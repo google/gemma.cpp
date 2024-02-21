@@ -328,8 +328,8 @@ If this is successful, you should now have a
 
 ## Acknowledgements and Contacts
 
-gemma.cpp was started in fall 2023 by [Austin Huang](austinvhuang@google.com)
-and [Jan Wassenberg](janwas@google.com), and subsequently released February 2024
+gemma.cpp was started in fall 2023 by [Austin Huang](mailto:austinvhuang@google.com)
+and [Jan Wassenberg](mailto:janwas@google.com), and subsequently released February 2024
 thanks to contributions from Phil Culliton, Paul Chang, and Dan Zheng.
 
 This is not an officially supported Google product.
