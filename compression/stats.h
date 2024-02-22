@@ -25,6 +25,8 @@
 
 #include "hwy/base.h"  // HWY_ASSERT
 
+namespace gcpp {
+
 // Thread-compatible.
 template <size_t N>
 class Bins {
@@ -186,5 +188,7 @@ class Stats {
   double m3_;
   double m4_;
 };
+
+}  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_STATS_H_

@@ -23,6 +23,8 @@
 
 #include "hwy/base.h"  // HWY_ASSERT
 
+namespace gcpp {
+
 void Stats::Assimilate(const Stats& other) {
   const int64_t total_n = n_ + other.n_;
   if (total_n == 0) return;  // Nothing to do; prevents div by zero.
@@ -115,3 +117,5 @@ std::string Stats::ToString(int exclude) const {
   HWY_ASSERT(pos < sizeof(buf));
   return buf;
 }
+
+}  // namespace gcpp

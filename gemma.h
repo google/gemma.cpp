@@ -51,9 +51,9 @@ constexpr bool kSystemPrompt = false;
 
 struct KVCache {
   hwy::AlignedFreeUniquePtr<float[]>
-      key_cache;  // batch_size * seq_len * n_layers * n_kv_heads * dim_qkv
+      key_cache;  // batch_size * kSeqLen * kLayers * kKVHeads * kQKVDim
   hwy::AlignedFreeUniquePtr<float[]>
-      value_cache;  // batch_size * seq_len * n_layers * n_kv_heads * dim_qkv
+      value_cache;  // batch_size * kSeqLen * kLayers * kKVHeads * kQKVDim
 };
 
 // Model variants: see configs.h for details.
