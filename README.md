@@ -40,6 +40,10 @@ Community contributions large and small are welcome. This project follows
 [Google's Open Source Community
 Guidelines](https://opensource.google.com/conduct/).
 
+*Active development is currently done on the `dev` branch. Please open pull
+requests targeting `dev` branch instead of `main`, which is intended to be more
+stable.*
+
 ## Quick Start
 
 ### System requirements
