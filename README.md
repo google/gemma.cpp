@@ -105,7 +105,7 @@ runtime, create a build directory and generate the build files using `cmake`
 from the top-level project directory:
 
 ```sh
-(cd build && cmake ..)
+cmake -B build
 ```
 
 Then run `make` to build the `./gemma` executable:
@@ -115,8 +115,9 @@ cd build
 make -j [number of parallel threads to use] gemma
 ```
 
-For example, `make -j 8 gemma`. If this is successful, you should now have a
-`gemma` executable in the `build/` directory.
+For example, `make -j4 gemma` will build using 4 threads. If this is successful,
+you should now have a `gemma` executable in the `build/` directory. If the
+`nproc` command is available, you can use `make -j$(nproc) gemma`.
 
 > [!NOTE]
 > On Windows Subsystem for Linux (WSL) users should set the number of
@@ -317,7 +318,7 @@ the `libgemma` target instead of `gemma`.
 First, run `cmake`:
 
 ```sh
-(cd build && cmake ..)
+cmake -B build
 ```
 
 Then, run `make` with the `libgemma` target:
@@ -327,8 +328,8 @@ cd build
 make -j [number of parallel threads to use] libgemma
 ```
 
-If this is successful, you should now have a
-`libgemma` library file in the `build/` directory. On linux the filename is `libgemma.a`.
+If this is successful, you should now have a `libgemma` library file in the
+`build/` directory. On Unix platforms, the filename is `libgemma.a`.
 
 ## Acknowledgements and Contacts
 
