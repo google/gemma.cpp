@@ -1,0 +1,45 @@
+name: Build
+
+# Trigger on push or via manual dispath.
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ${{matrix.os}}
+    name: ${{ matrix.os }} ${{ matrix.type }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        type: ['Release']
+        os: ['ubuntu-latest']
+
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+    - uses: actions/checkout@v4
+
+    # Set up ccache
+    - name: ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+
+    # Install CMake
+    - uses: lukka/get-cmake@latest
+
+    # Build via CMake
+    # Reference: https://github.com/lukka/run-cmake/blob/v3/action.yml
+    - name: Build via cmake
+      uses: lukka/run-cmake@v3
+      with:
+        cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
+        cmakeAppendedArgs: >
+          -D CMAKE_C_COMPILER_LAUNCHER=ccache
+          -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
+        buildWithCMake: true
+        # Explicitly list build targets here.
+        # Building "all" includes test executables and takes much longer.
+        buildWithCMakeArgs: "-- gemma"
+        buildDirectory: '${{ github.workspace }}/build'
