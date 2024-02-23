@@ -25,9 +25,9 @@
 #include <vector>
 
 // copybara:import_next_line:gemma_cpp
-#include "configs.h" // kSeqLen
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"  // SfpStream/NuqStream
+// copybara:import_next_line:gemma_cpp
+#include "configs.h"               // kSeqLen
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"             // ArgsBase
 #include "hwy/aligned_allocator.h"

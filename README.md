@@ -61,7 +61,8 @@ Visit [the Gemma model page on
 Kaggle](https://www.kaggle.com/models/google/gemma) and select `Model Variations
 |> Gemma C++`. On this tab, the `Variation` dropdown includes the options below.
 Note bfloat16 weights are higher fidelity, while 8-bit switched floating point
-weights enable faster inference.
+weights enable faster inference. In general, we recommend starting with the
+`-sfp` checkpoints.
 
 2B instruction-tuned (`it`) and pre-trained (`pt`) models:
 
@@ -81,8 +82,9 @@ weights enable faster inference.
 | `7b-pt`     | 7 billion parameter pre-trained model, bfloat16 |
 | `7b-pt-sfp` | 7 billion parameter pre-trained model, 8-bit switched floating point |
 
-> [!NOTE]
-> We *recommend starting with `2b-it-sfp`* to get up and running.
+> [!NOTE] 
+> **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
+> get up and running.
 
 ### Step 2: Extract Files
 
@@ -102,21 +104,42 @@ convenient directory location (e.g. the `build/` directory in this repo).
 
 The build system uses [CMake](https://cmake.org/). To build the gemma inference
 runtime, create a build directory and generate the build files using `cmake`
-from the top-level project directory:
+from the top-level project directory. For the 8-bit switched floating point
+weights (sfp), run cmake with no options:
 
 ```sh
-(cd build && cmake ..)
+cmake -B build
 ```
 
-Then run `make` to build the `./gemma` executable:
+**or** if you downloaded bfloat16 weights (any model *without* `-sfp` in the name),
+instead of running cmake with no options as above, run cmake with WEIGHT_TYPE
+set to [highway's](https://github.com/google/highway) `hwy::bfloat16_t` type
+(this will be simplified in the future, we recommend using `-sfp` weights
+instead of bfloat16 for faster inference):
+
+```sh
+cmake -B build -DWEIGHT_TYPE=hwy::bfloat16_t
+```
+
+After running whichever of the above `cmake` invocations that is appropriate for
+your weights, you can enter the `build/` directory and run `make` to build the
+`./gemma` executable:
 
 ```sh
 cd build
 make -j [number of parallel threads to use] gemma
 ```
 
-For example, `make -j 8 gemma`. If this is successful, you should now have a
-`gemma` executable in the `build/` directory.
+Replace `[number of parallel threads to use]` with a number - the number of
+cores available on your system is a reasonable heuristic.
+
+For example, `make -j4 gemma` will build using 4 threads. If this is successful,
+you should now have a `gemma` executable in the `build/` directory. If the
+`nproc` command is available, you can use `make -j$(nproc) gemma` as a
+reasonable default for the number of threads. 
+
+If you aren't sure of the right value for the `-j` flag, you can simply run
+`make gemma` instead and it should still build the `./gemma` executable.
 
 > [!NOTE]
 > On Windows Subsystem for Linux (WSL) users should set the number of
@@ -156,6 +179,38 @@ Example invocation for the following configuration:
 --compressed_weights 2b-it-sfp.sbs \
 --model 2b-it
 ```
+
+### Troubleshooting and FAQs
+
+**Running `./gemma` fails with "Failed to read cache gating_ein_0 (error 294) ..."**
+
+The most common problem is that `cmake` was built with the wrong weight type and
+`gemma` is attempting to load `bfloat16` weights (`2b-it`, `2b-pt`, `7b-it`,
+`7b-pt`) using the default switched floating point (sfp) or vice versa. Revisit
+step #3 and check that the `cmake` command used to build `gemma` was correct for
+the weights that you downloaded.
+
+In the future we will handle model format handling from compile time to runtime
+to simplify this.
+
+**Problems building in Windows / Visual Studio**
+
+Currently if you're using Windows, we recommend building in WSL (Windows
+Subsystem for Linux). We are exploring options to enable other build
+configurations, see issues for active discussion.
+
+**Model does not respond to instructions and produces strange output**
+
+A common issue is that you are using a pre-trained model, which is not
+instruction-tuned and thus does not respond to instructions. Make sure you are
+using an instruction-tuned model (`2b-it-sfp`, `2b-it`, `7b-it-sfp`, `7b-it`)
+and not a pre-trained model (any model with a `-pt` suffix).
+
+**How do I convert my fine-tune to a `.sbs` compressed model file?**
+
+We're working on a python script to convert a standard model format to `.sbs`,
+and hope have it available in the next week or so. Follow [this
+issue](https://github.com/google/gemma.cpp/issues/11) for updates.
 
 ## Usage
 
@@ -317,7 +372,7 @@ the `libgemma` target instead of `gemma`.
 First, run `cmake`:
 
 ```sh
-(cd build && cmake ..)
+cmake -B build
 ```
 
 Then, run `make` with the `libgemma` target:
@@ -327,8 +382,8 @@ cd build
 make -j [number of parallel threads to use] libgemma
 ```
 
-If this is successful, you should now have a
-`libgemma` library file in the `build/` directory. On linux the filename is `libgemma.a`.
+If this is successful, you should now have a `libgemma` library file in the
+`build/` directory. On Unix platforms, the filename is `libgemma.a`.
 
 ## Acknowledgements and Contacts
 
