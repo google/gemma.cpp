@@ -55,6 +55,16 @@ Before starting, you should have installed:
   least C++17.
 - `tar` for extracting archives from Kaggle.
 
+Building natively on Windows requires the Visual Studio 2012 Build Tools with the
+optional Clang/LLVM C++ frontend (`clang-cl`). This can be installed from the
+command line with
+[`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+```sh
+winget install --id Kitware.CMake
+winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;installRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+```
+
 ### Step 1: Obtain model weights and tokenizer from Kaggle
 
 Visit [the Gemma model page on
@@ -104,24 +114,35 @@ The build system uses [CMake](https://cmake.org/). To build the gemma inference
 runtime, create a build directory and generate the build files using `cmake`
 from the top-level project directory:
 
-```sh
-cmake -B build
-```
-
-Then run `make` to build the `./gemma` executable:
+#### Unix-like Platforms
 
 ```sh
-cd build
-make -j [number of parallel threads to use] gemma
+# Configure `build` directory
+cmake --preset make
+
+# Build project using make
+cmake --build --preset make -j [number of parallel threads to use]
 ```
 
-For example, `make -j4 gemma` will build using 4 threads. If this is successful,
-you should now have a `gemma` executable in the `build/` directory. If the
-`nproc` command is available, you can use `make -j$(nproc) gemma`.
+If the `nproc` command is available, you can use `-j $(nproc)`.
+
+If this is successful, you should now have a `gemma` executable in the `build/` directory.
 
 > [!NOTE]
 > On Windows Subsystem for Linux (WSL) users should set the number of
 > parallel threads to 1. Using a larger number may result in errors.
+
+#### Windows
+
+```sh
+# Configure `build` directory
+cmake --preset windows
+
+# Build project using Visual Studio Build Tools
+cmake --build --preset windows -j [number of parallel threads to use]
+```
+
+If this is successful, you should now have a `gemma.exe` executable in the `build/` directory.
 
 ### Step 4: Run
 
