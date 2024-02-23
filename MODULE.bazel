@@ -1,0 +1,14 @@
+module(
+    name = "gemma",
+    version = "0.1.0",
+)
+
+bazel_dep(
+    name = "rules_license",
+    version = "0.0.7",
+)
+
+bazel_dep(
+    name = "com_google_sentencepiece",
+    version = "0.1.96",
+)

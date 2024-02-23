@@ -62,7 +62,6 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
-// #include "third_party/sentencepiece/src/util.h"
 
 namespace gcpp {
 
@@ -205,8 +204,7 @@ struct Activations {
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
-  static constexpr size_t kCachePosSize =
-      TConfig::kLayers * kKVHeads * kQKVDim;
+  static constexpr size_t kCachePosSize = TConfig::kLayers * kKVHeads * kQKVDim;
   static constexpr size_t kCacheLayerSize = kKVHeads * kQKVDim;
 
   std::array<float, kBatchSize * kModelDim> x;  // input
