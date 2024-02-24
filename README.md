@@ -55,16 +55,6 @@ Before starting, you should have installed:
   least C++17.
 - `tar` for extracting archives from Kaggle.
 
-Building natively on Windows requires the Visual Studio 2012 Build Tools with the
-optional Clang/LLVM C++ frontend (`clang-cl`). This can be installed from the
-command line with
-[`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
-
-```sh
-winget install --id Kitware.CMake
-winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;installRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
-```
-
 ### Step 1: Obtain model weights and tokenizer from Kaggle
 
 Visit [the Gemma model page on
@@ -117,7 +107,6 @@ runtime, create a build directory and generate the build files using `cmake`
 from the top-level project directory. For the 8-bit switched floating point
 weights (sfp), run cmake with no options:
 
-#### Unix-like Platforms
 ```sh
 cmake -B build
 ```
@@ -137,18 +126,17 @@ your weights, you can enter the `build/` directory and run `make` to build the
 `./gemma` executable:
 
 ```sh
-# Configure `build` directory
-cmake --preset make
-
-# Build project using make
-cmake --build --preset make -j [number of parallel threads to use]
+cd build
+make -j [number of parallel threads to use] gemma
 ```
 
 Replace `[number of parallel threads to use]` with a number - the number of
-cores available on your system is a reasonable heuristic.  For example,
-`make -j4 gemma` will build using 4 threads. If the `nproc` command is
-available, you can use `make -j$(nproc) gemma` as a reasonable default
-for the number of threads. 
+cores available on your system is a reasonable heuristic.
+
+For example, `make -j4 gemma` will build using 4 threads. If this is successful,
+you should now have a `gemma` executable in the `build/` directory. If the
+`nproc` command is available, you can use `make -j$(nproc) gemma` as a
+reasonable default for the number of threads. 
 
 If you aren't sure of the right value for the `-j` flag, you can simply run
 `make gemma` instead and it should still build the `./gemma` executable.
@@ -156,20 +144,6 @@ If you aren't sure of the right value for the `-j` flag, you can simply run
 > [!NOTE]
 > On Windows Subsystem for Linux (WSL) users should set the number of
 > parallel threads to 1. Using a larger number may result in errors.
-
-If the build is successful, you should now have a `gemma` executable in the `build/` directory.
-
-#### Windows
-
-```sh
-# Configure `build` directory
-cmake --preset windows
-
-# Build project using Visual Studio Build Tools
-cmake --build --preset windows -j [number of parallel threads to use]
-```
-
-If the build is successful, you should now have a `gemma.exe` executable in the `build/` directory.
 
 ### Step 4: Run
 
