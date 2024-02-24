@@ -1,6 +1,6 @@
 name: Build
 
-# Trigger on push or via manual dispath.
+# Trigger on push or via manual dispatch.
 on: [push, workflow_dispatch]
 
 jobs:

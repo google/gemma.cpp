@@ -151,7 +151,6 @@ HWY_INLINE void FullDotProductsForStrip(
                              MaxCols(), vec_aligned, out);
   // For further multiples of MaxCols, accumulate. Remainders handled below.
   size_t c0 = MaxCols();
-  HWY_UNROLL(1)
   for (; c0 <= mat_stride - MaxCols(); c0 += MaxCols()) {
     AccumulatePartialDotProducts(df, mat, mat_ofs, mat_stride, r0, c0, num_rows,
                                  MaxCols(), vec_aligned, out);
