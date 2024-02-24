@@ -18,7 +18,9 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 
+#if HWY_OS_LINUX
 #include <sched.h>
+#endif
 #include <stddef.h>
 
 #include <algorithm>  // std::clamp

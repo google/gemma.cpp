@@ -68,6 +68,8 @@ target_link_libraries(gemma hwy hwy_contrib sentencepiece)
 target_include_directories(gemma PRIVATE ./)
 FetchContent_GetProperties(sentencepiece)
 target_include_directories(gemma PRIVATE ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(gemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
+target_compile_options(gemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 
 ## Library Target
 
@@ -77,3 +79,5 @@ set_target_properties(libgemma PROPERTIES PREFIX "")
 target_include_directories(libgemma PUBLIC ./)
 target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
 target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
+target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
