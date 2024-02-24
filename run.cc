@@ -79,7 +79,9 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
 void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
                hwy::ThreadPool& inner_pool, const InferenceArgs& args,
-               int verbosity, const gcpp::AcceptFunc& accept_token) {
+               int verbosity, const gcpp::AcceptFunc& accept_token,
+               std::string &eot_line
+) {
   PROFILER_ZONE("Gen.misc");
   int abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -137,7 +139,18 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       if (verbosity >= 1) {
         std::cout << "> " << std::flush;
       }
-      std::getline(std::cin, prompt_string);
+
+      if (eot_line.size() == 0) {
+        std::getline(std::cin, prompt_string);
+      } else {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+          if (line == eot_line) {
+            break;
+          }
+          prompt_string += line + "\n";
+        }
+      }
     }
 
     if (std::cin.fail() || prompt_string == "%q" || prompt_string == "%Q") {
@@ -231,7 +244,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(model, pool, inner_pool, inference, app.verbosity,
-            /*accept_token=*/[](int) { return true; });
+            /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 
 }  // namespace gcpp

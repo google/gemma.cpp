@@ -62,6 +62,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   Path log;  // output
   int verbosity;
   size_t num_threads;
+  std::string eot_line;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -76,6 +77,11 @@ class AppArgs : public ArgsBase<AppArgs> {
             "Number of threads to use. Default value is set based on an "
             "estimate of "
             "how many concurrent threads are supported.",
+            2);
+    visitor(eot_line, "eot_line", std::string(""),
+            "End of turn line. "
+            "When you specify this, the prompt will be all lines "
+            "before the line where only the given string appears.",
             2);
   }
 };
