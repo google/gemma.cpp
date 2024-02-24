@@ -1,7 +1,7 @@
 name: Build
 
-# Trigger on push or via manual dispatch.
-on: [push, workflow_dispatch]
+# Trigger on push, pull request, or via manual dispatch.
+on: [push, pull_request, workflow_dispatch]
 
 jobs:
   build:
