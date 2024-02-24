@@ -144,11 +144,6 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       return;
     }
 
-    if (prompt_string == "%c" || prompt_string == "%C") {
-      abs_pos = 0;
-      continue;
-    }
-
     if (model.model_training == ModelTraining::GEMMA_IT) {
       // For instruction-tuned models: add control tokens.
       prompt_string = "<start_of_turn>user\n" + prompt_string +
