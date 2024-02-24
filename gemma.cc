@@ -60,7 +60,8 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "sentencepiece_processor.h"
+// copybara:import_next_line:sentencepiece
+#include "src/sentencepiece_processor.h"
 
 namespace gcpp {
 
