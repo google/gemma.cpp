@@ -221,7 +221,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
     const std::string instructions =
         "*Usage*\n"
-        "  Enter an instruction and press enter (%Q quits).\n\n"
+        "  Enter an instruction and press enter (%C reset conversation, "
+        "%Q quits).\n\n"
         "*Examples*\n"
         "  - Write an email to grandma thanking her for the cookies.\n"
         "  - What are some historical attractions to visit around "
