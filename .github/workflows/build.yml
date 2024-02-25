@@ -1,11 +1,11 @@
-name: build
+name: Build
 
-# Trigger on push, pull request, or via manual dispatch.
-on: [push, pull_request, workflow_dispatch]
+# Trigger on push or via manual dispatch.
+on: [push, workflow_dispatch]
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{matrix.os}}
     name: ${{ matrix.os }} ${{ matrix.type }}
     timeout-minutes: 30
 
@@ -13,10 +13,10 @@ jobs:
       fail-fast: false
       matrix:
         type: ['Release']
-        os: ['ubuntu-latest', 'macos-latest']
+        os: ['ubuntu-latest']
 
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.os }}-${{ matrix.type }}
+      group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
 
     steps:

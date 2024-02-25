@@ -114,3 +114,54 @@ cc_binary(
         "//:thread_pool",
     ],
 )
+
+# copybara:strip_begin
+cc_binary(
+    name = "run_csv",
+    srcs = [
+        "run_csv.cc",
+    ],
+    deps = [
+        ":app",
+        ":args",
+        ":gemma_lib",
+        "//compression:compress",
+        # copybara:import_next_line:hwy
+        "//:hwy",
+        # copybara:import_next_line:hwy
+        "//:nanobenchmark",
+        # copybara:import_next_line:hwy
+        "//:profiler",
+        # copybara:import_next_line:hwy
+        "//:thread_pool",
+        "//third_party/riegeli/bytes:file_reader",
+        "//third_party/riegeli/bytes:file_writer",
+        "//third_party/riegeli/csv:csv_reader",
+        "//third_party/riegeli/csv:csv_writer",
+    ],
+)
+
+gensignature(
+    name = "gemma_sign",
+    srcs = [":gemma"],
+)
+
+cc_test(
+    name = "benchmarks",
+    size = "large",
+    srcs = [
+        "benchmarks.cc",
+    ],
+    tags = ["notap"],
+    deps = [
+        ":app",
+        ":gemma_lib",
+        "//third_party/benchmark",
+        # copybara:import_next_line:hwy
+        "//:hwy",
+        # copybara:import_next_line:hwy
+        "//:thread_pool",
+    ],
+)
+
+# copybara:strip_end
