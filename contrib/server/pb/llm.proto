@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package llm;
+
+option go_package = "github.com/google/gemma.cpp/contrib/server/pb";
+
+// LLM serves the large language model.
+service LLM {
+    // Runs a conversational session with the LLM.
+    rpc Converse(stream ConverseRequest) returns (stream ConverseResponse) {}
+}
+
+message ConverseRequest {
+    string text = 1;
+}
+
+message ConverseResponse {
+    repeated string text = 1;
+    bool end_of_response = 2;
+}
