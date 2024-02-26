@@ -75,6 +75,7 @@ target_compile_options(gemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-de
 add_library(libgemma ${SOURCES})
 set_property(TARGET libgemma PROPERTY CXX_STANDARD 17)
 set_target_properties(libgemma PROPERTIES PREFIX "")
+set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
 target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
 target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
