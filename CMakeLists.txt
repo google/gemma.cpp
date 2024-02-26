@@ -24,7 +24,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG da250571a45826b21eebbddc1e50d0c1137dee5f)
 FetchContent_MakeAvailable(highway)
 
-## Note: absl meeds tp be installed by sentencepiece. This will only happen if
+## Note: absl needs to be installed by sentencepiece. This will only happen if
 ## cmake is invoked with -DSPM_ENABLE_SHARED=OFF and -DSPM_ABSL_PROVIDER=module
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c)
 FetchContent_MakeAvailable(sentencepiece)
@@ -49,7 +49,7 @@ endif()
 
 # Allowable types for WEIGHT_TYPE:
 # float - slow, not recommended
-# hwy::bfloat16_t - bfloat16 as impemented by https://github.com/google/highway
+# hwy::bfloat16_t - bfloat16 as implemented by https://github.com/google/highway
 # SfpStream - 8-bit switched floating point (recommended)
 # NuqStream - experimental, work-in-progress
 option(WEIGHT_TYPE "Set weight type" "")
@@ -67,6 +67,8 @@ target_link_libraries(gemma hwy hwy_contrib sentencepiece)
 target_include_directories(gemma PRIVATE ./)
 FetchContent_GetProperties(sentencepiece)
 target_include_directories(gemma PRIVATE ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(gemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
+target_compile_options(gemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 
 ## Library Target
 
@@ -76,3 +78,5 @@ set_target_properties(libgemma PROPERTIES PREFIX "")
 target_include_directories(libgemma PUBLIC ./)
 target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
 target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
+target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)

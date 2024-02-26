@@ -1,0 +1,59 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+      "major": 3,
+      "minor": 11,
+      "patch": 0
+    },
+    "configurePresets": [
+      {
+        "name": "__defaults__",
+        "hidden": true,
+        "binaryDir": "${sourceDir}/build"
+      },
+      {
+        "name": "make",
+        "inherits": "__defaults__",
+        "displayName": "Make",
+        "description": "Unix Makefiles",
+        "generator": "Unix Makefiles",
+        "binaryDir": "${sourceDir}/build"
+      },
+      {
+        "name": "windows",
+        "inherits": "__defaults__",
+        "displayName": "Windows",
+        "description": "Visual Studio 2022 with Clang/LLVM frontend",
+        "generator": "Visual Studio 17 2022",
+        "toolset": "ClangCL",
+        "condition": {
+          "type": "equals",
+          "lhs": "${hostSystemName}",
+          "rhs": "Windows"
+        }
+      }
+    ],
+    "buildPresets": [
+      {
+        "name": "__defaults__",
+        "hidden": true,
+        "targets": [
+            "gemma",
+            "libgemma"
+        ]
+      },
+      {
+        "name": "make",
+        "inherits": "__defaults__",
+        "displayName": "Unix Makefiles",
+        "configurePreset": "make"
+      },
+      {
+        "name": "windows",
+        "inherits": "__defaults__",
+        "displayName": "Windows",
+        "configuration": "Release",
+        "configurePreset": "windows"
+      }
+    ]
+  }
