@@ -273,7 +273,7 @@ max_tokens                    : 3072
 max_generated_tokens          : 2048
 
 *Usage*
-  Enter an instruction and press enter (%Q quits).
+  Enter an instruction and press enter (%C reset conversation, %Q quits).
 
 *Examples*
   - Write an email to grandma thanking her for the cookies.
