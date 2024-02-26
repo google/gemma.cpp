@@ -6,17 +6,25 @@ on: [push, pull_request, workflow_dispatch]
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} ${{ matrix.type }}
+    name: ${{ matrix.os }} (${{ matrix.preset }}) ${{ matrix.build_type }}
     timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
-        type: ['Release']
-        os: ['ubuntu-latest', 'macos-latest']
+        os: ['ubuntu-latest', 'macos-latest', 'windows-latest']
+        build_type: ['Release']
+        preset: ['make', 'windows']
+        exclude:
+          - os: ubuntu-latest
+            preset: windows
+          - os: macos-latest
+            preset: windows
+          - os: windows-latest
+            preset: make
 
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.os }}-${{ matrix.type }}
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.os }}-${{ matrix.preset }}-${{ matrix.build_type }}
       cancel-in-progress: true
 
     steps:
@@ -26,20 +34,23 @@ jobs:
     - name: ccache
       uses: hendrikmuhs/ccache-action@v1.2
 
-    # Install CMake
-    - uses: lukka/get-cmake@latest
+    - name: Configure CMake
+      run: >
+        cmake --preset ${{ matrix.preset }}
+        -S ${{ github.workspace }} -B ${{ github.workspace }}/build
+        -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -D CMAKE_C_COMPILER_LAUNCHER=ccache
+        -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-    # Build via CMake
-    # Reference: https://github.com/lukka/run-cmake/blob/v3/action.yml
-    - name: Build via cmake
-      uses: lukka/run-cmake@v3
+    - name: Build
+      run: cmake --build ${{ github.workspace }}/build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
+
+    - name: Archive production artifacts
+      uses: actions/upload-artifact@v4
       with:
-        cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
-        cmakeAppendedArgs: >
-          -D CMAKE_C_COMPILER_LAUNCHER=ccache
-          -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
-        buildWithCMake: true
-        # Explicitly list build targets here.
-        # Building "all" includes test executables and takes much longer.
-        buildWithCMakeArgs: "-- gemma"
-        buildDirectory: '${{ github.workspace }}/build'
+        name: gemma-${{ matrix.os }}-${{ matrix.preset }}-${{ matrix.build_type }}
+        path: |
+          ${{ github.workspace }}/build/${{ matrix.build_type }}/gemma.exe
+          ${{ github.workspace }}/build/${{ matrix.build_type }}/libgemma.lib
+          ${{ github.workspace }}/build/gemma
+          ${{ github.workspace }}/build/libgemma.a
