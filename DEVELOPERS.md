@@ -71,6 +71,18 @@ The implementation code is roughly split into 4 layers, from high to low level:
 4.  Backend (`highway`) - Low-level hardware interface (SIMD in the case of
     highway) supporting the implementations in (3).
 
+Besides these layers, supporting utilities are:
+
+- `compression/` - model compression operations. the 8-bit switched floating 
+  point model conversion is here.
+- `util/` - command line argument handling and any other utilities.
+
+## Style and Formatting
+
+A `.clang-format` configuration is provided with our defaults, please run source
+files through `clang-format` (or a formatter that produces equivalent behavior)
+before finalizing PR for submission.
+
 ## Compile-Time Flags (Advanced)
 
 There are several compile-time flags to be aware of (note these may or may not 
