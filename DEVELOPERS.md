@@ -73,7 +73,7 @@ The implementation code is roughly split into 4 layers, from high to low level:
 
 Besides these layers, supporting utilities are:
 
-- `compression/` - model compression operations. the 8-bit switched floating 
+- `compression/` - model compression operations. The 8-bit switched floating 
   point model conversion is here.
 - `util/` - command line argument handling and any other utilities.
 
