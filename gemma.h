@@ -115,7 +115,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path cache;  // compressed weights
   std::string model_type;
 
-  template <class Visitor> void ForEach(const Visitor& visitor) {
+  template <class Visitor>
+  void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
             "Path name of tokenizer model file. (required)");
     visitor(
@@ -175,7 +176,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     return nullptr;
   }
 
-  template <class Visitor> void ForEach(const Visitor& visitor) {
+  template <class Visitor>
+  void ForEach(const Visitor& visitor) {
     visitor(max_tokens, "max_tokens", size_t{3072},
             "Maximum number of tokens in prompt + generation.");
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
