@@ -29,10 +29,10 @@
 // copybara:import_next_line:gemma_cpp
 #include "configs.h"  // kSeqLen
 // copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // ArgsBase
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "util/args.h"  // ArgsBase
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
 
