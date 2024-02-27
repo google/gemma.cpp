@@ -114,8 +114,12 @@ convenient directory location (e.g. the `build/` directory in this repo).
 
 The build system uses [CMake](https://cmake.org/). To build the gemma inference
 runtime, create a build directory and generate the build files using `cmake`
-from the top-level project directory. For the 8-bit switched floating point
-weights (sfp), run cmake with no options:
+from the top-level project directory. Note if you previous ran `cmake` and are
+re-running with a different setting, be sure to clean out the `build/` directory
+with `rm -rf build/*` (warning this will delete any other files in the `build/` 
+directory.
+
+For the 8-bit switched floating point weights (sfp), run cmake with no options:
 
 #### Unix-like Platforms
 ```sh
