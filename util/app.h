@@ -20,8 +20,11 @@
 
 #if HWY_OS_LINUX
 #include <sched.h>
+
+#include <cerrno>  // IDE does not recognize errno.h as providing errno.
 #endif
 #include <stddef.h>
+#include <stdio.h>
 
 #include <algorithm>  // std::clamp
 #include <thread>     // NOLINT>
@@ -38,7 +41,13 @@ static inline void PinThreadToCore(size_t cpu_index) {
   cpu_set_t cset;             // bit array
   CPU_ZERO(&cset);            // clear all
   CPU_SET(cpu_index, &cset);  // set bit indicating which processor to run on.
-  HWY_ASSERT(0 == sched_setaffinity(0, sizeof(cset), &cset));
+  const int err = sched_setaffinity(0, sizeof(cset), &cset);
+  if (err != 0) {
+    fprintf(stderr,
+            "sched_setaffinity returned %d, errno %d. Can happen if running in "
+            "a container; this warning is safe to ignore.\n",
+            err, errno);
+  }
 #else
   (void)cpu_index;
 #endif
