@@ -122,21 +122,22 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
-            "Path name of tokenizer model file. (required)");
+            "Path name of tokenizer model file.\n    Required argument.");
     visitor(
         cache, "compressed_weights", Path(),
         "Path name of compressed weights file, regenerated from `--weights` "
         "file if "
-        "the compressed weights file does not exist. (required)");
+        "the compressed weights file does not exist.\n    Required argument.");
     visitor(model_type, "model", std::string(),
-            "Model type - can be 2b-it (2B parameters, instruction-tuned), "
-            "2b-pt (2B parameters, pretrained), 7b-it (7B parameters, "
-            "instruction-tuned), or 7b-pt (7B parameters, pretrained). "
-            "(required)");
+            "Model type\n    2b-it (2B parameters, instruction-tuned)\n    "
+            "2b-pt (2B parameters, pretrained)\n    7b-it (7B parameters "
+            "instruction-tuned)\n    7b-pt (7B parameters, pretrained)\n"
+            "    Required argument.");
     visitor(model, "weights", Path(),
             "Path name of model weights (.sbs) file. Only required if "
             "compressed_weights file is not present and needs to be "
-            "regenerated. Otherwise, not needed");
+            "regenerated. This parameter is only required for compressing"
+            "new model weight exports, otherwise it is not needed.");
   }
 };
 
@@ -192,7 +193,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Make top-k sampling deterministic", 2);
     visitor(multiturn, "multiturn", false,
             "Multiturn mode (if 0, this clears the KV cache after every "
-            "interaction without quitting)\n    Default = 0 (conversation "
+            "interaction without quitting)\n    Default : 0 (conversation "
             "resets every turn)");
   }
 };

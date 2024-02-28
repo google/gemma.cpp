@@ -92,7 +92,7 @@ weights enable faster inference. In general, we recommend starting with the
 | `7b-pt`     | 7 billion parameter pre-trained model, bfloat16 |
 | `7b-pt-sfp` | 7 billion parameter pre-trained model, 8-bit switched floating point |
 
-> [!NOTE] 
+> [!NOTE]
 > **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
 > get up and running.
 
@@ -116,7 +116,7 @@ The build system uses [CMake](https://cmake.org/). To build the gemma inference
 runtime, create a build directory and generate the build files using `cmake`
 from the top-level project directory. Note if you previous ran `cmake` and are
 re-running with a different setting, be sure to clean out the `build/` directory
-with `rm -rf build/*` (warning this will delete any other files in the `build/` 
+with `rm -rf build/*` (warning this will delete any other files in the `build/`
 directory.
 
 For the 8-bit switched floating point weights (sfp), run cmake with no options:
@@ -241,6 +241,21 @@ and not a pre-trained model (any model with a `-pt` suffix).
 We're working on a python script to convert a standard model format to `.sbs`,
 and hope have it available in the next week or so. Follow [this
 issue](https://github.com/google/gemma.cpp/issues/11) for updates.
+
+**What are some easy ways to make the model run faster?**
+
+1. Make sure you are using the 8-bit switched floating point `-sfp` models.
+2. If you're on a laptop, make sure power mode is set to maximize performance
+and saving mode is **off**. For most laptops, the power saving modes get
+activated automatically if the computer is not plugged in.
+3. Close other unused cpu-intensive applications.
+4. On macs, anecdotally we observe a "warm-up" ramp-up in speed as performance
+cores get engaged.
+5. Experiment with the `--num_threads` argument value. Depending on the device,
+larger numbers don't always mean better performance.
+
+We're also working on algorithmic and optimization approaches for faster
+inference, stay tuned.
 
 ## Usage
 
@@ -414,6 +429,17 @@ make -j [number of parallel threads to use] libgemma
 
 If this is successful, you should now have a `libgemma` library file in the
 `build/` directory. On Unix platforms, the filename is `libgemma.a`.
+
+## Independent Projects Using gemma.cpp
+
+Some independent projects using gemma.cpp:
+
+- [gemma-cpp-python - Python bindings](https://github.com/namtranase/gemma-cpp-python)
+- [lua-cgemma - Lua bindings](https://github.com/ufownl/lua-cgemma)
+- [Godot engine demo project](https://github.com/Rliop913/Gemma-godot-demo-project)
+
+If you would like to have your project included, feel free to get in touch or
+submit a PR with a `README.md` edit.
 
 ## Acknowledgements and Contacts
 
