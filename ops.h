@@ -341,7 +341,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     float* HWY_RESTRICT out, size_t size) {
   constexpr float eps = 1e-6f;
   float ss = SquaredL2(x, size);
-  ss = 1.0f / sqrtf(ss / static_cast<int>(size) + eps);
+  ss = 1.0f / sqrtf(ss / static_cast<float>(size) + eps);
   for (size_t j = 0; j < size; j++) {
     // Note 1.0f centering here
     out[j] = (1.0f + weight[j]) * (ss * x[j]);
@@ -353,7 +353,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     float* HWY_RESTRICT out, size_t size) {
   constexpr float eps = 1e-6f;
   float ss = SquaredL2(x, size);
-  ss = 1.0f / sqrtf(ss / static_cast<int>(size) + eps);
+  ss = 1.0f / sqrtf(ss / static_cast<float>(size) + eps);
   for (size_t j = 0; j < size; j++) {
     // Note 1.0f centering here
     out[j] = (1.0f + hwy::F32FromBF16(weight[j])) * (ss * x[j]);
@@ -364,7 +364,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const float* HWY_RESTRICT weight, float* HWY_RESTRICT inout, size_t size) {
   constexpr float eps = 1e-6f;
   float ss = SquaredL2(inout, size);
-  ss = 1.0f / sqrtf(ss / static_cast<int>(size) + eps);
+  ss = 1.0f / sqrtf(ss / static_cast<float>(size) + eps);
   for (size_t j = 0; j < size; j++) {
     // Note 1.0f centering here
     inout[j] = (1.0f + weight[j]) * (ss * inout[j]);
@@ -383,7 +383,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
 
   constexpr float eps = 1e-6f;
   const float ss = SquaredL2(inout, size);
-  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / static_cast<int>(size) + eps));
+  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / static_cast<float>(size) + eps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {
@@ -411,7 +411,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
 
   constexpr float eps = 1e-6f;
   const float ss = SquaredL2(x, size);
-  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / static_cast<int>(size) + eps));
+  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / static_cast<float>(size) + eps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {
@@ -438,7 +438,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
 
   constexpr float eps = 1e-6f;
   const float ss = SquaredL2(x, size);
-  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / size + eps));
+  const VF vss = hn::Set(df32, 1.0f / sqrtf(ss / static_cast<float>(size) + eps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {
@@ -464,9 +464,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
            : 1.0f);
   for (size_t dim = 0; dim < num_timescales; ++dim) {
     const float inv_timescale =
-        expf(static_cast<int>(dim) * -log_timescale_increment);
-    x[dim] += sinf(pos * inv_timescale);
-    x[num_timescales + dim] += cosf(pos * inv_timescale);
+        expf(static_cast<float>(dim) * -log_timescale_increment);
+    x[dim] += sinf(static_cast<float>(pos) * inv_timescale);
+    x[num_timescales + dim] += cosf(static_cast<float>(pos) * inv_timescale);
   }
 }
 
@@ -479,7 +479,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,
                                  static_cast<float>(dim_qkv);
     // Replacing with expf(ln(1E4) * freq_exponents) changes results noticeably.
     const float timescale = powf(10000.0f, freq_exponents);
-    const float theta = pos / timescale;
+    const float theta = static_cast<float>(pos) / timescale;
     const float cos_val = cosf(theta);
     const float sin_val = sinf(theta);
     const float x0 = x[dim];
@@ -500,7 +500,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(const float mul,
                                  static_cast<float>(dim_qkv);
     // Replacing with expf(ln(1E4) * freq_exponents) changes results noticeably.
     const float timescale = powf(10000.0f, freq_exponents);
-    const float theta = pos / timescale;
+    const float theta = static_cast<float>(pos) / timescale;
     const float cos_val = cosf(theta);
     const float sin_val = sinf(theta);
     const float x0 = x[dim];
