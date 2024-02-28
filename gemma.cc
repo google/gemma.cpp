@@ -633,30 +633,32 @@ void ForEachTensor(const Weights<TConfig>* weights,
        c_weights.c_final_norm_scale);
 
   char name[16];
-  for (size_t layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    Layer<TConfig>* layer = weights ? &weights->layers[layer_idx] : nullptr;
-    CompressedLayer<TConfig>* c_layer = c_weights.CLayer(layer_idx);
+  for (int layer_idx = 0; layer_idx < static_cast<int>(TConfig::kLayers);
+       ++layer_idx) {
+    const size_t idx = static_cast<size_t>(layer_idx);
+    Layer<TConfig>* layer = weights ? &weights->layers[idx] : nullptr;
+    CompressedLayer<TConfig>* c_layer = c_weights.CLayer(idx);
 
-    snprintf(name, sizeof(name), "pre_ff_ns_%lu", layer_idx);
+    snprintf(name, sizeof(name), "pre_ff_ns_%d", layer_idx);
     func(name, layer ? layer->pre_ffw_norm_scale.data() : nullptr,
          c_layer->c_pre_ffw_norm_scale);
 
-    snprintf(name, sizeof(name), "gating_ein_%lu", layer_idx);
+    snprintf(name, sizeof(name), "gating_ein_%d", layer_idx);
     func(name, layer ? layer->gating_einsum_w.data() : nullptr,
          c_layer->c_gating_einsum_w);
 
-    snprintf(name, sizeof(name), "linear_w_%lu", layer_idx);
+    snprintf(name, sizeof(name), "linear_w_%d", layer_idx);
     func(name, layer ? layer->linear_w.data() : nullptr, c_layer->c_linear_w);
-    snprintf(name, sizeof(name), "qkv_ein_%lu", layer_idx);
+    snprintf(name, sizeof(name), "qkv_ein_%d", layer_idx);
 
     func(name, layer ? layer->qkv_einsum_w.data() : nullptr,
          c_layer->c_qkv_einsum_w);
-    snprintf(name, sizeof(name), "att_ein_%lu", layer_idx);
+    snprintf(name, sizeof(name), "att_ein_%d", layer_idx);
 
     func(name, layer ? layer->attn_vec_einsum_w.data() : nullptr,
          c_layer->c_attn_vec_einsum_w);
 
-    snprintf(name, sizeof(name), "pre_att_ns_%lu", layer_idx);
+    snprintf(name, sizeof(name), "pre_att_ns_%d", layer_idx);
     func(name, layer ? layer->pre_attention_norm_scale.data() : nullptr,
          c_layer->c_pre_attention_norm_scale);
   }
