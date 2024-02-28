@@ -21,7 +21,7 @@
 // Allow changing pre-allocated kv cache size as a compiler flag
 #ifndef GEMMA_MAX_SEQLEN
 #define GEMMA_MAX_SEQLEN 4096
-#endif // !GEMMA_MAX_SEQLEN
+#endif  // !GEMMA_MAX_SEQLEN
 
 #include <stddef.h>
 
@@ -34,10 +34,10 @@ struct ConfigGemma7B {
   static constexpr int kVocabSize = 256128;
   static constexpr int kLayers = 28;
   static constexpr int kModelDim = 3072;
-  static constexpr int kFFHiddenDim = 16 * 3072 / 2; // = 24576
+  static constexpr int kFFHiddenDim = 16 * 3072 / 2;  // = 24576
   static constexpr int kHeads = 16;
-  static constexpr int kKVHeads = 16; // standard MHA
-  static constexpr int kQKVDim = 256; // query size == key size == value size
+  static constexpr int kKVHeads = 16;  // standard MHA
+  static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = 1;
 };
 
@@ -46,13 +46,13 @@ struct ConfigGemma2B {
   static constexpr int kVocabSize = 256128;
   static constexpr int kLayers = 18;
   static constexpr int kModelDim = 2048;
-  static constexpr int kFFHiddenDim = 16 * 2048 / 2; // = 16384
+  static constexpr int kFFHiddenDim = 16 * 2048 / 2;  // = 16384
   static constexpr int kHeads = 8;
-  static constexpr int kKVHeads = 8;  // TODO(austinvhuang): add MQA support
-  static constexpr int kQKVDim = 256; // query size == key size == value size
+  static constexpr int kKVHeads = 8;   // TODO(austinvhuang): add MQA support
+  static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = 1;
 };
 
-} // namespace gcpp
+}  // namespace gcpp
 
-#endif // THIRD_PARTY_GEMMA_CPP_CONFIGS_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_CONFIGS_H_

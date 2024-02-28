@@ -71,19 +71,31 @@ The implementation code is roughly split into 4 layers, from high to low level:
 4.  Backend (`highway`) - Low-level hardware interface (SIMD in the case of
     highway) supporting the implementations in (3).
 
+Besides these layers, supporting utilities are:
+
+- `compression/` - model compression operations. The 8-bit switched floating
+  point model conversion is here.
+- `util/` - command line argument handling and any other utilities.
+
+## Style and Formatting
+
+A `.clang-format` configuration is provided with our defaults, please run source
+files through `clang-format` (or a formatter that produces equivalent behavior)
+before finalizing PR for submission.
+
 ## Compile-Time Flags (Advanced)
 
-There are several compile-time flags to be aware of (note these may or may not 
+There are several compile-time flags to be aware of (note these may or may not
 be exposed to the build system):
 
-- `GEMMA_WEIGHT_T` : Sets the level of compression for weights (surfaced as 
-  WEIGHT_TYPE in CMakeLists.txt). Currently this should be set to `SfpStream` 
-  (default, if no flag is specified) for 8-bit SFP, or `hwy::bfloat16_t` to 
+- `GEMMA_WEIGHT_T` : Sets the level of compression for weights (surfaced as
+  WEIGHT_TYPE in CMakeLists.txt). Currently this should be set to `SfpStream`
+  (default, if no flag is specified) for 8-bit SFP, or `hwy::bfloat16_t` to
   enable for higher-fidelity (but slower) bfloat16 support. This is defined in
   `gemma.h`.
 - `GEMMA_MAX_SEQ_LEN` : Sets maximum sequence length to preallocate for the KV
   Cache. The default is 4096 tokens but can be overridden. This is not exposed
-  through `CMakeLists.txt` yet. 
+  through `CMakeLists.txt` yet.
 
 In the medium term both of these will likely be deprecated in favor of handling
 options at runtime - allowing for multiple weight compression schemes in a single
