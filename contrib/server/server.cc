@@ -49,7 +49,7 @@ namespace gcpp {
 void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
               gcpp::AppArgs& app) {
   fprintf(stderr,
-          "\ngemma.cpp\n---------\n\nTo run gemma.cpp, you need to "
+          "\ngemma-server\n---------\n\nTo run gemma-server, you need to "
           "specify 3 required model loading arguments: --tokenizer, "
           "--compressed_weights, "
           "and --model.\n\nModel Loading Arguments\n\n");
@@ -137,7 +137,7 @@ class LLMImpl final : public ::llm::LLM::Service {
     ++abs_pos;
     ++current_pos;
     if (current_pos < prompt_size) {
-      std::cerr << "." << std::flush;
+      // ignore tokens that are part of the prompt
     } else if (token == gcpp::EOS_ID) {
       if (!args.multiturn) {
         abs_pos = 0;
@@ -155,16 +155,14 @@ class LLMImpl final : public ::llm::LLM::Service {
       if (current_pos == prompt_size + 1) {
         // first token of response
         token_text.erase(0, token_text.find_first_not_of(" \t\n"));
-        if (verbosity >= 1) {
-          std::cout << std::endl << std::endl;
-        }
       }
-      // TODO(austinvhuang): is explicit space necessary?
-      std::cout << token_text << std::flush;
       ::llm::ConverseResponse converse_response;
       converse_response.add_text(token_text);
+      if (verbosity >= 2) {
+        std::cerr << "grpc-send: " << converse_response.DebugString() << std::endl;
+      }
       if (!stream->Write(converse_response)) {
-        return false; // TODO
+        return false; // TODO(justinsb): handle stream closed / error
       }
     }
     return true;
@@ -176,12 +174,12 @@ class LLMImpl final : public ::llm::LLM::Service {
     current_pos = 0;
     {
       PROFILER_ZONE("Gen.input");
-      // if (verbosity >= 1) {
-      //   std::cout << "> " << std::flush;
-      // }
       ::llm::ConverseRequest converse_request;
       if (! stream->Read(&converse_request)) {
         return ::grpc::Status::OK;
+      }
+      if (verbosity >= 2) {
+        std::cerr << "grpc-recv: " << converse_request.DebugString() << std::endl;
       }
       // if (converse_request.text().empty()) {
       //   if (verbosity >= 1) {
@@ -192,9 +190,10 @@ class LLMImpl final : public ::llm::LLM::Service {
       prompt_string = converse_request.text();
     }
 
-    if (prompt_string == "%q" || prompt_string == "%Q") {
-      return ::grpc::Status::OK;
-    }
+    // Client should just grpc close the stream instead
+    // if (prompt_string == "%q" || prompt_string == "%Q") {
+    //   return ::grpc::Status::OK;
+    // }
 
     if (this->_model.model_training == ModelTraining::GEMMA_IT) {
       // For instruction-tuned models: add control tokens.
@@ -217,8 +216,6 @@ class LLMImpl final : public ::llm::LLM::Service {
 
     prompt_size = prompt.size();
 
-    std::cerr << std::endl << "[ Reading prompt ] " << std::flush;
-
     const double time_start = hwy::platform::Now();
     GenerateGemma(model, args, prompt, abs_pos, this->_pool, this->_inner_pool, stream_token,
                   accept_token, gen, verbosity);
@@ -229,13 +226,17 @@ class LLMImpl final : public ::llm::LLM::Service {
                 << std::endl
                 << tok_sec << " tokens / sec" << std::endl;
     }
-    std::cout << std::endl << std::endl;
-     ::llm::ConverseResponse converse_response;
+    ::llm::ConverseResponse converse_response;
     converse_response.set_end_of_response(true);
+    if (verbosity >= 2) {
+      std::cerr << "grpc-send: " << converse_response.DebugString() << std::endl;
+    }
     if (!stream->Write(converse_response)) {
-      return ::grpc::Status::OK; // TODO
+      return ::grpc::Status::OK; // TODO(justinsb): which status to send?
     }
   }
+
+  // TODO(justinsb): send error code / message?
   std::cout
       << "max_tokens (" << args.max_tokens
       << ") exceeded. Use a larger value if desired using the --max_tokens "
@@ -266,30 +267,10 @@ void RunServer(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   if (app.verbosity >= 1) {
-    static const std::string banner_ascii_art =
-        "  __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __\n"
-        " / _` |/ _ \\ '_ ` _ \\| '_ ` _ \\ / _` | / __| '_ \\| '_ \\\n"
-        "| (_| |  __/ | | | | | | | | | | (_| || (__| |_) | |_) |\n"
-        " \\__, |\\___|_| |_| |_|_| |_| |_|\\__,_(_)___| .__/| .__/\n"
-        "  __/ |                                    | |   | |\n"
-        " |___/                                     |_|   |_|";
-
-    const std::string instructions =
-        "*Usage*\n"
-        "  Enter an instruction and press enter (%Q quits).\n\n"
-        "*Examples*\n"
-        "  - Write an email to grandma thanking her for the cookies.\n"
-        "  - What are some historical attractions to visit around "
-        "Massachusetts?\n"
-        "  - Compute the nth fibonacci number in javascript.\n"
-        "  - Write a standup comedy bit about GPU programming.\n";
-
-    std::cout << "\033[2J\033[1;1H"  // clear screen
-              << banner_ascii_art << "\n\n";
     ShowConfig(loader, inference, app);
-    std::cout << "\n" << instructions << "\n";
   }
 
+  // TODO(justinsb): make server_address configurable
   std::string server_address("0.0.0.0:50051");
   LLMImpl service(model, pool, inner_pool, inference, app.verbosity);
 
@@ -299,9 +280,6 @@ void RunServer(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   std::unique_ptr<::grpc::Server> server(builder.BuildAndStart());
   std::cout << "Server listening on " << server_address << std::endl;
   server->Wait();
-
-  // ReplGemma(model, pool, inner_pool, inference, app.verbosity,
-  //           /*accept_token=*/[](int) { return true; });
 }
 
 }  // namespace gcpp
