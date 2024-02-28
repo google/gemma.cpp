@@ -26,15 +26,19 @@
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"  // SfpStream/NuqStream
+// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "configs.h"  // kSeqLen
+// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // ArgsBase
+// copybara:end
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
+// copybara:end
 
 namespace gcpp {
 

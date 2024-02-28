@@ -83,14 +83,6 @@ A `.clang-format` configuration is provided with our defaults, please run source
 files through `clang-format` (or a formatter that produces equivalent behavior)
 before finalizing PR for submission.
 
-The `.clang-format` is the google style (as of feb 27 2024), except with 
-`SortIncludes` set to `false` to avoid breaking copybara path substitutions 
-which rely on adjacent comments.
-
-For transparency, `.clang-format` can be reproduced using the 
-`make_clang_format_config.sh` script in `utils/` run with `clang-format` version
-17.0.6.
-
 ## Compile-Time Flags (Advanced)
 
 There are several compile-time flags to be aware of (note these may or may not 
