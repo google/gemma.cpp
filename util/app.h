@@ -31,6 +31,7 @@
 
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
+// copybara:end
 #include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
@@ -77,7 +78,6 @@ class AppArgs : public ArgsBase<AppArgs> {
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
-    visitor(log, "log", Path{"/tmp/log.txt"}, "Logging file", 2);
     visitor(verbosity, "verbosity", 1,
             "Show verbose developer information\n   0 = only print generation "
             "output\n   1 = standard user-facing terminal ui\n   2 = show "
@@ -85,15 +85,16 @@ class AppArgs : public ArgsBase<AppArgs> {
             2);
     visitor(num_threads, "num_threads",
             kDefaultNumThreads,  // see ChooseNumThreads
-            "Number of threads to use. Default value is set based on an "
-            "estimate of "
-            "how many concurrent threads are supported.",
+            "Number of threads to use.\n    Default = Estimate of the "
+            "number of suupported concurrent threads.",
             2);
-    visitor(eot_line, "eot_line", std::string(""),
-            "End of turn line. "
-            "When you specify this, the prompt will be all lines "
-            "before the line where only the given string appears.",
-            2);
+    visitor(
+        eot_line, "eot_line", std::string(""),
+        "End of turn line. "
+        "When you specify this, the prompt will be all lines "
+        "before the line where only the given string appears.\n    Default = "
+        "When a newline is encountered, that signals the end of the turn.",
+        2);
   }
 };
 
