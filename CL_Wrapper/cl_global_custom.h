@@ -5,12 +5,12 @@
 using namespace cl;
 namespace clboost {
 
-	Platform get_platform();
-	Device get_gpu_device(const Platform& pf);
+	//Platform get_platform();
+	//Device get_gpu_device(const Platform& pf);
 	Context get_context(const Device& dev);
 	CommandQueue make_cq(const Context& ct,const Device& dev);
 	Program make_prog(const std::string& path,const Context& ct,const Device& dev);
-	Event make_event();
+	
 
 	template <typename T>
 	Buffer make_r_buf(const Context& ct, const int& size, std::vector<T>& vec);

@@ -2,38 +2,38 @@
 #include <fstream>
 #include <sstream>
 
-
-Platform
-clboost::get_platform()
-{
-	vector<Platform> pfvec;
-	Platform::get(&pfvec);
-	ASSERT_UEQ(pfvec.empty(), true);
-	for (int i = 0; i < pfvec.size(); i++) {
-
-		std::string pname;
-		vector<Device> dvs;
-		pfvec[i].getInfo(CL_PLATFORM_NAME, &pname);
-		pfvec[i].getDevices(CL_DEVICE_TYPE_ALL, &dvs);
-		for (int j = 0; j < dvs.size(); j++) {
-			std::string dname;
-			dvs[j].getInfo(CL_DEVICE_NAME, &dname);
-		}
-	}
-
-	Platform pf=pfvec[2];
-	return pf;
-}
-
-Device
-clboost::get_gpu_device(const Platform& pf)
-{
-	vector<Device> dvs;
-	pf.getDevices(CL_DEVICE_TYPE_GPU, &dvs);
-	ASSERT_UEQ(dvs.empty(), true);
-	Device dv = dvs[0];
-	return dv;
-}
+//
+//Platform
+//clboost::get_platform()
+//{
+//	vector<Platform> pfvec;
+//	Platform::get(&pfvec);
+//	ASSERT_UEQ(pfvec.empty(), true);
+//	for (int i = 0; i < pfvec.size(); i++) {
+//
+//		std::string pname;
+//		vector<Device> dvs;
+//		pfvec[i].getInfo(CL_PLATFORM_NAME, &pname);
+//		pfvec[i].getDevices(CL_DEVICE_TYPE_ALL, &dvs);
+//		for (int j = 0; j < dvs.size(); j++) {
+//			std::string dname;
+//			dvs[j].getInfo(CL_DEVICE_NAME, &dname);
+//		}
+//	}
+//
+//	Platform pf=pfvec[2];
+//	return pf;
+//}
+//
+//Device
+//clboost::get_gpu_device(const Platform& pf)
+//{
+//	vector<Device> dvs;
+//	pf.getDevices(CL_DEVICE_TYPE_GPU, &dvs);
+//	ASSERT_UEQ(dvs.empty(), true);
+//	Device dv = dvs[0];
+//	return dv;
+//}
 
 Context
 clboost::get_context(const Device& dev)
@@ -106,12 +106,6 @@ clboost::enq_q(CommandQueue& q, const Kernel& kernel, const int global_size, con
 	ASSERT_UEQ(global_size, 0);
 	q.enqueueNDRangeKernel(kernel, NullRange, NDRange(global_size), (local_size == NULL ? NullRange : NDRange(local_size)));
 	return;
-}
-
-
-Event
-clboost::make_event() {
-	return Event::Event();
 }
 
 
