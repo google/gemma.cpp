@@ -439,7 +439,8 @@ Some independent projects using gemma.cpp:
 - [Godot engine demo project](https://github.com/Rliop913/Gemma-godot-demo-project)
 
 If you would like to have your project included, feel free to get in touch or
-submit a PR with a `README.md` edit.
+submit a PR with a `README.md` edit..
+
 
 ## Acknowledgements and Contacts
 
