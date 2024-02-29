@@ -114,7 +114,7 @@ std::string Stats::ToString(int exclude) const {
     pos += ret;
   }
 
-  HWY_ASSERT(pos < sizeof(buf));
+  HWY_ASSERT(pos < static_cast<int>(sizeof(buf)));
   return buf;
 }
 

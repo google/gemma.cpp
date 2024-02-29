@@ -24,12 +24,16 @@
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
+// copybara:end
 // copybara:import_next_line:gemma_cpp
-#include "gemma.h"    // Gemma
+#include "gemma.h"  // Gemma
+// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"
+// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
+// copybara:end
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -39,20 +43,13 @@
 
 namespace gcpp {
 
-void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
-              gcpp::AppArgs& app) {
-  fprintf(stderr,
-          "\ngemma.cpp\n---------\n\nTo run gemma.cpp, you need to "
-          "specify 3 required model loading arguments: --tokenizer, "
-          "--compressed_weights, "
-          "and --model.\n\nModel Loading Arguments\n\n");
-  loader.Help();
-  fprintf(stderr, "\nInference Arguments\n\n");
-  inference.Help();
-  fprintf(stderr, "\nApplication Arguments\n\n");
-  app.Help();
-  fprintf(stderr, "\n\n");
-}
+static constexpr std::string_view kAsciiArtBanner =
+    "  __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __\n"
+    " / _` |/ _ \\ '_ ` _ \\| '_ ` _ \\ / _` | / __| '_ \\| '_ \\\n"
+    "| (_| |  __/ | | | | | | | | | | (_| || (__| |_) | |_) |\n"
+    " \\__, |\\___|_| |_| |_|_| |_| |_|\\__,_(_)___| .__/| .__/\n"
+    "  __/ |                                    | |   | |\n"
+    " |___/                                     |_|   |_|";
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   loader.Print(app.verbosity);
@@ -69,7 +66,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << std::thread::hardware_concurrency() << std::endl
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)" << "\n"
+              << hwy::VectorBytes() * 8 << " bits)"
+              << "\n"
               << "Weight Type                   : "
               << gcpp::TypeName(gcpp::WeightT()) << "\n"
               << "EmbedderInput Type            : "
@@ -77,9 +75,31 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 }
 
+void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
+              gcpp::AppArgs& app) {
+  std::cerr
+      << kAsciiArtBanner
+      << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
+         "==========================================================\n\n"
+         "To run gemma.cpp, you need to "
+         "specify 3 required model loading arguments:\n    --tokenizer\n    "
+         "--compressed_weights\n"
+         "    --model.\n";
+  std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
+               "--compressed_weights 2b-it-sfp.sbs --model 2b-it\n";
+  std::cerr << "\n*Model Loading Arguments*\n\n";
+  loader.Help();
+  std::cerr << "\n*Inference Arguments*\n\n";
+  inference.Help();
+  std::cerr << "\n*Application Arguments*\n\n";
+  app.Help();
+  std::cerr << "\n";
+}
+
 void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
                hwy::ThreadPool& inner_pool, const InferenceArgs& args,
-               int verbosity, const gcpp::AcceptFunc& accept_token) {
+               int verbosity, const gcpp::AcceptFunc& accept_token,
+               std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   int abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -137,7 +157,18 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       if (verbosity >= 1) {
         std::cout << "> " << std::flush;
       }
-      std::getline(std::cin, prompt_string);
+
+      if (eot_line.size() == 0) {
+        std::getline(std::cin, prompt_string);
+      } else {
+        std::string line;
+        while (std::getline(std::cin, line)) {
+          if (line == eot_line) {
+            break;
+          }
+          prompt_string += line + "\n";
+        }
+      }
     }
 
     if (std::cin.fail() || prompt_string == "%q" || prompt_string == "%Q") {
@@ -221,7 +252,12 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
     const std::string instructions =
         "*Usage*\n"
-        "  Enter an instruction and press enter (%Q quits).\n\n"
+        "  Enter an instruction and press enter (%C resets conversation, "
+        "%Q quits).\n" +
+        (inference.multiturn == 0
+             ? std::string("  Since multiturn is set to 0, conversation will "
+                           "automatically reset every turn.\n\n")
+             : "\n") +
         "*Examples*\n"
         "  - Write an email to grandma thanking her for the cookies.\n"
         "  - What are some historical attractions to visit around "
@@ -230,13 +266,14 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
         "  - Write a standup comedy bit about GPU programming.\n";
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
-              << banner_ascii_art << "\n\n";
+              << kAsciiArtBanner << "\n\n";
     ShowConfig(loader, inference, app);
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(model, pool, inner_pool, inference, app.verbosity,
-            /*accept_token=*/[](int) { return true; });
+  ReplGemma(
+      model, pool, inner_pool, inference, app.verbosity,
+      /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 
 }  // namespace gcpp

@@ -18,14 +18,20 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 
+#if HWY_OS_LINUX
 #include <sched.h>
+
+#include <cerrno>  // IDE does not recognize errno.h as providing errno.
+#endif
 #include <stddef.h>
+#include <stdio.h>
 
 #include <algorithm>  // std::clamp
 #include <thread>     // NOLINT>
 
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
+// copybara:end
 #include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
@@ -36,7 +42,13 @@ static inline void PinThreadToCore(size_t cpu_index) {
   cpu_set_t cset;             // bit array
   CPU_ZERO(&cset);            // clear all
   CPU_SET(cpu_index, &cset);  // set bit indicating which processor to run on.
-  HWY_ASSERT(0 == sched_setaffinity(0, sizeof(cset), &cset));
+  const int err = sched_setaffinity(0, sizeof(cset), &cset);
+  if (err != 0) {
+    fprintf(stderr,
+            "sched_setaffinity returned %d, errno %d. Can happen if running in "
+            "a container; this warning is safe to ignore.\n",
+            err, errno);
+  }
 #else
   (void)cpu_index;
 #endif
@@ -62,10 +74,10 @@ class AppArgs : public ArgsBase<AppArgs> {
   Path log;  // output
   int verbosity;
   size_t num_threads;
+  std::string eot_line;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
-    visitor(log, "log", Path{"/tmp/log.txt"}, "Logging file", 2);
     visitor(verbosity, "verbosity", 1,
             "Show verbose developer information\n   0 = only print generation "
             "output\n   1 = standard user-facing terminal ui\n   2 = show "
@@ -73,10 +85,16 @@ class AppArgs : public ArgsBase<AppArgs> {
             2);
     visitor(num_threads, "num_threads",
             kDefaultNumThreads,  // see ChooseNumThreads
-            "Number of threads to use. Default value is set based on an "
-            "estimate of "
-            "how many concurrent threads are supported.",
+            "Number of threads to use.\n    Default = Estimate of the "
+            "number of suupported concurrent threads.",
             2);
+    visitor(
+        eot_line, "eot_line", std::string(""),
+        "End of turn line. "
+        "When you specify this, the prompt will be all lines "
+        "before the line where only the given string appears.\n    Default = "
+        "When a newline is encountered, that signals the end of the turn.",
+        2);
   }
 };
 

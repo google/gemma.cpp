@@ -55,6 +55,16 @@ Before starting, you should have installed:
   least C++17.
 - `tar` for extracting archives from Kaggle.
 
+Building natively on Windows requires the Visual Studio 2012 Build Tools with the
+optional Clang/LLVM C++ frontend (`clang-cl`). This can be installed from the
+command line with
+[`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+
+```sh
+winget install --id Kitware.CMake
+winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;installRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+```
+
 ### Step 1: Obtain model weights and tokenizer from Kaggle
 
 Visit [the Gemma model page on
@@ -82,7 +92,7 @@ weights enable faster inference. In general, we recommend starting with the
 | `7b-pt`     | 7 billion parameter pre-trained model, bfloat16 |
 | `7b-pt-sfp` | 7 billion parameter pre-trained model, 8-bit switched floating point |
 
-> [!NOTE] 
+> [!NOTE]
 > **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
 > get up and running.
 
@@ -104,9 +114,14 @@ convenient directory location (e.g. the `build/` directory in this repo).
 
 The build system uses [CMake](https://cmake.org/). To build the gemma inference
 runtime, create a build directory and generate the build files using `cmake`
-from the top-level project directory. For the 8-bit switched floating point
-weights (sfp), run cmake with no options:
+from the top-level project directory. Note if you previous ran `cmake` and are
+re-running with a different setting, be sure to clean out the `build/` directory
+with `rm -rf build/*` (warning this will delete any other files in the `build/`
+directory.
 
+For the 8-bit switched floating point weights (sfp), run cmake with no options:
+
+#### Unix-like Platforms
 ```sh
 cmake -B build
 ```
@@ -126,17 +141,18 @@ your weights, you can enter the `build/` directory and run `make` to build the
 `./gemma` executable:
 
 ```sh
-cd build
-make -j [number of parallel threads to use] gemma
+# Configure `build` directory
+cmake --preset make
+
+# Build project using make
+cmake --build --preset make -j [number of parallel threads to use]
 ```
 
 Replace `[number of parallel threads to use]` with a number - the number of
-cores available on your system is a reasonable heuristic.
-
-For example, `make -j4 gemma` will build using 4 threads. If this is successful,
-you should now have a `gemma` executable in the `build/` directory. If the
-`nproc` command is available, you can use `make -j$(nproc) gemma` as a
-reasonable default for the number of threads. 
+cores available on your system is a reasonable heuristic.  For example,
+`make -j4 gemma` will build using 4 threads. If the `nproc` command is
+available, you can use `make -j$(nproc) gemma` as a reasonable default
+for the number of threads.
 
 If you aren't sure of the right value for the `-j` flag, you can simply run
 `make gemma` instead and it should still build the `./gemma` executable.
@@ -144,6 +160,20 @@ If you aren't sure of the right value for the `-j` flag, you can simply run
 > [!NOTE]
 > On Windows Subsystem for Linux (WSL) users should set the number of
 > parallel threads to 1. Using a larger number may result in errors.
+
+If the build is successful, you should now have a `gemma` executable in the `build/` directory.
+
+#### Windows
+
+```sh
+# Configure `build` directory
+cmake --preset windows
+
+# Build project using Visual Studio Build Tools
+cmake --build --preset windows -j [number of parallel threads to use]
+```
+
+If the build is successful, you should now have a `gemma.exe` executable in the `build/` directory.
 
 ### Step 4: Run
 
@@ -212,6 +242,21 @@ We're working on a python script to convert a standard model format to `.sbs`,
 and hope have it available in the next week or so. Follow [this
 issue](https://github.com/google/gemma.cpp/issues/11) for updates.
 
+**What are some easy ways to make the model run faster?**
+
+1. Make sure you are using the 8-bit switched floating point `-sfp` models.
+2. If you're on a laptop, make sure power mode is set to maximize performance
+and saving mode is **off**. For most laptops, the power saving modes get
+activated automatically if the computer is not plugged in.
+3. Close other unused cpu-intensive applications.
+4. On macs, anecdotally we observe a "warm-up" ramp-up in speed as performance
+cores get engaged.
+5. Experiment with the `--num_threads` argument value. Depending on the device,
+larger numbers don't always mean better performance.
+
+We're also working on algorithmic and optimization approaches for faster
+inference, stay tuned.
+
 ## Usage
 
 `gemma` has different usage modes, controlled by the verbosity flag.
@@ -247,7 +292,7 @@ max_tokens                    : 3072
 max_generated_tokens          : 2048
 
 *Usage*
-  Enter an instruction and press enter (%Q quits).
+  Enter an instruction and press enter (%C reset conversation, %Q quits).
 
 *Examples*
   - Write an email to grandma thanking her for the cookies.
@@ -384,6 +429,17 @@ make -j [number of parallel threads to use] libgemma
 
 If this is successful, you should now have a `libgemma` library file in the
 `build/` directory. On Unix platforms, the filename is `libgemma.a`.
+
+## Independent Projects Using gemma.cpp
+
+Some independent projects using gemma.cpp:
+
+- [gemma-cpp-python - Python bindings](https://github.com/namtranase/gemma-cpp-python)
+- [lua-cgemma - Lua bindings](https://github.com/ufownl/lua-cgemma)
+- [Godot engine demo project](https://github.com/Rliop913/Gemma-godot-demo-project)
+
+If you would like to have your project included, feel free to get in touch or
+submit a PR with a `README.md` edit.
 
 ## Acknowledgements and Contacts
 

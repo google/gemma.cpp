@@ -25,6 +25,8 @@ namespace gcpp {
 class DistortionStats {
  public:
   void Notify(float original, float distorted) {
+    (void)padding_;  // prevent unused member warning
+
     const double l1 = hwy::ScalarAbs(original - distorted);
 
     if (l1 > max_l1_) {
