@@ -1,7 +1,7 @@
 #pragma once
 #include "cl_FACADE.h"
 #include "cl_global_custom.h"
-#include "cl_inside.h"
+#include "cl_embedded.h"
 #include <thread>
 #include <vector>
 #define to_big_radix_2(var) pow(2,std::ceil(log2(var)));
@@ -28,7 +28,7 @@ private:
 		const ma_uint64& core_size,
 		const Args& ... args);
 
-	CL_INSIDE *CLS;
+	cl_embed *CLS;
 	[[nodiscard]]
 	cl_float2* bit_reverse(float* data_array, const int& data_length_radix_2);
 	void butterfly_stage_radix_2(cl_float2* data, const int& data_length_radix_2, float* data_out);

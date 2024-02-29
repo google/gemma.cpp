@@ -41,7 +41,9 @@ set(SOURCES
   compression/sfp-inl.h
   util/app.h
   util/args.h
-  )
+  CL_Wrapper/
+  CL_C_kernel_files/cl_embedded.h
+)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
@@ -64,6 +66,11 @@ add_executable(gemma run.cc)
 target_sources(gemma PRIVATE ${SOURCES})
 set_property(TARGET gemma PROPERTY CXX_STANDARD 17)
 target_link_libraries(gemma hwy hwy_contrib sentencepiece)
+if(WIN32)
+    TARGET_LINK_LIBRARIES( gemma ${CMAKE_SOURCE_DIR}/Khronos_CL_SDK/win_x64_SDK/lib/OpenCL.lib)
+else()
+    TARGET_LINK_LIBRARIES( gemma ${CMAKE_SOURCE_DIR}/Khronos_CL_SDK/linux/lib/OpenCL.a)
+endif()
 target_include_directories(gemma PRIVATE ./)
 FetchContent_GetProperties(sentencepiece)
 target_include_directories(gemma PRIVATE ${sentencepiece_SOURCE_DIR})
@@ -78,6 +85,11 @@ set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
 target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
+if(WIN32)
+    TARGET_LINK_LIBRARIES( gemma ${CMAKE_SOURCE_DIR}/Khronos_CL_SDK/win_x64_SDK/lib/OpenCL.lib)
+else()
+    TARGET_LINK_LIBRARIES( gemma ${CMAKE_SOURCE_DIR}/Khronos_CL_SDK/linux/lib/OpenCL.a)
+endif()
 target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
