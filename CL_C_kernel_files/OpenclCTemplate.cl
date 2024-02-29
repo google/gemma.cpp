@@ -10,7 +10,7 @@ void feel_free_to_make_functions()//but you can't use recursive function
 }
 
 //Kernel entry point, equals to main() function
-__kernel void sample_entry_code(__global int* from_main_code)
+__kernel void sample_entry(__global int* from_main_code)
 {
     int myid = get_global_id(0);
     printf("test %d sample",from_main_code[myid]);//also printf will be ignored in embedded

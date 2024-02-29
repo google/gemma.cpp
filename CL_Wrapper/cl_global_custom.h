@@ -10,7 +10,6 @@ namespace clboost {
 	Context get_context(const Device& dev);
 	CommandQueue make_cq(const Context& ct,const Device& dev);
 	Program make_prog(const std::string& path,const Context& ct,const Device& dev);
-	Program make_prog(const std::string& path, const Context& ct, const Device& dev, bool checker);
 	Event make_event();
 
 	template <typename T>

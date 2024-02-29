@@ -1,9 +1,11 @@
 
 #pragma once
+//generated with python code
 #include <string>
 class cl_embed {
     public:
-    std::string sample_entry_code = 
+    #ifndef NO_EMBEDDED_CL
+std::string sample_entry = 
 	"//or\n"
 	"\n"
 	"\n"
@@ -14,11 +16,17 @@ class cl_embed {
 	"}\n"
 	"\n"
 	"//Kernel entry point, equals to main() function\n"
-	"__kernel void sample_entry_code(__global int* from_main_code)\n"
+	"__kernel void sample_entry(__global int* from_main_code)\n"
 	"{\n"
 	"    int myid = get_global_id(0);\n"
 	"    feel_free_to_make_functions();\n"
 	"}\n"
 	;
+#endif
+#ifdef NO_EMBEDDED_CL
+std::string sample_entry = 
+	"CL_C_kernel_files/OpenclCTemplate.cl\n"
+	;
+#endif
 
 };

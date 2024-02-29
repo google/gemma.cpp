@@ -46,18 +46,12 @@ clboost::make_cq(const Context& ct, const Device& dev)
 {
 	return CommandQueue(ct, dev);
 }
+#ifndef NO_EMBEDDED_CL
+
+
 Program
 clboost::make_prog(const std::string& hardcoded_cl_code, const Context& ct, const Device& dev)
 {
-	/*ASSERT_NO_STRING(path);
-	std::ifstream fp;
-	fp.open(path);
-	ASSERT_EQ(fp.is_open(), true);
-	std::stringstream ss;
-	ss << fp.rdbuf();
-	string source=ss.str();
-	ASSERT_NO_STRING(source);
-	*/
 	Program pg(ct,hardcoded_cl_code);
 	
 	pg.build(dev);
@@ -65,10 +59,14 @@ clboost::make_prog(const std::string& hardcoded_cl_code, const Context& ct, cons
 	ASSERT_EQ(pg.getBuildInfo<CL_PROGRAM_BUILD_LOG>(dev), "\n");
 	return pg;
 }
+#endif  // !NO_EMBEDDED_CL
+#ifdef NO_EMBEDDED_CL
+
 
 Program
-clboost::make_prog(const std::string& path, const Context& ct, const Device& dev,bool checker)
+clboost::make_prog(const std::string& path, const Context& ct, const Device& dev)
 {
+
 	ASSERT_NO_STRING(path);
 	std::ifstream fp;
 	fp.open(path);
@@ -85,6 +83,7 @@ clboost::make_prog(const std::string& path, const Context& ct, const Device& dev
 	ASSERT_EQ(pg.getBuildInfo<CL_PROGRAM_BUILD_LOG>(dev), "\n");
 	return pg;
 }
+#endif  // NO_EMBEDDED_CL
 Kernel 
 clboost::make_kernel(const Program& prog, const std::string& class_name)
 {
