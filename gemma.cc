@@ -721,10 +721,10 @@ HWY_EXPORT(GetCompressedWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
 
-KVCache CreateKVCache(size_t size_cache_pos, size_t kSeqLen) {
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len) {
   KVCache kv_cache = {};
-  kv_cache.key_cache = hwy::AllocateAligned<float>(kSeqLen * size_cache_pos);
-  kv_cache.value_cache = hwy::AllocateAligned<float>(kSeqLen * size_cache_pos);
+  kv_cache.key_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
+  kv_cache.value_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
   return kv_cache;
 }
 
