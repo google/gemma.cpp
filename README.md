@@ -65,14 +65,24 @@ winget install --id Kitware.CMake
 winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;installRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
 ```
 
-### Step 1: Obtain model weights and tokenizer from Kaggle
+### Step 1: Obtain model weights and tokenizer from Kaggle or Hugging Face Hub
 
 Visit [the Gemma model page on
-Kaggle](https://www.kaggle.com/models/google/gemma) and select `Model Variations
+Kaggle](https://www.kaggle.com/models/google/gemma/frameworks/gemmaCpp) and select `Model Variations
 |> Gemma C++`. On this tab, the `Variation` dropdown includes the options below.
 Note bfloat16 weights are higher fidelity, while 8-bit switched floating point
 weights enable faster inference. In general, we recommend starting with the
 `-sfp` checkpoints.
+
+Alternatively, visit the [gemma.cpp](https://huggingface.co/models?other=gemma.cpp)
+models on the Hugging Face Hub. First go the the model repository of the model of interest
+(see recommendations below). Then, click the `Files and versions` tab and download the 
+model and tokenizer files. For programmatic downloading, if you have `huggingface_hub`
+installed, you can also run:
+
+```
+huggingface-cli download google/gemma-2b-cpp --local-dir build/
+``` 
 
 2B instruction-tuned (`it`) and pre-trained (`pt`) models:
 
@@ -96,7 +106,7 @@ weights enable faster inference. In general, we recommend starting with the
 > **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
 > get up and running.
 
-### Step 2: Extract Files
+### Step 2: Extract Files (if downloading from Kaggle)
 
 After filling out the consent form, the download should proceed to retrieve a
 tar archive file `archive.tar.gz`. Extract files from `archive.tar.gz` (this can
