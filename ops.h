@@ -62,7 +62,8 @@ HWY_INLINE constexpr std::enable_if_t<
     std::is_arithmetic_v<To> && std::is_arithmetic_v<From>, To>
 StaticCast(From from) noexcept {
   if constexpr (std::is_unsigned_v<From> && std::is_floating_point_v<To>)
-    return static_cast<To>(static_cast<int64_t>(from));
+    return static_cast<To>(
+        static_cast<hwy::SignedFromSize<sizeof(From)>>(from));
   else
     return static_cast<To>(from);
 }
