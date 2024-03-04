@@ -68,15 +68,15 @@ class DistortionStats {
 
   double GeomeanValueDivL1() const {
     if (num_rel_ == 0) return 0.0;
-    return exp(sum_log_rel_ / num_rel_);
+    return exp(sum_log_rel_ / static_cast<double>(num_rel_));
   }
 
   double PNorm() const {
     // p-norms are a compromise between max-norm (penalizes the largest error
     // without dilution, but does not notice any other errors) and L1 (all
     // errors contribute, but large errors are diluted by smaller ones).
-    const double norm3 = pow(sum_pow3_ / n_, 1.0 / 3);
-    const double norm6 = pow(sum_pow6_ / n_, 1.0 / 6);
+    const double norm3 = pow(sum_pow3_ / static_cast<double>(n_), 1.0 / 3);
+    const double norm6 = pow(sum_pow6_ / static_cast<double>(n_), 1.0 / 6);
     return 0.5 * (norm3 + norm6);
   }
 

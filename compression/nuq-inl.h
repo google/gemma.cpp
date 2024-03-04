@@ -87,7 +87,7 @@ class NuqClustering {
 
       inv_len_[0] = 0.0f;  // unused
       for (size_t i = 0; i <= kGroupSize; ++i) {
-        inv_len_[i] = 1.0f / i;
+        inv_len_[i] = 1.0f / static_cast<float>(i);
       }
     }
 
@@ -229,7 +229,7 @@ class NuqClustering {
       const float sum = cc.SumOfSorted(start, last);
       const int size = static_cast<int>(last) - static_cast<int>(start) + 1;
       HWY_DASSERT(0 < size && size <= kGroupSize);
-      centers[k] = sum / size;
+      centers[k] = sum / static_cast<float>(size);
 
       // We know the range inside sorted_and_i[]; translate to original indices,
       // which are stored inside each of the sorted_and_i mantissas.
