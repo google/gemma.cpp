@@ -78,11 +78,12 @@ Alternatively, visit the [gemma.cpp](https://huggingface.co/models?other=gemma.c
 models on the Hugging Face Hub. First go the the model repository of the model of interest
 (see recommendations below). Then, click the `Files and versions` tab and download the 
 model and tokenizer files. For programmatic downloading, if you have `huggingface_hub`
-installed, you can also run:
+installed, you can also download by running:
 
 ```
-huggingface-cli download google/gemma-2b-cpp --local-dir build/
-``` 
+huggingface-cli login # Just the first time
+huggingface-cli download google/gemma-2b-sfp-cpp --local-dir build/
+```
 
 2B instruction-tuned (`it`) and pre-trained (`pt`) models:
 
@@ -106,7 +107,9 @@ huggingface-cli download google/gemma-2b-cpp --local-dir build/
 > **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
 > get up and running.
 
-### Step 2: Extract Files (if downloading from Kaggle)
+### Step 2: Extract Files
+
+If you downloaded the models from Hugging Face, skip to step 3.
 
 After filling out the consent form, the download should proceed to retrieve a
 tar archive file `archive.tar.gz`. Extract files from `archive.tar.gz` (this can
