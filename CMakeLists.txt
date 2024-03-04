@@ -46,7 +46,6 @@ set(SOURCES
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
-
 # Allowable types for WEIGHT_TYPE:
 # float - slow, not recommended
 # hwy::bfloat16_t - bfloat16 as implemented by https://github.com/google/highway
