@@ -470,9 +470,7 @@ class NuqCodec {
   static HWY_INLINE size_t Enc(DF df, const float* const in, const size_t num,
                                ClusterBuf& buf, const size_t out_capacity,
                                NuqStream* const out, const size_t out_ofs) {
-    const hn::Repartition<uint8_t, DF> d8;
     const hn::Repartition<uint16_t, DF> d16;
-    using V8 = hn::Vec<decltype(d8)>;
     using V16 = hn::Vec<decltype(d16)>;
 
     const size_t N16 = hn::Lanes(d16);

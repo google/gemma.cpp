@@ -175,6 +175,14 @@ cmake --build --preset windows -j [number of parallel threads to use]
 
 If the build is successful, you should now have a `gemma.exe` executable in the `build/` directory.
 
+#### Bazel
+
+```sh
+bazel build -c opt --cxxopt=-std=c++20 :gemma
+```
+
+If the build is successful, you should now have a `gemma` executable in the `bazel-bin/` directory.
+
 ### Step 4: Run
 
 You can now run `gemma` from inside the `build/` directory.

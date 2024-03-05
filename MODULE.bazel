@@ -3,12 +3,57 @@ module(
     version = "0.1.0",
 )
 
-bazel_dep(
-    name = "rules_license",
-    version = "0.0.7",
+bazel_dep(name = "rules_license", version = "0.0.7")
+bazel_dep(name = "googletest", version = "1.14.0")
+
+# Copied from Highway because Bazel does not load them transitively
+bazel_dep(name = "bazel_skylib", version = "1.4.1")
+bazel_dep(name = "rules_cc", version = "0.0.9")
+bazel_dep(name = "platforms", version = "0.0.7")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "hwy",
+    urls = ["https://github.com/google/highway/archive/refs/tags/1.1.0.zip"],
+    integrity = "sha256-zkJX2SwL4wQ0nHMsURW7MDLEf43vFSnqhSUsUM6eQmY=",
+    strip_prefix = "highway-1.1.0",
 )
 
-bazel_dep(
+http_archive(
     name = "com_google_sentencepiece",
-    version = "0.1.96",
+    sha256 = "8409b0126ebd62b256c685d5757150cf7fcb2b92a2f2b98efb3f38fc36719754",
+    strip_prefix = "sentencepiece-0.1.96",
+    urls = ["https://github.com/google/sentencepiece/archive/refs/tags/v0.1.96.zip"],
+    build_file = "@//bazel:sentencepiece.bazel",
+    patches = ["@//bazel:com_google_sentencepiece.patch"],
+    patch_args = ["-p1"],
+)
+
+# For sentencepiece
+http_archive(
+    name = "darts_clone",
+    build_file_content = """
+licenses(["notice"])
+exports_files(["LICENSE"])
+package(default_visibility = ["//visibility:public"])
+cc_library(
+    name = "darts_clone",
+    hdrs = [
+        "include/darts.h",
+    ],
+)
+""",
+    sha256 = "c97f55d05c98da6fcaf7f9ecc6a6dc6bc5b18b8564465f77abff8879d446491c",
+    strip_prefix = "darts-clone-e40ce4627526985a7767444b6ed6893ab6ff8983",
+    urls = [
+        "https://github.com/s-yata/darts-clone/archive/e40ce4627526985a7767444b6ed6893ab6ff8983.zip",
+    ],
+)
+# ABSL on 2023-10-18
+http_archive(
+    name = "com_google_absl",
+    sha256 = "f841f78243f179326f2a80b719f2887c38fe226d288ecdc46e2aa091e6aa43bc",
+    strip_prefix = "abseil-cpp-9687a8ea750bfcddf790372093245a1d041b21a3",
+    urls = ["https://github.com/abseil/abseil-cpp/archive//9687a8ea750bfcddf790372093245a1d041b21a3.tar.gz"],
 )
