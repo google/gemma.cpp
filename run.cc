@@ -96,10 +96,10 @@ void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
   std::cerr << "\n";
 }
 
-void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
-               hwy::ThreadPool& inner_pool, const InferenceArgs& args,
-               int verbosity, const gcpp::AcceptFunc& accept_token,
-               std::string& eot_line) {
+void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
+               hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+               const InferenceArgs& args, int verbosity,
+               const gcpp::AcceptFunc& accept_token, std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   int abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -205,7 +205,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
 
     const double time_start = hwy::platform::Now();
     GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
-                  args.temperature, prompt, abs_pos, pool, inner_pool,
+                  args.temperature, prompt, abs_pos, kv_cache, pool, inner_pool,
                   stream_token, accept_token, gen, verbosity);
     const double time_end = hwy::platform::Now();
     const double tok_sec = current_pos / (time_end - time_start);
@@ -236,6 +236,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   gcpp::Gemma model(loader, pool);
+  auto kv_cache = model.CreateKVCache();
 
   if (const char* error = inference.Validate()) {
     ShowHelp(loader, inference, app);
@@ -273,7 +274,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(
-      model, pool, inner_pool, inference, app.verbosity,
+      model, kv_cache, pool, inner_pool, inference, app.verbosity,
       /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 
