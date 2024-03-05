@@ -364,8 +364,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     float* HWY_RESTRICT out, size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
 
-  constexpr float eps = 1e-6f;
-  constexpr size_t unroll_size = 2;
+  constexpr float kEps = 1e-6f;
+  constexpr size_t kUnrollSize = 2;
 
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   const hn::Repartition<float, decltype(dbf)> df32;
@@ -373,10 +373,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
 
   const float ss = SquaredL2(x, size);
   const auto vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + eps));
+      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
 
-  HWY_DASSERT(size % (unroll_size * MaxLanes(df32)) == 0);
-  for (size_t i = 0; i < size; i += unroll_size * N32) {
+  HWY_DASSERT(size % (kUnrollSize * MaxLanes(df32)) == 0);
+  for (size_t i = 0; i < size; i += kUnrollSize * N32) {
     const hn::Vec<decltype(dbf)> w16 = hn::LoadU(dbf, weight + i);
     const auto w0 = hn::PromoteLowerTo(df32, w16);
     const auto w1 = hn::PromoteUpperTo(df32, w16);
