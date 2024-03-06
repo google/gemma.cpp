@@ -186,7 +186,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       if (abs_pos > 0) {
         // Prepend "<end_of_turn>" token if this is a multi-turn dialogue
         // continuation.
-        prompt_string = "<end_of_turn>\n" + prompt_string;
+        prompt_string = "<end_of_turn>model\n" + prompt_string;
       }
     }
 
