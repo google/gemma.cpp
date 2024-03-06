@@ -19,18 +19,18 @@
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "gemma.cc"  // NOLINT
-#include "hwy/foreach_target.h"  // IWYU pragma: keep
+#include "hwy/foreach_target.h"        // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
 // copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
+#include "util/args.h"  // Path
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
@@ -231,9 +231,8 @@ struct Activations {
 struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
-  virtual const sentencepiece::SentencePieceProcessor& Tokenizer() const = 0;
+  virtual const sentencepiece::SentencePieceProcessor* Tokenizer() const = 0;
 
-  // TODO: group pool/callbacks into struct
   virtual void Generate(const InferenceArgs& args,
                         const std::vector<int>& prompt, size_t start_pos,
                         hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
@@ -244,7 +243,10 @@ struct GemmaInterface {
 
 template <class Config>
 struct GemmaImpl : public GemmaInterface {
-  GemmaImpl(const LoaderArgs& args, hwy::ThreadPool& pool);
+  GemmaImpl(  // const LoaderArgs& args,
+      std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
+      hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
+      hwy::ThreadPool& pool);
 
   ~GemmaImpl() {
     using CWeights = CompressedWeights<Config>;
@@ -252,8 +254,8 @@ struct GemmaImpl : public GemmaInterface {
     c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
   }
 
-  const sentencepiece::SentencePieceProcessor& Tokenizer() const {
-    return tokenizer;
+  const sentencepiece::SentencePieceProcessor* Tokenizer() const {
+    return tokenizer.get();
   }
 
   void Generate(const InferenceArgs& args, const std::vector<int>& prompt,
@@ -261,9 +263,8 @@ struct GemmaImpl : public GemmaInterface {
                 hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                 const AcceptFunc& accept_token, std::mt19937&, int verbosity);
 
-  sentencepiece::SentencePieceProcessor tokenizer;
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
 
-  // CompressedWeights<Config>
   hwy::AlignedFreeUniquePtr<uint8_t[]> compressed_weights;
   hwy::AlignedUniquePtr<Activations<Config, kPrefillBatchSize>> prefill;
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
@@ -495,7 +496,8 @@ void Transformer(int token, size_t pos,
 }
 
 template <class TConfig>
-void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
+void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
+                  size_t max_generated_tokens, float temperature,
                   const std::vector<int>& prompt, size_t pos,
                   hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
                   const StreamFunc& stream_token,
@@ -549,7 +551,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
     // should be available as observable state for frontend code to handle I/O.
     double prefill_end = hwy::platform::Now();
     const double prefill_tok_sec = pos_offset / (prefill_end - prefill_start);
-    std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]\n";
+    std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]";
   }
 
   double gen_start = hwy::platform::Now();
@@ -558,10 +560,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
 
   if (verbosity >= 2) {
     // Provide usage warnings if max_new_tokens is out of range.
-    if (args.max_generated_tokens > args.max_tokens) {
+    if (max_generated_tokens > max_tokens) {
       std::cout << "Warning: max_new_tokens should be <= max_tokens"
                 << std::endl;
-    } else if ((prompt.size() + args.max_generated_tokens) > args.max_tokens) {
+    } else if ((prompt.size() + max_generated_tokens) > max_tokens) {
       std::cout << "Warning: Prompt size + max_new_tokens exceeds max_tokens."
                 << std::endl;
     }
@@ -570,7 +572,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
   auto pos_gen_start = pos_offset;
   token = prompt.at(pos_offset);
   size_t generate_pos = 0;
-  for (; pos < args.max_tokens && generate_pos < args.max_generated_tokens;
+  for (; pos < max_tokens && generate_pos < max_generated_tokens;
        ++pos, ++pos_offset, ++generate_pos) {
     Transformer(token, pos, c_weights, activations, kv_cache, pool, inner_pool);
     float* final_activation = activations.x.data();
@@ -583,7 +585,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
       // Barrier: must have all logits so we can subtract max.
       Softmax(activations.logits.data(), kVocabSize);
       token = SampleTopK<kTopK>(activations.logits.data(), kVocabSize, gen,
-                                args.temperature, accept_token);
+                                temperature, accept_token);
     }
     if (!stream_token(token, activations.logits[token])) {
       token = EOS_ID;
@@ -593,7 +595,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
         double gen_end = hwy::platform::Now();
         const double gen_tok_sec =
             (pos_offset - pos_gen_start) / (gen_end - gen_start);
-        std::cout << "\n[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
+        std::cout << "[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
       }
       break;
     }
@@ -605,8 +607,9 @@ void Generate2B(GemmaImpl<ConfigGemma2B>& gemma, const InferenceArgs& args,
                 hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
                 const StreamFunc& stream_token, const AcceptFunc& accept_token,
                 std::mt19937& gen, int verbosity) {
-  GenerateImpl(gemma, args, prompt, start_pos, pool, inner_pool, stream_token,
-               accept_token, gen, verbosity);
+  GenerateImpl(gemma, args.max_tokens, args.max_generated_tokens,
+               args.temperature, prompt, start_pos, pool, inner_pool,
+               stream_token, accept_token, gen, verbosity);
 }
 
 void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, const InferenceArgs& args,
@@ -614,8 +617,9 @@ void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, const InferenceArgs& args,
                 hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
                 const StreamFunc& stream_token, const AcceptFunc& accept_token,
                 std::mt19937& gen, int verbosity) {
-  GenerateImpl(gemma, args, prompt, start_pos, pool, inner_pool, stream_token,
-               accept_token, gen, verbosity);
+  GenerateImpl(gemma, args.max_tokens, args.max_generated_tokens,
+               args.temperature, prompt, start_pos, pool, inner_pool,
+               stream_token, accept_token, gen, verbosity);
 }
 
 // Calls func(name, float*, CompressedArray&) for each tensor. float* is null
@@ -729,17 +733,22 @@ KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len) {
 }
 
 template <class Config>
-GemmaImpl<Config>::GemmaImpl(const LoaderArgs& args, hwy::ThreadPool& pool)
-    : compressed_weights(
-          HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(args, pool)),
+GemmaImpl<Config>::GemmaImpl(
+    std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
+    hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
+    hwy::ThreadPool& pool)
+    // GemmaImpl<Config>::GemmaImpl(const LoaderArgs& args, hwy::ThreadPool&
+    // pool)
+    : compressed_weights(std::move(compressed_weights)),
+      // HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(args, pool)),
       prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
       state(hwy::MakeUniqueAligned<Activations<Config, 1>>()),
       kv_cache(
           CreateKVCache(Config::kLayers * Config::kKVHeads * Config::kQKVDim,
-                        Config::kSeqLen)) {
-  PROFILER_ZONE("Startup.tokenizer");
-
-  HWY_ASSERT(tokenizer.Load(args.tokenizer.path).ok());
+                        Config::kSeqLen)),
+      tokenizer(std::move(tokenizer)) {
+  // PROFILER_ZONE("Startup.tokenizer");
+  // HWY_ASSERT(tokenizer.Load(args.tokenizer.path).ok());
 }
 
 template <>
@@ -770,12 +779,20 @@ void GemmaImpl<ConfigGemma7B>::Generate(const InferenceArgs& args,
 Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
   const Model model_type = args.ModelType();
   model_training = args.ModelTraining();
+  PROFILER_ZONE("Startup.tokenizer");
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
+      std::make_unique<sentencepiece::SentencePieceProcessor>();
+  HWY_ASSERT(tokenizer->Load(args.tokenizer.path).ok());
+  auto compressed_weights =
+      HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(args, pool);
   switch (model_type) {
     case Model::GEMMA_2B:
-      impl_.reset(new GemmaImpl<ConfigGemma2B>(args, pool));
+      impl_.reset(
+          new GemmaImpl<ConfigGemma2B>(tokenizer, compressed_weights, pool));
       break;
     case Model::GEMMA_7B:
-      impl_.reset(new GemmaImpl<ConfigGemma7B>(args, pool));
+      impl_.reset(
+          new GemmaImpl<ConfigGemma7B>(tokenizer, compressed_weights, pool));
       break;
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
@@ -783,7 +800,7 @@ Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
 }
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
-const sentencepiece::SentencePieceProcessor& Gemma::Tokenizer() const {
+const sentencepiece::SentencePieceProcessor* Gemma::Tokenizer() const {
   return impl_->Tokenizer();
 }
 

@@ -64,6 +64,15 @@ struct KVCache {
 enum class Model { GEMMA_2B, GEMMA_7B };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
+// TODO: incorporate
+struct InferenceParams {
+  Model model;
+  ModelTraining model_training;
+  size_t max_generated_tokens;
+  size_t max_tokens;
+  float temperature;
+};
+
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
@@ -129,9 +138,9 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
         "file if "
         "the compressed weights file does not exist.\n    Required argument.");
     visitor(model_type, "model", std::string(),
-            "Model type\n    2b-it (2B parameters, instruction-tuned)\n    "
-            "2b-pt (2B parameters, pretrained)\n    7b-it (7B parameters "
-            "instruction-tuned)\n    7b-pt (7B parameters, pretrained)\n"
+            "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
+            "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
+            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n"
             "    Required argument.");
     visitor(model, "weights", Path(),
             "Path name of model weights (.sbs) file. Only required if "
@@ -147,7 +156,10 @@ struct Gemma {
   Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
 
-  const sentencepiece::SentencePieceProcessor& Tokenizer() const;
+  // TODO: cleanup
+  // const sentencepiece::SentencePieceProcessor& Tokenizer() const;
+  // const std::unique_ptr<sentencepiece::SentencePieceProcessor> Tokenizer() const;
+  const sentencepiece::SentencePieceProcessor* Tokenizer() const;
 
   std::unique_ptr<GemmaInterface> impl_;
   gcpp::ModelTraining model_training;
@@ -192,8 +204,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(deterministic, "deterministic", false,
             "Make top-k sampling deterministic", 2);
     visitor(multiturn, "multiturn", false,
-            "Multiturn mode (if 0, this clears the KV cache after every "
-            "interaction without quitting)\n    Default : 0 (conversation "
+            "Multiturn mode\n    0 = clear KV cache after every "
+            "interaction\n    1 = continue KV cache after every interaction\n    Default : 0 (conversation "
             "resets every turn)");
   }
 };

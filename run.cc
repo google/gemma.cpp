@@ -115,7 +115,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
 
   // callback function invoked for each generated token.
   auto stream_token = [&abs_pos, &current_pos, &args, &gen, &prompt_size,
-                       tokenizer = &model.Tokenizer(),
+                       tokenizer = model.Tokenizer(),
                        verbosity](int token, float) {
     ++abs_pos;
     ++current_pos;
@@ -129,7 +129,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
         }
       }
       if (verbosity >= 2) {
-        std::cout << "\n[ End ]" << std::endl;
+        std::cout << "\n[ End ]\n";
       }
     } else {
       std::string token_text;
@@ -142,7 +142,6 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
           std::cout << std::endl << std::endl;
         }
       }
-      // TODO(austinvhuang): is explicit space necessary?
       std::cout << token_text << std::flush;
     }
     return true;
@@ -191,7 +190,8 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       }
     }
 
-    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt).ok());
+    // HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt).ok());
+    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt).ok());
 
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token
     // if needed.

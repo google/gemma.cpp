@@ -12,6 +12,9 @@
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
 // copybara:end
+// copybara:import_next_line:gemma_cpp
+#include "configs.h"
+// copybara:end
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -35,17 +38,13 @@ int main(int argc, char** argv) {
   hwy::ThreadPool pool(app.num_threads);
   hwy::ThreadPool inner_pool(0);
   gcpp::Gemma model(loader, pool);
-
-  std::vector<int> tokens = tokenize("Hello, how are you?", model.Tokenizer());
-
   std::mt19937 gen;
   std::random_device rd;
   gen.seed(rd());
 
+  std::vector<int> tokens = tokenize("Hello, how are you?", model.Tokenizer());
   size_t ntokens = tokens.size();
-
   size_t pos = 0;
-
   auto stream_token = [&pos, &gen, &ntokens, tokenizer = &model.Tokenizer()](int token, float) {
     ++pos;
     if (pos < ntokens) {
