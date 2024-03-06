@@ -241,7 +241,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void GeluMulToBF16(
 
   size_t i = 0;
   if (size >= 2 * NF) {
-    for (; i < size - 2 * NF; i += 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
       const VF mul0 = hn::LoadU(df, mul + i);
       const VF mul1 = hn::LoadU(df, mul + i + NF);
       const VF g0 = hn::Mul(mul0, Gelu(df, hn::LoadU(df, gelu_in + i)));
