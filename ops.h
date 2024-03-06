@@ -342,12 +342,12 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED float SquaredL2(
     const float* HWY_RESTRICT a, size_t size) {
   const hn::ScalableTag<float> d;
   const size_t N = hn::Lanes(d);
-  HWY_DASSERT(size >= N);
+  HWY_DASSERT(size >= 2 * N);
   HWY_DASSERT(size % (2 * N) == 0);
 
   auto sum0 = hn::Zero(d);
   auto sum1 = hn::Zero(d);
-  for (size_t i = 0; i + 2 * N <= size; i += 2 * N) {
+  for (size_t i = 0; i <= size - 2 * N; i += 2 * N) {
     const auto a0 = LoadU(d, a + i);
     sum0 = MulAdd(a0, a0, sum0);
     const auto a1 = LoadU(d, a + i + N);
