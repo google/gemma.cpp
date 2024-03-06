@@ -527,7 +527,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   // In single-turn (non-chat) usage, pos and pos_offset start at 0 and are
   // always equal.
   size_t pos_offset = 0;  // offset relative to pos
-  double prefill_start = hwy::platform::Now();
+  const double prefill_start = hwy::platform::Now();
 
   // Prefill stops before prompt.size() - 1 since the last prompt token is the
   // first input token for generation.
@@ -549,12 +549,13 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   if (verbosity >= 2) {
     // in the future this output should not occur in GenerateImpl but instead
     // should be available as observable state for frontend code to handle I/O.
-    double prefill_end = hwy::platform::Now();
-    const double prefill_tok_sec = pos_offset / (prefill_end - prefill_start);
+    const double prefill_end = hwy::platform::Now();
+    const double prefill_tok_sec =
+        static_cast<double>(pos_offset) / (prefill_end - prefill_start);
     std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]";
   }
 
-  double gen_start = hwy::platform::Now();
+  const double gen_start = hwy::platform::Now();
 
   HWY_DASSERT(pos_offset == prompt.size() - 1);
 
@@ -592,10 +593,11 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     }
     if (token == EOS_ID) {
       if (verbosity >= 2) {
-        double gen_end = hwy::platform::Now();
+        const double gen_end = hwy::platform::Now();
         const double gen_tok_sec =
-            (pos_offset - pos_gen_start) / (gen_end - gen_start);
-        std::cout << "[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
+            static_cast<double>(pos_offset - pos_gen_start) /
+            (gen_end - gen_start);
+        std::cout << "\n[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
       }
       break;
     }
@@ -693,7 +695,8 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
   if (loader.ReadAll(pool)) return c_weights_u8;
 
   // Get weights, compress, and store in cache.
-  hwy::AlignedUniquePtr<Weights<TConfig>> weights = LoadWeights<TConfig>(model);
+  const hwy::AlignedUniquePtr<Weights<TConfig>> weights =
+      LoadWeights<TConfig>(model);
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights.get(), *c_weights, compressor);
   compressor.WriteAll(pool, cache.path.c_str());

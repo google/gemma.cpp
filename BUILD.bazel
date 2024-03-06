@@ -25,21 +25,14 @@ cc_library(
     ],
     deps = [
         "//compression:compress",
-        # copybara:import_next_line:hwy
-        "//:algo",
-        # copybara:import_next_line:hwy
-        "//:dot",
-        # copybara:import_next_line:hwy
-        "//:hwy",
-        # copybara:import_next_line:hwy
-        "//:math",
-        # copybara:import_next_line:hwy
-        "//:matvec",
-        # copybara:import_next_line:hwy
-        "//:profiler",
-        # copybara:import_next_line:hwy
-        "//:thread_pool",
-        "//hwy/contrib/sort:vqsort",
+        "@hwy//:algo",
+        "@hwy//:dot",
+        "@hwy//:hwy",
+        "@hwy//:math",
+        "@hwy//:matvec",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+        "@hwy//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -49,8 +42,7 @@ cc_library(
         "util/args.h",
     ],
     deps = [
-        # copybara:import_next_line:hwy
-        "//:hwy",
+        "@hwy//:hwy",
     ],
 )
 
@@ -61,8 +53,7 @@ cc_library(
     ],
     deps = [
         ":args",
-        # copybara:import_next_line:hwy
-        "//:hwy",
+        "@hwy//:hwy",
     ],
 )
 
@@ -78,19 +69,13 @@ cc_library(
     deps = [
         ":args",
         ":transformer_ops",
-        "//base",
         "//compression:compress",
-        # copybara:import_next_line:hwy
-        "//:hwy",
-        # copybara:import_next_line:hwy
-        "//:matvec",
-        # copybara:import_next_line:hwy
-        "//:nanobenchmark",  # timer
-        # copybara:import_next_line:hwy
-        "//:profiler",
-        # copybara:import_next_line:hwy
-        "//:thread_pool",
-        ":sentencepiece_processor",
+        "@hwy//:hwy",
+        "@hwy//:matvec",
+        "@hwy//:nanobenchmark",  # timer
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+        "@com_google_sentencepiece//:sentencepiece_processor",
     ],
 )
 
@@ -104,13 +89,9 @@ cc_binary(
         ":args",
         ":gemma_lib",
         "//compression:compress",
-        # copybara:import_next_line:hwy
-        "//:hwy",
-        # copybara:import_next_line:hwy
-        "//:nanobenchmark",
-        # copybara:import_next_line:hwy
-        "//:profiler",
-        # copybara:import_next_line:hwy
-        "//:thread_pool",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
     ],
 )
