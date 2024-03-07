@@ -156,9 +156,6 @@ struct Gemma {
   Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
 
-  // TODO: cleanup
-  // const sentencepiece::SentencePieceProcessor& Tokenizer() const;
-  // const std::unique_ptr<sentencepiece::SentencePieceProcessor> Tokenizer() const;
   const sentencepiece::SentencePieceProcessor* Tokenizer() const;
 
   std::unique_ptr<GemmaInterface> impl_;
@@ -205,15 +202,16 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Make top-k sampling deterministic", 2);
     visitor(multiturn, "multiturn", false,
             "Multiturn mode\n    0 = clear KV cache after every "
-            "interaction\n    1 = continue KV cache after every interaction\n    Default : 0 (conversation "
+            "interaction\n    1 = continue KV cache after every interaction\n  "
+            "  Default : 0 (conversation "
             "resets every turn)");
   }
 };
 
-void GenerateGemma(Gemma& gemma, const InferenceArgs& args,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
-                   const StreamFunc& stream_token,
+void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
+                   float temperature, const std::vector<int>& prompt,
+                   size_t start_pos, hwy::ThreadPool& pool,
+                   hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& g,
                    int verbosity);
 

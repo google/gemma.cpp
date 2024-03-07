@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
   inference.multiturn = false;
 
   GenerateGemma(
-      model, inference, tokens, 0, pool, inner_pool, stream_token,
+      model, /*max_tokens=*/2048, /*max_generated_tokens=*/1024, /*temperature=*/1.0, tokens, 0, pool, inner_pool, stream_token,
       [](int) {return true;}, gen, 0);
 
   std::cout << std::endl;
