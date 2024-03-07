@@ -236,7 +236,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   gcpp::Gemma model(loader, pool);
-  auto kv_cache = model.CreateKVCache();
+  auto kv_cache = CreateKVCache(loader.ModelType());
 
   if (const char* error = inference.Validate()) {
     ShowHelp(loader, inference, app);

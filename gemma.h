@@ -157,12 +157,14 @@ struct Gemma {
   Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
 
-  KVCache CreateKVCache() const;
   const sentencepiece::SentencePieceProcessor* Tokenizer() const;
 
   std::unique_ptr<GemmaInterface> impl_;
   gcpp::ModelTraining model_training;
 };
+
+KVCache CreateKVCache(Model type);  // convenient workaround for now
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f.

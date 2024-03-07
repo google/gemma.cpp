@@ -231,7 +231,6 @@ struct Activations {
 struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
-  virtual KVCache CreateKVCache() const = 0;
   virtual const sentencepiece::SentencePieceProcessor* Tokenizer() const = 0;
 
   virtual void Generate(size_t max_tokens, size_t max_generated_tokens,
@@ -242,6 +241,23 @@ struct GemmaInterface {
                         const AcceptFunc& accept_token, std::mt19937& gen,
                         int verbosity) = 0;
 };
+
+template <class Config>
+KVCache CreateKVCache() {
+  return CreateKVCache(Config::kLayers * Config::kKVHeads * Config::kQKVDim,
+                       Config::kSeqLen);
+}
+
+KVCache CreateKVCache(Model type) {
+  switch (type) {
+    case Model::GEMMA_2B:
+      return CreateKVCache<ConfigGemma2B>();
+    case Model::GEMMA_7B:
+      return CreateKVCache<ConfigGemma7B>();
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(type));
+  }
+}
 
 template <class Config>
 struct GemmaImpl : public GemmaInterface {
@@ -255,8 +271,6 @@ struct GemmaImpl : public GemmaInterface {
     CWeights* c_weights = reinterpret_cast<CWeights*>(compressed_weights.get());
     c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
   }
-
-  KVCache CreateKVCache() const override;
 
   const sentencepiece::SentencePieceProcessor* Tokenizer() const override {
     return tokenizer.get();
@@ -739,6 +753,13 @@ HWY_EXPORT(GetCompressedWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
 
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len) {
+  KVCache kv_cache = {};
+  kv_cache.key_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
+  kv_cache.value_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
+  return kv_cache;
+}
+
 template <class Config>
 GemmaImpl<Config>::GemmaImpl(
     std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
@@ -753,17 +774,6 @@ GemmaImpl<Config>::GemmaImpl(
       tokenizer(std::move(tokenizer)) {
   // PROFILER_ZONE("Startup.tokenizer");
   // HWY_ASSERT(tokenizer.Load(args.tokenizer.path).ok());
-}
-
-template <class Config>
-KVCache GemmaImpl<Config>::CreateKVCache() const {
-  constexpr const size_t size_cache_pos = Config::kLayers * Config::kKVHeads *
-                                          Config::kQKVDim;
-  constexpr const size_t seq_len = Config::kSeqLen;
-  KVCache kv_cache = {};
-  kv_cache.key_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
-  kv_cache.value_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
-  return kv_cache;
 }
 
 template <>
@@ -814,10 +824,6 @@ Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
   }
 }
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
-
-KVCache Gemma::CreateKVCache() const {
-  return impl_->CreateKVCache();
-}
 
 const sentencepiece::SentencePieceProcessor* Gemma::Tokenizer() const {
   return impl_->Tokenizer();
