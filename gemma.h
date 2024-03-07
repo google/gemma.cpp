@@ -163,6 +163,9 @@ struct Gemma {
   gcpp::ModelTraining model_training;
 };
 
+KVCache CreateKVCache(Model type);  // convenient workaround for now
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
+
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f.
 using StreamFunc = std::function<bool(int, float)>;
@@ -211,7 +214,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
 void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    float temperature, const std::vector<int>& prompt,
-                   size_t start_pos, hwy::ThreadPool& pool,
+                   size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
                    int verbosity);
