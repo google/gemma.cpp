@@ -1,23 +1,12 @@
 #include <iostream>
 
 // copybara:import_next_line:gemma_cpp
-#include "compression/compress.h"
+#include "gemma.h"
 // copybara:end
 // copybara:import_next_line:gemma_cpp
-#include "gemma.h"  // Gemma
+#include "util/args.h"
 // copybara:end
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // HasHelp
-// copybara:end
-// copybara:import_next_line:gemma_cpp
-#include "configs.h"
-// copybara:end
-#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/highway.h"
-#include "hwy/per_target.h"
-#include "hwy/profiler.h"
-#include "hwy/timer.h"
 
 std::vector<int> tokenize(
     std::string prompt_string,
