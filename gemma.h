@@ -104,6 +104,10 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   // Returns error string or nullptr if OK.
   const char* Validate() const {
     const std::string model_type_lc = ToLower(model_type);
+    if (model_type.empty()) {
+      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
+             "2b-it, or 7b-it.";
+    }
     if (model_type_lc != "2b-pt" && model_type_lc != "7b-pt" &&
         model_type_lc != "2b-it" && model_type_lc != "7b-it") {
       return "Model type must be 2b-pt, 7b-pt, 2b-it, or "
@@ -111,10 +115,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     }
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
-    }
-    if (model_type.empty()) {
-      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
-             "2b-it, or 7b-it.";
     }
     if (cache.path.empty()) {
       return "Missing --compressed_weights flag, a file for the compressed "

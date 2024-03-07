@@ -7,9 +7,6 @@
 #include "gemma.h"  // Gemma
 // copybara:end
 // copybara:import_next_line:gemma_cpp
-#include "util/app.h"
-// copybara:end
-// copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
 // copybara:end
 // copybara:import_next_line:gemma_cpp
@@ -22,30 +19,35 @@
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
 
-std::vector<int> tokenize(std::string prompt_string, const sentencepiece::SentencePieceProcessor& tokenizer) {
+std::vector<int> tokenize(
+    std::string prompt_string,
+    const sentencepiece::SentencePieceProcessor* tokenizer) {
   prompt_string = "<start_of_turn>user\n" + prompt_string +
                   "<end_of_turn>\n<start_of_turn>model\n";
   std::vector<int> tokens;
-  HWY_ASSERT(tokenizer.Encode(prompt_string, &tokens).ok());
-  tokens.insert(tokens.begin(), 2); // BOS token
+  HWY_ASSERT(tokenizer->Encode(prompt_string, &tokens).ok());
+  tokens.insert(tokens.begin(), 2);  // BOS token
   return tokens;
 }
 
 int main(int argc, char** argv) {
-  gcpp::InferenceArgs inference(argc, argv);
   gcpp::LoaderArgs loader(argc, argv);
-  gcpp::AppArgs app(argc, argv);
-  hwy::ThreadPool pool(app.num_threads);
+  // A rough heuristic for a reasonable number of threads given hardware
+  // concurrency estimate
+  size_t num_threads = static_cast<size_t>(std::clamp(
+      static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
+  hwy::ThreadPool pool(num_threads);
   hwy::ThreadPool inner_pool(0);
   gcpp::Gemma model(loader, pool);
   std::mt19937 gen;
   std::random_device rd;
   gen.seed(rd());
-
-  std::vector<int> tokens = tokenize("Hello, how are you?", model.Tokenizer());
+  std::vector<int> tokens =
+      tokenize("Write a greeting to the world.", model.Tokenizer());
   size_t ntokens = tokens.size();
   size_t pos = 0;
-  auto stream_token = [&pos, &gen, &ntokens, tokenizer = &model.Tokenizer()](int token, float) {
+  auto stream_token = [&pos, &gen, &ntokens, tokenizer = model.Tokenizer()](
+                          int token, float) {
     ++pos;
     if (pos < ntokens) {
       // print feedback
@@ -60,14 +62,9 @@ int main(int argc, char** argv) {
     }
     return true;
   };
-
-  inference.temperature = 1.0f;
-  inference.deterministic = true;
-  inference.multiturn = false;
-
   GenerateGemma(
-      model, /*max_tokens=*/2048, /*max_generated_tokens=*/1024, /*temperature=*/1.0, tokens, 0, pool, inner_pool, stream_token,
-      [](int) {return true;}, gen, 0);
-
+      model, /*max_tokens=*/2048, /*max_generated_tokens=*/1024,
+      /*temperature=*/1.0, tokens, 0, pool, inner_pool, stream_token,
+      [](int) { return true; }, gen, 0);
   std::cout << std::endl;
 }

@@ -782,6 +782,8 @@ void GemmaImpl<ConfigGemma7B>::Generate(
    pool, inner_pool, stream_token, accept_token, gen, verbosity);
 }
 
+// TODO: Make Gemma type independent of LoaderArgs, create a factory function
+// that takes LoaderArgs and creates a Gemma instance.
 Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
   const Model model_type = args.ModelType();
   model_training = args.ModelTraining();
@@ -817,9 +819,9 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    const AcceptFunc& accept_token, std::mt19937& gen,
                    int verbosity) {
   pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
-  gemma.impl_->Generate(max_tokens, max_generated_tokens,
-                        temperature, prompt, start_pos, pool, inner_pool,
-                        stream_token, accept_token, gen, verbosity);
+  gemma.impl_->Generate(max_tokens, max_generated_tokens, temperature, prompt,
+                        start_pos, pool, inner_pool, stream_token, accept_token,
+                        gen, verbosity);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 

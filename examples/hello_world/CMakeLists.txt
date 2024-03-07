@@ -27,7 +27,7 @@ FetchContent_MakeAvailable(highway)
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c)
 FetchContent_MakeAvailable(sentencepiece)
 
-FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 808dbdc42b216c3ac1f1c40dfa638bcff24bbd2b) 
+FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 7042316013d7e2ad06532f420b551802ec114f89) 
 FetchContent_MakeAvailable(gemma)
 
 if(NOT CMAKE_BUILD_TYPE)
