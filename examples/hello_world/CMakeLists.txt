@@ -24,6 +24,7 @@ FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sent
 FetchContent_MakeAvailable(sentencepiece)
 
 
+
 # Allow for both local and remote building)
 option(BUILD_MODE "'local' or 'remote' git fetch for builds")
 if (NOT BUILD_MODE)
