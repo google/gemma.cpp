@@ -844,5 +844,16 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
+void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   const StreamFunc& stream_token, std::mt19937& gen) {
+  hwy::ThreadPool inner_pool(0);
+  GenerateGemma(
+      gemma, runtime_config.max_tokens, runtime_config.max_generated_tokens,
+      runtime_config.temperature, prompt, start_pos, kv_cache, pool, inner_pool,
+      stream_token, [](int) { return true; }, gen, runtime_config.verbosity);
+}
+
 }  // namespace gcpp
 #endif  // HWY_ONCE

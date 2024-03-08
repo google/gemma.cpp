@@ -64,17 +64,11 @@ struct KVCache {
 enum class Model { GEMMA_2B, GEMMA_7B };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
-// TODO: Incorporate this
-struct Runtime {
-  // TODO: In the future we may fold ModelTraining into Model.
-  // As we add more variations of model_type, the cartesian set becomes
-  // unwieldy.
-  Model model_type;
-  ModelTraining model_training;
+struct RuntimeConfig {
   size_t max_tokens;
   size_t max_generated_tokens;
   float temperature;
-  std::mt19937 gen;
+  int verbosity;
 };
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
@@ -205,9 +199,6 @@ struct Gemma {
   gcpp::ModelTraining model_training;
 };
 
-struct LoaderArgs;  // forward declaration
-void CreateGemma(const LoaderArgs& args, hwy::ThreadPool& pool, Gemma& model);
-
 KVCache CreateKVCache(Model type);  // convenient workaround for now
 KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
 
@@ -222,6 +213,15 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
                    int verbosity);
+
+// Convenience function for the common case:
+// - Bundle runtime parameters as RuntimeConfig
+// - No threadpools within threadpools (inner_pool = dummy)
+// - All tokens accepted
+void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   const StreamFunc& stream_token, std::mt19937& gen);
 
 constexpr int EOS_ID = 1;
 

@@ -21,20 +21,27 @@ std::vector<int> tokenize(
 
 int main(int argc, char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
-  // A rough heuristic for a reasonable number of threads given hardware
-  // concurrency estimate
+
+  // A rough heuristic number of threads to use
   size_t num_threads = static_cast<size_t>(std::clamp(
       static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
   hwy::ThreadPool pool(num_threads);
-  hwy::ThreadPool inner_pool(0);
+
+  // Instantiate model
   gcpp::Gemma model(loader, pool);
+
+  // Setup random number generator
   std::mt19937 gen;
   std::random_device rd;
   gen.seed(rd());
+
+  // Tokenize instruction
   std::vector<int> tokens =
       tokenize("Write a greeting to the world.", model.Tokenizer());
   size_t ntokens = tokens.size();
   size_t pos = 0;
+
+  // Callback
   auto stream_token = [&pos, &gen, &ntokens, tokenizer = model.Tokenizer()](
                           int token, float) {
     ++pos;
@@ -43,17 +50,16 @@ int main(int argc, char** argv) {
     } else if (token != gcpp::EOS_ID) {
       std::string token_text;
       HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text).ok());
-      if (pos == ntokens + 1) {
-        // first token of response
-        token_text.erase(0, token_text.find_first_not_of(" \t\n\n"));
-      }
       std::cout << token_text << std::flush;
     }
     return true;
   };
-  GenerateGemma(
-      model, /*max_tokens=*/2048, /*max_generated_tokens=*/1024,
-      /*temperature=*/1.0, tokens, 0, pool, inner_pool, stream_token,
-      [](int) { return true; }, gen, 0);
+
+  GenerateGemma(model,
+                {.max_tokens = 2048,
+                 .max_generated_tokens = 1024,
+                 .temperature = 1.0,
+                 .verbosity = 0},
+                tokens, /*KV cache position = */ 0, pool, stream_token, gen);
   std::cout << std::endl;
 }
