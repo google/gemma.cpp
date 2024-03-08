@@ -285,7 +285,6 @@ struct GemmaImpl : public GemmaInterface {
                 int verbosity) override;
 
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
-
   hwy::AlignedFreeUniquePtr<uint8_t[]> compressed_weights;
   hwy::AlignedUniquePtr<Activations<Config, kPrefillBatchSize>> prefill;
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
@@ -803,15 +802,15 @@ void GemmaImpl<ConfigGemma7B>::Generate(
    kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
 }
 
-Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
-  const Model model_type = args.ModelType();
-  model_training = args.ModelTraining();
+Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+             const Path& weights_path, Model model_type,
+             hwy::ThreadPool& pool) {
   PROFILER_ZONE("Startup.tokenizer");
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
       std::make_unique<sentencepiece::SentencePieceProcessor>();
-  HWY_ASSERT(tokenizer->Load(args.tokenizer.path).ok());
+  HWY_ASSERT(tokenizer->Load(tokenizer_path.path).ok());
   auto compressed_weights = HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(
-      args.ModelType(), args.model, args.cache, pool);
+      model_type, weights_path, compressed_weights_path, pool);
   switch (model_type) {
     case Model::GEMMA_2B:
       impl_.reset(
@@ -825,6 +824,12 @@ Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
   }
 }
+
+Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+             Model model_type, hwy::ThreadPool& pool)
+    : Gemma(tokenizer_path, compressed_weights_path, Path{""}, model_type,
+            pool) {}
+
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
 const sentencepiece::SentencePieceProcessor* Gemma::Tokenizer() const {

@@ -22,7 +22,18 @@ FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.gi
 FetchContent_MakeAvailable(highway)
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c)
 FetchContent_MakeAvailable(sentencepiece)
-FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG e781007836ec034236e90cc4d313d0a8c481bce6)
+
+
+# Allow for both local and remote building)
+option(BUILD_MODE "'local' or 'remote' git fetch for builds")
+if (NOT BUILD_MODE)
+  set(BUILD_MODE "remote")
+endif()
+if (BUILD_MODE STREQUAL "local")
+  FetchContent_Declare(gemma SOURCE_DIR ../../..)
+else()
+  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 42e53e2da89f80dc46399c7037fbbfb15cdc3de3)
+endif()
 FetchContent_MakeAvailable(gemma)
 
 if(NOT CMAKE_BUILD_TYPE)

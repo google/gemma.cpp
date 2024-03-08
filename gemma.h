@@ -192,7 +192,10 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 struct GemmaInterface;
 
 struct Gemma {
-  Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
+  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+        const Path& weights_path, Model model_type, hwy::ThreadPool& pool);
+  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+        Model model_type, hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
   const sentencepiece::SentencePieceProcessor* Tokenizer() const;
   std::unique_ptr<GemmaInterface> impl_;

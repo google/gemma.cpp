@@ -22,15 +22,17 @@ std::vector<int> tokenize(
 int main(int argc, char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
 
-  // A rough heuristic number of threads to use
+  // Rough heuristic for the number of threads to use
   size_t num_threads = static_cast<size_t>(std::clamp(
       static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
   hwy::ThreadPool pool(num_threads);
 
-  // Instantiate model
-  gcpp::Gemma model(loader, pool);
+  // Instantiate model and KV Cache
+  gcpp::Gemma model(loader.tokenizer, loader.cache, loader.ModelType(), pool);
+  auto kv_cache = CreateKVCache(loader.ModelType());
+  size_t pos = 0;  // KV Cache position
 
-  // Setup random number generator
+  // Initialize random number generator
   std::mt19937 gen;
   std::random_device rd;
   gen.seed(rd());
@@ -39,7 +41,6 @@ int main(int argc, char** argv) {
   std::vector<int> tokens =
       tokenize("Write a greeting to the world.", model.Tokenizer());
   size_t ntokens = tokens.size();
-  size_t pos = 0;
 
   // Callback
   auto stream_token = [&pos, &gen, &ntokens, tokenizer = model.Tokenizer()](
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
                  .max_generated_tokens = 1024,
                  .temperature = 1.0,
                  .verbosity = 0},
-                tokens, /*KV cache position = */ 0, pool, stream_token, gen);
+                tokens, /*KV cache position = */ 0, kv_cache, pool,
+                stream_token, gen);
   std::cout << std::endl;
 }

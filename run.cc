@@ -235,7 +235,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
              [](uint64_t /*task*/, size_t thread) { PinThreadToCore(thread); });
   }
 
-  gcpp::Gemma model(loader, pool);
+  gcpp::Gemma model(loader.tokenizer, loader.cache, loader.ModelType(), pool);
 
   auto kv_cache = CreateKVCache(loader.ModelType());
 
