@@ -114,7 +114,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
     }
-    if (cache.path.empty()) {
+    if (compressed_weights.path.empty()) {
       return "Missing --compressed_weights flag, a file for the compressed "
              "model.";
     }
@@ -122,8 +122,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   }
 
   Path tokenizer;
-  Path model;  // uncompressed weights OR
-  Path cache;  // compressed weights (TODO: update name)
+  Path weights;             // uncompressed weights file location
+  Path compressed_weights;  // compressed weights file location
   std::string model_type;
 
   template <class Visitor>
@@ -131,7 +131,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     visitor(tokenizer, "tokenizer", Path(),
             "Path name of tokenizer model file.\n    Required argument.");
     visitor(
-        cache, "compressed_weights", Path(),
+        compressed_weights, "compressed_weights", Path(),
         "Path name of compressed weights file, regenerated from `--weights` "
         "file if "
         "the compressed weights file does not exist.\n    Required argument.");
@@ -140,7 +140,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
             "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n"
             "    Required argument.");
-    visitor(model, "weights", Path(),
+    visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file. Only required if "
             "compressed_weights file is not present and needs to be "
             "regenerated. This parameter is only required for compressing"

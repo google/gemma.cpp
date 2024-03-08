@@ -28,7 +28,8 @@ int main(int argc, char** argv) {
   hwy::ThreadPool pool(num_threads);
 
   // Instantiate model and KV Cache
-  gcpp::Gemma model(loader.tokenizer, loader.cache, loader.ModelType(), pool);
+  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights,
+                    loader.ModelType(), pool);
   auto kv_cache = CreateKVCache(loader.ModelType());
   size_t pos = 0;  // KV Cache position
 
