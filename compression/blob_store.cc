@@ -341,7 +341,7 @@ BlobError BlobReader::Open(const char* filename) {
 #endif
   if (fd_ < 0) return __LINE__;
 
-#if HWY_OS_LINUX
+#if HWY_OS_LINUX && (!defined(__ANDROID_API__) || __ANDROID_API__ >= 21)
   // Doubles the readahead window, which seems slightly faster when cached.
   (void)posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
 #endif
