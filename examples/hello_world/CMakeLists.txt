@@ -32,7 +32,7 @@ endif()
 if (BUILD_MODE STREQUAL "local")
   FetchContent_Declare(gemma SOURCE_DIR ../../..)
 else()
-  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG dfd2fdc1dd8e7a84d2e2f9618334b87a79ba02b1)
+  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 03147effbd241530611c99f46df51ce5b87f2d8a)
 endif()
 FetchContent_MakeAvailable(gemma)
 
