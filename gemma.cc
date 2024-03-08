@@ -30,7 +30,6 @@
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
-#include "util/app.h"   // arg types
 #include "util/args.h"  // Path
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
