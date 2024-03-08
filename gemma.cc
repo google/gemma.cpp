@@ -30,6 +30,7 @@
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
+#include "util/app.h"   // arg types
 #include "util/args.h"  // Path
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
@@ -697,10 +698,10 @@ void ForEachTensor(const Weights<TConfig>* weights,
 
 template <class TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
-    const Path& model, const Path& cache, hwy::ThreadPool& pool) {
+    const Path& weights_path, const Path& cache, hwy::ThreadPool& pool) {
   PROFILER_ZONE("Startup.LoadCache");
 
-  if (!std::filesystem::exists(model.path) &&
+  if (!std::filesystem::exists(weights_path.path) &&
       !std::filesystem::exists(cache.path)) {
     HWY_ABORT(
         "Either the model weights (--weights) or cached compressed weights "
@@ -721,7 +722,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
 
   // Get weights, compress, and store in cache.
   const hwy::AlignedUniquePtr<Weights<TConfig>> weights =
-      LoadWeights<TConfig>(model);
+      LoadWeights<TConfig>(weights_path);
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights.get(), *c_weights, compressor);
   compressor.WriteAll(pool, cache.path.c_str());
@@ -731,14 +732,17 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
 
 // Type-erased because this function is called via a function pointer.
 hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeightsT(
-    const LoaderArgs& args, hwy::ThreadPool& pool) {
-  switch (args.ModelType()) {
+    gcpp::Model model, const Path& weights, const Path& compressed_weights,
+    hwy::ThreadPool& pool) {
+  switch (model) {
     case Model::GEMMA_2B:
-      return GetCompressedWeights<ConfigGemma2B>(args.model, args.cache, pool);
+      return GetCompressedWeights<ConfigGemma2B>(weights, compressed_weights,
+                                                 pool);
     case Model::GEMMA_7B:
-      return GetCompressedWeights<ConfigGemma7B>(args.model, args.cache, pool);
+      return GetCompressedWeights<ConfigGemma7B>(weights, compressed_weights,
+                                                 pool);
     default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(args.ModelType()));
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
 }
 
@@ -799,8 +803,6 @@ void GemmaImpl<ConfigGemma7B>::Generate(
    kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
 }
 
-// TODO: Make Gemma type independent of LoaderArgs, create a factory function
-// that takes LoaderArgs and creates a Gemma instance.
 Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
   const Model model_type = args.ModelType();
   model_training = args.ModelTraining();
@@ -808,8 +810,8 @@ Gemma::Gemma(const LoaderArgs& args, hwy::ThreadPool& pool) {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
       std::make_unique<sentencepiece::SentencePieceProcessor>();
   HWY_ASSERT(tokenizer->Load(args.tokenizer.path).ok());
-  auto compressed_weights =
-      HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(args, pool);
+  auto compressed_weights = HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(
+      args.ModelType(), args.model, args.cache, pool);
   switch (model_type) {
     case Model::GEMMA_2B:
       impl_.reset(

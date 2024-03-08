@@ -66,6 +66,9 @@ enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // TODO: Incorporate this
 struct Runtime {
+  // TODO: In the future we may fold ModelTraining into Model.
+  // As we add more variations of model_type, the cartesian set becomes
+  // unwieldy.
   Model model_type;
   ModelTraining model_training;
   size_t max_tokens;
@@ -126,7 +129,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   Path tokenizer;
   Path model;  // uncompressed weights OR
-  Path cache;  // compressed weights
+  Path cache;  // compressed weights (TODO: update name)
   std::string model_type;
 
   template <class Visitor>
@@ -150,26 +153,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "new model weight exports, otherwise it is not needed.");
   }
 };
-
-struct GemmaInterface;
-
-struct Gemma {
-  Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
-  ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
-
-  const sentencepiece::SentencePieceProcessor* Tokenizer() const;
-
-  std::unique_ptr<GemmaInterface> impl_;
-  gcpp::ModelTraining model_training;
-};
-
-KVCache CreateKVCache(Model type);  // convenient workaround for now
-KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
-
-// StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f.
-using StreamFunc = std::function<bool(int, float)>;
-using AcceptFunc = std::function<bool(int)>;
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
@@ -211,6 +194,27 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "resets every turn)");
   }
 };
+
+struct GemmaInterface;
+
+struct Gemma {
+  Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
+  ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
+  const sentencepiece::SentencePieceProcessor* Tokenizer() const;
+  std::unique_ptr<GemmaInterface> impl_;
+  gcpp::ModelTraining model_training;
+};
+
+struct LoaderArgs;  // forward declaration
+void CreateGemma(const LoaderArgs& args, hwy::ThreadPool& pool, Gemma& model);
+
+KVCache CreateKVCache(Model type);  // convenient workaround for now
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
+
+// StreamFunc is called with (token, probability). For prompt tokens,
+// probability is 0.0f.
+using StreamFunc = std::function<bool(int, float)>;
+using AcceptFunc = std::function<bool(int)>;
 
 void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    float temperature, const std::vector<int>& prompt,
