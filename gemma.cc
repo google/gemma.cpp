@@ -797,10 +797,10 @@ void GemmaImpl<ConfigGemma7B>::Generate(
 Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
              const Path& weights_path, Model model_type,
              hwy::ThreadPool& pool) {
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
   {
     PROFILER_ZONE("Startup.tokenizer");
-    std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
-        std::make_unique<sentencepiece::SentencePieceProcessor>();
+    tokenizer = std::make_unique<sentencepiece::SentencePieceProcessor>();
     if (!tokenizer->Load(tokenizer_path.path).ok()) {
       HWY_ABORT("Failed to load the tokenizer file.");
     }
