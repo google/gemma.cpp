@@ -100,3 +100,79 @@ be exposed to the build system):
 In the medium term both of these will likely be deprecated in favor of handling
 options at runtime - allowing for multiple weight compression schemes in a single
 build and dynamically resizes the KV cache as needed.
+
+## Using gemma.cpp as a Library (Advanced)
+
+Unless you are doing lower level implementations or research, from an
+application standpoint you can think of gemma.h and gemma.cc as the "core" of
+the library.
+
+You can regard `run.cc` as an example application that your own application is
+substituting for, so the invocations into gemma.h and gemma.cc you see in
+`run.cc` are probably the functions you'll be invoking. You can find examples
+of the invocations to tokenizer methods and `GenerateGemma` in `run.cc`.
+
+Keep in mind gemma.cpp is oriented at more experimental / prototype / research
+applications. If you're targeting production, there's more standard paths via
+jax / pytorch / keras for NN deployments.
+
+### Gemma struct contains all the state of the inference engine - tokenizer, weights, and activations
+
+`Gemma(...)` - constructor, creates a gemma model object, which is a wrapper
+around 3 things - the tokenizer object, weights, activations, and KV Cache.
+
+In a standard LLM chat app, you'll probably use a Gemma object directly, in
+more exotic data processing or research applications, you might decompose
+working with weights, kv cache and activations (e.g. you might have multiple kv
+caches and activations for a single set of weights) more directly rather than
+only using a Gemma object.
+
+### Use the tokenizer in the Gemma object (or interact with the Tokenizer object directly)
+
+You pretty much only do things with the tokenizer, call `Encode()` to go from
+string prompts to token id vectors, or `Decode()` to go from token id vector
+outputs from the model back to strings.
+
+### The main entrypoint for generation is `GenerateGemma()`
+
+Calling into `GenerateGemma` with a tokenized prompt will 1) mutate the
+activation values in `model` and 2) invoke StreamFunc - a lambda callback for
+each generated token.
+
+Your application defines its own StreamFunc as a lambda callback to do
+something everytime a token string is streamed from the engine (eg print to the
+screen, write data to the disk, send the string to a server, etc.). You can see
+in `run.cc` the StreamFunc lambda takes care of printing each token to the
+screen as it arrives.
+
+Optionally you can define accept_token as another lambda - this is mostly for
+constrained decoding type of use cases where you want to force the generation
+to fit a grammar. If you're not doing this, you can send an empty lambda as a
+no-op which is what `run.cc` does.
+
+### If you want to invoke the neural network forward function directly call the `Transformer()` function
+
+For high-level applications, you might only call `GenerateGemma()` and never
+interact directly with the neural network, but if you're doing something a bit
+more custom you can call transformer which performs a single inference
+operation on a single token and mutates the Activations and the KVCache through
+the neural network computation.
+
+### For low level operations, defining new architectures, call `ops.h` functions directly
+
+You use `ops.h` if you're writing other NN architectures or modifying the
+inference path of the Gemma model.
+
+## Building with Bazel
+
+The sentencepiece library we depend on requires some additional work to build
+with the Bazel build system. First, it does not export its BUILD file, so we
+provide `bazel/sentencepiece.bazel`. Second, it ships with a vendored subset of
+the Abseil library. `bazel/com_google_sentencepiece.patch` changes the code to
+support Abseil as a standalone dependency without third_party/ prefixes, similar
+to the transforms we apply to Gemma via Copybara.
+
+## Discord
+
+We're also trying out a discord server for discussion here -
+https://discord.gg/H5jCBAWxAe

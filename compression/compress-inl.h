@@ -149,7 +149,7 @@ struct CompressTraits<hwy::bfloat16_t> {
       }
     }
 
-    size_t remaining = num - i;
+    const size_t remaining = num - i;
     if (remaining != 0) {
       const VF in0 = hn::LoadN(df, in + i, remaining);
       const size_t remaining1 = remaining - HWY_MIN(remaining, N / 2);
@@ -195,7 +195,7 @@ struct CompressTraits<hwy::bfloat16_t> {
       }
     }
 
-    size_t remaining = num - i;
+    const size_t remaining = num - i;
     if (remaining != 0) {
       const VBF in16 = hn::LoadN(dbf, in + in_ofs + i, remaining);
       const VF in0 = hn::PromoteLowerTo(df, in16);
@@ -287,7 +287,7 @@ struct CompressTraits<NuqStream> {
 
     if (COMPRESS_STATS) {
       for (size_t i = 0; i < num; ++i) {
-        tls.stats.NotifyIn(in[i] * 100 + 500);
+        tls.stats.NotifyIn(static_cast<int>(lroundf(in[i] * 100.0f + 500.0f)));
       }
 
       const hn::Repartition<hwy::bfloat16_t, DF> dbf;
@@ -358,7 +358,7 @@ HWY_NOINLINE void Compress(const float* in, size_t num,
            });
 
   const double t1 = hwy::platform::Now();
-  const double mb = num * sizeof(in[0]) * 1E-6;
+  const double mb = static_cast<double>(num) * sizeof(in[0]) * 1E-6;
   const double mbps = mb / (t1 - t0);
   fprintf(stderr, "Compress %.1f MB/s\n", mbps);
 

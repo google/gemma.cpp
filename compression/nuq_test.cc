@@ -13,6 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// SFP uses ConcatEven/Odd which are not supported. Use HWY_EMU128 instead.
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS HWY_SCALAR
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,9 +28,10 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
+// clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE \
-  "third_party/gemma_cpp/compression/nuq_test.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "compression/nuq_test.cc"  // NOLINT
+// clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Other headers that include Highway must come after foreach_target.h
 // copybara:import_next_line:gemma_cpp
