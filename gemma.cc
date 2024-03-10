@@ -261,10 +261,9 @@ KVCache CreateKVCache(Model type) {
 
 template <class Config>
 struct GemmaImpl : public GemmaInterface {
-  GemmaImpl(  // const LoaderArgs& args,
-      std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
-      hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
-      hwy::ThreadPool& pool);
+  GemmaImpl(std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
+            hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
+            hwy::ThreadPool& pool);
 
   ~GemmaImpl() {
     using CWeights = CompressedWeights<Config>;
@@ -767,16 +766,10 @@ GemmaImpl<Config>::GemmaImpl(
     std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
     hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
     hwy::ThreadPool& pool)
-    // GemmaImpl<Config>::GemmaImpl(const LoaderArgs& args, hwy::ThreadPool&
-    // pool)
     : compressed_weights(std::move(compressed_weights)),
-      // HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(args, pool)),
       prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
       state(hwy::MakeUniqueAligned<Activations<Config, 1>>()),
-      tokenizer(std::move(tokenizer)) {
-  // PROFILER_ZONE("Startup.tokenizer");
-  // HWY_ASSERT(tokenizer.Load(args.tokenizer.path).ok());
-}
+      tokenizer(std::move(tokenizer)) {}
 
 template <>
 void GemmaImpl<ConfigGemma2B>::Generate(
@@ -804,10 +797,14 @@ void GemmaImpl<ConfigGemma7B>::Generate(
 Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
              const Path& weights_path, Model model_type,
              hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.tokenizer");
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
-      std::make_unique<sentencepiece::SentencePieceProcessor>();
-  HWY_ASSERT(tokenizer->Load(tokenizer_path.path).ok());
+  {
+    PROFILER_ZONE("Startup.tokenizer");
+    std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer =
+        std::make_unique<sentencepiece::SentencePieceProcessor>();
+    if (!tokenizer->Load(tokenizer_path.path).ok()) {
+      HWY_ABORT("Failed to load the tokenizer file.");
+    }
+  }
   auto compressed_weights = HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(
       model_type, weights_path, compressed_weights_path, pool);
   switch (model_type) {

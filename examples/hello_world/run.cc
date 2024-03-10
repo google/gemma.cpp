@@ -24,12 +24,12 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 std::vector<int> tokenize(
-    std::string prompt_string,
+    const std::string& prompt_string,
     const sentencepiece::SentencePieceProcessor* tokenizer) {
-  prompt_string = "<start_of_turn>user\n" + prompt_string +
-                  "<end_of_turn>\n<start_of_turn>model\n";
+  std::string formatted = "<start_of_turn>user\n" + prompt_string +
+                          "<end_of_turn>\n<start_of_turn>model\n";
   std::vector<int> tokens;
-  HWY_ASSERT(tokenizer->Encode(prompt_string, &tokens).ok());
+  HWY_ASSERT(tokenizer->Encode(formatted, &tokens).ok());
   tokens.insert(tokens.begin(), 2);  // BOS token
   return tokens;
 }

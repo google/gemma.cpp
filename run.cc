@@ -190,7 +190,6 @@ void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
       }
     }
 
-    // HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt).ok());
     HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt).ok());
 
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token

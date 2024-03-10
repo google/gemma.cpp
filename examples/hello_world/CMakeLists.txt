@@ -14,7 +14,6 @@
 
 cmake_minimum_required(VERSION 3.11)
 project(hello_world)
-set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
@@ -31,18 +30,18 @@ if (NOT BUILD_MODE)
   set(BUILD_MODE "remote")
 endif()
 if (BUILD_MODE STREQUAL "local")
-  FetchContent_Declare(gemma SOURCE_DIR ../../..)
+  # Relative path to gemma.cpp from examples/hello_world/build/
+  FetchContent_Declare(gemma SOURCE_DIR ../../..) 
 else()
   FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 8c7b2cf61b9794b806de091685dc6739dd3db837)
 endif()
-FetchContent_MakeAvailable(gemma)
+FetchContent_MakeAvailabl(gemma)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
 add_executable(hello_world run.cc)
-set_property(TARGET hello_world PROPERTY CXX_STANDARD 17)
 target_link_libraries(hello_world hwy hwy_contrib sentencepiece libgemma)
 FetchContent_GetProperties(sentencepiece)
 target_include_directories(hello_world PRIVATE ${sentencepiece_SOURCE_DIR})
