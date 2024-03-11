@@ -35,7 +35,7 @@ if (BUILD_MODE STREQUAL "local")
 else()
   FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 8c7b2cf61b9794b806de091685dc6739dd3db837)
 endif()
-FetchContent_MakeAvailabl(gemma)
+FetchContent_MakeAvailable(gemma)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
