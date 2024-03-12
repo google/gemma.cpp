@@ -97,9 +97,9 @@ class AppArgs : public ArgsBase<AppArgs> {
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(verbosity, "verbosity", 1,
-            "Show verbose developer information\n   0 = only print generation "
-            "output\n   1 = standard user-facing terminal ui\n   2 = show "
-            "developer/debug info).\n   Default = 1.",
+            "Show verbose developer information\n    0 = only print generation "
+            "output\n    1 = standard user-facing terminal ui\n    2 = show "
+            "developer/debug info).\n    Default = 1.",
             2);
     visitor(num_threads, "num_threads",
             kDefaultNumThreads,  // see ChooseNumThreads

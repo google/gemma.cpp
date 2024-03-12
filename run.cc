@@ -96,10 +96,10 @@ void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
   std::cerr << "\n";
 }
 
-void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
-               hwy::ThreadPool& inner_pool, const InferenceArgs& args,
-               int verbosity, const gcpp::AcceptFunc& accept_token,
-               std::string& eot_line) {
+void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
+               hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+               const InferenceArgs& args, int verbosity,
+               const gcpp::AcceptFunc& accept_token, std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   int abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -115,11 +115,11 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
 
   // callback function invoked for each generated token.
   auto stream_token = [&abs_pos, &current_pos, &args, &gen, &prompt_size,
-                       tokenizer = &model.Tokenizer(),
+                       tokenizer = model.Tokenizer(),
                        verbosity](int token, float) {
     ++abs_pos;
     ++current_pos;
-    if (current_pos < prompt_size) {
+    if (current_pos <= prompt_size) {
       std::cerr << "." << std::flush;
     } else if (token == gcpp::EOS_ID) {
       if (!args.multiturn) {
@@ -129,7 +129,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
         }
       }
       if (verbosity >= 2) {
-        std::cout << "\n[ End ]" << std::endl;
+        std::cout << "\n[ End ]\n";
       }
     } else {
       std::string token_text;
@@ -142,7 +142,6 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
           std::cout << std::endl << std::endl;
         }
       }
-      // TODO(austinvhuang): is explicit space necessary?
       std::cout << token_text << std::flush;
     }
     return true;
@@ -191,7 +190,7 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
       }
     }
 
-    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt).ok());
+    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt).ok());
 
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token
     // if needed.
@@ -204,8 +203,9 @@ void ReplGemma(gcpp::Gemma& model, hwy::ThreadPool& pool,
     std::cerr << std::endl << "[ Reading prompt ] " << std::flush;
 
     const double time_start = hwy::platform::Now();
-    GenerateGemma(model, args, prompt, abs_pos, pool, inner_pool, stream_token,
-                  accept_token, gen, verbosity);
+    GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
+                  args.temperature, prompt, abs_pos, kv_cache, pool, inner_pool,
+                  stream_token, accept_token, gen, verbosity);
     const double time_end = hwy::platform::Now();
     const double tok_sec = current_pos / (time_end - time_start);
     if (verbosity >= 2) {
@@ -234,7 +234,10 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
              [](uint64_t /*task*/, size_t thread) { PinThreadToCore(thread); });
   }
 
-  gcpp::Gemma model(loader, pool);
+  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights,
+                    loader.ModelType(), pool);
+
+  auto kv_cache = CreateKVCache(loader.ModelType());
 
   if (const char* error = inference.Validate()) {
     ShowHelp(loader, inference, app);
@@ -272,7 +275,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(
-      model, pool, inner_pool, inference, app.verbosity,
+      model, kv_cache, pool, inner_pool, inference, app.verbosity,
       /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 

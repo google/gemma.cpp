@@ -64,6 +64,13 @@ struct KVCache {
 enum class Model { GEMMA_2B, GEMMA_7B };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
+struct RuntimeConfig {
+  size_t max_tokens;
+  size_t max_generated_tokens;
+  float temperature;
+  int verbosity;
+};
+
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
@@ -95,6 +102,10 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   // Returns error string or nullptr if OK.
   const char* Validate() const {
     const std::string model_type_lc = ToLower(model_type);
+    if (model_type.empty()) {
+      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
+             "2b-it, or 7b-it.";
+    }
     if (model_type_lc != "2b-pt" && model_type_lc != "7b-pt" &&
         model_type_lc != "2b-it" && model_type_lc != "7b-it") {
       return "Model type must be 2b-pt, 7b-pt, 2b-it, or "
@@ -103,11 +114,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
     }
-    if (model_type.empty()) {
-      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
-             "2b-it, or 7b-it.";
-    }
-    if (cache.path.empty()) {
+    if (compressed_weights.path.empty()) {
       return "Missing --compressed_weights flag, a file for the compressed "
              "model.";
     }
@@ -115,8 +122,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   }
 
   Path tokenizer;
-  Path model;  // uncompressed weights OR
-  Path cache;  // compressed weights
+  Path weights;             // uncompressed weights file location
+  Path compressed_weights;  // compressed weights file location
   std::string model_type;
 
   template <class Visitor>
@@ -124,39 +131,22 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     visitor(tokenizer, "tokenizer", Path(),
             "Path name of tokenizer model file.\n    Required argument.");
     visitor(
-        cache, "compressed_weights", Path(),
+        compressed_weights, "compressed_weights", Path(),
         "Path name of compressed weights file, regenerated from `--weights` "
         "file if "
         "the compressed weights file does not exist.\n    Required argument.");
     visitor(model_type, "model", std::string(),
-            "Model type\n    2b-it (2B parameters, instruction-tuned)\n    "
-            "2b-pt (2B parameters, pretrained)\n    7b-it (7B parameters "
-            "instruction-tuned)\n    7b-pt (7B parameters, pretrained)\n"
+            "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
+            "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
+            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n"
             "    Required argument.");
-    visitor(model, "weights", Path(),
+    visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file. Only required if "
             "compressed_weights file is not present and needs to be "
             "regenerated. This parameter is only required for compressing"
             "new model weight exports, otherwise it is not needed.");
   }
 };
-
-struct GemmaInterface;
-
-struct Gemma {
-  Gemma(const LoaderArgs& args, hwy::ThreadPool& pool);
-  ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
-
-  const sentencepiece::SentencePieceProcessor& Tokenizer() const;
-
-  std::unique_ptr<GemmaInterface> impl_;
-  gcpp::ModelTraining model_training;
-};
-
-// StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f.
-using StreamFunc = std::function<bool(int, float)>;
-using AcceptFunc = std::function<bool(int)>;
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
@@ -192,18 +182,49 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(deterministic, "deterministic", false,
             "Make top-k sampling deterministic", 2);
     visitor(multiturn, "multiturn", false,
-            "Multiturn mode (if 0, this clears the KV cache after every "
-            "interaction without quitting)\n    Default : 0 (conversation "
+            "Multiturn mode\n    0 = clear KV cache after every "
+            "interaction\n    1 = continue KV cache after every interaction\n  "
+            "  Default : 0 (conversation "
             "resets every turn)");
   }
 };
 
-void GenerateGemma(Gemma& gemma, const InferenceArgs& args,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
-                   const StreamFunc& stream_token,
-                   const AcceptFunc& accept_token, std::mt19937& g,
+struct GemmaInterface;
+
+struct Gemma {
+  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+        const Path& weights_path, Model model_type, hwy::ThreadPool& pool);
+  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+        Model model_type, hwy::ThreadPool& pool);
+  ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
+  const sentencepiece::SentencePieceProcessor* Tokenizer() const;
+  std::unique_ptr<GemmaInterface> impl_;
+  gcpp::ModelTraining model_training;
+};
+
+KVCache CreateKVCache(Model type);  // convenient workaround for now
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
+
+// StreamFunc is called with (token, probability). For prompt tokens,
+// probability is 0.0f.
+using StreamFunc = std::function<bool(int, float)>;
+using AcceptFunc = std::function<bool(int)>;
+
+void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
+                   float temperature, const std::vector<int>& prompt,
+                   size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
+                   hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
+                   const AcceptFunc& accept_token, std::mt19937& gen,
                    int verbosity);
+
+// Convenience function for the common case:
+// - Bundle runtime parameters as RuntimeConfig
+// - No threadpools within threadpools (inner_pool = dummy)
+// - All tokens accepted
+void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   const StreamFunc& stream_token, std::mt19937& gen);
 
 constexpr int EOS_ID = 1;
 
