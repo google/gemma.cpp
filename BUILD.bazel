@@ -89,7 +89,9 @@ cc_binary(
         ":app",
         ":args",
         ":gemma_lib",
+        # copybara:strip_begin
         "//base",
+        # copybara:strip_end
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
