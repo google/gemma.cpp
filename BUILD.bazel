@@ -69,7 +69,7 @@ cc_library(
     deps = [
         ":args",
         ":transformer_ops",
-        "//base",
+        # "//base",
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:matvec",
@@ -89,9 +89,7 @@ cc_binary(
         ":app",
         ":args",
         ":gemma_lib",
-        # copybara:strip_begin
-        "//base",
-        # copybara:strip_end
+        # "//base",
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
