@@ -511,7 +511,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
       *reinterpret_cast<CompressedWeights<TConfig>*>(
           gemma.compressed_weights.get());
   KVCache& kv_cache = gemma.kv_cache;
-  int token;
+  int token = 0;
 
   // pos indexes the KV cache. In the first turn of a chat, pos = 0.
   //
