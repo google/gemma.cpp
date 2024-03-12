@@ -36,6 +36,24 @@
 
 namespace gcpp {
 
+static inline const char* CompiledConfig() {
+  if (HWY_IS_ASAN) {
+    return "asan";
+  } else if (HWY_IS_MSAN) {
+    return "msan";
+  } else if (HWY_IS_TSAN) {
+    return "tsan";
+#if defined(HWY_IS_UBSAN)
+  } else if (HWY_IS_UBSAN) {
+    return "ubsan";
+#endif
+  } else if (HWY_IS_DEBUG_BUILD) {
+    return "dbg";
+  } else {
+    return "opt";
+  }
+}
+
 static inline void PinThreadToCore(size_t cpu_index) {
 #if HWY_OS_LINUX
   // Forces the thread to run on the logical processor with the same number.

@@ -66,8 +66,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << std::thread::hardware_concurrency() << std::endl
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)"
-              << "\n"
+              << hwy::VectorBytes() * 8 << " bits)" << "\n"
+              << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
               << gcpp::TypeName(gcpp::WeightT()) << "\n"
               << "EmbedderInput Type            : "
