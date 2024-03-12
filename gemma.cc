@@ -529,7 +529,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
 
   // Prefill stops before prompt.size() - 1 since the last prompt token is the
   // first input token for generation.
-  while (pos_offset < prompt.size() - 1) {
+  while (pos_offset < prompt.size() - 1 && token != EOS_ID) {
     const size_t end_offset =
         std::min(kPrefillBatchSize, prompt.size() - 1 - pos_offset);
     HWY_DASSERT(end_offset < prompt.size());
@@ -538,7 +538,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
                                         c_weights, prefill_activations,
                                         kv_cache, pool, inner_pool);
     for (size_t idx = 0; idx < end_offset; ++idx) {
-      stream_token(batch_tokens[idx], 0.0);
+      if (!stream_token(batch_tokens[idx], 0.0)) {
+        token = EOS_ID;
+      }
     }
     pos += end_offset;
     pos_offset += end_offset;
