@@ -19,18 +19,16 @@
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "gemma.cc"  // NOLINT
-#include "hwy/foreach_target.h"        // IWYU pragma: keep
+#include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
-// copybara:import_next_line:gemma_cpp
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
-#include "util/args.h"  // Path
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
@@ -766,10 +764,10 @@ GemmaImpl<Config>::GemmaImpl(
     std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
     hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
     hwy::ThreadPool& pool)
-    : compressed_weights(std::move(compressed_weights)),
+    : tokenizer(std::move(tokenizer)),
+      compressed_weights(std::move(compressed_weights)),
       prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
-      state(hwy::MakeUniqueAligned<Activations<Config, 1>>()),
-      tokenizer(std::move(tokenizer)) {}
+      state(hwy::MakeUniqueAligned<Activations<Config, 1>>()) {}
 
 template <>
 void GemmaImpl<ConfigGemma2B>::Generate(

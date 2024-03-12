@@ -66,8 +66,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << std::thread::hardware_concurrency() << std::endl
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)"
-              << "\n"
+              << hwy::VectorBytes() * 8 << " bits)" << "\n"
+              << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
               << gcpp::TypeName(gcpp::WeightT()) << "\n"
               << "EmbedderInput Type            : "
@@ -119,7 +119,7 @@ void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
                        verbosity](int token, float) {
     ++abs_pos;
     ++current_pos;
-    if (current_pos < prompt_size) {
+    if (current_pos <= prompt_size) {
       std::cerr << "." << std::flush;
     } else if (token == gcpp::EOS_ID) {
       if (!args.multiturn) {
