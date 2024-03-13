@@ -22,11 +22,7 @@ import numpy as np
 import argparse
 import os
 
-# WIP - DO NOT MERGE
 # Requires torch 2.2 and gemma package from https://github.com/google/gemma_pytorch
-
-## parameters
-## model, tokenizer, model type, 
 
 def check_file_exists(value):
   if not os.path.exists(str(value)):
