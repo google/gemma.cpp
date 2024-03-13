@@ -245,14 +245,6 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   if (app.verbosity >= 1) {
-    static const std::string banner_ascii_art =
-        "  __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __\n"
-        " / _` |/ _ \\ '_ ` _ \\| '_ ` _ \\ / _` | / __| '_ \\| '_ \\\n"
-        "| (_| |  __/ | | | | | | | | | | (_| || (__| |_) | |_) |\n"
-        " \\__, |\\___|_| |_| |_|_| |_| |_|\\__,_(_)___| .__/| .__/\n"
-        "  __/ |                                    | |   | |\n"
-        " |___/                                     |_|   |_|";
-
     const std::string instructions =
         "*Usage*\n"
         "  Enter an instruction and press enter (%C resets conversation, "
