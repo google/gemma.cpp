@@ -1,4 +1,5 @@
 FormatStyle: file
+WarningsAsErrors: "*"
 Checks: "-*,\
           abseil-*,\
           -abseil-string-find-startswith,\
@@ -204,3 +205,6 @@ Checks: "-*,\
           -readability-uppercase-literal-suffix,\
           -readability-use-anyofallof
           "
+CheckOptions:
+    - { key: readability-identifier-naming.ConstexprVariableCase,    value: CamelCase }
+    - { key: readability-identifier-naming.ConstexprVariablePrefix,  value: k         }

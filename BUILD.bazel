@@ -47,17 +47,6 @@ cc_library(
 )
 
 cc_library(
-    name = "app",
-    hdrs = [
-        "util/app.h",
-    ],
-    deps = [
-        ":args",
-        "@hwy//:hwy",
-    ],
-)
-
-cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma.cc",
@@ -69,6 +58,7 @@ cc_library(
     deps = [
         ":args",
         ":transformer_ops",
+        # "//base",
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:matvec",
@@ -76,6 +66,18 @@ cc_library(
         "@hwy//:profiler",
         "@hwy//:thread_pool",
         "@com_google_sentencepiece//:sentencepiece_processor",
+    ],
+)
+
+cc_library(
+    name = "app",
+    hdrs = [
+        "util/app.h",
+    ],
+    deps = [
+        ":args",
+        ":gemma_lib",
+        "@hwy//:hwy",
     ],
 )
 
@@ -88,6 +90,7 @@ cc_binary(
         ":app",
         ":args",
         ":gemma_lib",
+        # "//base",
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
