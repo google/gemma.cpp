@@ -584,6 +584,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     } else if ((prompt.size() + max_generated_tokens) > max_tokens) {
       std::cout << "Warning: Prompt size + max_new_tokens exceeds max_tokens."
                 << std::endl;
+    } else if (pos >= max_tokens) {
+      std::cout << "Warning: pos exceeds max_tokens."
+                << std::endl;
     }
   }
 
