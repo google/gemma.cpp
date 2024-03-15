@@ -36,7 +36,12 @@ For production-oriented edge deployments we recommend standard deployment
 pathways using Python frameworks like JAX, Keras, PyTorch, and Transformers
 ([all model variations here](https://www.kaggle.com/models/google/gemma)).
 
-Community contributions large and small are welcome. This project follows
+## Contributing
+
+Community contributions large and small are welcome. See
+[DEVELOPERS.md](https://github.com/google/gemma.cpp/blob/main/DEVELOPERS.md)
+for additional notes contributing developers and [join the discord by following
+this invite link](https://discord.gg/H5jCBAWxAe). This project follows
 [Google's Open Source Community
 Guidelines](https://opensource.google.com/conduct/).
 
