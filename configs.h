@@ -37,7 +37,7 @@ static constexpr size_t kTopK = GEMMA_TOPK;
 
 struct ConfigGemma7B {
   static constexpr int kSeqLen = gcpp::kSeqLen;
-  static constexpr int kVocabSize = 256128;
+  static constexpr int kVocabSize = 256000;
   static constexpr int kLayers = 28;
   static constexpr int kModelDim = 3072;
   static constexpr int kFFHiddenDim = 16 * 3072 / 2;  // = 24576
@@ -49,7 +49,7 @@ struct ConfigGemma7B {
 
 struct ConfigGemma2B {
   static constexpr int kSeqLen = gcpp::kSeqLen;
-  static constexpr int kVocabSize = 256128;
+  static constexpr int kVocabSize = 256000;
   static constexpr int kLayers = 18;
   static constexpr int kModelDim = 2048;
   static constexpr int kFFHiddenDim = 16 * 2048 / 2;  // = 16384
