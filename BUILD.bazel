@@ -4,9 +4,7 @@
 load("@rules_license//rules:license.bzl", "license")
 
 package(
-    default_applicable_licenses = [
-        "//:license",  # Placeholder comment, do not modify
-    ],
+    default_applicable_licenses = ["//third_party/gemma_cpp:license"],
     default_visibility = ["//visibility:public"],
 )
 
