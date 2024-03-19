@@ -844,11 +844,6 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
   }
 }
 
-Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             Model model_type, hwy::ThreadPool& pool)
-    : Gemma(tokenizer_path, compressed_weights_path, Path{""}, model_type,
-            pool) {}
-
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
 const sentencepiece::SentencePieceProcessor* Gemma::Tokenizer() const {
