@@ -34,10 +34,15 @@
 
 // copybara:import_next_line:gemma_cpp
 #include "configs.h"
+// copybara:end
+
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"
+// copybara:end
+
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
+// copybara:end
 #include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {

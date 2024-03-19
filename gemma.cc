@@ -25,8 +25,6 @@
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
@@ -51,8 +49,6 @@
 #include <random>
 #include <string>
 #include <vector>
-
-// Placeholder for internal header, do not modify.
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
@@ -817,9 +813,8 @@ void GemmaImpl<ConfigGemma7B>::Generate(
 }
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             const Path& weights_path, Model model_type, ModelTraining training,
-             hwy::ThreadPool& pool)
-    : model_training(training) {
+             const Path& weights_path, Model model_type,
+             hwy::ThreadPool& pool) {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
   {
     PROFILER_ZONE("Startup.tokenizer");
@@ -843,6 +838,11 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
   }
 }
+
+Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
+             Model model_type, hwy::ThreadPool& pool)
+    : Gemma(tokenizer_path, compressed_weights_path, Path{""}, model_type,
+            pool) {}
 
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 

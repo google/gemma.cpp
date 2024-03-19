@@ -17,10 +17,13 @@
 
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/app.h"  // LoaderArgs
+// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
+// copybara:end
+// copybara:import_next_line:gemma_cpp
+#include "util/app.h" // LoaderArgs
+// copybara:end
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 std::vector<int> tokenize(
