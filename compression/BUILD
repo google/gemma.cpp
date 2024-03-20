@@ -1,10 +1,12 @@
 # Weight compression, I/O and analysis
 
 package(
-    default_applicable_licenses = ["//:license"],
+    default_applicable_licenses = [
+        "//:license",  # Placeholder comment, do not modify
+    ],
     default_visibility = [
         "//learning/gemini/prod/contrib/gemini_cpp:__subpackages__",
-        "//:__subpackages__",
+        "//:__subpackages__",  # Placeholder, do not modify
     ],
 )
 

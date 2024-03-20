@@ -52,6 +52,8 @@
 #include <string>
 #include <vector>
 
+#include "base/init_google.h"
+
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
 // copybara:import_next_line:gemma_cpp
