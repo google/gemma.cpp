@@ -25,6 +25,8 @@
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
@@ -818,8 +820,9 @@ void GemmaImpl<ConfigGemma7B>::Generate(
 }
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             const Path& weights_path, Model model_type,
-             hwy::ThreadPool& pool) {
+             const Path& weights_path, Model model_type, ModelTraining training,
+             hwy::ThreadPool& pool)
+    : model_training(training) {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
   {
     PROFILER_ZONE("Startup.tokenizer");
