@@ -22,19 +22,15 @@
 #include <thread>  // NOLINT
 #include <vector>
 
-// Placeholder for internal header, do not modify.  // copybara:strip
+// Placeholder for internal header, do not modify.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"  // Gemma
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
-// copybara:end
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -278,9 +274,7 @@ int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 
-    // copybara:strip_begin
     // Placeholder for internal init, do not modify.
-    // copybara:strip_end
 
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);

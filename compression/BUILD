@@ -1,10 +1,12 @@
 # Weight compression, I/O and analysis
 
 package(
-    default_applicable_licenses = ["//third_party/gemma_cpp:license"],
+    default_applicable_licenses = [
+        "//:license",  # Placeholder comment, do not modify
+    ],
     default_visibility = [
         # Placeholder for internal visibility,
-        "//third_party/gemma_cpp:__subpackages__",
+        "//:__subpackages__",  # Placeholder, do not modify
     ],
 )
 

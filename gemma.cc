@@ -52,10 +52,7 @@
 #include <string>
 #include <vector>
 
-// copybara:strip_begin
-// Required because sentencepiece uses Google I/O which requires InitGoogle.
 // Placeholder for internal header, do not modify.
-// copybara:strip_end
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
