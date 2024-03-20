@@ -235,7 +235,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   gcpp::Gemma model(loader.tokenizer, loader.compressed_weights, loader.weights,
-                    loader.ModelType(), pool);
+                    loader.ModelType(), loader.ModelTraining(), pool);
 
   auto kv_cache = CreateKVCache(loader.ModelType());
 
