@@ -70,12 +70,13 @@ template <class TConfig>
 struct Layer {
   Layer() = default;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   static constexpr size_t kAttVecEinsumWSize = kHeads * kQKVDim * kModelDim;
-  // 3x for (query, key, value)
-  static constexpr size_t kQKVEinsumWSize = 3 * kHeads * kQKVDim * kModelDim;
+  static constexpr size_t kQKVEinsumWSize =
+      (kHeads + 2 * kKVHeads) * kQKVDim * kModelDim;
   // 2x for (gelu gating vector, gated vector)
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
 
@@ -313,28 +314,46 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
   static constexpr size_t kModelDim =
       gcpp::Activations<TConfig, kBatchSize>::kModelDim;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
+  const size_t batch_offset = batch_idx * kModelDim;
+
   pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
     // linear projections to QKV
-    const size_t head_offset =
-        3 * kQKVDim * kModelDim;  // 3x for QKV dimensions
+    constexpr const size_t head_offset =
+        kHeads == kKVHeads ? 3 * kQKVDim * kModelDim : kQKVDim * kModelDim;
     const size_t q_offset = head * head_offset + 0 * kQKVDim * kModelDim;
-    const size_t k_offset = head * head_offset + 1 * kQKVDim * kModelDim;
-    const size_t v_offset = head * head_offset + 2 * kQKVDim * kModelDim;
 
     float* HWY_RESTRICT q =
         activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
-
-    const size_t batch_offset = batch_idx * kModelDim;
 
     MatVecLoop<kQKVDim, kModelDim>(
         c_layer->c_qkv_einsum_w, q_offset,
         activations.pre_att_rms_out.data() + batch_offset, q);
 
-    const size_t kv_offset =
-        pos * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+    if constexpr (kHeads == kKVHeads) {
+      const size_t k_offset = head * head_offset + 1 * kQKVDim * kModelDim;
+      const size_t v_offset = head * head_offset + 2 * kQKVDim * kModelDim;
+      const size_t kv_offset =
+          pos * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+
+      TwoOfsMatVecLoop<kQKVDim, kModelDim>(
+          c_layer->c_qkv_einsum_w, k_offset, v_offset,
+          activations.pre_att_rms_out.data() + batch_offset,
+          kv_cache.key_cache.get() + kv_offset,
+          kv_cache.value_cache.get() + kv_offset);
+
+      Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
+    }
+  });
+
+  if constexpr (kHeads != kKVHeads) {
+    constexpr const size_t q_offset = kHeads * kQKVDim * kModelDim;
+    constexpr const size_t k_offset = q_offset + 0 * kQKVDim * kModelDim;
+    constexpr const size_t v_offset = q_offset + 1 * kQKVDim * kModelDim;
+    const size_t kv_offset = pos * kCachePosSize + layer * kCacheLayerSize;
 
     TwoOfsMatVecLoop<kQKVDim, kModelDim>(
         c_layer->c_qkv_einsum_w, k_offset, v_offset,
@@ -342,18 +361,24 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
         kv_cache.key_cache.get() + kv_offset,
         kv_cache.value_cache.get() + kv_offset);
 
+    Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
+  }
+
+  pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
     // Calculate scores
+    float* HWY_RESTRICT q =
+        activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * TConfig::kSeqLen +
                                    batch_idx * kHeads * kQKVDim;
 
     Rope(q, kQKVDim, pos);
-    Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
     MulByConst(kQueryScale, q, kQKVDim);
     // Compute Q dot K scores
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-      const size_t cache_offset =
-          pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+      const size_t cache_offset = kHeads == kKVHeads
+          ? pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim
+          : pos2 * kCachePosSize + layer * kCacheLayerSize;
       const float* HWY_RESTRICT k2 = kv_cache.key_cache.get() + cache_offset;
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2] = score;
@@ -365,8 +390,9 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
                                   batch_idx * kHeads * kQKVDim;
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-      const size_t cache_offset =
-          pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+      const size_t cache_offset = kHeads == kKVHeads
+          ? pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim
+          : pos2 * kCachePosSize + layer * kCacheLayerSize;
       float* HWY_RESTRICT v2 = kv_cache.value_cache.get() + cache_offset;
       MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }

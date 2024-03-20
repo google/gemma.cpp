@@ -54,7 +54,7 @@ struct ConfigGemma2B {
   static constexpr int kModelDim = 2048;
   static constexpr int kFFHiddenDim = 16 * 2048 / 2;  // = 16384
   static constexpr int kHeads = 8;
-  static constexpr int kKVHeads = 8;   // TODO(austinvhuang): add MQA support
+  static constexpr int kKVHeads = 1;
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
 };

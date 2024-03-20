@@ -72,26 +72,12 @@ parser.add_argument(
 args = parser.parse_args()
 
 
-def expand_qkv(qkv_proj: np.array) -> np.array:
-    """This won't be needed anymore when MQA is implemented"""
-    assert qkv_proj.shape == (2560, 2048)
-    qkv = qkv_proj.reshape((10, 256, 2048))
-
-    q_proj = qkv[:8].reshape((1,8,256,2048))
-    kv_proj = qkv[8:]
-    kv_proj = kv_proj[:, np.newaxis, :, :]
-    kv_proj = np.repeat(kv_proj, 8, axis=1)
-
-    qkv = np.concatenate([q_proj, kv_proj])
-    qkv = np.transpose(qkv, axes=[1,0,2,3])
-    return qkv
-
 TRANSFORMATIONS = {
   "2b":defaultdict(
     lambda: lambda x: x,
     {
         "embedder.weight": lambda x: x,
-        "self_attn.qkv_proj.weight": expand_qkv,
+        "self_attn.qkv_proj.weight": lambda x: x.reshape((10, 256, 2048)),
         "self_attn.o_proj.weight": lambda x: x.reshape((2048, 8, 256)).transpose([1,0,2]),
         "mlp.gate_proj.weight": lambda x: x[np.newaxis, :, :],
         "mlp.up_proj.weight": lambda x: x[np.newaxis, :, :],
@@ -115,7 +101,7 @@ VALIDATIONS = {
   "2b": {
     "embedder.weight": lambda x: x.shape == (256000, 2048),
     "model.norm.weight": lambda x: x.shape == (2048,),
-    "self_attn.qkv_proj.weight": lambda x: x.shape == (8, 3, 256, 2048),
+    "self_attn.qkv_proj.weight": lambda x: x.shape == (10, 256, 2048),
     "self_attn.o_proj.weight": lambda x: x.shape == (8, 2048, 256),
     "mlp.gate_proj.weight": lambda x: x.shape == (1, 16384, 2048),
     "mlp.up_proj.weight": lambda x: x.shape == (1, 16384, 2048),
