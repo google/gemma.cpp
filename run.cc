@@ -273,7 +273,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
 }  // namespace gcpp
 
-int main(int argc, char** argv) {
+int main(int argc, const char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 

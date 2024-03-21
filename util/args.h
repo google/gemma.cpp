@@ -106,7 +106,7 @@ class ArgsBase {
   // consider adding a hash-map to speed this up.
   class ParseVisitor {
    public:
-    ParseVisitor(int argc, char* argv[]) : argc_(argc), argv_(argv) {}
+    ParseVisitor(int argc, const char* argv[]) : argc_(argc), argv_(argv) {}
 
     template <typename T>
     void operator()(T& t, const char* name, const T& /*init*/,
@@ -167,7 +167,7 @@ class ArgsBase {
     }
 
     int argc_;
-    char** argv_;
+    const char** argv_;
   };  // ParseVisitor
 
   template <class Visitor>
@@ -192,19 +192,19 @@ class ArgsBase {
     ForEach(visitor);
   }
 
-  void Parse(int argc, char* argv[]) {
+  void Parse(int argc, const char* argv[]) {
     ParseVisitor visitor(argc, argv);
     ForEach(visitor);
   }
 
   // For convenience, enables single-line constructor.
-  void InitAndParse(int argc, char* argv[]) {
+  void InitAndParse(int argc, const char* argv[]) {
     Init();
     Parse(argc, argv);
   }
 };
 
-static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, char* argv[]) {
+static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, const char* argv[]) {
   // TODO(austinvhuang): handle case insensitivity
   if (argc == 1) {
     // no arguments - print help
