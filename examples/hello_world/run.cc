@@ -22,7 +22,7 @@
 #include "util/args.h"
 // copybara:end
 // copybara:import_next_line:gemma_cpp
-#include "util/app.h" // LoaderArgs
+#include "util/app.h"  // LoaderArgs
 // copybara:end
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -37,8 +37,8 @@ std::vector<int> tokenize(
   return tokens;
 }
 
-int main(int argc, const char** argv) {
-  gcpp::LoaderArgs loader(argc, argv);
+int main(int argc, char** argv) {
+  gcpp::LoaderArgs loader(argc, (const char**)argv);
 
   // Rough heuristic for the number of threads to use
   size_t num_threads = static_cast<size_t>(std::clamp(
