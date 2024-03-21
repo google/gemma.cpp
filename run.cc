@@ -22,7 +22,7 @@
 #include <thread>  // NOLINT
 #include <vector>
 
-#include "base/init_google.h"
+// Placeholder for internal header, do not modify.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
 // copybara:import_next_line:gemma_cpp
@@ -274,11 +274,7 @@ int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 
-    int argc_dummy = 1;
-    // Required because sentencepiece uses Google I/O which requires InitGoogle.
-    // argc_dummy = 1 avoids sentencepiece absl flags attempting to parse
-    // arguments
-    InitGoogle("usage", &argc_dummy, &argv, false);
+    // Placeholder for internal init, do not modify.
 
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);

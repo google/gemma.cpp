@@ -52,7 +52,7 @@
 #include <string>
 #include <vector>
 
-#include "base/init_google.h"
+// Placeholder for internal header, do not modify.
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"

@@ -5,7 +5,7 @@ package(
         "//:license",  # Placeholder comment, do not modify
     ],
     default_visibility = [
-        "//learning/gemini/prod/contrib/gemini_cpp:__subpackages__",
+        # Placeholder for internal visibility,
         "//:__subpackages__",  # Placeholder, do not modify
     ],
 )
