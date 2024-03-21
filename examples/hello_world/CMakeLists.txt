@@ -36,7 +36,7 @@ if (BUILD_MODE STREQUAL "local")
   # Relative path to gemma.cpp from examples/hello_world/build/
   FetchContent_Declare(gemma SOURCE_DIR ../../..) 
 else()
-  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG a9aa63fd2ea6b786ed0706d619588bfe2d43370e)
+  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 73db33580b90f55042285b99139056c632f159bd)
 endif()
 FetchContent_MakeAvailable(gemma)
 

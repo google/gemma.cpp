@@ -37,7 +37,7 @@ std::vector<int> tokenize(
   return tokens;
 }
 
-int main(int argc, char** argv) {
+int main(int argc, const char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
 
   // Rough heuristic for the number of threads to use
