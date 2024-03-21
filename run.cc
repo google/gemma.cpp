@@ -66,7 +66,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << std::thread::hardware_concurrency() << std::endl
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)" << "\n"
+              << hwy::VectorBytes() * 8 << " bits)"
+              << "\n"
               << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
               << gcpp::TypeName(gcpp::WeightT()) << "\n"
@@ -273,15 +274,15 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
 }  // namespace gcpp
 
-int main(int argc, const char** argv) {
+int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 
-    gcpp::LoaderArgs loader(argc, argv);
-    gcpp::InferenceArgs inference(argc, argv);
-    gcpp::AppArgs app(argc, argv);
+    gcpp::LoaderArgs loader(argc, (const char**)argv);
+    gcpp::InferenceArgs inference(argc, (const char**)argv);
+    gcpp::AppArgs app(argc, (const char**)argv);
 
-    if (gcpp::HasHelp(argc, argv)) {
+    if (gcpp::HasHelp(argc, (const char**)argv)) {
       ShowHelp(loader, inference, app);
       return 0;
     }
