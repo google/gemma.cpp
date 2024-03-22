@@ -563,9 +563,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   size_t pos_offset = 0;  // offset relative to pos
   const double prefill_start = hwy::platform::Now();
 
+  bool keep_on = true;
   // Prefill stops before prompt.size() - 1 since the last prompt token is the
   // first input token for generation.
-  while (pos_offset < prompt.size() - 1) {
+  while (pos_offset < prompt.size() - 1 && keep_on) {
     const size_t end_offset =
         std::min(kPrefillBatchSize, prompt.size() - 1 - pos_offset);
     HWY_DASSERT(end_offset < prompt.size());
@@ -574,7 +575,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
                                         c_weights, prefill_activations,
                                         kv_cache, pool, inner_pool);
     for (size_t idx = 0; idx < end_offset; ++idx) {
-      stream_token(batch_tokens[idx], 0.0);
+      keep_on = stream_token(batch_tokens[idx], 0.0);
+      if(!keep_on) {
+        break;
+      }
     }
     pos += end_offset;
     pos_offset += end_offset;
@@ -587,6 +591,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     const double prefill_tok_sec =
         static_cast<double>(pos_offset) / (prefill_end - prefill_start);
     std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]";
+  }
+
+  if(!keep_on) {
+    return;
   }
 
   const double gen_start = hwy::platform::Now();
