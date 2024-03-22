@@ -42,6 +42,10 @@
 #include "hwy/contrib/sort/vqsort-inl.h"
 #include "hwy/highway.h"
 
+#ifndef HWY_IF_CONSTEXPR
+#define HWY_IF_CONSTEXPR if
+#endif
+
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
@@ -124,7 +128,7 @@ class NuqClustering {
     }
 
    private:
-    // Float has enough precision for our relatively small kGroupSize (128).
+    // Float has enough precision for our relatively small kGroupSize (256).
     float cumsum_[kGroupSize + 1];
     float cumsum2_[kGroupSize + 1];
     float inv_len_[kGroupSize + 1];
@@ -168,8 +172,8 @@ class NuqClustering {
   // `centers`; prior centers are zero-initialized.
   //
   // O(kClusters * kGroupSize * kGroupSize), but the constant factors are so low
-  // that this is about 10 times as fast as the O(kClusters * kGroupSize) SMAWK
-  // as implemented in FAISS, for our kGroupSize <= 128.
+  // that this is about 5 times as fast as the O(kClusters * kGroupSize) SMAWK
+  // as implemented in FAISS, for our kGroupSize of 256.
   template <class DF>
   static HWY_NOINLINE size_t ClusterExactL2(DF df, const float* x,
                                             ClusterBuf& buf,
@@ -228,7 +232,7 @@ class NuqClustering {
       // Center = mean, O(1) thanks to cumulative sums.
       const float sum = cc.SumOfSorted(start, last);
       const int size = static_cast<int>(last) - static_cast<int>(start) + 1;
-      HWY_DASSERT(0 < size && size <= kGroupSize);
+      HWY_DASSERT(0 < size && size <= static_cast<int>(kGroupSize));
       centers[k] = sum / static_cast<float>(size);
 
       // We know the range inside sorted_and_i[]; translate to original indices,
@@ -427,7 +431,7 @@ class NuqCodec {
     // instead of TableLookupBytes, which requires extra interleaving of lo/hi.
     HWY_DASSERT(hn::Lanes(du) >= 8);
 
-    if (NumTables(du) == 2) {
+    HWY_IF_CONSTEXPR(NumTables(du) == 2) {
       // Reduce cap for second half to avoid loading past the end of the table.
       const hn::CappedTag<hwy::bfloat16_t, kClusters / 2> d_table2;
       *tbl1 = hn::ResizeBitCast(du, hn::LoadU(d_table2, table + kClusters / 2));
@@ -449,11 +453,12 @@ class NuqCodec {
     const auto indices0 = hn::IndicesFromVec(du, idx0);
     const auto indices1 = hn::IndicesFromVec(du, idx1);
 
-    if (NumTables(du) == 1) {
+    HWY_IF_CONSTEXPR(NumTables(du) == 1) {
       (void)tbl1;
       c0 = hn::TableLookupLanes(tbl0, indices0);
       c1 = hn::TableLookupLanes(tbl0, indices1);
-    } else {
+    }
+    HWY_IF_CONSTEXPR(NumTables(du) == 2) {  // `else` is poorly formatted.
       c0 = hn::TwoTablesLookupLanes(du, tbl0, tbl1, indices0);
       c1 = hn::TwoTablesLookupLanes(du, tbl0, tbl1, indices1);
     }
@@ -521,8 +526,8 @@ class NuqCodec {
   // Decodes `num` values from the stream `in`, starting at the offset `in_ofs`
   // (in units of values), to bf16 in `out`. `in_capacity`, `in_ofs` and `num`
   // must all be multiples of `kGroupSize`.
-  template <class DF, HWY_IF_BF16_D(DF)>
-  static HWY_INLINE void Dec(DF dbf, const size_t in_capacity,
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void Dec(DBF dbf, const size_t in_capacity,
                              const NuqStream* const in, const size_t in_ofs,
                              hwy::bfloat16_t* const out, const size_t num) {
     const hn::RebindToUnsigned<decltype(dbf)> d16;

@@ -24,17 +24,33 @@ cc_library(
     ],
 )
 
+# Deprecated because it is also implemented in Highway; will be removed once
+# that Highway version is sufficiently widespread.
 cc_library(
     name = "stats",
-    srcs = [
-        "stats.cc",
-    ],
-    hdrs = [
-        "distortion.h",
-        "stats.h",
-    ],
+    srcs = ["stats.cc"],
+    hdrs = ["stats.h"],
     deps = [
         "@hwy//:hwy",
+    ],
+)
+
+cc_library(
+    name = "distortion",
+    hdrs = ["distortion.h"],
+    deps = [
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
+    name = "test_util",
+    hdrs = ["test_util.h"],
+    deps = [
+        ":distortion",
+        ":stats",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
     ],
 )
 
@@ -62,12 +78,11 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":sfp",
-        ":stats",
+        ":test_util",
         "@googletest//:gtest_main",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",
-        "@hwy//:thread_pool",
     ],
 )
 
@@ -98,7 +113,7 @@ cc_test(
     deps = [
         ":nuq",
         ":sfp",
-        ":stats",
+        ":test_util",
         "@googletest//:gtest_main",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
@@ -118,6 +133,7 @@ cc_library(
     ],
     deps = [
         ":blob_store",
+        ":distortion",
         ":nuq",
         ":sfp",
         ":stats",
@@ -134,6 +150,7 @@ cc_library(
         "analyze.h",
     ],
     deps = [
+        ":distortion",
         ":nuq",
         ":sfp",
         ":stats",
