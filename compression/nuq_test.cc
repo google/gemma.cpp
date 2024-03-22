@@ -452,6 +452,9 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotBF16);
+#ifdef HWY_AFTER_TEST
+HWY_AFTER_TEST();
+#endif
 }  // namespace gcpp
 
 #endif

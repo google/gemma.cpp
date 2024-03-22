@@ -463,6 +463,9 @@ HWY_EXPORT_AND_TEST_P(SfpTest, TestAllEncDec);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllOrder);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotF32);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotBF16);
+#ifdef HWY_AFTER_TEST
+HWY_AFTER_TEST();
+#endif
 }  // namespace gcpp
 
 #endif
