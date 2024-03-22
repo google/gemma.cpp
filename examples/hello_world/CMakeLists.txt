@@ -14,7 +14,10 @@
 
 cmake_minimum_required(VERSION 3.11)
 project(hello_world)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+#set(CMAKE_CXX_FLAGS "-Wall -Wextra -fPIC -Wno-unused-parameter")
 
 include(FetchContent)
 FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG da250571a45826b21eebbddc1e50d0c1137dee5f)
