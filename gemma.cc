@@ -511,7 +511,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
       *reinterpret_cast<CompressedWeights<TConfig>*>(
           gemma.compressed_weights.get());
   KVCache& kv_cache = gemma.kv_cache;
-  int token = 0;
+  int token;
 
   // pos indexes the KV cache. In the first turn of a chat, pos = 0.
   //
@@ -527,9 +527,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
   size_t pos_offset = 0;  // offset relative to pos
   const double prefill_start = hwy::platform::Now();
 
+  bool keep_on = true;
   // Prefill stops before prompt.size() - 1 since the last prompt token is the
   // first input token for generation.
-  while (pos_offset < prompt.size() - 1 && token != EOS_ID) {
+  while (pos_offset < prompt.size() - 1 && keep_on) {
     const size_t end_offset =
         std::min(kPrefillBatchSize, prompt.size() - 1 - pos_offset);
     HWY_DASSERT(end_offset < prompt.size());
@@ -538,8 +539,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
                                         c_weights, prefill_activations,
                                         kv_cache, pool, inner_pool);
     for (size_t idx = 0; idx < end_offset; ++idx) {
-      if (!stream_token(batch_tokens[idx], 0.0)) {
-        token = EOS_ID;
+      keep_on = stream_token(batch_tokens[idx], 0.0);
+      if(!keep_on) {
+        break;
       }
     }
     pos += end_offset;
@@ -552,6 +554,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, const InferenceArgs& args,
     const double prefill_end = hwy::platform::Now();
     const double prefill_tok_sec = static_cast<double>(pos_offset) / (prefill_end - prefill_start);
     std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]\n";
+  }
+
+  if(!keep_on) {
+    return;
   }
 
   const double gen_start = hwy::platform::Now();
