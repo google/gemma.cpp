@@ -38,7 +38,7 @@ std::vector<int> tokenize(
 }
 
 int main(int argc, char** argv) {
-  gcpp::LoaderArgs loader(argc, (const char**)argv);
+  gcpp::LoaderArgs loader(argc, argv);
 
   // Rough heuristic for the number of threads to use
   size_t num_threads = static_cast<size_t>(std::clamp(

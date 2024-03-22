@@ -278,11 +278,11 @@ int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 
-    gcpp::LoaderArgs loader(argc, (const char**)argv);
-    gcpp::InferenceArgs inference(argc, (const char**)argv);
-    gcpp::AppArgs app(argc, (const char**)argv);
+    gcpp::LoaderArgs loader(argc, argv);
+    gcpp::InferenceArgs inference(argc, argv);
+    gcpp::AppArgs app(argc, argv);
 
-    if (gcpp::HasHelp(argc, (const char**)argv)) {
+    if (gcpp::HasHelp(argc, argv)) {
       ShowHelp(loader, inference, app);
       return 0;
     }

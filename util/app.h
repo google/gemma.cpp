@@ -95,7 +95,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 
  public:
-  AppArgs(int argc, const char* argv[]) {
+  AppArgs(int argc, char* argv[]) {
     InitAndParse(argc, argv);
     ChooseNumThreads();
   }
@@ -128,7 +128,7 @@ class AppArgs : public ArgsBase<AppArgs> {
 };
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, const char* argv[]) { InitAndParse(argc, argv); }
+  LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
   static std::string ToLower(const std::string& text) {
     std::string result = text;
@@ -205,7 +205,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
-  InferenceArgs(int argc, const char* argv[]) { InitAndParse(argc, argv); }
+  InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
   size_t max_tokens;
   size_t max_generated_tokens;
