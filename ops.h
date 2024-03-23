@@ -634,6 +634,7 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   Foreach(d, x, mask_pos, vmin,
           [&vmax](const auto d, const auto value)
               HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
   auto sum = hn::Zero(d);
@@ -703,7 +704,7 @@ create_distribution(std::array<float, k>& top_k, float temperature) {
 
   hn::Transform(d, top_k.data(), top_k.size(),
                 [&temperature_inv](D d, hn::Vec<D> v) HWY_ATTR {
-                  return hn::Mul(hn::Exp(d, hn::Log(d, v)), temperature_inv);
+                  return hn::Exp(d, hn::Mul(hn::Log(d, v), temperature_inv));
                 });
 
   return std::discrete_distribution<int>(std::begin(top_k), std::end(top_k));

@@ -83,3 +83,35 @@ target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
 target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+
+set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
+if (GEMMA_ENABLE_TESTS)
+
+set(GEMMA_TEST_FILES
+  ops_test.cc
+)
+
+include(FetchContent)
+FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+include(GoogleTest)
+
+foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
+  # The TESTNAME is the name without the extension or directory.
+  get_filename_component(TESTNAME ${TESTFILE} NAME_WE)
+  add_executable(${TESTNAME} ${TESTFILE})
+  # Test all targets, not just the best/baseline. This changes the default
+  # policy to all-attainable; note that setting -DHWY_COMPILE_* directly can
+  # cause compile errors because only one may be set, and other CMakeLists.txt
+  # that include us may set them.
+  target_compile_options(${TESTNAME} PRIVATE -DHWY_IS_TEST=1)
+
+  target_link_libraries(${TESTNAME} PRIVATE libgemma GTest::gtest_main hwy hwy_contrib hwy_test)
+
+  gtest_discover_tests(${TESTNAME})
+endforeach ()
+endif()  # GEMMA_ENABLE_TESTS
