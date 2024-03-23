@@ -16,29 +16,20 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_H_
 
-#include <algorithm>
-#include <cctype>
 #include <functional>
 #include <memory>
 #include <random>
-#include <string>
 #include <vector>
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"  // SfpStream/NuqStream
-// copybara:end
 // copybara:import_next_line:gemma_cpp
-#include "configs.h"  // kSeqLen
-// copybara:end
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // ArgsBase
-// copybara:end
+#include "util/args.h"             // Path
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
-// copybara:end
 
 namespace gcpp {
 
@@ -75,9 +66,8 @@ struct GemmaInterface;
 
 struct Gemma {
   Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-        const Path& weights_path, Model model_type, hwy::ThreadPool& pool);
-  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-        Model model_type, hwy::ThreadPool& pool);
+        const Path& weights_path, Model model_type, ModelTraining training,
+        hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
   const sentencepiece::SentencePieceProcessor* Tokenizer() const;
   std::unique_ptr<GemmaInterface> impl_;

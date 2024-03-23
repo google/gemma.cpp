@@ -27,6 +27,7 @@
 
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/timer.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -35,15 +36,14 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Other headers that include Highway must come after foreach_target.h
 // copybara:import_next_line:gemma_cpp
-#include "compression/distortion.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "compression/nuq.h"
+// copybara:import_next_line:gemma_cpp
+#include "compression/test_util.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"
-#include "hwy/timer.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -181,12 +181,14 @@ struct TestNormal {
     auto in = hwy::AllocateAligned<float>(kGroupSize);
     HWY_ASSERT(in);
 
-    std::mt19937 rng(123);
-    std::normal_distribution<float> dist{0.001f, 0.3f};
+    hwy::RandomState rng;
+    Stats in_stats;
     for (size_t i = 0; i < kGroupSize; ++i) {
-      in[i] = dist(rng);
+      const double r = RandomGaussian(rng);
+      in_stats.Notify(r);
+      in[i] = hwy::ConvertScalarTo<T>(r);
     }
-    std::shuffle(in.get(), in.get() + kGroupSize, rng);
+    VerifyGaussian(in_stats);
 
     ClusterBuf buf;
     float centers[kClusters];
@@ -212,9 +214,9 @@ struct TestNormal {
     const float snr = stats.GeomeanValueDivL1();
     fprintf(stderr, "p-norm %.3E snr %.2f @%zu = %.4E\n", pnorm, snr,
             stats.MaxIndex(), stats.MaxL1());
-    static_assert(kGroupSize == 128 || kGroupSize == 256, "Update expected");
-    const float expected_pnorm = kGroupSize == 128 ? 3E-2f : 3.4E-2f;
-    const float expected_snr = kGroupSize == 128 ? 17.4f : 13.1f;
+    static_assert(kGroupSize == 256, "Update expected");
+    const float expected_pnorm = 3.68E-2f;
+    const float expected_snr = 12.7f;
     HWY_ASSERT(expected_pnorm <= pnorm && pnorm < 1.02f * expected_pnorm);
     HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
   }
@@ -345,21 +347,27 @@ struct TestDot {
     auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
     HWY_ASSERT(in && dec && vec && nuq);
 
-    std::mt19937 rng(123);
-    std::normal_distribution<float> dist{0.001f, 0.3f};
+    // Generate inputs and verify their distribution.
+    hwy::RandomState rng;
+    Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
-      in[i] = dist(rng);
-      vec[i] = hwy::ConvertScalarTo<T>(dist(rng));
+      const float r = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(r);
+      in[i] = r;
     }
-    // This changes the correlation between in and vec, which considerably
-    // affects the error of the result.
-    std::shuffle(in.get(), in.get() + num, rng);
+    for (size_t i = 0; i < num; ++i) {
+      const float r = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(r);
+      vec[i] = hwy::ConvertScalarTo<T>(r);
+    }
+    VerifyGaussian(in_stats);
 
     ClusterBuf buf;
     const size_t unused_clusters =
         NuqCodec::Enc(df, in.get(), num, buf, num, nuq.get(), 0);
     HWY_ASSERT(unused_clusters == 0);
 
+    // Compute dot product without decompression.
     double actual = 0.0;
     double elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 20; ++rep) {
@@ -380,24 +388,39 @@ struct TestDot {
     fprintf(stderr, "Vec %zu Dec %.2f MB/s\n", Lanes(d) * sizeof(T),
             num * sizeof(in[0]) * 1E-6 / elapsed);
 
-    double expected = 0.0;   // using original input
-    double expected2 = 0.0;  // using decoded NUQ
+    // Exact and decompressed dot products for comparison.
+    double exact = 0.0;     // using original input
+    double expected = 0.0;  // using decoded NUQ
+    DistortionStats dec_stats;
+    Stats ratios;
     for (size_t i = 0; i < num; ++i) {
-      expected += in[i] * hwy::ConvertScalarTo<double>(vec[i]);
-      expected2 += dec[i] * hwy::ConvertScalarTo<double>(vec[i]);
+      dec_stats.Notify(in[i], dec[i]);
+      const float v1 = hwy::ConvertScalarTo<float>(vec[i]);
+      exact += in[i] * v1;
+      expected += dec[i] * v1;
+      if (expected != 0.0f) {
+        ratios.Notify(exact / expected);
+      }
     }
-    const double l1 = hwy::ScalarAbs(expected - actual);
-    const double snr = 1.0 + hwy::ScalarAbs(expected) / l1;
-    fprintf(stderr, "expected %.3f e2 %.4f actual %.4f l1 %E snr %.2f\n",
-            expected, expected2, actual, l1, snr);
-    HWY_ASSERT(hwy::ScalarAbs(expected2 - actual) < 1E-4);
-    static_assert(kGroupSize == 128 || kGroupSize == 256, "Update expected");
-    const double expected_l1 = kGroupSize == 128 ? 7.3E-2 : 4.34E-2;
-    const double expected_snr = kGroupSize == 128 ? 9.7f
-                                : sizeof(T) == 2  ? 14.5f
-                                                  : 14.9f;
-    HWY_ASSERT(expected_l1 <= l1 && l1 < 1.02f * expected_l1);
-    HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
+    const double dec_snr = dec_stats.GeomeanValueDivL1();
+    const double dot_snr = 1.0 / hwy::ScalarAbs(1.0 - ratios.GeometricMean());
+    // exact and actual fluctuate due to the combination of NUQ imprecision,
+    // and whether vec[i] is negative or positive, so this is quite loose.
+    const float final_ratio = HWY_MIN(exact / actual, actual / exact);
+    fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
+    fprintf(stderr,
+            "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
+            "dot_snr %.2f\n",
+            exact, expected, actual, final_ratio, dec_snr, dot_snr);
+    // Final values are not too far apart.
+    HWY_ASSERT(0.88f <= final_ratio && final_ratio <= 1.0f);
+    // Decompressed and uncompressed dot should match exactly.
+    HWY_ASSERT(hwy::ScalarAbs(expected - actual) < 1E-4f);
+    // dec[] is close to in[], but we already check that in TestStream.
+    HWY_ASSERT(dec_snr >= 13.0);
+    // Geomean of ratios for each i is an approximation of the actual SNR.
+    HWY_ASSERT(dot_snr >= (sizeof(T) == 2 ? 17.0 : 14.0));
+    static_assert(kGroupSize == 256, "Update expected*");
   }
 };
 
@@ -429,6 +452,9 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotBF16);
+#ifdef HWY_AFTER_TEST
+HWY_AFTER_TEST();
+#endif
 }  // namespace gcpp
 
 #endif

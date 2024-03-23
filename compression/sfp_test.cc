@@ -25,12 +25,11 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <algorithm>
-#include <random>
 #include <set>
 
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/timer.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -39,13 +38,12 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Any highway.h must come after foreach_target.h
 // copybara:import_next_line:gemma_cpp
-#include "compression/distortion.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp-inl.h"
+// copybara:import_next_line:gemma_cpp
+#include "compression/test_util.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"
-#include "hwy/timer.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -358,25 +356,31 @@ struct TestDot {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::Repartition<float, D> df;
-    const size_t num = 384;
+    const size_t num = 1024;  // not too many for GeometricMean overflow.
     auto in = hwy::AllocateAligned<T>(num);
     auto dec = hwy::AllocateAligned<T>(num);
     auto vec = hwy::AllocateAligned<T>(num);
     auto sfp = hwy::AllocateAligned<SfpStream>(num);
     HWY_ASSERT(in && dec && vec && sfp);
 
-    std::mt19937 rng(123);
-    std::normal_distribution<float> dist{0.001f, 0.3f};
+    // Generate inputs and verify their distribution.
+    hwy::RandomState rng;
+    Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
-      in[i] = hwy::ConvertScalarTo<T>(dist(rng));
-      vec[i] = hwy::ConvertScalarTo<T>(dist(rng));
+      const float r = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(r);
+      in[i] = hwy::ConvertScalarTo<T>(r);
     }
-    // This changes the correlation between in and vec, which considerably
-    // affects the error of the result.
-    std::shuffle(in.get(), in.get() + num, rng);
+    for (size_t i = 0; i < num; ++i) {
+      const float r = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(r);
+      vec[i] = hwy::ConvertScalarTo<T>(r);
+    }
+    VerifyGaussian(in_stats);
 
     SfpCodec::Enc(d, in.get(), num, sfp.get());
 
+    // Compute dot product without decompression.
     double actual = 0.0;
     double elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 200; ++rep) {
@@ -393,26 +397,44 @@ struct TestDot {
     }
 
     SfpCodec::Dec(d, sfp.get(), num, dec.get());
-    fprintf(stderr, "Vec %zu Dot %.2f MB/s\n", Lanes(d) * sizeof(T),
-            num * sizeof(T) * 1E-6 / elapsed);
+    fprintf(stderr, "Vec %zu Dot %zu-bit %.2f MB/s\n", Lanes(d) * sizeof(T),
+            sizeof(T) * 8, num * sizeof(T) * 1E-6 / elapsed);
 
-    double expected = 0.0;   // using original input
-    double expected2 = 0.0;  // using decoded SFP
+    // Exact and decompressed dot products for comparison.
+    float exact = 0.0f;     // using original input
+    float expected = 0.0f;  // using decoded SFP
+    DistortionStats dec_stats;
+    Stats ratios;
     for (size_t i = 0; i < num; ++i) {
-      expected += hwy::ConvertScalarTo<double>(in[i]) *
-                  hwy::ConvertScalarTo<double>(vec[i]);
-      expected2 += hwy::ConvertScalarTo<double>(dec[i]) *
-                   hwy::ConvertScalarTo<double>(vec[i]);
+      const float in1 = hwy::ConvertScalarTo<float>(in[i]);
+      const float dec1 = hwy::ConvertScalarTo<float>(dec[i]);
+      const float vec1 = hwy::ConvertScalarTo<float>(vec[i]);
+      dec_stats.Notify(in1, dec1);
+
+      exact += in1 * vec1;
+      expected += dec1 * vec1;
+      if (expected != 0.0f) {
+        ratios.Notify(exact / expected);
+      }
     }
-    const double l1 = hwy::ScalarAbs(expected - actual);
-    const double snr = 1.0 + hwy::ScalarAbs(expected) / l1;
-    fprintf(stderr, "expected %.3f e2 %.4f actual %.4f l1 %E snr %.2f\n",
-            expected, expected2, actual, l1, snr);
-    HWY_ASSERT(hwy::ScalarAbs(expected2 - actual) < 1E-4);
-    const double expected_l1 = sizeof(T) == 2 ? 1.52E-2 : 1.15E-2;
-    const double expected_snr = sizeof(T) == 2 ? 80.1f : 104.9f;
-    HWY_ASSERT(expected_l1 <= l1 && l1 < 1.02f * expected_l1);
-    HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
+    const double dec_snr = dec_stats.GeomeanValueDivL1();
+    const double dot_snr = 1.0 / hwy::ScalarAbs(1.0 - ratios.GeometricMean());
+    // exact and actual fluctuate due to the combination of SFP imprecision,
+    // and whether vec[i] is negative or positive, so this is quite loose.
+    const float final_ratio = HWY_MIN(exact / actual, actual / exact);
+    fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
+    fprintf(stderr,
+            "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
+            "dot_snr %.2f\n",
+            exact, expected, actual, final_ratio, dec_snr, dot_snr);
+    // Final values are not too far apart.
+    HWY_ASSERT(0.87f <= final_ratio && final_ratio <= 1.0f);
+    // Decompressed and uncompressed dot should match exactly.
+    HWY_ASSERT(hwy::ScalarAbs(expected - actual) < 1E-4f);
+    // dec[] is close to in[], but we already check that in TestEncDec.
+    HWY_ASSERT(dec_snr >= 50.0);
+    // Geomean of ratios for each i should be very close to one.
+    HWY_ASSERT(dot_snr >= (sizeof(T) == 2 ? 70.0 : 1000.0));
   }
 };
 
@@ -441,6 +463,9 @@ HWY_EXPORT_AND_TEST_P(SfpTest, TestAllEncDec);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllOrder);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotF32);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotBF16);
+#ifdef HWY_AFTER_TEST
+HWY_AFTER_TEST();
+#endif
 }  // namespace gcpp
 
 #endif

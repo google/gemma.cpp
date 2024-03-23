@@ -22,18 +22,15 @@
 #include <thread>  // NOLINT
 #include <vector>
 
+// Placeholder for internal header, do not modify.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"  // Gemma
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"
-// copybara:end
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
-// copybara:end
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -234,8 +231,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
              [](uint64_t /*task*/, size_t thread) { PinThreadToCore(thread); });
   }
 
-  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights,
-                    loader.ModelType(), pool);
+  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights, loader.weights,
+                    loader.ModelType(), loader.ModelTraining(), pool);
 
   auto kv_cache = CreateKVCache(loader.ModelType());
 
@@ -276,6 +273,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
+
+    // Placeholder for internal init, do not modify.
 
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);

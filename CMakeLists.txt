@@ -40,6 +40,7 @@ set(SOURCES
   compression/nuq-inl.h
   compression/sfp.h
   compression/sfp-inl.h
+  compression/test_util.h
   util/app.h
   util/args.h
   )

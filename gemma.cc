@@ -25,6 +25,8 @@
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
@@ -50,6 +52,8 @@
 #include <string>
 #include <vector>
 
+// Placeholder for internal header, do not modify.
+
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
 // copybara:import_next_line:gemma_cpp
@@ -68,12 +72,13 @@ template <class TConfig>
 struct Layer {
   Layer() = default;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   static constexpr size_t kAttVecEinsumWSize = kHeads * kQKVDim * kModelDim;
-  // 3x for (query, key, value)
-  static constexpr size_t kQKVEinsumWSize = 3 * kHeads * kQKVDim * kModelDim;
+  static constexpr size_t kQKVEinsumWSize =
+      (kHeads + 2 * kKVHeads) * kQKVDim * kModelDim;
   // 2x for (gelu gating vector, gated vector)
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
 
@@ -311,47 +316,47 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
   static constexpr size_t kModelDim =
       gcpp::Activations<TConfig, kBatchSize>::kModelDim;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-  pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
-    // linear projections to QKV
-    const size_t head_offset =
-        3 * kQKVDim * kModelDim;  // 3x for QKV dimensions
-    const size_t q_offset = head * head_offset + 0 * kQKVDim * kModelDim;
-    const size_t k_offset = head * head_offset + 1 * kQKVDim * kModelDim;
-    const size_t v_offset = head * head_offset + 2 * kQKVDim * kModelDim;
+  const size_t batch_offset = batch_idx * kModelDim;
 
+  auto ProjQ = [&](uint64_t head, size_t head_offset) HWY_ATTR {
     float* HWY_RESTRICT q =
         activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
 
-    const size_t batch_offset = batch_idx * kModelDim;
-
     MatVecLoop<kQKVDim, kModelDim>(
-        c_layer->c_qkv_einsum_w, q_offset,
+        c_layer->c_qkv_einsum_w, head_offset + 0 * kQKVDim * kModelDim,
         activations.pre_att_rms_out.data() + batch_offset, q);
+  };
 
-    const size_t kv_offset =
-        pos * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+  auto ProjKV =
+      [&](size_t k_offset, size_t v_offset, size_t kv_offset) HWY_ATTR {
+        TwoOfsMatVecLoop<kQKVDim, kModelDim>(
+            c_layer->c_qkv_einsum_w, k_offset, v_offset,
+            activations.pre_att_rms_out.data() + batch_offset,
+            kv_cache.key_cache.get() + kv_offset,
+            kv_cache.value_cache.get() + kv_offset);
 
-    TwoOfsMatVecLoop<kQKVDim, kModelDim>(
-        c_layer->c_qkv_einsum_w, k_offset, v_offset,
-        activations.pre_att_rms_out.data() + batch_offset,
-        kv_cache.key_cache.get() + kv_offset,
-        kv_cache.value_cache.get() + kv_offset);
+        Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
+      };
 
+  auto Attn = [&](uint64_t head, size_t head_offset) HWY_ATTR {
     // Calculate scores
+    float* HWY_RESTRICT q =
+        activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * TConfig::kSeqLen +
                                    batch_idx * kHeads * kQKVDim;
 
     Rope(q, kQKVDim, pos);
-    Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
     MulByConst(kQueryScale, q, kQKVDim);
+
     // Compute Q dot K scores
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       const size_t cache_offset =
-          pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+          pos2 * kCachePosSize + layer * kCacheLayerSize + head_offset;
       const float* HWY_RESTRICT k2 = kv_cache.key_cache.get() + cache_offset;
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2] = score;
@@ -364,7 +369,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       const size_t cache_offset =
-          pos2 * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+          pos2 * kCachePosSize + layer * kCacheLayerSize + head_offset;
       float* HWY_RESTRICT v2 = kv_cache.value_cache.get() + cache_offset;
       MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }
@@ -377,7 +382,41 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
     MatVecLoop<kModelDim, kQKVDim>(c_layer->c_attn_vec_einsum_w,
                                    head * kModelDim * kQKVDim, att_out,
                                    head_out);
-  });
+  };
+
+  if constexpr (kHeads == kKVHeads) {
+    // Multi-Head Attention
+    pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
+      const size_t head_offset = head * 3 * kQKVDim * kModelDim;
+
+      ProjQ(head, head_offset);
+
+      const size_t k_offset = head_offset + 1 * kQKVDim * kModelDim;
+      const size_t v_offset = head_offset + 2 * kQKVDim * kModelDim;
+      const size_t kv_offset =
+          pos * kCachePosSize + layer * kCacheLayerSize + head * kQKVDim;
+
+      ProjKV(k_offset, v_offset, kv_offset);
+
+      Attn(head, head * kQKVDim);
+    });
+  } else {
+    // Multi-Query Attention
+    pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
+      ProjQ(head, head * kQKVDim * kModelDim);
+    });
+
+    constexpr const size_t q_offset = kHeads * kQKVDim * kModelDim;
+    constexpr const size_t k_offset = q_offset + 0 * kQKVDim * kModelDim;
+    constexpr const size_t v_offset = q_offset + 1 * kQKVDim * kModelDim;
+    const size_t kv_offset = pos * kCachePosSize + layer * kCacheLayerSize;
+
+    ProjKV(k_offset, v_offset, kv_offset);
+
+    pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
+      Attn(head, 0);
+    });
+  }
 
   // accumulate output across all heads into att_post2. head 0 already wrote
   // directly to att_post2.
@@ -813,8 +852,9 @@ void GemmaImpl<ConfigGemma7B>::Generate(
 }
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             const Path& weights_path, Model model_type,
-             hwy::ThreadPool& pool) {
+             const Path& weights_path, Model model_type, ModelTraining training,
+             hwy::ThreadPool& pool)
+    : model_training(training) {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
   {
     PROFILER_ZONE("Startup.tokenizer");
@@ -838,11 +878,6 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
   }
 }
-
-Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             Model model_type, hwy::ThreadPool& pool)
-    : Gemma(tokenizer_path, compressed_weights_path, Path{""}, model_type,
-            pool) {}
 
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 

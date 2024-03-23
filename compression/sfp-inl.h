@@ -449,6 +449,18 @@ class SfpCodec {
     return Enc2U(d16, w0, w1);
   }
 
+  // Truncates two f32 to bf16, in lane order, without rounding (see Enc4F).
+  template <class DBF, class DF = hn::RepartitionToWide<DBF>>
+  static HWY_INLINE hn::Vec<DBF> Truncate2To(DBF dbf, hn::Vec<DF> f0,
+                                             hn::Vec<DF> f1) {
+    const hn::RebindToUnsigned<DBF> d16;
+    using V16 = hn::Vec<decltype(d16)>;
+    const V16 u0 = BitCast(d16, f0);
+    const V16 u1 = BitCast(d16, f1);
+    return BitCast(DBF(), HWY_IS_LITTLE_ENDIAN ? ConcatOdd(d16, u1, u0)
+                                               : ConcatEven(d16, u1, u0));
+  }
+
   template <class DF, HWY_IF_F32_D(DF),
             class V8 = hn::Vec<hn::Repartition<uint8_t, DF>>>
   static HWY_INLINE V8 Enc4F(DF df, const float* HWY_RESTRICT in) {
@@ -462,9 +474,10 @@ class SfpCodec {
     const VF f1 = hn::LoadU(df, in + NF * 1);
     const VF f2 = hn::LoadU(df, in + NF * 2);
     const VF f3 = hn::LoadU(df, in + NF * 3);
-    // Chop off the lower 16 bits; EncBytes still rounds properly.
-    const V16 w0 = hn::BitCast(d16, hn::OrderedDemote2To(dbf, f0, f1));
-    const V16 w1 = hn::BitCast(d16, hn::OrderedDemote2To(dbf, f2, f3));
+    // Chop off the lower 16 bits instead of OrderedDemote2To, which rounds to
+    // the nearest bf16, because EncBytes will round again.
+    const V16 w0 = hn::BitCast(d16, Truncate2To(dbf, f0, f1));
+    const V16 w1 = hn::BitCast(d16, Truncate2To(dbf, f2, f3));
     return Enc2U(d16, w0, w1);
   }
 
