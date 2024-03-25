@@ -552,47 +552,66 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(const float mul,
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
-    const float* HWY_RESTRICT other, float* HWY_RESTRICT x, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    x[i] += other[i];
-  }
+    const float* HWY_RESTRICT other, float* HWY_RESTRICT x, const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  hn::Transform1(d, x, size, other,
+                 [](const auto d, const auto x, const auto other)
+                     HWY_ATTR { return hn::Add(x, other); });
 }
 
 static HWY_NOINLINE void MulBy(const float* HWY_RESTRICT other,
-                               float* HWY_RESTRICT x, size_t size,
-                               size_t max_pos) {
+                               float* HWY_RESTRICT x, const size_t size,
+                               const size_t max_pos) {
   HWY_DASSERT(max_pos <= size);
-  for (size_t i = 0; i < max_pos; ++i) {
-    x[i] *= other[i];
-  }
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  hn::Transform1(d, x, max_pos, other,
+                 [](const auto d, const auto x, const auto other)
+                     HWY_ATTR { return hn::Mul(x, other); });
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void MulBy(const float* HWY_RESTRICT other,
                                               float* HWY_RESTRICT x,
-                                              size_t size) {
+                                              const size_t size) {
   return MulBy(other, x, size, size);
 }
 
-static HWY_NOINLINE void MulByConst(float c, float* HWY_RESTRICT x, size_t size,
-                                    size_t max_pos) {
+static HWY_NOINLINE void MulByConst(const float c, float* HWY_RESTRICT x,
+                                    const size_t size, const size_t max_pos) {
   HWY_DASSERT(max_pos <= size);
-  for (size_t i = 0; i < max_pos; ++i) {
-    x[i] *= c;
-  }
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+  const auto constant = hn::Set(d, c);
+  hn::Transform(d, x, max_pos,
+                [&constant](const auto d, const auto x)
+                    HWY_ATTR { return hn::Mul(x, constant); });
 }
 
-static HWY_INLINE HWY_MAYBE_UNUSED void MulByConst(float c,
+static HWY_INLINE HWY_MAYBE_UNUSED void MulByConst(const float c,
                                                    float* HWY_RESTRICT x,
-                                                   size_t size) {
+                                                   const size_t size) {
   MulByConst(c, x, size, size);
 }
 
-static HWY_NOINLINE void MulByConstAndAdd(float c, const float* HWY_RESTRICT x,
-                                          float* HWY_RESTRICT out, size_t size,
-                                          size_t max_pos) {
-  for (size_t i = 0; i < max_pos; ++i) {
-    out[i] += x[i] * c;
-  }
+static HWY_NOINLINE void MulByConstAndAdd(const float c,
+                                          const float* HWY_RESTRICT x,
+                                          float* HWY_RESTRICT out,
+                                          const size_t size,
+                                          const size_t max_pos) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+  const auto constant = hn::Set(d, c);
+  hn::Transform1(
+      d, out, max_pos, x,
+      [&constant](const auto d, const auto out_element, const auto x_element)
+          HWY_ATTR { return hn::MulAdd(x_element, constant, out_element); });
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
@@ -601,49 +620,30 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
-static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, size_t size,
-                                 size_t mask_pos) {
+static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
+                                 const size_t mask_pos) {
   HWY_DASSERT(size != 0);
   HWY_DASSERT(mask_pos <= size);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
-  const size_t N = hn::Lanes(d);
 
-  // Find max so we can subtract it below. Avoid hn::Foreach because SVE vectors
-  // cannot be lambda-captured.
-  // TODO(janwas): could be replaced with an hn::Accumulate algo.
-  const hn::Vec<D> vmin = hn::Set(d, hwy::LowestValue<float>());
-  hn::Vec<D> vmax = vmin;
-  size_t idx = 0;
-  if (mask_pos >= N) {
-    for (; idx <= mask_pos - N; idx += N) {
-      vmax = hn::Max(vmax, LoadU(d, x + idx));
-    }
-  }
-  vmax = hn::Max(vmax, LoadNOr(vmin, d, x + idx, mask_pos - idx));
-  vmax = hn::MaxOfLanes(d, vmax);  // broadcast
+  const auto vmin = hn::Set(d, hwy::LowestValue<float>());
+  auto vmax = vmin;
+  Foreach(d, x, mask_pos, vmin,
+          [&vmax](const auto d, const auto value)
+              HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  // Also avoid hn::Transform because the additional `sum` output vector cannot
-  // be captured by a lambda.
-  hn::Vec<D> sum = hn::Zero(d);
-  idx = 0;
-  if (mask_pos >= N) {
-    for (; idx <= mask_pos - N; idx += N) {
-      const hn::Vec<D> out = hn::Exp(d, hn::Sub(hn::LoadU(d, x + idx), vmax));
-      sum = hn::Add(sum, out);
-      hn::StoreU(out, d, x + idx);
-    }
-  }
-  if (mask_pos > idx) {
-    const size_t remaining = mask_pos - idx;
-    const hn::Vec<D> out =
-        hn::Exp(d, hn::Sub(hn::LoadN(d, x + idx, remaining), vmax));
-    sum = hn::Add(sum, out);
-    hn::StoreN(out, d, x + idx, remaining);
-  }
+  auto sum = hn::Zero(d);
+  hn::Transform(d, x, mask_pos,
+                [&sum, &vmax](const auto d, const auto value) HWY_ATTR {
+                  const auto out = hn::Exp(d, hn::Sub(value, vmax));
+                  sum = hn::Add(sum, out);
+                  return out;
+                });
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
@@ -651,29 +651,30 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, size_t size,
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
-                                                size_t size) {
+                                                const size_t size) {
   Softmax(x, size, size);
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
-                                       size_t size, size_t max_pos) {
+                                       const size_t size,
+                                       const size_t max_pos) {
   HWY_DASSERT(max_pos <= size);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
 
-  const float inv_cap = 1.0f / cap;
+  const auto vcap = hn::Set(d, cap);
+  const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
 
-  hn::Transform(d, x, size, [cap, inv_cap](D d, hn::Vec<D> v) HWY_ATTR {
-    return hn::Mul(hn::Set(d, cap),
-                   hn::Tanh(d, hn::Mul(v, hn::Set(d, inv_cap))));
+  hn::Transform(d, x, size, [&vcap, &vinv_cap](D d, hn::Vec<D> v) HWY_ATTR {
+    return hn::Mul(vcap, hn::Tanh(d, hn::Mul(v, vinv_cap)));
   });
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
                                                       float* HWY_RESTRICT x,
-                                                      size_t size) {
+                                                      const size_t size) {
   LogitsSoftCap(cap, x, size, size);
 }
 
@@ -694,15 +695,18 @@ template <size_t k>
 static HWY_NOINLINE HWY_MAYBE_UNUSED std::discrete_distribution<int>
 create_distribution(std::array<float, k>& top_k, float temperature) {
   // re-normalize distribution
-  for (size_t i = 0; i < k; ++i) {
-    top_k[i] = exp(log(top_k[i]) / temperature);
-  }
-  float denominator = 0.0f;
-  for (size_t i = 0; i < k; ++i) {
-    denominator += top_k[i];
-  }
-  denominator = 1.0f / denominator;
-  MulByConst(denominator, top_k.data(), k);
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  const D d;
+
+  const auto temperature_inv =
+      hn::Div(hn::Set(d, 1.0f), hn::Set(d, temperature));
+
+  hn::Transform(d, top_k.data(), top_k.size(),
+                [&temperature_inv](D d, hn::Vec<D> v) HWY_ATTR {
+                  return hn::Exp(d, hn::Mul(hn::Log(d, v), temperature_inv));
+                });
+
   return std::discrete_distribution<int>(std::begin(top_k), std::end(top_k));
 }
 
