@@ -711,7 +711,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
     const float* HWY_RESTRICT probabilities, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
   static_assert(k != 0, "");
-  // TODO(austinvhuang): Optimize this implementation.
+  // TODO: Optimize, potentially using new VQSort PartialSort.
   std::array<float, k> top_k{};  // sorted from highest [0], to lowest [k-1]
   std::array<int, k> indices{};
   for (size_t i = 0; i < vocab_size; ++i) {
