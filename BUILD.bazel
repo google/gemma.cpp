@@ -21,7 +21,7 @@ licenses(["notice"])
 exports_files(["LICENSE"])
 
 cc_library(
-    name = "transformer_ops",
+    name = "ops",
     hdrs = [
         "ops.h",
     ],
@@ -35,6 +35,21 @@ cc_library(
         "@hwy//:profiler",
         "@hwy//:thread_pool",
         "@hwy//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_test(
+    name = "ops_test",
+    size = "small",
+    srcs = ["ops_test.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":ops",
+        "@googletest//:gtest_main",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
     ],
 )
 
@@ -59,7 +74,7 @@ cc_library(
     ],
     deps = [
         ":args",
-        ":transformer_ops",
+        ":ops",
         # "//base",
         "//compression:compress",
         "@hwy//:hwy",

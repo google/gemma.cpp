@@ -17,6 +17,9 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include <array>
+#include <random>
+
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
@@ -25,9 +28,10 @@
 #define HWY_TARGET_INCLUDE "ops_test.cc"  //NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-// copybara:import_next_line:gemma_cpp
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
+// After highway.h
+// copybara:import_next_line:gemma_cpp
 #include "ops.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -282,6 +286,7 @@ struct TestSoftmax {
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
+    if (count == 0) return;  // *Softmax would assert
     using T = hn::TFromD<D>;
 
     hwy::AlignedFreeUniquePtr<T[]> px =
