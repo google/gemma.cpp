@@ -194,7 +194,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file. Only required if "
             "compressed_weights file is not present and needs to be "
-            "regenerated. This parameter is only required for compressing"
+            "regenerated. This parameter is only required for compressing "
             "new model weight exports, otherwise it is not needed.");
   }
 };
