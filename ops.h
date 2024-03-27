@@ -22,12 +22,28 @@
 #include <array>
 #include <cmath>
 #include <random>
+#include <type_traits>  // std::enable_if_t
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
+
+namespace gcpp {
+
+// __builtin_sqrt is not constexpr as of Clang 17.
+#if HWY_COMPILER_GCC_ACTUAL
+#define GEMMA_CONSTEXPR_SQRT constexpr
+static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) {
+  return __builtin_sqrt(x);
+}
+#else
+#define GEMMA_CONSTEXPR_SQRT
+static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) { return sqrtf(x); }
+#endif
+
+}  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_H_
 
