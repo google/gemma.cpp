@@ -1,1 +1,5 @@
 common --enable_bzlmod
+
+build --cxxopt="-std=c++17"
+
+test --cxxopt="-std=c++17"
