@@ -1,6 +1,7 @@
 # gemma.cpp is a lightweight, standalone C++ inference engine for the Gemma
 # foundation models from Google.
 
+load("//devtools/python/blaze:pytype.bzl", "pytype_strict_library")
 load("@rules_license//rules:license.bzl", "license")
 
 package(
@@ -130,5 +131,15 @@ cc_binary(
         "@hwy//:nanobenchmark",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
+    ],
+)
+
+pytype_strict_library(
+    name = "util/convert_weights",
+    srcs = ["util/convert_weights.py"],
+    deps = [
+        "//third_party/py/gemma",
+        "//third_party/py/numpy",
+        "//third_party/py/torch:pytorch",
     ],
 )
