@@ -98,6 +98,10 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
                    const StreamFunc& stream_token, std::mt19937& gen);
 
+void CompressWeights(gcpp::Model model, const Path& weights,
+                     const Path& compressed_weights,
+                     hwy::ThreadPool& pool);
+
 constexpr int EOS_ID = 1;
 
 }  // namespace gcpp

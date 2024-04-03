@@ -80,7 +80,7 @@ set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
 target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
-target_include_directories(libgemma PRIVATE ${sentencepiece_SOURCE_DIR})
+target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 
@@ -115,3 +115,8 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
   gtest_discover_tests(${TESTNAME})
 endforeach ()
 endif()  # GEMMA_ENABLE_TESTS
+
+## Tools
+
+add_executable(compress_weights compress_weights.cc)
+target_link_libraries(compress_weights libgemma hwy hwy_contrib)
