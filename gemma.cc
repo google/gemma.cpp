@@ -116,10 +116,13 @@ hwy::AlignedUniquePtr<Weights<TConfig>> LoadWeights(const Path& checkpoint) {
               checkpoint.path.c_str());
   }
   bool ok = true;
+  uint64_t total_size = 0;
   ok &= 1 == fread(&(weights->embedder_input_embedding),
                    sizeof(weights->embedder_input_embedding), 1, fptr);
   ok &= 1 == fread(&(weights->final_norm_scale),
                    sizeof(weights->final_norm_scale), 1, fptr);
+  total_size += sizeof(weights->embedder_input_embedding) +
+                sizeof(weights->final_norm_scale);
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     Layer<TConfig>* layer_view = &weights->layers[layer];
     ok &= 1 == fread(&layer_view->attn_vec_einsum_w,
@@ -134,10 +137,12 @@ hwy::AlignedUniquePtr<Weights<TConfig>> LoadWeights(const Path& checkpoint) {
                      sizeof(layer_view->pre_attention_norm_scale), 1, fptr);
     ok &= 1 == fread(&layer_view->pre_ffw_norm_scale,
                      sizeof(layer_view->pre_ffw_norm_scale), 1, fptr);
+    total_size += sizeof(*layer_view);
   }
   if (!ok) {
-    HWY_ABORT("Failed to read from %s - might be a directory, or too small?",
-              checkpoint.path.c_str());
+    HWY_ABORT("Failed to read from %s - might be a directory, or too small? "
+              "expected size: %d kB", checkpoint.path.c_str(),
+              static_cast<uint32_t>(total_size >> 10));
   }
   HWY_ASSERT(0 == fclose(fptr));
   return weights;
@@ -813,6 +818,47 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeightsT(
   }
 }
 
+template <class TConfig>
+void CompressWeights(const Path& weights_path,
+                     const Path& compressed_weights_path,
+                     hwy::ThreadPool& pool) {
+  if (!std::filesystem::exists(weights_path.path)) {
+    HWY_ABORT("The model weights file '%s' does not exist.",
+              weights_path.path.c_str());
+  }
+
+  // Allocate compressed weights.
+  using CWeights = CompressedWeights<TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> c_weights_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(CWeights));
+  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
+  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
+
+  // Get weights, compress, and store.
+  const hwy::AlignedUniquePtr<Weights<TConfig>> weights =
+      LoadWeights<TConfig>(weights_path);
+  Compressor compressor(pool);
+  ForEachTensor<TConfig>(weights.get(), *c_weights, compressor);
+  compressor.WriteAll(pool, compressed_weights_path.path.c_str());
+
+  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
+}
+
+void CompressWeightsT(gcpp::Model model, const Path& weights,
+                      const Path& compressed_weights,
+                      hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      CompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
+      break;
+    case Model::GEMMA_7B:
+      CompressWeights<ConfigGemma7B>(weights, compressed_weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -821,6 +867,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 
 HWY_EXPORT(GetCompressedWeightsT);
+HWY_EXPORT(CompressWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
 
@@ -920,6 +967,13 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
       gemma, runtime_config.max_tokens, runtime_config.max_generated_tokens,
       runtime_config.temperature, prompt, start_pos, kv_cache, pool, inner_pool,
       stream_token, [](int) { return true; }, gen, runtime_config.verbosity);
+}
+
+void CompressWeights(gcpp::Model model, const Path& weights,
+                     const Path& compressed_weights,
+                     hwy::ThreadPool& pool) {
+  HWY_DYNAMIC_DISPATCH(CompressWeightsT)(
+      model, weights, compressed_weights, pool);
 }
 
 }  // namespace gcpp

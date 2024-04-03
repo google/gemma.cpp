@@ -115,3 +115,20 @@ cc_binary(
         "@hwy//:thread_pool",
     ],
 )
+
+cc_binary(
+    name = "compress_weights",
+    srcs = [
+        "compress_weights.cc",
+    ],
+    deps = [
+        ":args",
+        ":gemma_lib",
+        # "//base",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+    ],
+)
