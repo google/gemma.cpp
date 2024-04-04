@@ -88,45 +88,80 @@ template <size_t kOuter>
 HWY_INLINE constexpr size_t RowsPerStrip() {
   // Aim for 128 work items to reduce pool overhead. Must be at least one
   // vector; prefer a power of two for faster division.
+  constexpr size_t kLanes = hn::ScalableTag<float>().MaxLanes();
   constexpr size_t kRowsPerStrip =
-      HWY_MAX(hn::ScalableTag<float>().MaxLanes(),
-              1ULL << hwy::FloorLog2(kOuter / 128));
+      kOuter < 128 ? kLanes
+                   : HWY_MAX(kLanes, 1ULL << hwy::FloorLog2(kOuter / 128));
   return kRowsPerStrip;
 }
 
 // Simple version without tiling nor threading.
-template <size_t kOuter, size_t kInner, typename MatT, size_t kCapacity,
-          typename VecT>
-HWY_INLINE void MatVecLoop(const CompressedArray<MatT, kCapacity>& mat,
-                           const size_t mat_ofs,
-                           const VecT* HWY_RESTRICT vec_aligned,
-                           float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecLoop");
+template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
+          typename VecT, typename AddT>
+HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
+                              const VecT* HWY_RESTRICT vec_aligned,
+                              const AddT* HWY_RESTRICT add,
+                              float* HWY_RESTRICT out) {
+  PROFILER_ZONE("MatVecAddLoop");
   const hn::ScalableTag<float> df;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs = mat_ofs + idx_row * kInner;
-    out[idx_row] = Dot(df, mat, row_ofs, vec_aligned, kInner);
+    if constexpr (kAdd) {
+      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
+                     Dot(df, mat, row_ofs, vec_aligned, kInner);
+    } else {
+      out[idx_row] = Dot(df, mat, row_ofs, vec_aligned, kInner);
+    }
   }
 }
 
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
+HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
+                           const VecT* HWY_RESTRICT vec_aligned,
+                           float* HWY_RESTRICT out) {
+  MatVecAddLoop<false, kOuter, kInner, ArrayT, VecT, VecT>(
+      mat, mat_ofs, vec_aligned, /*add=*/nullptr, out);
+}
+
 // Simple version without tiling nor threading, but two offsets/outputs.
-template <size_t kOuter, size_t kInner, typename MatT, size_t kCapacity,
-          typename VecT>
-HWY_INLINE void TwoOfsMatVecLoop(const CompressedArray<MatT, kCapacity>& mat,
-                                 const size_t mat_ofs0, const size_t mat_ofs1,
-                                 const VecT* HWY_RESTRICT vec_aligned,
-                                 float* HWY_RESTRICT out0,
-                                 float* HWY_RESTRICT out1) {
+template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
+          typename VecT, typename AddT>
+HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
+                                    const size_t mat_ofs1,
+                                    const VecT* HWY_RESTRICT vec_aligned,
+                                    const AddT* HWY_RESTRICT add0,
+                                    const AddT* HWY_RESTRICT add1,
+                                    float* HWY_RESTRICT out0,
+                                    float* HWY_RESTRICT out1) {
   PROFILER_ZONE("MatVecLoop");
   const hn::ScalableTag<float> df;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
     const size_t row_ofs1 = mat_ofs1 + (idx_row)*kInner;
-    out0[idx_row] = Dot(df, mat, row_ofs0, vec_aligned, kInner);
-    out1[idx_row] = Dot(df, mat, row_ofs1, vec_aligned, kInner);
+    if constexpr (kAdd) {
+      out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
+                      Dot(df, mat, row_ofs0, vec_aligned, kInner);
+      out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
+                      Dot(df, mat, row_ofs1, vec_aligned, kInner);
+    } else {
+      out0[idx_row] = Dot(df, mat, row_ofs0, vec_aligned, kInner);
+      out1[idx_row] = Dot(df, mat, row_ofs1, vec_aligned, kInner);
+    }
   }
+}
+
+// Simple version without tiling nor threading, but two offsets/outputs.
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
+HWY_INLINE void TwoOfsMatVecLoop(const ArrayT& mat, const size_t mat_ofs0,
+                                 const size_t mat_ofs1,
+                                 const VecT* HWY_RESTRICT vec_aligned,
+                                 float* HWY_RESTRICT out0,
+                                 float* HWY_RESTRICT out1) {
+  TwoOfsMatVecAddLoop<false, kOuter, kInner, ArrayT, VecT, VecT>(
+      mat, mat_ofs0, mat_ofs1, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
+      out0, out1);
 }
 
 namespace detail {
@@ -134,10 +169,10 @@ namespace detail {
 // For each i = [0, num_rows), compute partial (length `num_cols`) dot product
 // of row i with `vec_aligned` and add into `out[i]`. The upper-left coordinate
 // of the tile is r0, c0.
-template <class DF, typename MatT, size_t kCapacity, typename VecT>
+template <class DF, typename ArrayT, typename VecT>
 HWY_INLINE void AccumulatePartialDotProducts(
-    DF df, const CompressedArray<MatT, kCapacity>& mat, size_t mat_ofs,
-    size_t mat_stride, size_t r0, size_t c0, size_t num_rows, size_t num_cols,
+    DF df, const ArrayT& mat, size_t mat_ofs, size_t mat_stride, size_t r0,
+    size_t c0, size_t num_rows, size_t num_cols,
     const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out) {
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
     const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
@@ -145,37 +180,49 @@ HWY_INLINE void AccumulatePartialDotProducts(
   }
 }
 
-// Same as above, but sets out[i] to the first partial dot product, which
-// avoids having to zero-initialize and accumulate.
-template <class DF, typename MatT, size_t kCapacity, typename VecT>
-HWY_INLINE void SetFirstPartialDotProducts(
-    DF df, const CompressedArray<MatT, kCapacity>& mat, size_t mat_ofs,
-    size_t mat_stride, size_t r0, size_t c0, size_t num_rows, size_t num_cols,
-    const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out) {
+// Same as above, but sets out[i] to the first partial dot product +
+// init (if kInit), which avoids having to zero-initialize and accumulate.
+template <bool kInit, class DF, typename ArrayT, typename VecT, typename InitT>
+HWY_INLINE void SetFirstPartialDotProducts(DF df, const ArrayT& mat,
+                                           size_t mat_ofs, size_t mat_stride,
+                                           size_t r0, size_t c0,
+                                           size_t num_rows, size_t num_cols,
+                                           const VecT* HWY_RESTRICT vec_aligned,
+                                           const InitT* HWY_RESTRICT init,
+                                           float* HWY_RESTRICT out) {
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
     const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
-    out[idx_row] = Dot(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+    if constexpr (kInit) {
+      out[idx_row] = hwy::ConvertScalarTo<float>(init[idx_row + r0]) +
+                     Dot(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+    } else {
+      out[idx_row] = Dot(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+    }
   }
 }
 
 // Adds together partial dot products for all tiles with the same r0 (a
 // horizontal strip of the entire matrix); the result is the full dot product
-// for rows r in [r0, r0 + num_rows), which we store into in out[r - r0].
-template <class DF, typename MatT, size_t kCapacity, typename VecT>
-HWY_INLINE void FullDotProductsForStrip(
-    DF df, const CompressedArray<MatT, kCapacity>& mat, size_t mat_ofs,
-    size_t mat_stride, size_t r0, size_t num_rows,
-    const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out) {
+// for rows r in [r0, r0 + num_rows) + optionally the add vector, which we store
+// into in out[r - r0].
+template <bool kAdd, class DF, typename ArrayT, typename VecT, typename AddT>
+HWY_INLINE void FullDotProductsForStrip(DF df, const ArrayT& mat,
+                                        size_t mat_ofs, size_t mat_stride,
+                                        size_t r0, size_t num_rows,
+                                        const VecT* HWY_RESTRICT vec_aligned,
+                                        const AddT* HWY_RESTRICT add,
+                                        float* HWY_RESTRICT out) {
   // Tall and skinny: set `out` to the single dot product.
   if (mat_stride < MaxCols()) {
-    SetFirstPartialDotProducts(df, mat, mat_ofs, mat_stride, r0, 0, num_rows,
-                               mat_stride, vec_aligned, out);
+    SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, mat_stride, r0, 0,
+                                     num_rows, mat_stride, vec_aligned, add,
+                                     out);
     return;
   }
 
   // We have at least MaxCols, so start by setting `out` to that:
-  SetFirstPartialDotProducts(df, mat, mat_ofs, mat_stride, r0, 0, num_rows,
-                             MaxCols(), vec_aligned, out);
+  SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, mat_stride, r0, 0,
+                                   num_rows, MaxCols(), vec_aligned, add, out);
   // For further multiples of MaxCols, accumulate. Remainders handled below.
   size_t c0 = MaxCols();
   for (; c0 <= mat_stride - MaxCols(); c0 += MaxCols()) {
@@ -191,15 +238,16 @@ HWY_INLINE void FullDotProductsForStrip(
 
 }  // namespace detail
 
-// Stores dot products of rows with `vec_aligned` to a buffer, then stores them
-// to `out`.
-template <size_t kOuter, size_t kInner, typename MatT, size_t kCapacity,
-          typename VecT>
-HWY_INLINE void MatVec(const CompressedArray<MatT, kCapacity>& mat,
-                       const size_t mat_ofs,
-                       const VecT* HWY_RESTRICT const vec_aligned,
-                       float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
-  PROFILER_ZONE("MatVec");
+// Stores dot products of rows with `vec_aligned` + add the values from `add`
+// (if kAdd), then stores them to `out`.
+//
+template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
+          typename VecT, typename AddT>
+HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
+                          const VecT* HWY_RESTRICT const vec_aligned,
+                          const AddT* HWY_RESTRICT const add,
+                          float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
+  PROFILER_ZONE("MatVecAdd");
 
   const hn::ScalableTag<float> df;
   constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
@@ -209,8 +257,9 @@ HWY_INLINE void MatVec(const CompressedArray<MatT, kCapacity>& mat,
   pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
     PROFILER_ZONE("MatVec.lambda");
     const size_t r0 = strip * kRowsPerStrip;
-    detail::FullDotProductsForStrip(df, mat, mat_ofs, kInner, r0, kRowsPerStrip,
-                                    vec_aligned, out + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, kInner, r0,
+                                          kRowsPerStrip, vec_aligned, add,
+                                          out + r0);
   });
 
   // Remaining rows
@@ -218,9 +267,17 @@ HWY_INLINE void MatVec(const CompressedArray<MatT, kCapacity>& mat,
   if (r0 < kOuter) {
     PROFILER_ZONE("MatVec remainder");
     const size_t num_rows = kOuter - r0;
-    detail::FullDotProductsForStrip(df, mat, mat_ofs, kInner, r0, num_rows,
-                                    vec_aligned, out + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, kInner, r0,
+                                          num_rows, vec_aligned, add, out + r0);
   }
+}
+
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
+HWY_INLINE void MatVec(const ArrayT& mat, const size_t mat_ofs,
+                       const VecT* HWY_RESTRICT const vec_aligned,
+                       float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
+  MatVecAdd<false, kOuter, kInner, ArrayT, VecT, VecT>(
+      mat, mat_ofs, vec_aligned, /*add=*/nullptr, out, pool);
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -277,69 +334,105 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void GeluMulToBF16(
   }
 }
 
+template <class D, HWY_IF_F32_D(D)>
+static HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
+  using VF = hn::Vec<D>;
+  // Chebyshev polynomial coefficients for rational approximation
+  const VF c0 = hn::Set(d, 0.00949107017368078f);
+  const VF c1 = hn::Set(d, 0.0654858946800232f);
+  const VF c2 = hn::Set(d, 0.231547489762306f - 0.00949107017368078f);
+  const VF c3 = hn::Set(d, 0.530778527259827f);
+  const VF c4 = hn::Set(d, 0.855334937572479f);
+  const VF c5 = hn::Set(d, 0.500000894069672f);
+
+  const VF d0 = hn::Set(d, 0.130970627069473f);
+  const VF d1 = hn::Set(d, 3.99615288415589e-07f);
+  const VF d2 = hn::Set(d, 1.06155431270599f - 0.130970627069473f);
+  const VF d3 = hn::Set(d, 1.35144250634767e-06f);
+  const VF d4 = hn::Set(d, 1);
+
+  // The approximation works in range -12..12, but the input value is clamped
+  // in -11.5..11.5 since the approximation slightly overshoots after that.
+  // The function is nearly 0 for input values below -11.5 and nearly 1 for
+  // input values above 11.5.
+  const VF invtwelve = hn::Set(d, 1.0f / 12.0f);
+  const VF lo = hn::Set(d, -11.5f);
+  const VF hi = hn::Set(d, 11.5f);
+
+  VF f = hn::Clamp(v, lo, hi);
+  f = hn::Mul(f, invtwelve);
+  VF f2 = hn::Add(f, f);
+
+  VF a1 = hn::MulAdd(f2, c0, c1);
+  VF a2 = hn::MulAdd(f2, a1, c2);
+  VF a3 = hn::Sub(hn::MulAdd(f2, a2, c3), a1);
+  VF a4 = hn::Sub(hn::MulAdd(f2, a3, c4), a2);
+  VF f0 = hn::Sub(hn::MulAdd(f, a4, c5), a3);
+
+  VF b1 = hn::MulAdd(f2, d0, d1);
+  VF b2 = hn::MulAdd(f2, b1, d2);
+  VF b3 = hn::Sub(hn::MulAdd(f2, b2, d3), b1);
+  VF f1 = hn::Sub(hn::MulAdd(f, b3, d4), b2);
+
+  return Div(f0, f1);
+}
+
+// Sigmoid using the logistic function 1 / (1 + exp(-x[i]))
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(float* HWY_RESTRICT x,
+                                                  size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  hn::Transform(D(), x, size,
+                [](D d, hn::Vec<D> v) HWY_ATTR { return Sigmoid(d, v); });
+}
+
 // Two matrices, same vector
-// TODO(janwas): apply optimizations from MatVec/replace with above overload
-template <size_t kOuter, size_t kInner, typename MatT, size_t kCapacity,
-          typename VecT>
-HWY_NOINLINE void TwoMatVec(const CompressedArray<MatT, kCapacity>& mat0,
-                            const CompressedArray<MatT, kCapacity>& mat1,
+template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
+          typename VecT, typename AddT>
+HWY_NOINLINE void TwoMatVecAdd(
+    const ArrayT& mat0, const ArrayT& mat1, const size_t mat_ofs,
+    const VecT* HWY_RESTRICT vec_aligned, const AddT* HWY_RESTRICT add0,
+    const AddT* HWY_RESTRICT add1, float* HWY_RESTRICT out0,
+    float* HWY_RESTRICT out1, hwy::ThreadPool& pool) {
+  PROFILER_ZONE("TwoMatVecAdd");
+
+  const hn::ScalableTag<float> df;
+  constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
+  constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
+
+  // For each entire strip.
+  pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
+    PROFILER_ZONE("TwoMatVec.lambda");
+    const size_t r0 = strip * kRowsPerStrip;
+    detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, kInner, r0,
+                                          kRowsPerStrip, vec_aligned, add0,
+                                          out0 + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, kInner, r0,
+                                          kRowsPerStrip, vec_aligned, add1,
+                                          out1 + r0);
+  });
+
+  // Remaining rows
+  const size_t r0 = kNumStrips * kRowsPerStrip;
+  if (r0 < kOuter) {
+    PROFILER_ZONE("TwoMatVec remainder");
+    const size_t num_rows = kOuter - r0;
+    detail::FullDotProductsForStrip<kAdd>(
+        df, mat0, mat_ofs, kInner, r0, num_rows, vec_aligned, add0, out0 + r0);
+    detail::FullDotProductsForStrip<kAdd>(
+        df, mat1, mat_ofs, kInner, r0, num_rows, vec_aligned, add1, out1 + r0);
+  }
+}
+
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
+HWY_NOINLINE void TwoMatVec(const ArrayT& mat0, const ArrayT& mat1,
                             const size_t mat_ofs,
                             const VecT* HWY_RESTRICT vec_aligned,
                             float* HWY_RESTRICT out0, float* HWY_RESTRICT out1,
                             hwy::ThreadPool& pool) {
-  const hn::ScalableTag<float> df;
-  const size_t NF = hn::Lanes(df);
-
-  // Process multiple rows at a time so that we write multiples of a cache line
-  // to avoid false sharing (>= 64).
-  constexpr size_t kRowsPerStrip = 128 / sizeof(float);
-  const uint32_t num_strips = kOuter / kRowsPerStrip;
-
-  // No remainder handling after ThreadPool.
-  static_assert(kOuter % kRowsPerStrip == 0, "Add remainder handling");
-
-  // Required for Stream loop, otherwise we might have partial vectors.
-  HWY_DASSERT(kRowsPerStrip >= NF);
-  pool.Run(0, num_strips,
-           [&](const uint32_t strip, size_t /*thread*/) HWY_ATTR {
-             // MSVC workaround: duplicate to ensure constexpr.
-             constexpr size_t kRowsPerStrip = 128 / sizeof(float);
-             // Software write-combining to avoid cache pollution from out.
-             // Although `out` may be used later, keeping it out of the cache
-             // now and avoiding RFOs is a consistent 5% overall win.
-             HWY_ALIGN float buf0[kRowsPerStrip];
-             HWY_ALIGN float buf1[kRowsPerStrip];
-
-             // Only handle entire strips here because the Stream is not masked.
-             const size_t begin = strip * kRowsPerStrip;
-             for (size_t idx_row = 0; idx_row < kRowsPerStrip; ++idx_row) {
-               const size_t row_ofs = mat_ofs + (begin + idx_row) * kInner;
-               buf0[idx_row] = Dot(df, mat0, row_ofs, vec_aligned, kInner);
-               buf1[idx_row] = Dot(df, mat1, row_ofs, vec_aligned, kInner);
-             }
-
-             HWY_UNROLL(4)
-             for (size_t i = 0; i != kRowsPerStrip; i += NF) {
-               hn::Stream(hn::Load(df, buf0 + i), df, out0 + begin + i);
-             }
-             HWY_UNROLL(4)
-             for (size_t i = 0; i != kRowsPerStrip; i += NF) {
-               hn::Stream(hn::Load(df, buf1 + i), df, out1 + begin + i);
-             }
-           });
-  hwy::FlushStream();
-}
-
-// Baseline Naive MatMul
-template <size_t kOuter, size_t kInner, size_t kBatchSize, typename MatT,
-          size_t kCapacity, typename VecT>
-HWY_NOINLINE void MatMul(const CompressedArray<MatT, kCapacity>& mat,
-                         const size_t mat_ofs, const VecT* HWY_RESTRICT vec,
-                         float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
-  for (size_t i = 0; i < kBatchSize; ++i) {
-    MatVec<kOuter, kInner, MatT, kCapacity, VecT>(
-        mat, mat_ofs, vec + i * kInner, out + i * kOuter, pool);
-  }
+  TwoMatVecAdd<false, kOuter, kInner, ArrayT, VecT, VecT>(
+      mat0, mat1, mat_ofs, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
+      out0, out1, pool);
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED float Dot(const float* HWY_RESTRICT a,
