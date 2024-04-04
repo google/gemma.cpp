@@ -378,7 +378,13 @@ BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
   uint64_t offset;
   size_t actual_size;
   if (!blob_store_->FindKey(key, offset, actual_size)) return __LINE__;
-  if (actual_size != size) return __LINE__;
+  if (actual_size != size) {
+    fprintf(stderr,
+            "Mismatch between expected %d and actual %d KiB size. Please see "
+            "README.md on how to update the weights.\n",
+            static_cast<int>(size >> 10), static_cast<int>(actual_size >> 10));
+    return __LINE__;
+  }
 
   EnqueueChunkRequests(offset, actual_size, reinterpret_cast<uint8_t*>(data),
                        requests_);

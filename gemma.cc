@@ -109,6 +109,12 @@ hwy::AlignedUniquePtr<Weights<TConfig>> LoadWeights(const Path& checkpoint) {
   weights->layers =
       hwy::MakeUniqueAlignedArray<Layer<TConfig>>(TConfig::kLayers);
 
+  if (checkpoint.path.empty()) {
+    HWY_ABORT(
+        "Loading --compressed_weights failed; we require a --weights argument. "
+        "Please see issue #11 on how to create this file.\n");
+  }
+
   FILE* fptr;
   fptr = fopen(checkpoint.path.c_str(), "rb");
   if (fptr == nullptr) {

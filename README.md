@@ -8,6 +8,11 @@ For additional information about Gemma, see
 specific artifacts, are [available on
 kaggle](https://www.kaggle.com/models/google/gemma).
 
+NOTE: 2024-04-04: if using 2B models, please re-download weights from Kaggle and
+ensure you have the latest version (-mqa or version 3). We are changing the code
+to match the new weights. If you wish to use old weights, change `ConfigGemma2B`
+in `configs.h` back to `kVocabSize = 256128` and `kKVHeads = 8`.
+
 ## Who is this project for?
 
 Modern LLM inference engines are sophisticated systems, often with bespoke
