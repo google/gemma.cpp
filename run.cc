@@ -116,7 +116,8 @@ void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
                        verbosity](int token, float) {
     ++abs_pos;
     ++current_pos;
-    if (current_pos < prompt_size) {
+    // <= since position is incremented before
+    if (current_pos <= prompt_size) {
       std::cerr << "." << std::flush;
     } else if (token == gcpp::EOS_ID) {
       if (!args.multiturn) {
