@@ -1,0 +1,12 @@
++++
+list me ten biggest cities
+---
+6. Mexico City, Mexico
++++
+What is the capital of Switzerland?
+---
+Bern is the capital of Switzerland.
++++
+What is the name of the president of the US?
+---
+The answer is: Joe Biden.

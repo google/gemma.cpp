@@ -31,6 +31,9 @@
 #include "hwy/timer.h"
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // Path
+// copybara:import_next_line:sentencepiece
+#include "src/sentencepiece_processor.h"
+// copybara:end
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
@@ -49,6 +52,7 @@
 #include <iostream>
 #include <memory>
 #include <random>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -330,7 +334,7 @@ struct Activations {
 struct GemmaInterface {
   virtual ~GemmaInterface() = default;
 
-  virtual const sentencepiece::SentencePieceProcessor* Tokenizer() const = 0;
+  virtual const GemmaTokenizer* Tokenizer() const = 0;
 
   virtual void Generate(size_t max_tokens, size_t max_generated_tokens,
                         float temperature, const std::vector<int>& prompt,
@@ -339,6 +343,12 @@ struct GemmaInterface {
                         const StreamFunc& stream_token,
                         const AcceptFunc& accept_token, std::mt19937& gen,
                         int verbosity) = 0;
+
+  virtual float ComputeCrossEntropy(size_t max_tokens,
+                                    const std::vector<int>& prompt,
+                                    KVCache& kv_cache, hwy::ThreadPool& pool,
+                                    hwy::ThreadPool& inner_pool,
+                                    int verbosity) = 0;
 };
 
 template <class Config>
@@ -357,6 +367,29 @@ KVCache CreateKVCache(Model type) {
       HWY_ABORT("Model type %d unknown.", static_cast<int>(type));
   }
 }
+
+class GemmaTokenizerImpl : public GemmaTokenizer {
+ public:
+  GemmaTokenizerImpl(
+      std::unique_ptr<sentencepiece::SentencePieceProcessor>&& impl)
+      : impl_(std::move(impl)) {}
+  bool Encode(const std::string& input,
+              std::vector<std::string>* pieces) const override {
+    return impl_->Encode(input, pieces).ok();
+  }
+  bool Encode(const std::string& input,
+              std::vector<int>* pieces) const override {
+    return impl_->Encode(input, pieces).ok();
+  }
+  // Given a sequence of ids, decodes it into a detokenized output.
+  bool Decode(const std::vector<int>& ids,
+              std::string* detokenized) const override {
+    return impl_->Decode(ids, detokenized).ok();
+  }
+
+ private:
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> impl_;
+};
 
 namespace {
 template <class Config>
@@ -381,8 +414,8 @@ struct GemmaImpl : public GemmaInterface {
     DeleteLayersPtrs(weights);
   }
 
-  const sentencepiece::SentencePieceProcessor* Tokenizer() const override {
-    return tokenizer.get();
+  const GemmaTokenizer* Tokenizer() const override {
+    return &tokenizer;
   }
 
   void Generate(size_t max_tokens, size_t max_generated_tokens,
@@ -392,7 +425,12 @@ struct GemmaImpl : public GemmaInterface {
                 const AcceptFunc& accept_token, std::mt19937&,
                 int verbosity) override;
 
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
+  float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
+                            KVCache& kv_cache, hwy::ThreadPool& pool,
+                            hwy::ThreadPool& inner_pool,
+                            int verbosity) override;
+
+  GemmaTokenizerImpl tokenizer;
   hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
   hwy::AlignedUniquePtr<Activations<Config, kPrefillBatchSize>> prefill;
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
@@ -804,6 +842,78 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   }
 }
 
+template <class TConfig>
+std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
+  std::string token_str;
+  gemma.Tokenizer()->Decode({token}, &token_str);
+  return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
+}
+
+#define TOKEN(token_id) TokenString(gemma, token_id).c_str()
+
+template <class TConfig>
+void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
+             size_t k) {
+  std::vector<std::pair<float, int>> sorted(len);
+  for (int i = 0; i < len; ++i) {
+    sorted[i] = std::make_pair(dist[i], i);
+  }
+  std::sort(sorted.begin(), sorted.end(),
+            [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+              if (a.first != b.first) {
+                return a.first > b.first;
+              }
+              return a.second < b.second;
+            });
+  for (int i = 0; i < k; ++i) {
+    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", i + 1, sorted[i].second,
+           TOKEN(sorted[i].second), sorted[i].first, logits[sorted[i].second]);
+  }
+}
+
+template <class TConfig>
+float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
+                              const std::vector<int>& prompt, KVCache& kv_cache,
+                              hwy::ThreadPool& pool,
+                              hwy::ThreadPool& inner_pool, int verbosity) {
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kVocabSize = TConfig::kVocabSize;
+  Activations<TConfig, 1>& activations = *gemma.state.get();
+  const WeightsT<TConfig>& weights =
+      *reinterpret_cast<const WeightsT<TConfig>*>(gemma.weights_u8.get());
+  std::vector<float> logits(kVocabSize);
+  Softmax(activations.logits.data(), kVocabSize);
+  float total_entropy = 0.0f;
+  for (size_t pos = 0; pos < max_tokens && pos < prompt.size(); ++pos) {
+    if (verbosity >= 4) {
+      LogTopK(gemma, logits.data(), activations.logits.data(), kVocabSize, 10);
+    }
+    const int token = prompt[pos];
+    const float prob = activations.logits[token];
+    if (verbosity >= 3) {
+      printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
+             TOKEN(token), prob, -std::log(prob) / std::log(2.0));
+    }
+    total_entropy -= std::max(std::log(prob), -64.0f);
+    if (verbosity >= 2 && pos % 100 == 99) {
+      printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
+             total_entropy / std::log(2.0) / (pos + 1));
+    }
+    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool);
+    MatVec<kVocabSize, kModelDim>(weights.embedder_input_embedding, 0,
+                                  activations.x.data(),
+                                  activations.logits.data(), pool);
+    LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
+    memcpy(logits.data(), activations.logits.data(),
+           kVocabSize * sizeof(logits[0]));
+    Softmax(activations.logits.data(), kVocabSize);
+  }
+  return total_entropy / std::log(2.0);
+}
+
+#undef TOKEN
+
+
 void Generate2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
                 size_t max_generated_tokens, float temperature,
                 const std::vector<int>& prompt, size_t start_pos,
@@ -827,6 +937,23 @@ void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
                start_pos, kv_cache, pool, inner_pool, stream_token,
                accept_token, gen, verbosity);
 }
+
+float ComputeCrossEntropy2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
+                            const std::vector<int>& prompt, KVCache& kv_cache,
+                            hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+                            int verbosity) {
+  return ComputeCrossEntropyImpl(gemma, max_tokens, prompt, kv_cache, pool,
+                                 inner_pool, verbosity);
+}
+
+float ComputeCrossEntropy7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
+                            const std::vector<int>& prompt, KVCache& kv_cache,
+                            hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+                            int verbosity) {
+  return ComputeCrossEntropyImpl(gemma, max_tokens, prompt, kv_cache, pool,
+                                 inner_pool, verbosity);
+}
+
 
 // Calls func(name, float*, CompressedArray&) for each tensor. float* is null
 // if weights = null, which happens during the first call where we attempt to
@@ -983,6 +1110,8 @@ HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
+HWY_EXPORT(ComputeCrossEntropy2B);
+HWY_EXPORT(ComputeCrossEntropy7B);
 
 KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len) {
   KVCache kv_cache = {};
@@ -995,7 +1124,7 @@ template <class Config>
 GemmaImpl<Config>::GemmaImpl(
     std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
     hwy::AlignedFreeUniquePtr<uint8_t[]>& weights_u8, hwy::ThreadPool& pool)
-    : tokenizer(std::move(tokenizer)),
+    : tokenizer(GemmaTokenizerImpl(std::move(tokenizer))),
       weights_u8(std::move(weights_u8)),
       prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
       state(hwy::MakeUniqueAligned<Activations<Config, 1>>()) {}
@@ -1021,6 +1150,22 @@ void GemmaImpl<ConfigGemma7B>::Generate(
   HWY_DYNAMIC_DISPATCH(Generate7B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
    kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
+}
+
+template <>
+float GemmaImpl<ConfigGemma2B>::ComputeCrossEntropy(
+    size_t max_tokens, const std::vector<int>& prompt, KVCache& kv_cache,
+    hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool, int verbosity) {
+  return HWY_DYNAMIC_DISPATCH(ComputeCrossEntropy2B)(
+      *this, max_tokens, prompt, kv_cache, pool, inner_pool, verbosity);
+}
+
+template <>
+float GemmaImpl<ConfigGemma7B>::ComputeCrossEntropy(
+    size_t max_tokens, const std::vector<int>& prompt, KVCache& kv_cache,
+    hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool, int verbosity) {
+  return HWY_DYNAMIC_DISPATCH(ComputeCrossEntropy7B)(
+      *this, max_tokens, prompt, kv_cache, pool, inner_pool, verbosity);
 }
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
@@ -1056,7 +1201,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
 
 Gemma::~Gemma() = default;  // after GemmaInterface is defined
 
-const sentencepiece::SentencePieceProcessor* Gemma::Tokenizer() const {
+const GemmaTokenizer* Gemma::Tokenizer() const {
   return impl_->Tokenizer();
 }
 
@@ -1088,6 +1233,17 @@ void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool) {
   HWY_DYNAMIC_DISPATCH(CompressWeightsT)
   (model, weights, compressed_weights, pool);
+}
+
+float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
+                          const std::vector<int>& prompt, KVCache& kv_cache,
+                          hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+                          int verbosity) {
+  pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
+  const float result = gemma.impl_->ComputeCrossEntropy(
+      max_tokens, prompt, kv_cache, pool, inner_pool, verbosity);
+  pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
+  return result;
 }
 
 }  // namespace gcpp

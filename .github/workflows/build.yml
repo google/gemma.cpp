@@ -1,7 +1,11 @@
 name: build
 
 # Trigger on push, pull request, or via manual dispatch.
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+    types: [opened, reopened, labeled, unlabeled, synchronize]
+  workflow_dispatch:
 
 jobs:
   build:

@@ -25,7 +25,7 @@
 #include <cctype>
 #include <cerrno>  // IDE does not recognize errno.h as providing errno.
 #include <string>
-#endif
+#endif  // HWY_OS_LINUX
 #include <stddef.h>
 #include <stdio.h>
 
@@ -170,8 +170,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
         weights = compressed_weights;
       } else {
         return "Only one of --weights and --compressed_weights can be "
-            "specified. To create compressed weights use the compress_weights "
-            "tool.";
+               "specified. To create compressed weights use the "
+               "compress_weights tool.";
       }
     }
     if (weights.path.empty()) {
@@ -179,12 +179,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     }
     if (!weights.exists()) {
       return "Can't open file specified with --weights flag.";
-     }
+    }
     return nullptr;
   }
 
   Path tokenizer;
-  Path weights;             // weights file location
+  Path weights;  // weights file location
   Path compressed_weights;
   std::string model_type;
 

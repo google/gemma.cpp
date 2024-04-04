@@ -30,6 +30,9 @@ FetchContent_MakeAvailable(highway)
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(sentencepiece)
 
+FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(json)
+
 set(SOURCES
   gemma.cc
   compression/blob_store.cc
@@ -60,17 +63,7 @@ if (WEIGHT_TYPE)
   add_definitions(-DGEMMA_WEIGHT_T=${WEIGHT_TYPE})
 endif()
 
-# Executable Target
-
-add_executable(gemma run.cc)
-target_sources(gemma PRIVATE ${SOURCES})
-set_property(TARGET gemma PROPERTY CXX_STANDARD 17)
-target_link_libraries(gemma hwy hwy_contrib sentencepiece)
-target_include_directories(gemma PRIVATE ./)
 FetchContent_GetProperties(sentencepiece)
-target_include_directories(gemma PRIVATE ${sentencepiece_SOURCE_DIR})
-target_compile_definitions(gemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
-target_compile_options(gemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 
 ## Library Target
 
@@ -84,11 +77,21 @@ target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 
+# Executable Target
+
+add_executable(gemma run.cc)
+target_link_libraries(gemma libgemma hwy hwy_contrib)
+
+add_executable(benchmark benchmark.cc)
+target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+
+## Tests
 set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)
 
 set(GEMMA_TEST_FILES
   ops_test.cc
+  gemma_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
