@@ -71,10 +71,15 @@ class CompressedArray {
   }
 
  public:
+  using value_type = MatT;
+
   MatT* data() { return data_.data(); }
   const MatT* data() const { return data_.data(); }
 
-  constexpr size_t NumElements() const { return kCapacity; }
+  float scale() const { return scale_[0]; }
+  void set_scale(float scale) { scale_[0] = scale; }
+
+  constexpr size_t size() const { return kCapacity; }
 
   constexpr size_t CompressedSize() const {
     return NumCompressed() * sizeof(MatT);
@@ -82,6 +87,7 @@ class CompressedArray {
 
  private:
   std::array<MatT, NumCompressed()> data_;
+  float scale_[kBlobAlign / sizeof(float)];
 };
 
 #if COMPRESS_STATS
@@ -187,8 +193,18 @@ class CacheLoader {
 
     err_ = reader_.Enqueue(CacheKey<MatT>(name), compressed.data(),
                            compressed.CompressedSize());
+    compressed.set_scale(1.0f);
     if (err_ != 0) {
       fprintf(stderr, "Failed to read cache %s (error %d)\n", name, err_);
+    }
+  }
+
+  void LoadScales(float* scales, size_t len) {
+    if (0 != reader_.Enqueue(CacheKey<float>("scales"), scales,
+                             len * sizeof(scales[0]))) {
+      for (size_t i = 0; i < len; ++i) {
+        scales[i] = 1.0f;
+      }
     }
   }
 

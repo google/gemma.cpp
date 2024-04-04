@@ -29,14 +29,14 @@
 #include "gemma.h"  // Gemma
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // HasHelp
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/per_target.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // HasHelp
 
 namespace gcpp {
 
@@ -66,7 +66,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << hwy::VectorBytes() * 8 << " bits)" << "\n"
               << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
-              << gcpp::TypeName(gcpp::WeightT()) << "\n"
+              << gcpp::TypeName(gcpp::GemmaWeightT()) << "\n"
               << "EmbedderInput Type            : "
               << gcpp::TypeName(gcpp::EmbedderInputT()) << "\n";
   }
@@ -93,10 +93,11 @@ void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
   std::cerr << "\n";
 }
 
-void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
-               hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
-               const InferenceArgs& args, int verbosity,
-               const gcpp::AcceptFunc& accept_token, std::string& eot_line) {
+void ReplGemma(gcpp::Gemma& model, ModelTraining training,
+               gcpp::KVCache& kv_cache, hwy::ThreadPool& pool,
+               hwy::ThreadPool& inner_pool, const InferenceArgs& args,
+               int verbosity, const gcpp::AcceptFunc& accept_token,
+               std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   int abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -177,7 +178,7 @@ void ReplGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
       continue;
     }
 
-    if (model.model_training == ModelTraining::GEMMA_IT) {
+    if (training == ModelTraining::GEMMA_IT) {
       // For instruction-tuned models: add control tokens.
       prompt_string = "<start_of_turn>user\n" + prompt_string +
                       "<end_of_turn>\n<start_of_turn>model\n";
@@ -232,8 +233,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
              [](uint64_t /*task*/, size_t thread) { PinThreadToCore(thread); });
   }
 
-  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights, loader.weights,
-                    loader.ModelType(), loader.ModelTraining(), pool);
+  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
 
   auto kv_cache = CreateKVCache(loader.ModelType());
 
@@ -265,7 +265,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(
-      model, kv_cache, pool, inner_pool, inference, app.verbosity,
+      model, loader.ModelTraining(), kv_cache, pool, inner_pool, inference,
+      app.verbosity,
       /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 

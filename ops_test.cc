@@ -369,6 +369,7 @@ CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
     }
   }
   Compress(content, ws, mat, pool);
+  mat.set_scale(1.0f);
   return mat;
 }
 

@@ -30,6 +30,16 @@
 
 #include <stddef.h>
 
+// copybara:import_next_line:gemma_cpp
+#include "compression/sfp.h"
+#include "hwy/base.h"  // hwy::bfloat16_t
+
+// Allowable types for GEMMA_WEIGHT_T (can be specified at compilation time):
+// float, hwy::bfloat16_t, SfpStream, NuqStream
+#ifndef GEMMA_WEIGHT_T
+#define GEMMA_WEIGHT_T SfpStream
+#endif  // !GEMMA_WEIGHT_T
+
 namespace gcpp {
 
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
@@ -45,6 +55,8 @@ struct ConfigGemma7B {
   static constexpr int kKVHeads = 16;  // standard MHA
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
+  static constexpr int kNumTensorScales = 0;
+  using WeightT = GEMMA_WEIGHT_T;
 };
 
 struct ConfigGemma2B {
@@ -57,6 +69,8 @@ struct ConfigGemma2B {
   static constexpr int kKVHeads = 1;
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
+  static constexpr int kNumTensorScales = 0;
+  using WeightT = GEMMA_WEIGHT_T;
 };
 
 }  // namespace gcpp

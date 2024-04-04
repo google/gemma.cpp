@@ -19,18 +19,18 @@
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "gemma.cc"  // NOLINT
-#include "hwy/foreach_target.h"  // IWYU pragma: keep
+#include "hwy/foreach_target.h"        // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
 // copybara:import_next_line:gemma_cpp
 #include "ops.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // Path
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
@@ -64,6 +64,12 @@
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
 
+// Setting this to true disables fread() calls that read the model file.
+constexpr bool kDryRunFread = false;
+
+// Setting this to false will load and use uncompressed weights.
+constexpr bool kWeightsAreCompressed = true;
+
 namespace gcpp {
 
 template <class TConfig>
@@ -88,70 +94,145 @@ struct Layer {
   std::array<float, kModelDim> pre_ffw_norm_scale;
 };
 
+float ScaleWeights(float* data, size_t len) {
+  float maxabs = 0.0;
+  for (size_t i = 0; i < len; ++i) {
+    maxabs = std::max(maxabs, std::abs(data[i]));
+  }
+  const float kMaxRange = 1.875f;
+  if (maxabs <= kMaxRange) {
+    return 1.0f;
+  }
+  const float scale = maxabs / kMaxRange;
+  const float inv_scale = 1.0f / scale;
+  for (size_t i = 0; i < len; ++i) {
+    data[i] *= inv_scale;
+  }
+  return scale;
+}
+
+// Array instead of single large allocation for parallel mem init. Split out of
+// Weights so that only these pointers are initialized.
+template <class TConfig>
+struct LayerPointers {
+  explicit LayerPointers(hwy::ThreadPool& pool) {
+    pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
+      this->layers[task] = hwy::AllocateAligned<Layer<TConfig>>(1);
+    });
+  }
+
+  using TLayer = Layer<TConfig>;
+  std::array<hwy::AlignedFreeUniquePtr<TLayer[]>, TConfig::kLayers> layers;
+};
+
 template <class TConfig>
 struct Weights {
-  Weights() = default;
-
-  hwy::AlignedUniquePtr<Layer<TConfig>[]> layers;  // kLayers
+  // No ctor/dtor, allocated via AllocateAligned.
 
   std::array<float, TConfig::kVocabSize * TConfig::kModelDim>
       embedder_input_embedding;
 
   std::array<float, TConfig::kModelDim> final_norm_scale;
+
+  LayerPointers<TConfig> layer_ptrs;
+
+  std::array<float, TConfig::kNumTensorScales> scales;
+
+  const Layer<TConfig>* GetLayer(size_t layer) const {
+    return layer_ptrs.layers[layer].get();
+  }
+  Layer<TConfig>* GetLayer(size_t layer) {
+    return layer_ptrs.layers[layer].get();
+  }
 };
 
-// Only called if cached loading fails.
 template <typename TConfig>
-hwy::AlignedUniquePtr<Weights<TConfig>> LoadWeights(const Path& checkpoint) {
+hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
+    const Path& checkpoint, hwy::ThreadPool& pool,
+    bool scale_for_compression = false) {
   PROFILER_ZONE("Startup.LoadWeights");
-  using TWeights = Weights<TConfig>;
-  hwy::AlignedUniquePtr<TWeights> weights = hwy::MakeUniqueAligned<TWeights>();
-  weights->layers =
-      hwy::MakeUniqueAlignedArray<Layer<TConfig>>(TConfig::kLayers);
-
-  if (checkpoint.path.empty()) {
-    HWY_ABORT(
-        "Loading --compressed_weights failed; we require a --weights argument. "
-        "Please see issue #11 on how to create this file.\n");
+  if (!std::filesystem::exists(checkpoint.path)) {
+    HWY_ABORT("The model weights file '%s' does not exist.",
+              checkpoint.path.c_str());
   }
 
+  using TWeights = Weights<TConfig>;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
+      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
+  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
+  new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
+
+  size_t scale_pos = 0;
   FILE* fptr;
-  fptr = fopen(checkpoint.path.c_str(), "rb");
-  if (fptr == nullptr) {
-    HWY_ABORT("Failed to open model file %s - does it exist?",
-              checkpoint.path.c_str());
+  if constexpr (kDryRunFread) {
+    fprintf(stderr, "Dry-Run, not reading model-file.\n");
+  } else {
+    fptr = fopen(checkpoint.path.c_str(), "rb");
+    if (fptr == nullptr) {
+      HWY_ABORT("Failed to open model file %s - does it exist?",
+                checkpoint.path.c_str());
+    }
   }
   bool ok = true;
   uint64_t total_size = 0;
-  ok &= 1 == fread(&(weights->embedder_input_embedding),
-                   sizeof(weights->embedder_input_embedding), 1, fptr);
-  ok &= 1 == fread(&(weights->final_norm_scale),
-                   sizeof(weights->final_norm_scale), 1, fptr);
-  total_size += sizeof(weights->embedder_input_embedding) +
-                sizeof(weights->final_norm_scale);
+  auto do_fread = [&](void* var, int layer, const char* name, size_t size) {
+    if (layer == -1) {
+      fprintf(stderr, "Loading Parameters (size %zu): %s\n", size, name);
+    } else {
+      fprintf(stderr, "Loading Parameters (layer=%d, size %zu): %s\n", layer,
+              size, name);
+    }
+    if constexpr (!kDryRunFread) {
+      ok &= 1 == fread(var, size, 1, fptr);
+      total_size += size;
+    }
+  };
+  do_fread(&(weights->embedder_input_embedding), -1, "embedder_input_embedding",
+           sizeof(weights->embedder_input_embedding));
+  do_fread(&(weights->final_norm_scale), -1, "final_norm_scale",
+           sizeof(weights->final_norm_scale));
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-    Layer<TConfig>* layer_view = &weights->layers[layer];
-    ok &= 1 == fread(&layer_view->attn_vec_einsum_w,
-                     sizeof(layer_view->attn_vec_einsum_w), 1, fptr);
-    ok &= 1 == fread(&layer_view->qkv_einsum_w,
-                     sizeof(layer_view->qkv_einsum_w), 1, fptr);
-    ok &= 1 == fread(&layer_view->gating_einsum_w,
-                     sizeof(layer_view->gating_einsum_w), 1, fptr);
-    ok &= 1 ==
-          fread(&layer_view->linear_w, sizeof(layer_view->linear_w), 1, fptr);
-    ok &= 1 == fread(&layer_view->pre_attention_norm_scale,
-                     sizeof(layer_view->pre_attention_norm_scale), 1, fptr);
-    ok &= 1 == fread(&layer_view->pre_ffw_norm_scale,
-                     sizeof(layer_view->pre_ffw_norm_scale), 1, fptr);
-    total_size += sizeof(*layer_view);
+    Layer<TConfig>* layer_view = weights->GetLayer(layer);
+
+#define READ_WEIGHTS(name)                                                 \
+  do {                                                                     \
+    do_fread(&(layer_view->name), layer, #name, sizeof(layer_view->name)); \
+  } while (0)
+
+#define SCALE_WEIGHTS(name)                                               \
+  do {                                                                    \
+    if (ok && !kDryRunFread && scale_for_compression) {                   \
+      weights->scales[scale_pos++] =                                      \
+          ScaleWeights(layer_view->name.data(), layer_view->name.size()); \
+    }                                                                     \
+  } while (0)
+    // Make sure we don't have uninitialized memory.
+    hwy::ZeroBytes(layer_view, sizeof(*layer_view));
+    READ_WEIGHTS(attn_vec_einsum_w);
+    READ_WEIGHTS(qkv_einsum_w);
+    SCALE_WEIGHTS(attn_vec_einsum_w);
+    SCALE_WEIGHTS(qkv_einsum_w);
+    READ_WEIGHTS(gating_einsum_w);
+    READ_WEIGHTS(linear_w);
+    SCALE_WEIGHTS(gating_einsum_w);
+    SCALE_WEIGHTS(linear_w);
+    READ_WEIGHTS(pre_attention_norm_scale);
+    READ_WEIGHTS(pre_ffw_norm_scale);
+#undef READ_WEIGHTS
   }
   if (!ok) {
-    HWY_ABORT("Failed to read from %s - might be a directory, or too small? "
-              "expected size: %d kB", checkpoint.path.c_str(),
-              static_cast<uint32_t>(total_size >> 10));
+    HWY_ABORT(
+        "Failed to read from %s - might be a directory, or too small? "
+        "expected size: %d kB",
+        checkpoint.path.c_str(), static_cast<uint32_t>(total_size >> 10));
   }
-  HWY_ASSERT(0 == fclose(fptr));
-  return weights;
+  if (!kDryRunFread) {
+    HWY_ASSERT(0 == fclose(fptr));
+    if (scale_for_compression) {
+      HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
+    }
+  }
+  return weights_u8;
 }
 
 template <class TConfig>
@@ -159,18 +240,19 @@ struct CompressedLayer {
   // No ctor/dtor, allocated via AllocateAligned.
 
   using TLayer = gcpp::Layer<TConfig>;
+  using WeightT = typename TConfig::WeightT;
 
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
 
   // Compressed Parameters
   // We don't yet have an RMSNorm that accepts all WeightT.
-  CompressedArray<hwy::bfloat16_t, kModelDim> c_pre_attention_norm_scale;
-  CompressedArray<hwy::bfloat16_t, kModelDim> c_pre_ffw_norm_scale;
-  CompressedArray<WeightT, TLayer::kGatingEinsumWSize> c_gating_einsum_w;
-  CompressedArray<WeightT, kModelDim * kFFHiddenDim> c_linear_w;
-  CompressedArray<WeightT, TLayer::kQKVEinsumWSize> c_qkv_einsum_w;
-  CompressedArray<WeightT, TLayer::kAttVecEinsumWSize> c_attn_vec_einsum_w;
+  CompressedArray<hwy::bfloat16_t, kModelDim> pre_attention_norm_scale;
+  CompressedArray<hwy::bfloat16_t, kModelDim> pre_ffw_norm_scale;
+  CompressedArray<WeightT, TLayer::kGatingEinsumWSize> gating_einsum_w;
+  CompressedArray<WeightT, kModelDim * kFFHiddenDim> linear_w;
+  CompressedArray<WeightT, TLayer::kQKVEinsumWSize> qkv_einsum_w;
+  CompressedArray<WeightT, TLayer::kAttVecEinsumWSize> attn_vec_einsum_w;
 };
 
 // Array instead of single large allocation for parallel mem init. Split out of
@@ -193,20 +275,24 @@ struct CompressedWeights {
   // No ctor/dtor, allocated via AllocateAligned.
 
   CompressedArray<EmbedderInputT, TConfig::kVocabSize * TConfig::kModelDim>
-      c_embedder_input_embedding;
+      embedder_input_embedding;
 
-  CompressedArray<hwy::bfloat16_t, TConfig::kModelDim> c_final_norm_scale;
+  CompressedArray<hwy::bfloat16_t, TConfig::kModelDim> final_norm_scale;
 
   // Must be last so that the other arrays remain aligned.
   CompressedLayerPointers<TConfig> c_layer_ptrs;
 
-  const CompressedLayer<TConfig>* CLayer(size_t layer) const {
+  const CompressedLayer<TConfig>* GetLayer(size_t layer) const {
     return c_layer_ptrs.c_layers[layer].get();
   }
-  CompressedLayer<TConfig>* CLayer(size_t layer) {
+  CompressedLayer<TConfig>* GetLayer(size_t layer) {
     return c_layer_ptrs.c_layers[layer].get();
   }
 };
+
+template <class TConfig>
+using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
+                         Weights<TConfig>>;
 
 // Aligned.
 template <class TConfig, size_t TBatchSize>
@@ -272,16 +358,27 @@ KVCache CreateKVCache(Model type) {
   }
 }
 
+namespace {
+template <class Config>
+void DeleteLayersPtrs(CompressedWeights<Config>* c_weights) {
+  c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
+}
+template <class Config>
+void DeleteLayersPtrs(Weights<Config>* weights) {
+  weights->layer_ptrs.~LayerPointers<Config>();
+}
+}  // namespace
+
 template <class Config>
 struct GemmaImpl : public GemmaInterface {
   GemmaImpl(std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
-            hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
+            hwy::AlignedFreeUniquePtr<uint8_t[]>& weights_u8,
             hwy::ThreadPool& pool);
 
   ~GemmaImpl() {
-    using CWeights = CompressedWeights<Config>;
-    CWeights* c_weights = reinterpret_cast<CWeights*>(compressed_weights.get());
-    c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
+    WeightsT<Config>* weights =
+        reinterpret_cast<WeightsT<Config>*>(weights_u8.get());
+    DeleteLayersPtrs(weights);
   }
 
   const sentencepiece::SentencePieceProcessor* Tokenizer() const override {
@@ -296,7 +393,7 @@ struct GemmaImpl : public GemmaInterface {
                 int verbosity) override;
 
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> compressed_weights;
+  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
   hwy::AlignedUniquePtr<Activations<Config, kPrefillBatchSize>> prefill;
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
 };
@@ -309,11 +406,11 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <class TConfig, size_t kBatchSize>
+template <size_t kBatchSize, typename LayerT, class TConfig>
 HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
                             Activations<TConfig, kBatchSize>& activations,
-                            const CompressedLayer<TConfig>* c_layer,
-                            KVCache& kv_cache, hwy::ThreadPool& pool) {
+                            const LayerT* layer_weights, KVCache& kv_cache,
+                            hwy::ThreadPool& pool) {
   PROFILER_ZONE("Gen.Attention");
   const size_t pos = batch_start + batch_idx;
   HWY_DASSERT(batch_idx < kBatchSize);
@@ -329,27 +426,26 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
   static const float kQueryScale =
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
 
-  const size_t batch_offset = batch_idx * kModelDim;
+  float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
 
   auto ProjQ = [&](uint64_t head, size_t head_offset) HWY_ATTR {
     float* HWY_RESTRICT q =
         activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
 
-    MatVecLoop<kQKVDim, kModelDim>(
-        c_layer->c_qkv_einsum_w, head_offset + 0 * kQKVDim * kModelDim,
-        activations.pre_att_rms_out.data() + batch_offset, q);
+    MatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w,
+                                   head_offset + 0 * kQKVDim * kModelDim, x, q);
   };
 
-  auto ProjKV =
-      [&](size_t k_offset, size_t v_offset, size_t kv_offset) HWY_ATTR {
-        TwoOfsMatVecLoop<kQKVDim, kModelDim>(
-            c_layer->c_qkv_einsum_w, k_offset, v_offset,
-            activations.pre_att_rms_out.data() + batch_offset,
-            kv_cache.key_cache.get() + kv_offset,
-            kv_cache.value_cache.get() + kv_offset);
+  auto ProjKV = [&](size_t k_offset, size_t v_offset,
+                    size_t kv_offset) HWY_ATTR {
+    float* HWY_RESTRICT k = kv_cache.key_cache.get() + kv_offset;
+    float* HWY_RESTRICT v = kv_cache.value_cache.get() + kv_offset;
 
-        Rope(kv_cache.key_cache.get() + kv_offset, kQKVDim, pos);
-      };
+    TwoOfsMatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, k_offset,
+                                         v_offset, x, k, v);
+
+    Rope(k, kQKVDim, pos);
+  };
 
   auto Attn = [&](uint64_t head, size_t head_offset) HWY_ATTR {
     // Calculate scores
@@ -388,7 +484,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
         head == 0
             ? activations.att_post2.data() + batch_idx * kModelDim
             : activations.att_post1.data() + head * kBatchSize * kModelDim;
-    MatVecLoop<kModelDim, kQKVDim>(c_layer->c_attn_vec_einsum_w,
+    MatVecLoop<kModelDim, kQKVDim>(layer_weights->attn_vec_einsum_w,
                                    head * kModelDim * kQKVDim, att_out,
                                    head_out);
   };
@@ -431,9 +527,9 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
   }
 }
 
-template <typename TConfig, size_t kBatchSize>
+template <size_t kBatchSize, typename LayerT, typename TConfig>
 HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
-                      size_t batch_idx, const CompressedLayer<TConfig>* c_layer,
+                      size_t batch_idx, const LayerT* layer_weights,
                       hwy::ThreadPool& pool) {
   HWY_DASSERT(batch_idx < kBatchSize);
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -449,12 +545,12 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
 
     // Same matrix, first and second half of rows. Could fuse into one MatVec,
     // but separating them could help on NUMA e.g. multiple sockets.
-    MatVec<kFFHiddenDim, kModelDim>(c_layer->c_gating_einsum_w,
+    MatVec<kFFHiddenDim, kModelDim>(layer_weights->gating_einsum_w,
                                     kFFHiddenDim * kModelDim, vec, out_mul,
                                     pool);
 
     // Gate, will go through the nonlinearity.
-    MatVec<kFFHiddenDim, kModelDim>(c_layer->c_gating_einsum_w, 0, vec, out,
+    MatVec<kFFHiddenDim, kModelDim>(layer_weights->gating_einsum_w, 0, vec, out,
                                     pool);
 
     namespace hn = hwy::HWY_NAMESPACE;
@@ -467,7 +563,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
 
   PROFILER_ZONE("Gen.FFW\\GatedGELU");
   MatVec<kModelDim, kFFHiddenDim>(
-      c_layer->c_linear_w, 0, activations.ffw_hidden.data() + hidden_offset,
+      layer_weights->linear_w, 0, activations.ffw_hidden.data() + hidden_offset,
       activations.ffw_out.data() + batch_idx * kModelDim, pool);
 }
 
@@ -486,9 +582,9 @@ GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling() {
       Sqrt(static_cast<float>(TConfig::kModelDim))));
 }
 
-template <typename TConfig, size_t kBatchSize>
+template <size_t kBatchSize, typename WeightArrayT, typename TConfig>
 HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
-                          const CompressedWeights<TConfig>& c_weights,
+                          const WeightArrayT& weights,
                           Activations<TConfig, kBatchSize>& activations,
                           KVCache& kv_cache, hwy::ThreadPool& pool,
                           hwy::ThreadPool& inner_pool) {
@@ -500,22 +596,22 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
   pool.Run(
       0, num_tokens, [&](const uint64_t token_idx, size_t /*thread*/) HWY_ATTR {
         const int token = tokens[token_idx];
-        Decompress(c_weights.c_embedder_input_embedding, token * kModelDim,
+        Decompress(weights.embedder_input_embedding, token * kModelDim,
                    activations.x.data() + token_idx * kModelDim, kModelDim);
         MulByConst(kEmbScaling, activations.x.data() + token_idx * kModelDim,
                    kModelDim);
       });
 
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-    const CompressedLayer<TConfig>* c_layer = c_weights.CLayer(layer);
+    const auto* layer_weights = weights.GetLayer(layer);
 
     for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
       RMSNorm(activations.x.data() + token_idx * kModelDim,
-              c_layer->c_pre_attention_norm_scale.data(),
+              layer_weights->pre_attention_norm_scale.data(),
               activations.pre_att_rms_out.data() + token_idx * kModelDim,
               kModelDim);
-      Attention<TConfig, kBatchSize>(pos, token_idx, layer, activations,
-                                     c_layer, kv_cache, pool);
+      Attention<kBatchSize>(pos, token_idx, layer, activations, layer_weights,
+                            kv_cache, pool);
     }
 
     // TODO: sink the loop into these functions, i.e. make them matmuls.
@@ -525,10 +621,10 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
           AddFrom(activations.att_post2.data() + token_idx * kModelDim,
                   activations.x.data() + token_idx * kModelDim, kModelDim);
           RMSNorm(activations.x.data() + token_idx * kModelDim,
-                  c_layer->c_pre_ffw_norm_scale.data(),
+                  layer_weights->pre_ffw_norm_scale.data(),
                   activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
                   kModelDim);
-          FFW<TConfig, kBatchSize>(activations, token_idx, c_layer, inner_pool);
+          FFW<kBatchSize>(activations, token_idx, layer_weights, inner_pool);
           AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
                   activations.x.data() + token_idx * kModelDim, kModelDim);
         });
@@ -536,21 +632,20 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
 
   pool.Run(
       0, num_tokens, [&](const uint64_t token_idx, size_t /*thread*/) HWY_ATTR {
-        RMSNormInplace(c_weights.c_final_norm_scale.data(),
+        RMSNormInplace(weights.final_norm_scale.data(),
                        activations.x.data() + token_idx * kModelDim, kModelDim);
       });
 }
 
 // n = 1 specialization
-template <class TConfig>
-void Transformer(int token, size_t pos,
-                 const CompressedWeights<TConfig>& c_weights,
+template <typename WeightArrayT, class TConfig>
+void Transformer(int token, size_t pos, const WeightArrayT& weights,
                  Activations<TConfig, 1>& activations, KVCache& kv_cache,
                  hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool) {
   static constexpr size_t kLayers = TConfig::kLayers;
   static constexpr size_t kModelDim = TConfig::kModelDim;
 
-  Decompress(c_weights.c_embedder_input_embedding, token * kModelDim,
+  Decompress(weights.embedder_input_embedding, token * kModelDim,
              activations.x.data(), kModelDim);
 
   GEMMA_CONSTEXPR_EMBSCALING const float kEmbScaling =
@@ -558,17 +653,18 @@ void Transformer(int token, size_t pos,
   MulByConst(kEmbScaling, activations.x.data(), kModelDim);
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
-    const CompressedLayer<TConfig>* c_layer = c_weights.CLayer(layer);
-    RMSNorm(activations.x.data(), c_layer->c_pre_attention_norm_scale.data(),
+    const auto* layer_weights = weights.GetLayer(layer);
+    RMSNorm(activations.x.data(),
+            layer_weights->pre_attention_norm_scale.data(),
             activations.pre_att_rms_out.data(), kModelDim);
-    Attention<TConfig, 1>(pos, 0, layer, activations, c_layer, kv_cache, pool);
+    Attention<1>(pos, 0, layer, activations, layer_weights, kv_cache, pool);
     AddFrom(activations.att_post2.data(), activations.x.data(), kModelDim);
-    RMSNorm(activations.x.data(), c_layer->c_pre_ffw_norm_scale.data(),
+    RMSNorm(activations.x.data(), layer_weights->pre_ffw_norm_scale.data(),
             activations.bf_pre_ffw_rms_out.data(), kModelDim);
-    FFW<TConfig, 1>(activations, /* batch_idx = */ 0, c_layer, pool);
+    FFW<1>(activations, /* batch_idx = */ 0, layer_weights, pool);
     AddFrom(activations.ffw_out.data(), activations.x.data(), kModelDim);
   }
-  RMSNormInplace(c_weights.c_final_norm_scale.data(), activations.x.data(),
+  RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
                  kModelDim);
 }
 
@@ -609,9 +705,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   Activations<TConfig, 1>& activations = *gemma.state.get();
   Activations<TConfig, kPrefillBatchSize>& prefill_activations =
       *gemma.prefill.get();
-  const CompressedWeights<TConfig>& c_weights =
-      *reinterpret_cast<CompressedWeights<TConfig>*>(
-          gemma.compressed_weights.get());
+
+  const WeightsT<TConfig>& weights =
+      *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
 
   size_t prompt_size = prompt.size();
   RangeChecks<TConfig>(max_tokens, max_generated_tokens, prompt_size);
@@ -643,9 +739,8 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     HWY_DASSERT(batch_size <= kPrefillBatchSize);
     HWY_DASSERT(pos_offset + batch_size <= prompt_size - 1);
     const int* batch_tokens = prompt.data() + pos_offset;
-    Prefill<TConfig, kPrefillBatchSize>(batch_tokens, batch_size, pos,
-                                        c_weights, prefill_activations,
-                                        kv_cache, pool, inner_pool);
+    Prefill<kPrefillBatchSize>(batch_tokens, batch_size, pos, weights,
+                               prefill_activations, kv_cache, pool, inner_pool);
     for (size_t idx = 0; idx < batch_size; ++idx) {
       stream_token(batch_tokens[idx], 0.0f);
     }
@@ -672,7 +767,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   for (size_t generate_pos = 0;
        pos < max_tokens && generate_pos < max_generated_tokens;
        ++pos, ++pos_offset, ++generate_pos) {
-    Transformer(token, pos, c_weights, activations, kv_cache, pool, inner_pool);
+    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool);
     float* final_activation = activations.x.data();
     // The condition below is always true if we are doing Prefill above.
     // We keep it here for clarity so that the code is correct even if Prefill
@@ -680,9 +775,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     if (pos_offset >= prompt_size - 1) {
       PROFILER_ZONE("Gen.Embedding");
       // Generation phase
-      MatVec<kVocabSize, TConfig::kModelDim>(
-          c_weights.c_embedder_input_embedding, 0, final_activation,
-          activations.logits.data(), pool);
+      MatVec<kVocabSize, TConfig::kModelDim>(weights.embedder_input_embedding,
+                                             0, final_activation,
+                                             activations.logits.data(), pool);
       // Barrier: must have all logits so we can subtract max.
       Softmax(activations.logits.data(), kVocabSize);
       token = SampleTopK<TConfig::kTopK>(activations.logits.data(), kVocabSize,
@@ -743,52 +838,37 @@ void ForEachTensor(const Weights<TConfig>* weights,
                    CompressedWeights<TConfig>& c_weights, Func& func) {
   func("c_embedding",
        weights ? weights->embedder_input_embedding.data() : nullptr,
-       c_weights.c_embedder_input_embedding);
+       c_weights.embedder_input_embedding);
   func("c_final_norm", weights ? weights->final_norm_scale.data() : nullptr,
-       c_weights.c_final_norm_scale);
+       c_weights.final_norm_scale);
 
-  char name[16];
-  for (int layer_idx = 0; layer_idx < static_cast<int>(TConfig::kLayers);
-       ++layer_idx) {
+  char name_buf[16];
+  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     const size_t idx = static_cast<size_t>(layer_idx);
-    Layer<TConfig>* layer = weights ? &weights->layers[idx] : nullptr;
-    CompressedLayer<TConfig>* c_layer = c_weights.CLayer(idx);
+    const Layer<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
+    CompressedLayer<TConfig>* layer_weights = c_weights.GetLayer(idx);
 
-    snprintf(name, sizeof(name), "pre_ff_ns_%d", layer_idx);
-    func(name, layer ? layer->pre_ffw_norm_scale.data() : nullptr,
-         c_layer->c_pre_ffw_norm_scale);
+#define CALL_FUNC(name, member)                                \
+  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx); \
+  func(name_buf, layer ? layer->member.data() : nullptr, layer_weights->member)
 
-    snprintf(name, sizeof(name), "gating_ein_%d", layer_idx);
-    func(name, layer ? layer->gating_einsum_w.data() : nullptr,
-         c_layer->c_gating_einsum_w);
-
-    snprintf(name, sizeof(name), "linear_w_%d", layer_idx);
-    func(name, layer ? layer->linear_w.data() : nullptr, c_layer->c_linear_w);
-    snprintf(name, sizeof(name), "qkv_ein_%d", layer_idx);
-
-    func(name, layer ? layer->qkv_einsum_w.data() : nullptr,
-         c_layer->c_qkv_einsum_w);
-    snprintf(name, sizeof(name), "att_ein_%d", layer_idx);
-
-    func(name, layer ? layer->attn_vec_einsum_w.data() : nullptr,
-         c_layer->c_attn_vec_einsum_w);
-
-    snprintf(name, sizeof(name), "pre_att_ns_%d", layer_idx);
-    func(name, layer ? layer->pre_attention_norm_scale.data() : nullptr,
-         c_layer->c_pre_attention_norm_scale);
+    CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
+    CALL_FUNC("gating_ein", gating_einsum_w);
+    CALL_FUNC("linear_w", linear_w);
+    CALL_FUNC("qkv_ein", qkv_einsum_w);
+    CALL_FUNC("att_ein", attn_vec_einsum_w);
+    CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
+#undef CALL_FUNC
   }
 }
 
 template <class TConfig>
-hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
-    const Path& weights_path, const Path& cache, hwy::ThreadPool& pool) {
+hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
+    const Path& weights, hwy::ThreadPool& pool) {
   PROFILER_ZONE("Startup.LoadCache");
-
-  if (!std::filesystem::exists(weights_path.path) &&
-      !std::filesystem::exists(cache.path)) {
-    HWY_ABORT(
-        "Either the model weights (--weights) or cached compressed weights "
-        "(--compressed_weights) must exist.");
+  if (!std::filesystem::exists(weights.path)) {
+    HWY_ABORT("The model weights file '%s' does not exist.",
+              weights.path.c_str());
   }
 
   // Allocate compressed weights.
@@ -798,32 +878,49 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeights(
   CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
   new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
 
-  // First attempt to load them from cache, without requiring weights.
-  CacheLoader loader(cache.path.c_str());
+  std::array<float, TConfig::kNumTensorScales> scales;
+  CacheLoader loader(weights.path.c_str());
   ForEachTensor<TConfig>(nullptr, *c_weights, loader);
-  if (loader.ReadAll(pool)) return c_weights_u8;
-
-  // Get weights, compress, and store in cache.
-  const hwy::AlignedUniquePtr<Weights<TConfig>> weights =
-      LoadWeights<TConfig>(weights_path);
-  Compressor compressor(pool);
-  ForEachTensor<TConfig>(weights.get(), *c_weights, compressor);
-  compressor.WriteAll(pool, cache.path.c_str());
-
+  loader.LoadScales(scales.data(), scales.size());
+  if (!loader.ReadAll(pool)) {
+    HWY_ABORT("Failed to load model weights.");
+  }
+  if (TConfig::kNumTensorScales > 0) {
+    size_t scale_pos = 0;
+    for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
+      const size_t idx = static_cast<size_t>(layer_idx);
+      CompressedLayer<TConfig>* layer_weights = c_weights->GetLayer(idx);
+      layer_weights->attn_vec_einsum_w.set_scale(scales[scale_pos++]);
+      layer_weights->qkv_einsum_w.set_scale(scales[scale_pos++]);
+      layer_weights->gating_einsum_w.set_scale(scales[scale_pos++]);
+      layer_weights->linear_w.set_scale(scales[scale_pos++]);
+    }
+    HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
+  }
   return c_weights_u8;
 }
 
 // Type-erased because this function is called via a function pointer.
-hwy::AlignedFreeUniquePtr<uint8_t[]> GetCompressedWeightsT(
-    gcpp::Model model, const Path& weights, const Path& compressed_weights,
-    hwy::ThreadPool& pool) {
+hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeightsT(
+    gcpp::Model model, const Path& weights, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
-      return GetCompressedWeights<ConfigGemma2B>(weights, compressed_weights,
-                                                 pool);
+      return LoadCompressedWeights<ConfigGemma2B>(weights, pool);
     case Model::GEMMA_7B:
-      return GetCompressedWeights<ConfigGemma7B>(weights, compressed_weights,
-                                                 pool);
+      return LoadCompressedWeights<ConfigGemma7B>(weights, pool);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
+hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeightsT(gcpp::Model model,
+                                                  const Path& weights,
+                                                  hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return LoadWeights<ConfigGemma2B>(weights, pool);
+    case Model::GEMMA_7B:
+      return LoadWeights<ConfigGemma7B>(weights, pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -846,18 +943,22 @@ void CompressWeights(const Path& weights_path,
   new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
 
   // Get weights, compress, and store.
-  const hwy::AlignedUniquePtr<Weights<TConfig>> weights =
-      LoadWeights<TConfig>(weights_path);
+  const bool scale_for_compression = TConfig::kNumTensorScales > 0;
+  const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
+      LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
+  Weights<TConfig>* weights =
+      reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
-  ForEachTensor<TConfig>(weights.get(), *c_weights, compressor);
+  ForEachTensor<TConfig>(weights, *c_weights, compressor);
+  compressor.AddScales(weights->scales.data(), weights->scales.size());
   compressor.WriteAll(pool, compressed_weights_path.path.c_str());
 
+  weights->layer_ptrs.~LayerPointers<TConfig>();
   c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
 }
 
 void CompressWeightsT(gcpp::Model model, const Path& weights,
-                      const Path& compressed_weights,
-                      hwy::ThreadPool& pool) {
+                      const Path& compressed_weights, hwy::ThreadPool& pool) {
   switch (model) {
     case Model::GEMMA_2B:
       CompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
@@ -877,7 +978,8 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-HWY_EXPORT(GetCompressedWeightsT);
+HWY_EXPORT(LoadCompressedWeightsT);
+HWY_EXPORT(LoadWeightsT);
 HWY_EXPORT(CompressWeightsT);
 HWY_EXPORT(Generate2B);
 HWY_EXPORT(Generate7B);
@@ -892,10 +994,9 @@ KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len) {
 template <class Config>
 GemmaImpl<Config>::GemmaImpl(
     std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
-    hwy::AlignedFreeUniquePtr<uint8_t[]>& compressed_weights,
-    hwy::ThreadPool& pool)
+    hwy::AlignedFreeUniquePtr<uint8_t[]>& weights_u8, hwy::ThreadPool& pool)
     : tokenizer(std::move(tokenizer)),
-      compressed_weights(std::move(compressed_weights)),
+      weights_u8(std::move(weights_u8)),
       prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
       state(hwy::MakeUniqueAligned<Activations<Config, 1>>()) {}
 
@@ -922,10 +1023,8 @@ void GemmaImpl<ConfigGemma7B>::Generate(
    kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
 }
 
-Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-             const Path& weights_path, Model model_type, ModelTraining training,
-             hwy::ThreadPool& pool)
-    : model_training(training) {
+Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
+             hwy::ThreadPool& pool) {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
   {
     PROFILER_ZONE("Startup.tokenizer");
@@ -934,16 +1033,21 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
       HWY_ABORT("Failed to load the tokenizer file.");
     }
   }
-  auto compressed_weights = HWY_DYNAMIC_DISPATCH(GetCompressedWeightsT)(
-      model_type, weights_path, compressed_weights_path, pool);
+
+  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
+  if constexpr (kWeightsAreCompressed) {
+    weights_u8 =
+        HWY_DYNAMIC_DISPATCH(LoadCompressedWeightsT)(model_type, weights, pool);
+  } else {
+    weights_u8 = HWY_DYNAMIC_DISPATCH(LoadWeightsT)(model_type, weights, pool);
+  }
+
   switch (model_type) {
     case Model::GEMMA_2B:
-      impl_.reset(
-          new GemmaImpl<ConfigGemma2B>(tokenizer, compressed_weights, pool));
+      impl_.reset(new GemmaImpl<ConfigGemma2B>(tokenizer, weights_u8, pool));
       break;
     case Model::GEMMA_7B:
-      impl_.reset(
-          new GemmaImpl<ConfigGemma7B>(tokenizer, compressed_weights, pool));
+      impl_.reset(new GemmaImpl<ConfigGemma7B>(tokenizer, weights_u8, pool));
       break;
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
@@ -981,10 +1085,9 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
 }
 
 void CompressWeights(gcpp::Model model, const Path& weights,
-                     const Path& compressed_weights,
-                     hwy::ThreadPool& pool) {
-  HWY_DYNAMIC_DISPATCH(CompressWeightsT)(
-      model, weights, compressed_weights, pool);
+                     const Path& compressed_weights, hwy::ThreadPool& pool) {
+  HWY_DYNAMIC_DISPATCH(CompressWeightsT)
+  (model, weights, compressed_weights, pool);
 }
 
 }  // namespace gcpp
