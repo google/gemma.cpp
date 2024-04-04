@@ -125,45 +125,20 @@ class AppArgs : public ArgsBase<AppArgs> {
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  static std::string ToLower(const std::string& text) {
-    std::string result = text;
-    std::transform(begin(result), end(result), begin(result),
-                   [](unsigned char c) { return std::tolower(c); });
-    return result;
-  }
+  gcpp::Model ModelType() const { return model_type; }
 
-  gcpp::Model ModelType() const {
-    const std::string model_type_lc = ToLower(model_type);
-    if (model_type_lc == "2b-pt" || model_type_lc == "2b-it") {
-      return gcpp::Model::GEMMA_2B;
-    } else {
-      return gcpp::Model::GEMMA_7B;
-    }
-  }
-
-  gcpp::ModelTraining ModelTraining() const {
-    const std::string model_type_lc = ToLower(model_type);
-    if (model_type_lc == "7b-pt" || model_type_lc == "2b-pt") {
-      return gcpp::ModelTraining::GEMMA_PT;
-    } else {
-      return gcpp::ModelTraining::GEMMA_IT;
-    }
-  }
+  gcpp::ModelTraining ModelTraining() const { return model_training; }
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    const std::string model_type_lc = ToLower(model_type);
-    if (model_type.empty()) {
-      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
-             "2b-it, or 7b-it.";
-    }
-    if (model_type_lc != "2b-pt" && model_type_lc != "7b-pt" &&
-        model_type_lc != "2b-it" && model_type_lc != "7b-it") {
-      return "Model type must be 2b-pt, 7b-pt, 2b-it, or "
-             "7b-it.";
-    }
+    const char* parse_result =
+        ParseModelTypeAndTraining(model_type_str, model_type, model_training);
+    if (parse_result) return parse_result;
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
+    }
+    if (!tokenizer.exists()) {
+      return "Can't open file specified with --tokenizer flag.";
     }
     if (!compressed_weights.path.empty()) {
       if (weights.path.empty()) {
@@ -186,7 +161,9 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path tokenizer;
   Path weights;  // weights file location
   Path compressed_weights;
-  std::string model_type;
+  std::string model_type_str;
+  Model model_type;
+  enum ModelTraining model_training;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -196,10 +173,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "Path name of model weights (.sbs) file.\n    Required argument.");
     visitor(compressed_weights, "compressed_weights", Path(),
             "Alias for --weights.");
-    visitor(model_type, "model", std::string(),
+    visitor(model_type_str, "model", std::string(),
             "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
             "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
-            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n"
+            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n    "
+            "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
+            "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
   }
 };

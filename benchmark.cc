@@ -10,14 +10,14 @@
 #include "nlohmann/json.hpp"
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/app.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/timer.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/app.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"
 
 using json = nlohmann::json;
 
@@ -259,6 +259,13 @@ int main(int argc, char** argv) {
   gcpp::AppArgs app(argc, argv);
   BenchmarkArgs benchmark_args(argc, argv);
 
+  if (const char* error = loader.Validate()) {
+    HWY_ABORT("\nInvalid loader args: %s", error);
+  }
+  if (const char* error = args.Validate()) {
+    HWY_ABORT("\nInvalid inference args: %s", error);
+  }
+
   hwy::ThreadPool inner_pool(0);
   hwy::ThreadPool pool(app.num_threads);
   // For many-core, pinning threads to cores helps.
@@ -275,7 +282,7 @@ int main(int argc, char** argv) {
 
   if (!benchmark_args.goldens.path.empty()) {
     const std::string golden_path =
-        benchmark_args.goldens.path + "/" + loader.model_type + ".txt";
+        benchmark_args.goldens.path + "/" + loader.model_type_str + ".txt";
     return BenchmarkGoldens(model, args, app, kv_cache, inner_pool, pool,
                             golden_path);
   } else if (!benchmark_args.summarize_text.path.empty()) {
