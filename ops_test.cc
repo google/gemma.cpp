@@ -356,6 +356,155 @@ void TestAllCreateDistribution() {
   TestCreateDistribution<5000>();
 }
 
+template <size_t kOuter, size_t kInner>
+CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
+  hwy::ThreadPool pool(0);
+  gcpp::CompressWorkingSet ws;
+  CompressedArray<float, kOuter * kInner> mat;
+  std::array<float, kOuter * kInner> content;
+  const float scale = 1.0f / kInner;
+  for (size_t i = 0; i < kOuter; i++) {
+    for (size_t j = 0; j < kInner; j++) {
+      content[i * kInner + j] = static_cast<float>((i + j + offset) * scale);
+    }
+  }
+  Compress(content, ws, mat, pool);
+  return mat;
+}
+
+template <size_t length>
+hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
+  hwy::AlignedFreeUniquePtr<float[]> vec = hwy::AllocateAligned<float>(length);
+  for (size_t idx = 0; idx < length; idx++) {
+    vec[idx] = static_cast<float>(idx + offset);
+  }
+  return vec;
+}
+
+template <size_t kOuter, size_t kInner>
+hwy::AlignedFreeUniquePtr<float[]> SimpleMatVecAdd(
+    const CompressedArray<float, kOuter * kInner>& mat,
+    const hwy::AlignedFreeUniquePtr<float[]>& vec,
+    const hwy::AlignedFreeUniquePtr<float[]>& add) {
+  hwy::AlignedFreeUniquePtr<float[]> uncompressed_mat =
+      hwy::AllocateAligned<float>(kOuter * kInner);
+  Decompress(mat, 0, uncompressed_mat.get(), kOuter * kInner);
+  hwy::AlignedFreeUniquePtr<float[]> out = hwy::AllocateAligned<float>(kOuter);
+  for (size_t idx_row = 0; idx_row < kOuter; idx_row++) {
+    out[idx_row] = add[idx_row];
+    for (size_t idx_col = 0; idx_col < kInner; idx_col++) {
+      out[idx_row] +=
+          uncompressed_mat[kInner * idx_row + idx_col] * vec[idx_col];
+    }
+  }
+  return out;
+}
+
+template <size_t length>
+void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
+                 const hwy::AlignedFreeUniquePtr<float[]>& b) {
+  for (size_t idx = 0; idx < length; idx++) {
+    const float rel_abs_delta = std::abs(a[idx] - b[idx]) /
+                                std::max(std::abs(a[idx]), std::abs(b[idx]));
+    EXPECT_LT(rel_abs_delta, 2e-6)
+        << "a[" << idx << "]=" << a[idx] << ", b[" << idx << "]=" << b[idx];
+  }
+}
+
+void TestMatVecAdd() {
+  hwy::ThreadPool pool(0);
+  constexpr size_t kOuter = 128 * 3;
+  constexpr size_t kInner = 128 * 5;
+  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out =
+      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out =
+      hwy::AllocateAligned<float>(kOuter);
+  MatVecAdd<true, kOuter, kInner>(mat, 0, vec.get(), add.get(),
+                                  actual_out.get(), pool);
+  AssertClose<kOuter>(actual_out, expected_out);
+}
+
+void TestMatVecAddLoop() {
+  constexpr size_t kOuter = 128 * 3;
+  constexpr size_t kInner = 128 * 5;
+  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out =
+      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out =
+      hwy::AllocateAligned<float>(kOuter);
+  MatVecAddLoop<true, kOuter, kInner>(mat, 0, vec.get(), add.get(),
+                                      actual_out.get());
+  AssertClose<kOuter>(actual_out, expected_out);
+}
+
+void TestTwoMatVecAdd() {
+  hwy::ThreadPool pool(0);
+  constexpr size_t kOuter = 128 * 3;
+  constexpr size_t kInner = 128 * 5;
+  CompressedArray<float, kOuter * kInner> mat0 = GenerateMat<kOuter, kInner>(0);
+  CompressedArray<float, kOuter * kInner> mat1 = GenerateMat<kOuter, kInner>(1);
+  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out0 =
+      SimpleMatVecAdd<kOuter, kInner>(mat0, vec, add0);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
+      SimpleMatVecAdd<kOuter, kInner>(mat1, vec, add1);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out0 =
+      hwy::AllocateAligned<float>(kOuter);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
+      hwy::AllocateAligned<float>(kOuter);
+  TwoMatVecAdd<true, kOuter, kInner>(mat0, mat1, 0, vec.get(), add0.get(),
+                                     add1.get(), actual_out0.get(),
+                                     actual_out1.get(), pool);
+  AssertClose<kOuter>(actual_out0, expected_out0);
+  AssertClose<kOuter>(actual_out1, expected_out1);
+}
+
+void TestTwoOfsMatVecAddLoop() {
+  constexpr size_t kOuter = 128 * 3;
+  constexpr size_t kInner = 128 * 5;
+  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out0 =
+      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add0);
+  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
+      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add1);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out0 =
+      hwy::AllocateAligned<float>(kOuter);
+  hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
+      hwy::AllocateAligned<float>(kOuter);
+  TwoOfsMatVecAddLoop<true, kOuter, kInner>(mat, 0, 0, vec.get(), add0.get(),
+                                            add1.get(), actual_out0.get(),
+                                            actual_out1.get());
+  AssertClose<kOuter>(actual_out0, expected_out0);
+  AssertClose<kOuter>(actual_out1, expected_out1);
+}
+
+void TestSigmoid() {
+  std::vector<float> values;
+  for (int i = -150; i <= 150; ++i) {
+    values.push_back(.1f * i);
+  }
+  std::vector<float> result = values;
+  Sigmoid(result.data(), result.size());
+
+  for (size_t i = 0; i < values.size(); i++) {
+    const float max_error = 0.00007;
+    float value = values[i];
+    float approx = result[i];
+    float expected = (1 / (1 + std::exp(-values[i])));
+    EXPECT_NEAR(approx, expected, max_error) << "Input: " << value;
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -371,9 +520,15 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAddLoop);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
 #ifdef HWY_AFTER_TEST
 HWY_AFTER_TEST();
 #endif
+
 }  // namespace gcpp
 
 #endif
