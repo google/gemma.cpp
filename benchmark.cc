@@ -3,9 +3,13 @@
 #include <iostream>
 #include <ostream>
 #include <sstream>
+#include <string>
+#include <utility>  // std::pair
 #include <vector>
 
 #include "nlohmann/json.hpp"
+// copybara:import_next_line:gemma_cpp
+#include "gemma.h"
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"
 // copybara:import_next_line:gemma_cpp
@@ -13,8 +17,6 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
-#include "hwy/per_target.h"
-#include "hwy/profiler.h"
 #include "hwy/timer.h"
 
 using json = nlohmann::json;

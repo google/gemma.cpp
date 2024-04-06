@@ -167,6 +167,6 @@ cc_binary(
         "@hwy//:nanobenchmark",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
-        "//third_party/json",
+        "@nlohmann_json//:json",
     ],
 )
