@@ -24,8 +24,6 @@
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
-// copybara:import_next_line:gemma_cpp
-#include "compression/compress.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -57,7 +55,6 @@ static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) { return sqrtf(x); }
 
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
-#include "hwy/cache_control.h"  // FlushStream
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
