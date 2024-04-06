@@ -36,9 +36,9 @@
 #include "configs.h"
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"
+#include "hwy/base.h"  // HWY_ASSERT
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
-#include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
 
@@ -151,7 +151,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   }
 
   // Returns error string or nullptr if OK.
-  const char* Validate() const {
+  const char* Validate() {
     const std::string model_type_lc = ToLower(model_type);
     if (model_type.empty()) {
       return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
@@ -165,37 +165,42 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
     }
-    if (compressed_weights.path.empty()) {
-      return "Missing --compressed_weights flag, a file for the compressed "
-             "model.";
+    if (!compressed_weights.path.empty()) {
+      if (weights.path.empty()) {
+        weights = compressed_weights;
+      } else {
+        return "Only one of --weights and --compressed_weights can be "
+            "specified. To create compressed weights use the compress_weights "
+            "tool.";
+      }
     }
+    if (weights.path.empty()) {
+      return "Missing --weights flag, a file for the model weights.";
+    }
+    if (!weights.exists()) {
+      return "Can't open file specified with --weights flag.";
+     }
     return nullptr;
   }
 
   Path tokenizer;
-  Path weights;             // uncompressed weights file location
-  Path compressed_weights;  // compressed weights file location
+  Path weights;             // weights file location
+  Path compressed_weights;
   std::string model_type;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
             "Path name of tokenizer model file.\n    Required argument.");
-    visitor(
-        compressed_weights, "compressed_weights", Path(),
-        "Path name of compressed weights file, regenerated from `--weights` "
-        "file if "
-        "the compressed weights file does not exist.\n    Required argument.");
+    visitor(weights, "weights", Path(),
+            "Path name of model weights (.sbs) file.\n    Required argument.");
+    visitor(compressed_weights, "compressed_weights", Path(),
+            "Alias for --weights.");
     visitor(model_type, "model", std::string(),
             "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
             "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
             "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n"
             "    Required argument.");
-    visitor(weights, "weights", Path(),
-            "Path name of model weights (.sbs) file. Only required if "
-            "compressed_weights file is not present and needs to be "
-            "regenerated. This parameter is only required for compressing "
-            "new model weight exports, otherwise it is not needed.");
   }
 };
 

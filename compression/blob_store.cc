@@ -29,15 +29,15 @@
 // copybara:import_next_line:gemma_cpp
 #include "compression/blob_store.h"
 
+#include <fcntl.h>  // open
 #include <stdint.h>
 #include <stdio.h>     // SEEK_END - unistd isn't enough for IDE.
 #include <sys/stat.h>  // O_RDONLY
-#include <fcntl.h>  // open
 #if HWY_OS_WIN
-#include <io.h>  // read, write, close
 #include <fileapi.h>
+#include <io.h>  // read, write, close
 #else
-#include <unistd.h>    // read, write, close
+#include <unistd.h>  // read, write, close
 #endif
 
 #include <atomic>
@@ -113,8 +113,9 @@ hwy::uint128_t MakeKey(const char* string) {
   return ret;
 }
 
-static void EnqueueChunkRequests(uint64_t offset, uint64_t size, uint8_t* data,
-                                 std::vector<BlobIO>& requests) {
+namespace {
+void EnqueueChunkRequests(uint64_t offset, uint64_t size, uint8_t* data,
+                          std::vector<BlobIO>& requests) {
   // Split into chunks for load-balancing even if blob sizes vary.
   constexpr size_t kChunkSize = 4 * 1024 * 1024;
 
@@ -129,7 +130,7 @@ static void EnqueueChunkRequests(uint64_t offset, uint64_t size, uint8_t* data,
     requests.emplace_back(offset + pos, size - pos, data + pos, 0);
   }
 }
-
+}  // namespace
 
 struct IO {
   // Returns size in bytes or 0.
@@ -197,12 +198,6 @@ static_assert(HWY_IS_LITTLE_ENDIAN, "Assumes little endian");
 class BlobStore {
   static constexpr uint32_t kMagic = 0x0A534253;  // SBS\n
 
-  // Blob offsets on disk and memory addresses are a multiple of this, because
-  // we pad the header and each blob's size. This matches CUDA alignment and the
-  // maximum SVE vector size, and exceeds typical x86 cache line sizes (64 or
-  // 128), which can help performance.
-  static constexpr size_t kAlign = 256;
-
  public:
   // NOT including padding, so that we can also use ZeroFillPadding after
   // copying the header.
@@ -215,13 +210,13 @@ class BlobStore {
   // blobs. Requires num_blobs_ to already be set, typically by reading
   // sizeof(BlobStore) bytes from disk.
   size_t PaddedHeaderSize() const {
-    return hwy::RoundUpTo(HeaderSize(num_blobs_), kAlign);
+    return hwy::RoundUpTo(HeaderSize(num_blobs_), kBlobAlign);
   }
 
   // Returns aligned offset and zero-fills between that and `offset`.
   uint64_t ZeroFillPadding(uint64_t offset) {
     uint8_t* const bytes = reinterpret_cast<uint8_t*>(this);
-    const uint64_t padded = hwy::RoundUpTo(offset, kAlign);
+    const uint64_t padded = hwy::RoundUpTo(offset, kBlobAlign);
     hwy::ZeroBytes(bytes + offset, padded - offset);
     return padded;
   }
@@ -236,7 +231,7 @@ class BlobStore {
     for (size_t i = 0; i < num_blobs_; ++i) {
       const hwy::uint128_t val = keys_[num_blobs_ + i];
       if (val.lo != offset) return __LINE__;
-      offset = ZeroFillPadding(offset + val.hi);
+      offset = hwy::RoundUpTo(offset + val.hi, kBlobAlign);
     }
 
     if (offset != file_size_) return __LINE__;
@@ -253,25 +248,24 @@ class BlobStore {
 
   static std::vector<BlobIO> PrepareWriteRequests(
       const hwy::uint128_t keys[], const hwy::Span<uint8_t> blobs[],
-      size_t num_blobs) {
+      size_t num_blobs, BlobStore* bs) {
     // Sanity check and ensure the cast below is safe.
     HWY_ASSERT(num_blobs < (1ULL << 20));
 
     // Allocate var-length header.
     const size_t header_size = HeaderSize(num_blobs);
-    const size_t padded_header_size = hwy::RoundUpTo(header_size, kAlign);
-    BlobStorePtr bs = Allocate(padded_header_size);
+    const size_t padded_header_size = hwy::RoundUpTo(header_size, kBlobAlign);
     const uint64_t padded_header_end = bs->ZeroFillPadding(header_size);
     HWY_ASSERT(padded_header_end == padded_header_size);
 
     // All-zero buffer used to write padding to the file without copying the
     // input blobs.
-    static uint8_t zeros[kAlign] = {0};
+    static uint8_t zeros[kBlobAlign] = {0};
 
     // Total file size will be the header plus all padded blobs.
     uint64_t payload = 0;
     for (size_t i = 0; i < num_blobs; ++i) {
-      payload += hwy::RoundUpTo(blobs[i].size(), kAlign);
+      payload += hwy::RoundUpTo(blobs[i].size(), kBlobAlign);
     }
     const size_t total_size = padded_header_size + payload;
 
@@ -285,7 +279,7 @@ class BlobStore {
     std::vector<BlobIO> requests;
     requests.reserve(1 + 2 * num_blobs);
     requests.emplace_back(/*offset=*/0, padded_header_size,
-                          reinterpret_cast<uint8_t*>(bs.get()), 0);
+                          reinterpret_cast<uint8_t*>(bs), 0);
 
     // Fill second half of keys_ with offset/size and prepare IO requests.
     uint64_t offset = padded_header_end;
@@ -295,10 +289,10 @@ class BlobStore {
 
       EnqueueChunkRequests(offset, blobs[i].size(), blobs[i].data(), requests);
       offset += blobs[i].size();
-      const size_t padded_size = hwy::RoundUpTo(blobs[i].size(), kAlign);
+      const size_t padded_size = hwy::RoundUpTo(blobs[i].size(), kBlobAlign);
       if (padded_size != blobs[i].size()) {
         const size_t padding = padded_size - blobs[i].size();
-        HWY_ASSERT(padding <= kAlign);
+        HWY_ASSERT(padding <= kBlobAlign);
         requests.emplace_back(offset, padding, zeros, 0);
         offset += padding;
       }
@@ -418,8 +412,11 @@ BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool,
   HWY_ASSERT(keys_.size() == blobs_.size());
 
   // Concatenate blobs in memory.
+  const size_t header_size = BlobStore::HeaderSize(keys_.size());
+  const size_t padded_header_size = hwy::RoundUpTo(header_size, kBlobAlign);
+  BlobStorePtr bs = BlobStore::Allocate(padded_header_size);
   std::vector<BlobIO> requests = BlobStore::PrepareWriteRequests(
-      keys_.data(), blobs_.data(), keys_.size());
+      keys_.data(), blobs_.data(), keys_.size(), bs.get());
 
   // Create/replace existing file.
 #if HWY_OS_WIN

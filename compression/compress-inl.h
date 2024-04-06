@@ -381,13 +381,14 @@ HWY_INLINE void Compress(const std::array<float, kCapacity>& in,
 }
 
 // Decompresses `num` values from `compressed` starting at `compressed_ofs`.
-template <typename MatT, size_t kCapacity, typename OutT>
-HWY_NOINLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
-                             size_t compressed_ofs, OutT* out, size_t num) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.NumElements());
+template <typename ArrayT, typename OutT>
+HWY_NOINLINE void Decompress(const ArrayT& compressed, size_t compressed_ofs,
+                             OutT* out, size_t num) {
+  HWY_DASSERT(compressed_ofs + num <= compressed.size());
   const hn::ScalableTag<OutT> d;
-  using Traits = CompressTraits<MatT>;
-  Traits::Decompress(d, kCapacity, compressed.data(), compressed_ofs, out, num);
+  using Traits = CompressTraits<typename ArrayT::value_type>;
+  Traits::Decompress(d, compressed.size(), compressed.data(), compressed_ofs,
+                     out, num);
 }
 
 // As above, but with threading and benchmarking.
@@ -395,7 +396,7 @@ template <typename MatT, size_t kCapacity, typename OutT>
 HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
                            size_t compressed_ofs, OutT* out, size_t num,
                            hwy::ThreadPool& pool) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.NumElements());
+  HWY_DASSERT(compressed_ofs + num <= compressed.size());
   const double t0 = hwy::platform::Now();
 
   using Traits = CompressTraits<MatT>;
@@ -407,7 +408,7 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
 
         const size_t ofs = idx_batch * kBatch;
         const size_t num = idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
-        Traits::Decompress(d, compressed.NumElements(), compressed.data(),
+        Traits::Decompress(d, compressed.size(), compressed.data(),
                            compressed_ofs + ofs, out + ofs, num);
       });
 
@@ -418,15 +419,27 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
 }
 
 // Returns dot product with `vec_aligned` of length `num`.
+template <class DF, typename ArrayT, typename VecT>
+HWY_INLINE float Dot(DF df, const ArrayT& compressed, size_t compressed_ofs,
+                     const VecT* vec_aligned, size_t num) {
+  HWY_DASSERT(compressed_ofs + num <= compressed.size());
+  HWY_DASSERT(hn::IsAligned(df, vec_aligned));
+  using Traits = CompressTraits<typename ArrayT::value_type>;
+  return Traits::Dot(df, compressed.size(), compressed.data(), compressed_ofs,
+                     vec_aligned, num);
+}
+
+// Returns dot product with `vec_aligned` of length `num`.
 template <class DF, typename MatT, size_t kCapacity, typename VecT>
 HWY_INLINE float Dot(DF df, const CompressedArray<MatT, kCapacity>& compressed,
                      size_t compressed_ofs, const VecT* vec_aligned,
                      size_t num) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.NumElements());
+  HWY_DASSERT(compressed_ofs + num <= compressed.size());
   HWY_DASSERT(hn::IsAligned(df, vec_aligned));
   using Traits = CompressTraits<MatT>;
-  return Traits::Dot(df, kCapacity, compressed.data(), compressed_ofs,
-                     vec_aligned, num);
+  return (compressed.scale() * Traits::Dot(df, compressed.size(),
+                                           compressed.data(), compressed_ofs,
+                                           vec_aligned, num));
 }
 
 // Callback used by ForeachTensor.
@@ -443,6 +456,12 @@ class Compressor {
     Compress(weights, kCapacity, work_, kCapacity, compressed.data(), 0, pool_);
     writer_.Add(CacheKey<MatT>(name), compressed.data(),
                 compressed.CompressedSize());
+  }
+
+  void AddScales(float* scales, size_t len) {
+    if (len) {
+      writer_.Add(CacheKey<float>("scales"), scales, len * sizeof(scales[0]));
+    }
   }
 
   void WriteAll(hwy::ThreadPool& pool, const char* blob_filename) {

@@ -19,9 +19,9 @@
 #include "gemma.h"
 // copybara:import_next_line:gemma_cpp
 #include "util/app.h"  // LoaderArgs
+#include "hwy/contrib/thread_pool/thread_pool.h"
 // copybara:import_next_line:gemma_cpp
 #include "util/args.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 std::vector<int> tokenize(
     const std::string& prompt_string,
@@ -43,8 +43,7 @@ int main(int argc, char** argv) {
   hwy::ThreadPool pool(num_threads);
 
   // Instantiate model and KV Cache
-  gcpp::Gemma model(loader.tokenizer, loader.compressed_weights,
-                    loader.ModelType(), pool);
+  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
   auto kv_cache = CreateKVCache(loader.ModelType());
   size_t pos = 0;  // KV Cache position
 

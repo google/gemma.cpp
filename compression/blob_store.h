@@ -40,6 +40,12 @@ using BlobStorePtr = hwy::AlignedFreeUniquePtr<BlobStore>;
 // 0 if successful, otherwise the line number of the failing check.
 using BlobError = int;
 
+// Blob offsets on disk and memory addresses are a multiple of this, because
+// we pad the header and each blob's size. This matches CUDA alignment and the
+// maximum SVE vector size, and exceeds typical x86 cache line sizes (64 or
+// 128), which can help performance.
+static constexpr size_t kBlobAlign = 256;
+
 struct BlobIO {
   BlobIO(uint64_t offset, size_t size, void* data, uint64_t padding)
       : offset(offset), size(size), data(data), padding(padding) {}

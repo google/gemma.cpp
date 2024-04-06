@@ -24,22 +24,18 @@
 // copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"  // SfpStream/NuqStream
 // copybara:import_next_line:gemma_cpp
-#include "util/args.h"             // Path
+#include "configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
+// copybara:import_next_line:gemma_cpp
+#include "util/args.h"  // Path
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
 
 namespace gcpp {
 
-// Allowable types for GEMMA_WEIGHT_T (can be specified at compilation time):
-// float, hwy::bfloat16_t, SfpStream, NuqStream
-#ifndef GEMMA_WEIGHT_T
-#define GEMMA_WEIGHT_T SfpStream
-#endif  // !GEMMA_WEIGHT_T
-using WeightT = GEMMA_WEIGHT_T;
-
+using GemmaWeightT = GEMMA_WEIGHT_T;
 using EmbedderInputT = hwy::bfloat16_t;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
@@ -65,13 +61,11 @@ struct RuntimeConfig {
 struct GemmaInterface;
 
 struct Gemma {
-  Gemma(const Path& tokenizer_path, const Path& compressed_weights_path,
-        const Path& weights_path, Model model_type, ModelTraining training,
+  Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
   const sentencepiece::SentencePieceProcessor* Tokenizer() const;
   std::unique_ptr<GemmaInterface> impl_;
-  gcpp::ModelTraining model_training;
 };
 
 KVCache CreateKVCache(Model type);  // convenient workaround for now
@@ -99,8 +93,7 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    const StreamFunc& stream_token, std::mt19937& gen);
 
 void CompressWeights(gcpp::Model model, const Path& weights,
-                     const Path& compressed_weights,
-                     hwy::ThreadPool& pool);
+                     const Path& compressed_weights, hwy::ThreadPool& pool);
 
 constexpr int EOS_ID = 1;
 
