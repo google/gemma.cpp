@@ -86,6 +86,25 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "gemma_test",
+    srcs = ["gemma_test.cc"],
+    # Requires model files
+    tags = [
+        "local",
+        "manual",
+        "no_tap",
+    ],
+    deps = [
+        ":args",
+        ":gemma_lib",
+        ":ops",
+        "@googletest//:gtest_main",
+        "@hwy//:hwy_test_util",
+        "@hwy//:thread_pool",
+    ],
+)
+
 cc_library(
     name = "app",
     hdrs = [
@@ -130,5 +149,24 @@ cc_binary(
         "@hwy//:nanobenchmark",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
+    ],
+)
+
+cc_binary(
+    name = "benchmark",
+    srcs = [
+        "benchmark.cc",
+    ],
+    deps = [
+        ":app",
+        ":args",
+        ":gemma_lib",
+        # "//base",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+        "//third_party/json",
     ],
 )

@@ -1,0 +1,40 @@
++++
+list me ten biggest cities
+---
+8. Mexico City
++++
+What is the capital of Switzerland?
+---
+The capital of Switzerland is Bern.
++++
+What is the name of the president of the US?
+---
+I cannot answer this question
++++
+Is it raining frequently in China?
+---
+average of 1,200 rainy days per year
++++
+tell me a french joke
+---
+What do you call a French person who's always complaining?
++++
+which year did the 21th century started?
+---
+The 21st century started in the year **1900**
++++
+what's your favorite pokemon?
+---
+I am unable to provide a favorite Pokémon
++++
+How to bake a tasty cake?
+---
+* 1 and 1/2 cups all-purpose flour
++++
+Which is the richest country in the world?
+---
+richest country in the world is the United States
++++
+do you like electronic music?
+---
+Electronic music is a broad genre

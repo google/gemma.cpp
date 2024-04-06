@@ -40,13 +40,14 @@
 
 namespace gcpp {
 
-static constexpr std::string_view kAsciiArtBanner =
-    "  __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __\n"
-    " / _` |/ _ \\ '_ ` _ \\| '_ ` _ \\ / _` | / __| '_ \\| '_ \\\n"
-    "| (_| |  __/ | | | | | | | | | | (_| || (__| |_) | |_) |\n"
-    " \\__, |\\___|_| |_| |_|_| |_| |_|\\__,_(_)___| .__/| .__/\n"
-    "  __/ |                                    | |   | |\n"
-    " |___/                                     |_|   |_|";
+static constexpr std::string_view kAsciiArtBanner = R""(
+  __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __
+ / _` |/ _ \ '_ ` _ \| '_ ` _ \ / _` | / __| '_ \| '_ \
+| (_| |  __/ | | | | | | | | | | (_| || (__| |_) | |_) |
+ \__, |\___|_| |_| |_|_| |_| |_|\__,_(_)___| .__/| .__/
+  __/ |                                    | |   | |
+ |___/                                     |_|   |_|
+)"";
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   loader.Print(app.verbosity);
@@ -60,7 +61,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << "Prefill Token Batch Size      : " << gcpp::kPrefillBatchSize
               << "\n"
               << "Hardware concurrency          : "
-              << std::thread::hardware_concurrency() << std::endl
+              << std::thread::hardware_concurrency() << "\n"
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
               << hwy::VectorBytes() * 8 << " bits)" << "\n"
@@ -132,13 +133,13 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       }
     } else {
       std::string token_text;
-      HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text).ok());
+      HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text));
       // +1 since position is incremented above
       if (current_pos == prompt_size + 1) {
         // first token of response
         token_text.erase(0, token_text.find_first_not_of(" \t\n"));
         if (verbosity >= 1) {
-          std::cout << std::endl << std::endl;
+          std::cout << "\n\n";
         }
       }
       std::cout << token_text << std::flush;
@@ -189,7 +190,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       }
     }
 
-    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt).ok());
+    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
 
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token
     // if needed.
@@ -199,7 +200,8 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
     prompt_size = prompt.size();
 
-    std::cerr << std::endl << "[ Reading prompt ] " << std::flush;
+    std::cerr << "\n"
+              << "[ Reading prompt ] " << std::flush;
 
     const double time_start = hwy::platform::Now();
     GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
@@ -209,10 +211,10 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
     const double tok_sec = current_pos / (time_end - time_start);
     if (verbosity >= 2) {
       std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
-                << std::endl
-                << tok_sec << " tokens / sec" << std::endl;
+                << "\n"
+                << tok_sec << " tokens / sec" << "\n";
     }
-    std::cout << std::endl << std::endl;
+    std::cout << "\n\n";
   }
   std::cout
       << "max_tokens (" << args.max_tokens

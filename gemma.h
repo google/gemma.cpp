@@ -60,11 +60,21 @@ struct RuntimeConfig {
 
 struct GemmaInterface;
 
+class GemmaTokenizer {
+ public:
+  virtual bool Encode(const std::string& input,
+                      std::vector<std::string>* pieces) const = 0;
+  virtual bool Encode(const std::string& input,
+                      std::vector<int>* pieces) const = 0;
+  virtual bool Decode(const std::vector<int>& ids,
+                      std::string* detokenized) const = 0;
+};
+
 struct Gemma {
   Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
         hwy::ThreadPool& pool);
   ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
-  const sentencepiece::SentencePieceProcessor* Tokenizer() const;
+  const GemmaTokenizer* Tokenizer() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
 
@@ -94,6 +104,11 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
 
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);
+
+float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
+                          const std::vector<int>& prompt, KVCache& kv_cache,
+                          hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+                          int verbosity);
 
 constexpr int EOS_ID = 1;
 

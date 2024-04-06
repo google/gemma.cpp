@@ -1,0 +1,4 @@
+.cache/
+bazel-*/
+build-*/
+python/*/__pycache__

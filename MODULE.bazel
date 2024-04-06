@@ -21,6 +21,13 @@ http_archive(
 )
 
 http_archive(
+    name = "nlohmann_json",
+    urls = ["https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip"],
+    integrity = "sha256-BAIrBdgG61/3MCPCgLaGl9Erk+G3JnoLIqGjnsdXgGk=",
+    strip_prefix = "json-3.11.3",
+)
+
+http_archive(
     name = "com_google_sentencepiece",
     sha256 = "8409b0126ebd62b256c685d5757150cf7fcb2b92a2f2b98efb3f38fc36719754",
     strip_prefix = "sentencepiece-0.1.96",
