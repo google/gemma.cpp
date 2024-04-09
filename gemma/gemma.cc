@@ -71,30 +71,6 @@ constexpr bool kShowTokenization = false;
 
 namespace gcpp {
 
-template <size_t kNumLayers>
-constexpr size_t NumLayersOfTypeBefore(
-    const std::array<LayerAttentionType, kNumLayers>& layers,
-    LayerAttentionType type, size_t num) {
-  size_t count = 0;
-  for (size_t i = 0; i < num; i++) {
-    if (layers[i] == type) count++;
-  }
-  return count;
-}
-
-template <typename TConfig>
-constexpr size_t NumGemmaLayers() {
-  return NumLayersOfTypeBefore(TConfig::kLayerConfig,
-                               LayerAttentionType::kGemma, TConfig::kLayers);
-}
-
-template <typename TConfig>
-constexpr size_t NumGriffinLayers() {
-  return NumLayersOfTypeBefore(TConfig::kLayerConfig,
-                               LayerAttentionType::kGriffinRecurrentBlock,
-                               TConfig::kLayers);
-}
-
 template <class TConfig>
 struct Layer {
   Layer() = default;
@@ -389,7 +365,7 @@ struct Activations {
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static constexpr size_t kCachePosSize =
-      NumGemmaLayers<TConfig>() * kKVHeads * kQKVDim;
+      TConfig::kGemmaLayers * kKVHeads * kQKVDim;
   static constexpr size_t kCacheLayerSize = kKVHeads * kQKVDim;
 
   std::array<float, kBatchSize * kModelDim> x;  // input
@@ -443,11 +419,11 @@ template <class Config>
 KVCache CreateKVCache() {
   constexpr size_t kConv1dWidth = Config::kConv1dWidth;
   return CreateKVCache(
-      NumGemmaLayers<Config>() * Config::kKVHeads * Config::kQKVDim,
+      Config::kGemmaLayers * Config::kKVHeads * Config::kQKVDim,
       Config::kSeqLen,
-      NumGriffinLayers<Config>() * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
+      Config::kGriffinLayers * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
           Config::kModelDim,
-      NumGriffinLayers<Config>() * Config::kModelDim);
+      Config::kGriffinLayers * Config::kModelDim);
 }
 
 KVCache CreateKVCache(Model type) {
