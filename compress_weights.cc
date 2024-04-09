@@ -44,35 +44,14 @@ struct Args : public ArgsBase<Args> {
     ChooseNumThreads();
   }
 
-  static std::string ToLower(const std::string& text) {
-    std::string result = text;
-    std::transform(begin(result), end(result), begin(result),
-                   [](unsigned char c) { return std::tolower(c); });
-    return result;
-  }
-
-  gcpp::Model ModelType() const {
-    const std::string model_type_lc = ToLower(model_type);
-    if (model_type_lc.substr(0, 2) == "2b") {
-      return gcpp::Model::GEMMA_2B;
-    } else if (model_type_lc.substr(0, 2) == "7b") {
-      return gcpp::Model::GEMMA_7B;
-    } else {
-      HWY_ABORT("Unknown model type %s", model_type_lc.c_str());
-    }
-  }
+  gcpp::Model ModelType() const { return model_type; }
 
   // Returns error string or nullptr if OK.
-  const char* Validate() const {
-    const std::string model_type_lc = ToLower(model_type);
-    if (model_type.empty()) {
-      return "Missing --model flag, need to specify either 2b-pt, 7b-pt, "
-             "2b-it, 7b-it.";
-    }
-    if (model_type_lc != "2b-pt" && model_type_lc != "7b-pt" &&
-        model_type_lc != "2b-it" && model_type_lc != "7b-it") {
-      return "Model type must be 2b-pt, 7b-pt, 2b-it, 7b-it.";
-    }
+  const char* Validate() {
+    ModelTraining model_training;
+    const char* parse_result =
+        ParseModelTypeAndTraining(model_type_str, model_type, model_training);
+    if (parse_result) return parse_result;
     if (weights.path.empty()) {
       return "Missing --weights flag, a file for the uncompressed model.";
     }
@@ -88,7 +67,8 @@ struct Args : public ArgsBase<Args> {
 
   Path weights;             // uncompressed weights file location
   Path compressed_weights;  // compressed weights file location
-  std::string model_type;
+  std::string model_type_str;
+  Model model_type;
   size_t num_threads;
 
   template <class Visitor>
@@ -96,10 +76,12 @@ struct Args : public ArgsBase<Args> {
     visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file.\n"
             "    Required argument.");
-    visitor(model_type, "model", std::string(),
+    visitor(model_type_str, "model", std::string(),
             "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
             "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
             "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n    "
+            "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
+            "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
     visitor(compressed_weights, "compressed_weights", Path(),
             "Path name where compressed weights file will be written.\n"
@@ -115,7 +97,7 @@ struct Args : public ArgsBase<Args> {
 void ShowHelp(gcpp::Args& args) {
   std::cerr
       << "Usage:\n./compress_weights --weights <path to uncompressed weights> "
-      " --model <model type> --compressed_weights <output path>\n";
+         " --model <model type> --compressed_weights <output path>\n";
   std::cerr << "\n*Arguments*\n\n";
   args.Help();
   std::cerr << "\n";

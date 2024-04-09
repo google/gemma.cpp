@@ -42,14 +42,23 @@ constexpr bool kSystemPrompt = false;
 
 struct KVCache {
   hwy::AlignedFreeUniquePtr<float[]>
-      key_cache;  // batch_size * kSeqLen * kLayers * kKVHeads * kQKVDim
+      key_cache;  // kSeqLen * kNumGemmaLayers * kKVHeads * kQKVDim
   hwy::AlignedFreeUniquePtr<float[]>
-      value_cache;  // batch_size * kSeqLen * kLayers * kKVHeads * kQKVDim
+      value_cache;  // kSeqLen * kNumGemmaLayers * kKVHeads * kQKVDim
+  hwy::AlignedFreeUniquePtr<float[]>
+      conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kNumGriffinLayers
+  hwy::AlignedFreeUniquePtr<float[]>
+      rglru_cache;  // kModelDim * kNumGriffinLayers
 };
 
 // Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B };
+enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
+
+// Returns error string or nullptr if OK.
+// Thread-hostile.
+const char* ParseModelTypeAndTraining(const std::string& model_flag,
+                                      Model& model, ModelTraining& training);
 
 struct RuntimeConfig {
   size_t max_tokens;
@@ -79,7 +88,8 @@ struct Gemma {
 };
 
 KVCache CreateKVCache(Model type);  // convenient workaround for now
-KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len);
+KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
+                      size_t conv1d_cache_size, size_t rglru_cache_size);
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f.

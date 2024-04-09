@@ -27,8 +27,6 @@
 #include "compression/compress.h"
 // copybara:import_next_line:gemma_cpp
 #include "gemma.h"  // Gemma
-// copybara:import_next_line:gemma_cpp
-#include "util/app.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -36,7 +34,11 @@
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
 // copybara:import_next_line:gemma_cpp
+#include "util/app.h"
+// copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // HasHelp
+
+static constexpr bool kVerboseLogTokens = false;
 
 namespace gcpp {
 
@@ -202,6 +204,12 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
     std::cerr << "\n"
               << "[ Reading prompt ] " << std::flush;
+
+    if constexpr (kVerboseLogTokens) {
+      for (int i = 0; i < static_cast<int>(prompt.size()); ++i) {
+        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
+      }
+    }
 
     const double time_start = hwy::platform::Now();
     GenerateGemma(model, args.max_tokens, args.max_generated_tokens,

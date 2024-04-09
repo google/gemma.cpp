@@ -241,6 +241,24 @@ Example invocation for the following configuration:
 --model 2b-it
 ```
 
+### RecurrentGemma
+
+This repository includes a version of Gemma based on Griffin
+([paper](https://arxiv.org/abs/2402.19427),
+[code](https://github.com/google-deepmind/recurrentgemma)). Its architecture
+includes both recurrent layers and local attention, thus it is more efficient
+for longer sequences and has a smaller memory footprint than standard Gemma. We
+here provide a C++ implementation of this model based on the paper.
+
+To use the recurrent version of Gemma included in this repository, build the
+gemma binary as noted above in Step 3. Download the compressed weights and
+tokenizer from
+[Kaggle](https://www.kaggle.com/models/google/recurrentgemma/gemmaCpp) as in
+Step 1, and run the binary as follows:
+
+`./gemma --tokenizer tokenizer.spm --model gr2b-it --compressed_weights 2b-it-sfp.sbs`
+
+
 ### Troubleshooting and FAQs
 
 **Running `./gemma` fails with "Failed to read cache gating_ein_0 (error 294) ..."**
@@ -477,5 +495,10 @@ submit a PR with a `README.md` edit.
 gemma.cpp was started in fall 2023 by [Austin Huang](mailto:austinvhuang@google.com)
 and [Jan Wassenberg](mailto:janwas@google.com), and subsequently released February 2024
 thanks to contributions from Phil Culliton, Paul Chang, and Dan Zheng.
+
+Griffin support was implemented in April 2024 thanks to contributions by Andrey
+Mikhaylov, Eugene Kliuchnikov, Jan Wassenberg, Jyrki Alakuijala, Lode
+Vandevenne, Luca Versari, Martin Bruse, Phil Culliton, Sami Boukortt, Thomas
+Fischbacher and Zoltan Szabadka.
 
 This is not an officially supported Google product.
