@@ -252,7 +252,7 @@ here provide a C++ implementation of this model based on the paper.
 
 To use the recurrent version of Gemma included in this repository, build the
 gemma binary as noted above in Step 3. Download the compressed weights and
-tokenizer from
+tokenizer from the RecurrentGemma
 [Kaggle](https://www.kaggle.com/models/google/recurrentgemma/gemmaCpp) as in
 Step 1, and run the binary as follows:
 
