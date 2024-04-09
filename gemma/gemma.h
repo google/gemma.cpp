@@ -37,13 +37,13 @@ constexpr bool kSystemPrompt = false;
 
 struct KVCache {
   hwy::AlignedFreeUniquePtr<float[]>
-      key_cache;  // kSeqLen * kNumGemmaLayers * kKVHeads * kQKVDim
+      key_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim
   hwy::AlignedFreeUniquePtr<float[]>
-      value_cache;  // kSeqLen * kNumGemmaLayers * kKVHeads * kQKVDim
+      value_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim
   hwy::AlignedFreeUniquePtr<float[]>
-      conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kNumGriffinLayers
+      conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]>
-      rglru_cache;  // kModelDim * kNumGriffinLayers
+      rglru_cache;  // kModelDim * kGriffinLayers
 };
 
 // Model variants: see configs.h for details.

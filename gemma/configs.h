@@ -61,12 +61,29 @@ constexpr std::array<LayerAttentionType, kNum> FixedLayerConfig(
   return config;
 }
 
+template <size_t kNumLayers>
+constexpr size_t NumLayersOfTypeBefore(
+    const std::array<LayerAttentionType, kNumLayers>& layers,
+    LayerAttentionType type, size_t num) {
+  size_t count = 0;
+  for (size_t i = 0; i < num; i++) {
+    if (layers[i] == type) count++;
+  }
+  return count;
+}
+
 struct ConfigGemma7B {
   static constexpr int kSeqLen = gcpp::kSeqLen;
   static constexpr int kVocabSize = 256000;
   static constexpr std::array<LayerAttentionType, 28> kLayerConfig =
       FixedLayerConfig<28>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers =
+      NumLayersOfTypeBefore(kLayerConfig, LayerAttentionType::kGemma, kLayers);
+  static constexpr int kGriffinLayers =
+      NumLayersOfTypeBefore(kLayerConfig,
+                            LayerAttentionType::kGriffinRecurrentBlock,
+                            kLayers);
   static constexpr int kModelDim = 3072;
   static constexpr int kFFHiddenDim = 16 * 3072 / 2;  // = 24576
   static constexpr int kHeads = 16;
@@ -91,6 +108,12 @@ struct ConfigGemma2B {
   static constexpr std::array<LayerAttentionType, 18> kLayerConfig =
       FixedLayerConfig<18>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers =
+      NumLayersOfTypeBefore(kLayerConfig, LayerAttentionType::kGemma, kLayers);
+  static constexpr int kGriffinLayers =
+      NumLayersOfTypeBefore(kLayerConfig,
+                            LayerAttentionType::kGriffinRecurrentBlock,
+                            kLayers);
   static constexpr int kModelDim = 2048;
   static constexpr int kFFHiddenDim = 16 * 2048 / 2;  // = 16384
   static constexpr int kHeads = 8;
@@ -143,6 +166,12 @@ struct ConfigGriffin2B {
       LayerAttentionType::kGriffinRecurrentBlock,
   };
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers =
+      NumLayersOfTypeBefore(kLayerConfig, LayerAttentionType::kGemma, kLayers);
+  static constexpr int kGriffinLayers =
+      NumLayersOfTypeBefore(kLayerConfig,
+                            LayerAttentionType::kGriffinRecurrentBlock,
+                            kLayers);
   static constexpr int kModelDim = 2560;
   static constexpr int kFFHiddenDim = 7680;
   static constexpr int kHeads = 10;
