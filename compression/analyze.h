@@ -26,11 +26,8 @@
 #include <cstdlib>  // std::abs
 #include <vector>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/distortion.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/stats.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -46,9 +43,7 @@
 #define THIRD_PARTY_GEMMA_CPP_ANALYZE_TOGGLE
 #endif
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq-inl.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp-inl.h"
 #include "hwy/contrib/sort/vqsort-inl.h"
 #include "hwy/highway.h"

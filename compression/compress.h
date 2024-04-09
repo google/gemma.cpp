@@ -27,19 +27,14 @@
 #include <vector>
 
 // IWYU pragma: begin_exports
-// copybara:import_next_line:gemma_cpp
 #include "compression/blob_store.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp.h"
 // IWYU pragma: end_exports
-// copybara:import_next_line:gemma_cpp
 #include "compression/distortion.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #if COMPRESS_STATS
-// copybara:import_next_line:gemma_cpp
 #include "compression/stats.h"
 #endif
 

@@ -20,9 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp.h"
 #include "hwy/base.h"
 
@@ -37,7 +35,6 @@
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_NUQ_INL_TOGGLE
 #endif
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp-inl.h"
 #include "hwy/contrib/sort/vqsort-inl.h"
 #include "hwy/highway.h"

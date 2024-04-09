@@ -34,7 +34,6 @@ FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GI
 FetchContent_MakeAvailable(json)
 
 set(SOURCES
-  gemma.cc
   compression/blob_store.cc
   compression/blob_store.h
   compression/compress.h
@@ -44,6 +43,10 @@ set(SOURCES
   compression/sfp.h
   compression/sfp-inl.h
   compression/test_util.h
+  gemma/configs.h
+  gemma/gemma.cc
+  gemma/gemma.h
+  gemma/ops.h
   util/app.h
   util/args.h
   )
@@ -79,10 +82,10 @@ target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated
 
 # Executable Target
 
-add_executable(gemma run.cc)
+add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
 
-add_executable(benchmark benchmark.cc)
+add_executable(benchmark gemma/benchmark.cc)
 target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
 ## Tests
@@ -90,8 +93,8 @@ set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)
 
 set(GEMMA_TEST_FILES
-  ops_test.cc
-  gemma_test.cc
+  gemma/ops_test.cc
+  gemma/gemma_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
@@ -112,5 +115,5 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
-add_executable(compress_weights compress_weights.cc)
+add_executable(compress_weights gemma/compress_weights.cc)
 target_link_libraries(compress_weights libgemma hwy hwy_contrib)

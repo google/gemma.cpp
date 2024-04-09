@@ -25,14 +25,13 @@
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "ops_test.cc"  //NOLINT
+#define HWY_TARGET_INCLUDE "gemma/ops_test.cc"  //NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 // After highway.h
-// copybara:import_next_line:gemma_cpp
-#include "ops.h"
+#include "gemma/ops.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

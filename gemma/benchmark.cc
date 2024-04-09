@@ -8,16 +8,13 @@
 #include <vector>
 
 #include "nlohmann/json.hpp"
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"
+#include "gemma/gemma.h"
+#include "util/app.h"
+#include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/timer.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/app.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"
 
 using json = nlohmann::json;
 

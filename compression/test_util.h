@@ -24,9 +24,7 @@
 #include "hwy/base.h"
 
 // IWYU pragma: begin_exports
-// copybara:import_next_line:gemma_cpp
 #include "compression/distortion.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/stats.h"
 #include "hwy/tests/test_util.h"  // RandomState
 // IWYU pragma: end_exports

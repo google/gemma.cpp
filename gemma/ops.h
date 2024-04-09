@@ -14,8 +14,9 @@
 // limitations under the License.
 
 // Include guard for non-SIMD code.
-#ifndef THIRD_PARTY_GEMMA_CPP_OPS_H_
-#define THIRD_PARTY_GEMMA_CPP_OPS_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_H_
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_H_
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -43,7 +44,7 @@ static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) { return sqrtf(x); }
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_OPS_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_H_
 
 // Include guard for (potentially) SIMD code.
 #if defined(THIRD_PARTY_GEMMA_CPP_OPS_TOGGLE) == defined(HWY_TARGET_TOGGLE)
@@ -53,7 +54,6 @@ static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) { return sqrtf(x); }
 #define THIRD_PARTY_GEMMA_CPP_OPS_TOGGLE
 #endif
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"

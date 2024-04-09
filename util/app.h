@@ -18,7 +18,6 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 
-#include <iterator>
 #if HWY_OS_LINUX
 #include <sched.h>
 
@@ -32,13 +31,10 @@
 #include <algorithm>  // std::clamp
 #include <thread>     // NOLINT>
 
-// copybara:import_next_line:gemma_cpp
-#include "configs.h"
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"
-#include "hwy/base.h"  // HWY_ASSERT
-// copybara:import_next_line:gemma_cpp
+#include "gemma/configs.h"
+#include "gemma/gemma.h"
 #include "util/args.h"
+#include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
 

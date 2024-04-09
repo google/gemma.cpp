@@ -18,22 +18,18 @@
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "gemma/gemma.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress-inl.h"
-// copybara:import_next_line:gemma_cpp
-#include "ops.h"
+#include "gemma/ops.h"
+#include "util/args.h"  // Path
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // Path
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
-// copybara:end
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
@@ -53,21 +49,16 @@
 #include <iostream>
 #include <memory>
 #include <random>
-#include <regex>
+#include <regex>  // NOLINT
 #include <string>
 #include <vector>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
-// copybara:import_next_line:gemma_cpp
-#include "configs.h"
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"
+#include "gemma/configs.h"
+#include "gemma/gemma.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-// copybara:import_next_line:sentencepiece
-#include "src/sentencepiece_processor.h"
 
 // Setting this to true disables fread() calls that read the model file.
 constexpr bool kDryRunFread = false;

@@ -18,12 +18,8 @@
 #include <iostream>
 #include <string>
 
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"  // Gemma
-// copybara:end
-// copybara:import_next_line:gemma_cpp
+#include "gemma/gemma.h"  // Gemma
 #include "util/args.h"
-// copybara:end
 
 namespace gcpp {
 

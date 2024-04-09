@@ -15,12 +15,9 @@
 
 #include <iostream>
 
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"
-// copybara:import_next_line:gemma_cpp
+#include "third_party/gemma_cpp/gemma.h"
 #include "util/app.h"  // LoaderArgs
 #include "hwy/contrib/thread_pool/thread_pool.h"
-// copybara:import_next_line:gemma_cpp
 #include "util/args.h"
 
 std::vector<int> tokenize(const std::string& prompt_string,

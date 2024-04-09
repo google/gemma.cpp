@@ -23,11 +23,8 @@
 
 #include <array>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/blob_store.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/distortion.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -44,9 +41,7 @@
 #define THIRD_PARTY_GEMMA_CPP_COMPRESS_TOGGLE
 #endif
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq-inl.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/highway.h"

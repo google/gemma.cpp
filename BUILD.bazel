@@ -22,9 +22,7 @@ exports_files(["LICENSE"])
 
 cc_library(
     name = "ops",
-    hdrs = [
-        "ops.h",
-    ],
+    hdrs = ["gemma/ops.h"],
     deps = [
         "//compression:compress",
         "@hwy//:algo",
@@ -41,7 +39,7 @@ cc_library(
 cc_test(
     name = "ops_test",
     size = "small",
-    srcs = ["ops_test.cc"],
+    srcs = ["gemma/ops_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["hwy_ops_test"],
@@ -55,9 +53,7 @@ cc_test(
 
 cc_library(
     name = "args",
-    hdrs = [
-        "util/args.h",
-    ],
+    hdrs = ["util/args.h"],
     deps = [
         "@hwy//:hwy",
     ],
@@ -66,11 +62,11 @@ cc_library(
 cc_library(
     name = "gemma_lib",
     srcs = [
-        "gemma.cc",
+        "gemma/gemma.cc",
     ],
     hdrs = [
-        "configs.h",
-        "gemma.h",
+        "gemma/configs.h",
+        "gemma/gemma.h",
     ],
     deps = [
         ":args",
@@ -88,7 +84,7 @@ cc_library(
 
 cc_test(
     name = "gemma_test",
-    srcs = ["gemma_test.cc"],
+    srcs = ["gemma/gemma_test.cc"],
     # Requires model files
     tags = [
         "local",
@@ -107,9 +103,7 @@ cc_test(
 
 cc_library(
     name = "app",
-    hdrs = [
-        "util/app.h",
-    ],
+    hdrs = ["util/app.h"],
     deps = [
         ":args",
         ":gemma_lib",
@@ -119,9 +113,7 @@ cc_library(
 
 cc_binary(
     name = "gemma",
-    srcs = [
-        "run.cc",
-    ],
+    srcs = ["gemma/run.cc"],
     deps = [
         ":app",
         ":args",
@@ -137,9 +129,7 @@ cc_binary(
 
 cc_binary(
     name = "compress_weights",
-    srcs = [
-        "compress_weights.cc",
-    ],
+    srcs = ["gemma/compress_weights.cc"],
     deps = [
         ":args",
         ":gemma_lib",
@@ -154,9 +144,7 @@ cc_binary(
 
 cc_binary(
     name = "benchmark",
-    srcs = [
-        "benchmark.cc",
-    ],
+    srcs = ["gemma/benchmark.cc"],
     deps = [
         ":app",
         ":args",

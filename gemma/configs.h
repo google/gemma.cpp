@@ -15,8 +15,8 @@
 
 // Model configurations
 
-#ifndef THIRD_PARTY_GEMMA_CPP_CONFIGS_H_
-#define THIRD_PARTY_GEMMA_CPP_CONFIGS_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_CONFIGS_H_
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_CONFIGS_H_
 
 // Allow changing pre-allocated kv cache size as a compiler flag
 #ifndef GEMMA_MAX_SEQLEN
@@ -32,7 +32,6 @@
 
 #include <array>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 
@@ -164,4 +163,4 @@ struct ConfigGriffin2B {
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_CONFIGS_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_CONFIGS_H_

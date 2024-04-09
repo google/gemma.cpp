@@ -23,20 +23,16 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"  // Gemma
+#include "gemma/gemma.h"  // Gemma
+#include "util/app.h"
+#include "util/args.h"  // HasHelp
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/per_target.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/app.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // HasHelp
 
 static constexpr bool kVerboseLogTokens = false;
 

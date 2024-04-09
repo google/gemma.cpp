@@ -26,7 +26,6 @@
 #undef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/blob_store.h"
 
 #include <fcntl.h>  // open

@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/stats.h"
 
 #include <stdio.h>

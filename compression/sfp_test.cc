@@ -18,7 +18,6 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp.h"
 
 #include <stddef.h>
@@ -37,9 +36,7 @@
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Any highway.h must come after foreach_target.h
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp-inl.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/test_util.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"

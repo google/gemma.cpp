@@ -35,11 +35,8 @@
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Other headers that include Highway must come after foreach_target.h
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq-inl.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/nuq.h"
-// copybara:import_next_line:gemma_cpp
 #include "compression/test_util.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"

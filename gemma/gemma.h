@@ -13,25 +13,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 
 #include <functional>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
-// copybara:import_next_line:gemma_cpp
-#include "compression/compress.h"  // SfpStream/NuqStream
-// copybara:import_next_line:gemma_cpp
-#include "configs.h"
+#include "gemma/configs.h"
+#include "util/args.h"  // Path
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
-// copybara:import_next_line:gemma_cpp
-#include "util/args.h"  // Path
-// copybara:import_next_line:sentencepiece
-#include "src/sentencepiece_processor.h"
 
 namespace gcpp {
 
@@ -71,6 +66,7 @@ struct GemmaInterface;
 
 class GemmaTokenizer {
  public:
+  virtual ~GemmaTokenizer() = default;
   virtual bool Encode(const std::string& input,
                       std::vector<std::string>* pieces) const = 0;
   virtual bool Encode(const std::string& input,
@@ -82,7 +78,7 @@ class GemmaTokenizer {
 struct Gemma {
   Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
         hwy::ThreadPool& pool);
-  ~Gemma();  // must be defined after GemmaInterface's dtor is defined.
+  ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
   const GemmaTokenizer* Tokenizer() const;
   std::unique_ptr<GemmaInterface> impl_;
 };
@@ -105,7 +101,7 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
 
 // Convenience function for the common case:
 // - Bundle runtime parameters as RuntimeConfig
-// - No threadpools within threadpools (inner_pool = dummy)
+// - No ThreadPool within ThreadPool (inner_pool = dummy)
 // - All tokens accepted
 void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
@@ -124,4 +120,4 @@ constexpr int EOS_ID = 1;
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_

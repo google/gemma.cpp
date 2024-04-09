@@ -13,14 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// copybara:import_next_line:gemma_cpp
-#include "gemma.h"
+#include "gemma/gemma.h"
 
-#include <thread>
+#include <algorithm>
+#include <iostream>
+#include <random>
+#include <string>
+#include <thread>  // NOLINT
+#include <vector>
 
-// copybara:import_next_line:gemma_cpp
-#include "ops.h"
-// copybara:import_next_line:gemma_cpp
+#include "gemma/ops.h"
 #include "util/args.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/tests/test_util-inl.h"
@@ -79,7 +81,7 @@ class GemmaTest : public ::testing::Test {
       std::cout << "Question " << i + 1 << "\n\n";
       std::string response = GemmaReply(kQA[i][0]);
       std::cout << response << "\n\n";
-      EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);
+      EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
     }
   }
 

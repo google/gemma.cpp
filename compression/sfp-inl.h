@@ -20,7 +20,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/sfp.h"
 #include "hwy/base.h"
 
