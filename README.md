@@ -206,6 +206,12 @@ bazel build -c opt --cxxopt=-std=c++20 :gemma
 
 If the build is successful, you should now have a `gemma` executable in the `bazel-bin/` directory.
 
+#### Make
+
+If you prefer Makefiles, @jart has made one available here:
+
+https://github.com/jart/gemma3/blob/main/Makefile
+
 ### Step 4: Run
 
 You can now run `gemma` from inside the `build/` directory.
