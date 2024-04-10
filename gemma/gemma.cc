@@ -86,7 +86,7 @@ struct Layer {
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
   static constexpr bool kFFBiases = TConfig::kFFBiases;
-  static constexpr size_t kAOBiaseDim =
+  static constexpr size_t kAOBiasDim =
       TConfig::kSoftmaxAttnOutputBiases ? kModelDim : 0;
   static constexpr size_t kGriffinDim =
       TConfig::kGriffinLayers > 0 ? kModelDim : 0;
@@ -98,7 +98,7 @@ struct Layer {
     struct {
       ArrayT<float, kAttVecEinsumWSize> attn_vec_einsum_w;
       ArrayT<float, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiaseDim> attention_output_biases;
+      ArrayT<float, kAOBiasDim> attention_output_biases;
     };
 
     struct {
@@ -310,7 +310,7 @@ struct CompressedLayer {
   static constexpr size_t kGatingEinsumWSize = TLayer::kGatingEinsumWSize;
   static constexpr size_t kConv1dWidth = TLayer::kConv1dWidth;
   static constexpr bool kFFBiases = TLayer::kFFBiases;
-  static constexpr size_t kAOBiaseDim = TLayer::kAOBiaseDim;
+  static constexpr size_t kAOBiasDim = TLayer::kAOBiasDim;
   static constexpr size_t kGriffinDim = TLayer::kGriffinDim;
 
   // Compressed Parameters
@@ -322,7 +322,7 @@ struct CompressedLayer {
     struct {
       ArrayT<WeightT, kAttVecEinsumWSize> attn_vec_einsum_w;
       ArrayT<WeightT, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiaseDim> attention_output_biases;
+      ArrayT<float, kAOBiasDim> attention_output_biases;
     };
 
     struct {
