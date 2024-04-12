@@ -85,6 +85,9 @@ target_link_libraries(gemma libgemma hwy hwy_contrib)
 add_executable(benchmark benchmark.cc)
 target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
+add_executable(debug_prompt debug_prompt.cc)
+target_link_libraries(debug_prompt libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+
 ## Tests
 set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)

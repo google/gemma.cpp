@@ -37,6 +37,7 @@ namespace gcpp {
 
 using GemmaWeightT = GEMMA_WEIGHT_T;
 using EmbedderInputT = hwy::bfloat16_t;
+using LayersOutputT = std::function<void(int, std::string, const float*, size_t)>;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
 
@@ -101,7 +102,7 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity);
+                   int verbosity, LayersOutputT* layers_output = nullptr);
 
 // Convenience function for the common case:
 // - Bundle runtime parameters as RuntimeConfig
