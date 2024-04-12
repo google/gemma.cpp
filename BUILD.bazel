@@ -158,3 +158,22 @@ cc_binary(
         "@nlohmann_json//:json",
     ],
 )
+
+cc_binary(
+    name = "debug_prompt",
+    srcs = [
+        "debug_prompt.cc",
+    ],
+    deps = [
+        ":app",
+        ":args",
+        ":gemma_lib",
+        # "//base",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+        "@nlohmann_json//:json",
+    ],
+)

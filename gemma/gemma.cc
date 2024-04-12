@@ -442,7 +442,7 @@ struct GemmaInterface {
                         hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
                         const StreamFunc& stream_token,
                         const AcceptFunc& accept_token, std::mt19937& gen,
-                        int verbosity) = 0;
+                        int verbosity, LayersOutputT* layers_output) = 0;
 
   virtual float ComputeCrossEntropy(size_t max_tokens,
                                     const std::vector<int>& prompt,
@@ -535,8 +535,8 @@ struct GemmaImpl : public GemmaInterface {
                 float temperature, const std::vector<int>& prompt,
                 size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                 hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
-                const AcceptFunc& accept_token, std::mt19937&,
-                int verbosity) override;
+                const AcceptFunc& accept_token, std::mt19937&, int verbosity,
+                LayersOutputT* layers_output) override;
 
   float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
                             KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -935,7 +935,12 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
 template <typename WeightArrayT, class TConfig>
 void Transformer(int token, size_t pos, const WeightArrayT& weights,
                  Activations<TConfig, 1>& activations, KVCache& kv_cache,
-                 hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool) {
+                 hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
+                 LayersOutputT* layers_output) {
+  if (layers_output != nullptr) {
+    float token_f = token;
+    (*layers_output)(pos, "Tokens", &token_f, 1);
+  }
   static constexpr size_t kModelDim = TConfig::kModelDim;
   Decompress(weights.embedder_input_embedding, token * kModelDim,
              activations.x.data(), kModelDim);
@@ -943,7 +948,6 @@ void Transformer(int token, size_t pos, const WeightArrayT& weights,
   GEMMA_CONSTEXPR_EMBSCALING const float kEmbScaling =
       EmbeddingScaling<TConfig>();
   MulByConst(kEmbScaling, activations.x.data(), kModelDim);
-
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];
     const auto* layer_weights = weights.GetLayer(layer);
@@ -964,9 +968,16 @@ void Transformer(int token, size_t pos, const WeightArrayT& weights,
             activations.bf_pre_ffw_rms_out.data(), kModelDim);
     FFW<1>(activations, /* batch_idx = */ 0, layer_weights, pool);
     AddFrom(activations.ffw_out.data(), activations.x.data(), kModelDim);
+    if (layers_output != nullptr) {
+      std::string block_name = "blocks." + std::to_string(layer);
+      (*layers_output)(pos, block_name, activations.x.data(), kModelDim);
+    }
   }
   RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
                  kModelDim);
+  if (layers_output != nullptr) {
+    (*layers_output)(pos, "final_norm", activations.x.data(), kModelDim);
+  }
 }
 
 template <class TConfig>
@@ -1005,7 +1016,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
                   hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
                   const StreamFunc& stream_token,
                   const AcceptFunc& accept_token, std::mt19937& gen,
-                  int verbosity) {
+                  int verbosity, LayersOutputT* layers_output) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   Activations<TConfig, 1>& activations = *gemma.state.get();
   Activations<TConfig, kPrefillBatchSize>& prefill_activations =
@@ -1072,12 +1083,14 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   for (size_t generate_pos = 0;
        pos < max_tokens && generate_pos < max_generated_tokens;
        ++pos, ++pos_offset, ++generate_pos) {
-    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool);
+    const bool is_generating_phase = pos_offset >= prompt_size - 1;
+    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool,
+                layers_output);
     float* final_activation = activations.x.data();
     // The condition below is always true if we are doing Prefill above.
     // We keep it here for clarity so that the code is correct even if Prefill
     // is disabled.
-    if (pos_offset >= prompt_size - 1) {
+    if (is_generating_phase) {
       PROFILER_ZONE("Gen.Embedding");
       // Generation phase
       MatVec<kVocabSize, TConfig::kModelDim>(weights.embedder_input_embedding,
@@ -1166,7 +1179,8 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
       printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
              total_entropy / std::log(2.0) / (pos + 1));
     }
-    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool);
+    Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool,
+                nullptr);
     MatVec<kVocabSize, kModelDim>(weights.embedder_input_embedding, 0,
                                   activations.x.data(),
                                   activations.logits.data(), pool);
@@ -1186,10 +1200,10 @@ void Generate2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
                 KVCache& kv_cache, hwy::ThreadPool& pool,
                 hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                 const AcceptFunc& accept_token, std::mt19937& gen,
-                int verbosity) {
+                int verbosity, LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, inner_pool, stream_token,
-               accept_token, gen, verbosity);
+               accept_token, gen, verbosity, layers_output);
 }
 
 void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
@@ -1198,10 +1212,10 @@ void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
                 KVCache& kv_cache, hwy::ThreadPool& pool,
                 hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                 const AcceptFunc& accept_token, std::mt19937& gen,
-                int verbosity) {
+                int verbosity, LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, inner_pool, stream_token,
-               accept_token, gen, verbosity);
+               accept_token, gen, verbosity, layers_output);
 }
 
 void GenerateGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma, size_t max_tokens,
@@ -1211,10 +1225,10 @@ void GenerateGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma, size_t max_tokens,
                        hwy::ThreadPool& inner_pool,
                        const StreamFunc& stream_token,
                        const AcceptFunc& accept_token, std::mt19937& gen,
-                       int verbosity) {
+                       int verbosity, LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, inner_pool, stream_token,
-               accept_token, gen, verbosity);
+               accept_token, gen, verbosity, layers_output);
 }
 
 float ComputeCrossEntropy2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
@@ -1478,10 +1492,11 @@ void GemmaImpl<ConfigGemma2B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
     const StreamFunc& stream_token, const AcceptFunc& accept_token,
-    std::mt19937& gen, int verbosity) {
+    std::mt19937& gen, int verbosity, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(Generate2B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
+   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity,
+   layers_output);
 }
 
 template <>
@@ -1490,10 +1505,11 @@ void GemmaImpl<ConfigGemma7B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
     const StreamFunc& stream_token, const AcceptFunc& accept_token,
-    std::mt19937& gen, int verbosity) {
+    std::mt19937& gen, int verbosity, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(Generate7B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
+   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity,
+   layers_output);
 }
 
 template <>
@@ -1502,10 +1518,11 @@ void GemmaImpl<ConfigGriffin2B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
     const StreamFunc& stream_token, const AcceptFunc& accept_token,
-    std::mt19937& gen, int verbosity) {
+    std::mt19937& gen, int verbosity, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(GenerateGriffin2B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity);
+   kv_cache, pool, inner_pool, stream_token, accept_token, gen, verbosity,
+   layers_output);
 }
 
 template <>
@@ -1575,11 +1592,11 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity) {
+                   int verbosity, LayersOutputT* layers_output) {
   pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
   gemma.impl_->Generate(max_tokens, max_generated_tokens, temperature, prompt,
                         start_pos, kv_cache, pool, inner_pool, stream_token,
-                        accept_token, gen, verbosity);
+                        accept_token, gen, verbosity, layers_output);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
@@ -1591,7 +1608,8 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
   GenerateGemma(
       gemma, runtime_config.max_tokens, runtime_config.max_generated_tokens,
       runtime_config.temperature, prompt, start_pos, kv_cache, pool, inner_pool,
-      stream_token, [](int) { return true; }, gen, runtime_config.verbosity);
+      stream_token, [](int) { return true; }, gen, runtime_config.verbosity,
+      nullptr);
 }
 
 void CompressWeights(gcpp::Model model, const Path& weights,
