@@ -32,6 +32,13 @@ namespace gcpp {
 
 using GemmaWeightT = GEMMA_WEIGHT_T;
 using EmbedderInputT = hwy::bfloat16_t;
+// Will be called for layers output with:
+// - position in the tokens sequence
+// - name of the data, p.ex. "tokens", "block.1", "final_norm"
+// - ponter to the data array
+// - size of the data array
+using LayersOutputT =
+    std::function<void(int, const std::string&, const float*, size_t)>;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
 
@@ -92,12 +99,14 @@ KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
 using StreamFunc = std::function<bool(int, float)>;
 using AcceptFunc = std::function<bool(int)>;
 
+// layers_output is optional; if set - it will be called with the activations
+// output after applying each layer.
 void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    float temperature, const std::vector<int>& prompt,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity);
+                   int verbosity, LayersOutputT* layers_output = nullptr);
 
 // Convenience function for the common case:
 // - Bundle runtime parameters as RuntimeConfig
