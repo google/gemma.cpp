@@ -1180,7 +1180,7 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
              total_entropy / std::log(2.0) / (pos + 1));
     }
     Transformer(token, pos, weights, activations, kv_cache, pool, inner_pool,
-                nullptr);
+                /*layers_output=*/nullptr);
     MatVec<kVocabSize, kModelDim>(weights.embedder_input_embedding, 0,
                                   activations.x.data(),
                                   activations.logits.data(), pool);
@@ -1609,7 +1609,7 @@ void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
       gemma, runtime_config.max_tokens, runtime_config.max_generated_tokens,
       runtime_config.temperature, prompt, start_pos, kv_cache, pool, inner_pool,
       stream_token, [](int) { return true; }, gen, runtime_config.verbosity,
-      nullptr);
+      /*layers_output=*/nullptr);
 }
 
 void CompressWeights(gcpp::Model model, const Path& weights,

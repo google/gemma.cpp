@@ -38,7 +38,7 @@ using EmbedderInputT = hwy::bfloat16_t;
 // - ponter to the data array
 // - size of the data array
 using LayersOutputT =
-    std::function<void(int, std::string, const float*, size_t)>;
+    std::function<void(int, const std::string&, const float*, size_t)>;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
 
