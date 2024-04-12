@@ -21,16 +21,12 @@
 #include <random>
 #include <vector>
 
-// copybara:import_next_line:gemma_cpp
 #include "compression/compress.h"  // SfpStream/NuqStream
-// copybara:import_next_line:gemma_cpp
 #include "configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
-// copybara:import_next_line:gemma_cpp
 #include "util/args.h"  // Path
-// copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
 
 namespace gcpp {
@@ -43,7 +39,7 @@ using EmbedderInputT = hwy::bfloat16_t;
 // - ponter to the data array
 // - size of the data array
 using LayersOutputT =
-    std::function<void(int, std::string, const float*, size_t)>;
+    std::function<void(int, const std::string&, const float*, size_t)>;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
 

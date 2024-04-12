@@ -5,9 +5,7 @@
 
 #include "gemma.h"
 #include "nlohmann/json.hpp"
-// copybara:import_next_line:gemma_cpp
 #include "util/app.h"
-// copybara:import_next_line:gemma_cpp
 #include "util/args.h"
 
 using json = nlohmann::json;
@@ -67,7 +65,7 @@ class OutputJsonLogger {
   json json_output;
 
   gcpp::LayersOutputT layers_output_log_f =
-      [this](int pos, std::string key, const float* values, size_t values_len) {
+      [this](int pos, const std::string& key, const float* values, size_t values_len) {
         std::vector<float> v{values, values + values_len};
         json_output[std::to_string(pos)][key] = v;
       };
