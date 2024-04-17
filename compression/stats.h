@@ -45,7 +45,7 @@ class Bins {
     }
   }
 
-  void Print(const char* caption) {
+  void Print(const char* caption) const {
     fprintf(stderr, "\n%s [%zu]\n", caption, N);
     size_t last_nonzero = 0;
     for (size_t i = N - 1; i < N; --i) {

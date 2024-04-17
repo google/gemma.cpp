@@ -18,6 +18,8 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include "compression/nuq.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,8 +27,10 @@
 #include <algorithm>  // std::shuffle
 #include <random>
 
+#include "compression/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/tests/test_util.h"
 #include "hwy/timer.h"
 
 // clang-format off
@@ -36,8 +40,6 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Other headers that include Highway must come after foreach_target.h
 #include "compression/nuq-inl.h"
-#include "compression/nuq.h"
-#include "compression/test_util.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"
@@ -114,12 +116,16 @@ struct TestPlateaus {
       HWY_ASSERT(indices[i] < kClusters);
       stats.Notify(in[i], centers[indices[i]]);
     }
-    const float pnorm = stats.PNorm();
-    const float snr = stats.GeomeanValueDivL1();
-    fprintf(stderr, "p-norm %.3E snr %.2f @%zu = %.4E\n", pnorm, snr,
-            stats.MaxIndex(), stats.MaxL1());
-    HWY_ASSERT(pnorm == 0.0f);
-    HWY_ASSERT(snr == 0.0f);
+    // Zero error.
+    HWY_ASSERT_EQ(kGroupSize, stats.NumExact());
+    HWY_ASSERT_EQ(0, stats.NumSignFlip());
+    HWY_ASSERT_EQ(0, stats.NumRoundedToZero());
+    HWY_ASSERT_EQ(0.0, stats.SumL1());
+    HWY_ASSERT_EQ(0.0f, stats.GeomeanValueDivL1());
+    HWY_ASSERT_EQ(0.0f, stats.WeightedAverageL1());
+    // Input was symmetric and zero-mean.
+    HWY_ASSERT(gcpp::IsInside(-0.05, 0.05, stats.Original().Mean()));
+    HWY_ASSERT(gcpp::IsNear(0.0, stats.Original().Skewness()));
   }
 };
 
@@ -157,16 +163,19 @@ struct TestRamp {
       HWY_ASSERT(indices[i] < kClusters);
       stats.Notify(in[i], centers[indices[i]]);
     }
-    const float pnorm = stats.PNorm();
-    const float snr = stats.GeomeanValueDivL1();
-    fprintf(stderr, "p-norm %.3E snr %.2f @%zu = %.4E\n", pnorm, snr,
-            stats.MaxIndex(), stats.MaxL1());
-    static_assert(kGroupSize == 128 || kGroupSize == 256, "Update expected");
 
-    const float expected_pnorm = kGroupSize == 128 ? 2.08E-2f : 2.1E-2f;
-    const float expected_snr = kGroupSize == 128 ? 16.9f : 17.6f;
-    HWY_ASSERT(expected_pnorm <= pnorm && pnorm < 1.02f * expected_pnorm);
-    HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
+    // Low error.
+    HWY_ASSERT_EQ(0, stats.NumExact());
+    HWY_ASSERT(stats.NumSignFlip() < 10);
+    HWY_ASSERT_EQ(0, stats.NumRoundedToZero());
+    HWY_ASSERT_EQ(kGroupSize / kClusters / 4.0, stats.SumL1());
+    HWY_ASSERT(gcpp::IsInside(17.0, 18.0, stats.GeomeanValueDivL1()));
+    HWY_ASSERT(gcpp::IsInside(0.005, 0.010, stats.WeightedAverageL1()));
+    HWY_ASSERT(stats.L1().Max() <= 0.04f);
+    // Input was symmetric about 0.05.
+    HWY_ASSERT(gcpp::IsNear(0.05, stats.Original().Mean(), 0.01));
+    HWY_ASSERT(gcpp::IsNear(0.0, stats.Original().Skewness(), 1E-4));
+    static_assert(kGroupSize == 256, "Update expected");
   }
 };
 
@@ -207,15 +216,16 @@ struct TestNormal {
       HWY_ASSERT(indices[i] < kClusters);
       stats.Notify(in[i], centers[indices[i]]);
     }
-    const float pnorm = stats.PNorm();
-    const float snr = stats.GeomeanValueDivL1();
-    fprintf(stderr, "p-norm %.3E snr %.2f @%zu = %.4E\n", pnorm, snr,
-            stats.MaxIndex(), stats.MaxL1());
+
+    // Moderate error.
+    HWY_ASSERT_EQ(0, stats.NumExact());
+    HWY_ASSERT(stats.NumSignFlip() < kGroupSize / kClusters);
+    HWY_ASSERT_EQ(0, stats.NumRoundedToZero());
+    HWY_ASSERT(gcpp::IsInside(5.0, 6.0, stats.SumL1()));
+    HWY_ASSERT(gcpp::IsInside(12.7, 12.8, stats.GeomeanValueDivL1()));
+    HWY_ASSERT(gcpp::IsInside(0.036, 0.037, stats.WeightedAverageL1()));
+    HWY_ASSERT(stats.L1().Max() <= 0.10f);
     static_assert(kGroupSize == 256, "Update expected");
-    const float expected_pnorm = 3.68E-2f;
-    const float expected_snr = 12.7f;
-    HWY_ASSERT(expected_pnorm <= pnorm && pnorm < 1.02f * expected_pnorm);
-    HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
   }
 };
 
@@ -235,10 +245,9 @@ struct TestOffset {
     auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
     HWY_ASSERT(in && dec1 && dec2 && nuq);
 
-    std::mt19937 rng(123);
-    std::normal_distribution<float> dist{0.001f, 0.3f};
+    hwy::RandomState rng;
     for (size_t i = 0; i < total; ++i) {
-      in[i] = dist(rng);
+      in[i] = static_cast<float>(RandomGaussian(rng));
     }
 
     // Encode + decode everything
@@ -278,11 +287,13 @@ struct TestStream {
     auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
     HWY_ASSERT(in && out && nuq);
 
-    std::mt19937 rng(123);
-    std::normal_distribution<float> dist{0.001f, 0.3f};
+    hwy::RandomState rng;
+    Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
-      in[i] = dist(rng);
+      in[i] = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(in[i]);
     }
+    VerifyGaussian(in_stats);
 
     ClusterBuf buf;
     double elapsed = hwy::HighestValue<double>();
@@ -311,15 +322,16 @@ struct TestStream {
     for (size_t i = 0; i < num; ++i) {
       stats.Notify(in[i], hwy::ConvertScalarTo<float>(out[i]));
     }
-    const float pnorm = stats.PNorm();
-    const float snr = stats.GeomeanValueDivL1();
-    fprintf(stderr, "p-norm %.3E snr %.2f @%zu = %.4E\n", pnorm, snr,
-            stats.MaxIndex(), stats.MaxL1());
-    static_assert(kGroupSize == 128 || kGroupSize == 256, "Update expected");
-    const float expected_pnorm = kGroupSize == 128 ? 3.44E-2f : 3.88E-2f;
-    const float expected_snr = kGroupSize == 128 ? 15.0f : 13.3f;
-    HWY_ASSERT(expected_pnorm <= pnorm && pnorm < 1.02f * expected_pnorm);
-    HWY_ASSERT(expected_snr <= snr && snr < 1.01f * expected_snr);
+
+    // Moderate error.
+    HWY_ASSERT_EQ(0, stats.NumExact());
+    HWY_ASSERT(stats.NumSignFlip() < num / kClusters);
+    HWY_ASSERT_EQ(0, stats.NumRoundedToZero());
+    HWY_ASSERT(gcpp::IsInside(23.0, 24.0, stats.SumL1()));
+    HWY_ASSERT(gcpp::IsInside(13.0, 13.3, stats.GeomeanValueDivL1()));
+    HWY_ASSERT(gcpp::IsInside(0.034, 0.035, stats.WeightedAverageL1()));
+    HWY_ASSERT(stats.L1().Max() <= 0.11f);
+    static_assert(kGroupSize == 256, "Update expected");
   }
 };
 
@@ -348,9 +360,8 @@ struct TestDot {
     hwy::RandomState rng;
     Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
-      const float r = static_cast<float>(RandomGaussian(rng));
-      in_stats.Notify(r);
-      in[i] = r;
+      in[i] = static_cast<float>(RandomGaussian(rng));
+      in_stats.Notify(in[i]);
     }
     for (size_t i = 0; i < num; ++i) {
       const float r = static_cast<float>(RandomGaussian(rng));
@@ -365,7 +376,7 @@ struct TestDot {
     HWY_ASSERT(unused_clusters == 0);
 
     // Compute dot product without decompression.
-    double actual = 0.0;
+    float actual = 0.0f;
     double elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 20; ++rep) {
       hn::Vec<decltype(df)> sum0 = hn::Zero(df);
@@ -386,8 +397,8 @@ struct TestDot {
             num * sizeof(in[0]) * 1E-6 / elapsed);
 
     // Exact and decompressed dot products for comparison.
-    double exact = 0.0;     // using original input
-    double expected = 0.0;  // using decoded NUQ
+    float exact = 0.0f;     // using original input
+    float expected = 0.0f;  // using decoded NUQ
     DistortionStats dec_stats;
     Stats ratios;
     for (size_t i = 0; i < num; ++i) {
@@ -399,24 +410,42 @@ struct TestDot {
         ratios.Notify(exact / expected);
       }
     }
+    const bool isBF = sizeof(T) == 2;
     const double dec_snr = dec_stats.GeomeanValueDivL1();
+    const double dec_wl1 = dec_stats.WeightedAverageL1();
     const double dot_snr = 1.0 / hwy::ScalarAbs(1.0 - ratios.GeometricMean());
     // exact and actual fluctuate due to the combination of NUQ imprecision,
     // and whether vec[i] is negative or positive, so this is quite loose.
     const float final_ratio = HWY_MIN(exact / actual, actual / exact);
-    fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
-    fprintf(stderr,
-            "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
-            "dot_snr %.2f\n",
-            exact, expected, actual, final_ratio, dec_snr, dot_snr);
+    if (HWY_ONCE) {
+      fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
+      fprintf(stderr,
+              "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
+              "dot_snr %.2f dec_wl1 %.4f\n",
+              exact, expected, actual, final_ratio, dec_snr, dot_snr, dec_wl1);
+    }
     // Final values are not too far apart.
-    HWY_ASSERT(0.88f <= final_ratio && final_ratio <= 1.0f);
+    HWY_ASSERT(gcpp::IsInside(0.88f, 1.0f, final_ratio));
     // Decompressed and uncompressed dot should match exactly.
-    HWY_ASSERT(hwy::ScalarAbs(expected - actual) < 1E-4f);
-    // dec[] is close to in[], but we already check that in TestStream.
-    HWY_ASSERT(dec_snr >= 13.0);
-    // Geomean of ratios for each i is an approximation of the actual SNR.
-    HWY_ASSERT(dot_snr >= (sizeof(T) == 2 ? 17.0 : 14.0));
+    HWY_ASSERT(gcpp::IsNear(expected, actual, 1E-4f));
+    // Geomean of ratios for each i should be very close to one.
+    HWY_ASSERT(dot_snr >= (isBF ? 17.7 : 14.3));
+
+    // dec[] is close to in[], but we already check that in TestStream with the
+    // same input distribution.
+    HWY_ASSERT(gcpp::IsNear(13.1, dec_snr, 0.1));
+    HWY_ASSERT(gcpp::IsNear(0.034, dec_wl1, 0.001));
+    HWY_ASSERT(gcpp::IsNear(23.5, dec_stats.SumL1(), 0.1));
+    HWY_ASSERT(dec_stats.NumSignFlip() < num / kClusters);
+    HWY_ASSERT_EQ(0, dec_stats.NumExact());
+    HWY_ASSERT_EQ(0, dec_stats.NumRoundedToZero());
+    HWY_ASSERT_EQ(0.0, dec_stats.SumL1Rounded());
+    // Absolute decode errors are in [0, 0.11], and somewhat right-tailed.
+    HWY_ASSERT(gcpp::IsInside(0.0f, 2E-5f, dec_stats.L1().Min()));
+    HWY_ASSERT(gcpp::IsInside(0.09f, 0.11f, dec_stats.L1().Max()));
+    HWY_ASSERT(gcpp::IsInside(0.02, 0.03, dec_stats.L1().Mean()));
+    HWY_ASSERT(gcpp::IsInside(1.0, 1.1, dec_stats.L1().Skewness()));
+    HWY_ASSERT(gcpp::IsInside(4.0, 5.0, dec_stats.L1().Kurtosis()));
     static_assert(kGroupSize == 256, "Update expected*");
   }
 };

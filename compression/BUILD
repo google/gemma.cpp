@@ -12,12 +12,8 @@ package(
 
 cc_library(
     name = "blob_store",
-    srcs = [
-        "blob_store.cc",
-    ],
-    hdrs = [
-        "blob_store.h",
-    ],
+    srcs = ["blob_store.cc"],
+    hdrs = ["blob_store.h"],
     deps = [
         "@hwy//:hwy",
         "@hwy//:thread_pool",
@@ -39,7 +35,23 @@ cc_library(
     name = "distortion",
     hdrs = ["distortion.h"],
     deps = [
+        ":stats",
         "@hwy//:hwy",
+        "@hwy//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_test(
+    name = "distortion_test",
+    size = "small",
+    srcs = ["distortion_test.cc"],
+    deps = [
+        ":distortion",
+        ":test_util",
+        "@googletest//:gtest_main",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",  # Unpredictable1
     ],
 )
 

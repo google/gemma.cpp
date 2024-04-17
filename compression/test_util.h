@@ -49,12 +49,26 @@ HWY_INLINE double RandomGaussian(hwy::RandomState& rng) {
   return plus_minus_1 * std::sqrt(kReps / 3.0);
 };
 
+// Returns true if val is inside [min, max].
+template <typename T>
+static inline bool IsInside(T expected_min, T expected_max, T val) {
+  return expected_min <= val && val <= expected_max;
+}
+
+template <typename T>
+static inline bool IsNear(T expected, T val, T epsilon = T{1E-6}) {
+  return IsInside(expected - epsilon, expected + epsilon, val);
+}
+
 HWY_INLINE void VerifyGaussian(Stats& stats) {
-  const double stddev = stats.StandardDeviation();
-  HWY_ASSERT(-0.01 <= stats.Mean() && stats.Mean() <= 0.01);
-  HWY_ASSERT(0.30 <= stddev && stddev <= 0.35);
-  HWY_ASSERT(-1.1 <= stats.Min() && stats.Min() <= -0.9);
-  HWY_ASSERT(0.9 <= stats.Max() && stats.Max() <= 1.1);
+  // Inputs are roughly [-1, 1] and symmetric about zero.
+  HWY_ASSERT(IsNear(-1.0f, stats.Min(), 0.10f));
+  HWY_ASSERT(IsNear(+1.0f, stats.Max(), 0.10f));
+  HWY_ASSERT(IsInside(-2E-3, 2E-3, stats.Mean()));
+  HWY_ASSERT(IsInside(-0.15, 0.15, stats.Skewness()));
+  // Near-Gaussian.
+  HWY_ASSERT(IsInside(0.30, 0.35, stats.StandardDeviation()));
+  HWY_ASSERT(IsNear(3.0, stats.Kurtosis(), 0.3));
 }
 
 }  // namespace gcpp
