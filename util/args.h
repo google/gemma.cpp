@@ -23,15 +23,8 @@
 #include <algorithm>  // std::transform
 #include <string>
 
+#include "compression/io.h"
 #include "hwy/base.h"  // HWY_ABORT
-
-#if defined(_WIN32)
-#include <io.h>
-#define F_OK 0
-#define access _access
-#else
-#include <unistd.h>
-#endif
 
 namespace gcpp {
 
@@ -57,9 +50,10 @@ struct Path {
     return path;
   }
 
-  // Beware, TOCTOU.
-  bool exists() const {
-    return (access(path.c_str(), F_OK) == 0);
+  // Returns whether the file existed when this was called.
+  bool Exists() const {
+    File file;
+    return file.Open(path.c_str(), "r");
   }
 
   std::string path;

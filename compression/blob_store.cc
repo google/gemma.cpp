@@ -13,87 +13,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Request POSIX 2008, including `pread()` and `posix_fadvise()`.
-#if !defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 700
-#undef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 700
-#endif
-#if !defined(_POSIX_C_SOURCE) || _POSIX_C_SOURCE < 200809
-#define _POSIX_C_SOURCE 200809
-#endif
-
-// Make `off_t` 64-bit even on 32-bit systems. Works for Android >= r15c.
-#undef _FILE_OFFSET_BITS
-#define _FILE_OFFSET_BITS 64
-
 #include "compression/blob_store.h"
 
-#include <fcntl.h>  // open
+#include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>     // SEEK_END - unistd isn't enough for IDE.
-#include <sys/stat.h>  // O_RDONLY
-#if HWY_OS_WIN
-#include <fileapi.h>
-#include <io.h>  // read, write, close
-#else
-#include <unistd.h>  // read, write, close
-#endif
 
 #include <atomic>
 #include <vector>
 
+#include "compression/io.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_compiler_arch.h"
-
-namespace {
-#if HWY_OS_WIN
-
-// pread is not supported on Windows
-static int64_t pread(int fd, void* buf, uint64_t size, uint64_t offset) {
-  HANDLE file = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
-  if (file == INVALID_HANDLE_VALUE) {
-    return -1;
-  }
-
-  OVERLAPPED overlapped = {0};
-  overlapped.Offset = offset & 0xFFFFFFFF;
-  overlapped.OffsetHigh = (offset >> 32) & 0xFFFFFFFF;
-
-  DWORD bytes_read;
-  if (!ReadFile(file, buf, size, &bytes_read, &overlapped)) {
-    if (GetLastError() != ERROR_HANDLE_EOF) {
-      return -1;
-    }
-  }
-
-  return bytes_read;
-}
-
-// pwrite is not supported on Windows
-static int64_t pwrite(int fd, const void* buf, uint64_t size, uint64_t offset) {
-  HANDLE file = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
-  if (file == INVALID_HANDLE_VALUE) {
-    return -1;
-  }
-
-  OVERLAPPED overlapped = {0};
-  overlapped.Offset = offset & 0xFFFFFFFF;
-  overlapped.OffsetHigh = (offset >> 32) & 0xFFFFFFFF;
-
-  DWORD bytes_written;
-  if (!WriteFile(file, buf, size, &bytes_written, &overlapped)) {
-    if (GetLastError() != ERROR_HANDLE_EOF) {
-      return -1;
-    }
-  }
-
-  return bytes_written;
-}
-
-#endif
-}  // namespace
 
 namespace gcpp {
 
@@ -130,61 +62,6 @@ void EnqueueChunkRequests(uint64_t offset, uint64_t size, uint8_t* data,
   }
 }
 }  // namespace
-
-struct IO {
-  // Returns size in bytes or 0.
-  static uint64_t FileSize(const char* filename) {
-    int fd = open(filename, O_RDONLY);
-    if (fd < 0) {
-      return 0;
-    }
-
-#if HWY_OS_WIN
-    const int64_t size = _lseeki64(fd, 0, SEEK_END);
-    HWY_ASSERT(close(fd) != -1);
-    if (size < 0) {
-      return 0;
-    }
-#else
-    static_assert(sizeof(off_t) == 8, "64-bit off_t required");
-    const off_t size = lseek(fd, 0, SEEK_END);
-    HWY_ASSERT(close(fd) != -1);
-    if (size == static_cast<off_t>(-1)) {
-      return 0;
-    }
-#endif
-
-    return static_cast<uint64_t>(size);
-  }
-
-  static bool Read(int fd, uint64_t offset, uint64_t size, void* to) {
-    uint8_t* bytes = reinterpret_cast<uint8_t*>(to);
-    uint64_t pos = 0;
-    for (;;) {
-      // pread seems to be faster than lseek + read when parallelized.
-      const auto bytes_read = pread(fd, bytes + pos, size - pos, offset + pos);
-      if (bytes_read <= 0) break;
-      pos += bytes_read;
-      HWY_ASSERT(pos <= size);
-      if (pos == size) break;
-    }
-    return pos == size;  // success if managed to read desired size
-  }
-
-  static bool Write(const void* from, uint64_t size, uint64_t offset, int fd) {
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(from);
-    uint64_t pos = 0;
-    for (;;) {
-      const auto bytes_written =
-          pwrite(fd, bytes + pos, size - pos, offset + pos);
-      if (bytes_written <= 0) break;
-      pos += bytes_written;
-      HWY_ASSERT(pos <= size);
-      if (pos == size) break;
-    }
-    return pos == size;  // success if managed to write desired size
-  }
-};  // IO
 
 static_assert(HWY_IS_LITTLE_ENDIAN, "Assumes little endian");
 
@@ -323,25 +200,11 @@ class BlobStore {
 #pragma pack(pop)
 
 BlobError BlobReader::Open(const char* filename) {
-#if HWY_OS_WIN
-  DWORD flags = FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN;
-  HANDLE file = CreateFileA(filename, GENERIC_READ, FILE_SHARE_READ, nullptr,
-                            OPEN_EXISTING, flags, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return __LINE__;
-  fd_ = _open_osfhandle(reinterpret_cast<intptr_t>(file), _O_RDONLY);
-#else
-  fd_ = open(filename, O_RDONLY);
-#endif
-  if (fd_ < 0) return __LINE__;
-
-#if HWY_OS_LINUX && (!defined(__ANDROID_API__) || __ANDROID_API__ >= 21)
-  // Doubles the readahead window, which seems slightly faster when cached.
-  (void)posix_fadvise(fd_, 0, 0, POSIX_FADV_SEQUENTIAL);
-#endif
+  if (!file_.Open(filename, "r")) return __LINE__;
 
   // Read first part of header to get actual size.
   BlobStore bs;
-  if (!IO::Read(fd_, 0, sizeof(bs), &bs)) return __LINE__;
+  if (!file_.Read(0, sizeof(bs), &bs)) return __LINE__;
   const size_t padded_size = bs.PaddedHeaderSize();
   HWY_ASSERT(padded_size >= sizeof(bs));
 
@@ -353,18 +216,11 @@ BlobError BlobReader::Open(const char* filename) {
   hwy::CopySameSize(&bs, blob_store_.get());
   // Read the rest of the header, but not the full file.
   uint8_t* bytes = reinterpret_cast<uint8_t*>(blob_store_.get());
-  if (!IO::Read(fd_, sizeof(bs), padded_size - sizeof(bs),
-                bytes + sizeof(bs))) {
+  if (!file_.Read(sizeof(bs), padded_size - sizeof(bs), bytes + sizeof(bs))) {
     return __LINE__;
   }
 
-  return blob_store_->CheckValidity(IO::FileSize(filename));
-}
-
-BlobReader::~BlobReader() {
-  if (fd_ >= 0) {
-    HWY_ASSERT(close(fd_) != -1);
-  }
+  return blob_store_->CheckValidity(file_.FileSize());
 }
 
 BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
@@ -391,14 +247,14 @@ BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
 //   between consecutive runs.
 // - memory-mapped I/O is less predictable and adds noise to measurements.
 BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
-  const int fd = fd_;
+  File* pfile = &file_;  // not owned
   const auto& requests = requests_;
   std::atomic_flag err = ATOMIC_FLAG_INIT;
   // >5x speedup from parallel reads when cached.
   pool.Run(0, requests.size(),
-           [fd, &requests, &err](uint64_t i, size_t /*thread*/) {
-             if (!IO::Read(fd, requests[i].offset, requests[i].size,
-                           requests[i].data)) {
+           [pfile, &requests, &err](uint64_t i, size_t /*thread*/) {
+             if (!pfile->Read(requests[i].offset, requests[i].size,
+                              requests[i].data)) {
                err.test_and_set();
              }
            });
@@ -406,8 +262,7 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
   return 0;
 }
 
-BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool,
-                               const char* filename) const {
+BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const char* filename) {
   HWY_ASSERT(keys_.size() == blobs_.size());
 
   // Concatenate blobs in memory.
@@ -418,26 +273,18 @@ BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool,
       keys_.data(), blobs_.data(), keys_.size(), bs.get());
 
   // Create/replace existing file.
-#if HWY_OS_WIN
-  DWORD flags = FILE_ATTRIBUTE_NORMAL;
-  HANDLE file = CreateFileA(filename, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                            flags, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return __LINE__;
-  const int fd = _open_osfhandle(reinterpret_cast<intptr_t>(file), _O_WRONLY);
-#else
-  const int fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-#endif
-  if (fd < 0) return __LINE__;
+  File file;
+  if (!file.Open(filename, "w+")) return __LINE__;
+  File* pfile = &file;  // not owned
 
   std::atomic_flag err = ATOMIC_FLAG_INIT;
   pool.Run(0, requests.size(),
-           [fd, &requests, &err](uint64_t i, size_t /*thread*/) {
-             if (!IO::Write(requests[i].data, requests[i].size,
-                            requests[i].offset, fd)) {
+           [pfile, &requests, &err](uint64_t i, size_t /*thread*/) {
+             if (!pfile->Write(requests[i].data, requests[i].size,
+                               requests[i].offset)) {
                err.test_and_set();
              }
            });
-  HWY_ASSERT(close(fd) != -1);
   if (err.test_and_set()) return __LINE__;
   return 0;
 }

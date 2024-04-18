@@ -55,6 +55,7 @@ cc_library(
     name = "args",
     hdrs = ["util/args.h"],
     deps = [
+        "//compression:io",
         "@hwy//:hwy",
     ],
 )

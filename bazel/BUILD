@@ -1,4 +1,4 @@
-# Required for referencing bazel:com_google_sentencepiece.patch
+# Required for referencing bazel:sentencepiece.patch
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],

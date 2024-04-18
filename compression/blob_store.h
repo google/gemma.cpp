@@ -21,6 +21,7 @@
 
 #include <vector>
 
+#include "compression/io.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::uint128_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -59,7 +60,7 @@ struct BlobIO {
 class BlobReader {
  public:
   BlobReader() { requests_.reserve(500); }
-  ~BlobReader();
+  ~BlobReader() = default;
 
   // Opens `filename` and reads its header.
   BlobError Open(const char* filename);
@@ -73,7 +74,7 @@ class BlobReader {
  private:
   BlobStorePtr blob_store_;  // holds header, not the entire file
   std::vector<BlobIO> requests_;
-  int fd_ = 0;
+  File file_;
 };
 
 class BlobWriter {
@@ -84,7 +85,7 @@ class BlobWriter {
   }
 
   // Stores all blobs to disk in the given order with padding for alignment.
-  BlobError WriteAll(hwy::ThreadPool& pool, const char* filename) const;
+  BlobError WriteAll(hwy::ThreadPool& pool, const char* filename);
 
  private:
   std::vector<hwy::uint128_t> keys_;

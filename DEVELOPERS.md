@@ -169,9 +169,9 @@ inference path of the Gemma model.
 The sentencepiece library we depend on requires some additional work to build
 with the Bazel build system. First, it does not export its BUILD file, so we
 provide `bazel/sentencepiece.bazel`. Second, it ships with a vendored subset of
-the Abseil library. `bazel/com_google_sentencepiece.patch` changes the code to
-support Abseil as a standalone dependency without third_party/ prefixes, similar
-to the transforms we apply to Gemma via Copybara.
+the Abseil library. `bazel/sentencepiece.patch` changes the code to support
+Abseil as a standalone dependency without third_party/ prefixes, similar to the
+transforms we apply to Gemma via Copybara.
 
 ## Discord
 

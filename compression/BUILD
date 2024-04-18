@@ -11,10 +11,22 @@ package(
 )
 
 cc_library(
+    name = "io",
+    srcs = ["io.cc"],
+    hdrs = ["io.h"],
+    # Placeholder for io textual_hdrs, do not remove
+    deps = [
+        # Placeholder for io deps, do not remove
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
     name = "blob_store",
     srcs = ["blob_store.cc"],
     hdrs = ["blob_store.h"],
     deps = [
+        ":io",
         "@hwy//:hwy",
         "@hwy//:thread_pool",
     ],

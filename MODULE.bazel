@@ -33,7 +33,7 @@ http_archive(
     strip_prefix = "sentencepiece-0.1.96",
     urls = ["https://github.com/google/sentencepiece/archive/refs/tags/v0.1.96.zip"],
     build_file = "@//bazel:sentencepiece.bazel",
-    patches = ["@//bazel:com_google_sentencepiece.patch"],
+    patches = ["@//bazel:sentencepiece.patch"],
     patch_args = ["-p1"],
 )
 

@@ -55,7 +55,7 @@ struct Args : public ArgsBase<Args> {
       return "Missing --compressed_weights flag, a file for the compressed "
              "model.";
     }
-    if (!weights.exists()) {
+    if (!weights.Exists()) {
       return "Can't open file specified with --weights flag.";
     }
     return nullptr;

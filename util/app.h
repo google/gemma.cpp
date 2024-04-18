@@ -133,7 +133,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
     }
-    if (!tokenizer.exists()) {
+    if (!tokenizer.Exists()) {
       return "Can't open file specified with --tokenizer flag.";
     }
     if (!compressed_weights.path.empty()) {
@@ -148,7 +148,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (weights.path.empty()) {
       return "Missing --weights flag, a file for the model weights.";
     }
-    if (!weights.exists()) {
+    if (!weights.Exists()) {
       return "Can't open file specified with --weights flag.";
     }
     return nullptr;

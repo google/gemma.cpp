@@ -40,7 +40,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <filesystem>  // NOLINT
 #include <iostream>
 #include <memory>
 #include <random>
@@ -182,7 +181,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
     const Path& checkpoint, hwy::ThreadPool& pool,
     bool scale_for_compression = false) {
   PROFILER_ZONE("Startup.LoadWeights");
-  if (!std::filesystem::exists(checkpoint.path)) {
+  if (!checkpoint.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               checkpoint.path.c_str());
   }
@@ -1318,8 +1317,8 @@ void ForEachTensor(const Weights<TConfig>* weights,
 template <class TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
     const Path& weights, hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.LoadCache");
-  if (!std::filesystem::exists(weights.path)) {
+  PROFILER_ZONE("Startup.LoadCompressedWeights");
+  if (!weights.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights.path.c_str());
   }
@@ -1395,7 +1394,7 @@ template <class TConfig>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path,
                      hwy::ThreadPool& pool) {
-  if (!std::filesystem::exists(weights_path.path)) {
+  if (!weights_path.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights_path.path.c_str());
   }
