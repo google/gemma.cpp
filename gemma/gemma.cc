@@ -548,6 +548,13 @@ struct GemmaImpl : public GemmaInterface {
   hwy::AlignedUniquePtr<Activations<Config, 1>> state;
 };
 
+template <class TConfig>
+std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
+  std::string token_str;
+  gemma.Tokenizer()->Decode({token}, &token_str);
+  return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
+}
+
 }  // namespace gcpp
 #endif  // GEMMA_ONCE
 
@@ -1119,13 +1126,6 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
       break;
     }
   }
-}
-
-template <class TConfig>
-std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
-  std::string token_str;
-  gemma.Tokenizer()->Decode({token}, &token_str);
-  return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
 }
 
 #define TOKEN(token_id) TokenString(gemma, token_id).c_str()
