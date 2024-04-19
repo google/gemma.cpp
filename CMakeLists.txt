@@ -38,6 +38,7 @@ set(SOURCES
   compression/blob_store.h
   compression/compress.h
   compression/compress-inl.h
+  compression/io_win.cc
   compression/io.cc
   compression/io.h
   compression/nuq.h

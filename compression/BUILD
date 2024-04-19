@@ -12,9 +12,11 @@ package(
 
 cc_library(
     name = "io",
-    srcs = ["io.cc"],
+    srcs = [
+        "io.cc",
+        # Placeholder for io backend, do not remove
+    ],
     hdrs = ["io.h"],
-    # Placeholder for io textual_hdrs, do not remove
     deps = [
         # Placeholder for io deps, do not remove
         "@hwy//:hwy",
@@ -80,12 +82,8 @@ cc_library(
 
 cc_library(
     name = "sfp",
-    hdrs = [
-        "sfp.h",
-    ],
-    textual_hdrs = [
-        "sfp-inl.h",
-    ],
+    hdrs = ["sfp.h"],
+    textual_hdrs = ["sfp-inl.h"],
     deps = [
         "@hwy//:hwy",
     ],
@@ -112,12 +110,8 @@ cc_test(
 
 cc_library(
     name = "nuq",
-    hdrs = [
-        "nuq.h",
-    ],
-    textual_hdrs = [
-        "nuq-inl.h",
-    ],
+    hdrs = ["nuq.h"],
+    textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
         "@hwy//:hwy",
@@ -158,6 +152,7 @@ cc_library(
     deps = [
         ":blob_store",
         ":distortion",
+        ":io",
         ":nuq",
         ":sfp",
         ":stats",
@@ -170,9 +165,7 @@ cc_library(
 # For internal experimentation
 cc_library(
     name = "analyze",
-    textual_hdrs = [
-        "analyze.h",
-    ],
+    textual_hdrs = ["analyze.h"],
     deps = [
         ":distortion",
         ":nuq",

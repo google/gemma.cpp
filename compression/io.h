@@ -16,35 +16,71 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_IO_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_IO_H_
 
+#include <stddef.h>
 #include <stdint.h>
+
+#include <memory>
+#include <string>
+#include <utility>  // std::move
 
 namespace gcpp {
 
-// unique_ptr-like interface with RAII, but not (yet) moveable.
+// Forward-declare to break the circular dependency: OpenFileOrNull returns
+// File and has a Path argument, and Path::Exists calls OpenFileOrNull. We
+// prefer to define Exists inline because there are multiple io*.cc files.
+struct Path;
+
+// Abstract base class enables multiple I/O backends in the same binary.
 class File {
  public:
   File() = default;
-  ~File() { Close(); }
+  virtual ~File() = default;
+
+  // Noncopyable.
   File(const File& other) = delete;
   const File& operator=(const File& other) = delete;
 
-  // Returns false on failure. `mode` is either "r" or "w+".
-  bool Open(const char* filename, const char* mode);
-
-  // No effect if `Open` returned false or `Close` already called.
-  void Close();
-
   // Returns size in bytes or 0.
-  uint64_t FileSize() const;
+  virtual uint64_t FileSize() const = 0;
 
   // Returns true if all the requested bytes were read.
-  bool Read(uint64_t offset, uint64_t size, void* to) const;
+  virtual bool Read(uint64_t offset, uint64_t size, void* to) const = 0;
 
   // Returns true if all the requested bytes were written.
-  bool Write(const void* from, uint64_t size, uint64_t offset);
+  virtual bool Write(const void* from, uint64_t size, uint64_t offset) = 0;
+};
 
- private:
-  intptr_t p_ = 0;
+// Returns nullptr on failure. `mode` is either "r" or "w+". This is not just
+// named 'OpenFile' to avoid a conflict with Windows.h #define.
+std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode);
+
+// Wrapper for strings representing a path name. Differentiates vs. arbitrary
+// strings and supports shortening for display purposes.
+struct Path {
+  Path() {}
+  explicit Path(const char* p) : path(p) {}
+  explicit Path(std::string p) : path(std::move(p)) {}
+
+  Path& operator=(const char* other) {
+    path = other;
+    return *this;
+  }
+
+  std::string Shortened() const {
+    constexpr size_t kMaxLen = 48;
+    constexpr size_t kCutPoint = kMaxLen / 2 - 5;
+    if (path.size() > kMaxLen) {
+      return std::string(begin(path), begin(path) + kCutPoint) + " ... " +
+             std::string(end(path) - kCutPoint, end(path));
+    }
+    if (path.empty()) return "[no path specified]";
+    return path;
+  }
+
+  // Returns whether the file existed when this was called.
+  bool Exists() const { return !!OpenFileOrNull(*this, "r"); }
+
+  std::string path;
 };
 
 }  // namespace gcpp

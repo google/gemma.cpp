@@ -52,15 +52,6 @@ cc_test(
 )
 
 cc_library(
-    name = "args",
-    hdrs = ["util/args.h"],
-    deps = [
-        "//compression:io",
-        "@hwy//:hwy",
-    ],
-)
-
-cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
@@ -70,16 +61,35 @@ cc_library(
         "gemma/gemma.h",
     ],
     deps = [
-        ":args",
         ":ops",
         # "//base",
         "//compression:compress",
+        "//compression:io",
         "@hwy//:hwy",
         "@hwy//:matvec",
         "@hwy//:nanobenchmark",  # timer
         "@hwy//:profiler",
         "@hwy//:thread_pool",
         "@com_google_sentencepiece//:sentencepiece_processor",
+    ],
+)
+
+cc_library(
+    name = "args",
+    hdrs = ["util/args.h"],
+    deps = [
+        "//compression:io",
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
+    name = "app",
+    hdrs = ["util/app.h"],
+    deps = [
+        ":args",
+        ":gemma_lib",
+        "@hwy//:hwy",
     ],
 )
 
@@ -99,16 +109,6 @@ cc_test(
         "@googletest//:gtest_main",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",
-    ],
-)
-
-cc_library(
-    name = "app",
-    hdrs = ["util/app.h"],
-    deps = [
-        ":args",
-        ":gemma_lib",
-        "@hwy//:hwy",
     ],
 )
 

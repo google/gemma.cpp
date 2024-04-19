@@ -19,7 +19,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -77,8 +76,8 @@ class Stats {
   void Notify(const float x) {
     ++n_;
 
-    min_ = std::min(min_, x);
-    max_ = std::max(max_, x);
+    min_ = HWY_MIN(min_, x);
+    max_ = HWY_MAX(max_, x);
 
     product_ *= x;
 
@@ -119,7 +118,7 @@ class Stats {
   // Near zero for normal distributions; if positive on a unimodal distribution,
   // the right tail is fatter. Assumes n_ is large.
   double SampleSkewness() const {
-    if (std::abs(m2_) < 1E-7) return 0.0;
+    if (hwy::ScalarAbs(m2_) < 1E-7) return 0.0;
     return m3_ * std::sqrt(static_cast<double>(n_)) / std::pow(m2_, 1.5);
   }
   // Corrected for bias (same as Wikipedia and Minitab but not Excel).
@@ -132,7 +131,7 @@ class Stats {
   // Near zero for normal distributions; smaller values indicate fewer/smaller
   // outliers and larger indicates more/larger outliers. Assumes n_ is large.
   double SampleKurtosis() const {
-    if (std::abs(m2_) < 1E-7) return 0.0;
+    if (hwy::ScalarAbs(m2_) < 1E-7) return 0.0;
     return m4_ * n_ / (m2_ * m2_);
   }
   // Corrected for bias (same as Wikipedia and Minitab but not Excel).

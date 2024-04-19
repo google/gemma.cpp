@@ -19,6 +19,7 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
 #include "compression/io.h"
@@ -199,12 +200,13 @@ class BlobStore {
 };
 #pragma pack(pop)
 
-BlobError BlobReader::Open(const char* filename) {
-  if (!file_.Open(filename, "r")) return __LINE__;
+BlobError BlobReader::Open(const Path& filename) {
+  file_ = OpenFileOrNull(filename, "r");
+  if (!file_) return __LINE__;
 
   // Read first part of header to get actual size.
   BlobStore bs;
-  if (!file_.Read(0, sizeof(bs), &bs)) return __LINE__;
+  if (!file_->Read(0, sizeof(bs), &bs)) return __LINE__;
   const size_t padded_size = bs.PaddedHeaderSize();
   HWY_ASSERT(padded_size >= sizeof(bs));
 
@@ -216,11 +218,11 @@ BlobError BlobReader::Open(const char* filename) {
   hwy::CopySameSize(&bs, blob_store_.get());
   // Read the rest of the header, but not the full file.
   uint8_t* bytes = reinterpret_cast<uint8_t*>(blob_store_.get());
-  if (!file_.Read(sizeof(bs), padded_size - sizeof(bs), bytes + sizeof(bs))) {
+  if (!file_->Read(sizeof(bs), padded_size - sizeof(bs), bytes + sizeof(bs))) {
     return __LINE__;
   }
 
-  return blob_store_->CheckValidity(file_.FileSize());
+  return blob_store_->CheckValidity(file_->FileSize());
 }
 
 BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
@@ -247,7 +249,7 @@ BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
 //   between consecutive runs.
 // - memory-mapped I/O is less predictable and adds noise to measurements.
 BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
-  File* pfile = &file_;  // not owned
+  File* pfile = file_.get();  // not owned
   const auto& requests = requests_;
   std::atomic_flag err = ATOMIC_FLAG_INIT;
   // >5x speedup from parallel reads when cached.
@@ -262,7 +264,7 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
   return 0;
 }
 
-BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const char* filename) {
+BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
   HWY_ASSERT(keys_.size() == blobs_.size());
 
   // Concatenate blobs in memory.
@@ -273,9 +275,9 @@ BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const char* filename) {
       keys_.data(), blobs_.data(), keys_.size(), bs.get());
 
   // Create/replace existing file.
-  File file;
-  if (!file.Open(filename, "w+")) return __LINE__;
-  File* pfile = &file;  // not owned
+  std::unique_ptr<File> file = OpenFileOrNull(filename, "w+");
+  if (!file) return __LINE__;
+  File* pfile = file.get();  // not owned
 
   std::atomic_flag err = ATOMIC_FLAG_INIT;
   pool.Run(0, requests.size(),

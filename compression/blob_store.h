@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <vector>
 
 #include "compression/io.h"
@@ -63,7 +64,7 @@ class BlobReader {
   ~BlobReader() = default;
 
   // Opens `filename` and reads its header.
-  BlobError Open(const char* filename);
+  BlobError Open(const Path& filename);
 
   // Enqueues read requests if `key` is found and its size matches `size`.
   BlobError Enqueue(hwy::uint128_t key, void* data, size_t size);
@@ -74,7 +75,7 @@ class BlobReader {
  private:
   BlobStorePtr blob_store_;  // holds header, not the entire file
   std::vector<BlobIO> requests_;
-  File file_;
+  std::unique_ptr<File> file_;
 };
 
 class BlobWriter {
@@ -85,7 +86,7 @@ class BlobWriter {
   }
 
   // Stores all blobs to disk in the given order with padding for alignment.
-  BlobError WriteAll(hwy::ThreadPool& pool, const char* filename);
+  BlobError WriteAll(hwy::ThreadPool& pool, const Path& filename);
 
  private:
   std::vector<hwy::uint128_t> keys_;

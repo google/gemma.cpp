@@ -459,11 +459,11 @@ class Compressor {
     }
   }
 
-  void WriteAll(hwy::ThreadPool& pool, const char* blob_filename) {
+  void WriteAll(hwy::ThreadPool& pool, const Path& blob_filename) {
     const BlobError err = writer_.WriteAll(pool, blob_filename);
     if (err != 0) {
-      fprintf(stderr, "Failed to write blobs to %s (error %d)\n", blob_filename,
-              err);
+      fprintf(stderr, "Failed to write blobs to %s (error %d)\n",
+              blob_filename.path.c_str(), err);
     }
   }
 

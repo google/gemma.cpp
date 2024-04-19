@@ -28,37 +28,6 @@
 
 namespace gcpp {
 
-// Wrapper for strings representing a path name. Differentiates vs. arbitrary
-// strings and supports shortening for display purposes.
-struct Path {
-  Path() {}
-  explicit Path(const char* p) : path(p) {}
-
-  Path& operator=(const char* other) {
-    path = other;
-    return *this;
-  }
-
-  std::string Shortened() const {
-    constexpr size_t kMaxLen = 48;
-    constexpr size_t kCutPoint = kMaxLen / 2 - 5;
-    if (path.size() > kMaxLen) {
-      return std::string(begin(path), begin(path) + kCutPoint) + " ... " +
-             std::string(end(path) - kCutPoint, end(path));
-    }
-    if (path.empty()) return "[no path specified]";
-    return path;
-  }
-
-  // Returns whether the file existed when this was called.
-  bool Exists() const {
-    File file;
-    return file.Open(path.c_str(), "r");
-  }
-
-  std::string path;
-};
-
 // Args is a class that provides a ForEach member function which visits each of
 // its member variables. ArgsBase provides functions called by Args to
 // initialize values to their defaults (passed as an argument to the visitor),

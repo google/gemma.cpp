@@ -22,8 +22,8 @@
 #include <string>
 #include <vector>
 
+#include "compression/io.h"  // Path
 #include "gemma/configs.h"
-#include "util/args.h"  // Path
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -35,7 +35,7 @@ using EmbedderInputT = hwy::bfloat16_t;
 // Will be called for layers output with:
 // - position in the tokens sequence
 // - name of the data, p.ex. "tokens", "block.1", "final_norm"
-// - ponter to the data array
+// - pointer to the data array
 // - size of the data array
 using LayersOutputT =
     std::function<void(int, const std::string&, const float*, size_t)>;

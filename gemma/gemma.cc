@@ -39,18 +39,20 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <iostream>
 #include <memory>
 #include <random>
 #include <regex>  // NOLINT
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "compression/compress.h"
+#include "compression/io.h"  // Path
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
-#include "util/args.h"  // Path
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -914,7 +916,7 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
       }
     }
 
-    // TODO: sink the loop into these functions, i.e. make them matmuls.
+    // TODO: sink the loop into these functions, i.e. make them MatMul.
     pool.Run(
         0, num_tokens,
         [&](const uint64_t token_idx, size_t thread_id) HWY_ATTR {
@@ -1331,7 +1333,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
   new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
 
   std::array<float, TConfig::kNumTensorScales> scales;
-  CacheLoader loader(weights.path.c_str());
+  CacheLoader loader(weights);
   ForEachTensor<TConfig>(nullptr, *c_weights, loader);
   loader.LoadScales(scales.data(), scales.size());
   if (!loader.ReadAll(pool)) {
@@ -1415,7 +1417,7 @@ void CompressWeights(const Path& weights_path,
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights, *c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
-  compressor.WriteAll(pool, compressed_weights_path.path.c_str());
+  compressor.WriteAll(pool, compressed_weights_path);
 
   weights->layer_ptrs.~LayerPointers<TConfig>();
   c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();

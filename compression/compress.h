@@ -28,6 +28,7 @@
 
 // IWYU pragma: begin_exports
 #include "compression/blob_store.h"
+#include "compression/io.h"
 #include "compression/nuq.h"
 #include "compression/sfp.h"
 // IWYU pragma: end_exports
@@ -166,13 +167,13 @@ hwy::uint128_t CacheKey(const char* name) {
 
 class CacheLoader {
  public:
-  explicit CacheLoader(const char* blob_filename) {
+  explicit CacheLoader(const Path& blob_filename) {
     err_ = reader_.Open(blob_filename);
     if (err_ != 0) {
       fprintf(stderr,
               "Cached compressed weights does not exist yet (code %d), "
               "compressing weights and creating file: %s.\n",
-              err_, blob_filename);
+              err_, blob_filename.path.c_str());
     }
   }
 
