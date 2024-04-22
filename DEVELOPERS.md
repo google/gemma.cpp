@@ -83,6 +83,23 @@ A `.clang-format` configuration is provided with our defaults, please run source
 files through `clang-format` (or a formatter that produces equivalent behavior)
 before finalizing PR for submission.
 
+## Converting weights
+
+We use a stripped down binary blob (.sbs) artifact to accelerate weight loading
+in C++. These files can be downloaded directly from Kaggle and HuggingFace. You
+can also convert Pytorch or Keras checkpoints to .sbs, but most end users should
+not have to do this.
+
+If starting with Keras, first run this script to convert to Pytorch:
+https://github.com/keras-team/keras-nlp/blob/master/tools/gemma/export_gemma_to_torch_xla.py
+
+From Pytorch, use the following script to generate uncompressed weights:
+https://github.com/google/gemma.cpp/blob/dev/util/convert_weights.py
+
+Then run gemma/compress_weights.cc (Bazel target :compress_weights), specifying
+the resulting file as `--weights` and the desired .sbs name as the
+`--compressed_weights`.
+
 ## Compile-Time Flags (Advanced)
 
 There are several compile-time flags to be aware of (note these may or may not
