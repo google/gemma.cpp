@@ -1033,7 +1033,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   size_t pos_offset = 0;  // offset relative to pos
   const double prefill_start = hwy::platform::Now();
 
-  auto prefill_phase = [&]() {
+  auto prefill_phase = [&]() HWY_ATTR {
     bool keep_on = true;
     // Prefill stops before prompt_size - 1 since the last prompt token is the
     // first input token for generation.
@@ -1066,7 +1066,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     return keep_on;
   };
 
-  auto transform_phase = [&]() {
+  auto transform_phase = [&]() HWY_ATTR {
     const double gen_start = hwy::platform::Now();
 
     HWY_DASSERT(pos_offset == prompt_size - 1);
