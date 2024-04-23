@@ -98,7 +98,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
                int verbosity, const gcpp::AcceptFunc& accept_token,
                std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
-  int abs_pos = 0;      // absolute token index over all turns
+  size_t abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
   int prompt_size{};
 
@@ -181,7 +181,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       // For instruction-tuned models: add control tokens.
       prompt_string = "<start_of_turn>user\n" + prompt_string +
                       "<end_of_turn>\n<start_of_turn>model\n";
-      if (abs_pos > 0) {
+      if (abs_pos != 0) {
         // Prepend "<end_of_turn>" token if this is a multi-turn dialogue
         // continuation.
         prompt_string = "<end_of_turn>\n" + prompt_string;

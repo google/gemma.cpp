@@ -1136,8 +1136,8 @@ template <class TConfig>
 void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
              size_t k) {
   std::vector<std::pair<float, int>> sorted(len);
-  for (int i = 0; i < len; ++i) {
-    sorted[i] = std::make_pair(dist[i], i);
+  for (size_t i = 0; i < len; ++i) {
+    sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
   }
   std::sort(sorted.begin(), sorted.end(),
             [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
@@ -1146,9 +1146,10 @@ void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
               }
               return a.second < b.second;
             });
-  for (int i = 0; i < k; ++i) {
-    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", i + 1, sorted[i].second,
-           TOKEN(sorted[i].second), sorted[i].first, logits[sorted[i].second]);
+  for (size_t i = 0; i < k; ++i) {
+    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", static_cast<int>(i + 1),
+           sorted[i].second, TOKEN(sorted[i].second), sorted[i].first,
+           logits[sorted[i].second]);
   }
 }
 
