@@ -95,6 +95,9 @@ class AppArgs : public ArgsBase<AppArgs> {
   int verbosity;
   size_t num_threads;
   std::string eot_line;
+#ifdef WITH_WEBSOCKET
+  int port;
+#endif
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -115,6 +118,9 @@ class AppArgs : public ArgsBase<AppArgs> {
         "before the line where only the given string appears.\n    Default = "
         "When a newline is encountered, that signals the end of the turn.",
         2);
+#ifdef WITH_WEBSOCKET
+    visitor(port, "port", 9999, "Port for WebSocket.\n    Default = 9999.", 2);
+#endif
   }
 };
 
