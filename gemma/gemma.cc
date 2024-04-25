@@ -896,6 +896,11 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
                    activations.x.data() + token_idx * kModelDim, kModelDim);
         MulByConst(kEmbScaling, activations.x.data() + token_idx * kModelDim,
                    kModelDim);
+        if constexpr (TConfig::kAbsolutePE) {
+          AddAbsolutePositionalEmbeddings(
+              activations.x.data() + token_idx * kModelDim, TConfig::kModelDim,
+              pos);
+        };
       });
 
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
@@ -958,6 +963,10 @@ void Transformer(int token, size_t pos, const WeightArrayT& weights,
   GEMMA_CONSTEXPR_EMBSCALING const float kEmbScaling =
       EmbeddingScaling<TConfig>();
   MulByConst(kEmbScaling, activations.x.data(), kModelDim);
+  if constexpr (TConfig::kAbsolutePE) {
+    AddAbsolutePositionalEmbeddings(activations.x.data(), TConfig::kModelDim,
+                                    pos);
+  };
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];
     const auto* layer_weights = weights.GetLayer(layer);

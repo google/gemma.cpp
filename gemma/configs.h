@@ -90,6 +90,7 @@ struct ConfigGemma7B {
   static constexpr int kKVHeads = 16;  // standard MHA
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
 
   // SSM config.
   static constexpr int kConv1dWidth = 0;
@@ -120,6 +121,7 @@ struct ConfigGemma2B {
   static constexpr int kKVHeads = 1;
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
 
   // SSM config.
   static constexpr int kConv1dWidth = 0;
@@ -178,6 +180,7 @@ struct ConfigGriffin2B {
   static constexpr int kKVHeads = 1;
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
 
   // SSM config.
   static constexpr int kConv1dWidth = 4;
