@@ -80,8 +80,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   void ChooseNumThreads() {
     if (num_threads == kDefaultNumThreads) {
       // This is a rough heuristic, replace with something better in the future.
-      num_threads = static_cast<size_t>(std::clamp(
-          static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
+      num_threads = GetSupportedThreadCount();
     }
   }
 
@@ -89,6 +88,11 @@ class AppArgs : public ArgsBase<AppArgs> {
   AppArgs(int argc, char* argv[]) {
     InitAndParse(argc, argv);
     ChooseNumThreads();
+  }
+
+  static inline size_t GetSupportedThreadCount() {
+    return static_cast<size_t>(std::clamp(
+        static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
   }
 
   Path log;  // output
