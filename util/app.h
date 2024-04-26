@@ -31,6 +31,7 @@
 #include <algorithm>  // std::clamp
 #include <thread>     // NOLINT>
 
+#include "compression/io.h"  // Path
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "util/args.h"
@@ -45,6 +46,10 @@ static inline const char* CompiledConfig() {
     return "msan";
   } else if (HWY_IS_TSAN) {
     return "tsan";
+#if defined(HWY_IS_HWASAN)
+  } else if (HWY_IS_HWASAN) {
+    return "hwasan";
+#endif
 #if defined(HWY_IS_UBSAN)
   } else if (HWY_IS_UBSAN) {
     return "ubsan";

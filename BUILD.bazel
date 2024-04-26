@@ -89,6 +89,7 @@ cc_library(
     deps = [
         ":args",
         ":gemma_lib",
+        "//compression:io",
         "@hwy//:hwy",
     ],
 )
