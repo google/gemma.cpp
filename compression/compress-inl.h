@@ -51,6 +51,20 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+template <class DF, HWY_IF_F32_D(DF)>
+HWY_INLINE void Bf16ToF32EO(const DF df32,
+                            const hwy::bfloat16_t* HWY_RESTRICT in,
+                            hn::Vec<DF>& v_even,
+                            hn::Vec<DF>& v_odd) {
+  const hn::Repartition<hwy::bfloat16_t, DF> dbf16;
+  const hn::RebindToUnsigned<decltype(df32)> du32;
+
+  const auto odd = Set(du32, 0xFFFF0000u);
+  const auto interleaved = BitCast(du32, LoadU(dbf16, in));
+  v_even = BitCast(df32, hn::ShiftLeft<16>(interleaved));
+  v_odd = BitCast(df32, And(interleaved, odd));
+}
+
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
@@ -58,6 +72,7 @@ struct CompressTraits {};
 template <>
 struct CompressTraits<float> {
   using MatT = float;
+  static constexpr bool supports_eo = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
@@ -111,6 +126,7 @@ struct CompressTraits<float> {
 template <>
 struct CompressTraits<hwy::bfloat16_t> {
   using MatT = hwy::bfloat16_t;
+  static constexpr bool supports_eo = true;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
@@ -219,11 +235,60 @@ struct CompressTraits<hwy::bfloat16_t> {
     // bf16*bf16.
     return hn::Dot::Compute<kAssumptions>(d_vec, vec_aligned, in + in_ofs, num);
   }
+
+  // Computes the dot product of an even-odd deinterleaved, f32 `vec_aligned`
+  // and a column- major matrix `in`. `vec_aligned` should be aligned and
+  // alternate even-indexed `hn::Lanes(df32)` elements followed by odd-indexed 
+  // `hn::Lanes(df32)` elements.
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE float DotEO(
+      const DF df32, const hwy::bfloat16_t* HWY_RESTRICT in, size_t in_ofs,
+      const float* HWY_RESTRICT vec_aligned, size_t num) {
+    HWY_DASSERT(num >= (hn::Lanes(df32) * 2) && (num % (hn::Lanes(df32) * 2)) == 0);
+    HWY_DASSERT((in_ofs % (hn::Lanes(df32) * 2)) == 0);
+    HWY_DASSERT(hn::IsAligned(df32, vec_aligned));
+
+    const hn::Repartition<hwy::bfloat16_t, DF> dbf16;
+    using VF32 = decltype(Zero(df32));
+    const size_t N = Lanes(dbf16);
+
+    VF32 sum0 = Zero(df32);
+    VF32 sum1 = Zero(df32);
+    VF32 sum2 = Zero(df32);
+    VF32 sum3 = Zero(df32);
+
+    const hn::RebindToUnsigned<decltype(df32)> du32;
+    using VU32 = hn::VFromD<decltype(du32)>;
+    const VU32 odd = Set(du32, 0xFFFF0000u);
+
+    VF32 be0, bo0, be1, bo1;
+    for (size_t i = 0; i < num; /* i += 2 * N */) {
+      const VF32 ae0 = Load(df32, vec_aligned + i);
+      const VF32 ao0 = Load(df32, vec_aligned + i + (N / 2));
+      Bf16ToF32EO(df32, in + in_ofs + i, be0, bo0);
+      i += N;
+      sum0 = hn::MulAdd(ae0, be0, sum0);
+      sum1 = hn::MulAdd(ao0, bo0, sum1);
+
+      const VF32 ae1 = Load(df32, vec_aligned + i);
+      const VF32 ao1 = Load(df32, vec_aligned + i + (N / 2));
+      Bf16ToF32EO(df32, in + in_ofs + i, be1, bo1);
+      i += N;
+      sum2 = hn::MulAdd(ae1, be1, sum2);
+      sum3 = hn::MulAdd(ao1, bo1, sum3);
+    }
+
+    sum0 = Add(sum0, sum1);
+    sum2 = Add(sum2, sum3);
+    sum0 = Add(sum0, sum2);
+    return ReduceSum(df32, sum0);
+  }
 };
 
 template <>
 struct CompressTraits<SfpStream> {
   using MatT = SfpStream;
+  static constexpr bool supports_eo = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* in, size_t num,
@@ -273,6 +338,7 @@ struct CompressTraits<SfpStream> {
 template <>
 struct CompressTraits<NuqStream> {
   using MatT = NuqStream;
+  static constexpr bool supports_eo = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* in, size_t num,
@@ -425,16 +491,22 @@ HWY_INLINE float Dot(DF df, const ArrayT& compressed, size_t compressed_ofs,
 }
 
 // Returns dot product with `vec_aligned` of length `num`.
-template <class DF, typename MatT, size_t kCapacity, typename VecT>
+template <bool kVecEO, class DF, typename MatT, size_t kCapacity, typename VecT>
 HWY_INLINE float Dot(DF df, const CompressedArray<MatT, kCapacity>& compressed,
                      size_t compressed_ofs, const VecT* vec_aligned,
                      size_t num) {
   HWY_DASSERT(compressed_ofs + num <= compressed.size());
   HWY_DASSERT(hn::IsAligned(df, vec_aligned));
   using Traits = CompressTraits<MatT>;
-  return (compressed.scale() * Traits::Dot(df, compressed.size(),
-                                           compressed.data(), compressed_ofs,
-                                           vec_aligned, num));
+  float dot_result;
+  if constexpr (kVecEO) {
+    dot_result = Traits::DotEO(df, compressed.data(), compressed_ofs,
+                               vec_aligned, num);
+  } else {
+    dot_result = Traits::Dot(df, compressed.size(), compressed.data(),
+                             compressed_ofs, vec_aligned, num);
+  }
+  return compressed.scale() * dot_result;
 }
 
 // Callback used by ForeachTensor.
