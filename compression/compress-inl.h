@@ -72,7 +72,7 @@ struct CompressTraits {};
 template <>
 struct CompressTraits<float> {
   using MatT = float;
-  static constexpr bool supports_eo = false;
+  static constexpr bool kSupportsEvenOdd = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
@@ -126,7 +126,7 @@ struct CompressTraits<float> {
 template <>
 struct CompressTraits<hwy::bfloat16_t> {
   using MatT = hwy::bfloat16_t;
-  static constexpr bool supports_eo = true;
+  static constexpr bool kSupportsEvenOdd = true;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
@@ -288,7 +288,7 @@ struct CompressTraits<hwy::bfloat16_t> {
 template <>
 struct CompressTraits<SfpStream> {
   using MatT = SfpStream;
-  static constexpr bool supports_eo = false;
+  static constexpr bool kSupportsEvenOdd = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* in, size_t num,
@@ -338,7 +338,7 @@ struct CompressTraits<SfpStream> {
 template <>
 struct CompressTraits<NuqStream> {
   using MatT = NuqStream;
-  static constexpr bool supports_eo = false;
+  static constexpr bool kSupportsEvenOdd = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* in, size_t num,

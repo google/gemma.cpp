@@ -341,7 +341,9 @@ HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
 // vector to even-odd layout.
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename AddT,
-          std::enable_if_t<CompressTraits<typename ArrayT::value_type>::supports_eo, bool> = true>
+          std::enable_if_t<
+            CompressTraits<typename ArrayT::value_type>::kSupportsEvenOdd, bool>
+            = true>
 HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
                           const float* HWY_RESTRICT const vec_aligned,
                           const AddT* HWY_RESTRICT const add,
@@ -378,7 +380,9 @@ HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
 // vector to even-odd layout.
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename AddT,
-          std::enable_if_t<CompressTraits<typename ArrayT::value_type>::supports_eo, bool> = true>
+          std::enable_if_t<
+            CompressTraits<typename ArrayT::value_type>::kSupportsEvenOdd, bool>
+            = true>
 HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
                           const hwy::bfloat16_t* HWY_RESTRICT const vec_aligned,
                           const AddT* HWY_RESTRICT const add,
