@@ -27,8 +27,8 @@ class PromptArgs : public gcpp::ArgsBase<PromptArgs> {
 
 std::pair<std::string, int> QueryModel(
     gcpp::Gemma& model, gcpp::InferenceArgs& args, gcpp::AppArgs& app,
-    gcpp::KVCache& kv_cache, hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-    const std::string& input, gcpp::LayersOutputT* layers_output) {
+    gcpp::KVCache& kv_cache, hwy::ThreadPool& pool, const std::string& input,
+    gcpp::LayersOutputT* layers_output) {
   std::vector<int> prompt;
   HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
 
@@ -55,8 +55,7 @@ std::pair<std::string, int> QueryModel(
   }
   GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                 args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,
-                inner_pool, stream_token, accept_token, gen, app.verbosity,
-                layers_output);
+                stream_token, accept_token, gen, app.verbosity, layers_output);
   return {res, total_tokens};
 }
 
@@ -92,7 +91,6 @@ int main(int argc, char** argv) {
   gcpp::LayersOutputT* layers_output =
       log_layers_output ? &json_logger.layers_output_log_f : nullptr;
 
-  hwy::ThreadPool inner_pool(0);
   hwy::ThreadPool pool(app.num_threads);
   // For many-core, pinning threads to cores helps.
   if (app.num_threads > 10) {
@@ -112,7 +110,7 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   const auto [answer, token_count] = QueryModel(
-      model, args, app, kv_cache, inner_pool, pool, prompt, layers_output);
+      model, args, app, kv_cache, pool, prompt, layers_output);
   std::cout << answer.substr(prompt.size()) << "\n" << std::flush;
 
   if (log_layers_output) {

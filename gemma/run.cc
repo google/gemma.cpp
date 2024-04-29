@@ -94,9 +94,8 @@ void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
 
 void ReplGemma(gcpp::Gemma& model, ModelTraining training,
                gcpp::KVCache& kv_cache, hwy::ThreadPool& pool,
-               hwy::ThreadPool& inner_pool, const InferenceArgs& args,
-               int verbosity, const gcpp::AcceptFunc& accept_token,
-               std::string& eot_line) {
+               const InferenceArgs& args, int verbosity,
+               const gcpp::AcceptFunc& accept_token, std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;      // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -209,7 +208,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
     const double time_start = hwy::platform::Now();
     GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
-                  args.temperature, prompt, abs_pos, kv_cache, pool, inner_pool,
+                  args.temperature, prompt, abs_pos, kv_cache, pool,
                   stream_token, accept_token, gen, verbosity);
     const double time_end = hwy::platform::Now();
     const double tok_sec = current_pos / (time_end - time_start);
@@ -229,7 +228,6 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   PROFILER_ZONE("Run.misc");
 
-  hwy::ThreadPool inner_pool(0);
   hwy::ThreadPool pool(app.num_threads);
   // For many-core, pinning threads to cores helps.
   if (app.num_threads > 10) {
@@ -271,8 +269,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(
-      model, loader.ModelTraining(), kv_cache, pool, inner_pool, inference,
-      app.verbosity,
+      model, loader.ModelTraining(), kv_cache, pool, inference, app.verbosity,
       /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 

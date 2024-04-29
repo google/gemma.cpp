@@ -104,13 +104,12 @@ using AcceptFunc = std::function<bool(int)>;
 void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    float temperature, const std::vector<int>& prompt,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
-                   hwy::ThreadPool& inner_pool, const StreamFunc& stream_token,
+                   const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
                    int verbosity, LayersOutputT* layers_output = nullptr);
 
 // Convenience function for the common case:
 // - Bundle runtime parameters as RuntimeConfig
-// - No ThreadPool within ThreadPool (inner_pool = dummy)
 // - All tokens accepted
 void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
@@ -122,8 +121,7 @@ void CompressWeights(gcpp::Model model, const Path& weights,
 
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
-                          hwy::ThreadPool& pool, hwy::ThreadPool& inner_pool,
-                          int verbosity);
+                          hwy::ThreadPool& pool, int verbosity);
 
 constexpr int EOS_ID = 1;
 
