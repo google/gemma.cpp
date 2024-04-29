@@ -70,7 +70,7 @@ struct Args : public ArgsBase<Args> {
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(weights, "weights", Path(),
-            "Path name of model weights (.sbs) file.\n"
+            "Path to model weights (.bin) file.\n"
             "    Required argument.");
     visitor(model_type_str, "model", std::string(),
             "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
@@ -80,7 +80,7 @@ struct Args : public ArgsBase<Args> {
             "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
     visitor(compressed_weights, "compressed_weights", Path(),
-            "Path name where compressed weights file will be written.\n"
+            "Path name where compressed weights (.sbs) file will be written.\n"
             "    Required argument.");
     visitor(num_threads, "num_threads",
             kDefaultNumThreads,  // see ChooseNumThreads
