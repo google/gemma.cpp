@@ -181,7 +181,7 @@ HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
                            const VecT* HWY_RESTRICT vec_aligned,
                            float* HWY_RESTRICT out) {
   MatVecAddLoop<false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/(VecT*)nullptr, out);
+      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), out);
 }
 
 // Simple version without tiling nor threading, but two offsets/outputs.
@@ -420,7 +420,8 @@ HWY_INLINE void MatVec(const ArrayT& mat, const size_t mat_ofs,
                        const VecT* HWY_RESTRICT const vec_aligned,
                        float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
   MatVecAdd<false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/(VecT *)nullptr, out, pool);
+      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), out,
+      pool);
 }
 
 template <class D, HWY_IF_F32_D(D)>
