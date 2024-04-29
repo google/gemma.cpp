@@ -104,11 +104,10 @@ HWY_INLINE void ToEvenOddF32(
   HWY_DASSERT(size % hn::Lanes(dbf16) == 0);
   HWY_DASSERT(hn::IsAligned(df, vec_aligned));
 
-  VF32 veven, vodd;
   for (size_t i = 0; i < size; i += hn::Lanes(dbf16)) {
-    Bf16ToF32EO(df, vec_aligned + i, veven, vodd);
-    hn::Store(veven, df, out + i);
-    hn::Store(vodd, df, out + i + hn::Lanes(df));
+    const auto interleaved = hn::LoadU(dbf16, vec_aligned + i);
+    hn::Store(hn::PromoteEvenTo(df, interleaved), df, out + i);
+    hn::Store(hn::PromoteOddTo(df, interleaved), df, out + i + hn::Lanes(df));
   }
 }
 
