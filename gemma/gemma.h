@@ -44,9 +44,7 @@ constexpr bool kSystemPrompt = false;
 
 struct KVCache {
   hwy::AlignedFreeUniquePtr<float[]>
-      key_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim
-  hwy::AlignedFreeUniquePtr<float[]>
-      value_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim
+      kv_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim * 2
   hwy::AlignedFreeUniquePtr<float[]>
       conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]>
