@@ -421,6 +421,10 @@ struct Activations {
   std::array<float, kBatchSize * kModelDim> ffw_out;
   std::array<float, kBatchSize * TConfig::kVocabSize> logits;
 
+  // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
+  // per-thread storage.
+  std::array<float, kModelDim * kMaxThreads> even_odd;
+
   // Griffin layer internal activations
   static constexpr size_t kGriffinDim =
       TConfig::kGriffinLayers > 0 ? kModelDim : 0;
@@ -575,13 +579,14 @@ HWY_NOINLINE void GriffinRecurrent(
       gcpp::Activations<TConfig, kBatchSize>::kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
   static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr bool kAdd = true;
   const size_t batch_offset = batch_idx * kModelDim;
   const size_t pos = batch_start + batch_idx;
 
   // X / Y linear layers.
   float* HWY_RESTRICT y = activations.griffin_y.data() + batch_offset;
   float* HWY_RESTRICT x = activations.griffin_x.data() + batch_offset;
-  TwoMatVecAdd<true, kModelDim, kModelDim>(
+  TwoMatVecAdd<kAdd, kModelDim, kModelDim>(
       layer_weights->griffin.linear_x_w, layer_weights->griffin.linear_y_w, 0,
       activations.pre_att_rms_out.data() + batch_offset,
       /*add0=*/layer_weights->griffin.linear_x_biases.data(),
@@ -631,7 +636,7 @@ HWY_NOINLINE void GriffinRecurrent(
     constexpr size_t kHeadDim = kModelDim / kHeads;
     constexpr size_t kMatrixSize = kHeadDim * kHeadDim;
     size_t head_offset = head * kHeadDim;
-    TwoOfsMatVecAddLoop<true, kHeadDim, kHeadDim>(
+    TwoOfsMatVecAddLoop<kAdd, kHeadDim, kHeadDim>(
         layer_weights->griffin.gate_w, kMatrixSize * head,
         kMatrixSize * (kHeads + head), x + head_offset,
         /*add0=*/layer_weights->griffin.gate_biases.data() + head_offset,
@@ -670,9 +675,10 @@ HWY_NOINLINE void GriffinRecurrent(
 
   // Final linear layer.
   float* out_ptr = activations.att_post2.data() + batch_idx * kModelDim;
-  MatVecAdd<true, kModelDim, kModelDim>(
+  MatVecAdd<kAdd, kModelDim, kModelDim>(
       layer_weights->griffin.linear_out_w, 0, x,
-      layer_weights->griffin.linear_out_biases.data(), out_ptr, pool);
+      layer_weights->griffin.linear_out_biases.data(),
+      activations.even_odd.data(), out_ptr, pool);
 }
 
 template <size_t kBatchSize, typename LayerT, class TConfig>
@@ -704,26 +710,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
 
   float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
 
-  auto ProjQ = [&](uint64_t head, size_t head_offset) HWY_ATTR {
-    float* HWY_RESTRICT q =
-        activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
-
-    MatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w,
-                                   head_offset + 0 * kQKVDim * kModelDim, x, q);
-  };
-
-  auto ProjKV = [&](size_t k_offset, size_t v_offset,
-                    size_t kv_offset) HWY_ATTR {
-    float* HWY_RESTRICT k = kv_cache.kv_cache.get() + kv_offset;
-    float* HWY_RESTRICT v = k + kQKVDim;
-
-    TwoOfsMatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, k_offset,
-                                         v_offset, x, k, v);
-
-    Rope(k, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-  };
-
-  auto Attn = [&](uint64_t head, size_t head_offset) HWY_ATTR {
+  auto Attn = [&](uint64_t head, size_t head_offset, size_t thread) HWY_ATTR {
     // Calculate scores
     float* HWY_RESTRICT q =
         activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
@@ -760,20 +747,21 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
         head == 0
             ? activations.att_post2.data() + batch_idx * kModelDim
             : activations.att_post1.data() + head * kBatchSize * kModelDim;
+    float* even_odd = activations.even_odd.data() + thread * kQKVDim;
     if (head == 0) {
       MatVecAddLoop<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
           layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim, att_out,
-          layer_weights->attention_output_biases.data(), head_out);
+          layer_weights->attention_output_biases.data(), even_odd, head_out);
     } else {
       MatVecLoop<kModelDim, kQKVDim>(layer_weights->attn_vec_einsum_w,
                                      head * kModelDim * kQKVDim, att_out,
-                                     head_out);
+                                     even_odd, head_out);
     }
   };
 
   if constexpr (kHeads == kKVHeads) {
     // Multi-Head Attention
-    pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
+    pool.Run(0, kHeads, [&](const uint64_t head, size_t thread) HWY_ATTR {
       // linear projections to QKV
       const size_t head_offset = TConfig::kInterleaveQKV
                                      ? 3 * kQKVDim * kModelDim
@@ -784,32 +772,41 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
       const size_t k_offset = head * head_offset + 1 * mat_offset;
       const size_t v_offset = head * head_offset + 2 * mat_offset;
 
-      ProjQ(head, q_offset);
+      // ProjQ
+      float* HWY_RESTRICT q =
+          activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
+      MatVecLoop<kQKVDim, kModelDim>(
+          layer_weights->qkv_einsum_w, q_offset + 0 * kQKVDim * kModelDim, x,
+          activations.even_odd.data() + thread * kModelDim, q);
 
-      const size_t kv_offset =
-          cache_pos * kCachePosSize + layer * kCacheLayerSize +
-          head * kQKVDim * 2;
+      // ProjKV
+      const size_t kv_offset = cache_pos * kCachePosSize +
+                               layer * kCacheLayerSize + head * kQKVDim * 2;
+      float* HWY_RESTRICT k = kv_cache.kv_cache.get() + kv_offset;
+      float* HWY_RESTRICT v = k + kQKVDim;
+      TwoOfsMatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w,
+                                           k_offset, v_offset, x, k, v);
+      Rope(k, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
 
-      ProjKV(k_offset, v_offset, kv_offset);
-
-      Attn(head, head * kQKVDim * 2);
+      Attn(head, head * kQKVDim * 2, thread);
     });
   } else {
     // Multi-Query Attention
     float* HWY_RESTRICT q = activations.q.data() + batch_idx * kHeads * kQKVDim;
-    MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x, q,
-                                        pool);
+    MatVec<kHeads * kQKVDim, kModelDim>(layer_weights->qkv_einsum_w, 0, x,
+                                        activations.even_odd.data(), q, pool);
 
     float* HWY_RESTRICT kv = kv_cache.kv_cache.get() +
                              cache_pos * kCachePosSize +
                              layer * kCacheLayerSize;
     MatVec<kQKVDim * 2, kModelDim>(layer_weights->qkv_einsum_w,
-                                   kHeads * kQKVDim * kModelDim, x, kv, pool);
+                                   kHeads * kQKVDim * kModelDim, x,
+                                   activations.even_odd.data(), kv, pool);
 
     Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
 
-    pool.Run(0, kHeads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
-      Attn(head, 0);
+    pool.Run(0, kHeads, [&](const uint64_t head, size_t thread) HWY_ATTR {
+      Attn(head, 0, thread);
     });
   }
 
@@ -829,6 +826,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
+  float* HWY_RESTRICT even_odd = activations.even_odd.data();
 
   {
     PROFILER_ZONE("Gen.FFW.GatedGELU");
@@ -837,15 +835,15 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
     float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
-    // Same matrix, first and second half of rows. Could fuse into one MatVec,
-    // but separating them could help on NUMA e.g. multiple sockets.
+    // Same matrix, first and second half of rows. Could fuse into one MatVec.
     MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-        layer_weights->ffw_gating_biases.data() + kFFHiddenDim, out_mul, pool);
+        layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
+        out_mul, pool);
     // Gate, will go through the nonlinearity.
     MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, 0, vec,
-        layer_weights->ffw_gating_biases.data(), out, pool);
+        layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
 
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
@@ -858,7 +856,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   PROFILER_ZONE("Gen.FFW\\GatedGELU");
   MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
       layer_weights->linear_w, 0, activations.ffw_hidden.data() + hidden_offset,
-      layer_weights->ffw_output_biases.data(),
+      layer_weights->ffw_output_biases.data(), even_odd,
       activations.ffw_out.data() + batch_idx * kModelDim, pool);
 }
 
@@ -1110,9 +1108,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     if (is_generating_phase) {
       PROFILER_ZONE("Gen.Embedding");
       // Generation phase
-      MatVec<kVocabSize, TConfig::kModelDim>(weights.embedder_input_embedding,
-                                             0, final_activation,
-                                             activations.logits.data(), pool);
+      MatVec<kVocabSize, TConfig::kModelDim>(
+          weights.embedder_input_embedding, 0, final_activation,
+          activations.even_odd.data(), activations.logits.data(), pool);
       // Barrier: must have all logits so we can subtract max.
       Softmax(activations.logits.data(), kVocabSize);
       token = SampleTopK<TConfig::kTopK>(activations.logits.data(), kVocabSize,
@@ -1193,9 +1191,9 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     }
     Transformer(token, pos, weights, activations, kv_cache, pool,
                 /*layers_output=*/nullptr);
-    MatVec<kVocabSize, kModelDim>(weights.embedder_input_embedding, 0,
-                                  activations.x.data(),
-                                  activations.logits.data(), pool);
+    MatVec<kVocabSize, kModelDim>(
+        weights.embedder_input_embedding, 0, activations.x.data(),
+        activations.even_odd.data(), activations.logits.data(), pool);
     LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
     memcpy(logits.data(), activations.logits.data(),
            kVocabSize * sizeof(logits[0]));
