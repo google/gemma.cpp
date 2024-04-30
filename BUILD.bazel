@@ -46,8 +46,10 @@ cc_test(
     deps = [
         ":ops",
         "@googletest//:gtest_main",
+        "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
+        "@hwy//:thread_pool",
     ],
 )
 

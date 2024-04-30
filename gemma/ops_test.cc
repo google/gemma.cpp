@@ -17,11 +17,15 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include <algorithm>
 #include <array>
 #include <random>
+#include <vector>
 
+#include "compression/compress.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -375,6 +379,7 @@ CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
 template <size_t length>
 hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
   hwy::AlignedFreeUniquePtr<float[]> vec = hwy::AllocateAligned<float>(length);
+  HWY_ASSERT(vec);
   for (size_t idx = 0; idx < length; idx++) {
     vec[idx] = static_cast<float>(idx + offset);
   }
@@ -388,8 +393,9 @@ hwy::AlignedFreeUniquePtr<float[]> SimpleMatVecAdd(
     const hwy::AlignedFreeUniquePtr<float[]>& add) {
   hwy::AlignedFreeUniquePtr<float[]> uncompressed_mat =
       hwy::AllocateAligned<float>(kOuter * kInner);
-  Decompress(mat, 0, uncompressed_mat.get(), kOuter * kInner);
   hwy::AlignedFreeUniquePtr<float[]> out = hwy::AllocateAligned<float>(kOuter);
+  HWY_ASSERT(uncompressed_mat && out);
+  Decompress(mat, 0, uncompressed_mat.get(), kOuter * kInner);
   for (size_t idx_row = 0; idx_row < kOuter; idx_row++) {
     out[idx_row] = add[idx_row];
     for (size_t idx_col = 0; idx_col < kInner; idx_col++) {
@@ -418,12 +424,15 @@ void TestMatVecAdd() {
   CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> even_odd =
+      hwy::AllocateAligned<float>(kInner * pool.NumWorkers());
   hwy::AlignedFreeUniquePtr<float[]> expected_out =
       SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
   hwy::AlignedFreeUniquePtr<float[]> actual_out =
       hwy::AllocateAligned<float>(kOuter);
-  MatVecAdd<true, kOuter, kInner>(mat, 0, vec.get(), add.get(),
-                                  actual_out.get(), pool);
+  HWY_ASSERT(vec && add && even_odd && expected_out && actual_out);
+  MatVecAdd</*kAdd=*/true, kOuter, kInner>(
+      mat, 0, vec.get(), add.get(), even_odd.get(), actual_out.get(), pool);
   AssertClose<kOuter>(actual_out, expected_out);
 }
 
@@ -433,12 +442,15 @@ void TestMatVecAddLoop() {
   CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
+  hwy::AlignedFreeUniquePtr<float[]> even_odd =
+      hwy::AllocateAligned<float>(kInner);
   hwy::AlignedFreeUniquePtr<float[]> expected_out =
       SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
   hwy::AlignedFreeUniquePtr<float[]> actual_out =
       hwy::AllocateAligned<float>(kOuter);
+  HWY_ASSERT(vec && add && even_odd && expected_out && actual_out);
   MatVecAddLoop<true, kOuter, kInner>(mat, 0, vec.get(), add.get(),
-                                      actual_out.get());
+                                      even_odd.get(), actual_out.get());
   AssertClose<kOuter>(actual_out, expected_out);
 }
 
@@ -459,6 +471,8 @@ void TestTwoMatVecAdd() {
       hwy::AllocateAligned<float>(kOuter);
   hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
       hwy::AllocateAligned<float>(kOuter);
+  HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
+             expected_out1 && actual_out1);
   TwoMatVecAdd<true, kOuter, kInner>(mat0, mat1, 0, vec.get(), add0.get(),
                                      add1.get(), actual_out0.get(),
                                      actual_out1.get(), pool);
@@ -481,6 +495,8 @@ void TestTwoOfsMatVecAddLoop() {
       hwy::AllocateAligned<float>(kOuter);
   hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
       hwy::AllocateAligned<float>(kOuter);
+  HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
+             expected_out1 && actual_out1);
   TwoOfsMatVecAddLoop<true, kOuter, kInner>(mat, 0, 0, vec.get(), add0.get(),
                                             add1.get(), actual_out0.get(),
                                             actual_out1.get());

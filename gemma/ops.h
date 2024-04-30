@@ -129,11 +129,13 @@ HWY_INLINE void ToEvenOddF32(
 }
 
 // Simple version without tiling nor threading.
+// even_odd is precomputed for the current thread.
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename VecT, typename AddT>
 HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
                               const VecT* HWY_RESTRICT vec_aligned,
                               const AddT* HWY_RESTRICT add,
+                              float* HWY_RESTRICT even_odd,
                               float* HWY_RESTRICT out) {
   PROFILER_ZONE("MatVecAddLoop");
   const hn::ScalableTag<float> df;
@@ -149,7 +151,6 @@ HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
   }
 }
 
-
 #if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
 template <bool kAdd, size_t kOuter, size_t kInner, typename VecT, typename AddT,
           size_t kCapacity>
@@ -157,33 +158,39 @@ HWY_INLINE void MatVecAddLoop(
     const CompressedArray<hwy::bfloat16_t, kCapacity>& mat,
     const size_t mat_ofs,
     const VecT* HWY_RESTRICT vec_aligned,
-    const AddT* HWY_RESTRICT add,
+    const AddT* HWY_RESTRICT add, float* HWY_RESTRICT even_odd,
     float* HWY_RESTRICT out) {
   PROFILER_ZONE("MatVecAddLoop");
 
+  // Sanity check: we can write without race conditions.
+  if (HWY_IS_TSAN) {
+    even_odd[0] = hwy::ConvertScalarTo<float>(vec_aligned[0]);
+    even_odd[kInner - 1] = -even_odd[0];
+  }
+
   const hn::ScalableTag<float> df;
-
-  const auto vec_dequant = hwy::AllocateAligned<float>(kInner);
-  ToEvenOddF32(vec_aligned, kInner, vec_dequant.get());
-
+  ToEvenOddF32(vec_aligned, kInner, even_odd);
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs = mat_ofs + idx_row * kInner;
     if constexpr (kAdd) {
       out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot<true>(df, mat, row_ofs, vec_dequant.get(), kInner);
+                     Dot<true>(df, mat, row_ofs, even_odd, kInner);
     } else {
-      out[idx_row] = Dot<true>(df, mat, row_ofs, vec_dequant.get(), kInner);
+      out[idx_row] = Dot<true>(df, mat, row_ofs, even_odd, kInner);
     }
   }
 }
 #endif
 
+// even_odd is precomputed for the current thread.
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
 HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
                            const VecT* HWY_RESTRICT vec_aligned,
+                           float* HWY_RESTRICT even_odd,
                            float* HWY_RESTRICT out) {
-  MatVecAddLoop<false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), out);
+  MatVecAddLoop</*kAdd=*/false, kOuter, kInner>(
+      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), even_odd,
+      out);
 }
 
 // Simple version without tiling nor threading, but two offsets/outputs.
@@ -221,7 +228,7 @@ HWY_INLINE void TwoOfsMatVecLoop(const ArrayT& mat, const size_t mat_ofs0,
                                  const VecT* HWY_RESTRICT vec_aligned,
                                  float* HWY_RESTRICT out0,
                                  float* HWY_RESTRICT out1) {
-  TwoOfsMatVecAddLoop<false, kOuter, kInner, ArrayT, VecT, VecT>(
+  TwoOfsMatVecAddLoop</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
       mat, mat_ofs0, mat_ofs1, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
       out0, out1);
 }
@@ -307,10 +314,20 @@ template <bool kVecIsEvenOdd, bool kAdd, size_t kOuter, size_t kInner,
 HWY_INLINE void MatVecAddInner(const ArrayT& mat, const size_t mat_ofs,
                                const VecT* HWY_RESTRICT const vec_aligned,
                                const AddT* HWY_RESTRICT const add,
+                               float* HWY_RESTRICT even_odd,
                                float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
   const hn::ScalableTag<float> df;
   constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
   constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
+
+  // Sanity check: each thread can write without race conditions.
+  if (HWY_IS_TSAN) {
+    pool.Run(
+        0, pool.NumWorkers(), [even_odd](uint64_t /*task*/, size_t thread) {
+          even_odd[thread * kInner] = -static_cast<float>(thread);
+          even_odd[thread * kInner + kInner - 1] = static_cast<float>(thread);
+        });
+  }
 
   // For each entire strip.
   pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
@@ -340,6 +357,7 @@ template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
 HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
                           const VecT* HWY_RESTRICT const vec_aligned,
                           const AddT* HWY_RESTRICT const add,
+                          float* HWY_RESTRICT even_odd,
                           float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
   PROFILER_ZONE("MatVecAdd");
 
@@ -352,25 +370,25 @@ HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
     CompressTraits<typename ArrayT::value_type>::kSupportsEvenOdd
     && hwy::IsSameEither<VecT, float, hwy::bfloat16_t>()
   ) {
-    const auto vec_dequant = hwy::AllocateAligned<float>(kInner);
-    ToEvenOddF32(vec_aligned, kInner, vec_dequant.get());
+    ToEvenOddF32(vec_aligned, kInner, even_odd);
     detail::MatVecAddInner<true, kAdd, kOuter, kInner>(
-      mat, mat_ofs, vec_dequant.get(), add, out, pool);
+      mat, mat_ofs, even_odd, add, even_odd, out, pool);
     return;
   }
   #endif
 
   detail::MatVecAddInner<false, kAdd, kOuter, kInner>(
-    mat, mat_ofs, vec_aligned, add, out, pool);
+    mat, mat_ofs, vec_aligned, add, even_odd, out, pool);
 }
 
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
 HWY_INLINE void MatVec(const ArrayT& mat, const size_t mat_ofs,
                        const VecT* HWY_RESTRICT const vec_aligned,
-                       float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
-  MatVecAdd<false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), out,
-      pool);
+                       float* HWY_RESTRICT even_odd, float* HWY_RESTRICT out,
+                       hwy::ThreadPool& pool) {
+  MatVecAdd</*kAdd=*/false, kOuter, kInner>(
+      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), even_odd,
+      out, pool);
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -523,7 +541,7 @@ HWY_NOINLINE void TwoMatVec(const ArrayT& mat0, const ArrayT& mat1,
                             const VecT* HWY_RESTRICT vec_aligned,
                             float* HWY_RESTRICT out0, float* HWY_RESTRICT out1,
                             hwy::ThreadPool& pool) {
-  TwoMatVecAdd<false, kOuter, kInner, ArrayT, VecT, VecT>(
+  TwoMatVecAdd</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
       mat0, mat1, mat_ofs, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
       out0, out1, pool);
 }

@@ -36,7 +36,6 @@ class GemmaTest : public ::testing::Test {
       : weights("./2b-it-mqa.sbs"),
         tokenizer("./tokenizer.spm"),
         pool(std::min<int>(20, (std::thread::hardware_concurrency() - 1) / 2)),
-        inner_pool(0),
         model_type(gcpp::Model::GEMMA_2B),
         model(tokenizer, weights, model_type, pool) {
     kv_cache = CreateKVCache(model_type);
@@ -60,8 +59,8 @@ class GemmaTest : public ::testing::Test {
     gcpp::GenerateGemma(
         model, /*max_tokens=*/3072, /*max_generated_tokens=*/2048,
         /*temperature=*/1.0, prompt, /*start_pos=*/0, kv_cache, pool,
-        inner_pool, stream_token,
-        /*accept=*/[](int) { return true; }, gen, /*verbosity=*/0);
+        stream_token, /*accept=*/[](int) { return true; }, gen,
+        /*verbosity=*/0);
     std::string response_text;
     HWY_ASSERT(model.Tokenizer()->Decode(response, &response_text));
     return response_text;
@@ -71,8 +70,7 @@ class GemmaTest : public ::testing::Test {
     std::vector<int> prompt;
     HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
     return gcpp::ComputeCrossEntropy(model, /*max_tokens=*/3072, prompt,
-                                     kv_cache, pool, inner_pool,
-                                     /*verbosity=*/0) /
+                                     kv_cache, pool, /*verbosity=*/0) /
            prompt_string.size();
   }
 
@@ -89,7 +87,6 @@ class GemmaTest : public ::testing::Test {
   gcpp::Path tokenizer;
   gcpp::KVCache kv_cache;
   hwy::ThreadPool pool;
-  hwy::ThreadPool inner_pool;
   gcpp::Model model_type = {};
   gcpp::Gemma model;
 };
