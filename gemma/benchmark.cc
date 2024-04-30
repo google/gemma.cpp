@@ -58,8 +58,7 @@ void LogSpeedStats(const double time_start, size_t total_tokens) {
 
 std::pair<std::string, int> QueryModel(
     gcpp::Gemma& model, gcpp::InferenceArgs& args, gcpp::AppArgs& app,
-    gcpp::KVCache& kv_cache, hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-    const std::string& input) {
+    gcpp::KVCache& kv_cache, hwy::ThreadPool& pool, const std::string& input) {
   std::vector<int> prompt;
   HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
 
@@ -90,7 +89,7 @@ std::pair<std::string, int> QueryModel(
   }
   GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                 args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,
-                inner_pool, stream_token, accept_token, gen, app.verbosity);
+                stream_token, accept_token, gen, app.verbosity);
   if (app.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
   }
@@ -131,8 +130,7 @@ std::string ReadFile(const gcpp::Path& path) {
 
 int BenchmarkGoldens(gcpp::Gemma& model, gcpp::InferenceArgs& args,
                      gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                     hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-                     const std::string& golden_path) {
+                     hwy::ThreadPool& pool, const std::string& golden_path) {
   const std::vector<std::pair<std::string, std::string>> queries_answers =
       load_goldens(golden_path);
   int correct_answers = 0;
@@ -140,7 +138,7 @@ int BenchmarkGoldens(gcpp::Gemma& model, gcpp::InferenceArgs& args,
   const double time_start = hwy::platform::Now();
   for (const auto& [question, expected_answer] : queries_answers) {
     const auto [answer, token_count] =
-        QueryModel(model, args, app, kv_cache, inner_pool, pool, question);
+        QueryModel(model, args, app, kv_cache, pool, question);
     total_tokens += token_count;
     if (answer.find(expected_answer) != std::string::npos) {
       correct_answers++;
@@ -164,14 +162,13 @@ int BenchmarkGoldens(gcpp::Gemma& model, gcpp::InferenceArgs& args,
 
 int BenchmarkSummary(gcpp::Gemma& model, gcpp::InferenceArgs& args,
                      gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                     hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-                     const gcpp::Path& text) {
+                     hwy::ThreadPool& pool, const gcpp::Path& text) {
   std::string prompt("Here is some text to summarize:\n");
   prompt.append(ReadFile(text));
   prompt.append("\nSummarize this text.\n");
   const double time_start = hwy::platform::Now();
   const auto [answer, token_count] =
-      QueryModel(model, args, app, kv_cache, inner_pool, pool, prompt);
+      QueryModel(model, args, app, kv_cache, pool, prompt);
   std::cout << answer.substr(prompt.size()) << "\n" << std::flush;
   LogSpeedStats(time_start, token_count);
   return EXIT_SUCCESS;
@@ -179,8 +176,8 @@ int BenchmarkSummary(gcpp::Gemma& model, gcpp::InferenceArgs& args,
 
 int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
                           gcpp::InferenceArgs& args, gcpp::AppArgs& app,
-                          hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-                          const gcpp::Path& text, size_t batch_tokens) {
+                          hwy::ThreadPool& pool, const gcpp::Path& text,
+                          size_t batch_tokens) {
   std::string input = ReadFile(text);
   std::vector<int> prompt;
   HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
@@ -197,7 +194,7 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     auto kv_cache = CreateKVCache(model_type);
     float entropy =
         ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
-                            inner_pool, app.verbosity);
+                            app.verbosity);
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice;
@@ -211,8 +208,8 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
 
 int BenchmarkTriviaQA(gcpp::Gemma& model, gcpp::InferenceArgs& args,
                       gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                      hwy::ThreadPool& inner_pool, hwy::ThreadPool& pool,
-                      const gcpp::Path& json_file, size_t max_questions) {
+                      hwy::ThreadPool& pool, const gcpp::Path& json_file,
+                      size_t max_questions) {
   std::ifstream trivia_file(json_file.path);
   if (!trivia_file) {
     std::cout << "Could not load file: " << json_file.path << "\n"
@@ -225,7 +222,7 @@ int BenchmarkTriviaQA(gcpp::Gemma& model, gcpp::InferenceArgs& args,
   while (std::getline(trivia_file, line)) {
     json data = json::parse(line);
     const auto [answer, token_count] = QueryModel(
-        model, args, app, kv_cache, inner_pool, pool, data["question"]);
+        model, args, app, kv_cache, pool, data["question"]);
     std::cout << answer << "\n";
     bool correct = false;
     for (const std::string expected : data["answer"]["aliases"]) {
@@ -263,7 +260,6 @@ int main(int argc, char** argv) {
     HWY_ABORT("\nInvalid inference args: %s", error);
   }
 
-  hwy::ThreadPool inner_pool(0);
   hwy::ThreadPool pool(app.num_threads);
   // For many-core, pinning threads to cores helps.
   if (app.num_threads > 10) {
@@ -280,17 +276,16 @@ int main(int argc, char** argv) {
   if (!benchmark_args.goldens.path.empty()) {
     const std::string golden_path =
         benchmark_args.goldens.path + "/" + loader.model_type_str + ".txt";
-    return BenchmarkGoldens(model, args, app, kv_cache, inner_pool, pool,
-                            golden_path);
+    return BenchmarkGoldens(model, args, app, kv_cache, pool, golden_path);
   } else if (!benchmark_args.summarize_text.path.empty()) {
-    return BenchmarkSummary(model, args, app, kv_cache, inner_pool, pool,
+    return BenchmarkSummary(model, args, app, kv_cache, pool,
                             benchmark_args.summarize_text);
   } else if (!benchmark_args.cross_entropy.path.empty()) {
     return BenchmarkCrossEntropy(model, loader.ModelType(), args, app,
-                                 inner_pool, pool, benchmark_args.cross_entropy,
+                                 pool, benchmark_args.cross_entropy,
                                  benchmark_args.batch_tokens);
   } else if (!benchmark_args.trivia_qa.path.empty()) {
-    return BenchmarkTriviaQA(model, args, app, kv_cache, inner_pool, pool,
+    return BenchmarkTriviaQA(model, args, app, kv_cache, pool,
                              benchmark_args.trivia_qa,
                              benchmark_args.max_questions);
   }
