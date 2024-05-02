@@ -98,7 +98,6 @@ HWY_INLINE void ToEvenOddF32(
   const hn::ScalableTag<float> df;
   const hn::Repartition<hwy::bfloat16_t, decltype(df)> dbf16;
   const hn::RebindToUnsigned<decltype(df)> du32;
-  const auto odd = Set(du32, 0xFFFF0000u);
   using VF32 = decltype(hn::Zero(df));
 
   HWY_DASSERT(size % hn::Lanes(dbf16) == 0);
@@ -361,9 +360,7 @@ HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
                           float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
   PROFILER_ZONE("MatVecAdd");
 
-  const hn::ScalableTag<float> df;
   constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
-  constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
 
   #if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
   if constexpr (
