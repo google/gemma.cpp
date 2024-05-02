@@ -92,45 +92,6 @@ HWY_INLINE constexpr size_t RowsPerStrip() {
   return kRowsPerStrip;
 }
 
-// Simple version without tiling nor threading.
-// even_odd is precomputed for the current thread.
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
-HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              const AddT* HWY_RESTRICT add,
-                              float* HWY_RESTRICT even_odd,
-                              float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecAddLoop");
-  const hn::ScalableTag<float> df;
-
-  // Sanity check: we can write without race conditions.
-  if (HWY_IS_TSAN) {
-    even_odd[0] = hwy::ConvertScalarTo<float>(vec_aligned[0]);
-    even_odd[kInner - 1] = -even_odd[0];
-  }
-
-  for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
-    const size_t row_ofs = mat_ofs + idx_row * kInner;
-    if constexpr (kAdd) {
-      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot(df, mat, row_ofs, vec_aligned, kInner);
-    } else {
-      out[idx_row] = Dot(df, mat, row_ofs, vec_aligned, kInner);
-    }
-  }
-}
-
-// even_odd is precomputed for the current thread.
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
-                           const VecT* HWY_RESTRICT vec_aligned,
-                           float* HWY_RESTRICT even_odd,
-                           float* HWY_RESTRICT out) {
-  MatVecAddLoop</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
-      mat, mat_ofs, vec_aligned, /*add=*/nullptr, even_odd, out);
-}
-
 // Simple version without tiling nor threading, but two offsets/outputs.
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename VecT, typename AddT>
@@ -157,18 +118,6 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
       out1[idx_row] = Dot(df, mat, row_ofs1, vec_aligned, kInner);
     }
   }
-}
-
-// Simple version without tiling nor threading, but two offsets/outputs.
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_INLINE void TwoOfsMatVecLoop(const ArrayT& mat, const size_t mat_ofs0,
-                                 const size_t mat_ofs1,
-                                 const VecT* HWY_RESTRICT vec_aligned,
-                                 float* HWY_RESTRICT out0,
-                                 float* HWY_RESTRICT out1) {
-  TwoOfsMatVecAddLoop</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
-      mat, mat_ofs0, mat_ofs1, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
-      out0, out1);
 }
 
 namespace detail {
