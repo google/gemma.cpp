@@ -436,24 +436,6 @@ void TestMatVecAdd() {
   AssertClose<kOuter>(actual_out, expected_out);
 }
 
-void TestMatVecAddLoop() {
-  constexpr size_t kOuter = 128 * 3;
-  constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
-  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
-  hwy::AlignedFreeUniquePtr<float[]> even_odd =
-      hwy::AllocateAligned<float>(kInner);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out =
-      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out =
-      hwy::AllocateAligned<float>(kOuter);
-  HWY_ASSERT(vec && add && even_odd && expected_out && actual_out);
-  MatVecAddLoop<true, kOuter, kInner>(mat, 0, vec.get(), add.get(),
-                                      even_odd.get(), actual_out.get());
-  AssertClose<kOuter>(actual_out, expected_out);
-}
-
 void TestTwoMatVecAdd() {
   hwy::ThreadPool pool(0);
   constexpr size_t kOuter = 128 * 3;
@@ -537,7 +519,6 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAddLoop);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);

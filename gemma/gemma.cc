@@ -402,10 +402,11 @@ struct Activations {
   static constexpr size_t kCacheLayerSize = kKVHeads * kQKVDim * 2;
   static constexpr size_t kCachePosSize =
       TConfig::kGemmaLayers * kCacheLayerSize;
+  static constexpr size_t kQDim = kHeads == kKVHeads ? kQKVDim * 3 : kQKVDim;
 
   std::array<float, kBatchSize * kModelDim> x;  // input
   std::array<float, kBatchSize * kModelDim> pre_att_rms_out;
-  std::array<float, kBatchSize * kHeads * kQKVDim> q;  // query vector
+  std::array<float, kBatchSize * kHeads * kQDim> q;  // query vector
   std::array<float, kBatchSize * kHeads * TConfig::kSeqLen>
       att;                                                   // attention vector
   std::array<float, kBatchSize * kHeads * kQKVDim> att_out;  // attention output
@@ -710,10 +711,9 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
 
   float* x = activations.pre_att_rms_out.data() + batch_idx * kModelDim;
 
-  auto Attn = [&](uint64_t head, size_t head_offset, size_t thread) HWY_ATTR {
+  auto Attn = [&](float* q, uint64_t head, size_t head_offset,
+                  size_t thread) HWY_ATTR {
     // Calculate scores
-    float* HWY_RESTRICT q =
-        activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
     float* HWY_RESTRICT head_att = activations.att.data() +
                                    head * TConfig::kSeqLen +
                                    batch_idx * kHeads * kQKVDim;
@@ -745,34 +745,23 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
 
   if constexpr (kHeads == kKVHeads) {
     // Multi-Head Attention
+    static_assert(TConfig::kInterleaveQKV);
+
+    float* HWY_RESTRICT qkv =
+        activations.q.data() + batch_idx * kHeads * kQKVDim * 3;
+    MatVec<kHeads * kQKVDim * 3, kModelDim>(
+        layer_weights->qkv_einsum_w, 0, x, activations.even_odd.data(), qkv,
+        pool);
+
     pool.Run(0, kHeads, [&](const uint64_t head, size_t thread) HWY_ATTR {
-      // linear projections to QKV
-      const size_t head_offset = TConfig::kInterleaveQKV
-                                     ? 3 * kQKVDim * kModelDim
-                                     : kQKVDim * kModelDim;
-      const size_t mat_offset =
-          TConfig::kInterleaveQKV ? kQKVDim * kModelDim : kModelDim * kModelDim;
-      const size_t q_offset = head * head_offset + 0 * mat_offset;
-      const size_t k_offset = head * head_offset + 1 * mat_offset;
-      const size_t v_offset = head * head_offset + 2 * mat_offset;
-
-      // ProjQ
-      float* HWY_RESTRICT q =
-          activations.q.data() + head * kQKVDim + batch_idx * kHeads * kQKVDim;
-      MatVecLoop<kQKVDim, kModelDim>(
-          layer_weights->qkv_einsum_w, q_offset + 0 * kQKVDim * kModelDim, x,
-          activations.even_odd.data() + thread * kModelDim, q);
-
-      // ProjKV
+      float* HWY_RESTRICT q = qkv + head * kQKVDim * 3;
       const size_t kv_offset = cache_pos * kCachePosSize +
                                layer * kCacheLayerSize + head * kQKVDim * 2;
-      float* HWY_RESTRICT k = kv_cache.kv_cache.get() + kv_offset;
-      float* HWY_RESTRICT v = k + kQKVDim;
-      TwoOfsMatVecLoop<kQKVDim, kModelDim>(layer_weights->qkv_einsum_w,
-                                           k_offset, v_offset, x, k, v);
-      Rope(k, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+      float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
 
-      Attn(head, head * kQKVDim * 2, thread);
+      memcpy(kv, q + kQKVDim, 2 * kQKVDim * sizeof(float));
+      Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+      Attn(q, head, head * kQKVDim * 2, thread);
     });
   } else {
     // Multi-Query Attention
@@ -790,7 +779,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t batch_idx, size_t layer,
     Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
 
     pool.Run(0, kHeads, [&](const uint64_t head, size_t thread) HWY_ATTR {
-      Attn(head, 0, thread);
+      Attn(q + head * kQKVDim, head, 0, thread);
     });
   }
 
