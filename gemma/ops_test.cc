@@ -17,6 +17,8 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include <stddef.h>
+
 #include <algorithm>
 #include <array>
 #include <random>
@@ -376,6 +378,25 @@ CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
   return mat;
 }
 
+template <size_t kOuter, size_t kInner>
+CompressedArray<float, kOuter * kInner> GenerateZeroMat(size_t offset) {
+  hwy::ThreadPool pool(static_cast<size_t>(std::clamp(
+      static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 4)));
+  gcpp::CompressWorkingSet ws;
+  CompressedArray<float, kOuter * kInner> mat;
+  std::array<float, kOuter * kInner> content;
+
+  pool.Run(0, kOuter, [&](const size_t i, size_t thread) {
+    for (size_t j = 0; j < kInner; j++) {
+      content[i * kInner + j] = 0.0f;
+    }
+  });
+
+  Compress(content, ws, mat, pool);
+  mat.set_scale(1.0f);
+  return mat;
+}
+
 template <size_t length>
 hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
   hwy::AlignedFreeUniquePtr<float[]> vec = hwy::AllocateAligned<float>(length);
@@ -384,6 +405,25 @@ hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
     vec[idx] = static_cast<float>(idx + offset);
   }
   return vec;
+}
+
+// A simple matrix multiplication. No optimization / tiling.
+template <size_t kM, size_t kN, size_t kK>
+hwy::AlignedFreeUniquePtr<float[]> SimpleMatMul(
+    const hwy::AlignedFreeUniquePtr<float[]>& a,
+    const hwy::AlignedFreeUniquePtr<float[]>& b) {
+  hwy::AlignedFreeUniquePtr<float[]> out = hwy::AllocateAligned<float>(kM * kK);
+  hwy::ZeroBytes(out.get(), kM * kK * sizeof(float));
+
+  int i, j, k;
+  for (i = 0; i < kM; ++i) {
+    for (j = 0; j < kK; ++j) {
+      for (k = 0; k < kN; ++k) {
+        out[i * kK + j] += a[i * kN + k] * b[k * kK + j];
+      }
+    }
+  }
+  return out;
 }
 
 template <size_t kOuter, size_t kInner>
@@ -415,6 +455,52 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
     EXPECT_LT(rel_abs_delta, 2e-6)
         << "a[" << idx << "]=" << a[idx] << ", b[" << idx << "]=" << b[idx];
   }
+}
+
+template <typename MatT>
+void AssertClose(const hwy::AlignedFreeUniquePtr<MatT[]>& expected,
+                 const hwy::AlignedFreeUniquePtr<MatT[]>& actual, size_t num) {
+  for (size_t idx = 0; idx < num; idx++) {
+    double expected_value = hwy::ConvertScalarTo<double>(expected[idx]);
+    double actual_value = hwy::ConvertScalarTo<double>(actual[idx]);
+
+    const double tolerance =
+        expected_value * 20 * 1.0 / (1ULL << hwy::MantissaBits<MatT>());
+
+    if (!(expected_value - tolerance <= actual_value &&
+          actual_value <= expected_value + tolerance)) {
+      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f\n", idx,
+              expected_value, idx, actual_value);
+      HWY_ASSERT(0);
+    }
+  }
+}
+
+void TestMatMul() {
+  hwy::ThreadPool pool(0);
+  constexpr size_t kM = 128 * 3;  // 384
+  constexpr size_t kK = 128 * 5;  // 640
+  constexpr size_t kN = 128 * 6;  // 768
+
+  CompressedArray<float, kM * kN> a1 = GenerateMat<kM, kN>(0);
+  CompressedArray<float, kN * kK> b1 = GenerateMat<kN, kK>(0);
+
+  hwy::AlignedFreeUniquePtr<float[]> a = hwy::AllocateAligned<float>(kM * kN);
+  Decompress(a1, 0, a.get(), kM * kN);
+
+  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kN * kK);
+  Decompress(b1, 0, b.get(), kN * kK);
+
+  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
+      SimpleMatMul<kM, kN, kK>(a, b);
+
+  CompressedArray<float, kM * kK> compressed_c = GenerateZeroMat<kM, kK>(0);
+  hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
+  Decompress(compressed_c, 0, c.get(), kM * kK);
+
+  MatMul<kM, kN, kK>(a.get(), b.get(), c.get());
+
+  AssertClose(expected_out1, c, kM * kK);
 }
 
 void TestMatVecAdd() {
@@ -518,6 +604,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestMatMul);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);

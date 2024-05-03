@@ -93,6 +93,21 @@ HWY_INLINE constexpr size_t RowsPerStrip() {
   return kRowsPerStrip;
 }
 
+// Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
+// ops_test across instruction sets.
+template <size_t kM, size_t kN, size_t kK>
+HWY_INLINE void MatMul(const float* HWY_RESTRICT a, const float* HWY_RESTRICT b,
+                       float* HWY_RESTRICT out) {
+  int i, j, k;
+  for (i = 0; i < kM; ++i) {
+    for (k = 0; k < kN; ++k) {
+      for (j = 0; j < kK; ++j) {
+        out[i * kK + j] += a[i * kN + k] * b[k * kK + j];
+      }
+    }
+  }
+}
+
 HWY_INLINE void ToEvenOddF32(const hwy::bfloat16_t* HWY_RESTRICT vec_aligned,
                              const size_t size, float* HWY_RESTRICT out) {
   const hn::ScalableTag<float> df;
