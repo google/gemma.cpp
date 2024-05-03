@@ -247,7 +247,6 @@ struct CompressTraits<hwy::bfloat16_t> {
     using VU32 = hn::VFromD<decltype(du32)>;
     const VU32 odd = Set(du32, 0xFFFF0000u);
 
-    VF32 be0, bo0, be1, bo1;
     for (size_t i = 0; i < num; /* i += 2 * N */) {
       const auto interleaved0 = hn::LoadU(dbf16, in + in_ofs + i);
       const VF32 ae0 = Load(df32, vec_aligned + i);

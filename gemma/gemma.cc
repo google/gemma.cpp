@@ -585,7 +585,6 @@ HWY_NOINLINE void GriffinRecurrent(
   // X / Y linear layers.
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     const size_t batch_offset = batch_idx * kModelDim;
-    const size_t pos = batch_start + batch_idx;
     float* HWY_RESTRICT y = activations.griffin_y.data() + batch_offset;
     float* HWY_RESTRICT x = activations.griffin_x.data() + batch_offset;
     TwoMatVecAdd<kAdd, kModelDim, kModelDim>(
@@ -691,7 +690,6 @@ HWY_NOINLINE void GriffinRecurrent(
   // Final linear layer.
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     const size_t batch_offset = batch_idx * kModelDim;
-    const size_t pos = batch_start + batch_idx;
     float* HWY_RESTRICT x = activations.griffin_x.data() + batch_offset;
     float* out_ptr = activations.att_post2.data() + batch_idx * kModelDim;
     MatVecAdd<kAdd, kModelDim, kModelDim>(
