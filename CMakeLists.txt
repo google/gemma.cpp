@@ -78,15 +78,17 @@ set_property(TARGET libgemma PROPERTY CXX_STANDARD 17)
 set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
-target_link_libraries(libgemma hwy hwy_contrib sentencepiece)
+target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static)
 target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+install(TARGETS libgemma DESTINATION lib)
 
 # Executable Target
 
 add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
+install(TARGETS gemma DESTINATION bin)
 
 add_executable(benchmark gemma/benchmark.cc)
 target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
