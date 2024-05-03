@@ -845,7 +845,7 @@ template <size_t kBatchSize, typename LayerT, typename TConfig>
 HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
                       size_t num_tokens, const LayerT* layer_weights,
                       hwy::ThreadPool& pool) {
-  HWY_DASSERT(batch_idx < kBatchSize);
+  HWY_DASSERT(num_tokens <= kBatchSize);
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   float* HWY_RESTRICT even_odd = activations.even_odd.data();
