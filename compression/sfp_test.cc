@@ -67,6 +67,26 @@ float F32FromSFP8(uint32_t sfp) {
   return result;
 }
 
+// Used for HWY_AVX3_DL and newer.
+void PrintTables() {
+  if (HWY_ONCE && false) {
+    uint8_t hi[128];
+    fprintf(stderr, "lo\n");
+    for (uint32_t sfp = 0; sfp < 128; ++sfp) {
+      const uint32_t u = hwy::BitCastScalar<uint32_t>(F32FromSFP8(sfp));
+      // Lower bits are zero, hence we can truncate instead of rounding to bf16.
+      HWY_ASSERT((u & 0xFFFF) == 0);
+      fprintf(stderr, "0x%02X,", (u >> 16) & 0xFF);
+      hi[sfp] = u >> 24;
+    }
+    fprintf(stderr, "\nhi\n");
+    for (uint32_t sfp = 0; sfp < 128; ++sfp) {
+      fprintf(stderr, "0x%02X,", hi[sfp]);
+    }
+    fprintf(stderr, "\n");
+  }
+}
+
 void TestAllUnique() {
   std::set<float> unique;
   for (uint32_t sfp = 0; sfp < 256; ++sfp) {
@@ -497,6 +517,7 @@ HWY_AFTER_NAMESPACE();
 
 namespace gcpp {
 HWY_BEFORE_TEST(SfpTest);
+HWY_EXPORT_AND_TEST_P(SfpTest, PrintTables);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllUnique);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDecEnc);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllGolden);
