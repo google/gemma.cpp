@@ -25,7 +25,6 @@
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
-#include "compression/compress.h"  // CompressedArray
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -139,68 +138,10 @@ HWY_INLINE void ToEvenOddF32(const float* HWY_RESTRICT vec_aligned,
   }
 }
 
-// Simple version without tiling nor threading.
-// even_odd is precomputed for the current thread.
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
-HWY_INLINE void MatVecAddLoop(const ArrayT& mat, const size_t mat_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              const AddT* HWY_RESTRICT add,
-                              float* HWY_RESTRICT even_odd,
-                              float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecAddLoop");
-  const hn::ScalableTag<float> df;
-
-  for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
-    const size_t row_ofs = mat_ofs + idx_row * kInner;
-    if constexpr (kAdd) {
-      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot(df, mat, row_ofs, vec_aligned, kInner);
-    } else {
-      out[idx_row] = Dot(df, mat, row_ofs, vec_aligned, kInner);
-    }
-  }
-}
-
-#if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
-template <bool kAdd, size_t kOuter, size_t kInner, typename VecT, typename AddT,
-          size_t kCapacity>
-HWY_INLINE void MatVecAddLoop(
-    const CompressedArray<hwy::bfloat16_t, kCapacity>& mat,
-    const size_t mat_ofs, const VecT* HWY_RESTRICT vec_aligned,
-    const AddT* HWY_RESTRICT add, float* HWY_RESTRICT even_odd,
-    float* HWY_RESTRICT out) {
-  PROFILER_ZONE("MatVecAddLoop");
-  constexpr bool kVecIsEvenOdd = true;
-
-  const hn::ScalableTag<float> df;
-  ToEvenOddF32(vec_aligned, kInner, even_odd);
-  for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
-    const size_t row_ofs = mat_ofs + idx_row * kInner;
-    if constexpr (kAdd) {
-      out[idx_row] = hwy::ConvertScalarTo<float>(add[idx_row]) +
-                     Dot<kVecIsEvenOdd>(df, mat, row_ofs, even_odd, kInner);
-    } else {
-      out[idx_row] = Dot<kVecIsEvenOdd>(df, mat, row_ofs, even_odd, kInner);
-    }
-  }
-}
-#endif
-
-// even_odd is precomputed for the current thread.
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_INLINE void MatVecLoop(const ArrayT& mat, const size_t mat_ofs,
-                           const VecT* HWY_RESTRICT vec_aligned,
-                           float* HWY_RESTRICT even_odd,
-                           float* HWY_RESTRICT out) {
-  MatVecAddLoop</*kAdd=*/false, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, /*add=*/static_cast<VecT*>(nullptr), even_odd,
-      out);
-}
-
-// Simple version without tiling nor threading, but two offsets/outputs.
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
+// Simple version without tiling nor threading, but two offsets/outputs and
+// always with addition.
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
+          typename AddT>
 HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     const size_t mat_ofs1,
                                     const VecT* HWY_RESTRICT vec_aligned,
@@ -208,34 +149,18 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     const AddT* HWY_RESTRICT add1,
                                     float* HWY_RESTRICT out0,
                                     float* HWY_RESTRICT out1) {
-  PROFILER_ZONE("MatVecLoop");
+  PROFILER_ZONE("TwoOfsMatVecAddLoop");
+  constexpr bool kVecEO = false;
   const hn::ScalableTag<float> df;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
     const size_t row_ofs1 = mat_ofs1 + (idx_row)*kInner;
-    if constexpr (kAdd) {
-      out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
-                      Dot(df, mat, row_ofs0, vec_aligned, kInner);
-      out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
-                      Dot(df, mat, row_ofs1, vec_aligned, kInner);
-    } else {
-      out0[idx_row] = Dot(df, mat, row_ofs0, vec_aligned, kInner);
-      out1[idx_row] = Dot(df, mat, row_ofs1, vec_aligned, kInner);
-    }
+    out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
+                    Dot<kVecEO>(df, mat, row_ofs0, vec_aligned, kInner);
+    out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
+                    Dot<kVecEO>(df, mat, row_ofs1, vec_aligned, kInner);
   }
-}
-
-// Simple version without tiling nor threading, but two offsets/outputs.
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_INLINE void TwoOfsMatVecLoop(const ArrayT& mat, const size_t mat_ofs0,
-                                 const size_t mat_ofs1,
-                                 const VecT* HWY_RESTRICT vec_aligned,
-                                 float* HWY_RESTRICT out0,
-                                 float* HWY_RESTRICT out1) {
-  TwoOfsMatVecAddLoop</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
-      mat, mat_ofs0, mat_ofs1, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
-      out0, out1);
 }
 
 namespace detail {
@@ -323,20 +248,10 @@ template <bool kVecIsEvenOdd, bool kAdd, size_t kOuter, size_t kInner,
 HWY_INLINE void MatVecAddInner(const ArrayT& mat, const size_t mat_ofs,
                                const VecT* HWY_RESTRICT const vec_aligned,
                                const AddT* HWY_RESTRICT const add,
-                               float* HWY_RESTRICT even_odd,
                                float* HWY_RESTRICT out, hwy::ThreadPool& pool) {
   const hn::ScalableTag<float> df;
   constexpr size_t kRowsPerStrip = RowsPerStrip<kOuter>();
   constexpr size_t kNumStrips = kOuter / kRowsPerStrip;
-
-  // Sanity check: each thread can write without race conditions.
-  if (HWY_IS_TSAN) {
-    pool.Run(
-        0, pool.NumWorkers(), [even_odd](uint64_t /*task*/, size_t thread) {
-          even_odd[thread * kInner] = -static_cast<float>(thread);
-          even_odd[thread * kInner + kInner - 1] = static_cast<float>(thread);
-        });
-  }
 
   // For each entire strip.
   pool.Run(0, kNumStrips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
@@ -361,14 +276,13 @@ HWY_INLINE void MatVecAddInner(const ArrayT& mat, const size_t mat_ofs,
 
 // Stores dot products of rows with `vec_aligned` + add the values from `add`
 // (if kAdd), then stores them to `out`.
-//
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename VecT, typename AddT>
-HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
-                          const VecT* HWY_RESTRICT const vec_aligned,
-                          const AddT* HWY_RESTRICT const add,
-                          float* HWY_RESTRICT even_odd, float* HWY_RESTRICT out,
-                          hwy::ThreadPool& pool) {
+HWY_INLINE void MatVecT(const ArrayT& mat, const size_t mat_ofs,
+                        const VecT* HWY_RESTRICT const vec_aligned,
+                        const AddT* HWY_RESTRICT const add,
+                        float* HWY_RESTRICT even_odd, float* HWY_RESTRICT out,
+                        hwy::ThreadPool& pool) {
   PROFILER_ZONE("MatVecAdd");
 
 #if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
@@ -376,23 +290,38 @@ HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
                 hwy::IsSameEither<VecT, float, hwy::bfloat16_t>()) {
     ToEvenOddF32(vec_aligned, kInner, even_odd);
     detail::MatVecAddInner</*kVecIsEvenOdd=*/true, kAdd, kOuter, kInner>(
-        mat, mat_ofs, even_odd, add, even_odd, out, pool);
+        mat, mat_ofs, even_odd, add, out, pool);
     return;
   }
+#else
+  (void)even_odd;
 #endif
 
   detail::MatVecAddInner</*kVecIsEvenOdd=*/false, kAdd, kOuter, kInner>(
-      mat, mat_ofs, vec_aligned, add, even_odd, out, pool);
+      mat, mat_ofs, vec_aligned, add, out, pool);
 }
 
+// With addition
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
+          typename AddT>
+HWY_INLINE void MatVecAdd(const ArrayT& mat, const size_t mat_ofs,
+                          const VecT* HWY_RESTRICT const vec_aligned,
+                          const AddT* HWY_RESTRICT const add,
+                          float* HWY_RESTRICT even_odd, float* HWY_RESTRICT out,
+                          hwy::ThreadPool& pool) {
+  return MatVecT</*kAdd=*/true, kOuter, kInner>(mat, mat_ofs, vec_aligned, add,
+                                                even_odd, out, pool);
+}
+
+// Without addition
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
 HWY_INLINE void MatVec(const ArrayT& mat, const size_t mat_ofs,
                        const VecT* HWY_RESTRICT const vec_aligned,
                        float* HWY_RESTRICT even_odd, float* HWY_RESTRICT out,
                        hwy::ThreadPool& pool) {
-  MatVecAdd</*kAdd=*/false, kOuter, kInner>(mat, mat_ofs, vec_aligned,
-                                            /*add=*/static_cast<VecT*>(nullptr),
-                                            even_odd, out, pool);
+  MatVecT</*kAdd=*/false, kOuter, kInner>(mat, mat_ofs, vec_aligned,
+                                          /*add=*/static_cast<VecT*>(nullptr),
+                                          even_odd, out, pool);
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -504,11 +433,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(float* HWY_RESTRICT x,
 // Two matrices, same vector
 template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
           typename VecT, typename AddT>
-HWY_NOINLINE void TwoMatVecAdd(
-    const ArrayT& mat0, const ArrayT& mat1, const size_t mat_ofs,
-    const VecT* HWY_RESTRICT vec_aligned, const AddT* HWY_RESTRICT add0,
-    const AddT* HWY_RESTRICT add1, float* HWY_RESTRICT out0,
-    float* HWY_RESTRICT out1, hwy::ThreadPool& pool) {
+HWY_NOINLINE void TwoMatVecT(const ArrayT& mat0, const ArrayT& mat1,
+                             const size_t mat_ofs,
+                             const VecT* HWY_RESTRICT vec_aligned,
+                             const AddT* HWY_RESTRICT add0,
+                             const AddT* HWY_RESTRICT add1,
+                             float* HWY_RESTRICT out0, float* HWY_RESTRICT out1,
+                             hwy::ThreadPool& pool) {
   PROFILER_ZONE("TwoMatVecAdd");
 
   const hn::ScalableTag<float> df;
@@ -540,13 +471,26 @@ HWY_NOINLINE void TwoMatVecAdd(
   }
 }
 
+// With addition
+template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
+          typename AddT>
+HWY_NOINLINE void TwoMatVecAdd(
+    const ArrayT& mat0, const ArrayT& mat1, const size_t mat_ofs,
+    const VecT* HWY_RESTRICT vec_aligned, const AddT* HWY_RESTRICT add0,
+    const AddT* HWY_RESTRICT add1, float* HWY_RESTRICT out0,
+    float* HWY_RESTRICT out1, hwy::ThreadPool& pool) {
+  return TwoMatVecT</*kAdd=*/true, kOuter, kInner>(
+      mat0, mat1, mat_ofs, vec_aligned, add0, add1, out0, out1, pool);
+}
+
+// Without addition
 template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
 HWY_NOINLINE void TwoMatVec(const ArrayT& mat0, const ArrayT& mat1,
                             const size_t mat_ofs,
                             const VecT* HWY_RESTRICT vec_aligned,
                             float* HWY_RESTRICT out0, float* HWY_RESTRICT out1,
                             hwy::ThreadPool& pool) {
-  TwoMatVecAdd</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
+  TwoMatVecT</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
       mat0, mat1, mat_ofs, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
       out0, out1, pool);
 }

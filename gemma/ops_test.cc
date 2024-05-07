@@ -517,8 +517,8 @@ void TestMatVecAdd() {
   hwy::AlignedFreeUniquePtr<float[]> actual_out =
       hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add && even_odd && expected_out && actual_out);
-  MatVecAdd</*kAdd=*/true, kOuter, kInner>(
-      mat, 0, vec.get(), add.get(), even_odd.get(), actual_out.get(), pool);
+  MatVecAdd<kOuter, kInner>(mat, 0, vec.get(), add.get(), even_odd.get(),
+                            actual_out.get(), pool);
   AssertClose<kOuter>(actual_out, expected_out);
 }
 
@@ -541,9 +541,8 @@ void TestTwoMatVecAdd() {
       hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
              expected_out1 && actual_out1);
-  TwoMatVecAdd<true, kOuter, kInner>(mat0, mat1, 0, vec.get(), add0.get(),
-                                     add1.get(), actual_out0.get(),
-                                     actual_out1.get(), pool);
+  TwoMatVecAdd<kOuter, kInner>(mat0, mat1, 0, vec.get(), add0.get(), add1.get(),
+                               actual_out0.get(), actual_out1.get(), pool);
   AssertClose<kOuter>(actual_out0, expected_out0);
   AssertClose<kOuter>(actual_out1, expected_out1);
 }
@@ -565,9 +564,9 @@ void TestTwoOfsMatVecAddLoop() {
       hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
              expected_out1 && actual_out1);
-  TwoOfsMatVecAddLoop<true, kOuter, kInner>(mat, 0, 0, vec.get(), add0.get(),
-                                            add1.get(), actual_out0.get(),
-                                            actual_out1.get());
+  TwoOfsMatVecAddLoop<kOuter, kInner>(mat, 0, 0, vec.get(), add0.get(),
+                                      add1.get(), actual_out0.get(),
+                                      actual_out1.get());
   AssertClose<kOuter>(actual_out0, expected_out0);
   AssertClose<kOuter>(actual_out1, expected_out1);
 }

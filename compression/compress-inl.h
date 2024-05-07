@@ -224,7 +224,7 @@ struct CompressTraits<hwy::bfloat16_t> {
 
   // Computes the dot product of an even-odd deinterleaved, f32 `vec_aligned`
   // and a column- major matrix `in`. `vec_aligned` should be aligned and
-  // alternate even-indexed `hn::Lanes(df32)` elements followed by odd-indexed 
+  // alternate even-indexed `hn::Lanes(df32)` elements followed by odd-indexed
   // `hn::Lanes(df32)` elements.
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE float DotEO(
@@ -462,17 +462,6 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
   const double mb = num * sizeof(MatT) * 1E-6;
   const double mbps = mb / (t1 - t0);
   fprintf(stderr, "Decompress %.1f MB/s\n", mbps);
-}
-
-// Returns dot product with `vec_aligned` of length `num`.
-template <class DF, typename ArrayT, typename VecT>
-HWY_INLINE float Dot(DF df, const ArrayT& compressed, size_t compressed_ofs,
-                     const VecT* vec_aligned, size_t num) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.size());
-  HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-  using Traits = CompressTraits<typename ArrayT::value_type>;
-  return Traits::Dot(df, compressed.size(), compressed.data(), compressed_ofs,
-                     vec_aligned, num);
 }
 
 // Returns dot product with `vec_aligned` of length `num`.

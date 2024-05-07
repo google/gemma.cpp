@@ -580,14 +580,13 @@ HWY_NOINLINE void GriffinRecurrent(
       gcpp::Activations<TConfig, kBatchSize>::kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
   static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr bool kAdd = true;
 
   // X / Y linear layers.
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     const size_t batch_offset = batch_idx * kModelDim;
     float* HWY_RESTRICT y = activations.griffin_y.data() + batch_offset;
     float* HWY_RESTRICT x = activations.griffin_x.data() + batch_offset;
-    TwoMatVecAdd<kAdd, kModelDim, kModelDim>(
+    TwoMatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_x_w, layer_weights->griffin.linear_y_w, 0,
         activations.pre_att_rms_out.data() + batch_offset,
         /*add0=*/layer_weights->griffin.linear_x_biases.data(),
@@ -649,12 +648,12 @@ HWY_NOINLINE void GriffinRecurrent(
       constexpr size_t kHeadDim = kModelDim / kHeads;
       constexpr size_t kMatrixSize = kHeadDim * kHeadDim;
       size_t head_offset = head * kHeadDim;
-      TwoOfsMatVecAddLoop<kAdd, kHeadDim, kHeadDim>(
+      TwoOfsMatVecAddLoop<kHeadDim, kHeadDim>(
           layer_weights->griffin.gate_w, kMatrixSize * head,
           kMatrixSize * (kHeads + head), x + head_offset,
           /*add0=*/layer_weights->griffin.gate_biases.data() + head_offset,
           /*add1=*/layer_weights->griffin.gate_biases.data() + kModelDim +
-          head_offset,
+              head_offset,
           /*out0=*/gate_x + head_offset, /*out1=*/a + head_offset);
       Sigmoid(gate_x + head_offset, kHeadDim);
       Sigmoid(a + head_offset, kHeadDim);
@@ -692,7 +691,7 @@ HWY_NOINLINE void GriffinRecurrent(
     const size_t batch_offset = batch_idx * kModelDim;
     float* HWY_RESTRICT x = activations.griffin_x.data() + batch_offset;
     float* out_ptr = activations.att_post2.data() + batch_idx * kModelDim;
-    MatVecAdd<kAdd, kModelDim, kModelDim>(
+    MatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_out_w, 0, x,
         layer_weights->griffin.linear_out_biases.data(),
         activations.even_odd.data(), out_ptr, pool);
@@ -825,7 +824,7 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
         activations.att_out.data() + batch_idx * kHeads * kQKVDim;
     float* HWY_RESTRICT layer_out =
         activations.att_post2.data() + batch_idx * kModelDim;
-    MatVecAdd<TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
+    MatVecT</*kAdd=*/TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
         layer_weights->attn_vec_einsum_w, 0, att_out,
         layer_weights->attention_output_biases.data(),
         activations.even_odd.data(), layer_out, pool);
@@ -859,12 +858,12 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
     // Same matrix, first and second half of rows. Could fuse into one MatVec.
-    MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+    MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
         layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
         out_mul, pool);
     // Gate, will go through the nonlinearity.
-    MatVecAdd<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+    MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, 0, vec,
         layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
 
@@ -879,7 +878,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     PROFILER_ZONE("Gen.FFW\\GatedGELU");
     const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
-    MatVecAdd<TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
+    MatVecT</*kAdd=*/TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
         layer_weights->linear_w, 0,
         activations.ffw_hidden.data() + hidden_offset,
         layer_weights->ffw_output_biases.data(), even_odd,
