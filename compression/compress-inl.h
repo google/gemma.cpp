@@ -58,7 +58,7 @@ struct CompressTraits {};
 template <>
 struct CompressTraits<float> {
   using MatT = float;
-  static constexpr bool kSupportsEvenOdd = false;
+  static constexpr bool kSupportsEvenOdd = false;  // unnecessary
 
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
@@ -230,7 +230,8 @@ struct CompressTraits<hwy::bfloat16_t> {
   static HWY_INLINE float DotEO(
       const DF df32, const hwy::bfloat16_t* HWY_RESTRICT in, size_t in_ofs,
       const float* HWY_RESTRICT vec_aligned, size_t num) {
-    HWY_DASSERT(num >= (hn::Lanes(df32) * 2) && (num % (hn::Lanes(df32) * 2)) == 0);
+    HWY_DASSERT(num >= (hn::Lanes(df32) * 2) &&
+                (num % (hn::Lanes(df32) * 2)) == 0);
     HWY_DASSERT((in_ofs % (hn::Lanes(df32) * 2)) == 0);
     HWY_DASSERT(hn::IsAligned(df32, vec_aligned));
 
@@ -273,13 +274,13 @@ struct CompressTraits<hwy::bfloat16_t> {
 template <>
 struct CompressTraits<SfpStream> {
   using MatT = SfpStream;
-  static constexpr bool kSupportsEvenOdd = false;
+  static constexpr bool kSupportsEvenOdd = true;
 
   template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Compress(DF df, const float* in, size_t num,
-                                  CompressPerThread& tls,
-                                  size_t /*out_capacity*/, MatT* out,
-                                  size_t out_ofs) {
+  static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
+                                  size_t num, CompressPerThread& tls,
+                                  size_t /*out_capacity*/,
+                                  MatT* HWY_RESTRICT out, size_t out_ofs) {
     SfpCodec::Enc(df, in, num, out + out_ofs);
 
     if (COMPRESS_STATS) {
@@ -295,15 +296,21 @@ struct CompressTraits<SfpStream> {
   }
 
   template <class D, typename OutT>
-  static HWY_INLINE void Decompress(D d, size_t /*in_capacity*/, const MatT* in,
-                                    size_t in_ofs, OutT* out, size_t num) {
+  static HWY_INLINE void Decompress(D d, size_t /*in_capacity*/,
+                                    const MatT* HWY_RESTRICT in, size_t in_ofs,
+                                    OutT* HWY_RESTRICT out, size_t num) {
     SfpCodec::Dec(d, in + in_ofs, num, out);
   }
 
   template <class DF, typename VecT, HWY_IF_F32_D(DF)>
-  static HWY_INLINE float Dot(DF df, size_t /*in_capacity*/, const MatT* in,
-                              size_t in_ofs, const VecT* vec_aligned,
+  static HWY_INLINE float Dot(DF df, size_t /*in_capacity*/,
+                              const MatT* HWY_RESTRICT in, size_t in_ofs,
+                              const VecT* HWY_RESTRICT vec_aligned,
                               size_t num) {
+    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
+    HWY_DASSERT((in_ofs % hn::Lanes(df)) == 0);
+    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
+
     using VF = hn::Vec<decltype(df)>;
     VF sum0 = hn::Zero(df);
     VF sum1 = hn::Zero(df);
@@ -311,6 +318,34 @@ struct CompressTraits<SfpStream> {
     VF sum3 = hn::Zero(df);
 
     SfpCodec::Dot(df, in + in_ofs, num, vec_aligned, sum0, sum1, sum2, sum3);
+
+    // Reduction tree: sum of all accumulators, then their lanes
+    sum0 = hn::Add(sum0, sum1);
+    sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, sum2);
+    return hn::ReduceSum(df, sum0);
+  }
+
+  // Computes the dot product of an even-odd deinterleaved, f32 or bf16
+  // `vec_aligned` and a column-major matrix `in`. `vec_aligned` should be
+  // aligned and alternate even-indexed `hn::Lanes(df)` elements followed by
+  // odd-indexed `hn::Lanes(df)` elements.
+  template <class DF, typename VecT, HWY_IF_F32_D(DF)>
+  static HWY_INLINE float DotEO(const DF df, const MatT* HWY_RESTRICT in,
+                                size_t in_ofs,
+                                const VecT* HWY_RESTRICT vec_aligned,
+                                size_t num) {
+    HWY_DASSERT(num >= (hn::Lanes(df) * 2) && (num % (hn::Lanes(df) * 2)) == 0);
+    HWY_DASSERT((in_ofs % (hn::Lanes(df) * 2)) == 0);
+    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
+
+    using VF = hn::Vec<decltype(df)>;
+    VF sum0 = hn::Zero(df);
+    VF sum1 = hn::Zero(df);
+    VF sum2 = hn::Zero(df);
+    VF sum3 = hn::Zero(df);
+
+    SfpCodec::DotEO(df, in + in_ofs, num, vec_aligned, sum0, sum1, sum2, sum3);
 
     // Reduction tree: sum of all accumulators, then their lanes
     sum0 = hn::Add(sum0, sum1);

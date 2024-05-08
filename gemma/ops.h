@@ -25,6 +25,7 @@
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
+#include "compression/sfp.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -286,8 +287,12 @@ HWY_INLINE void MatVecT(const ArrayT& mat, const size_t mat_ofs,
   PROFILER_ZONE("MatVecAdd");
 
 #if !defined(HWY_NATIVE_DOT_BF16) || !HWY_NATIVE_DOT_BF16
-  if constexpr (CompressTraits<typename ArrayT::value_type>::kSupportsEvenOdd &&
-                hwy::IsSameEither<VecT, float, hwy::bfloat16_t>()) {
+  using MatT = typename ArrayT::value_type;
+  // Sfp -> float does not benefit enough to recoup the cost of ToEvenOddF32.
+  if constexpr (CompressTraits<MatT>::kSupportsEvenOdd &&
+                hwy::IsSameEither<VecT, float, hwy::bfloat16_t>() &&
+                !(hwy::IsSame<MatT, SfpStream>() &&
+                  hwy::IsSame<VecT, float>())) {
     ToEvenOddF32(vec_aligned, kInner, even_odd);
     detail::MatVecAddInner</*kVecIsEvenOdd=*/true, kAdd, kOuter, kInner>(
         mat, mat_ofs, even_odd, add, out, pool);

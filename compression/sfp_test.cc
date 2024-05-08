@@ -401,11 +401,13 @@ struct TestDot {
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::Repartition<float, D> df;
     const size_t num = 1024;  // not too many for GeometricMean overflow.
+    const size_t N = hn::Lanes(d);
     auto in = hwy::AllocateAligned<T>(num);
     auto dec = hwy::AllocateAligned<T>(num);
     auto vec = hwy::AllocateAligned<T>(num);
+    auto vec_eo = hwy::AllocateAligned<T>(num);
     auto sfp = hwy::AllocateAligned<SfpStream>(num);
-    HWY_ASSERT(in && dec && vec && sfp);
+    HWY_ASSERT(in && dec && vec && vec_eo && sfp);
 
     // Generate inputs and verify their distribution.
     hwy::RandomState rng;
@@ -422,27 +424,54 @@ struct TestDot {
     }
     VerifyGaussian(in_stats);
 
+    // Convert vec to even/odd for DotEO
+    for (size_t i = 0; i < num; i += 2 * N) {
+      hn::Vec<D> ve, vo;
+      hn::LoadInterleaved2(d, vec.get() + i, ve, vo);
+      hn::Store(ve, d, vec_eo.get() + i + 0);
+      hn::Store(vo, d, vec_eo.get() + i + N);
+    }
+
     SfpCodec::Enc(d, in.get(), num, sfp.get());
 
     // Compute dot product without decompression.
     float actual = 0.0f;
+    float actual_eo = 0.0f;
     double elapsed = hwy::HighestValue<double>();
+    double elapsed_eo = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 200; ++rep) {
-      hn::Vec<decltype(df)> sum0 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum1 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum2 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum3 = hn::Zero(df);
-      const double t0 = hwy::platform::Now();
-      SfpCodec::Dot(df, sfp.get(), num, vec.get(), sum0, sum1, sum2, sum3);
-      const double t1 = hwy::platform::Now();
-      elapsed = HWY_MIN(elapsed, t1 - t0);
-      sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
-      actual = hn::ReduceSum(df, sum0);
+      {
+        hn::Vec<decltype(df)> sum0 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum1 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum2 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum3 = hn::Zero(df);
+        const double t0 = hwy::platform::Now();
+        SfpCodec::Dot(df, sfp.get(), num, vec.get(), sum0, sum1, sum2, sum3);
+        const double t1 = hwy::platform::Now();
+        elapsed = HWY_MIN(elapsed, t1 - t0);
+        sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
+        actual = hn::ReduceSum(df, sum0);
+      }
+      {
+        hn::Vec<decltype(df)> sum0 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum1 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum2 = hn::Zero(df);
+        hn::Vec<decltype(df)> sum3 = hn::Zero(df);
+        const double t0 = hwy::platform::Now();
+        SfpCodec::DotEO(df, sfp.get(), num, vec_eo.get(), sum0, sum1, sum2,
+                        sum3);
+        const double t1 = hwy::platform::Now();
+        elapsed_eo = HWY_MIN(elapsed_eo, t1 - t0);
+        sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
+        actual_eo = hn::ReduceSum(df, sum0);
+      }
     }
 
     SfpCodec::Dec(d, sfp.get(), num, dec.get());
-    fprintf(stderr, "Vec %zu Dot %zu-bit %.2f MB/s\n", Lanes(d) * sizeof(T),
-            sizeof(T) * 8, num * sizeof(T) * 1E-6 / elapsed);
+    fprintf(stderr, "Vec %zu Dot %zu-bit %.2f ; %.2f MB/s\n",
+            Lanes(d) * sizeof(T), sizeof(T) * 8,
+            num * sizeof(T) * 1E-6 / elapsed,
+            num * sizeof(T) * 1E-6 / elapsed_eo);
 
     // Exact and decompressed dot products for comparison.
     float exact = 0.0f;     // using original input
@@ -479,6 +508,8 @@ struct TestDot {
     HWY_ASSERT(gcpp::IsInside(0.87f, 1.0f, final_ratio));
     // Decompressed and uncompressed dot should match exactly.
     HWY_ASSERT(gcpp::IsNear(expected, actual, 1E-4f));
+    // Even/odd dot should also match
+    HWY_ASSERT(gcpp::IsNear(actual, actual_eo, 1E-4f));
     // Geomean of ratios for each i should be very close to one.
     HWY_ASSERT(dot_snr >= (isBF ? 70.0 : 1000.0));
 

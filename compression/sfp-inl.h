@@ -475,6 +475,61 @@ class SfpCodec {
     }
   }
 
+  // Fused decode and dot product with even-odd bf16 into four f32 accumulators.
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void DotEO(DF df, const SfpStream* HWY_RESTRICT in_packed,
+                               size_t num,
+                               const hwy::bfloat16_t* HWY_RESTRICT vec_aligned,
+                               hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
+                               hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
+    const hn::Repartition<uint8_t, DF> d8;
+    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+    using V8 = hn::Vec<decltype(d8)>;
+    using VBF = hn::Vec<decltype(dbf)>;
+    const size_t N16 = hn::Lanes(dbf);
+    HWY_DASSERT(num % (2 * N16) == 0);  // whole SFP vector -> 2x bf16
+
+    HWY_UNROLL(1)
+    for (size_t i = 0; i < num; i += 2 * N16) {
+      const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
+      const VBF ve = hn::LoadU(dbf, vec_aligned + i);
+      const VBF vo = hn::LoadU(dbf, vec_aligned + i + N16);
+      VBF be, bo;
+      DecEvenOdd(dbf, packed, be, bo);
+      sum0 = hn::ReorderWidenMulAccumulate(df, be, ve, sum0, sum1);
+      sum2 = hn::ReorderWidenMulAccumulate(df, bo, vo, sum2, sum3);
+    }
+  }
+
+  // Fused decode and dot product with even-odd f32 into four f32 accumulators.
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void DotEO(DF df, const SfpStream* HWY_RESTRICT in_packed,
+                               size_t num,
+                               const float* HWY_RESTRICT vec_aligned,
+                               hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
+                               hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
+    const hn::Repartition<uint8_t, DF> d8;
+    using V8 = hn::Vec<decltype(d8)>;
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+    HWY_DASSERT(num % (4 * NF) == 0);  // whole SFP vector -> 4x f32
+
+    HWY_UNROLL(1)
+    for (size_t i = 0; i < num; i += 4 * NF) {
+      const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
+      const VF ve0 = hn::LoadU(df, vec_aligned + i + NF * 0);
+      const VF vo0 = hn::LoadU(df, vec_aligned + i + NF * 1);
+      const VF ve1 = hn::LoadU(df, vec_aligned + i + NF * 2);
+      const VF vo1 = hn::LoadU(df, vec_aligned + i + NF * 3);
+      VF fe0, fo0, fe1, fo1;
+      DecEvenOddF(df, packed, fe0, fo0, fe1, fo1);
+      sum0 = hn::MulAdd(fe0, ve0, sum0);
+      sum1 = hn::MulAdd(fo0, vo0, sum1);
+      sum2 = hn::MulAdd(fe1, ve1, sum2);
+      sum3 = hn::MulAdd(fo1, vo1, sum3);
+    }
+  }
+
  private:
   // Wrappers to avoid code duplication across float/bf16 input types and
   // the main loop/remainder.
@@ -573,6 +628,37 @@ class SfpCodec {
     f1 = hn::PromoteUpperTo(df, bf0);
     f2 = hn::PromoteLowerTo(df, bf1);
     f3 = hn::PromoteUpperTo(df, bf1);
+  }
+
+  template <class DBF, HWY_IF_BF16_D(DBF),
+            class V8 = hn::Vec<hn::Repartition<uint8_t, DBF>>>
+  static HWY_INLINE void DecEvenOdd(DBF dbf, V8 packed, hn::Vec<DBF>& even,
+                                    hn::Vec<DBF>& odd) {
+    const hn::Repartition<uint8_t, DBF> d8;
+    V8 lo, hi;
+    DecBytes(d8, packed, lo, hi);
+#if HWY_MAJOR > 1 || HWY_MINOR >= 2
+    even = hn::BitCast(dbf, hn::InterleaveEven(d8, lo, hi));
+    odd = hn::BitCast(dbf, hn::InterleaveOdd(d8, lo, hi));
+#else
+    even = hn::BitCast(dbf, hn::OddEven(hn::DupEven(hi), lo));
+    odd = hn::BitCast(dbf, hn::OddEven(hi, hn::DupOdd(lo)));
+#endif
+  }
+
+  template <class DF, HWY_IF_F32_D(DF),
+            class V8 = hn::Vec<hn::Repartition<uint8_t, DF>>>
+  static HWY_INLINE void DecEvenOddF(DF df, V8 packed, hn::Vec<DF>& even0,
+                                     hn::Vec<DF>& odd0, hn::Vec<DF>& even1,
+                                     hn::Vec<DF>& odd1) {
+    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+    using VBF = hn::Vec<decltype(dbf)>;
+    VBF even_bf, odd_bf;
+    DecEvenOdd(dbf, packed, even_bf, odd_bf);
+    even0 = hn::PromoteLowerTo(df, even_bf);
+    odd0 = hn::PromoteLowerTo(df, odd_bf);
+    even1 = hn::PromoteUpperTo(df, even_bf);
+    odd1 = hn::PromoteUpperTo(df, odd_bf);
   }
 };  // SfpCodec
 
