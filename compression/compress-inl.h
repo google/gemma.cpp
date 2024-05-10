@@ -264,10 +264,10 @@ struct CompressTraits<hwy::bfloat16_t> {
       i += N;
     }
 
-    sum0 = Add(sum0, sum1);
-    sum2 = Add(sum2, sum3);
-    sum0 = Add(sum0, sum2);
-    return ReduceSum(df32, sum0);
+    sum0 = hn::Add(sum0, sum1);
+    sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, sum2);
+    return hn::ReduceSum(df32, sum0);
   }
 };
 

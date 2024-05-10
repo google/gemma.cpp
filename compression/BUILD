@@ -10,6 +10,21 @@ package(
     ],
 )
 
+config_setting(
+    name = "android",
+    constraint_values = [
+        "@platforms//os:android",
+    ],
+    visibility = [":__subpackages__"],
+)
+
+FILE_DEPS = select({
+    "//conditions:default": [
+        # Placeholder for io deps, do not remove
+    ],
+    ":android": [],
+})
+
 cc_library(
     name = "io",
     srcs = [
@@ -18,9 +33,8 @@ cc_library(
     ],
     hdrs = ["io.h"],
     deps = [
-        # Placeholder for io deps, do not remove
         "@hwy//:hwy",
-    ],
+    ] + FILE_DEPS,
 )
 
 cc_library(

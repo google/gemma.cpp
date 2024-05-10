@@ -423,7 +423,7 @@ static HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
   VF b3 = hn::Sub(hn::MulAdd(f2, b2, d3), b1);
   VF f1 = hn::Sub(hn::MulAdd(f, b3, d4), b2);
 
-  return Div(f0, f1);
+  return hn::Div(f0, f1);
 }
 
 // Sigmoid using the logistic function 1 / (1 + exp(-x[i]))
