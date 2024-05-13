@@ -458,7 +458,8 @@ struct GemmaInterface {
                         size_t start_pos, KVCache& kv_cache,
                         hwy::ThreadPool& pool, const StreamFunc& stream_token,
                         const AcceptFunc& accept_token, std::mt19937& gen,
-                        int verbosity, LayersOutputT* layers_output) = 0;
+                        int verbosity, TimingInfo& timing_info,
+                        LayersOutputT* layers_output) = 0;
 
   virtual float ComputeCrossEntropy(size_t max_tokens,
                                     const std::vector<int>& prompt,
@@ -550,7 +551,7 @@ struct GemmaImpl : public GemmaInterface {
                 float temperature, const std::vector<int>& prompt,
                 size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                 const StreamFunc& stream_token, const AcceptFunc& accept_token,
-                std::mt19937&, int verbosity,
+                std::mt19937&, int verbosity, TimingInfo& timing_info,
                 LayersOutputT* layers_output) override;
 
   float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
@@ -1087,7 +1088,8 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
                   const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
                   hwy::ThreadPool& pool, const StreamFunc& stream_token,
                   const AcceptFunc& accept_token, std::mt19937& gen,
-                  int verbosity, LayersOutputT* layers_output) {
+                  int verbosity, TimingInfo& timing_info,
+                  LayersOutputT* layers_output) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   Activations<TConfig, 1>& activations = *gemma.state.get();
   Activations<TConfig, kPrefillBatchSize>& prefill_activations =
@@ -1137,12 +1139,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
   }
 
   if (verbosity >= 2) {
-    // in the future this output should not occur in GenerateImpl but instead
-    // should be available as observable state for frontend code to handle I/O.
     const double prefill_end = hwy::platform::Now();
-    const double prefill_tok_sec =
+    timing_info.prefill_tok_sec =
         static_cast<double>(pos_offset) / (prefill_end - prefill_start);
-    std::cout << "\n[ Prefill tokens / sec = " << prefill_tok_sec << " ]";
   }
 
   const double gen_start = hwy::platform::Now();
@@ -1186,10 +1185,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
     if (token == EOS_ID) {
       if (verbosity >= 2) {
         const double gen_end = hwy::platform::Now();
-        const double gen_tok_sec =
+        timing_info.gen_tok_sec =
             static_cast<double>(pos_offset - pos_gen_start) /
             (gen_end - gen_start);
-        std::cout << "\n[ Generation tokens / sec = " << gen_tok_sec << " ]\n";
       }
       break;
     }
@@ -1266,11 +1264,11 @@ void Generate2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
                 const std::vector<int>& prompt, size_t start_pos,
                 KVCache& kv_cache, hwy::ThreadPool& pool,
                 const StreamFunc& stream_token, const AcceptFunc& accept_token,
-                std::mt19937& gen, int verbosity,
+                std::mt19937& gen, int verbosity, TimingInfo& timing_info,
                 LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, stream_token, accept_token, gen,
-               verbosity, layers_output);
+               verbosity, timing_info, layers_output);
 }
 
 void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
@@ -1278,11 +1276,11 @@ void Generate7B(GemmaImpl<ConfigGemma7B>& gemma, size_t max_tokens,
                 const std::vector<int>& prompt, size_t start_pos,
                 KVCache& kv_cache, hwy::ThreadPool& pool,
                 const StreamFunc& stream_token, const AcceptFunc& accept_token,
-                std::mt19937& gen, int verbosity,
+                std::mt19937& gen, int verbosity, TimingInfo& timing_info,
                 LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, stream_token, accept_token, gen,
-               verbosity, layers_output);
+               verbosity, timing_info, layers_output);
 }
 
 void GenerateGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma, size_t max_tokens,
@@ -1291,10 +1289,11 @@ void GenerateGriffin2B(GemmaImpl<ConfigGriffin2B>& gemma, size_t max_tokens,
                        KVCache& kv_cache, hwy::ThreadPool& pool,
                        const StreamFunc& stream_token,
                        const AcceptFunc& accept_token, std::mt19937& gen,
-                       int verbosity, LayersOutputT* layers_output) {
+                       int verbosity, TimingInfo& timing_info,
+                       LayersOutputT* layers_output) {
   GenerateImpl(gemma, max_tokens, max_generated_tokens, temperature, prompt,
                start_pos, kv_cache, pool, stream_token, accept_token, gen,
-               verbosity, layers_output);
+               verbosity, timing_info, layers_output);
 }
 
 float ComputeCrossEntropy2B(GemmaImpl<ConfigGemma2B>& gemma, size_t max_tokens,
@@ -1559,10 +1558,10 @@ void GemmaImpl<ConfigGemma2B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, const StreamFunc& stream_token,
     const AcceptFunc& accept_token, std::mt19937& gen, int verbosity,
-    LayersOutputT* layers_output) {
+    TimingInfo& timing_info, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(Generate2B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, stream_token, accept_token, gen, verbosity,
+   kv_cache, pool, stream_token, accept_token, gen, verbosity, timing_info,
    layers_output);
 }
 
@@ -1572,10 +1571,11 @@ void GemmaImpl<ConfigGemma7B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, const StreamFunc& stream_token,
     const AcceptFunc& accept_token, std::mt19937& gen, int verbosity,
-    LayersOutputT* layers_output) {
+    TimingInfo& timing_info, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(Generate7B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, stream_token, accept_token, gen, verbosity, layers_output);
+   kv_cache, pool, stream_token, accept_token, gen, verbosity, timing_info,
+   layers_output);
 }
 
 template <>
@@ -1584,10 +1584,10 @@ void GemmaImpl<ConfigGriffin2B>::Generate(
     const std::vector<int>& prompt, size_t start_pos, KVCache& kv_cache,
     hwy::ThreadPool& pool, const StreamFunc& stream_token,
     const AcceptFunc& accept_token, std::mt19937& gen, int verbosity,
-    LayersOutputT* layers_output) {
+    TimingInfo& timing_info, LayersOutputT* layers_output) {
   HWY_DYNAMIC_DISPATCH(GenerateGriffin2B)
   (*this, max_tokens, max_generated_tokens, temperature, prompt, start_pos,
-   kv_cache, pool, stream_token, accept_token, gen, verbosity,
+   kv_cache, pool, stream_token, accept_token, gen, verbosity, timing_info,
    layers_output);
 }
 
@@ -1658,23 +1658,25 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity, LayersOutputT* layers_output) {
+                   int verbosity, TimingInfo& timing_info,
+                   LayersOutputT* layers_output) {
   pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
   gemma.impl_->Generate(max_tokens, max_generated_tokens, temperature, prompt,
                         start_pos, kv_cache, pool, stream_token, accept_token,
-                        gen, verbosity, layers_output);
+                        gen, verbosity, timing_info, layers_output);
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
 void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token, std::mt19937& gen) {
+                   const StreamFunc& stream_token, std::mt19937& gen,
+                   TimingInfo& timing_info) {
   GenerateGemma(
       gemma, runtime_config.max_tokens, runtime_config.max_generated_tokens,
       runtime_config.temperature, prompt, start_pos, kv_cache, pool,
       stream_token, [](int) { return true; }, gen, runtime_config.verbosity,
-      /*layers_output=*/nullptr);
+      timing_info, /*layers_output=*/nullptr);
 }
 
 void CompressWeights(gcpp::Model model, const Path& weights,

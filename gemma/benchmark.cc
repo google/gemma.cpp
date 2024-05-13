@@ -87,9 +87,10 @@ std::pair<std::string, int> QueryModel(
     std::cout << args.max_tokens << " " << args.max_generated_tokens << " "
               << args.temperature;
   }
+  gcpp::TimingInfo timing_info;
   GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                 args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,
-                stream_token, accept_token, gen, app.verbosity);
+                stream_token, accept_token, gen, app.verbosity, timing_info);
   if (app.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
   }

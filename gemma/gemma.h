@@ -88,6 +88,11 @@ struct Gemma {
   std::unique_ptr<GemmaInterface> impl_;
 };
 
+struct TimingInfo {
+  double prefill_tok_sec = 0.0;
+  double gen_tok_sec = 0.0;
+};
+
 KVCache CreateKVCache(Model type);  // convenient workaround for now
 KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
                       size_t conv1d_cache_size, size_t rglru_cache_size);
@@ -104,7 +109,8 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
                    size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
                    const StreamFunc& stream_token,
                    const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity, LayersOutputT* layers_output = nullptr);
+                   int verbosity, TimingInfo& timing_info,
+                   LayersOutputT* layers_output = nullptr);
 
 // Convenience function for the common case:
 // - Bundle runtime parameters as RuntimeConfig
@@ -112,7 +118,8 @@ void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
 void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token, std::mt19937& gen);
+                   const StreamFunc& stream_token, std::mt19937& gen,
+                   int verbosity, TimingInfo& timing_info);
 
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);

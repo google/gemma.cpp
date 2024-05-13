@@ -1,12 +1,18 @@
 
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "compression/io.h"
 #include "gemma/gemma.h"
 #include "nlohmann/json.hpp"
 #include "util/app.h"
 #include "util/args.h"
+#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 using json = nlohmann::json;
@@ -54,9 +60,11 @@ std::pair<std::string, int> QueryModel(
     std::cout << args.max_tokens << " " << args.max_generated_tokens << " "
               << args.temperature;
   }
+  gcpp::TimingInfo timing_info;
   GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                 args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,
-                stream_token, accept_token, gen, app.verbosity, layers_output);
+                stream_token, accept_token, gen, app.verbosity, timing_info,
+                layers_output);
   return {res, total_tokens};
 }
 
@@ -65,7 +73,8 @@ class OutputJsonLogger {
   json json_output;
 
   gcpp::LayersOutputT layers_output_log_f =
-      [this](int pos, const std::string& key, const float* values, size_t values_len) {
+      [this](int pos, const std::string& key, const float* values,
+             size_t values_len) {
         std::vector<float> v{values, values + values_len};
         json_output[std::to_string(pos)][key] = v;
       };

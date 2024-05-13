@@ -19,6 +19,7 @@
 #include <iostream>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>  // NOLINT
 #include <vector>
 
@@ -206,16 +207,16 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       }
     }
 
-    const double time_start = hwy::platform::Now();
+    TimingInfo timing_info;
     GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
                   args.temperature, prompt, abs_pos, kv_cache, pool,
-                  stream_token, accept_token, gen, verbosity);
-    const double time_end = hwy::platform::Now();
-    const double tok_sec = current_pos / (time_end - time_start);
+                  stream_token, accept_token, gen, verbosity, timing_info);
     if (verbosity >= 2) {
       std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
                 << "\n"
-                << tok_sec << " tokens / sec" << "\n";
+                << timing_info.prefill_tok_sec << " prefill tokens / sec"
+                << "\n"
+                << timing_info.gen_tok_sec << " tokens / sec" << "\n";
     }
     std::cout << "\n\n";
   }
