@@ -2,6 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <ostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <utility>  // std::pair
@@ -88,9 +89,17 @@ std::pair<std::string, int> QueryModel(
               << args.temperature;
   }
   gcpp::TimingInfo timing_info;
-  GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
-                args.temperature, prompt, /*abs_pos=*/0, kv_cache, pool,
-                stream_token, accept_token, gen, app.verbosity, timing_info);
+  gcpp::RuntimeConfig runtime_config = {
+      .max_tokens = args.max_tokens,
+      .max_generated_tokens = args.max_generated_tokens,
+      .temperature = args.temperature,
+      .verbosity = app.verbosity,
+      .gen = &gen,
+      .stream_token = stream_token,
+      .accept_token = accept_token,
+  };
+  GenerateGemma(model, runtime_config, prompt, /*start_pos=*/0, kv_cache, pool,
+                timing_info, /*layers_output=*/nullptr);
   if (app.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
   }

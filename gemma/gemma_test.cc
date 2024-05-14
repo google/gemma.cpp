@@ -56,11 +56,18 @@ class GemmaTest : public ::testing::Test {
       response.push_back(token);
       return true;
     };
-    gcpp::GenerateGemma(
-        model, /*max_tokens=*/3072, /*max_generated_tokens=*/2048,
-        /*temperature=*/1.0, prompt, /*start_pos=*/0, kv_cache, pool,
-        stream_token, /*accept=*/[](int) { return true; }, gen,
-        /*verbosity=*/0);
+    gcpp::RuntimeConfig runtime_config = {
+        .max_tokens = 3072,
+        .max_generated_tokens = 2048,
+        .temperature = 1.0,
+        .verbosity = 0,
+        .gen = &gen,
+        .stream_token = stream_token,
+        .accept_token = [](int) { return true; },
+    };
+    gcpp::TimingInfo timing_info;
+    gcpp::GenerateGemma(model, runtime_config, prompt, /*start_pos=*/0,
+                        kv_cache, pool, timing_info, /*layers_output=*/nullptr);
     std::string response_text;
     HWY_ASSERT(model.Tokenizer()->Decode(response, &response_text));
     return response_text;

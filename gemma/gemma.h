@@ -60,11 +60,19 @@ enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training);
 
+// StreamFunc is called with (token, probability). For prompt tokens,
+// probability is 0.0f.
+using StreamFunc = std::function<bool(int, float)>;
+using AcceptFunc = std::function<bool(int)>;
+
 struct RuntimeConfig {
   size_t max_tokens;
   size_t max_generated_tokens;
   float temperature;
   int verbosity;
+  std::mt19937* gen;
+  const StreamFunc& stream_token;
+  const AcceptFunc& accept_token;
 };
 
 struct GemmaInterface;
@@ -97,29 +105,14 @@ KVCache CreateKVCache(Model type);  // convenient workaround for now
 KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
                       size_t conv1d_cache_size, size_t rglru_cache_size);
 
-// StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f.
-using StreamFunc = std::function<bool(int, float)>;
-using AcceptFunc = std::function<bool(int)>;
-
+// Bundle runtime parameters as RuntimeConfig
 // layers_output is optional; if set - it will be called with the activations
 // output after applying each layer.
-void GenerateGemma(Gemma& gemma, size_t max_tokens, size_t max_generated_tokens,
-                   float temperature, const std::vector<int>& prompt,
-                   size_t start_pos, KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token,
-                   const AcceptFunc& accept_token, std::mt19937& gen,
-                   int verbosity, TimingInfo& timing_info,
-                   LayersOutputT* layers_output = nullptr);
-
-// Convenience function for the common case:
-// - Bundle runtime parameters as RuntimeConfig
-// - All tokens accepted
-void GenerateGemma(Gemma& gemma, RuntimeConfig runtime_config,
+void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    const std::vector<int>& prompt, size_t start_pos,
                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                   const StreamFunc& stream_token, std::mt19937& gen,
-                   int verbosity, TimingInfo& timing_info);
+                   TimingInfo& timing_info,
+                   LayersOutputT* layers_output = nullptr);
 
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);

@@ -208,9 +208,17 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
     }
 
     TimingInfo timing_info;
-    GenerateGemma(model, args.max_tokens, args.max_generated_tokens,
-                  args.temperature, prompt, abs_pos, kv_cache, pool,
-                  stream_token, accept_token, gen, verbosity, timing_info);
+    gcpp::RuntimeConfig runtime_config = {
+        .max_tokens = args.max_tokens,
+        .max_generated_tokens = args.max_generated_tokens,
+        .temperature = args.temperature,
+        .verbosity = verbosity,
+        .gen = &gen,
+        .stream_token = stream_token,
+        .accept_token = accept_token,
+    };
+    GenerateGemma(model, runtime_config, prompt, abs_pos, kv_cache, pool,
+                  timing_info);
     if (verbosity >= 2) {
       std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
                 << "\n"
