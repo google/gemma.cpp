@@ -218,19 +218,18 @@ You can now run `gemma` from inside the `build/` directory.
 
 `gemma` has the following required arguments:
 
-| Argument | Description | Example value |
-| -------- | ----------- | ------------- |
-| `--model` | The model type. | `2b-it`, `2b-pt`, `7b-it`, `7b-pt`, ... (see above) |
-| `--compressed_weights` | The compressed weights file. | `2b-it-sfp.sbs`, ... (see above) |
-| `--tokenizer` | The tokenizer file. | `tokenizer.spm` |
-
+| Argument      | Description                  | Example value              |
+| ------------- | ---------------------------- | -------------------------- |
+| `--model`     | The model type.              | `2b-it`, `2b-pt`, `7b-it`, `7b-pt`, ... (see above) |
+| `--weights`   | The compressed weights file. | `2b-it-sfp.sbs`, ... (see above) |
+| `--tokenizer` | The tokenizer file.          | `tokenizer.spm`            |
 
 `gemma` is invoked as:
 
 ```sh
 ./gemma \
 --tokenizer [tokenizer file] \
---compressed_weights [compressed weights file] \
+--weights [compressed weights file] \
 --model [2b-it or 2b-pt or 7b-it or 7b-pt or ...]
 ```
 
@@ -243,7 +242,7 @@ Example invocation for the following configuration:
 ```sh
 ./gemma \
 --tokenizer tokenizer.spm \
---compressed_weights 2b-it-sfp.sbs \
+--weights 2b-it-sfp.sbs \
 --model 2b-it
 ```
 
@@ -262,8 +261,7 @@ tokenizer from the RecurrentGemma
 [Kaggle](https://www.kaggle.com/models/google/recurrentgemma/gemmaCpp) as in
 Step 1, and run the binary as follows:
 
-`./gemma --tokenizer tokenizer.spm --model gr2b-it --compressed_weights 2b-it-sfp.sbs`
-
+`./gemma --tokenizer tokenizer.spm --model gr2b-it --weights 2b-it-sfp.sbs`
 
 ### Troubleshooting and FAQs
 
@@ -382,7 +380,7 @@ For using the `gemma` executable as a command line tool, it may be useful to
 create an alias for gemma.cpp with arguments fully specified:
 
 ```sh
-alias gemma2b="~/gemma.cpp/build/gemma -- --tokenizer ~/gemma.cpp/build/tokenizer.spm --compressed_weights ~/gemma.cpp/build/2b-it-sfp.sbs --model 2b-it --verbosity 0"
+alias gemma2b="~/gemma.cpp/build/gemma -- --tokenizer ~/gemma.cpp/build/tokenizer.spm --weights ~/gemma.cpp/build/2b-it-sfp.sbs --model 2b-it --verbosity 0"
 ```
 
 Replace the above paths with your own paths to the model and tokenizer paths

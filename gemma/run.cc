@@ -79,11 +79,12 @@ void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
       << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
          "==========================================================\n\n"
          "To run gemma.cpp, you need to "
-         "specify 3 required model loading arguments:\n    --tokenizer\n    "
-         "--compressed_weights\n"
+         "specify 3 required model loading arguments:\n"
+         "    --tokenizer\n"
+         "    --weights\n"
          "    --model.\n";
   std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
-               "--compressed_weights 2b-it-sfp.sbs --model 2b-it\n";
+               "--weights 2b-it-sfp.sbs --model 2b-it\n";
   std::cerr << "\n*Model Loading Arguments*\n\n";
   loader.Help();
   std::cerr << "\n*Inference Arguments*\n\n";
