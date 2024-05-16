@@ -99,6 +99,7 @@ struct Gemma {
 struct TimingInfo {
   double prefill_tok_sec = 0.0;
   double gen_tok_sec = 0.0;
+  double time_to_first_token = 0;
 };
 
 KVCache CreateKVCache(Model type);  // convenient workaround for now

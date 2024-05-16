@@ -1171,6 +1171,9 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
       if (!runtime_config.stream_token(token, activations.logits[token])) {
         token = EOS_ID;
       }
+      if (generate_pos == 0) {
+        timing_info.time_to_first_token = hwy::platform::Now() - gen_start;
+      }
     } else {
       // We would take this branch if we were not doing Prefill but would
       // process the tokens of the prompt one at a time.

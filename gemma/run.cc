@@ -224,7 +224,9 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
                 << "\n"
                 << timing_info.prefill_tok_sec << " prefill tokens / sec"
                 << "\n"
-                << timing_info.gen_tok_sec << " tokens / sec" << "\n";
+                << timing_info.gen_tok_sec << " tokens / sec" << "\n"
+                << static_cast<int>(timing_info.time_to_first_token * 1000)
+                << " milliseconds time to first token" << "\n";
     }
     std::cout << "\n\n";
   }
