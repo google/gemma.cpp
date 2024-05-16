@@ -90,6 +90,15 @@ add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
 install(TARGETS gemma DESTINATION bin)
 
+option (WITH_WEBSOCKET "Run with websocket" OFF)
+IF(WITH_WEBSOCKET)
+  FetchContent_Declare(IXWebSocket GIT_REPOSITORY https://github.com/machinezone/IXWebSocket GIT_TAG dc8807ec9d25f602d94f023e40a896de820d2bee EXCLUDE_FROM_ALL)
+  FetchContent_MakeAvailable(IXWebSocket)
+  add_definitions(-DWITH_WEBSOCKET)
+  add_executable(gemma.ws gemma/run-ws.cc)
+  target_link_libraries(gemma.ws libgemma hwy hwy_contrib ixwebsocket)
+ENDIF(WITH_WEBSOCKET)
+
 add_executable(benchmark gemma/benchmark.cc)
 target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
