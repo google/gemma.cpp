@@ -80,9 +80,9 @@ class BlobReader {
 
 class BlobWriter {
  public:
-  void Add(hwy::uint128_t key, void* data, size_t size) {
+  void Add(hwy::uint128_t key, const void* data, size_t size) {
     keys_.push_back(key);
-    blobs_.emplace_back(static_cast<uint8_t*>(data), size);
+    blobs_.emplace_back(static_cast<const uint8_t*>(data), size);
   }
 
   // Stores all blobs to disk in the given order with padding for alignment.
@@ -90,7 +90,7 @@ class BlobWriter {
 
  private:
   std::vector<hwy::uint128_t> keys_;
-  std::vector<hwy::Span<uint8_t>> blobs_;
+  std::vector<hwy::Span<const uint8_t>> blobs_;
 };
 
 }  // namespace gcpp

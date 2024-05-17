@@ -124,7 +124,7 @@ class BlobStore {
   }
 
   static std::vector<BlobIO> PrepareWriteRequests(
-      const hwy::uint128_t keys[], const hwy::Span<uint8_t> blobs[],
+      const hwy::uint128_t keys[], const hwy::Span<const uint8_t> blobs[],
       size_t num_blobs, BlobStore* bs) {
     // Sanity check and ensure the cast below is safe.
     HWY_ASSERT(num_blobs < (1ULL << 20));
@@ -164,7 +164,8 @@ class BlobStore {
       bs->keys_[num_blobs + i].lo = offset;
       bs->keys_[num_blobs + i].hi = blobs[i].size();
 
-      EnqueueChunkRequests(offset, blobs[i].size(), blobs[i].data(), requests);
+      EnqueueChunkRequests(offset, blobs[i].size(),
+                           const_cast<uint8_t*>(blobs[i].data()), requests);
       offset += blobs[i].size();
       const size_t padded_size = hwy::RoundUpTo(blobs[i].size(), kBlobAlign);
       if (padded_size != blobs[i].size()) {
@@ -270,8 +271,8 @@ BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
   // Concatenate blobs in memory.
   const size_t header_size = BlobStore::HeaderSize(keys_.size());
   const size_t padded_header_size = hwy::RoundUpTo(header_size, kBlobAlign);
-  BlobStorePtr bs = BlobStore::Allocate(padded_header_size);
-  std::vector<BlobIO> requests = BlobStore::PrepareWriteRequests(
+  const BlobStorePtr bs = BlobStore::Allocate(padded_header_size);
+  const std::vector<BlobIO> requests = BlobStore::PrepareWriteRequests(
       keys_.data(), blobs_.data(), keys_.size(), bs.get());
 
   // Create/replace existing file.
