@@ -8,7 +8,6 @@
 #include <utility>  // std::pair
 #include <vector>
 
-#include "nlohmann/json.hpp"
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
@@ -16,6 +15,7 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/timer.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 

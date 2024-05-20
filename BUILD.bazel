@@ -174,3 +174,17 @@ cc_binary(
         "@nlohmann_json//:json",
     ],
 )
+
+cc_binary(
+    name = "gemma_mmlu",
+    srcs = ["gemma/run_mmlu.cc"],
+    deps = [
+        ":app",
+        ":gemma_lib",
+        # "//base",
+        "@hwy//:hwy",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+        "@nlohmann_json//:json",
+    ],
+)

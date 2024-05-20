@@ -61,8 +61,11 @@ const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training);
 
 // StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f.
+// probability is 0.0f. StreamFunc should return False to stop generation and
+// True to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
+// AcceptFunc is called with token. It should return False for tokens you don't
+// want to generate and True for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
 
 struct RuntimeConfig {

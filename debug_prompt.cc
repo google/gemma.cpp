@@ -9,11 +9,11 @@
 
 #include "compression/io.h"
 #include "gemma/gemma.h"
-#include "nlohmann/json.hpp"
 #include "util/app.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 
