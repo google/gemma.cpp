@@ -527,14 +527,21 @@ class Compressor {
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const float* weights,
                   CompressedArray<MatT, kCapacity>& compressed) {
-    fprintf(stderr, "Regenerating %s (%zuM), please wait\n", name,
-            kCapacity / (1000 * 1000));
-    Compress(weights, kCapacity, work_, kCapacity, compressed.data(), 0, pool_);
-    writer_.Add(CacheKey<MatT>(name), compressed.data(),
-                compressed.CompressedSize());
+    Insert(name, weights, kCapacity, work_, compressed.CompressedSize(),
+           compressed.data(), 0, pool_);
   }
 
-  void AddScales(float* scales, size_t len) {
+  template <typename MatT>
+  void Insert(const char* name, const float* weights, size_t weights_count,
+              CompressWorkingSet& work, size_t out_capacity, MatT* out,
+              size_t out_ofs, hwy::ThreadPool& pool) {
+    fprintf(stderr, "Regenerating %s (%zuM), please wait\n", name,
+            weights_count / (1000 * 1000));
+    Compress(weights, weights_count, work_, weights_count, out, 0, pool_);
+    writer_.Add(CacheKey<MatT>(name), out, out_capacity);
+  }
+
+  void AddScales(const float* scales, size_t len) {
     if (len) {
       writer_.Add(CacheKey<float>("scales"), scales, len * sizeof(scales[0]));
     }

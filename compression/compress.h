@@ -57,6 +57,13 @@ constexpr size_t CompressedArrayLen<NuqStream>(size_t capacity) {
 }
 }  // namespace detail
 
+// Returns the number of bytes required to store a compressed array with the
+// given type and capacity.
+template <typename MatT>
+constexpr size_t CompressedArraySize(size_t capacity) {
+  return detail::CompressedArrayLen<MatT>(capacity) * sizeof(MatT);
+}
+
 // Compressed representation of floating-point elements. The array length may
 // differ from the number of elements. Associated operations such as Dot are
 // implemented in SIMD code and are thus non-member functions.
