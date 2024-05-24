@@ -833,13 +833,15 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  auto sum = hn::Zero(d);
   hn::Transform(d, x, mask_pos,
-                [&sum, &vmax](const auto d, const auto value) HWY_ATTR {
-                  const auto out = hn::Exp(d, hn::Sub(value, vmax));
-                  sum = hn::Add(sum, out);
-                  return out;
+                [&vmax](const auto d, const auto value) HWY_ATTR {
+                  return hn::Exp(d, hn::Sub(value, vmax));
                 });
+
+  auto sum = hn::Zero(d);
+  Foreach(d, x, mask_pos, sum,
+          [&sum](const auto d, const auto value)
+              HWY_ATTR { sum = hn::Add(sum, value); });
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);
