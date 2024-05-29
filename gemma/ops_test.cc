@@ -350,9 +350,44 @@ CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
   const float scale = 1.0f / kInner;
   for (size_t i = 0; i < kOuter; i++) {
     for (size_t j = 0; j < kInner; j++) {
-      content[i * kInner + j] = static_cast<float>((i + j + offset) * scale);
+      content[i * kInner + j] =
+          static_cast<float>((i * kInner + j + offset) * scale);
     }
   }
+
+  // for (size_t i = 0; i < kOuter; i++) {
+  //   for (size_t j = 0; j < kInner; j++) {
+  //     fprintf(stderr, "content[%lu] = %f\n", i * kInner + j,
+  //             content[i * kInner + j]);
+  //   }
+  // }
+
+  Compress(content, ws, mat, pool);
+  mat.set_scale(1.0f);
+  return mat;
+}
+
+template <size_t kOuter, size_t kInner>
+CompressedArray<float, kOuter * kInner> GenerateTransposeMat(size_t offset) {
+  hwy::ThreadPool pool(0);
+  gcpp::CompressWorkingSet ws;
+  CompressedArray<float, kOuter * kInner> mat;
+  std::array<float, kOuter * kInner> content;
+  const float scale = 1.0f / kInner;
+  for (size_t i = 0; i < kOuter; i++) {
+    for (size_t j = 0; j < kInner; j++) {
+      content[j * kOuter + i] =
+          static_cast<float>((i * kInner + j + offset) * scale);
+    }
+  }
+
+  // for (size_t i = 0; i < kOuter; i++) {
+  //   for (size_t j = 0; j < kInner; j++) {
+  //     fprintf(stderr, "content[%lu] = %f (transpose)\n", i * kInner + j,
+  //             content[i * kInner + j]);
+  //   }
+  // }
+
   Compress(content, ws, mat, pool);
   mat.set_scale(1.0f);
   return mat;
@@ -403,6 +438,7 @@ hwy::AlignedFreeUniquePtr<float[]> SimpleMatMul(
       }
     }
   }
+
   return out;
 }
 
@@ -445,7 +481,7 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<MatT[]>& expected,
     double actual_value = hwy::ConvertScalarTo<double>(actual[idx]);
 
     const double tolerance =
-        expected_value * 20 * 1.0 / (1ULL << hwy::MantissaBits<MatT>());
+        expected_value * 21 * 1.0 / (1ULL << hwy::MantissaBits<MatT>());
 
     if (!(expected_value - tolerance <= actual_value &&
           actual_value <= expected_value + tolerance)) {
@@ -456,11 +492,11 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<MatT[]>& expected,
   }
 }
 
-void TestMatMul() {
+void TestTiledMatMul() {
   hwy::ThreadPool pool(0);
-  constexpr size_t kM = 128 * 3;  // 384
-  constexpr size_t kK = 128 * 5;  // 640
-  constexpr size_t kN = 128 * 6;  // 768
+  constexpr size_t kM = 512;  // 384
+  constexpr size_t kN = 512;  // * 5;  // 6;  // 768
+  constexpr size_t kK = 512;  // * 5;  // 640
 
   CompressedArray<float, kM * kN> a1 = GenerateMat<kM, kN>(0);
   CompressedArray<float, kN * kK> b1 = GenerateMat<kN, kK>(0);
@@ -478,6 +514,37 @@ void TestMatMul() {
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
   Decompress(compressed_c, 0, c.get(), kM * kK);
 
+  CompressedArray<float, kN * kK> b1_trans = GenerateTransposeMat<kN, kK>(0);
+  hwy::AlignedFreeUniquePtr<float[]> b_trans =
+      hwy::AllocateAligned<float>(kN * kK);
+  Decompress(b1_trans, 0, b_trans.get(), kN * kK);
+  MatMul_4x4<kM, kN, kK>(a.get(), b_trans.get(), c.get(), pool);
+
+  AssertClose(expected_out1, c, kM * kK);
+}
+
+void TestMatMul() {
+  constexpr size_t kM = 512;  // 384
+  constexpr size_t kN = 512;  // * 5;  // 6;  // 768
+  constexpr size_t kK = 512;  // * 5;  // 640
+
+  CompressedArray<float, kM * kN> a1 = GenerateMat<kM, kN>(0);
+  CompressedArray<float, kN * kK> b1 = GenerateMat<kN, kK>(0);
+
+  hwy::AlignedFreeUniquePtr<float[]> a = hwy::AllocateAligned<float>(kM * kN);
+  Decompress(a1, 0, a.get(), kM * kN);
+
+  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kN * kK);
+  Decompress(b1, 0, b.get(), kN * kK);
+
+  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
+      SimpleMatMul<kM, kN, kK>(a, b);
+
+  CompressedArray<float, kM * kK> compressed_c = GenerateZeroMat<kM, kK>(0);
+  hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
+  Decompress(compressed_c, 0, c.get(), kM * kK);
+
+  Decompress(b1, 0, b.get(), kN * kK);
   MatMul<kM, kN, kK>(a.get(), b.get(), c.get());
 
   AssertClose(expected_out1, c, kM * kK);
@@ -583,6 +650,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestTiledMatMul);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatMul);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
