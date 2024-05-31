@@ -33,7 +33,10 @@
 #include "hwy/highway.h"
 #include "hwy/per_target.h"
 #include "hwy/profiler.h"
-#include "hwy/timer.h"
+
+#if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
+#error "Please update to version 1.2 of github.com/google/highway."
+#endif
 
 static constexpr bool kVerboseLogTokens = false;
 

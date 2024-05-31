@@ -244,10 +244,6 @@ struct CompressTraits<hwy::bfloat16_t> {
     VF32 sum2 = Zero(df32);
     VF32 sum3 = Zero(df32);
 
-    const hn::RebindToUnsigned<decltype(df32)> du32;
-    using VU32 = hn::VFromD<decltype(du32)>;
-    const VU32 odd = Set(du32, 0xFFFF0000u);
-
     for (size_t i = 0; i < num; /* i += 2 * N */) {
       const auto interleaved0 = hn::LoadU(dbf16, in + in_ofs + i);
       const VF32 ae0 = Load(df32, vec_aligned + i);

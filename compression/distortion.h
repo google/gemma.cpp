@@ -161,12 +161,8 @@ class DistortionStats {
     std::vector<float> weights(l1_);  // copy so we can modify
     const float median = [&weights]() {
       const size_t mid = weights.size() / 2;
-      // We just want the median; partial sort is faster if available (v1.2).
-#if HWY_MAJOR > 1 || HWY_MINOR >= 2
+      // We just want the median; partial sort is faster.
       hwy::VQSelect(weights.data(), weights.size(), mid, hwy::SortAscending());
-#else
-      hwy::VQSort(weights.data(), weights.size(), hwy::SortAscending());
-#endif
       return weights[mid];
     }();
     weights = l1_;  // restore original order

@@ -15,9 +15,8 @@ http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "ht
 
 http_archive(
     name = "hwy",
-    urls = ["https://github.com/google/highway/archive/refs/tags/1.1.0.zip"],
-    integrity = "sha256-zkJX2SwL4wQ0nHMsURW7MDLEf43vFSnqhSUsUM6eQmY=",
-    strip_prefix = "highway-1.1.0",
+    urls = ["https://github.com/google/highway/archive/refs/tags/1.2.0.zip"],
+    integrity = "sha256-fbtKAGj5hhhBr5Bggtsrj4aIodC2OHb1njB8LGfom8A=",    strip_prefix = "highway-1.2.0",
 )
 
 http_archive(

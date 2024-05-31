@@ -637,13 +637,9 @@ class SfpCodec {
     const hn::Repartition<uint8_t, DBF> d8;
     V8 lo, hi;
     DecBytes(d8, packed, lo, hi);
-#if HWY_MAJOR > 1 || HWY_MINOR >= 2
+    // (Supported since Highway 1.2)
     even = hn::BitCast(dbf, hn::InterleaveEven(d8, lo, hi));
     odd = hn::BitCast(dbf, hn::InterleaveOdd(d8, lo, hi));
-#else
-    even = hn::BitCast(dbf, hn::OddEven(hn::DupEven(hi), lo));
-    odd = hn::BitCast(dbf, hn::OddEven(hi, hn::DupOdd(lo)));
-#endif
   }
 
   template <class DF, HWY_IF_F32_D(DF),
