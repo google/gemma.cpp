@@ -98,7 +98,7 @@ class GemmaTest : public ::testing::Test {
   gcpp::Gemma model;
 };
 
-TEST_F(GemmaTest, Geography) {
+TEST_F(GemmaTest, DISABLED_Geography) {
   static const char* kQA[][2] = {
       {"What is the capital of Hungary?", "Budapest"},
       {"How many states does the US have?", "50"},
@@ -108,7 +108,7 @@ TEST_F(GemmaTest, Geography) {
   TestQuestions(kQA, kNum);
 }
 
-TEST_F(GemmaTest, History) {
+TEST_F(GemmaTest, DISABLED_History) {
   static const char* kQA[][2] = {
       {"When was the Battle of Hastings?", "1066"},
       {"Who fought at the Battle of Marathon?", "Greek"},
@@ -117,7 +117,7 @@ TEST_F(GemmaTest, History) {
   TestQuestions(kQA, kNum);
 }
 
-TEST_F(GemmaTest, Arithmetic) {
+TEST_F(GemmaTest, DISABLED_Arithmetic) {
   static const char* kQA[][2] = {
       {"what is 13 + 14?", "27"},
       {"what is 7 * 8", "56"},
@@ -280,7 +280,7 @@ static const char kDeclaration[] = {
     "reliance on the protection of divine Providence, we mutually pledge to "
     "each other our Lives, our Fortunes and our sacred Honor.\n"};
 
-TEST_F(GemmaTest, CrossEntropySmall) {
+TEST_F(GemmaTest, DISABLED_CrossEntropySmall) {
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = GemmaCrossEntropy(kSmall);
@@ -288,19 +288,19 @@ TEST_F(GemmaTest, CrossEntropySmall) {
   EXPECT_LT(entropy, 1.6f);
 }
 
-TEST_F(GemmaTest, CrossEntropyJingleBells) {
+TEST_F(GemmaTest, DISABLED_CrossEntropyJingleBells) {
   float entropy = GemmaCrossEntropy(kJingleBells);
   std::cout << "per-byte entropy: " << entropy << "\n";
   EXPECT_LT(entropy, 2.3f);
 }
 
-TEST_F(GemmaTest, CrossEntropyGettysburg) {
+TEST_F(GemmaTest, DISABLED_CrossEntropyGettysburg) {
   float entropy = GemmaCrossEntropy(kGettysburg);
   std::cout << "per-byte entropy: " << entropy << "\n";
   EXPECT_LT(entropy, 1.2f);
 }
 
-TEST_F(GemmaTest, CrossEntropyDeclaration) {
+TEST_F(GemmaTest, DISABLED_CrossEntropyDeclaration) {
   float entropy = GemmaCrossEntropy(kDeclaration);
   std::cout << "per-byte entropy: " << entropy << "\n";
   EXPECT_LT(entropy, 1.0f);

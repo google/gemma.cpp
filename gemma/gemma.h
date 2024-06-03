@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
@@ -51,8 +52,6 @@ struct KVCache {
       rglru_cache;  // kModelDim * kGriffinLayers
 };
 
-// Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B };
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // Returns error string or nullptr if OK.
@@ -68,6 +67,8 @@ using StreamFunc = std::function<bool(int, float)>;
 // want to generate and True for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
 
+constexpr int EOS_ID = 1;
+
 struct RuntimeConfig {
   size_t max_tokens;
   size_t max_generated_tokens;
@@ -76,6 +77,7 @@ struct RuntimeConfig {
   std::mt19937* gen;
   const StreamFunc& stream_token;
   const AcceptFunc& accept_token;
+  int eos_id = EOS_ID;
 };
 
 struct GemmaInterface;
@@ -118,14 +120,24 @@ void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                    TimingInfo& timing_info,
                    LayersOutputT* layers_output = nullptr);
 
+void GenerateGemma(Model model, const ByteStorageT& weights,
+                   ByteStorageT& inference_state,
+                   RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   TimingInfo& timing_info);
+
+ByteStorageT LoadWeights(const Path& weights, Model model,
+                         hwy::ThreadPool& pool);
+
+ByteStorageT AllocateInferenceState(Model model);
+
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool);
 
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           hwy::ThreadPool& pool, int verbosity);
-
-constexpr int EOS_ID = 1;
 
 }  // namespace gcpp
 
