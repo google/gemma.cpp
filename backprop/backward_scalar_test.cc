@@ -13,15 +13,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemma/backward_scalar.h"
+#include "backprop/backward_scalar.h"
 
 #include <array>
 #include <complex>
 #include <random>
 
-#include "gemma/forward_scalar.h"
-#include "gemma/sampler.h"
-#include "gemma/test_util.h"
+#include "backprop/forward_scalar.h"
+#include "backprop/sampler.h"
+#include "backprop/test_util.h"
 #include "gtest/gtest.h"
 
 namespace gcpp {

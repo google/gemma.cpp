@@ -23,9 +23,9 @@
 #include <complex>
 #include <vector>
 
+#include "backprop/common_scalar.h"
+#include "backprop/prompt.h"
 #include "gemma/activations.h"
-#include "gemma/common_scalar.h"
-#include "gemma/prompt.h"
 #include "gemma/weights.h"
 
 namespace gcpp {

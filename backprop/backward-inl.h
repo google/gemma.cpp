@@ -26,8 +26,8 @@
 #include <array>
 #include <cmath>
 
+#include "backprop/prompt.h"
 #include "gemma/activations.h"
-#include "gemma/prompt.h"
 #include "gemma/weights.h"
 
 #include "hwy/base.h"

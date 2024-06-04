@@ -18,7 +18,7 @@
 
 #include <vector>
 
-#include "gemma/prompt.h"
+#include "backprop/prompt.h"
 
 namespace gcpp {
 

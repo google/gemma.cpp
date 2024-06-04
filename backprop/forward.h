@@ -18,8 +18,8 @@
 
 #include <vector>
 
+#include "backprop/prompt.h"
 #include "gemma/common.h"
-#include "gemma/prompt.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {

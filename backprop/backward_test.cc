@@ -25,27 +25,27 @@
 #include <random>
 #include <vector>
 
+#include "backprop/backward_scalar.h"
+#include "backprop/forward_scalar.h"
+#include "backprop/sampler.h"
+#include "backprop/test_util.h"
 #include "compression/compress.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "gemma/backward_scalar.h"
-#include "gemma/forward_scalar.h"
 #include "gemma/gemma.h"
-#include "gemma/sampler.h"
-#include "gemma/test_util.h"
 #include "gemma/weights.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma/backward_test.cc"  //NOLINT
+#define HWY_TARGET_INCLUDE "backprop/backward_test.cc"  //NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 // After highway.h
-#include "gemma/backward-inl.h"
-#include "gemma/forward-inl.h"
+#include "backprop/backward-inl.h"
+#include "backprop/forward-inl.h"
 #include "gemma/ops.h"
 
 HWY_BEFORE_NAMESPACE();

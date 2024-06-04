@@ -16,12 +16,12 @@
 #include <iostream>
 #include <string>
 
+#include "backprop/backward.h"
+#include "backprop/forward.h"
+#include "backprop/optimizer.h"
+#include "backprop/sampler.h"
 #include "gemma/activations.h"
-#include "gemma/backward.h"
-#include "gemma/forward.h"
 #include "gemma/gemma.h"
-#include "gemma/optimizer.h"
-#include "gemma/sampler.h"
 #include "gemma/weights.h"
 #include "gtest/gtest.h"
 

@@ -16,10 +16,11 @@
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma/common_scalar.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "backprop/common_scalar.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 
-#include "hwy/highway.h"  // IWYU pragma: keep
+#include "hwy/highway.h"
+// After highway.h
 #include "gemma/ops.h"
 
 HWY_BEFORE_NAMESPACE();
