@@ -207,7 +207,7 @@ class NuqClustering {
         VI arg = hn::Zero(di);
         // For each j (start of rightmost cluster):
         VI vj = k1;
-        for (size_t j = 1; j < last + N; ++j, vj = Add(vj, k1)) {
+        for (size_t j = 1; j < last + N; ++j, vj = hn::Add(vj, k1)) {
           const VF c = ClusterDynProg(df, D, cc, num_clusters, last, j);
 
           // Retain the min cost and the j index that caused it.

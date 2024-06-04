@@ -371,8 +371,8 @@ void GEMM_4x4_Static(const MatT* HWY_RESTRICT A, const MatT* HWY_RESTRICT B,
   constexpr size_t kRegCols = 4;  // in vectors
 
   static_assert(kRowsAC % kRegRows == 0);
-  static_assert(kColsA_RowsB % (N * kRegCols) == 0);
   static_assert(kColsBC % kRegCols == 0);
+  HWY_ASSERT(kColsA_RowsB % (N * kRegCols) == 0);
   constexpr size_t kTilesY = kRowsAC / kRegRows;
   constexpr size_t kTilesX = kColsBC / kRegCols;
   constexpr size_t kTiles = kTilesX * kTilesY;
@@ -405,8 +405,8 @@ HWY_NOINLINE void MatMul_4x4(const MatT* HWY_RESTRICT A,
   constexpr size_t kRegCols = 4;  // in vectors
 
   static_assert(kRowsAC % kRegRows == 0);
-  static_assert(kColsA_RowsB % (N * kRegCols) == 0);
   static_assert(kColsBC % kRegCols == 0);
+  HWY_ASSERT(kColsA_RowsB % (N * kRegCols) == 0);
   const size_t kTilesY = kRowsAC / kRegRows;
   const size_t kTilesX = kColsBC / kRegCols;
   const size_t kTiles = kTilesX * kTilesY;
