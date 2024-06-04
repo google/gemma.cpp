@@ -59,8 +59,12 @@ cc_library(
         "gemma/gemma.cc",
     ],
     hdrs = [
+        "gemma/activations.h",
+        "gemma/common.h",
+        "gemma/common-inl.h",
         "gemma/configs.h",
         "gemma/gemma.h",
+        "gemma/weights.h",
     ],
     deps = [
         ":ops",
