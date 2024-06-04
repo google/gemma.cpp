@@ -16,6 +16,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_PROMPT_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_PROMPT_H_
 
+#include <stddef.h>
 #include <vector>
 
 namespace gcpp {
