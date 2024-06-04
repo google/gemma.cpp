@@ -199,8 +199,11 @@ class SfpCodec {
     const hn::Vec<D> tblL1 = hn::LoadU(d, kTblL1);
     const hn::Vec<D> tblH0 = hn::LoadU(d, kTblH0);
     const hn::Vec<D> tblH1 = hn::LoadU(d, kTblH1);
-    // AVX-512 ignores the index MSB, no need to clear.
+#if HWY_IDE  // only let the IDE see portable code.
+    const auto idx = hn::IndicesFromVec(hn::AndNot(k80, encoded));
+#else  // AVX-512-specific: index MSB is ignored, no need to clear.
     const hn::Indices512<uint8_t> idx{encoded.raw};
+#endif
     hi = hn::TwoTablesLookupLanes(d, tblH0, tblH1, idx);
     lo = hn::TwoTablesLookupLanes(d, tblL0, tblL1, idx);
     hi = hn::OrAnd(hi, encoded, k80);  // Insert sign bit

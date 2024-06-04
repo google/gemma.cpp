@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <random>
 #include <vector>
 
@@ -341,70 +342,52 @@ void TestAllCreateDistribution() {
   TestCreateDistribution<5000>();
 }
 
-template <size_t kOuter, size_t kInner>
-CompressedArray<float, kOuter * kInner> GenerateMat(size_t offset) {
-  hwy::ThreadPool pool(0);
+template <typename MatT, size_t kOuter, size_t kInner>
+CompressedArray<MatT, kOuter * kInner> GenerateMat(size_t offset,
+                                                   hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  CompressedArray<float, kOuter * kInner> mat;
+  CompressedArray<MatT, kOuter * kInner> mat;
   std::array<float, kOuter * kInner> content;
   const float scale = 1.0f / kInner;
-  for (size_t i = 0; i < kOuter; i++) {
+  pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kInner; j++) {
       content[i * kInner + j] =
           static_cast<float>((i * kInner + j + offset) * scale);
     }
-  }
-
-  // for (size_t i = 0; i < kOuter; i++) {
-  //   for (size_t j = 0; j < kInner; j++) {
-  //     fprintf(stderr, "content[%lu] = %f\n", i * kInner + j,
-  //             content[i * kInner + j]);
-  //   }
-  // }
+  });
 
   Compress(content, ws, mat, pool);
   mat.set_scale(1.0f);
   return mat;
 }
 
-template <size_t kOuter, size_t kInner>
-CompressedArray<float, kOuter * kInner> GenerateTransposeMat(size_t offset) {
-  hwy::ThreadPool pool(0);
+template <typename MatT, size_t kOuter, size_t kInner>
+CompressedArray<MatT, kOuter * kInner> GenerateTransposeMat(
+    size_t offset, hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  CompressedArray<float, kOuter * kInner> mat;
+  CompressedArray<MatT, kOuter * kInner> mat;
   std::array<float, kOuter * kInner> content;
   const float scale = 1.0f / kInner;
-  for (size_t i = 0; i < kOuter; i++) {
+  pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kInner; j++) {
-      content[j * kOuter + i] =
-          static_cast<float>((i * kInner + j + offset) * scale);
+      content[i * kInner + j] =
+          static_cast<float>((j * kInner + i + offset) * scale);
     }
-  }
-
-  // for (size_t i = 0; i < kOuter; i++) {
-  //   for (size_t j = 0; j < kInner; j++) {
-  //     fprintf(stderr, "content[%lu] = %f (transpose)\n", i * kInner + j,
-  //             content[i * kInner + j]);
-  //   }
-  // }
+  });
 
   Compress(content, ws, mat, pool);
   mat.set_scale(1.0f);
   return mat;
 }
 
-template <size_t kOuter, size_t kInner>
-CompressedArray<float, kOuter * kInner> GenerateZeroMat(size_t offset) {
-  hwy::ThreadPool pool(static_cast<size_t>(std::clamp(
-      static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 4)));
+template <typename MatT, size_t kOuter, size_t kInner>
+CompressedArray<MatT, kOuter * kInner> GenerateZeroMat(hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  CompressedArray<float, kOuter * kInner> mat;
-  std::array<float, kOuter * kInner> content;
+  CompressedArray<MatT, kOuter * kInner> mat;
+  std::array<MatT, kOuter * kInner> content;
 
   pool.Run(0, kOuter, [&](const size_t i, size_t thread) {
-    for (size_t j = 0; j < kInner; j++) {
-      content[i * kInner + j] = 0.0f;
-    }
+    hwy::ZeroBytes(&content[i * kInner], kInner * sizeof(content[0]));
   });
 
   Compress(content, ws, mat, pool);
@@ -474,8 +457,8 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
 }
 
 template <typename MatT>
-void AssertClose(const hwy::AlignedFreeUniquePtr<MatT[]>& expected,
-                 const hwy::AlignedFreeUniquePtr<MatT[]>& actual, size_t num) {
+void AssertClose(const MatT* HWY_RESTRICT expected,
+                 const MatT* HWY_RESTRICT actual, size_t num) {
   for (size_t idx = 0; idx < num; idx++) {
     double expected_value = hwy::ConvertScalarTo<double>(expected[idx]);
     double actual_value = hwy::ConvertScalarTo<double>(actual[idx]);
@@ -492,69 +475,38 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<MatT[]>& expected,
   }
 }
 
+template <typename MatT>
 void TestTiledMatMul() {
-  hwy::ThreadPool pool(0);
+  hwy::ThreadPool pool(3);
   constexpr size_t kM = 512;  // 384
   constexpr size_t kN = 512;  // * 5;  // 6;  // 768
   constexpr size_t kK = 512;  // * 5;  // 640
 
-  CompressedArray<float, kM * kN> a1 = GenerateMat<kM, kN>(0);
-  CompressedArray<float, kN * kK> b1 = GenerateMat<kN, kK>(0);
+  CompressedArray<MatT, kM * kN> a = GenerateMat<MatT, kM, kN>(0, pool);
+  CompressedArray<MatT, kN * kK> b = GenerateMat<MatT, kN, kK>(0, pool);
+  CompressedArray<float, kN * kK> c_slow = GenerateZeroMat<float, kM, kK>(pool);
+  MatMulSlow<kM, kN, kK>(a.data(), b.data(), c_slow.data());
 
-  hwy::AlignedFreeUniquePtr<float[]> a = hwy::AllocateAligned<float>(kM * kN);
-  Decompress(a1, 0, a.get(), kM * kN);
-
-  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kN * kK);
-  Decompress(b1, 0, b.get(), kN * kK);
-
-  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
-      SimpleMatMul<kM, kN, kK>(a, b);
-
-  CompressedArray<float, kM * kK> compressed_c = GenerateZeroMat<kM, kK>(0);
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
-  Decompress(compressed_c, 0, c.get(), kM * kK);
+  CompressedArray<MatT, kN * kK> b_trans =
+      GenerateTransposeMat<MatT, kN, kK>(0, pool);
+  MatMul_4x4<kM, kN, kK>(a.data(), b_trans.data(), c.get(), pool);
 
-  CompressedArray<float, kN * kK> b1_trans = GenerateTransposeMat<kN, kK>(0);
-  hwy::AlignedFreeUniquePtr<float[]> b_trans =
-      hwy::AllocateAligned<float>(kN * kK);
-  Decompress(b1_trans, 0, b_trans.get(), kN * kK);
-  MatMul_4x4<kM, kN, kK>(a.get(), b_trans.get(), c.get(), pool);
-
-  AssertClose(expected_out1, c, kM * kK);
+  AssertClose(c_slow.data(), c.get(), kM * kK);
 }
 
-void TestMatMul() {
-  constexpr size_t kM = 512;  // 384
-  constexpr size_t kN = 512;  // * 5;  // 6;  // 768
-  constexpr size_t kK = 512;  // * 5;  // 640
-
-  CompressedArray<float, kM * kN> a1 = GenerateMat<kM, kN>(0);
-  CompressedArray<float, kN * kK> b1 = GenerateMat<kN, kK>(0);
-
-  hwy::AlignedFreeUniquePtr<float[]> a = hwy::AllocateAligned<float>(kM * kN);
-  Decompress(a1, 0, a.get(), kM * kN);
-
-  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kN * kK);
-  Decompress(b1, 0, b.get(), kN * kK);
-
-  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
-      SimpleMatMul<kM, kN, kK>(a, b);
-
-  CompressedArray<float, kM * kK> compressed_c = GenerateZeroMat<kM, kK>(0);
-  hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
-  Decompress(compressed_c, 0, c.get(), kM * kK);
-
-  Decompress(b1, 0, b.get(), kN * kK);
-  MatMul<kM, kN, kK>(a.get(), b.get(), c.get());
-
-  AssertClose(expected_out1, c, kM * kK);
+void TestAllTiledMatMul() {
+  TestTiledMatMul<float>();
+  TestTiledMatMul<hwy::bfloat16_t>();
+  // TODO(janwas): SFP
 }
 
 void TestMatVecAdd() {
   hwy::ThreadPool pool(0);
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
+  CompressedArray<float, kOuter * kInner> mat =
+      GenerateMat<float, kOuter, kInner>(0, pool);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
   hwy::AlignedFreeUniquePtr<float[]> even_odd =
@@ -573,8 +525,10 @@ void TestTwoMatVecAdd() {
   hwy::ThreadPool pool(0);
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat0 = GenerateMat<kOuter, kInner>(0);
-  CompressedArray<float, kOuter * kInner> mat1 = GenerateMat<kOuter, kInner>(1);
+  CompressedArray<float, kOuter * kInner> mat0 =
+      GenerateMat<float, kOuter, kInner>(0, pool);
+  CompressedArray<float, kOuter * kInner> mat1 =
+      GenerateMat<float, kOuter, kInner>(1, pool);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
   hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
@@ -595,9 +549,11 @@ void TestTwoMatVecAdd() {
 }
 
 void TestTwoOfsMatVecAddLoop() {
+  hwy::ThreadPool pool(0);
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat = GenerateMat<kOuter, kInner>(0);
+  CompressedArray<float, kOuter * kInner> mat =
+      GenerateMat<float, kOuter, kInner>(0, pool);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
   hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
@@ -650,8 +606,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestTiledMatMul);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestMatMul);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllTiledMatMul);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);
