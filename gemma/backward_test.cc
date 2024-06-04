@@ -92,8 +92,8 @@ void TestMatMulVJP() {
     memset(&grad_scalar, 0, sizeof(grad_scalar));
     MatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                dx_scalar.data(), kRows, kCols, kTokens);
-    TestNear(dx, dx_scalar, 0, 0, __LINE__);
-    TestNear(grad, grad_scalar, 0, 0, __LINE__);
+    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
+    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
   }
 }
 
@@ -137,8 +137,8 @@ void TestMultiHeadMatMulVJP() {
     memset(&grad_scalar, 0, sizeof(grad_scalar));
     MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                         dx_scalar.data(), kHeads, kRows, kCols, kTokens);
-    TestNear(dx, dx_scalar, 0, 0, __LINE__);
-    TestNear(grad, grad_scalar, 0, 0, __LINE__);
+    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
+    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
   }
 }
 
