@@ -484,15 +484,26 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
         const hn::ScalableTag<OutT> d;
 
         const size_t ofs = idx_batch * kBatch;
-        const size_t num = idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
+        const size_t batch =
+            idx_batch == num_batches - 1 ? (num - ofs) : kBatch;
         Traits::Decompress(d, compressed.size(), compressed.data(),
-                           compressed_ofs + ofs, out + ofs, num);
+                           compressed_ofs + ofs, out + ofs, batch);
       });
 
   const double t1 = hwy::platform::Now();
   const double mb = num * sizeof(MatT) * 1E-6;
   const double mbps = mb / (t1 - t0);
   fprintf(stderr, "Decompress %.1f MB/s\n", mbps);
+}
+
+// Returns dot product with `vec_aligned` of length `num`.
+template <bool kVecEO, class DF, size_t kCapacity, typename VecT>
+HWY_INLINE float Dot(DF df, const std::array<float, kCapacity>& w, size_t ofs,
+                     const VecT* x, size_t num) {
+  HWY_DASSERT(ofs + num <= kCapacity);
+  HWY_DASSERT(hn::IsAligned(df, x));
+  using Traits = CompressTraits<float>;
+  return Traits::Dot(df, w.size(), w.data(), ofs, x, num);
 }
 
 // Returns dot product with `vec_aligned` of length `num`.

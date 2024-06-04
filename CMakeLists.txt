@@ -46,10 +46,28 @@ set(SOURCES
   compression/sfp.h
   compression/sfp-inl.h
   compression/test_util.h
+  backprop/backward.cc
+  backprop/backward.h
+  backprop/backward-inl.h
+  backprop/backward_scalar.h
+  backprop/common_scalar.cc
+  backprop/common_scalar.h
+  backprop/forward.cc
+  backprop/forward.h
+  backprop/forward-inl.h
+  backprop/forward_scalar.h
+  backprop/optimizer.cc
+  backprop/optimizer.h
   gemma/configs.h
+  gemma/activations.cc
+  gemma/activations.h
+  gemma/common.h
+  gemma/common-inl.h
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
+  gemma/weights.cc
+  gemma/weights.h
   util/app.h
   util/args.h
   )
@@ -100,7 +118,13 @@ target_link_libraries(debug_prompt libgemma hwy hwy_contrib nlohmann_json::nlohm
 set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)
 
+enable_testing()
+include(GoogleTest)
+
 set(GEMMA_TEST_FILES
+  backprop/backward_test.cc
+  backprop/backward_scalar_test.cc
+  backprop/optimize_test.cc
   gemma/ops_test.cc
   gemma/gemma_test.cc
 )

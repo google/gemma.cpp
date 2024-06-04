@@ -142,6 +142,38 @@ struct ConfigGemma2B {
   using WeightT = GEMMA_WEIGHT_T;
 };
 
+struct ConfigGemmaTiny {
+  static constexpr int kSeqLen = 32;
+  static constexpr int kVocabSize = 16;
+  static constexpr std::array<LayerAttentionType, 3> kLayerConfig =
+      FixedLayerConfig<3>(LayerAttentionType::kGemma);
+  static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers =
+      NumLayersOfTypeBefore(kLayerConfig, LayerAttentionType::kGemma, kLayers);
+  static constexpr int kGriffinLayers =
+      NumLayersOfTypeBefore(kLayerConfig,
+                            LayerAttentionType::kGriffinRecurrentBlock,
+                            kLayers);
+  static constexpr int kModelDim = 64;
+  static constexpr int kFFHiddenDim = 128;
+  static constexpr int kHeads = 4;
+  static constexpr int kKVHeads = 1;
+  static constexpr int kQKVDim = 16;  // query size == key size == value size
+  static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
+  static constexpr bool kPostNormScale = false;
+
+  // SSM config.
+  static constexpr int kConv1dWidth = 0;
+  static constexpr bool kFFBiases = false;
+  static constexpr bool kSoftmaxAttnOutputBiases = false;
+  static constexpr bool kUseHalfRope = false;
+  static constexpr bool kUseLocalAttention = false;
+  static constexpr bool kInterleaveQKV = true;
+  static constexpr int kNumTensorScales = 0;
+  using WeightT = GEMMA_WEIGHT_T;
+};
+
 struct ConfigGriffin2B {
   // Griffin uses local attention, so kSeqLen is actually the local attention
   // window.

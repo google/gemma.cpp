@@ -22,6 +22,7 @@
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 #include "compression/compress-inl.h"
+#include "gemma/common-inl.h"
 #include "gemma/ops.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
@@ -53,6 +54,7 @@
 #include "compression/io.h"  // Path
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
+#include "gemma/weights.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -72,63 +74,6 @@ constexpr bool kShowTokenization = false;
 
 namespace gcpp {
 
-template <class TConfig>
-struct Layer {
-  Layer() = default;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kKVHeads = TConfig::kKVHeads;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  static constexpr size_t kAttVecEinsumWSize = kHeads * kQKVDim * kModelDim;
-  static constexpr size_t kQKVEinsumWSize =
-      (kHeads + 2 * kKVHeads) * kQKVDim * kModelDim;
-  // 2x for (gelu gating vector, gated vector)
-  static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
-  static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
-  static constexpr bool kFFBiases = TConfig::kFFBiases;
-  static constexpr bool kPostNormScale = TConfig::kPostNormScale;
-  static constexpr size_t kAOBiasDim =
-      TConfig::kSoftmaxAttnOutputBiases ? kModelDim : 0;
-  static constexpr size_t kGriffinDim =
-      TConfig::kGriffinLayers > 0 ? kModelDim : 0;
-
-  template <class T, size_t N>
-  using ArrayT = std::array<T, N>;
-
-  union {
-    struct {
-      ArrayT<float, kAttVecEinsumWSize> attn_vec_einsum_w;
-      ArrayT<float, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiasDim> attention_output_biases;
-    };
-
-    struct {
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_x_w;
-      ArrayT<float, kGriffinDim> linear_x_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_y_w;
-      ArrayT<float, kGriffinDim> linear_y_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim> linear_out_w;
-      ArrayT<float, kGriffinDim> linear_out_biases;
-      ArrayT<float, kConv1dWidth * kGriffinDim> conv_w;
-      ArrayT<float, kGriffinDim> conv_biases;
-      ArrayT<float, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
-      ArrayT<float, kGriffinDim * 2> gate_biases;
-      ArrayT<float, kGriffinDim> a;
-    } griffin;
-  };
-
-  ArrayT<float, kGatingEinsumWSize> gating_einsum_w;
-  ArrayT<float, kModelDim * kFFHiddenDim> linear_w;
-  ArrayT<float, kModelDim> pre_attention_norm_scale;
-  ArrayT<float, kModelDim> pre_ffw_norm_scale;
-  ArrayT<float, kPostNormScale ? kModelDim : 0> post_attention_norm_scale;
-  ArrayT<float, kPostNormScale ? kModelDim : 0> post_ffw_norm_scale;
-
-  ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
-  ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
-};
-
 float ScaleWeights(float* data, size_t len) {
   float maxabs = 0.0;
   for (size_t i = 0; i < len; ++i) {
@@ -146,41 +91,6 @@ float ScaleWeights(float* data, size_t len) {
   return scale;
 }
 
-// Array instead of single large allocation for parallel mem init. Split out of
-// Weights so that only these pointers are initialized.
-template <class TConfig>
-struct LayerPointers {
-  explicit LayerPointers(hwy::ThreadPool& pool) {
-    pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
-      this->layers[task] = hwy::AllocateAligned<Layer<TConfig>>(1);
-    });
-  }
-
-  using TLayer = Layer<TConfig>;
-  std::array<hwy::AlignedFreeUniquePtr<TLayer[]>, TConfig::kLayers> layers;
-};
-
-template <class TConfig>
-struct Weights {
-  // No ctor/dtor, allocated via AllocateAligned.
-
-  std::array<float, TConfig::kVocabSize * TConfig::kModelDim>
-      embedder_input_embedding;
-
-  std::array<float, TConfig::kModelDim> final_norm_scale;
-
-  LayerPointers<TConfig> layer_ptrs;
-
-  std::array<float, TConfig::kNumTensorScales> scales;
-
-  const Layer<TConfig>* GetLayer(size_t layer) const {
-    return layer_ptrs.layers[layer].get();
-  }
-  Layer<TConfig>* GetLayer(size_t layer) {
-    return layer_ptrs.layers[layer].get();
-  }
-};
-
 template <typename TConfig>
 hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
     const Path& checkpoint, hwy::ThreadPool& pool,
@@ -191,11 +101,8 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
               checkpoint.path.c_str());
   }
 
-  using TWeights = Weights<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(TWeights));
-  TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-  new (&weights->layer_ptrs) LayerPointers<TConfig>(pool);
+  ByteStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
+  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
   size_t scale_pos = 0;
   FILE* fptr;
@@ -228,7 +135,7 @@ hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
            sizeof(weights->final_norm_scale));
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];
-    Layer<TConfig>* layer_view = weights->GetLayer(layer);
+    LayerF<TConfig>* layer_view = weights->GetLayer(layer);
 
 #define READ_WEIGHTS(name)                                                 \
   do {                                                                     \
@@ -305,7 +212,7 @@ template <class TConfig>
 struct CompressedLayer {
   // No ctor/dtor, allocated via AllocateAligned.
 
-  using TLayer = gcpp::Layer<TConfig>;
+  using TLayer = gcpp::LayerF<TConfig>;
   using WeightT = typename TConfig::WeightT;
 
   static constexpr size_t kHeads = TLayer::kHeads;
@@ -399,13 +306,13 @@ struct CompressedWeights {
 
 template <class TConfig>
 using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
-                         Weights<TConfig>>;
+                         WeightsF<TConfig>>;
 
 // Aligned.
 template <class TConfig, size_t TBatchSize>
 struct Activations {
   static constexpr size_t kBatchSize = TBatchSize;
-  using LayerConfig = Layer<TConfig>;
+  using LayerConfig = LayerF<TConfig>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
@@ -446,6 +353,16 @@ struct Activations {
   std::array<float, kBatchSize * kGriffinDim> griffin_multiplier;
 };
 
+template<typename TConfig>
+struct InferenceState {
+  Activations<TConfig, kPrefillBatchSize> prefill;
+  HWY_ALIGN Activations<TConfig, 1> state;
+
+  static ByteStorageT Allocate() {
+    return hwy::AllocateAligned<uint8_t>(sizeof(InferenceState<TConfig>));
+  }
+};
+
 // GemmaImpl is a template and thus cannot be exposed in gemma.h, hence we
 // define an abstract base class.
 struct GemmaInterface {
@@ -484,6 +401,8 @@ KVCache CreateKVCache(Model type) {
       return CreateKVCacheT<ConfigGemma7B>();
     case Model::GRIFFIN_2B:
       return CreateKVCacheT<ConfigGriffin2B>();
+    case Model::GEMMA_TINY:
+      return CreateKVCacheT<ConfigGemmaTiny>();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(type));
   }
@@ -526,8 +445,8 @@ void DeleteLayersPtrs(CompressedWeights<Config>* c_weights) {
   c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
 }
 template <class Config>
-void DeleteLayersPtrs(Weights<Config>* weights) {
-  weights->layer_ptrs.~LayerPointers<Config>();
+void DeleteLayersPtrs(WeightsF<Config>* weights) {
+  weights->layer_ptrs.~LayerPointers<float, Config>();
 }
 }  // namespace
 
@@ -866,8 +785,9 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     // Same matrix, first and second half of rows. Could fuse into one MatVec.
     MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-        layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
-        out_mul, pool);
+        TConfig::kFFBiases ?
+        layer_weights->ffw_gating_biases.data() + kFFHiddenDim : nullptr,
+        even_odd, out_mul, pool);
     // Gate, will go through the nonlinearity.
     MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
         layer_weights->gating_einsum_w, 0, vec,
@@ -890,21 +810,6 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
         layer_weights->ffw_output_biases.data(), even_odd,
         activations.ffw_out.data() + batch_idx * kModelDim, pool);
   }
-}
-
-// `EmbeddingScaling` can be constexpr only if `Sqrt` and `hwy::ConvertScalarTo`
-// are both constexpr
-#if HWY_COMPILER_GCC_ACTUAL
-#define GEMMA_CONSTEXPR_EMBSCALING HWY_BF16_CONSTEXPR
-#else
-#define GEMMA_CONSTEXPR_EMBSCALING
-#endif
-
-template <typename TConfig>
-GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling() {
-  // Round to bf16 to match Gemma's Embedder, which casts before mul.
-  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
-      Sqrt(static_cast<float>(TConfig::kModelDim))));
 }
 
 template <size_t kBatchSize, typename WeightArrayT, typename TConfig>
@@ -1076,20 +981,15 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
   }
 }
 
-template <class TConfig>
-void GenerateImpl(GemmaImpl<TConfig>& gemma,
+template <class TConfig, template<typename> typename WeightsType>
+void GenerateImpl(const WeightsType<TConfig>& weights,
+                  Activations<TConfig, kPrefillBatchSize>& prefill_activations,
+                  Activations<TConfig, 1>& activations,
                   const RuntimeConfig& runtime_config,
                   const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
                   hwy::ThreadPool& pool, TimingInfo& timing_info,
                   LayersOutputT* layers_output) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  Activations<TConfig, 1>& activations = *gemma.state.get();
-  Activations<TConfig, kPrefillBatchSize>& prefill_activations =
-      *gemma.prefill.get();
-
-  const WeightsT<TConfig>& weights =
-      *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
-
   size_t prompt_size = prompt.size();
   size_t max_tokens = runtime_config.max_tokens;
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
@@ -1167,7 +1067,7 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
           activations.logits.data(), kVocabSize, *runtime_config.gen,
           runtime_config.temperature, runtime_config.accept_token);
       if (!runtime_config.stream_token(token, activations.logits[token])) {
-        token = EOS_ID;
+        token = runtime_config.eos_id;
       }
       if (generate_pos == 0) {
         timing_info.time_to_first_token = hwy::platform::Now() - gen_start;
@@ -1177,10 +1077,10 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
       // process the tokens of the prompt one at a time.
       token = prompt.at(pos_offset + 1);
       if (!runtime_config.stream_token(token, 0)) {
-        token = EOS_ID;
+        token = runtime_config.eos_id;
       }
     }
-    if (token == EOS_ID) {
+    if (token == runtime_config.eos_id) {
       if (runtime_config.verbosity >= 2) {
         const double gen_end = hwy::platform::Now();
         timing_info.gen_tok_sec =
@@ -1190,6 +1090,35 @@ void GenerateImpl(GemmaImpl<TConfig>& gemma,
       break;
     }
   }
+}
+
+template <class TConfig>
+void GenerateImpl(GemmaImpl<TConfig>& gemma,
+                  const RuntimeConfig& runtime_config,
+                  const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
+                  hwy::ThreadPool& pool, TimingInfo& timing_info,
+                  LayersOutputT* layers_output) {
+  const WeightsT<TConfig>& weights =
+      *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
+  GenerateImpl<TConfig, WeightsT>(
+      weights, *gemma.prefill.get(), *gemma.state.get(), runtime_config, prompt,
+      pos, kv_cache, pool, timing_info, layers_output);
+}
+
+template <class TConfig>
+void GenerateGemma(const ByteStorageT& weights_u8,
+                   ByteStorageT& inference_state_u8,
+                   const RuntimeConfig& runtime_config,
+                   const std::vector<int>& prompt, size_t pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   TimingInfo& timing_info, LayersOutputT* layers_output) {
+  const WeightsF<TConfig>& weights =
+      *reinterpret_cast<const WeightsF<TConfig>*>(weights_u8.get());
+  InferenceState<TConfig>& inference_state =
+      *reinterpret_cast<InferenceState<TConfig>*>(inference_state_u8.get());
+  GenerateImpl<TConfig, WeightsF>(
+      weights, inference_state.prefill, inference_state.state, runtime_config,
+      prompt, pos, kv_cache, pool, timing_info, layers_output);
 }
 
 #define TOKEN(token_id) TokenString(gemma, token_id).c_str()
@@ -1263,7 +1192,7 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
 //
 // This avoids repeating the list of tensors between loading and compressing.
 template <class TConfig, class Func>
-void ForEachTensor(const Weights<TConfig>* weights,
+void ForEachTensor(const WeightsF<TConfig>* weights,
                    CompressedWeights<TConfig>& c_weights, Func& func) {
   func("c_embedding",
        weights ? weights->embedder_input_embedding.data() : nullptr,
@@ -1275,7 +1204,7 @@ void ForEachTensor(const Weights<TConfig>* weights,
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const Layer<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
+    const LayerF<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
     CompressedLayer<TConfig>* layer_weights = c_weights.GetLayer(idx);
 
 #define CALL_FUNC(name, member)                                \
@@ -1386,32 +1315,15 @@ void CompressWeights(const Path& weights_path,
   const bool scale_for_compression = TConfig::kNumTensorScales > 0;
   const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
       LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
-  Weights<TConfig>* weights =
-      reinterpret_cast<Weights<TConfig>*>(weights_u8.get());
+  WeightsF<TConfig>* weights =
+      reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
   ForEachTensor<TConfig>(weights, *c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
   compressor.WriteAll(pool, compressed_weights_path);
 
-  weights->layer_ptrs.~LayerPointers<TConfig>();
+  weights->layer_ptrs.~LayerPointers<float, TConfig>();
   c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
-}
-
-void CompressWeightsT(gcpp::Model model, const Path& weights,
-                      const Path& compressed_weights, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      CompressWeights<ConfigGemma2B>(weights, compressed_weights, pool);
-      break;
-    case Model::GEMMA_7B:
-      CompressWeights<ConfigGemma7B>(weights, compressed_weights, pool);
-      break;
-    case Model::GRIFFIN_2B:
-      CompressWeights<ConfigGriffin2B>(weights, compressed_weights, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
 }
 
 }  // namespace HWY_NAMESPACE
@@ -1420,8 +1332,6 @@ HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
 namespace gcpp {
-
-HWY_EXPORT(CompressWeightsT);
 
 KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
                       size_t conv1d_cache_size, size_t rglru_cache_size) {
@@ -1528,10 +1438,87 @@ void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
   pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
+void GenerateGemma(Model model, const ByteStorageT& weights,
+                   ByteStorageT& inference_state,
+                   RuntimeConfig runtime_config,
+                   const std::vector<int>& prompt, size_t start_pos,
+                   KVCache& kv_cache, hwy::ThreadPool& pool,
+                   TimingInfo& timing_info) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemma2B>)(
+          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
+          pool, timing_info, /*layers_output=*/nullptr);
+      break;
+    case Model::GEMMA_7B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemma7B>)(
+          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
+          pool, timing_info, /*layers_output=*/nullptr);
+      break;
+    case Model::GRIFFIN_2B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGriffin2B>)(
+          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
+          pool, timing_info, /*layers_output=*/nullptr);
+      break;
+    case Model::GEMMA_TINY:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemmaTiny>)(
+          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
+          pool, timing_info, /*layers_output=*/nullptr);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
+ByteStorageT LoadWeights(const Path& weights, Model model,
+                         hwy::ThreadPool& pool) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return LoadWeights<ConfigGemma2B>(weights, pool);
+    case Model::GEMMA_7B:
+      return LoadWeights<ConfigGemma7B>(weights, pool);
+    case Model::GRIFFIN_2B:
+      return LoadWeights<ConfigGriffin2B>(weights, pool);
+    case Model::GEMMA_TINY:
+      return LoadWeights<ConfigGemmaTiny>(weights, pool);
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
+ByteStorageT AllocateInferenceState(Model model) {
+  switch (model) {
+    case Model::GEMMA_2B:
+      return InferenceState<ConfigGemma2B>::Allocate();
+    case Model::GEMMA_7B:
+      return InferenceState<ConfigGemma7B>::Allocate();
+    case Model::GRIFFIN_2B:
+      return InferenceState<ConfigGriffin2B>::Allocate();
+    case Model::GEMMA_TINY:
+      return InferenceState<ConfigGemmaTiny>::Allocate();
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
+}
+
 void CompressWeights(gcpp::Model model, const Path& weights,
                      const Path& compressed_weights, hwy::ThreadPool& pool) {
-  HWY_DYNAMIC_DISPATCH(CompressWeightsT)
-  (model, weights, compressed_weights, pool);
+  switch (model) {
+    case Model::GEMMA_2B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGemma2B>)(
+          weights, compressed_weights, pool);
+      break;
+    case Model::GEMMA_7B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGemma7B>)(
+          weights, compressed_weights, pool);
+      break;
+    case Model::GRIFFIN_2B:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGriffin2B>)(
+          weights, compressed_weights, pool);
+      break;
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
+  }
 }
 
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
@@ -1546,13 +1533,16 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 
 namespace {
 constexpr const char* kModelFlags[] = {"2b-pt", "7b-pt", "gr2b-pt",
-                                       "2b-it", "7b-it", "gr2b-it"};
+                                       "2b-it", "7b-it", "gr2b-it",
+                                       "tiny"};
 constexpr Model kModelTypes[] = {Model::GEMMA_2B,   Model::GEMMA_7B,
                                  Model::GRIFFIN_2B, Model::GEMMA_2B,
-                                 Model::GEMMA_7B,   Model::GRIFFIN_2B};
+                                 Model::GEMMA_7B,   Model::GRIFFIN_2B,
+                                 Model::GEMMA_TINY};
 constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT,
-    ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT};
+    ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT,
+    ModelTraining::GEMMA_IT};
 }  // namespace
 
 const char* ParseModelTypeAndTraining(const std::string& model_flag,
