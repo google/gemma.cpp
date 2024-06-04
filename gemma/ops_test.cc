@@ -484,7 +484,7 @@ void TestTiledMatMul() {
 
   CompressedArray<MatT, kM * kN> a = GenerateMat<MatT, kM, kN>(0, pool);
   CompressedArray<MatT, kN * kK> b = GenerateMat<MatT, kN, kK>(0, pool);
-  CompressedArray<float, kN * kK> c_slow = GenerateZeroMat<float, kM, kK>(pool);
+  CompressedArray<float, kM * kK> c_slow = GenerateZeroMat<float, kM, kK>(pool);
   MatMulSlow<kM, kN, kK>(a.data(), b.data(), c_slow.data());
 
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
