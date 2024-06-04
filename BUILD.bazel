@@ -96,6 +96,8 @@ cc_library(
         ":gemma_lib",
         "//compression:io",
         "@hwy//:hwy",
+        "@hwy//:thread_pool",
+        "@hwy//:topology",
     ],
 )
 

@@ -271,13 +271,9 @@ int main(int argc, char** argv) {
   }
 
   hwy::ThreadPool pool(app.num_threads);
-  // For many-core, pinning threads to cores helps.
+  // For many-core, pinning workers to cores helps.
   if (app.num_threads > 10) {
-    gcpp::PinThreadToCore(app.num_threads - 1);  // Main thread
-
-    pool.Run(0, pool.NumThreads(), [](uint64_t /*task*/, size_t thread) {
-      gcpp::PinThreadToCore(thread);
-    });
+    gcpp::PinWorkersToCores(pool);
   }
 
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
