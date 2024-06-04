@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Implementation of the Vector-Jacobian Products (VJP) of the individual
+// operations of the forward pass.
+
 // Include guard for non-SIMD code.
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_INL_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_INL_H_
@@ -56,7 +59,7 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
                std::array<float, kRows * kCols>& grad_w,
                float* HWY_RESTRICT grad_x,  // num_tokens * kCols
                hwy::ThreadPool& pool) {
-  memset(grad_x, 0, num_tokens * kCols * sizeof(grad_x[0]));
+  hwy::ZeroBytes(grad_x, num_tokens * kCols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t voffs = pos * kRows;
     const size_t xoffs = pos * kCols;
@@ -77,7 +80,7 @@ void MultiHeadMatMulVJP(
     std::array<float, kHeads * kRows * kCols>& grad_w,
     float* HWY_RESTRICT grad_x,   // num_tokens * kHeads * kCols
     hwy::ThreadPool& pool) {
-  memset(grad_x, 0, num_tokens * kHeads * kCols * sizeof(grad_x[0]));
+  hwy::ZeroBytes(grad_x, num_tokens * kHeads * kCols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     for (size_t j = 0; j < kRows; ++j) {
       for (size_t h = 0; h < kHeads; ++h) {
@@ -154,11 +157,12 @@ static HWY_NOINLINE void RMSNormVJP(
 
 static HWY_NOINLINE void InputEmbeddingVJP(
     const float* weights, const std::vector<int>& prompt,
-    const float scaling, const float* HWY_RESTRICT backward,
+    const float scaling, const float* HWY_RESTRICT v,
     float* HWY_RESTRICT grad, size_t model_dim) {
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+  HWY_ASSERT(!prompt.empty());
+  for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     int token = prompt[pos];
-    MulByConstAndAdd(scaling, backward + pos * model_dim,
+    MulByConstAndAdd(scaling, v + pos * model_dim,
                      grad + token * model_dim, model_dim);
   }
 }
@@ -274,7 +278,7 @@ void LayerVJP(const Layer<float, TConfig>& weights,
     }
   }
 
-  for (int pos = 0; pos < num_tokens; ++pos) {
+  for (int pos = 0; pos < static_cast<int>(num_tokens); ++pos) {
     float* HWY_RESTRICT b_kv =
         backward.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
     Rope(b_kv, kQKVDim, -pos);
@@ -328,16 +332,17 @@ static HWY_NOINLINE void SoftcapVJP(const float* HWY_RESTRICT forward,
 static HWY_NOINLINE void CrossEntropyLossGrad(
     const float* HWY_RESTRICT x, float* HWY_RESTRICT grad,
     const Prompt& prompt, size_t vocab_size) {
+  HWY_ASSERT(!prompt.tokens.empty());
   const float scaling = -1.0 / std::log(2.0);
   size_t num_tokens = prompt.tokens.size() - 1;
-  memset(grad, 0, num_tokens * vocab_size * sizeof(grad[0]));
-  for (size_t i = 0; i + 1 < prompt.tokens.size(); ++i) {
-    if (i + 1 < prompt.context_size) {
+  hwy::ZeroBytes(grad, num_tokens * vocab_size * sizeof(grad[0]));
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    if (pos + 1 < prompt.context_size) {
       continue;
     }
-    const int next_token = prompt.tokens[i + 1];
-    grad[i * vocab_size + next_token] =
-        scaling / x[i * vocab_size + next_token];
+    const int next_token = prompt.tokens[pos + 1];
+    grad[pos * vocab_size + next_token] =
+        scaling / x[pos * vocab_size + next_token];
   }
 }
 

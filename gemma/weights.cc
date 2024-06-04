@@ -18,6 +18,7 @@
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/stats.h"
 
 namespace gcpp {
 
@@ -66,17 +67,12 @@ void ZeroInitWeights(Model model, ByteStorageT& weights,
 
 namespace {
 void LogVec(const char* name, const float* data, size_t len) {
-  float minval = std::numeric_limits<float>::max();
-  float maxval = std::numeric_limits<float>::min();
-  double sum = 0.0f;
+  hwy::Stats stats;
   for (size_t i = 0; i < len; ++i) {
-    minval = std::min(minval, data[i]);
-    maxval = std::max(maxval, data[i]);
-    sum += data[i];
+    stats.Notify(data[i]);
   }
-  float avg = sum / len;
   printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n",
-         name, len, minval, avg, maxval);
+         name, len, stats.Min(), stats.Mean(), stats.Max());
 }
 
 class WeightLogger {

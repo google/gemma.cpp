@@ -21,9 +21,9 @@
 #define HWY_TARGET_INCLUDE "gemma/forward.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 
+#include "hwy/highway.h"  // IWYU pragma: keep
 #include "gemma/forward-inl.h"
 #include "gemma/weights.h"
-#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

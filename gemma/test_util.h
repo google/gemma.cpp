@@ -107,7 +107,7 @@ void TestNear(const std::array<T, N>& actual, const std::array<U, N>& expected,
 }
 
 // Compute gradient with the finite difference method in the complex plane.
-// If f : R->R is the tested function and F : C->C is its extenstion on the
+// If f : R->R is the tested function and F : C->C is its extension on the
 // complex plane so that F is complex differentiable in x, then
 //
 //   F(x + ih) = F(x) + ih F'(x) + O(h^2) F''(x)
@@ -117,7 +117,7 @@ void TestNear(const std::array<T, N>& actual, const std::array<U, N>& expected,
 //   F'(x) ~= Imag(F(x + ih)) / h
 //
 // This method is more numerically stable than the real-valued finite difference
-// method since we don't need to substract floating point numbers that are near
+// method since we don't need to subtract floating point numbers that are near
 // to each other.
 template<typename T, typename U, size_t N, typename FUNC>
 void TestGradient(const std::array<T, N>& grad,

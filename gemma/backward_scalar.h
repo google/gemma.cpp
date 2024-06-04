@@ -193,7 +193,8 @@ void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
 template<typename T>
 void InputEmbeddingVJPT(const T* w, const std::vector<int>& tokens, T scaling,
                         const T* dy, T* dw, size_t N) {
-  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
+  for (size_t i = 0; i < num_tokens; ++i) {
     int token = tokens[i];
     MulByConstAndAddT(scaling, dy + i * N, dw + token * N, N);
   }
@@ -287,13 +288,14 @@ void SoftcapVJPT(const T* y, T* dy, size_t N) {
 template<typename T>
 void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
   T scaling = -1.0 / std::log(2.0);
-  size_t num_tokens = prompt.tokens.size() - 1;
+  const std::vector<int> tokens = prompt.tokens;
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
   memset(dx, 0, V * num_tokens * sizeof(x[0]));
-  for (size_t i = 0; i + 1 < prompt.tokens.size(); ++i) {
+  for (size_t i = 0; i < num_tokens; ++i) {
     if (i + 1 < prompt.context_size) {
       continue;
     }
-    const int next_token = prompt.tokens[i + 1];
+    const int next_token = tokens[i + 1];
     dx[i * V + next_token] = scaling / x[i * V + next_token];
   }
 }
@@ -307,7 +309,8 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
-  const size_t num_tokens = prompt.tokens.size() - 1;
+  const std::vector<int> tokens = prompt.tokens;
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
 
   CrossEntropyLossGrad(forward.probs.data(), backward.logits.data(), prompt,
                        kVocabSize);
@@ -341,8 +344,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
 
   const T kEmbScaling = EmbeddingScaling(kModelDim);
   InputEmbeddingVJPT(weights.embedder_input_embedding.data(),
-                     prompt.tokens, kEmbScaling,
-                     backward.layers[0].input.data(),
+                     tokens, kEmbScaling, backward.layers[0].input.data(),
                      grad.embedder_input_embedding.data(), kModelDim);
 }
 

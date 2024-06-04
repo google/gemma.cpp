@@ -60,6 +60,7 @@ struct ForwardPass {
   }
 };
 
+// Owns activations and undoes the type erasure of AllocateAligned.
 template<typename T, typename TConfig>
 class ActivationsWrapper {
   using WrappedT = ForwardPass<T, TConfig>;

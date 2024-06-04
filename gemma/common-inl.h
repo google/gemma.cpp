@@ -28,9 +28,6 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
-namespace gcpp {
-}  // namespace gcpp
-
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_INL_H_
 
 // Include guard for (potentially) SIMD code.

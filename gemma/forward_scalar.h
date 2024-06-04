@@ -116,7 +116,8 @@ void GatedGelu(const T* in, T* out, size_t N, size_t K) {
 template<typename T>
 void InputEmbedding(const T* w, const std::vector<int>& tokens, T scaling,
                     T* y, size_t N) {
-  for (size_t i = 0; i + 1 < tokens.size(); ++i) {
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
+  for (size_t i = 0; i < num_tokens; ++i) {
     int token = tokens[i];
     memcpy(y + i * N, w + token * N, N * sizeof(y[0]));
     MulByConstT(scaling, y + i * N, N);
@@ -230,11 +231,13 @@ void ApplyLayer(const Layer<T, TConfig>& weights,
 template<typename T>
 T CrossEntropyLoss(const T* x, const Prompt& prompt, size_t V) {
   T loss = {};
-  for (size_t i = 0; i + 1 < prompt.tokens.size(); ++i) {
+  const std::vector<int> tokens = prompt.tokens;
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
+  for (size_t i = 0; i < num_tokens; ++i) {
     if (i + 1 < prompt.context_size) {
       continue;  // next token is part of context, don't try to predict it
     }
-    const int next_token = prompt.tokens[i + 1];
+    const int next_token = tokens[i + 1];
     loss += std::log(x[i * V + next_token]);
   }
   T scaling = -1.0 / std::log(2.0);
@@ -248,10 +251,11 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kLayers = TConfig::kLayers;
-  const size_t num_tokens = prompt.tokens.size() - 1;
+  const std::vector<int> tokens = prompt.tokens;
+  const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
 
   const T kEmbScaling = EmbeddingScaling(kModelDim);
-  InputEmbedding(weights.embedder_input_embedding.data(), prompt.tokens,
+  InputEmbedding(weights.embedder_input_embedding.data(), tokens,
                  kEmbScaling, forward.layers[0].input.data(), kModelDim);
 
   for (size_t layer = 0; layer < kLayers; ++layer) {

@@ -19,8 +19,8 @@
 #define HWY_TARGET_INCLUDE "gemma/common_scalar.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 
+#include "hwy/highway.h"  // IWYU pragma: keep
 #include "gemma/ops.h"
-#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

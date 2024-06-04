@@ -874,6 +874,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
   consecutive pair of dimensions of v i.e. v_{2i} and v_{2i+1} by an angle
   m*theta_i. However in the Gemma implementation we choose to rotate
   the pairs of dimensions v_{i} and v_{i + d//2} instead.
+
+  pos parameter is deliberately an int because in the backward pass we
+  call this with negative values (for the VJP calculation we need the transpose
+  of this rotation matrix which is simply the same matrix with -pos parameter)
 */
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,

@@ -83,13 +83,13 @@ void TestMatMulVJP() {
       return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
 
-    memset(&grad, 0, sizeof(grad));
+    hwy::ZeroBytes(&grad, sizeof(grad));
     MatMulVJP<kCols, kRows>(weights, x.data(), dy.data(), kTokens,
                             grad, dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
 
-    memset(&grad_scalar, 0, sizeof(grad_scalar));
+    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
     MatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                dx_scalar.data(), kRows, kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
@@ -128,13 +128,13 @@ void TestMultiHeadMatMulVJP() {
       return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
 
-    memset(&grad, 0, sizeof(grad));
+    hwy::ZeroBytes(&grad, sizeof(grad));
     MultiHeadMatMulVJP<kHeads, kCols, kRows>(
         weights, x.data(), dy.data(), kTokens, grad, dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
 
-    memset(&grad_scalar, 0, sizeof(grad_scalar));
+    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
     MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                         dx_scalar.data(), kHeads, kRows, kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
@@ -170,13 +170,13 @@ void TestRMSNormVJP() {
       return DotT(dy.data(), c_y.data(), K * N);
     };
 
-    memset(&grad, 0, sizeof(grad));
+    hwy::ZeroBytes(&grad, sizeof(grad));
     RMSNormVJP(weights.data(), x.data(), dy.data(), N, K, grad.data(),
                dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
 
-    memset(&grad_scalar, 0, sizeof(grad_scalar));
+    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
     RMSNormVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                 dx_scalar.data(), N, K);
     TestNear(dx, dx_scalar, 0, 2e-5, __LINE__);
@@ -261,9 +261,7 @@ HWY_EXPORT_AND_TEST_P(BackwardTest, TestMatMulVJP);
 HWY_EXPORT_AND_TEST_P(BackwardTest, TestMultiHeadMatMulVJP);
 HWY_EXPORT_AND_TEST_P(BackwardTest, TestRMSNormVJP);
 HWY_EXPORT_AND_TEST_P(BackwardTest, TestEndToEnd);
-#ifdef HWY_AFTER_TEST
 HWY_AFTER_TEST();
-#endif
 
 }  // namespace gcpp
 

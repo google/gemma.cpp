@@ -127,136 +127,138 @@ ByteStorageT AllocateWeights(hwy::ThreadPool& pool) {
   return weights_u8;
 }
 
-#define CALL_TOP_FUNC1(name, member) func(name, weights1.member)
-#define CALL_TOP_FUNC2(name, member)             \
+#define GEMMA_CALL_TOP_FUNC1(name, member) func(name, weights1.member)
+#define GEMMA_CALL_TOP_FUNC2(name, member)      \
   func(name, weights1.member, weights2.member)
-#define CALL_TOP_FUNC3(name, member)             \
+#define GEMMA_CALL_TOP_FUNC3(name, member)      \
   func(name, weights1.member, weights2.member, weights3.member)
-#define CALL_TOP_FUNC4(name, member)             \
+#define GEMMA_CALL_TOP_FUNC4(name, member)       \
   func(name, weights1.member, weights2.memeber,  \
        weights3.member, weights4.member)
 
-#define CALL_LAYER_FUNC1(name, member)                                \
+#define GEMMA_CALL_LAYER_FUNC1(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
   func(name_buf, layer1.member)
 
-#define CALL_LAYER_FUNC2(name, member)                                \
+#define GEMMA_CALL_LAYER_FUNC2(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
   func(name_buf, layer1.member, layer2.member)
 
-#define CALL_LAYER_FUNC3(name, member)                                \
+#define GEMMA_CALL_LAYER_FUNC3(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
   func(name_buf, layer1.member, layer2.member, layer3.member)
 
-#define CALL_LAYER_FUNC4(name, member)                                \
+#define GEMMA_CALL_LAYER_FUNC4(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
   func(name_buf, layer1.member, layer2.member, layer4.member)
 
-#define CALL_ALL_LAYER_FUNC(N) \
-  if (type == LayerAttentionType::kGemma) {                             \
-    CALL_LAYER_FUNC ## N("att_ein", attn_vec_einsum_w);                 \
-    CALL_LAYER_FUNC ## N("qkv_ein", qkv_einsum_w);                      \
-  } else {                                                              \
-    CALL_LAYER_FUNC ## N("gr_lin_x_w", griffin.linear_x_w);             \
-    CALL_LAYER_FUNC ## N("gr_lin_x_b", griffin.linear_x_biases);        \
-    CALL_LAYER_FUNC ## N("gr_lin_y_w", griffin.linear_y_w);             \
-    CALL_LAYER_FUNC ## N("gr_lin_y_b", griffin.linear_y_biases);        \
-    CALL_LAYER_FUNC ## N("gr_lin_out_w", griffin.linear_out_w);         \
-    CALL_LAYER_FUNC ## N("gr_lin_out_b", griffin.linear_out_biases);    \
-    CALL_LAYER_FUNC ## N("gr_conv_w", griffin.conv_w);                  \
-    CALL_LAYER_FUNC ## N("gr_conv_b", griffin.conv_biases);             \
-    CALL_LAYER_FUNC ## N("gr_gate_w", griffin.gate_w);                  \
-    CALL_LAYER_FUNC ## N("gr_gate_b", griffin.gate_biases);             \
-    CALL_LAYER_FUNC ## N("gr_a", griffin.a);                            \
-  }                                                                     \
-  CALL_LAYER_FUNC ## N("gating_ein", gating_einsum_w);                  \
-  CALL_LAYER_FUNC ## N("linear_w", linear_w);                           \
-  CALL_LAYER_FUNC ## N("pre_att_ns", pre_attention_norm_scale);         \
-  if (TConfig::kPostNormScale) {                                        \
-    CALL_LAYER_FUNC ## N("post_att_ns", post_attention_norm_scale);     \
-    CALL_LAYER_FUNC ## N("post_ff_ns", post_ffw_norm_scale);            \
-  }                                                                     \
-  CALL_LAYER_FUNC ## N("pre_ff_ns", pre_ffw_norm_scale);                \
-  if (TConfig::kFFBiases) {                                             \
-    CALL_LAYER_FUNC ## N("ffw_gat_b", ffw_gating_biases);               \
-    CALL_LAYER_FUNC ## N("ffw_out_b", ffw_output_biases);               \
-  }                                                                     \
-  if (TConfig::kSoftmaxAttnOutputBiases &&                              \
-    type == LayerAttentionType::kGemma) {                               \
-    CALL_LAYER_FUNC ## N("attn_ob", attention_output_biases);           \
+#define GEMMA_CALL_ALL_LAYER_FUNC(N)                                          \
+  if (type == LayerAttentionType::kGemma) {                                   \
+    GEMMA_CALL_LAYER_FUNC ## N("att_ein", attn_vec_einsum_w);                 \
+    GEMMA_CALL_LAYER_FUNC ## N("qkv_ein", qkv_einsum_w);                      \
+  } else {                                                                    \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_x_w", griffin.linear_x_w);             \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_x_b", griffin.linear_x_biases);        \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_y_w", griffin.linear_y_w);             \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_y_b", griffin.linear_y_biases);        \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_out_w", griffin.linear_out_w);         \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_out_b", griffin.linear_out_biases);    \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_conv_w", griffin.conv_w);                  \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_conv_b", griffin.conv_biases);             \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_gate_w", griffin.gate_w);                  \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_gate_b", griffin.gate_biases);             \
+    GEMMA_CALL_LAYER_FUNC ## N("gr_a", griffin.a);                            \
+  }                                                                           \
+  GEMMA_CALL_LAYER_FUNC ## N("gating_ein", gating_einsum_w);                  \
+  GEMMA_CALL_LAYER_FUNC ## N("linear_w", linear_w);                           \
+  GEMMA_CALL_LAYER_FUNC ## N("pre_att_ns", pre_attention_norm_scale);         \
+  if (TConfig::kPostNormScale) {                                              \
+    GEMMA_CALL_LAYER_FUNC ## N("post_att_ns", post_attention_norm_scale);     \
+    GEMMA_CALL_LAYER_FUNC ## N("post_ff_ns", post_ffw_norm_scale);            \
+  }                                                                           \
+  GEMMA_CALL_LAYER_FUNC ## N("pre_ff_ns", pre_ffw_norm_scale);                \
+  if (TConfig::kFFBiases) {                                                   \
+    GEMMA_CALL_LAYER_FUNC ## N("ffw_gat_b", ffw_gating_biases);               \
+    GEMMA_CALL_LAYER_FUNC ## N("ffw_out_b", ffw_output_biases);               \
+  }                                                                           \
+  if (TConfig::kSoftmaxAttnOutputBiases &&                                    \
+    type == LayerAttentionType::kGemma) {                                     \
+    GEMMA_CALL_LAYER_FUNC ## N("attn_ob", attention_output_biases);           \
   }
 
 template <typename T, typename TConfig, class Func>
 void ForEachTensor1(Func& func, const Weights<T, TConfig>& weights1) {
-  CALL_TOP_FUNC1("embedding", embedder_input_embedding);
-  CALL_TOP_FUNC1("final_norm", final_norm_scale);
+  GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
     const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
-    CALL_ALL_LAYER_FUNC(1)
+    GEMMA_CALL_ALL_LAYER_FUNC(1)
   }
 }
 
 template <typename T, typename TConfig, class Func>
 void ForEachTensor1(Func& func, Weights<T, TConfig>& weights1) {
-  CALL_TOP_FUNC1("embedding", embedder_input_embedding);
-  CALL_TOP_FUNC1("final_norm", final_norm_scale);
+  GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
     LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
-    CALL_ALL_LAYER_FUNC(1)
+    GEMMA_CALL_ALL_LAYER_FUNC(1)
   }
 }
 
 template <typename T, typename TConfig, class Func>
 void ForEachTensor2(Func& func, const Weights<T, TConfig>& weights1,
                     Weights<T, TConfig>& weights2) {
-  CALL_TOP_FUNC2("embedding", embedder_input_embedding);
-  CALL_TOP_FUNC2("final_norm", final_norm_scale);
+  GEMMA_CALL_TOP_FUNC2("embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC2("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
     const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
     LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
-    CALL_ALL_LAYER_FUNC(2)
+    GEMMA_CALL_ALL_LAYER_FUNC(2)
   }
 }
 
-#undef CALL_TOP_FUNC1
-#undef CALL_TOP_FUNC2
-#undef CALL_TOP_FUNC3
-#undef CALL_TOP_FUNC4
-#undef CALL_LAYER_FUNC1
-#undef CALL_LAYER_FUNC2
-#undef CALL_LAYER_FUNC3
-#undef CALL_LAYER_FUNC4
-#undef CALL_ALL_LAYER_FUNC
+#undef GEMMA_CALL_TOP_FUNC1
+#undef GEMMA_CALL_TOP_FUNC2
+#undef GEMMA_CALL_TOP_FUNC3
+#undef GEMMA_CALL_TOP_FUNC4
+#undef GEMMA_CALL_LAYER_FUNC1
+#undef GEMMA_CALL_LAYER_FUNC2
+#undef GEMMA_CALL_LAYER_FUNC3
+#undef GEMMA_CALL_LAYER_FUNC4
+#undef GEMMA_CALL_ALL_LAYER_FUNC
 
 template<typename T, typename TConfig>
 void ZeroInit(Weights<T, TConfig>& w) {
-  memset(&w.embedder_input_embedding, 0, sizeof(w.embedder_input_embedding));
-  memset(&w.final_norm_scale, 0, sizeof(w.final_norm_scale));
+  hwy::ZeroBytes(&w.embedder_input_embedding,
+                 sizeof(w.embedder_input_embedding));
+  hwy::ZeroBytes(&w.final_norm_scale, sizeof(w.final_norm_scale));
   for (int i = 0; i < TConfig::kLayers; ++i) {
-    memset(w.GetLayer(i), 0, sizeof(*w.GetLayer(i)));
+    hwy::ZeroBytes(w.GetLayer(i), sizeof(*w.GetLayer(i)));
   }
 }
 
 template<typename T, typename TConfig>
 void Copy(Weights<T, TConfig>& dst, const Weights<T, TConfig>& src) {
-  memcpy(&dst.embedder_input_embedding, &src.embedder_input_embedding,
-         sizeof(src.embedder_input_embedding));
-  memcpy(&dst.final_norm_scale, &src.final_norm_scale,
-         sizeof(src.final_norm_scale));
+  hwy::CopyBytes(&src.embedder_input_embedding, &dst.embedder_input_embedding,
+                 sizeof(src.embedder_input_embedding));
+  hwy::CopyBytes(&src.final_norm_scale, &dst.final_norm_scale,
+                 sizeof(src.final_norm_scale));
   for (int i = 0; i < TConfig::kLayers; ++i) {
-    memcpy(dst.GetLayer(i), src.GetLayer(i), sizeof(*dst.GetLayer(i)));
+    hwy::CopyBytes(src.GetLayer(i), dst.GetLayer(i), sizeof(*dst.GetLayer(i)));
   }
 }
 
+// Owns weights and undoes the type erasure of AllocateWeights.
 template<typename T, typename TConfig>
 class WeightsWrapper {
  public:

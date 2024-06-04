@@ -51,7 +51,8 @@ template <typename ArrayT>
 void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
                     const float scaling, float* HWY_RESTRICT output,
                     size_t model_dim) {
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+  HWY_ASSERT(!prompt.empty());
+  for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     int token = prompt[pos];
     Decompress(weights, token * model_dim, output + pos * model_dim, model_dim);
     MulByConst(scaling, output + pos * model_dim, model_dim);
@@ -74,8 +75,9 @@ static HWY_NOINLINE float CrossEntropyLoss(const float* HWY_RESTRICT probs,
                                            size_t context_size,
                                            size_t vocab_size,
                                            hwy::ThreadPool& pool) {
+  HWY_ASSERT(!prompt.empty());
   float loss = 0.0f;
-  for (size_t pos = 0; pos + 1 < prompt.size(); ++pos) {
+  for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     if (pos + 1 < context_size) {
       continue;  // next token is part of context, don't try to predict it
     }
@@ -271,8 +273,8 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
     LogitsSoftCap(30.0f, forward.logits.data() + pos * kVocabSize, kVocabSize);
   }
 
-  memcpy(forward.probs.data(), forward.logits.data(),
-         num_tokens * kVocabSize * sizeof(forward.logits[0]));
+  hwy::CopyBytes(forward.logits.data(), forward.probs.data(),
+                 num_tokens * kVocabSize * sizeof(forward.logits[0]));
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Softmax(forward.probs.data() + pos * kVocabSize, kVocabSize);
