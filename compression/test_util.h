@@ -25,7 +25,7 @@
 
 // IWYU pragma: begin_exports
 #include "compression/distortion.h"
-#include "compression/stats.h"
+#include "hwy/stats.h"
 #include "hwy/tests/test_util.h"  // RandomState
 // IWYU pragma: end_exports
 
@@ -60,7 +60,7 @@ static inline bool IsNear(T expected, T val, T epsilon = T{1E-6}) {
   return IsInside(expected - epsilon, expected + epsilon, val);
 }
 
-HWY_INLINE void VerifyGaussian(Stats& stats) {
+HWY_INLINE void VerifyGaussian(hwy::Stats& stats) {
   // Inputs are roughly [-1, 1] and symmetric about zero.
   HWY_ASSERT(IsNear(-1.0f, stats.Min(), 0.10f));
   HWY_ASSERT(IsNear(+1.0f, stats.Max(), 0.10f));

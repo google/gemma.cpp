@@ -411,7 +411,7 @@ struct TestDot {
 
     // Generate inputs and verify their distribution.
     hwy::RandomState rng;
-    Stats in_stats;
+    hwy::Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
       const float r = static_cast<float>(RandomGaussian(rng));
       in_stats.Notify(r);
@@ -477,7 +477,7 @@ struct TestDot {
     float exact = 0.0f;     // using original input
     float expected = 0.0f;  // using decoded SFP
     DistortionStats dec_stats;
-    Stats ratios;
+    hwy::Stats ratios;
     for (size_t i = 0; i < num; ++i) {
       const float in1 = hwy::ConvertScalarTo<float>(in[i]);
       const float dec1 = hwy::ConvertScalarTo<float>(dec[i]);

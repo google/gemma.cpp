@@ -15,6 +15,8 @@
 
 // Lightweight C++ implementation of the gemma model.
 
+#include "gemma/common.h"
+
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
@@ -42,9 +44,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
-#include <iostream>
 #include <memory>
-#include <random>
 #include <regex>  // NOLINT
 #include <string>
 #include <utility>
@@ -1410,7 +1410,8 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
              hwy::ThreadPool& pool) {
   switch (model_type) {
     case Model::GEMMA_2B:
-      impl_.reset(CreateGemmaImpl<ConfigGemma2B>(tokenizer_path, weights, pool));
+      impl_.reset(
+          CreateGemmaImpl<ConfigGemma2B>(tokenizer_path, weights, pool));
       break;
     case Model::GEMMA_7B:
       impl_.reset(CreateGemmaImpl<ConfigGemma7B>(tokenizer_path, weights, pool));

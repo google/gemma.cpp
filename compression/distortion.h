@@ -22,10 +22,10 @@
 
 #include <vector>
 
-#include "compression/stats.h"
 #include "hwy/aligned_allocator.h"  // HWY_ALIGNMENT
 #include "hwy/base.h"               // ScalarAbs
 #include "hwy/contrib/sort/vqsort.h"
+#include "hwy/stats.h"
 
 namespace gcpp {
 
@@ -198,13 +198,13 @@ class DistortionStats {
     return weighted_sum / sum_weights;
   }
 
-  Stats& L1() { return s_l1_; }
-  Stats& Original() { return s_original_; }
+  hwy::Stats& L1() { return s_l1_; }
+  hwy::Stats& Original() { return s_original_; }
 
  private:
-  Stats s_original_;
-  Stats s_l1_;
-  Bins<100> b_l1_;
+  hwy::Stats s_original_;
+  hwy::Stats s_l1_;
+  hwy::Bins<100> b_l1_;
   CascadedSummation<double> sum_l1_;          // all
   CascadedSummation<double> sum_l1_rounded_;  // only if rounded_to_zero
   std::vector<float> l1_;

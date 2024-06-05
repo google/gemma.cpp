@@ -188,7 +188,7 @@ struct TestNormal {
     HWY_ASSERT(in);
 
     hwy::RandomState rng;
-    Stats in_stats;
+    hwy::Stats in_stats;
     for (size_t i = 0; i < kGroupSize; ++i) {
       const double r = RandomGaussian(rng);
       in_stats.Notify(r);
@@ -288,7 +288,7 @@ struct TestStream {
     HWY_ASSERT(in && out && nuq);
 
     hwy::RandomState rng;
-    Stats in_stats;
+    hwy::Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
       in[i] = static_cast<float>(RandomGaussian(rng));
       in_stats.Notify(in[i]);
@@ -358,7 +358,7 @@ struct TestDot {
 
     // Generate inputs and verify their distribution.
     hwy::RandomState rng;
-    Stats in_stats;
+    hwy::Stats in_stats;
     for (size_t i = 0; i < num; ++i) {
       in[i] = static_cast<float>(RandomGaussian(rng));
       in_stats.Notify(in[i]);
@@ -400,7 +400,7 @@ struct TestDot {
     float exact = 0.0f;     // using original input
     float expected = 0.0f;  // using decoded NUQ
     DistortionStats dec_stats;
-    Stats ratios;
+    hwy::Stats ratios;
     for (size_t i = 0; i < num; ++i) {
       dec_stats.Notify(in[i], dec[i]);
       const float v1 = hwy::ConvertScalarTo<float>(vec[i]);

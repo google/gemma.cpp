@@ -48,23 +48,12 @@ cc_library(
     ],
 )
 
-# Deprecated because it is also implemented in Highway; will be removed once
-# that Highway version is sufficiently widespread.
-cc_library(
-    name = "stats",
-    srcs = ["stats.cc"],
-    hdrs = ["stats.h"],
-    deps = [
-        "@hwy//:hwy",
-    ],
-)
-
 cc_library(
     name = "distortion",
     hdrs = ["distortion.h"],
     deps = [
-        ":stats",
         "@hwy//:hwy",
+        "@hwy//:stats",
         "@hwy//hwy/contrib/sort:vqsort",
     ],
 )
@@ -88,9 +77,9 @@ cc_library(
     hdrs = ["test_util.h"],
     deps = [
         ":distortion",
-        ":stats",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
+        "@hwy//:stats",
     ],
 )
 
@@ -169,9 +158,9 @@ cc_library(
         ":io",
         ":nuq",
         ":sfp",
-        ":stats",
         "@hwy//:dot",
         "@hwy//:hwy",
+        "@hwy//:stats",
         "@hwy//:thread_pool",
     ],
 )
@@ -184,9 +173,9 @@ cc_library(
         ":distortion",
         ":nuq",
         ":sfp",
-        ":stats",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",  # timer
+        "@hwy//:stats",
         "@hwy//:thread_pool",
         "@hwy//hwy/contrib/sort:vqsort",
     ],

@@ -36,7 +36,7 @@
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #if COMPRESS_STATS
-#include "compression/stats.h"
+#include "hwy/stats.h"
 #endif
 
 namespace gcpp {
@@ -117,7 +117,7 @@ class CompressStats {
   }
 
   void PrintAll() {
-    const int skip = Stats::kNoGeomean;
+    const int skip = hwy::Stats::kNoGeomean;
     fprintf(stderr, "  pnorm %s\n", s_pnorm_.ToString(skip).c_str());
     fprintf(stderr, "   SNR  %s\n", s_snr_.ToString(skip).c_str());
     fprintf(stderr, "  #exact %.3E\n", static_cast<double>(num_exact_));
@@ -132,10 +132,10 @@ class CompressStats {
   }
 
  private:
-  Stats s_pnorm_;
-  Stats s_snr_;
+  hwy::Stats s_pnorm_;
+  hwy::Stats s_snr_;
   size_t num_exact_ = 0;
-  Bins<1000> hist_weights_;
+  hwy::Bins<1000> hist_weights_;
   char padding_[64];  // prevent false sharing
 };
 #else
