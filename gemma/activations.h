@@ -16,8 +16,11 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 
-#include "gemma/common.h"
-#include "hwy/aligned_allocator.h"
+#include <stddef.h>
+
+#include <array>
+
+#include "gemma/common.h"  // ByteStorageT
 
 namespace gcpp {
 
@@ -54,9 +57,12 @@ struct ForwardPass {
   std::array<T, kSeqLen * kModelDim> final_norm_output;
   std::array<T, kSeqLen * kVocabSize> logits;
   std::array<T, kSeqLen * kVocabSize> probs;
+};
 
-  static ByteStorageT Allocate() {
-    return hwy::AllocateAligned<uint8_t>(sizeof(ForwardPass<T, TConfig>));
+template <typename TConfig>
+struct AllocateForwardPass {
+  ByteStorageT operator()() const {
+    return AllocateSizeof<ForwardPass<float, TConfig>>();
   }
 };
 
@@ -77,8 +83,6 @@ class ActivationsWrapper {
   ByteStorageT data_;
   WrappedT& activations_;
 };
-
-ByteStorageT AllocateForwardPass(Model model);
 
 }  // namespace gcpp
 

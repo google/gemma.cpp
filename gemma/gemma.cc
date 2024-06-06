@@ -15,16 +15,12 @@
 
 // Lightweight C++ implementation of the gemma model.
 
-#include "gemma/common.h"
-
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "gemma/gemma.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
-#include "compression/compress-inl.h"
-#include "gemma/common-inl.h"
 #include "gemma/ops.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/highway.h"
@@ -42,7 +38,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cmath>
 #include <memory>
 #include <regex>  // NOLINT
@@ -50,8 +45,8 @@
 #include <utility>
 #include <vector>
 
-#include "compression/compress.h"
 #include "compression/io.h"  // Path
+#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
@@ -63,255 +58,14 @@
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
 
-// Setting this to true disables fread() calls that read the model file.
-constexpr bool kDryRunFread = false;
-
-// Setting this to false will load and use uncompressed weights.
-constexpr bool kWeightsAreCompressed = true;
+namespace gcpp {
 
 // Set this to true to debug tokenizer tokens.
 constexpr bool kShowTokenization = false;
 
-namespace gcpp {
-
-float ScaleWeights(float* data, size_t len) {
-  float maxabs = 0.0;
-  for (size_t i = 0; i < len; ++i) {
-    maxabs = std::max(maxabs, std::abs(data[i]));
-  }
-  const float kMaxRange = 1.875f;
-  if (maxabs <= kMaxRange) {
-    return 1.0f;
-  }
-  const float scale = maxabs / kMaxRange;
-  const float inv_scale = 1.0f / scale;
-  for (size_t i = 0; i < len; ++i) {
-    data[i] *= inv_scale;
-  }
-  return scale;
-}
-
-template <typename TConfig>
-hwy::AlignedFreeUniquePtr<uint8_t[]> LoadWeights(
-    const Path& checkpoint, hwy::ThreadPool& pool,
-    bool scale_for_compression = false) {
-  PROFILER_ZONE("Startup.LoadWeights");
-  if (!checkpoint.Exists()) {
-    HWY_ABORT("The model weights file '%s' does not exist.",
-              checkpoint.path.c_str());
-  }
-
-  ByteStorageT weights_u8 = AllocateWeights<float, TConfig>(pool);
-  auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-
-  size_t scale_pos = 0;
-  FILE* fptr;
-  if constexpr (kDryRunFread) {
-    fprintf(stderr, "Dry-Run, not reading model-file.\n");
-  } else {
-    fptr = fopen(checkpoint.path.c_str(), "rb");
-    if (fptr == nullptr) {
-      HWY_ABORT("Failed to open model file %s - does it exist?",
-                checkpoint.path.c_str());
-    }
-  }
-  bool ok = true;
-  uint64_t total_size = 0;
-  auto do_fread = [&](void* var, int layer, const char* name, size_t size) {
-    if (layer == -1) {
-      fprintf(stderr, "Loading Parameters (size %zu): %s\n", size, name);
-    } else {
-      fprintf(stderr, "Loading Parameters (layer=%d, size %zu): %s\n", layer,
-              size, name);
-    }
-    if constexpr (!kDryRunFread) {
-      ok &= 1 == fread(var, size, 1, fptr);
-      total_size += size;
-    }
-  };
-  do_fread(&(weights->embedder_input_embedding), -1, "embedder_input_embedding",
-           sizeof(weights->embedder_input_embedding));
-  do_fread(&(weights->final_norm_scale), -1, "final_norm_scale",
-           sizeof(weights->final_norm_scale));
-  for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-    auto type = TConfig::kLayerConfig[layer];
-    LayerF<TConfig>* layer_view = weights->GetLayer(layer);
-
-#define READ_WEIGHTS(name)                                                 \
-  do {                                                                     \
-    do_fread(&(layer_view->name), layer, #name, sizeof(layer_view->name)); \
-  } while (0)
-
-#define SCALE_WEIGHTS(name)                                               \
-  do {                                                                    \
-    if (ok && !kDryRunFread && scale_for_compression) {                   \
-      weights->scales[scale_pos++] =                                      \
-          ScaleWeights(layer_view->name.data(), layer_view->name.size()); \
-    }                                                                     \
-  } while (0)
-    // Make sure we don't have uninitialized memory.
-    hwy::ZeroBytes(layer_view, sizeof(*layer_view));
-    if (type == LayerAttentionType::kGemma) {
-      READ_WEIGHTS(attn_vec_einsum_w);
-      READ_WEIGHTS(qkv_einsum_w);
-      SCALE_WEIGHTS(attn_vec_einsum_w);
-      SCALE_WEIGHTS(qkv_einsum_w);
-    } else {
-      READ_WEIGHTS(griffin.linear_x_w);
-      READ_WEIGHTS(griffin.linear_x_biases);
-      READ_WEIGHTS(griffin.linear_y_w);
-      READ_WEIGHTS(griffin.linear_y_biases);
-      READ_WEIGHTS(griffin.linear_out_w);
-      READ_WEIGHTS(griffin.linear_out_biases);
-      READ_WEIGHTS(griffin.conv_w);
-      READ_WEIGHTS(griffin.conv_biases);
-      READ_WEIGHTS(griffin.gate_w);
-      READ_WEIGHTS(griffin.gate_biases);
-      READ_WEIGHTS(griffin.a);
-      SCALE_WEIGHTS(griffin.linear_x_w);
-      SCALE_WEIGHTS(griffin.linear_y_w);
-      SCALE_WEIGHTS(griffin.linear_out_w);
-      SCALE_WEIGHTS(griffin.gate_w);
-    }
-    READ_WEIGHTS(gating_einsum_w);
-    READ_WEIGHTS(linear_w);
-    SCALE_WEIGHTS(gating_einsum_w);
-    SCALE_WEIGHTS(linear_w);
-    READ_WEIGHTS(pre_attention_norm_scale);
-    READ_WEIGHTS(pre_ffw_norm_scale);
-    if (TConfig::kPostNormScale) {
-      READ_WEIGHTS(post_attention_norm_scale);
-      READ_WEIGHTS(post_ffw_norm_scale);
-    }
-    if (TConfig::kFFBiases) {
-      READ_WEIGHTS(ffw_gating_biases);
-      READ_WEIGHTS(ffw_output_biases);
-    }
-    if (TConfig::kSoftmaxAttnOutputBiases &&
-        type == LayerAttentionType::kGemma) {
-      READ_WEIGHTS(attention_output_biases);
-    }
-#undef READ_WEIGHTS
-  }
-  if (!ok) {
-    HWY_ABORT(
-        "Failed to read from %s - might be a directory, or too small? "
-        "expected size: %d kB",
-        checkpoint.path.c_str(), static_cast<uint32_t>(total_size >> 10));
-  }
-  if (!kDryRunFread) {
-    HWY_ASSERT(0 == fclose(fptr));
-    if (scale_for_compression) {
-      HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
-    }
-  }
-  return weights_u8;
-}
-
-template <class TConfig>
-struct CompressedLayer {
-  // No ctor/dtor, allocated via AllocateAligned.
-
-  using TLayer = gcpp::LayerF<TConfig>;
-  using WeightT = typename TConfig::WeightT;
-
-  static constexpr size_t kHeads = TLayer::kHeads;
-  static constexpr size_t kKVHeads = TLayer::kKVHeads;
-  static constexpr size_t kModelDim = TLayer::kModelDim;
-  static constexpr size_t kQKVDim = TLayer::kQKVDim;
-  static constexpr size_t kFFHiddenDim = TLayer::kFFHiddenDim;
-  static constexpr size_t kAttVecEinsumWSize = TLayer::kAttVecEinsumWSize;
-  static constexpr size_t kQKVEinsumWSize = TLayer::kQKVEinsumWSize;
-  static constexpr size_t kGatingEinsumWSize = TLayer::kGatingEinsumWSize;
-  static constexpr size_t kConv1dWidth = TLayer::kConv1dWidth;
-  static constexpr bool kFFBiases = TLayer::kFFBiases;
-  static constexpr bool kPostNormScale = TConfig::kPostNormScale;
-  static constexpr size_t kAOBiasDim = TLayer::kAOBiasDim;
-  static constexpr size_t kGriffinDim = TLayer::kGriffinDim;
-
-  // Compressed Parameters
-
-  template <class T, size_t N>
-  using ArrayT = CompressedArray<T, N>;
-
-  union {
-    struct {
-      ArrayT<WeightT, kAttVecEinsumWSize> attn_vec_einsum_w;
-      ArrayT<WeightT, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiasDim> attention_output_biases;
-    };
-
-    struct {
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_x_w;
-      ArrayT<float, kGriffinDim> linear_x_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_y_w;
-      ArrayT<float, kGriffinDim> linear_y_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_out_w;
-      ArrayT<float, kGriffinDim> linear_out_biases;
-      ArrayT<float, TConfig::kConv1dWidth * kGriffinDim> conv_w;
-      ArrayT<float, kGriffinDim> conv_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
-      ArrayT<float, kGriffinDim * 2> gate_biases;
-      ArrayT<float, kGriffinDim> a;
-    } griffin;
-  };
-
-  ArrayT<WeightT, TLayer::kGatingEinsumWSize> gating_einsum_w;
-  ArrayT<WeightT, kModelDim * kFFHiddenDim> linear_w;
-  // We don't yet have an RMSNorm that accepts all WeightT.
-  ArrayT<hwy::bfloat16_t, kModelDim> pre_attention_norm_scale;
-  ArrayT<hwy::bfloat16_t, kModelDim> pre_ffw_norm_scale;
-  ArrayT<hwy::bfloat16_t, kPostNormScale ? kModelDim : 0>
-      post_attention_norm_scale;
-  ArrayT<hwy::bfloat16_t, kPostNormScale ? kModelDim : 0> post_ffw_norm_scale;
-
-  ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
-  ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
-};
-
-// Array instead of single large allocation for parallel mem init. Split out
-// of CompressedWeights so that only these pointers are initialized, not the
-// CompressedArray.
-template <class TConfig>
-struct CompressedLayerPointers {
-  explicit CompressedLayerPointers(hwy::ThreadPool& pool) {
-    pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
-      this->c_layers[task] = hwy::AllocateAligned<CompressedLayer<TConfig>>(1);
-    });
-  }
-
-  using CLayer = CompressedLayer<TConfig>;
-  std::array<hwy::AlignedFreeUniquePtr<CLayer[]>, TConfig::kLayers> c_layers;
-};
-
-template <class TConfig>
-struct CompressedWeights {
-  // No ctor/dtor, allocated via AllocateAligned.
-
-  CompressedArray<EmbedderInputT, TConfig::kVocabSize * TConfig::kModelDim>
-      embedder_input_embedding;
-
-  CompressedArray<hwy::bfloat16_t, TConfig::kModelDim> final_norm_scale;
-
-  // Must be last so that the other arrays remain aligned.
-  CompressedLayerPointers<TConfig> c_layer_ptrs;
-
-  const CompressedLayer<TConfig>* GetLayer(size_t layer) const {
-    return c_layer_ptrs.c_layers[layer].get();
-  }
-  CompressedLayer<TConfig>* GetLayer(size_t layer) {
-    return c_layer_ptrs.c_layers[layer].get();
-  }
-};
-
-template <class TConfig>
-using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
-                         WeightsF<TConfig>>;
-
-// Aligned.
-template <class TConfig, size_t TBatchSize>
+// Must be aligned.
+template <class TConfig, size_t kBatchSize>
 struct Activations {
-  static constexpr size_t kBatchSize = TBatchSize;
   using LayerConfig = LayerF<TConfig>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -353,137 +107,135 @@ struct Activations {
   std::array<float, kBatchSize * kGriffinDim> griffin_multiplier;
 };
 
-template<typename TConfig>
-struct InferenceState {
-  Activations<TConfig, kPrefillBatchSize> prefill;
-  HWY_ALIGN Activations<TConfig, 1> state;
+namespace {
 
-  static ByteStorageT Allocate() {
-    return hwy::AllocateAligned<uint8_t>(sizeof(InferenceState<TConfig>));
+template <class TConfig>
+struct CreateKVCache {
+  KVCache operator()() const {
+    KVCache kv_cache = {};
+
+    const size_t size_cache_pos =
+        TConfig::kGemmaLayers * TConfig::kKVHeads * TConfig::kQKVDim;
+    if (size_cache_pos != 0) {
+      const size_t seq_len = TConfig::kSeqLen + kPrefillBatchSize;
+      kv_cache.kv_cache =
+          hwy::AllocateAligned<float>(seq_len * size_cache_pos * 2);
+    }
+
+    if (TConfig::kGriffinLayers) {
+      constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
+      const size_t conv1d_cache_size =
+          TConfig::kGriffinLayers * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
+          TConfig::kModelDim;
+      if (conv1d_cache_size != 0) {
+        kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
+        hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
+                       conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
+      }
+
+      const size_t rglru_cache_size =
+          TConfig::kGriffinLayers * TConfig::kModelDim;
+      if (rglru_cache_size != 0) {
+        kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
+        hwy::ZeroBytes(kv_cache.rglru_cache.get(),
+                       rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
+      }
+    }  // kGriffinLayers
+
+    return kv_cache;
   }
 };
 
-// GemmaImpl is a template and thus cannot be exposed in gemma.h, hence we
-// define an abstract base class.
-struct GemmaInterface {
-  virtual ~GemmaInterface() = default;
+}  // namespace
 
-  virtual const GemmaTokenizer* Tokenizer() const = 0;
-
-  virtual void Generate(const RuntimeConfig& runtime_config,
-                        const std::vector<int>& prompt, size_t start_pos,
-                        KVCache& kv_cache, hwy::ThreadPool& pool,
-                        TimingInfo& timing_info,
-                        LayersOutputT* layers_output) = 0;
-
-  virtual float ComputeCrossEntropy(size_t max_tokens,
-                                    const std::vector<int>& prompt,
-                                    KVCache& kv_cache, hwy::ThreadPool& pool,
-                                    int verbosity) = 0;
-};
-
-template <class Config>
-KVCache CreateKVCacheT() {
-  constexpr size_t kConv1dWidth = Config::kConv1dWidth;
-  return CreateKVCache(
-      Config::kGemmaLayers * Config::kKVHeads * Config::kQKVDim,
-      Config::kSeqLen + kPrefillBatchSize,
-      Config::kGriffinLayers * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
-          Config::kModelDim,
-      Config::kGriffinLayers * Config::kModelDim);
+KVCache KVCache::Create(Model type) {
+  return CallFunctorForModel<CreateKVCache>(type);
 }
 
-KVCache CreateKVCache(Model type) {
-  switch (type) {
-    case Model::GEMMA_2B:
-      return CreateKVCacheT<ConfigGemma2B>();
-    case Model::GEMMA_7B:
-      return CreateKVCacheT<ConfigGemma7B>();
-    case Model::GRIFFIN_2B:
-      return CreateKVCacheT<ConfigGriffin2B>();
-    case Model::GEMMA_TINY:
-      return CreateKVCacheT<ConfigGemmaTiny>();
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(type));
-  }
-}
-
-class GemmaTokenizerImpl : public GemmaTokenizer {
+class GemmaTokenizer::Impl {
  public:
-  GemmaTokenizerImpl(
-      std::unique_ptr<sentencepiece::SentencePieceProcessor>&& impl)
-      : impl_(std::move(impl)) {}
-  bool Encode(const std::string& input,
-              std::vector<std::string>* pieces) const override {
-    return impl_->Encode(input, pieces).ok();
+  explicit Impl(const Path& tokenizer_path) {
+    PROFILER_ZONE("Startup.tokenizer");
+    spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
+    if (!spp_->Load(tokenizer_path.path).ok()) {
+      HWY_ABORT("Failed to load the tokenizer file.");
+    }
   }
+
   bool Encode(const std::string& input,
-              std::vector<int>* pieces) const override {
+              std::vector<std::string>* pieces) const {
+    return spp_->Encode(input, pieces).ok();
+  }
+
+  bool Encode(const std::string& input, std::vector<int>* pieces) const {
     if constexpr (kShowTokenization) {
-      bool is_ok = impl_->Encode(input, pieces).ok();
+      bool is_ok = spp_->Encode(input, pieces).ok();
       for (int i = 0; i < static_cast<int>(pieces->size()); i++) {
         fprintf(stderr, "%3d: %d\n", i, (*pieces)[i]);
       }
       return is_ok;
     } else {
-      return impl_->Encode(input, pieces).ok();
+      return spp_->Encode(input, pieces).ok();
     }
   }
+
   // Given a sequence of ids, decodes it into a detokenized output.
-  bool Decode(const std::vector<int>& ids,
-              std::string* detokenized) const override {
-    return impl_->Decode(ids, detokenized).ok();
+  bool Decode(const std::vector<int>& ids, std::string* detokenized) const {
+    return spp_->Decode(ids, detokenized).ok();
   }
 
  private:
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> impl_;
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> spp_;
 };
 
-namespace {
-template <class Config>
-void DeleteLayersPtrs(CompressedWeights<Config>* c_weights) {
-  c_weights->c_layer_ptrs.~CompressedLayerPointers<Config>();
+GemmaTokenizer::GemmaTokenizer(const Path& tokenizer_path) {
+  impl_ = std::make_unique<Impl>(tokenizer_path);
 }
-template <class Config>
-void DeleteLayersPtrs(WeightsF<Config>* weights) {
-  weights->layer_ptrs.~LayerPointers<float, Config>();
+
+GemmaTokenizer::~GemmaTokenizer() = default;
+GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
+GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;
+
+bool GemmaTokenizer::Encode(const std::string& input,
+                            std::vector<std::string>* pieces) const {
+  return impl_->Encode(input, pieces);
 }
-}  // namespace
 
-template <class Config>
-struct GemmaImpl : public GemmaInterface {
-  GemmaImpl(std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
-            hwy::AlignedFreeUniquePtr<uint8_t[]>& weights_u8,
-            hwy::ThreadPool& pool);
+bool GemmaTokenizer::Encode(const std::string& input,
+                            std::vector<int>* pieces) const {
+  return impl_->Encode(input, pieces);
+}
 
-  ~GemmaImpl() {
-    WeightsT<Config>* weights =
-        reinterpret_cast<WeightsT<Config>*>(weights_u8.get());
-    DeleteLayersPtrs(weights);
-  }
+// Given a sequence of ids, decodes it into a detokenized output.
+bool GemmaTokenizer::Decode(const std::vector<int>& ids,
+                            std::string* detokenized) const {
+  return impl_->Decode(ids, detokenized);
+}
 
-  const GemmaTokenizer* Tokenizer() const override { return &tokenizer; }
-
-  void Generate(const RuntimeConfig& runtime_config,
-                const std::vector<int>& prompt, size_t start_pos,
-                KVCache& kv_cache, hwy::ThreadPool& pool,
-                TimingInfo& timing_info, LayersOutputT* layers_output) override;
-
-  float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
-                            KVCache& kv_cache, hwy::ThreadPool& pool,
-                            int verbosity) override;
-
-  GemmaTokenizerImpl tokenizer;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
-  hwy::AlignedUniquePtr<Activations<Config, kPrefillBatchSize>> prefill;
-  hwy::AlignedUniquePtr<Activations<Config, 1>> state;
-};
-
-template <class TConfig>
-std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
+static std::string TokenString(const GemmaTokenizer& tokenizer, int token) {
   std::string token_str;
-  gemma.Tokenizer()->Decode({token}, &token_str);
+  tokenizer.Decode({token}, &token_str);
   return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
+}
+
+void LogTopK(const GemmaTokenizer& tokenizer, float* HWY_RESTRICT logits,
+             float* HWY_RESTRICT dist, size_t len, size_t k) {
+  std::vector<std::pair<float, int>> sorted(len);
+  for (size_t i = 0; i < len; ++i) {
+    sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
+  }
+  std::sort(sorted.begin(), sorted.end(),
+            [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
+              if (a.first != b.first) {
+                return a.first > b.first;
+              }
+              return a.second < b.second;
+            });
+  for (size_t i = 0; i < k; ++i) {
+    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", static_cast<int>(i + 1),
+           sorted[i].second, TokenString(tokenizer, sorted[i].second).c_str(),
+           sorted[i].first, logits[sorted[i].second]);
+  }
 }
 
 }  // namespace gcpp
@@ -493,6 +245,7 @@ std::string TokenString(GemmaImpl<TConfig>& gemma, int token) {
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
+namespace {
 
 template <size_t kBatchSize, typename LayerT, class TConfig>
 HWY_NOINLINE void GriffinRecurrent(
@@ -893,9 +646,11 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
 
 // n = 1 specialization
 template <typename WeightArrayT, class TConfig>
-void Transformer(int token, size_t pos, const WeightArrayT& weights,
-                 Activations<TConfig, 1>& activations, KVCache& kv_cache,
-                 hwy::ThreadPool& pool, LayersOutputT* layers_output) {
+HWY_NOINLINE void Transformer(int token, size_t pos,
+                              const WeightArrayT& weights,
+                              Activations<TConfig, 1>& activations,
+                              KVCache& kv_cache, hwy::ThreadPool& pool,
+                              LayersOutputT* layers_output) {
   if (layers_output != nullptr) {
     float token_f = token;
     (*layers_output)(pos, "Tokens", &token_f, 1);
@@ -981,14 +736,30 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
   }
 }
 
-template <class TConfig, template<typename> typename WeightsType>
-void GenerateImpl(const WeightsType<TConfig>& weights,
-                  Activations<TConfig, kPrefillBatchSize>& prefill_activations,
-                  Activations<TConfig, 1>& activations,
-                  const RuntimeConfig& runtime_config,
-                  const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
-                  hwy::ThreadPool& pool, TimingInfo& timing_info,
-                  LayersOutputT* layers_output) {
+template <class TConfig>
+const WeightsT<TConfig>& GetWeights(const ByteStorageT& weights_u8) {
+  return *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
+}
+
+template <class TConfig, size_t kBatchSize>
+Activations<TConfig, kBatchSize>& GetActivations(const ByteStorageT& state_u8) {
+  return *reinterpret_cast<Activations<TConfig, kBatchSize>*>(state_u8.get());
+}
+
+}  // namespace
+
+template <class TConfig>
+void Generate(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
+              const ByteStorageT& decode_u8,
+              const RuntimeConfig& runtime_config,
+              const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
+              hwy::ThreadPool& pool, TimingInfo& timing_info,
+              LayersOutputT* layers_output) {
+  const WeightsT<TConfig>& weights = GetWeights<TConfig>(weights_u8);
+  auto& prefill_activations =
+      GetActivations<TConfig, kPrefillBatchSize>(prefill_u8);
+  auto& activations = GetActivations<TConfig, 1>(decode_u8);
+
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   size_t prompt_size = prompt.size();
   size_t max_tokens = runtime_config.max_tokens;
@@ -1093,78 +864,31 @@ void GenerateImpl(const WeightsType<TConfig>& weights,
 }
 
 template <class TConfig>
-void GenerateImpl(GemmaImpl<TConfig>& gemma,
-                  const RuntimeConfig& runtime_config,
-                  const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
-                  hwy::ThreadPool& pool, TimingInfo& timing_info,
-                  LayersOutputT* layers_output) {
-  const WeightsT<TConfig>& weights =
-      *reinterpret_cast<WeightsT<TConfig>*>(gemma.weights_u8.get());
-  GenerateImpl<TConfig, WeightsT>(
-      weights, *gemma.prefill.get(), *gemma.state.get(), runtime_config, prompt,
-      pos, kv_cache, pool, timing_info, layers_output);
-}
+void ComputeCrossEntropy(const ByteStorageT& weights_u8,
+                         ByteStorageT& decode_u8,
+                         const GemmaTokenizer& tokenizer, size_t max_tokens,
+                         const std::vector<int>& prompt, KVCache& kv_cache,
+                         hwy::ThreadPool& pool, int verbosity,
+                         float& cross_entropy) {
+  const WeightsT<TConfig>& weights = GetWeights<TConfig>(weights_u8);
+  auto& activations = GetActivations<TConfig, 1>(decode_u8);
 
-template <class TConfig>
-void GenerateGemma(const ByteStorageT& weights_u8,
-                   ByteStorageT& inference_state_u8,
-                   const RuntimeConfig& runtime_config,
-                   const std::vector<int>& prompt, size_t pos,
-                   KVCache& kv_cache, hwy::ThreadPool& pool,
-                   TimingInfo& timing_info, LayersOutputT* layers_output) {
-  const WeightsF<TConfig>& weights =
-      *reinterpret_cast<const WeightsF<TConfig>*>(weights_u8.get());
-  InferenceState<TConfig>& inference_state =
-      *reinterpret_cast<InferenceState<TConfig>*>(inference_state_u8.get());
-  GenerateImpl<TConfig, WeightsF>(
-      weights, inference_state.prefill, inference_state.state, runtime_config,
-      prompt, pos, kv_cache, pool, timing_info, layers_output);
-}
-
-#define TOKEN(token_id) TokenString(gemma, token_id).c_str()
-
-template <class TConfig>
-void LogTopK(GemmaImpl<TConfig>& gemma, float* logits, float* dist, size_t len,
-             size_t k) {
-  std::vector<std::pair<float, int>> sorted(len);
-  for (size_t i = 0; i < len; ++i) {
-    sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
-  }
-  std::sort(sorted.begin(), sorted.end(),
-            [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
-              if (a.first != b.first) {
-                return a.first > b.first;
-              }
-              return a.second < b.second;
-            });
-  for (size_t i = 0; i < k; ++i) {
-    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", static_cast<int>(i + 1),
-           sorted[i].second, TOKEN(sorted[i].second), sorted[i].first,
-           logits[sorted[i].second]);
-  }
-}
-
-template <class TConfig>
-float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
-                              const std::vector<int>& prompt, KVCache& kv_cache,
-                              hwy::ThreadPool& pool, int verbosity) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  Activations<TConfig, 1>& activations = *gemma.state.get();
-  const WeightsT<TConfig>& weights =
-      *reinterpret_cast<const WeightsT<TConfig>*>(gemma.weights_u8.get());
   std::vector<float> logits(kVocabSize);
   Softmax(activations.logits.data(), kVocabSize);
   float total_entropy = 0.0f;
   for (size_t pos = 0; pos < max_tokens && pos < prompt.size(); ++pos) {
     if (verbosity >= 4) {
-      LogTopK(gemma, logits.data(), activations.logits.data(), kVocabSize, 10);
+      LogTopK(tokenizer, logits.data(), activations.logits.data(), kVocabSize,
+              10);
     }
     const int token = prompt[pos];
     const float prob = activations.logits[token];
     if (verbosity >= 3) {
       printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
-             TOKEN(token), prob, -std::log(prob) / std::log(2.0));
+             TokenString(tokenizer, token).c_str(), prob,
+             -std::log(prob) / std::log(2.0));
     }
     total_entropy -= std::max(std::log(prob), -64.0f);
     if (verbosity >= 2 && pos % 100 == 99) {
@@ -1181,149 +905,7 @@ float ComputeCrossEntropyImpl(GemmaImpl<TConfig>& gemma, size_t max_tokens,
            kVocabSize * sizeof(logits[0]));
     Softmax(activations.logits.data(), kVocabSize);
   }
-  return total_entropy / std::log(2.0);
-}
-
-#undef TOKEN
-
-// Calls func(name, float*, CompressedArray&) for each tensor. float* is null
-// if weights = null, which happens during the first call where we attempt to
-// load from cache.
-//
-// This avoids repeating the list of tensors between loading and compressing.
-template <class TConfig, class Func>
-void ForEachTensor(const WeightsF<TConfig>* weights,
-                   CompressedWeights<TConfig>& c_weights, Func& func) {
-  func("c_embedding",
-       weights ? weights->embedder_input_embedding.data() : nullptr,
-       c_weights.embedder_input_embedding);
-  func("c_final_norm", weights ? weights->final_norm_scale.data() : nullptr,
-       c_weights.final_norm_scale);
-
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    const LayerF<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
-    CompressedLayer<TConfig>* layer_weights = c_weights.GetLayer(idx);
-
-#define CALL_FUNC(name, member)                                \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx); \
-  func(name_buf, layer ? layer->member.data() : nullptr, layer_weights->member)
-
-    CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
-    CALL_FUNC("gating_ein", gating_einsum_w);
-    CALL_FUNC("linear_w", linear_w);
-    if (type == LayerAttentionType::kGemma) {
-      CALL_FUNC("qkv_ein", qkv_einsum_w);
-      CALL_FUNC("att_ein", attn_vec_einsum_w);
-    } else {
-      CALL_FUNC("gr_lin_x_w", griffin.linear_x_w);
-      CALL_FUNC("gr_lin_x_b", griffin.linear_x_biases);
-      CALL_FUNC("gr_lin_y_w", griffin.linear_y_w);
-      CALL_FUNC("gr_lin_y_b", griffin.linear_y_biases);
-      CALL_FUNC("gr_lin_out_w", griffin.linear_out_w);
-      CALL_FUNC("gr_lin_out_b", griffin.linear_out_biases);
-      CALL_FUNC("gr_conv_w", griffin.conv_w);
-      CALL_FUNC("gr_conv_b", griffin.conv_biases);
-      CALL_FUNC("gr_gate_w", griffin.gate_w);
-      CALL_FUNC("gr_gate_b", griffin.gate_biases);
-      CALL_FUNC("gr_a", griffin.a);
-    }
-    CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
-    if (TConfig::kPostNormScale) {
-      CALL_FUNC("post_att_ns", post_attention_norm_scale);
-      CALL_FUNC("post_ff_ns", post_ffw_norm_scale);
-    }
-
-    if (TConfig::kFFBiases) {
-      CALL_FUNC("ffw_gat_b", ffw_gating_biases);
-      CALL_FUNC("ffw_out_b", ffw_output_biases);
-    }
-
-    if (TConfig::kSoftmaxAttnOutputBiases &&
-        type == LayerAttentionType::kGemma) {
-      CALL_FUNC("attn_ob", attention_output_biases);
-    }
-#undef CALL_FUNC
-  }
-}
-
-template <class TConfig>
-hwy::AlignedFreeUniquePtr<uint8_t[]> LoadCompressedWeights(
-    const Path& weights, hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.LoadCompressedWeights");
-  if (!weights.Exists()) {
-    HWY_ABORT("The model weights file '%s' does not exist.",
-              weights.path.c_str());
-  }
-
-  // Allocate compressed weights.
-  using CWeights = CompressedWeights<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> c_weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(CWeights));
-  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
-
-  std::array<float, TConfig::kNumTensorScales> scales;
-  CacheLoader loader(weights);
-  ForEachTensor<TConfig>(nullptr, *c_weights, loader);
-  loader.LoadScales(scales.data(), scales.size());
-  if (!loader.ReadAll(pool)) {
-    HWY_ABORT("Failed to load model weights.");
-  }
-  if (TConfig::kNumTensorScales > 0) {
-    size_t scale_pos = 0;
-    for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-      auto type = TConfig::kLayerConfig[layer_idx];
-      const size_t idx = static_cast<size_t>(layer_idx);
-      CompressedLayer<TConfig>* layer_weights = c_weights->GetLayer(idx);
-      if (type == LayerAttentionType::kGemma) {
-        layer_weights->attn_vec_einsum_w.set_scale(scales[scale_pos++]);
-        layer_weights->qkv_einsum_w.set_scale(scales[scale_pos++]);
-      } else {
-        layer_weights->griffin.linear_x_w.set_scale(scales[scale_pos++]);
-        layer_weights->griffin.linear_y_w.set_scale(scales[scale_pos++]);
-        layer_weights->griffin.linear_out_w.set_scale(scales[scale_pos++]);
-        layer_weights->griffin.gate_w.set_scale(scales[scale_pos++]);
-      }
-      layer_weights->gating_einsum_w.set_scale(scales[scale_pos++]);
-      layer_weights->linear_w.set_scale(scales[scale_pos++]);
-    }
-    HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
-  }
-  return c_weights_u8;
-}
-
-template <class TConfig>
-void CompressWeights(const Path& weights_path,
-                     const Path& compressed_weights_path,
-                     hwy::ThreadPool& pool) {
-  if (!weights_path.Exists()) {
-    HWY_ABORT("The model weights file '%s' does not exist.",
-              weights_path.path.c_str());
-  }
-
-  // Allocate compressed weights.
-  using CWeights = CompressedWeights<TConfig>;
-  hwy::AlignedFreeUniquePtr<uint8_t[]> c_weights_u8 =
-      hwy::AllocateAligned<uint8_t>(sizeof(CWeights));
-  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
-
-  // Get weights, compress, and store.
-  const bool scale_for_compression = TConfig::kNumTensorScales > 0;
-  const hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8 =
-      LoadWeights<TConfig>(weights_path, pool, scale_for_compression);
-  WeightsF<TConfig>* weights =
-      reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  Compressor compressor(pool);
-  ForEachTensor<TConfig>(weights, *c_weights, compressor);
-  compressor.AddScales(weights->scales.data(), weights->scales.size());
-  compressor.WriteAll(pool, compressed_weights_path);
-
-  weights->layer_ptrs.~LayerPointers<float, TConfig>();
-  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
+  cross_entropy = total_entropy / std::log(2.0);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -1333,241 +915,69 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
-                      size_t conv1d_cache_size, size_t rglru_cache_size) {
-  KVCache kv_cache = {};
-  if (size_cache_pos != 0) {
-    kv_cache.kv_cache =
-        hwy::AllocateAligned<float>(seq_len * size_cache_pos * 2);
-  }
-  if (conv1d_cache_size != 0) {
-    kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
-    hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
-                   conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
-  }
-  if (rglru_cache_size != 0) {
-    kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
-    hwy::ZeroBytes(kv_cache.rglru_cache.get(),
-                   rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
-  }
-  return kv_cache;
-}
-
-template <class Config>
-GemmaImpl<Config>::GemmaImpl(
-    std::unique_ptr<sentencepiece::SentencePieceProcessor>& tokenizer,
-    hwy::AlignedFreeUniquePtr<uint8_t[]>& weights_u8, hwy::ThreadPool& pool)
-    : tokenizer(GemmaTokenizerImpl(std::move(tokenizer))),
-      weights_u8(std::move(weights_u8)),
-      prefill(hwy::MakeUniqueAligned<Activations<Config, kPrefillBatchSize>>()),
-      state(hwy::MakeUniqueAligned<Activations<Config, 1>>()) {}
-
-template <typename Config>
-void GemmaImpl<Config>::Generate(const RuntimeConfig& runtime_config,
-                                 const std::vector<int>& prompt,
-                                 size_t start_pos, KVCache& kv_cache,
-                                 hwy::ThreadPool& pool, TimingInfo& timing_info,
-                                 LayersOutputT* layers_output) {
-  HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImpl<Config>)
-  (*this, runtime_config, prompt, start_pos, kv_cache, pool, timing_info,
-   layers_output);
-}
-
-template <typename Config>
-float GemmaImpl<Config>::ComputeCrossEntropy(size_t max_tokens,
-                                             const std::vector<int>& prompt,
-                                             KVCache& kv_cache,
-                                             hwy::ThreadPool& pool,
-                                             int verbosity) {
-  HWY_EXPORT_T(ComputeCrossEntropyT, ComputeCrossEntropyImpl<Config>);
-  return HWY_DYNAMIC_DISPATCH_T(ComputeCrossEntropyT)(
-      *this, max_tokens, prompt, kv_cache, pool, verbosity);
-}
-
-template <class Config>
-GemmaImpl<Config>* CreateGemmaImpl(const Path& tokenizer_path,
-                                   const Path& weights, hwy::ThreadPool& pool) {
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> tokenizer;
-  {
-    PROFILER_ZONE("Startup.tokenizer");
-    tokenizer = std::make_unique<sentencepiece::SentencePieceProcessor>();
-    if (!tokenizer->Load(tokenizer_path.path).ok()) {
-      HWY_ABORT("Failed to load the tokenizer file.");
-    }
-  }
-
-  hwy::AlignedFreeUniquePtr<uint8_t[]> weights_u8;
-  if constexpr (kWeightsAreCompressed) {
-    HWY_EXPORT_T(LoadCompressedWeightsT, LoadCompressedWeights<Config>);
-    weights_u8 = HWY_DYNAMIC_DISPATCH_T(LoadCompressedWeightsT)(weights, pool);
-  } else {
-    weights_u8 = LoadWeights<Config>(weights, pool);
-  }
-  return new GemmaImpl<Config>(tokenizer, weights_u8, pool);
-}
-
-Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-             hwy::ThreadPool& pool) {
-  switch (model_type) {
-    case Model::GEMMA_2B:
-      impl_.reset(
-          CreateGemmaImpl<ConfigGemma2B>(tokenizer_path, weights, pool));
-      break;
-    case Model::GEMMA_7B:
-      impl_.reset(CreateGemmaImpl<ConfigGemma7B>(tokenizer_path, weights, pool));
-      break;
-    case Model::GRIFFIN_2B:
-      impl_.reset(CreateGemmaImpl<ConfigGriffin2B>(tokenizer_path, weights, pool));
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model_type));
-  }
-}
-
-Gemma::~Gemma() = default;  // after GemmaInterface is defined
-
-const GemmaTokenizer* Gemma::Tokenizer() const { return impl_->Tokenizer(); }
-
-void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   KVCache& kv_cache, hwy::ThreadPool& pool,
-                   TimingInfo& timing_info,
-                   LayersOutputT* layers_output) {
-  pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
-  gemma.impl_->Generate(runtime_config, prompt, start_pos, kv_cache, pool,
-                        timing_info, layers_output);
-  pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
-}
-
-void GenerateGemma(Model model, const ByteStorageT& weights,
-                   ByteStorageT& inference_state,
-                   RuntimeConfig runtime_config,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   KVCache& kv_cache, hwy::ThreadPool& pool,
-                   TimingInfo& timing_info) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemma2B>)(
-          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
-          pool, timing_info, /*layers_output=*/nullptr);
-      break;
-    case Model::GEMMA_7B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemma7B>)(
-          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
-          pool, timing_info, /*layers_output=*/nullptr);
-      break;
-    case Model::GRIFFIN_2B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGriffin2B>)(
-          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
-          pool, timing_info, /*layers_output=*/nullptr);
-      break;
-    case Model::GEMMA_TINY:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateGemma<ConfigGemmaTiny>)(
-          weights, inference_state, runtime_config, prompt, start_pos, kv_cache,
-          pool, timing_info, /*layers_output=*/nullptr);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-ByteStorageT LoadWeights(const Path& weights, Model model,
-                         hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return LoadWeights<ConfigGemma2B>(weights, pool);
-    case Model::GEMMA_7B:
-      return LoadWeights<ConfigGemma7B>(weights, pool);
-    case Model::GRIFFIN_2B:
-      return LoadWeights<ConfigGriffin2B>(weights, pool);
-    case Model::GEMMA_TINY:
-      return LoadWeights<ConfigGemmaTiny>(weights, pool);
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-ByteStorageT AllocateInferenceState(Model model) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      return InferenceState<ConfigGemma2B>::Allocate();
-    case Model::GEMMA_7B:
-      return InferenceState<ConfigGemma7B>::Allocate();
-    case Model::GRIFFIN_2B:
-      return InferenceState<ConfigGriffin2B>::Allocate();
-    case Model::GEMMA_TINY:
-      return InferenceState<ConfigGemmaTiny>::Allocate();
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-void CompressWeights(gcpp::Model model, const Path& weights,
-                     const Path& compressed_weights, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGemma2B>)(
-          weights, compressed_weights, pool);
-      break;
-    case Model::GEMMA_7B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGemma7B>)(
-          weights, compressed_weights, pool);
-      break;
-    case Model::GRIFFIN_2B:
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<ConfigGriffin2B>)(
-          weights, compressed_weights, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
-float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
-                          const std::vector<int>& prompt, KVCache& kv_cache,
-                          hwy::ThreadPool& pool, int verbosity) {
-  pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
-  const float result = gemma.impl_->ComputeCrossEntropy(
-      max_tokens, prompt, kv_cache, pool, verbosity);
-  pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
-  return result;
-}
-
 namespace {
-constexpr const char* kModelFlags[] = {"2b-pt", "7b-pt", "gr2b-pt",
-                                       "2b-it", "7b-it", "gr2b-it",
-                                       "tiny"};
-constexpr Model kModelTypes[] = {Model::GEMMA_2B,   Model::GEMMA_7B,
-                                 Model::GRIFFIN_2B, Model::GEMMA_2B,
-                                 Model::GEMMA_7B,   Model::GRIFFIN_2B,
-                                 Model::GEMMA_TINY};
-constexpr ModelTraining kModelTraining[] = {
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT,
-    ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT,
-    ModelTraining::GEMMA_IT};
+template <typename TConfig>
+struct AllocatePrefill {
+  ByteStorageT operator()() const {
+    return AllocateSizeof<Activations<TConfig, kPrefillBatchSize>>();
+  }
+};
+
+template <typename TConfig>
+struct AllocateDecode {
+  ByteStorageT operator()() const {
+    return AllocateSizeof<Activations<TConfig, 1>>();
+  }
+};
 }  // namespace
 
-const char* ParseModelTypeAndTraining(const std::string& model_flag,
-                                      Model& model, ModelTraining& training) {
-  constexpr size_t kNum = std::end(kModelFlags) - std::begin(kModelFlags);
-  static char kErrorMessageBuffer[kNum * 8 + 1024] =
-      "Invalid or missing model flag, need to specify one of ";
-  for (size_t i = 0; i + 1 < kNum; i++) {
-    strcat(kErrorMessageBuffer, kModelFlags[i]);  // NOLINT
-    strcat(kErrorMessageBuffer, ", ");            // NOLINT
-  }
-  strcat(kErrorMessageBuffer, kModelFlags[kNum - 1]);  // NOLINT
-  strcat(kErrorMessageBuffer, ".");                    // NOLINT
-  std::string model_type_lc = model_flag;
-  std::transform(begin(model_type_lc), end(model_type_lc), begin(model_type_lc),
-                 [](unsigned char c) { return std::tolower(c); });
-  for (size_t i = 0; i < kNum; i++) {
-    if (kModelFlags[i] == model_type_lc) {
-      model = kModelTypes[i];
-      training = kModelTraining[i];
-      return nullptr;
-    }
-  }
-  return kErrorMessageBuffer;
+Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
+             hwy::ThreadPool& pool)
+    : pool_(pool), tokenizer_(tokenizer_path), model_type_(model_type) {
+  weights_u8_ = LoadWeights(weights, model_type, pool);
+  prefill_u8_ = CallFunctorForModel<AllocatePrefill>(model_type);
+  decode_u8_ = CallFunctorForModel<AllocateDecode>(model_type);
+}
+
+Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type,
+             hwy::ThreadPool& pool)
+    : pool_(pool), tokenizer_(std::move(tokenizer)), model_type_(model_type) {
+  weights_u8_ = CallFunctorForModel<AllocateWeights>(model_type, pool);
+  prefill_u8_ = CallFunctorForModel<AllocatePrefill>(model_type);
+  decode_u8_ = CallFunctorForModel<AllocateDecode>(model_type);
+}
+
+Gemma::~Gemma() {
+  CallFunctorForModel<DeleteLayersPtrs>(model_type_, weights_u8_);
+}
+
+void Gemma::Generate(const RuntimeConfig& runtime_config,
+                     const std::vector<int>& prompt, size_t start_pos,
+                     KVCache& kv_cache, TimingInfo& timing_info,
+                     LayersOutputT* layers_output) {
+  pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
+
+  GEMMA_EXPORT_AND_DISPATCH_MODEL(
+      model_type_, Generate,
+      (weights_u8_, prefill_u8_, decode_u8_, runtime_config, prompt, start_pos,
+       kv_cache, pool_, timing_info, layers_output));
+
+  pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
+}
+
+float Gemma::ComputeCrossEntropy(size_t max_tokens,
+                                 const std::vector<int>& prompt,
+                                 KVCache& kv_cache, int verbosity) {
+  pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
+
+  float cross_entropy = 0.0f;
+  GEMMA_EXPORT_AND_DISPATCH_MODEL(
+      model_type_, ComputeCrossEntropy,
+      (weights_u8_, decode_u8_, tokenizer_, max_tokens, prompt, kv_cache, pool_,
+       verbosity, cross_entropy));
+
+  pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
+  return cross_entropy;
 }
 
 }  // namespace gcpp

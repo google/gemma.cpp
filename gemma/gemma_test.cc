@@ -22,8 +22,9 @@
 #include <thread>  // NOLINT
 #include <vector>
 
+#include "compression/io.h"  // Path
+#include "gemma/common.h"
 #include "gemma/ops.h"
-#include "util/args.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -38,7 +39,7 @@ class GemmaTest : public ::testing::Test {
         pool(std::min<int>(20, (std::thread::hardware_concurrency() - 1) / 2)),
         model_type(gcpp::Model::GEMMA_2B),
         model(tokenizer, weights, model_type, pool) {
-    kv_cache = CreateKVCache(model_type);
+    KVCache kv_cache = KVCache::Create(model_type);
   }
 
   std::string GemmaReply(const std::string& prompt_string) {
@@ -46,7 +47,7 @@ class GemmaTest : public ::testing::Test {
     gen.seed(42);
 
     std::vector<int> prompt;
-    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
+    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token
     // if needed.
     prompt.insert(prompt.begin(), 2);
@@ -66,18 +67,18 @@ class GemmaTest : public ::testing::Test {
         .accept_token = [](int) { return true; },
     };
     gcpp::TimingInfo timing_info;
-    gcpp::GenerateGemma(model, runtime_config, prompt, /*start_pos=*/0,
-                        kv_cache, pool, timing_info, /*layers_output=*/nullptr);
+    model.Generate(runtime_config, prompt, /*start_pos=*/0, kv_cache,
+                   timing_info, /*layers_output=*/nullptr);
     std::string response_text;
-    HWY_ASSERT(model.Tokenizer()->Decode(response, &response_text));
+    HWY_ASSERT(model.Tokenizer().Decode(response, &response_text));
     return response_text;
   }
 
   float GemmaCrossEntropy(const std::string& prompt_string) {
     std::vector<int> prompt;
-    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
-    return gcpp::ComputeCrossEntropy(model, /*max_tokens=*/3072, prompt,
-                                     kv_cache, pool, /*verbosity=*/0) /
+    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
+    return model.ComputeCrossEntropy(/*max_tokens=*/3072, prompt, kv_cache,
+                                     /*verbosity=*/0) /
            prompt_string.size();
   }
 

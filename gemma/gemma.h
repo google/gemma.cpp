@@ -24,22 +24,12 @@
 
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
-#include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-using GemmaWeightT = GEMMA_WEIGHT_T;
-using EmbedderInputT = hwy::bfloat16_t;
-// Will be called for layers output with:
-// - position in the tokens sequence
-// - name of the data, p.ex. "tokens", "block.1", "final_norm"
-// - pointer to the data array
-// - size of the data array
-using LayersOutputT =
-    std::function<void(int, const std::string&, const float*, size_t)>;
 constexpr size_t kPrefillBatchSize = 16;
 constexpr bool kSystemPrompt = false;
 
@@ -50,14 +40,30 @@ struct KVCache {
       conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]>
       rglru_cache;  // kModelDim * kGriffinLayers
+
+  static KVCache Create(Model type);
 };
 
-enum class ModelTraining { GEMMA_IT, GEMMA_PT };
+constexpr int EOS_ID = 1;
 
-// Returns error string or nullptr if OK.
-// Thread-hostile.
-const char* ParseModelTypeAndTraining(const std::string& model_flag,
-                                      Model& model, ModelTraining& training);
+class GemmaTokenizer {
+ public:
+  GemmaTokenizer() = default;  // for second Gemma ctor.
+  explicit GemmaTokenizer(const Path& tokenizer_path);
+
+  // must come after definition of Impl
+  ~GemmaTokenizer();
+  GemmaTokenizer(GemmaTokenizer&& other);
+  GemmaTokenizer& operator=(GemmaTokenizer&& other);
+
+  bool Encode(const std::string& input, std::vector<std::string>* pieces) const;
+  bool Encode(const std::string& input, std::vector<int>* pieces) const;
+  bool Decode(const std::vector<int>& ids, std::string* detokenized) const;
+
+ private:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
+};
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f. StreamFunc should return False to stop generation and
@@ -66,8 +72,6 @@ using StreamFunc = std::function<bool(int, float)>;
 // AcceptFunc is called with token. It should return False for tokens you don't
 // want to generate and True for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
-
-constexpr int EOS_ID = 1;
 
 struct RuntimeConfig {
   size_t max_tokens;
@@ -80,64 +84,65 @@ struct RuntimeConfig {
   int eos_id = EOS_ID;
 };
 
-struct GemmaInterface;
-
-class GemmaTokenizer {
- public:
-  virtual ~GemmaTokenizer() = default;
-  virtual bool Encode(const std::string& input,
-                      std::vector<std::string>* pieces) const = 0;
-  virtual bool Encode(const std::string& input,
-                      std::vector<int>* pieces) const = 0;
-  virtual bool Decode(const std::vector<int>& ids,
-                      std::string* detokenized) const = 0;
-};
-
-struct Gemma {
-  Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-        hwy::ThreadPool& pool);
-  ~Gemma();  // must be defined after the GemmaInterface dtor is defined.
-  const GemmaTokenizer* Tokenizer() const;
-  std::unique_ptr<GemmaInterface> impl_;
-};
-
 struct TimingInfo {
   double prefill_tok_sec = 0.0;
   double gen_tok_sec = 0.0;
   double time_to_first_token = 0;
 };
 
-KVCache CreateKVCache(Model type);  // convenient workaround for now
-KVCache CreateKVCache(size_t size_cache_pos, size_t seq_len,
-                      size_t conv1d_cache_size, size_t rglru_cache_size);
+// Will be called for layers output with:
+// - position in the tokens sequence
+// - name of the data, p.ex. "tokens", "block.1", "final_norm"
+// - pointer to the data array
+// - size of the data array
+using LayersOutputT =
+    std::function<void(int, const std::string&, const float*, size_t)>;
 
-// Bundle runtime parameters as RuntimeConfig
-// layers_output is optional; if set - it will be called with the activations
-// output after applying each layer.
-void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   KVCache& kv_cache, hwy::ThreadPool& pool,
-                   TimingInfo& timing_info,
-                   LayersOutputT* layers_output = nullptr);
+class Gemma {
+ public:
+  Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
+        hwy::ThreadPool& pool);
 
-void GenerateGemma(Model model, const ByteStorageT& weights,
-                   ByteStorageT& inference_state,
-                   RuntimeConfig runtime_config,
-                   const std::vector<int>& prompt, size_t start_pos,
-                   KVCache& kv_cache, hwy::ThreadPool& pool,
-                   TimingInfo& timing_info);
+  // Allocates weights, caller is responsible for filling them.
+  Gemma(GemmaTokenizer&& tokenizer, Model model_type, hwy::ThreadPool& pool);
+  ~Gemma();
 
-ByteStorageT LoadWeights(const Path& weights, Model model,
-                         hwy::ThreadPool& pool);
+  const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
+  const ByteStorageT& Weights() const { return weights_u8_; }
+  const ByteStorageT& Prefill() const { return prefill_u8_; }
+  const ByteStorageT& Decode() const { return decode_u8_; }
 
-ByteStorageT AllocateInferenceState(Model model);
+  // layers_output is optional; if set - it will be called with the activations
+  // output after applying each layer.
+  void Generate(const RuntimeConfig& runtime_config,
+                const std::vector<int>& prompt, size_t start_pos,
+                KVCache& kv_cache, TimingInfo& timing_info,
+                LayersOutputT* layers_output = nullptr);
 
-void CompressWeights(gcpp::Model model, const Path& weights,
-                     const Path& compressed_weights, hwy::ThreadPool& pool);
+  float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
+                            KVCache& kv_cache, int verbosity);
 
-float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
-                          const std::vector<int>& prompt, KVCache& kv_cache,
-                          hwy::ThreadPool& pool, int verbosity);
+ private:
+  hwy::ThreadPool& pool_;
+
+  GemmaTokenizer tokenizer_;
+  // Type-erased so that this can be defined in the header, without requiring
+  // forwarding functions.
+  ByteStorageT weights_u8_;
+  ByteStorageT prefill_u8_;
+  ByteStorageT decode_u8_;
+  Model model_type_;
+};
+
+// DEPRECATED, call Gemma::Generate directly.
+HWY_INLINE void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
+                              const std::vector<int>& prompt, size_t start_pos,
+                              KVCache& kv_cache, hwy::ThreadPool& /*pool*/,
+                              TimingInfo& timing_info,
+                              LayersOutputT* layers_output) {
+  gemma.Generate(runtime_config, prompt, start_pos, kv_cache, timing_info,
+                 layers_output);
+}
 
 }  // namespace gcpp
 

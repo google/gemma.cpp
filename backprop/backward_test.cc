@@ -30,11 +30,11 @@
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
 #include "compression/compress.h"
+#include "gemma/gemma.h"
+#include "gemma/weights.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "gemma/gemma.h"
-#include "gemma/weights.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE

@@ -24,8 +24,8 @@
 #include <cmath>
 
 #include "gemma/activations.h"
+#include "gemma/common.h"
 #include "gemma/configs.h"
-
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -39,7 +39,6 @@
 #define THIRD_PARTY_GEMMA_CPP_FORWARD_TOGGLE
 #endif
 
-#include "gemma/common-inl.h"
 #include "gemma/ops.h"
 
 HWY_BEFORE_NAMESPACE();

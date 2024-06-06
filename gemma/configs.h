@@ -13,10 +13,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Model configurations
-
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_CONFIGS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_CONFIGS_H_
+
+// Model configurations
+
+#include <stddef.h>
+
+#include <array>
+
+#include "compression/compress.h"  // SfpStream
+#include "hwy/base.h"                // hwy::bfloat16_t
+
+namespace gcpp {
 
 // Allow changing pre-allocated kv cache size as a compiler flag
 #ifndef GEMMA_MAX_SEQLEN
@@ -33,24 +42,19 @@
 #define GEMMA_MAX_THREADS 128
 #endif  // !GEMMA_MAX_THREADS
 
-#include <stddef.h>
-
-#include <array>
-
-#include "compression/sfp.h"
-#include "hwy/base.h"  // hwy::bfloat16_t
-
 // Allowable types for GEMMA_WEIGHT_T (can be specified at compilation time):
 // float, hwy::bfloat16_t, SfpStream, NuqStream
 #ifndef GEMMA_WEIGHT_T
 #define GEMMA_WEIGHT_T SfpStream
 #endif  // !GEMMA_WEIGHT_T
 
-namespace gcpp {
-
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
 static constexpr size_t kMaxThreads = GEMMA_MAX_THREADS;
+
+using GemmaWeightT = GEMMA_WEIGHT_T;
+
+using EmbedderInputT = hwy::bfloat16_t;
 
 enum class LayerAttentionType {
   kGemma,

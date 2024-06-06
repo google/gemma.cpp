@@ -41,14 +41,16 @@ class WeightInitializer {
 };
 
 template <typename TConfig>
-void RandInitWeights(ByteStorageT& weights_u8, hwy::ThreadPool& pool,
-                     std::mt19937& gen) {
-  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  // TODO(szabadka) Use the same weight initialization method as in the python
-  // version.
-  WeightInitializer init(gen);
-  ForEachTensor1<float, TConfig>(init, weights);
-}
+struct RandInitWeights {
+  void operator()(ByteStorageT& weights_u8, hwy::ThreadPool& pool,
+                  std::mt19937& gen) const {
+    auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+    // TODO(szabadka) Use the same weight initialization method as in the python
+    // version.
+    WeightInitializer init(gen);
+    ForEachTensor1<float, TConfig>(init, weights);
+  }
+};
 
 class WeightUpdater {
  public:
@@ -67,55 +69,22 @@ class WeightUpdater {
 };
 
 template <typename TConfig>
-void UpdateWeights(const ByteStorageT& grad_u8, float scale,
-                   ByteStorageT& weights_u8, hwy::ThreadPool& pool) {
-  const auto& grad =
-      *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
-  auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-  WeightUpdater updater(scale);
-  ForEachTensor2<float, TConfig>(updater, grad, weights);
-}
+struct UpdateWeightsT {
+  void operator()(const ByteStorageT& grad_u8, float scale,
+                  ByteStorageT& weights_u8, hwy::ThreadPool& pool) const {
+    const auto& grad =
+        *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
+    auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+    WeightUpdater updater(scale);
+    ForEachTensor2<float, TConfig>(updater, grad, weights);
+  }
+};
 
 }  // namespace
 
-void RandInitWeights(Model model, ByteStorageT& weights_u8,
-                     hwy::ThreadPool& pool, std::mt19937& gen) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      RandInitWeights<ConfigGemma2B>(weights_u8, pool, gen);
-      break;
-    case Model::GEMMA_7B:
-      RandInitWeights<ConfigGemma7B>(weights_u8, pool, gen);
-      break;
-    case Model::GRIFFIN_2B:
-      RandInitWeights<ConfigGriffin2B>(weights_u8, pool, gen);
-      break;
-    case Model::GEMMA_TINY:
-      RandInitWeights<ConfigGemmaTiny>(weights_u8, pool, gen);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
-}
-
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool) {
-  switch (model) {
-    case Model::GEMMA_2B:
-      UpdateWeights<ConfigGemma2B>(grad, scale, weights, pool);
-      break;
-    case Model::GEMMA_7B:
-      UpdateWeights<ConfigGemma7B>(grad, scale, weights, pool);
-      break;
-    case Model::GRIFFIN_2B:
-      UpdateWeights<ConfigGriffin2B>(grad, scale, weights, pool);
-      break;
-    case Model::GEMMA_TINY:
-      UpdateWeights<ConfigGemmaTiny>(grad, scale, weights, pool);
-      break;
-    default:
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
-  }
+  CallFunctorForModel<UpdateWeightsT>(model, grad, scale, weights, pool);
 }
 
 }  // namespace gcpp

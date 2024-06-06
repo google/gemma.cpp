@@ -48,6 +48,7 @@ float CrossEntropyLossForwardPassT(Model model, const Prompt& prompt,
                                    const ByteStorageT& weights,
                                    ByteStorageT& forward,
                                    hwy::ThreadPool& pool) {
+  // TODO(janwas): use CallFunctorForModel
   switch (model) {
     case Model::GEMMA_2B:
       return CrossEntropyLossForwardPass<ConfigGemma2B>(

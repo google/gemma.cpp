@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
 
   // Instantiate model and KV Cache
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
-  auto kv_cache = CreateKVCache(loader.ModelType());
+  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
   size_t pos = 0;  // KV Cache position
 
   // Initialize random number generator

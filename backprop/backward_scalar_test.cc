@@ -19,10 +19,10 @@
 #include <complex>
 #include <random>
 
+#include "gtest/gtest.h"
 #include "backprop/forward_scalar.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "gtest/gtest.h"
 
 namespace gcpp {
 

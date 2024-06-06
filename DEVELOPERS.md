@@ -151,9 +151,9 @@ file (usually `tokenizer.spm`), call `Encode()` to go from string prompts to
 token id vectors, or `Decode()` to go from token id vector outputs from the
 model back to strings.
 
-### `GenerateGemma()` is the entrypoint for token generation
+### `model.Generate()` is the entrypoint for token generation
 
-Calling into `GenerateGemma` with a tokenized prompt will 1) mutate the
+Calling into `model.Generate` with a tokenized prompt will 1) mutate the
 activation values in `model` and 2) invoke StreamFunc - a lambda callback for
 each generated token.
 
@@ -170,11 +170,11 @@ no-op which is what `run.cc` does.
 
 ### `Transformer()` implements the inference (i.e. `forward()` method in PyTorch or Jax) computation of the neural network
 
-For high-level applications, you might only call `GenerateGemma()` and never
+For high-level applications, you might only call `model.Generate()` and never
 interact directly with the neural network, but if you're doing something a bit
-more custom you can call transformer which performs a single inference
-operation on a single token and mutates the Activations and the KVCache through
-the neural network computation.
+more custom you can call transformer which performs a single inference operation
+on a single token and mutates the Activations and the KVCache through the neural
+network computation.
 
 ### For low level operations, defining new architectures, call `ops.h` functions directly
 

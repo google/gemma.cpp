@@ -15,7 +15,6 @@
 
 // Command line text interface to gemma.
 
-#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -63,7 +62,7 @@ void JsonGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
   std::set<int> accept_token_set{};
   for (const std::string& accept_token : accept_tokens) {
     std::vector<int> accept_token_ids;
-    HWY_ASSERT(model.Tokenizer()->Encode(accept_token, &accept_token_ids));
+    HWY_ASSERT(model.Tokenizer().Encode(accept_token, &accept_token_ids));
     accept_token_set.insert(accept_token_ids.begin(), accept_token_ids.end());
   }
 
@@ -76,7 +75,7 @@ void JsonGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
     const std::string& prompt_string = sample["prompt"];
     std::vector<int> prompt;
 
-    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
+    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
     prompt_size = prompt.size();
 
     const std::string& correct_answer = accept_tokens[sample["input_label"]];
@@ -124,11 +123,10 @@ void JsonGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
         .stream_token = stream_token,
         .accept_token = accept_token,
     };
-    GenerateGemma(model, runtime_config, prompt, abs_pos, kv_cache, pool,
-                  timing_info);
+    model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
 
     std::string output_string;
-    HWY_ASSERT(model.Tokenizer()->Decode(predicted_token_ids, &output_string));
+    HWY_ASSERT(model.Tokenizer().Decode(predicted_token_ids, &output_string));
     std::cout << "QuestionId: " << sample["i"] << "; "
               << "Predicted Answer: " << output_string << "; "
               << "Correct Answer: " << correct_answer << std::endl;
@@ -161,7 +159,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
 
-  auto kv_cache = CreateKVCache(loader.ModelType());
+  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
 
   JsonGemma(model, kv_cache, pool, inference, app.verbosity, app.eot_line);
 }

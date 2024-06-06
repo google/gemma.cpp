@@ -37,7 +37,7 @@ std::pair<std::string, int> QueryModel(
     gcpp::KVCache& kv_cache, hwy::ThreadPool& pool, const std::string& input,
     gcpp::LayersOutputT* layers_output) {
   std::vector<int> prompt;
-  HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
+  HWY_ASSERT(model.Tokenizer().Encode(input, &prompt));
 
   // For both pre-trained and instruction-tuned models: prepend "<bos>" token
   // if needed.
@@ -48,11 +48,10 @@ std::pair<std::string, int> QueryModel(
   std::mt19937 gen;
   gen.seed(42);
 
-  auto stream_token = [&res, &total_tokens, &app,
-                       tokenizer = model.Tokenizer()](int token, float) {
+  auto stream_token = [&res, &total_tokens, &model](int token, float) {
     ++total_tokens;
     std::string token_text;
-    HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text));
+    HWY_ASSERT(model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     res += token_text;
     return true;
   };
@@ -70,8 +69,8 @@ std::pair<std::string, int> QueryModel(
       .stream_token = stream_token,
       .accept_token = accept_token,
   };
-  GenerateGemma(model, runtime_config, prompt, /*start_pos=*/0, kv_cache, pool,
-                timing_info, layers_output);
+  model.Generate(runtime_config, prompt, /*start_pos=*/0, kv_cache, timing_info,
+                 layers_output);
   return {res, total_tokens};
 }
 
@@ -115,7 +114,7 @@ int main(int argc, char** argv) {
   }
 
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
-  auto kv_cache = CreateKVCache(loader.ModelType());
+  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
 
   const std::string& prompt = prompt_args.prompt;
   if (prompt.empty()) {

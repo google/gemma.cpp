@@ -54,20 +54,48 @@ cc_test(
 )
 
 cc_library(
+    name = "common",
+    srcs = ["gemma/common.cc"],
+    hdrs = [
+        "gemma/common.h",
+        "gemma/configs.h",
+    ],
+    deps = [
+        "//compression:compress",
+        "//compression:io",
+        "@hwy//:hwy",  # base.h
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "weights",
+    srcs = ["gemma/weights.cc"],
+    hdrs = ["gemma/weights.h"],
+    deps = [
+        ":common",
+        "//compression:compress",
+        "//compression:io",
+        "@hwy//:hwy",
+        "@hwy//:profiler",
+        "@hwy//:stats",
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
     ],
     hdrs = [
         "gemma/activations.h",
-        "gemma/common.h",
-        "gemma/common-inl.h",
-        "gemma/configs.h",
         "gemma/gemma.h",
-        "gemma/weights.h",
     ],
     deps = [
+        ":common",
         ":ops",
+        ":weights",
         "//compression:compress",
         "//compression:io",
         "@hwy//:hwy",
@@ -93,6 +121,7 @@ cc_library(
     hdrs = ["util/app.h"],
     deps = [
         ":args",
+        ":common",
         ":gemma_lib",
         "//compression:io",
         "@hwy//:hwy",
@@ -126,6 +155,7 @@ cc_binary(
     deps = [
         ":app",
         ":args",
+        ":common",
         ":gemma_lib",
         # "//base",
         "//compression:compress",
@@ -141,7 +171,9 @@ cc_binary(
     srcs = ["gemma/compress_weights.cc"],
     deps = [
         ":args",
+        ":common",
         ":gemma_lib",
+        ":weights",
         # "//base",
         "//compression:compress",
         "@hwy//:hwy",
@@ -157,7 +189,9 @@ cc_binary(
     deps = [
         ":app",
         ":args",
+        ":common",
         ":gemma_lib",
+        "//compression:io",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",

@@ -25,6 +25,7 @@
 
 // Placeholder for internal header, do not modify.
 #include "compression/compress.h"
+#include "gemma/configs.h"
 #include "gemma/gemma.h"  // Gemma
 #include "util/app.h"
 #include "util/args.h"  // HasHelp
@@ -116,8 +117,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
   // callback function invoked for each generated token.
   auto stream_token = [&abs_pos, &current_pos, &args, &gen, &prompt_size,
-                       tokenizer = model.Tokenizer(),
-                       verbosity](int token, float) {
+                       &model, verbosity](int token, float) {
     ++abs_pos;
     ++current_pos;
     // <= since position is incremented before
@@ -135,7 +135,8 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       }
     } else {
       std::string token_text;
-      HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text));
+      HWY_ASSERT(
+          model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
       // +1 since position is incremented above
       if (current_pos == prompt_size + 1) {
         // first token of response
@@ -192,7 +193,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       }
     }
 
-    HWY_ASSERT(model.Tokenizer()->Encode(prompt_string, &prompt));
+    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
 
     // For both pre-trained and instruction-tuned models: prepend "<bos>" token
     // if needed.
@@ -221,8 +222,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
         .stream_token = stream_token,
         .accept_token = accept_token,
     };
-    GenerateGemma(model, runtime_config, prompt, abs_pos, kv_cache, pool,
-                  timing_info);
+    model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
     if (verbosity >= 2) {
       std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
                 << "\n"
@@ -251,7 +251,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
 
-  auto kv_cache = CreateKVCache(loader.ModelType());
+  KVCache kv_cache = KVCache::Create(loader.ModelType());
 
   if (const char* error = inference.Validate()) {
     ShowHelp(loader, inference, app);

@@ -54,6 +54,7 @@ void CrossEntropyLossBackwardPassT(Model model,
                                    ByteStorageT& grad,
                                    ByteStorageT& backward,
                                    hwy::ThreadPool& pool) {
+  // TODO(janwas): use CallFunctorForModel
   switch (model) {
     case Model::GEMMA_2B:
       CrossEntropyLossBackwardPass<ConfigGemma2B>(

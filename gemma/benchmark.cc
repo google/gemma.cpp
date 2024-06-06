@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdlib>  // EXIT_FAILURE
 #include <fstream>
 #include <iostream>
 #include <ostream>
@@ -8,6 +9,7 @@
 #include <utility>  // std::pair
 #include <vector>
 
+#include "compression/io.h"  // Path
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
@@ -61,7 +63,7 @@ std::pair<std::string, int> QueryModel(
     gcpp::Gemma& model, gcpp::InferenceArgs& args, gcpp::AppArgs& app,
     gcpp::KVCache& kv_cache, hwy::ThreadPool& pool, const std::string& input) {
   std::vector<int> prompt;
-  HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
+  HWY_ASSERT(model.Tokenizer().Encode(input, &prompt));
 
   // For both pre-trained and instruction-tuned models: prepend "<bos>" token
   // if needed.
@@ -73,11 +75,11 @@ std::pair<std::string, int> QueryModel(
   gen.seed(42);
 
   const double time_start = hwy::platform::Now();
-  auto stream_token = [&res, &total_tokens, &time_start, &app,
-                       tokenizer = model.Tokenizer()](int token, float) {
+  auto stream_token = [&res, &total_tokens, &time_start, &app, &model](
+                          int token, float) {
     ++total_tokens;
     std::string token_text;
-    HWY_ASSERT(tokenizer->Decode(std::vector<int>{token}, &token_text));
+    HWY_ASSERT(model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     res += token_text;
     if (app.verbosity >= 1 && total_tokens % 100 == 0) {
       LogSpeedStats(time_start, total_tokens);
@@ -98,8 +100,8 @@ std::pair<std::string, int> QueryModel(
       .stream_token = stream_token,
       .accept_token = accept_token,
   };
-  GenerateGemma(model, runtime_config, prompt, /*start_pos=*/0, kv_cache, pool,
-                timing_info, /*layers_output=*/nullptr);
+  model.Generate(runtime_config, prompt, /*start_pos=*/0, kv_cache, timing_info,
+                 /*layers_output=*/nullptr);
   if (app.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
   }
@@ -190,7 +192,7 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
                           size_t batch_tokens) {
   std::string input = ReadFile(text);
   std::vector<int> prompt;
-  HWY_ASSERT(model.Tokenizer()->Encode(input, &prompt));
+  HWY_ASSERT(model.Tokenizer().Encode(input, &prompt));
   prompt.resize(std::min<size_t>(args.max_tokens, prompt.size()));
   std::cout << "Number of input tokens: " << prompt.size() << "\n";
   const double time_start = hwy::platform::Now();
@@ -201,14 +203,13 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-    auto kv_cache = CreateKVCache(model_type);
-    float entropy =
-        ComputeCrossEntropy(model, num_tokens, prompt_slice, kv_cache, pool,
-                            app.verbosity);
+    gcpp::KVCache kv_cache = gcpp::KVCache::Create(model_type);
+    float entropy = model.ComputeCrossEntropy(num_tokens, prompt_slice,
+                                              kv_cache, app.verbosity);
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice;
-    HWY_ASSERT(model.Tokenizer()->Decode(prompt_slice, &text_slice));
+    HWY_ASSERT(model.Tokenizer().Decode(prompt_slice, &text_slice));
     total_input_len += text_slice.size();
     printf("Cross entropy per byte: %f [cumulative: %f]\n",
            entropy / text_slice.size(), total_entropy / total_input_len);
@@ -277,7 +278,7 @@ int main(int argc, char** argv) {
   }
 
   gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
-  auto kv_cache = CreateKVCache(loader.ModelType());
+  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
 
   if (!benchmark_args.goldens.path.empty()) {
     const std::string golden_path =

@@ -16,15 +16,10 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_OPTIMIZER_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_OPTIMIZER_H_
 
-#include <random>
-
 #include "gemma/common.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
-
-void RandInitWeights(Model model, ByteStorageT& weights, hwy::ThreadPool& pool,
-                     std::mt19937& gen);
 
 void UpdateWeights(Model model, const ByteStorageT& grad, float scale,
                    ByteStorageT& weights, hwy::ThreadPool& pool);

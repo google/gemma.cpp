@@ -50,8 +50,6 @@ set(SOURCES
   backprop/backward.h
   backprop/backward-inl.h
   backprop/backward_scalar.h
-  backprop/common_scalar.cc
-  backprop/common_scalar.h
   backprop/forward.cc
   backprop/forward.h
   backprop/forward-inl.h
@@ -59,10 +57,9 @@ set(SOURCES
   backprop/optimizer.cc
   backprop/optimizer.h
   gemma/configs.h
-  gemma/activations.cc
   gemma/activations.h
+  gemma/common.cc
   gemma/common.h
-  gemma/common-inl.h
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
