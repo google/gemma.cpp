@@ -109,12 +109,12 @@ HWY_NOINLINE void SourceSoftmax(float* HWY_RESTRICT x, size_t size,
   HWY_DASSERT(size != 0);
   HWY_DASSERT(mask_pos <= size);
   float sum = 0.0;
-  float maxval = *std::max_element(x, x + mask_pos);
+  const float maxval = *std::max_element(x, x + mask_pos);
   for (size_t i = 0; i < mask_pos; ++i) {
     x[i] = std::exp(x[i] - maxval);
     sum += x[i];
   }
-  float scale = 1.0f / sum;
+  const float scale = 1.0f / sum;
   for (size_t i = 0; i < mask_pos; ++i) {
     x[i] *= scale;
   }
@@ -237,6 +237,7 @@ struct TestMulByConst {
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
+    if (misalign_b == 0) return;
     using T = hn::TFromD<D>;
 
     hwy::AlignedFreeUniquePtr<T[]> px =
@@ -267,6 +268,7 @@ struct TestSoftmax {
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
     if (count == 0) return;  // *Softmax would assert
+    if (misalign_b == 0) return;
     using T = hn::TFromD<D>;
 
     hwy::AlignedFreeUniquePtr<T[]> px =

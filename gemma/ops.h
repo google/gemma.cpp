@@ -29,6 +29,7 @@
 #include "compression/sfp.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/detect_targets.h"
 #include "hwy/profiler.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_H_
@@ -1247,8 +1248,15 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
   hn::Transform(d, x, mask_pos,
-                [&vmax](const auto d, const auto value)
-                    HWY_ATTR { return hn::Exp(d, hn::Sub(value, vmax)); });
+                [&vmax](const auto d, const auto value) HWY_ATTR {
+#if HWY_TARGET & HWY_ALL_SVE
+                  // Temporary workaround for buggy SVE codegen: avoid inlined
+                  // Exp().
+                  return hn::CallExp(d, hn::Sub(value, vmax));
+#else
+                  return hn::Exp(d, hn::Sub(value, vmax));
+#endif
+                });
 
   auto sum = hn::Zero(d);
   Foreach(d, x, mask_pos, sum, [&sum](const auto d, const auto value) HWY_ATTR {
