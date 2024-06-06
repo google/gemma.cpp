@@ -73,7 +73,7 @@ struct LoadRawWeightsT {
                 checkpoint.path.c_str());
     }
 
-    ByteStorageT weights_u8 = AllocateWeights<TConfig>()(pool);
+    ByteStorageT weights_u8 = AllocateWeightsF<TConfig>()(pool);
     auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
 
     size_t scale_pos = 0;

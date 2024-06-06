@@ -73,7 +73,7 @@ class ActivationsWrapper {
 
  public:
   ActivationsWrapper()
-      : data_(WrappedT::Allocate()),
+      : data_(AllocateSizeof<WrappedT>()),
         activations_(*reinterpret_cast<WrappedT*>(data_.get())) {}
 
   const WrappedT& get() const { return activations_; }

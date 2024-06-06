@@ -16,6 +16,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_SAMPLER_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_SAMPLER_H_
 
+#include <random>
 #include <vector>
 
 #include "backprop/prompt.h"

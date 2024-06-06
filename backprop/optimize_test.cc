@@ -16,7 +16,6 @@
 #include <iostream>
 #include <string>
 
-#include "gtest/gtest.h"
 #include "backprop/backward.h"
 #include "backprop/forward.h"
 #include "backprop/optimizer.h"
@@ -24,6 +23,7 @@
 #include "gemma/activations.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
+#include "gtest/gtest.h"
 
 namespace gcpp {
 
@@ -32,9 +32,9 @@ TEST(OptimizeTest, GradientDescent) {
   std::mt19937 gen(42);
 
   Model model_type = Model::GEMMA_TINY;
-  ByteStorageT grad = CallFunctorForModel<AllocateWeights>(model_type, pool);
-  ByteStorageT grad_m = CallFunctorForModel<AllocateWeights>(model_type, pool);
-  ByteStorageT grad_v = CallFunctorForModel<AllocateWeights>(model_type, pool);
+  ByteStorageT grad = CallFunctorForModel<AllocateWeightsF>(model_type, pool);
+  ByteStorageT grad_m = CallFunctorForModel<AllocateWeightsF>(model_type, pool);
+  ByteStorageT grad_v = CallFunctorForModel<AllocateWeightsF>(model_type, pool);
   ByteStorageT forward = CallFunctorForModel<AllocateForwardPass>(model_type);
   ByteStorageT backward = CallFunctorForModel<AllocateForwardPass>(model_type);
   KVCache kv_cache = KVCache::Create(model_type);
@@ -57,7 +57,7 @@ TEST(OptimizeTest, GradientDescent) {
       stream_token, accept_token, ReverseSequenceSampler::kEndToken,
     };
     TimingInfo timing_info;
-    model.Generate(runtime, prompt, 0, kv_cache, timing_info);
+    gemma.Generate(runtime, prompt, 0, kv_cache, timing_info);
     return reply;
   };
 
@@ -73,15 +73,18 @@ TEST(OptimizeTest, GradientDescent) {
     return ok;
   };
 
-  CallFunctorForModel<RandInitWeights>(model_type, gemma.Weights(), pool, gen);
-  CallFunctorForModel<ZeroInitWeights>(model_type, grad_m, pool);
-  CallFunctorForModel<ZeroInitWeights>(model_type, grad_v, pool);
+  RandInitWeights(model_type, gemma.Weights(), pool, gen);
+  CallFunctorForModel<ZeroInitWeightsF>(model_type, grad_m, pool);
+  CallFunctorForModel<ZeroInitWeightsF>(model_type, grad_v, pool);
 
   printf("Initial weights:\n");
   LogWeightStats(model_type, gemma.Weights());
 
   constexpr size_t kBatchSize = 8;
-  float learning_rate = 0.0005f;
+  const float alpha = 0.001f;
+  const float beta1 = 0.9f;
+  const float beta2 = 0.999f;
+  const float epsilon = 1e-8f;
 
   ReverseSequenceSampler training_task({
       0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1});
@@ -90,7 +93,7 @@ TEST(OptimizeTest, GradientDescent) {
   size_t num_ok;
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
-    CallFunctorForModel<ZeroInitWeights>(model_type, grad, pool);
+    CallFunctorForModel<ZeroInitWeightsF>(model_type, grad, pool);
     float total_loss = 0.0f;
     num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
@@ -103,8 +106,8 @@ TEST(OptimizeTest, GradientDescent) {
     }
     total_loss /= kBatchSize;
 
-    const float scale = -learning_rate / kBatchSize;
-    UpdateWeights(model_type, grad, scale, gemma.Weights(), pool);
+    AdamUpdate(model_type, grad, alpha, beta1, beta2, epsilon, steps + 1,
+               gemma.Weights(), grad_m, grad_v, pool);
     printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
            steps, total_loss, num_ok, kBatchSize);
     if (steps % 100 == 0) {
@@ -119,7 +122,7 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
   LogWeightStats(model_type, gemma.Weights());
-  EXPECT_LT(steps, 3000);
+  EXPECT_LT(steps, 200);
   EXPECT_EQ(num_ok, kBatchSize);
 }
 
