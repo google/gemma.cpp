@@ -475,21 +475,21 @@ void AssertClose(const MatT* HWY_RESTRICT expected,
   }
 }
 
-template <typename MatT>
+template <typename MatTA, typename MatTB = MatTA>
 void TestTiledMatMul() {
   hwy::ThreadPool pool(3);
   constexpr size_t kM = 512;  // 384
   constexpr size_t kN = 512;  // * 5;  // 6;  // 768
   constexpr size_t kK = 512;  // * 5;  // 640
 
-  CompressedArray<MatT, kM * kN> a = GenerateMat<MatT, kM, kN>(0, pool);
-  CompressedArray<MatT, kN * kK> b = GenerateMat<MatT, kN, kK>(0, pool);
+  CompressedArray<MatTA, kM * kN> a = GenerateMat<MatTA, kM, kN>(0, pool);
+  CompressedArray<MatTB, kN * kK> b = GenerateMat<MatTB, kN, kK>(0, pool);
   CompressedArray<float, kM * kK> c_slow = GenerateZeroMat<float, kM, kK>(pool);
   MatMulSlow<kM, kN, kK>(a.data(), b.data(), c_slow.data());
 
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
-  CompressedArray<MatT, kN * kK> b_trans =
-      GenerateTransposeMat<MatT, kN, kK>(0, pool);
+  CompressedArray<MatTB, kN * kK> b_trans =
+      GenerateTransposeMat<MatTB, kN, kK>(0, pool);
   MatMul_4x4<kM, kN, kK>(a.data(), b_trans.data(), c.get(), pool);
 
   AssertClose(c_slow.data(), c.get(), kM * kK);
@@ -498,6 +498,7 @@ void TestTiledMatMul() {
 void TestAllTiledMatMul() {
   TestTiledMatMul<float>();
   TestTiledMatMul<hwy::bfloat16_t>();
+  TestTiledMatMul<float, hwy::bfloat16_t>();
   // TODO(janwas): SFP
 }
 
