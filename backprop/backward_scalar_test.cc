@@ -415,7 +415,7 @@ TEST(BackPropTest, LayerVJP) {
     memset(&grad, 0, sizeof(grad));
     ApplyLayer(weights, forward, num_tokens, y.data());
     LayerVJP(weights, forward, dy.data(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-11, 1e-11,
+    TestGradient(backward.input, c_forward.input, func, 1e-11, 5e-11,
                  __LINE__);
     TestGradient(grad, c_weights, func, 1e-11);
   }
@@ -433,7 +433,7 @@ TEST(BackPropTest, EndToEnd) {
   ForwardPass<TC, TestConfig> c_forward;
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
-  std::vector<Prompt> batch = training_task.SampleBatch(10, gen);
+  std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);

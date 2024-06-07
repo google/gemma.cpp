@@ -154,6 +154,7 @@ KVCache KVCache::Create(Model type) {
 
 class GemmaTokenizer::Impl {
  public:
+  Impl() = default;
   explicit Impl(const Path& tokenizer_path) {
     PROFILER_ZONE("Startup.tokenizer");
     spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
@@ -164,24 +165,24 @@ class GemmaTokenizer::Impl {
 
   bool Encode(const std::string& input,
               std::vector<std::string>* pieces) const {
-    return spp_->Encode(input, pieces).ok();
+    return spp_ && spp_->Encode(input, pieces).ok();
   }
 
   bool Encode(const std::string& input, std::vector<int>* pieces) const {
     if constexpr (kShowTokenization) {
-      bool is_ok = spp_->Encode(input, pieces).ok();
+      bool is_ok = spp_ && spp_->Encode(input, pieces).ok();
       for (int i = 0; i < static_cast<int>(pieces->size()); i++) {
         fprintf(stderr, "%3d: %d\n", i, (*pieces)[i]);
       }
       return is_ok;
     } else {
-      return spp_->Encode(input, pieces).ok();
+      return spp_ && spp_->Encode(input, pieces).ok();
     }
   }
 
   // Given a sequence of ids, decodes it into a detokenized output.
   bool Decode(const std::vector<int>& ids, std::string* detokenized) const {
-    return spp_->Decode(ids, detokenized).ok();
+    return spp_ && spp_->Decode(ids, detokenized).ok();
   }
 
  private:
@@ -190,6 +191,10 @@ class GemmaTokenizer::Impl {
 
 GemmaTokenizer::GemmaTokenizer(const Path& tokenizer_path) {
   impl_ = std::make_unique<Impl>(tokenizer_path);
+}
+
+GemmaTokenizer::GemmaTokenizer() {
+  impl_ = std::make_unique<Impl>();
 }
 
 GemmaTokenizer::~GemmaTokenizer() = default;
@@ -942,7 +947,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
 Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type,
              hwy::ThreadPool& pool)
     : pool_(pool), tokenizer_(std::move(tokenizer)), model_type_(model_type) {
-  weights_u8_ = CallFunctorForModel<AllocateWeights>(model_type, pool);
+  weights_u8_ = CallFunctorForModel<AllocateWeightsF>(model_type, pool);
   prefill_u8_ = CallFunctorForModel<AllocatePrefill>(model_type);
   decode_u8_ = CallFunctorForModel<AllocateDecode>(model_type);
 }

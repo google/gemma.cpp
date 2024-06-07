@@ -242,21 +242,29 @@ using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
                          WeightsF<TConfig>>;
 
 // Call via CallFunctorForModel.
-template <typename TConfig>
+template <typename T, typename TConfig>
 struct AllocateWeights {
   ByteStorageT operator()(hwy::ThreadPool& pool) const {
-    using TWeights = WeightsF<TConfig>;
+    using TWeights = Weights<T, TConfig>;
     ByteStorageT weights_u8 = AllocateSizeof<TWeights>();
     TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-    new (&weights->layer_ptrs) LayerPointers<float, TConfig>(pool);
+    new (&weights->layer_ptrs) LayerPointers<T, TConfig>(pool);
     return weights_u8;
   }
 };
 
 template <typename TConfig>
+struct AllocateWeightsF {
+  ByteStorageT operator()(hwy::ThreadPool& pool) const {
+    return AllocateWeights<float, TConfig>()(pool);
+  }
+};
+
+template <typename T, typename TConfig>
 struct ZeroInitWeights {
   void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
-    WeightsF<TConfig>& w = *reinterpret_cast<WeightsF<TConfig>*>(weights.get());
+    Weights<T, TConfig>& w =
+        *reinterpret_cast<Weights<T, TConfig>*>(weights.get());
     hwy::ZeroBytes(&w.embedder_input_embedding,
                    sizeof(w.embedder_input_embedding));
     hwy::ZeroBytes(&w.final_norm_scale, sizeof(w.final_norm_scale));
@@ -267,8 +275,16 @@ struct ZeroInitWeights {
 };
 
 template <typename TConfig>
+struct ZeroInitWeightsF {
+  void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
+    ZeroInitWeights<float, TConfig>()(weights, pool);
+  }
+};
+
+template <typename T, typename TConfig>
 struct CopyWeights {
-  void operator()(WeightsF<TConfig>& dst, const WeightsF<TConfig>& src) const {
+void operator()(Weights<T, TConfig>& dst,
+                const Weights<T, TConfig>& src) const {
     hwy::CopyBytes(&src.embedder_input_embedding, &dst.embedder_input_embedding,
                    sizeof(src.embedder_input_embedding));
     hwy::CopyBytes(&src.final_norm_scale, &dst.final_norm_scale,
@@ -298,14 +314,18 @@ class WeightsWrapper {
  public:
   WeightsWrapper()
       : pool_(0),
-        data_(AllocateWeights<TConfig>(pool_)),
+        data_(AllocateWeights<T, TConfig>()(pool_)),
         weights_(reinterpret_cast<Weights<T, TConfig>*>(data_.get())) {}
+
+  ~WeightsWrapper() {
+    get().layer_ptrs.~LayerPointers<T, TConfig>();
+  }
 
   const Weights<T, TConfig>& get() const { return *weights_; }
   Weights<T, TConfig>& get() { return *weights_; }
-  void clear() { ZeroInitWeights<TConfig>()(get()); }
+  void clear() { ZeroInitWeights<T, TConfig>()(data_, pool_); }
   void copy(const WeightsWrapper<T, TConfig>& other) {
-    CopyWeights<TConfig>()(get(), other.get());
+    CopyWeights<T, TConfig>()(get(), other.get());
   }
 
  private:
@@ -397,7 +417,7 @@ void ForEachTensor(const WeightsF<TConfig>* weights,
 #define GEMMA_CALL_TOP_FUNC3(name, member)      \
   func(name, weights1.member, weights2.member, weights3.member)
 #define GEMMA_CALL_TOP_FUNC4(name, member)       \
-  func(name, weights1.member, weights2.memeber,  \
+  func(name, weights1.member, weights2.member,   \
        weights3.member, weights4.member)
 
 #define GEMMA_CALL_LAYER_FUNC1(name, member)                          \
@@ -414,7 +434,7 @@ void ForEachTensor(const WeightsF<TConfig>* weights,
 
 #define GEMMA_CALL_LAYER_FUNC4(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member, layer2.member, layer4.member)
+  func(name_buf, layer1.member, layer2.member, layer3.member, layer4.member)
 
 #define GEMMA_CALL_ALL_LAYER_FUNC(N)                                          \
   if (type == LayerAttentionType::kGemma) {                                   \
@@ -488,6 +508,25 @@ void ForEachTensor2(Func& func, const Weights<T, TConfig>& weights1,
     const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
     LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
     GEMMA_CALL_ALL_LAYER_FUNC(2)
+  }
+}
+
+template <typename T, typename TConfig, class Func>
+void ForEachTensor4(Func& func, const Weights<T, TConfig>& weights1,
+                    Weights<T, TConfig>& weights2,
+                    Weights<T, TConfig>& weights3,
+                    Weights<T, TConfig>& weights4) {
+  GEMMA_CALL_TOP_FUNC4("embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC4("final_norm", final_norm_scale);
+  char name_buf[16];
+  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
+    auto type = TConfig::kLayerConfig[layer_idx];
+    const size_t idx = static_cast<size_t>(layer_idx);
+    const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
+    LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
+    LayerF<TConfig>& layer3 = *weights3.GetLayer(idx);
+    LayerF<TConfig>& layer4 = *weights4.GetLayer(idx);
+    GEMMA_CALL_ALL_LAYER_FUNC(4)
   }
 }
 

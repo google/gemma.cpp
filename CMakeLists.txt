@@ -50,6 +50,7 @@ set(SOURCES
   backprop/backward.h
   backprop/backward-inl.h
   backprop/backward_scalar.h
+  backprop/common_scalar.h
   backprop/forward.cc
   backprop/forward.h
   backprop/forward-inl.h

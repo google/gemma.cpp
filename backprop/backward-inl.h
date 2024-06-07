@@ -354,7 +354,6 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
   static_assert(!TConfig::kAbsolutePE);

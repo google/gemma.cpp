@@ -48,7 +48,7 @@ constexpr int EOS_ID = 1;
 
 class GemmaTokenizer {
  public:
-  GemmaTokenizer() = default;  // for second Gemma ctor.
+  GemmaTokenizer();
   explicit GemmaTokenizer(const Path& tokenizer_path);
 
   // must come after definition of Impl

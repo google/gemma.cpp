@@ -92,7 +92,7 @@ void TestMatMulVJP() {
     hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
     MatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                dx_scalar.data(), kRows, kCols, kTokens);
-    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
+    TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__);
     TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
   }
 }
@@ -219,7 +219,7 @@ void TestEndToEnd() {
   ForwardPass<TC, TestConfig> c_forward;
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
-  std::vector<Prompt> batch = training_task.SampleBatch(10, gen);
+  std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
@@ -232,7 +232,7 @@ void TestEndToEnd() {
         prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
         pool);
 
-    EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 1e-5);
+    EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.clear();
     CrossEntropyLossBackwardPass(

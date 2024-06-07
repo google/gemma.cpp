@@ -125,6 +125,13 @@ GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling() {
       Sqrt(static_cast<float>(TConfig::kModelDim))));
 }
 
+static HWY_INLINE GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling(
+    size_t model_dim) {
+  // Round to bf16 to match Gemma's Embedder, which casts before mul.
+  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
+      Sqrt(static_cast<float>(model_dim))));
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_

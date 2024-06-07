@@ -23,6 +23,7 @@
 #include <complex>
 #include <vector>
 
+#include "backprop/common_scalar.h"
 #include "backprop/prompt.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"  // EmbeddingScaling
@@ -60,7 +61,6 @@ template<typename T>
 void RMSNormVJPT(const T* w, const T* x, const T* dy, T* dw, T* dx,
                  size_t N, size_t K) {
   for (size_t i = 0; i < K; ++i) {
-    const size_t offset = i * N;
     constexpr T eps(1e-6);
     T ss = SquaredL2(x + i * N, N);
     ss = T(1.0) / std::sqrt(ss / T(N) + eps);

@@ -228,3 +228,127 @@ cc_binary(
         "@nlohmann_json//:json",
     ],
 )
+
+cc_library(
+    name = "prompt",
+    hdrs = ["backprop/prompt.h"],
+    deps = [],
+)
+
+cc_library(
+    name = "sampler",
+    hdrs = ["backprop/sampler.h"],
+    deps = [
+        ":prompt",
+    ],
+)
+
+cc_library(
+    name = "backprop",
+    srcs = [
+        "backprop/backward.cc",
+        "backprop/forward.cc",
+    ],
+    hdrs = [
+        "backprop/backward.h",
+        "backprop/backward-inl.h",
+        "backprop/forward.h",
+        "backprop/forward-inl.h",
+    ],
+    deps = [
+        ":common",
+        ":gemma_lib",
+        ":ops",
+        ":prompt",
+        ":weights",
+        "@hwy//:hwy",  # base.h
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "backprop_scalar",
+    hdrs = [
+        "backprop/backward_scalar.h",
+        "backprop/common_scalar.h",
+        "backprop/forward_scalar.h",
+    ],
+    deps = [
+        ":common",
+        ":gemma_lib",
+        ":prompt",
+        ":weights",
+    ],
+)
+
+cc_test(
+    name = "backward_scalar_test",
+    size = "large",
+    srcs = [
+        "backprop/backward_scalar_test.cc",
+        "backprop/test_util.h",
+    ],
+    deps = [
+        ":backprop_scalar",
+        ":prompt",
+        ":sampler",
+        ":weights",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "backward_test",
+    size = "large",
+    srcs = [
+        "backprop/backward_test.cc",
+        "backprop/test_util.h",
+    ],
+    deps = [
+        ":backprop",
+        ":backprop_scalar",
+        ":gemma_lib",
+        ":ops",
+        ":prompt",
+        ":sampler",
+        ":weights",
+        "@googletest//:gtest_main",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "optimizer",
+    srcs = [
+        "backprop/optimizer.cc",
+    ],
+    hdrs = [
+        "backprop/optimizer.h",
+    ],
+    deps = [
+        ":common",
+        ":weights",
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "optimize_test",
+    srcs = [
+        "backprop/optimize_test.cc",
+    ],
+    deps = [
+        ":backprop",
+        ":common",
+        ":gemma_lib",
+        ":optimizer",
+        ":prompt",
+        ":sampler",
+        ":weights",
+        "@googletest//:gtest_main",
+        "@hwy//:thread_pool",
+    ],
+)

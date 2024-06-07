@@ -16,6 +16,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_SAMPLER_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_SAMPLER_H_
 
+#include <random>
 #include <vector>
 
 #include "backprop/prompt.h"
@@ -25,6 +26,7 @@ namespace gcpp {
 class PromptSampler {
  public:
   virtual Prompt Sample(std::mt19937& gen) = 0;
+  virtual ~PromptSampler() = default;
 
   std::vector<Prompt> SampleBatch(size_t batch_size, std::mt19937& gen) {
     std::vector<Prompt> batch;
@@ -48,6 +50,7 @@ class ReverseSequenceSampler : public PromptSampler {
     }
     length_dist_ = std::uniform_int_distribution<>(0, length_lut_.size() - 1);
   }
+  virtual ~ReverseSequenceSampler() = default;
 
   static constexpr int kReverseToken = 10;
   static constexpr int kEndToken = 11;
