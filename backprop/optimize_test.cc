@@ -57,7 +57,7 @@ TEST(OptimizeTest, GradientDescent) {
     };
     RuntimeConfig runtime = {
       max_tokens, max_generated_tokens, temperature, verbosity, &gen,
-      stream_token, accept_token, ReverseSequenceSampler::kEndToken,
+      stream_token, accept_token, nullptr, ReverseSequenceSampler::kEndToken,
     };
     TimingInfo timing_info;
     gemma.Generate(runtime, prompt, 0, kv_cache, timing_info);

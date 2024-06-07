@@ -108,6 +108,19 @@ cc_library(
 )
 
 cc_library(
+    name = "cross_entropy",
+    srcs = [
+        "gemma/cross_entropy.cc",
+    ],
+    hdrs = [
+        "gemma/cross_entropy.h",
+    ],
+    deps = [
+        ":gemma_lib",
+    ],
+)
+
+cc_library(
     name = "args",
     hdrs = ["util/args.h"],
     deps = [
@@ -141,6 +154,7 @@ cc_test(
     ],
     deps = [
         ":args",
+        ":cross_entropy",
         ":gemma_lib",
         ":ops",
         "@googletest//:gtest_main",
@@ -190,6 +204,7 @@ cc_binary(
         ":app",
         ":args",
         ":common",
+        ":cross_entropy",
         ":gemma_lib",
         "//compression:io",
         "@hwy//:hwy",

@@ -72,6 +72,9 @@ using StreamFunc = std::function<bool(int, float)>;
 // AcceptFunc is called with token. It should return False for tokens you don't
 // want to generate and True for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
+// CustomSampleFunc is called with the probability distribution for the next
+// token, and its return value is used as the next generated token.
+using CustomSampleFunc = std::function<int(const float*, size_t)>;
 
 struct RuntimeConfig {
   size_t max_tokens;
@@ -81,6 +84,7 @@ struct RuntimeConfig {
   std::mt19937* gen;
   const StreamFunc& stream_token;
   const AcceptFunc& accept_token;
+  const CustomSampleFunc* sample_func = nullptr;
   int eos_id = EOS_ID;
 };
 
@@ -107,6 +111,7 @@ class Gemma {
   Gemma(GemmaTokenizer&& tokenizer, Model model_type, hwy::ThreadPool& pool);
   ~Gemma();
 
+  Model ModelType() const { return model_type_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
   const ByteStorageT& Prefill() const { return prefill_u8_; }
@@ -118,9 +123,6 @@ class Gemma {
                 const std::vector<int>& prompt, size_t start_pos,
                 KVCache& kv_cache, TimingInfo& timing_info,
                 LayersOutputT* layers_output = nullptr);
-
-  float ComputeCrossEntropy(size_t max_tokens, const std::vector<int>& prompt,
-                            KVCache& kv_cache, int verbosity);
 
  private:
   hwy::ThreadPool& pool_;

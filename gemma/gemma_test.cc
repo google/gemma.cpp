@@ -24,6 +24,7 @@
 
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
+#include "gemma/cross_entropy.h"
 #include "gemma/ops.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/tests/test_util-inl.h"
@@ -77,9 +78,9 @@ class GemmaTest : public ::testing::Test {
   float GemmaCrossEntropy(const std::string& prompt_string) {
     std::vector<int> prompt;
     HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
-    return model.ComputeCrossEntropy(/*max_tokens=*/3072, prompt, kv_cache,
-                                     /*verbosity=*/0) /
-           prompt_string.size();
+    return ComputeCrossEntropy(model, /*max_tokens=*/3072, prompt, kv_cache,
+                               /*verbosity=*/0) /
+        prompt_string.size();
   }
 
   void TestQuestions(const char* kQA[][2], size_t num_questions) {

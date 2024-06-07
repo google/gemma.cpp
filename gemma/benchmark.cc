@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/cross_entropy.h"
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
@@ -204,13 +205,15 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
     gcpp::KVCache kv_cache = gcpp::KVCache::Create(model_type);
-    float entropy = model.ComputeCrossEntropy(num_tokens, prompt_slice,
-                                              kv_cache, app.verbosity);
+    float entropy = ComputeCrossEntropy(model, num_tokens, prompt_slice,
+                                        kv_cache, app.verbosity);
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice;
     HWY_ASSERT(model.Tokenizer().Decode(prompt_slice, &text_slice));
     total_input_len += text_slice.size();
+    printf("Total cross entropy: %f [cumulative: %f]\n",
+           entropy, total_entropy);
     printf("Cross entropy per byte: %f [cumulative: %f]\n",
            entropy / text_slice.size(), total_entropy / total_input_len);
   }

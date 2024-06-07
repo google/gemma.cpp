@@ -40,7 +40,6 @@
 #include <array>
 #include <cmath>
 #include <memory>
-#include <regex>  // NOLINT
 #include <string>
 #include <utility>
 #include <vector>
@@ -215,32 +214,6 @@ bool GemmaTokenizer::Encode(const std::string& input,
 bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
   return impl_->Decode(ids, detokenized);
-}
-
-static std::string TokenString(const GemmaTokenizer& tokenizer, int token) {
-  std::string token_str;
-  tokenizer.Decode({token}, &token_str);
-  return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
-}
-
-void LogTopK(const GemmaTokenizer& tokenizer, float* HWY_RESTRICT logits,
-             float* HWY_RESTRICT dist, size_t len, size_t k) {
-  std::vector<std::pair<float, int>> sorted(len);
-  for (size_t i = 0; i < len; ++i) {
-    sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
-  }
-  std::sort(sorted.begin(), sorted.end(),
-            [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
-              if (a.first != b.first) {
-                return a.first > b.first;
-              }
-              return a.second < b.second;
-            });
-  for (size_t i = 0; i < k; ++i) {
-    printf("  [#%-2d token %6d = %-12s  %.2e  %f]\n", static_cast<int>(i + 1),
-           sorted[i].second, TokenString(tokenizer, sorted[i].second).c_str(),
-           sorted[i].first, logits[sorted[i].second]);
-  }
 }
 
 }  // namespace gcpp
@@ -837,13 +810,19 @@ void Generate(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
       MatVec<kVocabSize, TConfig::kModelDim>(
           weights.embedder_input_embedding, 0, final_activation,
           activations.even_odd.data(), activations.logits.data(), pool);
+      LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
       // Barrier: must have all logits so we can subtract max.
       Softmax(activations.logits.data(), kVocabSize);
-      token = SampleTopK<TConfig::kTopK>(
-          activations.logits.data(), kVocabSize, *runtime_config.gen,
-          runtime_config.temperature, runtime_config.accept_token);
-      if (!runtime_config.stream_token(token, activations.logits[token])) {
-        token = runtime_config.eos_id;
+      if (runtime_config.sample_func) {
+        token = (*runtime_config.sample_func)(activations.logits.data(),
+                                              kVocabSize);
+      } else {
+        token = SampleTopK<TConfig::kTopK>(
+            activations.logits.data(), kVocabSize, *runtime_config.gen,
+            runtime_config.temperature, runtime_config.accept_token);
+        if (!runtime_config.stream_token(token, activations.logits[token])) {
+          token = runtime_config.eos_id;
+        }
       }
       if (generate_pos == 0) {
         timing_info.time_to_first_token = hwy::platform::Now() - gen_start;
@@ -866,51 +845,6 @@ void Generate(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
       break;
     }
   }
-}
-
-template <class TConfig>
-void ComputeCrossEntropy(const ByteStorageT& weights_u8,
-                         ByteStorageT& decode_u8,
-                         const GemmaTokenizer& tokenizer, size_t max_tokens,
-                         const std::vector<int>& prompt, KVCache& kv_cache,
-                         hwy::ThreadPool& pool, int verbosity,
-                         float& cross_entropy) {
-  const WeightsT<TConfig>& weights = GetWeights<TConfig>(weights_u8);
-  auto& activations = GetActivations<TConfig, 1>(decode_u8);
-
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  std::vector<float> logits(kVocabSize);
-  Softmax(activations.logits.data(), kVocabSize);
-  float total_entropy = 0.0f;
-  for (size_t pos = 0; pos < max_tokens && pos < prompt.size(); ++pos) {
-    if (verbosity >= 4) {
-      LogTopK(tokenizer, logits.data(), activations.logits.data(), kVocabSize,
-              10);
-    }
-    const int token = prompt[pos];
-    const float prob = activations.logits[token];
-    if (verbosity >= 3) {
-      printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
-             TokenString(tokenizer, token).c_str(), prob,
-             -std::log(prob) / std::log(2.0));
-    }
-    total_entropy -= std::max(std::log(prob), -64.0f);
-    if (verbosity >= 2 && pos % 100 == 99) {
-      printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
-             total_entropy / std::log(2.0) / (pos + 1));
-    }
-    Transformer(token, pos, weights, activations, kv_cache, pool,
-                /*layers_output=*/nullptr);
-    MatVec<kVocabSize, kModelDim>(
-        weights.embedder_input_embedding, 0, activations.x.data(),
-        activations.even_odd.data(), activations.logits.data(), pool);
-    LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
-    memcpy(logits.data(), activations.logits.data(),
-           kVocabSize * sizeof(logits[0]));
-    Softmax(activations.logits.data(), kVocabSize);
-  }
-  cross_entropy = total_entropy / std::log(2.0);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -968,21 +902,6 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
        kv_cache, pool_, timing_info, layers_output));
 
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
-}
-
-float Gemma::ComputeCrossEntropy(size_t max_tokens,
-                                 const std::vector<int>& prompt,
-                                 KVCache& kv_cache, int verbosity) {
-  pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
-
-  float cross_entropy = 0.0f;
-  GEMMA_EXPORT_AND_DISPATCH_MODEL(
-      model_type_, ComputeCrossEntropy,
-      (weights_u8_, decode_u8_, tokenizer_, max_tokens, prompt, kv_cache, pool_,
-       verbosity, cross_entropy));
-
-  pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
-  return cross_entropy;
 }
 
 }  // namespace gcpp
