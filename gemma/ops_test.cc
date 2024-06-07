@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <memory>
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
@@ -364,25 +365,6 @@ CompressedArray<MatT, kOuter * kInner> GenerateMat(size_t offset,
 }
 
 template <typename MatT, size_t kOuter, size_t kInner>
-CompressedArray<MatT, kOuter * kInner> GenerateTransposeMat(
-    size_t offset, hwy::ThreadPool& pool) {
-  gcpp::CompressWorkingSet ws;
-  CompressedArray<MatT, kOuter * kInner> mat;
-  std::array<float, kOuter * kInner> content;
-  const float scale = 1.0f / kInner;
-  pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
-    for (size_t j = 0; j < kInner; j++) {
-      content[i * kInner + j] =
-          static_cast<float>((j * kInner + i + offset) * scale);
-    }
-  });
-
-  Compress(content, ws, mat, pool);
-  mat.set_scale(1.0f);
-  return mat;
-}
-
-template <typename MatT, size_t kOuter, size_t kInner>
 CompressedArray<MatT, kOuter * kInner> GenerateZeroMat(hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
   CompressedArray<MatT, kOuter * kInner> mat;
@@ -394,6 +376,72 @@ CompressedArray<MatT, kOuter * kInner> GenerateZeroMat(hwy::ThreadPool& pool) {
 
   Compress(content, ws, mat, pool);
   mat.set_scale(1.0f);
+  return mat;
+}
+
+template <typename MatT, size_t kOuter, size_t kInner>
+std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> GenerateMatHeap(
+    size_t offset, hwy::ThreadPool& pool) {
+  gcpp::CompressWorkingSet ws;
+  std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> mat =
+      std::unique_ptr<CompressedArray<MatT, kOuter * kInner>>(
+          new CompressedArray<MatT, kOuter * kInner>);
+  hwy::AlignedFreeUniquePtr<float[]> content =
+      hwy::AllocateAligned<float>(kOuter * kInner);
+  const float scale = 1.0f / kInner;
+  pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
+    for (size_t j = 0; j < kInner; j++) {
+      content[i * kInner + j] =
+          static_cast<float>((i * kInner + j + offset) * scale);
+    }
+  });
+
+  Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
+           pool);
+  mat->set_scale(1.0f);
+  return mat;
+}
+
+template <typename MatT, size_t kOuter, size_t kInner>
+std::unique_ptr<CompressedArray<MatT, kOuter * kInner>>
+GenerateTransposeMatHeap(size_t offset, hwy::ThreadPool& pool) {
+  gcpp::CompressWorkingSet ws;
+  std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> mat =
+      std::unique_ptr<CompressedArray<MatT, kOuter * kInner>>(
+          new CompressedArray<MatT, kOuter * kInner>);
+  hwy::AlignedFreeUniquePtr<float[]> content =
+      hwy::AllocateAligned<float>(kOuter * kInner);
+  const float scale = 1.0f / kInner;
+  pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
+    for (size_t j = 0; j < kInner; j++) {
+      content[i * kInner + j] =
+          static_cast<float>((j * kInner + i + offset) * scale);
+    }
+  });
+
+  Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
+           pool);
+  mat->set_scale(1.0f);
+  return mat;
+}
+
+template <typename MatT, size_t kOuter, size_t kInner>
+std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> GenerateZeroMatHeap(
+    hwy::ThreadPool& pool) {
+  gcpp::CompressWorkingSet ws;
+  std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> mat =
+      std::unique_ptr<CompressedArray<MatT, kOuter * kInner>>(
+          new CompressedArray<MatT, kOuter * kInner>);
+  hwy::AlignedFreeUniquePtr<float[]> content =
+      hwy::AllocateAligned<float>(kOuter * kInner);
+
+  pool.Run(0, kOuter, [&](const size_t i, size_t thread) {
+    hwy::ZeroBytes(&content[i * kInner], kInner * sizeof(content[0]));
+  });
+
+  Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
+           pool);
+  mat->set_scale(1.0f);
   return mat;
 }
 
@@ -484,17 +532,21 @@ void TestTiledMatMul() {
   constexpr size_t kN = 512;  // * 5;  // 6;  // 768
   constexpr size_t kK = 512;  // * 5;  // 640
 
-  CompressedArray<MatTA, kM * kN> a = GenerateMat<MatTA, kM, kN>(0, pool);
-  CompressedArray<MatTB, kN * kK> b = GenerateMat<MatTB, kN, kK>(0, pool);
-  CompressedArray<float, kM * kK> c_slow = GenerateZeroMat<float, kM, kK>(pool);
-  MatMulSlow<kM, kN, kK>(a.data(), b.data(), c_slow.data());
+  std::unique_ptr<CompressedArray<MatTA, kM * kN>> a =
+      GenerateMatHeap<MatTA, kM, kN>(0, pool);
+  std::unique_ptr<CompressedArray<MatTB, kN * kK>> b =
+      GenerateMatHeap<MatTB, kN, kK>(0, pool);
+  std::unique_ptr<CompressedArray<float, kM * kK>> c_slow =
+      GenerateZeroMatHeap<float, kM, kK>(pool);
+
+  MatMulSlow<kM, kN, kK>(a->data(), b->data(), c_slow->data());
 
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
-  CompressedArray<MatTB, kN * kK> b_trans =
-      GenerateTransposeMat<MatTB, kN, kK>(0, pool);
-  MatMul_4x4<kM, kN, kK>(a.data(), b_trans.data(), c.get(), pool);
+  std::unique_ptr<CompressedArray<MatTB, kN * kK>> b_trans =
+      GenerateTransposeMatHeap<MatTB, kN, kK>(0, pool);
+  MatMul_4x4<kM, kN, kK>(a->data(), b_trans->data(), c.get(), pool);
 
-  AssertClose(c_slow.data(), c.get(), kM * kK);
+  AssertClose(c_slow->data(), c.get(), kM * kK);
 }
 
 void TestAllTiledMatMul() {
