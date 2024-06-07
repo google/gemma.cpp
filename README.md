@@ -151,13 +151,15 @@ cmake -B build
 
 **or** if you downloaded bfloat16 weights (any model *without* `-sfp` in the
 name), instead of running cmake with no options as above, run cmake with
-GEMMA_WEIGHT_T set to [highway's](https://github.com/google/highway)
-`hwy::bfloat16_t` type. We intend to soon support all weight types without
-requiring compiler flags. Note that we recommend using `-sfp` weights instead of
-bfloat16 for faster inference.
+WEIGHT_TYPE set to [highway's](https://github.com/google/highway)
+`hwy::bfloat16_t` type. Alternatively, you can also add
+`-DGEMMA_WEIGHT_T=hwy::bfloat16_t` to the C++ compiler flags.
+
+We intend to soon support all weight types without requiring extra flags. Note
+that we recommend using `-sfp` weights instead of bfloat16 for faster inference.
 
 ```sh
-cmake -B build -DGEMMA_WEIGHT_T=hwy::bfloat16_t
+cmake -B build -DWEIGHT_TYPE=hwy::bfloat16_t
 ```
 
 After running whichever of the above `cmake` invocations that is appropriate for
