@@ -44,7 +44,9 @@ struct KVCache {
   static KVCache Create(Model type);
 };
 
+// The tokenizer's end of sentence and beginning of sentence token ids.
 constexpr int EOS_ID = 1;
+constexpr int BOS_ID = 2;
 
 class GemmaTokenizer {
  public:
@@ -87,7 +89,7 @@ struct RuntimeConfig {
 struct TimingInfo {
   double prefill_tok_sec = 0.0;
   double gen_tok_sec = 0.0;
-  double time_to_first_token = 0;
+  double time_to_first_token = 0.0;
 };
 
 // Will be called for layers output with:
