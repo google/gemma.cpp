@@ -61,6 +61,8 @@ set(SOURCES
   gemma/activations.h
   gemma/common.cc
   gemma/common.h
+  gemma/cross_entropy.cc
+  gemma/cross_entropy.h
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
