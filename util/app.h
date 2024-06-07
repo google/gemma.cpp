@@ -21,19 +21,17 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #if HWY_OS_LINUX
 #include <sched.h>
-
-#include <cctype>
-#include <cerrno>  // IDE does not recognize errno.h as providing errno.
-#include <string>
 #endif  // HWY_OS_LINUX
 #include <stddef.h>
 #include <stdio.h>
 
 #include <algorithm>  // std::clamp
-#include <thread>     // NOLINT>
+#include <string>
+#include <thread>  // NOLINT>
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "util/args.h"
@@ -49,14 +47,10 @@ static inline const char* CompiledConfig() {
     return "msan";
   } else if (HWY_IS_TSAN) {
     return "tsan";
-#if defined(HWY_IS_HWASAN)
   } else if (HWY_IS_HWASAN) {
     return "hwasan";
-#endif
-#if defined(HWY_IS_UBSAN)
   } else if (HWY_IS_UBSAN) {
     return "ubsan";
-#endif
   } else if (HWY_IS_DEBUG_BUILD) {
     return "dbg";
   } else {
@@ -172,15 +166,15 @@ class AppArgs : public ArgsBase<AppArgs> {
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  gcpp::Model ModelType() const { return model_type; }
-
-  gcpp::ModelTraining ModelTraining() const { return model_training; }
-
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    const char* parse_result =
-        ParseModelTypeAndTraining(model_type_str, model_type, model_training);
-    if (parse_result) return parse_result;
+    if (const char* err = ParseModelTypeAndTraining(model_type_str, model_type_,
+                                                    model_training_)) {
+      return err;
+    }
+    if (const char* err = ParseType(weight_type_str, weight_type_)) {
+      return err;
+    }
     if (tokenizer.path.empty()) {
       return "Missing --tokenizer flag, a file for the tokenizer is required.";
     }
@@ -209,8 +203,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path weights;  // weights file location
   Path compressed_weights;
   std::string model_type_str;
-  Model model_type;
-  enum ModelTraining model_training;
+  std::string weight_type_str;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -227,8 +220,27 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
             "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
+    visitor(weight_type_str, "weight_type", std::string("sfp"),
+            "Weight type\n    f32 = float, bf16 = bfloat16, SFP = 8-bit FP\n"
+            "    Required argument.");
   }
+
+  // Uninitialized before Validate, must call after that.
+  gcpp::Model ModelType() const { return model_type_; }
+  gcpp::ModelTraining ModelTrainingType() const { return model_training_; }
+  gcpp::Type WeightType() const { return weight_type_; }
+
+ private:
+  Model model_type_;
+  ModelTraining model_training_;
+  Type weight_type_;
 };
+
+static inline Gemma CreateGemma(const LoaderArgs& loader,
+                                hwy::ThreadPool& pool) {
+  return Gemma(loader.tokenizer, loader.weights, loader.ModelType(),
+               loader.WeightType(), pool);
+}
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }

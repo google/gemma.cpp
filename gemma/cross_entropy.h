@@ -16,6 +16,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_CROSS_ENTROPY_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_CROSS_ENTROPY_H_
 
+#include <stddef.h>
+
 #include <vector>
 
 #include "gemma/gemma.h"

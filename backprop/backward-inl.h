@@ -21,7 +21,6 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_INL_H_
 
 #include <stddef.h>
-#include <stdint.h>
 
 #include <array>
 #include <cmath>
@@ -44,6 +43,7 @@
 #endif
 
 #include "gemma/ops.h"
+#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

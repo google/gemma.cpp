@@ -76,17 +76,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
 
-# Allowable types for WEIGHT_TYPE:
-# float - slow, not recommended
-# hwy::bfloat16_t - bfloat16 as implemented by https://github.com/google/highway
-# SfpStream - 8-bit switched floating point (recommended)
-# NuqStream - experimental, work-in-progress
-option(WEIGHT_TYPE "Set weight type" "")
-
-if (WEIGHT_TYPE)
-  add_definitions(-DGEMMA_WEIGHT_T=${WEIGHT_TYPE})
-endif()
-
 FetchContent_GetProperties(sentencepiece)
 
 ## Library Target

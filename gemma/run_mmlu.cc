@@ -157,8 +157,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     PinWorkersToCores(pool);
   }
 
-  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
-
+  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
 
   JsonGemma(model, kv_cache, pool, inference, app.verbosity, app.eot_line);

@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
     gcpp::PinWorkersToCores(pool);
   }
 
-  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
+  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
 
   const std::string& prompt = prompt_args.prompt;

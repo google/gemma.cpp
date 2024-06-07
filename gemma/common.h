@@ -21,6 +21,7 @@
 
 #include <string>
 
+#include "compression/compress.h"
 #include "gemma/configs.h"  // IWYU pragma: export
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // ConvertScalarTo
@@ -37,67 +38,129 @@ ByteStorageT AllocateSizeof() {
 // Model variants: see configs.h for details.
 enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
 
+// Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
-// Returns the return value of Func<T>().operator() called with `args`, where
-// `T` is selected based on `model`.
+// Tensor types for loading weights.
+enum class Type { kF32, kBF16, kSFP };
+
+// Returns the return value of FuncT<Config*<TWeight>>().operator()(args), where
+// Config* is selected via `model`. Typically called by CallForModelAndWeight,
+// but can also be called directly when FuncT does not actually use TWeight.
 //
-// This is used to implement type-erased functions such as
-// LoadCompressedWeights, which can be called from other .cc files, by calling a
-// functor LoadCompressedWeightsT, which has a template argument. `Func` must
-// be a functor because function templates cannot be passed as a template
-// template argument, and we prefer to avoid the overhead of std::function.
+// Note that a T prefix indicates a concrete type template argument, whereas a
+// T suffix indicates the argument is itself a template.
 //
-// This function avoids having to update all call sites when we extend `Model`.
-template <template <typename Config> class Func, typename... Args>
-decltype(auto) CallFunctorForModel(Model model, Args&&... args) {
+// `FuncT` must be a functor because function templates cannot be passed as a
+// template template argument, and we prefer to avoid the overhead of
+// std::function.
+template <typename TWeight, template <typename TConfig> class FuncT,
+          typename... TArgs>
+decltype(auto) CallForModel(Model model, TArgs&&... args) {
   switch (model) {
     case Model::GEMMA_TINY:
-      return Func<ConfigGemmaTiny>()(std::forward<Args>(args)...);
+      return FuncT<ConfigGemmaTiny<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA_2B:
-      return Func<ConfigGemma2B>()(std::forward<Args>(args)...);
+      return FuncT<ConfigGemma2B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA_7B:
-      return Func<ConfigGemma7B>()(std::forward<Args>(args)...);
+      return FuncT<ConfigGemma7B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GRIFFIN_2B:
-      return Func<ConfigGriffin2B>()(std::forward<Args>(args)...);
+      return FuncT<ConfigGriffin2B<TWeight>>()(std::forward<TArgs>(args)...);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
 }
 
-// Like CallFunctorForModel, but for SIMD function templates. This is a macro
+// Returns the return value of FuncT<TConfig>().operator()(args),
+// where `TConfig` is selected based on `model` and `weight`.
+
+// This makes it easy to extend `Model` or `Type` without updating callers.
+//
+// Usage example: LoadWeights is type-erased so that it can be called from other
+// .cc files. It uses this function to call the appropriate instantiation of a
+// template functor LoadCompressedWeightsT<TConfig>.
+template <template <typename TConfig> class FuncT, typename... TArgs>
+decltype(auto) CallForModelAndWeight(Model model, Type weight,
+                                     TArgs&&... args) {
+  switch (weight) {
+    case Type::kF32:
+      return CallForModel<float, FuncT, TArgs...>(  //
+          model, std::forward<TArgs>(args)...);
+    case Type::kBF16:
+      return CallForModel<hwy::bfloat16_t, FuncT, TArgs...>(
+          model, std::forward<TArgs>(args)...);
+    case Type::kSFP:
+      return CallForModel<SfpStream, FuncT, TArgs...>(
+          model, std::forward<TArgs>(args)...);
+    default:
+      HWY_ABORT("Weight type %d unknown.", static_cast<int>(weight));
+  }
+}
+
+// Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
+// calls FUNC<ConfigT<TWEIGHT>> where ConfigT is chosen via MODEL enum.
+#define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                \
+  switch (MODEL) {                                                      \
+    case Model::GEMMA_TINY: {                                           \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemmaTiny<TWEIGHT>>) \
+      ARGS;                                                             \
+      break;                                                            \
+    }                                                                   \
+    case Model::GEMMA_2B: {                                             \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2B<TWEIGHT>>)   \
+      ARGS;                                                             \
+      break;                                                            \
+    }                                                                   \
+    case Model::GEMMA_7B: {                                             \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B<TWEIGHT>>)   \
+      ARGS;                                                             \
+      break;                                                            \
+    }                                                                   \
+    case Model::GRIFFIN_2B: {                                           \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>) \
+      ARGS;                                                             \
+      break;                                                            \
+    }                                                                   \
+    default:                                                            \
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL));     \
+  }
+
+// Like CallForModelAndWeight, but for SIMD function templates. This is a macro
 // because it boils down to N_SSE4::FUNC, which would not work if FUNC was a
-// normal function argument.
-#define GEMMA_EXPORT_AND_DISPATCH_MODEL(MODEL, FUNC, ARGS)          \
-  switch (MODEL) {                                                  \
-    case Model::GEMMA_TINY: {                                       \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemmaTiny>)      \
-      ARGS;                                                         \
-      break;                                                        \
-    }                                                               \
-    case Model::GEMMA_2B: {                                         \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2B>)        \
-      ARGS;                                                         \
-      break;                                                        \
-    }                                                               \
-    case Model::GEMMA_7B: {                                         \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B>)        \
-      ARGS;                                                         \
-      break;                                                        \
-    }                                                               \
-    case Model::GRIFFIN_2B: {                                       \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B>)      \
-      ARGS;                                                         \
-      break;                                                        \
-    }                                                               \
-    default:                                                        \
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL)); \
+// normal function argument. MODEL and WEIGHT are enums.
+#define GEMMA_EXPORT_AND_DISPATCH(MODEL, WEIGHT, FUNC, ARGS)          \
+  switch (WEIGHT) {                                                   \
+    case Type::kF32:                                                  \
+      GEMMA_DISPATCH_MODEL(MODEL, float, FUNC, ARGS);                 \
+      break;                                                          \
+    case Type::kBF16:                                                 \
+      GEMMA_DISPATCH_MODEL(MODEL, hwy::bfloat16_t, FUNC, ARGS);       \
+      break;                                                          \
+    case Type::kSFP:                                                  \
+      GEMMA_DISPATCH_MODEL(MODEL, SfpStream, FUNC, ARGS);             \
+      break;                                                          \
+    default:                                                          \
+      HWY_ABORT("Weight type %d unknown.", static_cast<int>(WEIGHT)); \
   }
 
 // Returns error string or nullptr if OK.
 // Thread-hostile.
 const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training);
+const char* ParseType(const std::string& type_string, Type& type);
+
+static inline const char* StringFromType(Type type) {
+  switch (type) {
+    case Type::kF32:
+      return "f32";
+    case Type::kBF16:
+      return "bf16";
+    case Type::kSFP:
+      return "sfp";
+    default:
+      return "?";
+  }
+}
 
 // __builtin_sqrt is not constexpr as of Clang 17.
 #if HWY_COMPILER_GCC_ACTUAL

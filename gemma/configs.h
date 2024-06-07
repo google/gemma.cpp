@@ -22,7 +22,6 @@
 
 #include <array>
 
-#include "compression/compress.h"  // SfpStream
 #include "hwy/base.h"                // hwy::bfloat16_t
 
 namespace gcpp {
@@ -42,17 +41,9 @@ namespace gcpp {
 #define GEMMA_MAX_THREADS 128
 #endif  // !GEMMA_MAX_THREADS
 
-// Allowable types for GEMMA_WEIGHT_T (can be specified at compilation time):
-// float, hwy::bfloat16_t, SfpStream, NuqStream
-#ifndef GEMMA_WEIGHT_T
-#define GEMMA_WEIGHT_T SfpStream
-#endif  // !GEMMA_WEIGHT_T
-
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
 static constexpr size_t kMaxThreads = GEMMA_MAX_THREADS;
-
-using GemmaWeightT = GEMMA_WEIGHT_T;
 
 using EmbedderInputT = hwy::bfloat16_t;
 
@@ -82,7 +73,10 @@ constexpr size_t NumLayersOfTypeBefore(
   return count;
 }
 
+template <typename TWeight>
 struct ConfigGemma7B {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
   static constexpr int kSeqLen = gcpp::kSeqLen;
   static constexpr int kVocabSize = 256000;
   static constexpr std::array<LayerAttentionType, 28> kLayerConfig =
@@ -111,10 +105,12 @@ struct ConfigGemma7B {
   static constexpr bool kUseLocalAttention = false;
   static constexpr bool kInterleaveQKV = true;
   static constexpr int kNumTensorScales = 0;
-  using WeightT = GEMMA_WEIGHT_T;
 };
 
+template <typename TWeight>
 struct ConfigGemma2B {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
   static constexpr int kSeqLen = gcpp::kSeqLen;
   static constexpr int kVocabSize = 256000;
   static constexpr std::array<LayerAttentionType, 18> kLayerConfig =
@@ -143,10 +139,12 @@ struct ConfigGemma2B {
   static constexpr bool kUseLocalAttention = false;
   static constexpr bool kInterleaveQKV = true;
   static constexpr int kNumTensorScales = 0;
-  using WeightT = GEMMA_WEIGHT_T;
 };
 
+template <typename TWeight>
 struct ConfigGemmaTiny {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
   static constexpr int kSeqLen = 32;
   static constexpr int kVocabSize = 16;
   static constexpr std::array<LayerAttentionType, 3> kLayerConfig =
@@ -175,10 +173,12 @@ struct ConfigGemmaTiny {
   static constexpr bool kUseLocalAttention = false;
   static constexpr bool kInterleaveQKV = true;
   static constexpr int kNumTensorScales = 0;
-  using WeightT = GEMMA_WEIGHT_T;
 };
 
+template <typename TWeight>
 struct ConfigGriffin2B {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
   // Griffin uses local attention, so kSeqLen is actually the local attention
   // window.
   static constexpr int kSeqLen = 2048;
@@ -235,7 +235,6 @@ struct ConfigGriffin2B {
   static constexpr bool kUseLocalAttention = true;
   static constexpr bool kInterleaveQKV = false;
   static constexpr int kNumTensorScales = 140;
-  using WeightT = GEMMA_WEIGHT_T;
 };
 
 }  // namespace gcpp

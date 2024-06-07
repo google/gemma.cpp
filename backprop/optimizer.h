@@ -19,16 +19,16 @@
 #include <random>
 
 #include "gemma/common.h"
-#include "gemma/weights.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-void RandInitWeights(Model model, const ByteStorageT& weights,
-                     hwy::ThreadPool& pool, std::mt19937& gen);
+void RandInitWeights(Model model_type, Type weight_type,
+                     const ByteStorageT& weights, hwy::ThreadPool& pool,
+                     std::mt19937& gen);
 
-void AdamUpdate(Model model, const ByteStorageT& grad, float alpha, float beta1,
-                float beta2, float epsilon, size_t t,
+void AdamUpdate(Model model_type, Type weight_type, const ByteStorageT& grad,
+                float alpha, float beta1, float beta2, float epsilon, size_t t,
                 const ByteStorageT& weights, const ByteStorageT& grad_m,
                 const ByteStorageT& grad_v, hwy::ThreadPool& pool);
 

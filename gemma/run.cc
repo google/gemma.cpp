@@ -71,7 +71,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << hwy::VectorBytes() * 8 << " bits)" << "\n"
               << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
-              << gcpp::TypeName(gcpp::GemmaWeightT()) << "\n"
+              << gcpp::StringFromType(loader.WeightType()) << "\n"
               << "EmbedderInput Type            : "
               << gcpp::TypeName(gcpp::EmbedderInputT()) << "\n";
   }
@@ -251,8 +251,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     PinWorkersToCores(pool);
   }
 
-  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
-
+  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
   KVCache kv_cache = KVCache::Create(loader.ModelType());
 
   if (app.verbosity >= 1) {
@@ -278,7 +277,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   ReplGemma(
-      model, loader.ModelTraining(), kv_cache, pool, inference, app.verbosity,
+      model, loader.ModelTrainingType(), kv_cache, pool, inference,
+      app.verbosity,
       /*accept_token=*/[](int) { return true; }, app.eot_line);
 }
 

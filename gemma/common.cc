@@ -64,4 +64,28 @@ const char* ParseModelTypeAndTraining(const std::string& model_flag,
   return kErrorMessageBuffer;
 }
 
+const char* ParseType(const std::string& type_string, Type& type) {
+  constexpr Type kTypes[] = {Type::kF32, Type::kBF16, Type::kSFP};
+  constexpr const char* kStrings[] = {"f32", "bf16", "sfp"};
+  constexpr size_t kNum = std::end(kStrings) - std::begin(kStrings);
+  static char kErrorMessageBuffer[kNum * 8 + 100] =
+      "Invalid or missing type, need to specify one of ";
+  for (size_t i = 0; i + 1 < kNum; i++) {
+    strcat(kErrorMessageBuffer, kStrings[i]);  // NOLINT
+    strcat(kErrorMessageBuffer, ", ");         // NOLINT
+  }
+  strcat(kErrorMessageBuffer, kStrings[kNum - 1]);  // NOLINT
+  strcat(kErrorMessageBuffer, ".");                 // NOLINT
+  std::string type_lc = type_string;
+  std::transform(begin(type_lc), end(type_lc), begin(type_lc),
+                 [](unsigned char c) { return std::tolower(c); });
+  for (size_t i = 0; i < kNum; i++) {
+    if (kStrings[i] == type_lc) {
+      type = kTypes[i];
+      return nullptr;
+    }
+  }
+  return kErrorMessageBuffer;
+}
+
 }  // namespace gcpp

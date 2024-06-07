@@ -62,14 +62,16 @@ struct Args : public ArgsBase<Args> {
     ChooseNumThreads();
   }
 
-  gcpp::Model ModelType() const { return model_type; }
-
   // Returns error string or nullptr if OK.
   const char* Validate() {
     ModelTraining model_training;
-    const char* parse_result =
-        ParseModelTypeAndTraining(model_type_str, model_type, model_training);
-    if (parse_result) return parse_result;
+    if (const char* err = ParseModelTypeAndTraining(model_type_str, model_type_,
+                                                    model_training)) {
+      return err;
+    }
+    if (const char* err = ParseType(weight_type_str, weight_type_)) {
+      return err;
+    }
     if (weights.path.empty()) {
       return "Missing --weights flag, a file for the uncompressed model.";
     }
@@ -86,7 +88,7 @@ struct Args : public ArgsBase<Args> {
   Path weights;             // uncompressed weights file location
   Path compressed_weights;  // compressed weights file location
   std::string model_type_str;
-  Model model_type;
+  std::string weight_type_str;
   size_t num_threads;
 
   template <class Visitor>
@@ -101,6 +103,9 @@ struct Args : public ArgsBase<Args> {
             "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
             "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
+    visitor(weight_type_str, "weight_type", std::string("sfp"),
+            "Weight type\n    f32 = float, bf16 = bfloat16, SFP = 8-bit FP\n"
+            "    Required argument.");
     visitor(compressed_weights, "compressed_weights", Path(),
             "Path name where compressed weights (.sbs) file will be written.\n"
             "    Required argument.");
@@ -110,6 +115,14 @@ struct Args : public ArgsBase<Args> {
             "number of suupported concurrent threads.",
             2);
   }
+
+  // Uninitialized before Validate, must call after that.
+  gcpp::Model ModelType() const { return model_type_; }
+  gcpp::Type WeightType() const { return weight_type_; }
+
+ private:
+  Model model_type_;
+  Type weight_type_;
 };
 
 void ShowHelp(gcpp::Args& args) {
@@ -132,7 +145,7 @@ namespace HWY_NAMESPACE {
 template <class TConfig>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path, Model model_type,
-                     hwy::ThreadPool& pool) {
+                     Type weight_type, hwy::ThreadPool& pool) {
   if (!weights_path.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights_path.path.c_str());
@@ -147,7 +160,7 @@ void CompressWeights(const Path& weights_path,
   // Get weights, compress, and store.
   const bool scale_for_compression = TConfig::kNumTensorScales > 0;
   const ByteStorageT weights_u8 = gcpp::LoadRawWeights(
-      weights_path, model_type, pool, scale_for_compression);
+      weights_path, model_type, weight_type, pool, scale_for_compression);
   WeightsF<TConfig>* weights =
       reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
@@ -169,9 +182,10 @@ namespace gcpp {
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   const Model model_type = args.ModelType();
-  GEMMA_EXPORT_AND_DISPATCH_MODEL(
-      model_type, CompressWeights,
-      (args.weights, args.compressed_weights, model_type, pool));
+  const Type weight_type = args.WeightType();
+  GEMMA_EXPORT_AND_DISPATCH(
+      model_type, weight_type, CompressWeights,
+      (args.weights, args.compressed_weights, model_type, weight_type, pool));
 }
 
 }  // namespace gcpp

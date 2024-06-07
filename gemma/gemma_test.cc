@@ -38,8 +38,7 @@ class GemmaTest : public ::testing::Test {
       : weights("./2b-it-mqa.sbs"),
         tokenizer("./tokenizer.spm"),
         pool(std::min<int>(20, (std::thread::hardware_concurrency() - 1) / 2)),
-        model_type(gcpp::Model::GEMMA_2B),
-        model(tokenizer, weights, model_type, pool) {
+        model(tokenizer, weights, model_type, weight_type, pool) {
     KVCache kv_cache = KVCache::Create(model_type);
   }
 
@@ -96,7 +95,8 @@ class GemmaTest : public ::testing::Test {
   gcpp::Path tokenizer;
   gcpp::KVCache kv_cache;
   hwy::ThreadPool pool;
-  gcpp::Model model_type = {};
+  gcpp::Model model_type = gcpp::Model::GEMMA_2B;
+  gcpp::Type weight_type = gcpp::Type::kSFP;
   gcpp::Gemma model;
 };
 

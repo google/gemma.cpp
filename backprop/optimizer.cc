@@ -107,18 +107,20 @@ struct AdamUpdateT {
 
 }  // namespace
 
-void RandInitWeights(Model model, const ByteStorageT& weights,
-                     hwy::ThreadPool& pool,
+void RandInitWeights(Model model_type, Type weight_type,
+                     const ByteStorageT& weights, hwy::ThreadPool& pool,
                      std::mt19937& gen) {
-  CallFunctorForModel<RandInitWeightsT>(model, weights, pool, gen);
+  CallForModelAndWeight<RandInitWeightsT>(model_type, weight_type, weights,
+                                          pool, gen);
 }
 
-void AdamUpdate(Model model, const ByteStorageT& grad, float alpha, float beta1,
-                float beta2, float epsilon, size_t t,
+void AdamUpdate(Model model_type, Type weight_type, const ByteStorageT& grad,
+                float alpha, float beta1, float beta2, float epsilon, size_t t,
                 const ByteStorageT& weights, const ByteStorageT& grad_m,
                 const ByteStorageT& grad_v, hwy::ThreadPool& pool) {
-  CallFunctorForModel<AdamUpdateT>(model, grad, alpha, beta1, beta2, epsilon, t,
-                                   weights, grad_m, grad_v, pool);
+  CallForModelAndWeight<AdamUpdateT>(model_type, weight_type, grad, alpha,
+                                     beta1, beta2, epsilon, t, weights, grad_m,
+                                     grad_v, pool);
 }
 
 }  // namespace gcpp

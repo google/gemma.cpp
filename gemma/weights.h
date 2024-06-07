@@ -129,21 +129,17 @@ using WeightsF = Weights<float, TConfig>;
 // ----------------------------------------------------------------------------
 // Compressed
 
-// If weights are f32, also f32; otherwise at least bf16. Useful for ops that do
-// not yet support smaller compressed types, or require at least bf16. When
-// weights are f32, we also want such tensors to be f32.
-template <class TConfig>
-using WeightF32OrBF16T =
-    hwy::If<hwy::IsSame<typename TConfig::WeightT, float>(), float,
-            hwy::bfloat16_t>;
-
 template <class TConfig>
 struct CompressedLayer {
   // No ctor/dtor, allocated via AllocateAligned.
 
   using TLayer = gcpp::LayerF<TConfig>;
-  using WeightT = typename TConfig::WeightT;
-  using WeightF32OrBF16 = WeightF32OrBF16T<TConfig>;
+  using Weight = typename TConfig::Weight;
+  // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
+  // do not yet support smaller compressed types, or require at least bf16. When
+  // weights are f32, we also want such tensors to be f32.
+  using WeightF32OrBF16 =
+      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
 
   static constexpr size_t kHeads = TLayer::kHeads;
   static constexpr size_t kKVHeads = TLayer::kKVHeads;
@@ -166,29 +162,29 @@ struct CompressedLayer {
 
   union {
     struct {
-      ArrayT<WeightT, kAttVecEinsumWSize> attn_vec_einsum_w;
-      ArrayT<WeightT, kQKVEinsumWSize> qkv_einsum_w;
+      ArrayT<Weight, kAttVecEinsumWSize> attn_vec_einsum_w;
+      ArrayT<Weight, kQKVEinsumWSize> qkv_einsum_w;
       ArrayT<float, kAOBiasDim> attention_output_biases;
     };
 
     struct {
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_x_w;
+      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_x_w;
       ArrayT<float, kGriffinDim> linear_x_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_y_w;
+      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_y_w;
       ArrayT<float, kGriffinDim> linear_y_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim> linear_out_w;
+      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_out_w;
       ArrayT<float, kGriffinDim> linear_out_biases;
       ArrayT<float, TConfig::kConv1dWidth * kGriffinDim> conv_w;
       ArrayT<float, kGriffinDim> conv_biases;
-      ArrayT<WeightT, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
+      ArrayT<Weight, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
       ArrayT<float, kGriffinDim * 2> gate_biases;
       ArrayT<float, kGriffinDim> a;
     } griffin;
   };
 
-  ArrayT<WeightT, TLayer::kGatingEinsumWSize> gating_einsum_w;
-  ArrayT<WeightT, kModelDim * kFFHiddenDim> linear_w;
-  // We don't yet have an RMSNorm that accepts all WeightT.
+  ArrayT<Weight, TLayer::kGatingEinsumWSize> gating_einsum_w;
+  ArrayT<Weight, kModelDim * kFFHiddenDim> linear_w;
+  // We don't yet have an RMSNorm that accepts all Weight.
   ArrayT<WeightF32OrBF16, kModelDim> pre_attention_norm_scale;
   ArrayT<WeightF32OrBF16, kModelDim> pre_ffw_norm_scale;
   ArrayT<WeightF32OrBF16, kPostNormScale ? kModelDim : 0>
@@ -241,7 +237,7 @@ template <class TConfig>
 using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
                          WeightsF<TConfig>>;
 
-// Call via CallFunctorForModel.
+// TODO: can we use TConfig::Weight instead of T?
 template <typename T, typename TConfig>
 struct AllocateWeights {
   ByteStorageT operator()(hwy::ThreadPool& pool) const {
@@ -335,14 +331,15 @@ class WeightsWrapper {
 };
 
 // For use by compress_weights.cc.
-ByteStorageT LoadRawWeights(const Path& weights, Model model,
-                            hwy::ThreadPool& pool, bool scale_for_compression);
+ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
+                            Type weight_type, hwy::ThreadPool& pool,
+                            bool scale_for_compression);
 
 // For gemma.cc; calls LoadRawWeights if !kWeightsAreCompressed.
-ByteStorageT LoadWeights(const Path& weights, Model model,
-                         hwy::ThreadPool& pool);
+ByteStorageT LoadWeights(const Path& weights, Model model_type,
+                         Type weight_type, hwy::ThreadPool& pool);
 
-void LogWeightStats(Model model, const ByteStorageT& weights);
+void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
 
 // ----------------------------------------------------------------------------
 // Iterators

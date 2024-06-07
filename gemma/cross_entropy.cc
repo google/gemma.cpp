@@ -15,12 +15,19 @@
 
 #include "gemma/cross_entropy.h"
 
+#include <stddef.h>
+#include <stdio.h>
+
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <regex>  // NOLINT
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "gemma/common.h"
+#include "gemma/gemma.h"
 
 namespace gcpp {
 
@@ -63,7 +70,9 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
   auto stream_token = [](int, float) { return true; };
   auto accept_token = [](int) { return true; };
 
-  const int vocab_size = CallFunctorForModel<GetVocabSize>(gemma.ModelType());
+  // TWeight is unused, but we have to pass it to Config*.
+  const int vocab_size =
+      CallForModel</*TWeight=*/float, GetVocabSize>(gemma.ModelType());
   float cross_entropy = std::log(vocab_size);  // first token
   size_t pos = 1;
   std::function<int(const float*, size_t)> sample_token =

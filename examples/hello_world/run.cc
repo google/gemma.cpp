@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
   hwy::ThreadPool pool(num_threads);
 
   // Instantiate model and KV Cache
-  gcpp::Gemma model(loader.tokenizer, loader.weights, loader.ModelType(), pool);
+  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
   size_t pos = 0;  // KV Cache position
 

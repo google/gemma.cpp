@@ -15,6 +15,11 @@
 
 #include "backprop/forward.h"
 
+#include "backprop/prompt.h"
+#include "gemma/activations.h"
+#include "gemma/common.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
+
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
@@ -29,7 +34,6 @@
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
-namespace hn = hwy::HWY_NAMESPACE;
 
 template <typename TConfig>
 float CrossEntropyLossForwardPass(const Prompt& prompt,
@@ -51,10 +55,10 @@ float CrossEntropyLossForwardPassT(Model model, const Prompt& prompt,
   // TODO(janwas): use CallFunctorForModel
   switch (model) {
     case Model::GEMMA_2B:
-      return CrossEntropyLossForwardPass<ConfigGemma2B>(
-          prompt, weights, forward, pool);
+      return CrossEntropyLossForwardPass<ConfigGemma2B<float>>(prompt, weights,
+                                                               forward, pool);
     case Model::GEMMA_TINY:
-      return CrossEntropyLossForwardPass<ConfigGemmaTiny>(
+      return CrossEntropyLossForwardPass<ConfigGemmaTiny<float>>(
           prompt, weights, forward, pool);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));

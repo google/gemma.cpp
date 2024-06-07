@@ -116,6 +116,7 @@ cc_library(
         "gemma/cross_entropy.h",
     ],
     deps = [
+        ":common",
         ":gemma_lib",
     ],
 )

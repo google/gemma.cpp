@@ -147,8 +147,10 @@ struct CreateKVCache {
 
 }  // namespace
 
-KVCache KVCache::Create(Model type) {
-  return CallFunctorForModel<CreateKVCache>(type);
+KVCache KVCache::Create(Model model_type) {
+  // TWeight=float is a placeholder and unused because CreateKVCache does not
+  // use TConfig::Weight.
+  return CallForModel</*TWeight=*/float, CreateKVCache>(model_type);
 }
 
 class GemmaTokenizer::Impl {
@@ -727,12 +729,12 @@ Activations<TConfig, kBatchSize>& GetActivations(const ByteStorageT& state_u8) {
 }  // namespace
 
 template <class TConfig>
-void Generate(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
-              const ByteStorageT& decode_u8,
-              const RuntimeConfig& runtime_config,
-              const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
-              hwy::ThreadPool& pool, TimingInfo& timing_info,
-              LayersOutputT* layers_output) {
+void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
+               const ByteStorageT& decode_u8,
+               const RuntimeConfig& runtime_config,
+               const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
+               hwy::ThreadPool& pool, TimingInfo& timing_info,
+               LayersOutputT* layers_output) {
   const WeightsT<TConfig>& weights = GetWeights<TConfig>(weights_u8);
   auto& prefill_activations =
       GetActivations<TConfig, kPrefillBatchSize>(prefill_u8);
@@ -871,23 +873,31 @@ struct AllocateDecode {
 }  // namespace
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-             hwy::ThreadPool& pool)
-    : pool_(pool), tokenizer_(tokenizer_path), model_type_(model_type) {
-  weights_u8_ = LoadWeights(weights, model_type, pool);
-  prefill_u8_ = CallFunctorForModel<AllocatePrefill>(model_type);
-  decode_u8_ = CallFunctorForModel<AllocateDecode>(model_type);
+             Type weight_type, hwy::ThreadPool& pool)
+    : pool_(pool),
+      tokenizer_(tokenizer_path),
+      model_type_(model_type),
+      weight_type_(weight_type) {
+  weights_u8_ = LoadWeights(weights, model_type, weight_type, pool);
+  prefill_u8_ = CallForModelAndWeight<AllocatePrefill>(model_type, weight_type);
+  decode_u8_ = CallForModelAndWeight<AllocateDecode>(model_type, weight_type);
 }
 
-Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type,
+Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
              hwy::ThreadPool& pool)
-    : pool_(pool), tokenizer_(std::move(tokenizer)), model_type_(model_type) {
-  weights_u8_ = CallFunctorForModel<AllocateWeightsF>(model_type, pool);
-  prefill_u8_ = CallFunctorForModel<AllocatePrefill>(model_type);
-  decode_u8_ = CallFunctorForModel<AllocateDecode>(model_type);
+    : pool_(pool),
+      tokenizer_(std::move(tokenizer)),
+      model_type_(model_type),
+      weight_type_(weight_type) {
+  weights_u8_ =
+      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
+  prefill_u8_ = CallForModelAndWeight<AllocatePrefill>(model_type, weight_type);
+  decode_u8_ = CallForModelAndWeight<AllocateDecode>(model_type, weight_type);
 }
 
 Gemma::~Gemma() {
-  CallFunctorForModel<DeleteLayersPtrs>(model_type_, weights_u8_);
+  CallForModelAndWeight<DeleteLayersPtrs>(model_type_, weight_type_,
+                                          weights_u8_);
 }
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
@@ -896,8 +906,8 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
                      LayersOutputT* layers_output) {
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
-  GEMMA_EXPORT_AND_DISPATCH_MODEL(
-      model_type_, Generate,
+  GEMMA_EXPORT_AND_DISPATCH(
+      model_type_, weight_type_, GenerateT,
       (weights_u8_, prefill_u8_, decode_u8_, runtime_config, prompt, start_pos,
        kv_cache, pool_, timing_info, layers_output));
 

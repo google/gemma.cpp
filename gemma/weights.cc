@@ -173,10 +173,11 @@ struct LoadRawWeightsT {
 #undef SCALE_WEIGHTS
 }  // namespace
 
-ByteStorageT LoadRawWeights(const Path& weights, Model model,
-                            hwy::ThreadPool& pool, bool scale_for_compression) {
-  return CallFunctorForModel<LoadRawWeightsT>(model, weights, pool,
-                                              scale_for_compression);
+ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
+                            Type weight_type, hwy::ThreadPool& pool,
+                            bool scale_for_compression) {
+  return CallForModelAndWeight<LoadRawWeightsT>(
+      model_type, weight_type, weights, pool, scale_for_compression);
 }
 
 namespace {
@@ -227,17 +228,18 @@ struct LoadCompressedWeightsT {
 };
 }  // namespace
 
-ByteStorageT LoadCompressedWeights(const Path& weights, Model model,
-                                   hwy::ThreadPool& pool) {
-  return CallFunctorForModel<LoadCompressedWeightsT>(model, weights, pool);
+ByteStorageT LoadCompressedWeights(const Path& weights, Model model_type,
+                                   Type weight_type, hwy::ThreadPool& pool) {
+  return CallForModelAndWeight<LoadCompressedWeightsT>(model_type, weight_type,
+                                                       weights, pool);
 }
 
-ByteStorageT LoadWeights(const Path& weights, Model model,
-                         hwy::ThreadPool& pool) {
+ByteStorageT LoadWeights(const Path& weights, Model model_type,
+                         Type weight_type, hwy::ThreadPool& pool) {
   if constexpr (kWeightsAreCompressed) {
-    return LoadCompressedWeights(weights, model, pool);
+    return LoadCompressedWeights(weights, model_type, weight_type, pool);
   } else {
-    return LoadRawWeights(weights, model, pool,
+    return LoadRawWeights(weights, model_type, weight_type, pool,
                           /*scale_for_compression=*/false);
   }
 }
@@ -274,8 +276,9 @@ struct LogWeightStatsT {
 };
 }  // namespace
 
-void LogWeightStats(gcpp::Model model, const ByteStorageT& weights) {
-  CallFunctorForModel<LogWeightStatsT>(model, weights);
+void LogWeightStats(gcpp::Model model_type, Type weight_type,
+                    const ByteStorageT& weights) {
+  CallForModelAndWeight<LogWeightStatsT>(model_type, weight_type, weights);
 }
 
 }  // namespace gcpp

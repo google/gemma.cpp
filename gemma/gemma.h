@@ -107,10 +107,11 @@ using LayersOutputT =
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-        hwy::ThreadPool& pool);
+        Type weight_type, hwy::ThreadPool& pool);
 
   // Allocates weights, caller is responsible for filling them.
-  Gemma(GemmaTokenizer&& tokenizer, Model model_type, hwy::ThreadPool& pool);
+  Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
+        hwy::ThreadPool& pool);
   ~Gemma();
 
   Model ModelType() const { return model_type_; }
@@ -136,6 +137,7 @@ class Gemma {
   ByteStorageT prefill_u8_;
   ByteStorageT decode_u8_;
   Model model_type_;
+  Type weight_type_;
 };
 
 // DEPRECATED, call Gemma::Generate directly.
