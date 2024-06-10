@@ -156,10 +156,12 @@ cc_test(
     ],
     deps = [
         ":args",
+        ":common",
         ":cross_entropy",
         ":gemma_lib",
         ":ops",
         "@googletest//:gtest_main",
+        "//compression:io",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",
     ],
