@@ -28,7 +28,6 @@
 #include "backprop/prompt.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"
-#include "gemma/weights.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -51,12 +50,12 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
 template <size_t kCols, size_t kRows>
-void MatMulVJP(const std::array<float, kRows * kCols>& weights,
-               const float* HWY_RESTRICT x,  // num_tokens * kCols
-               const float* HWY_RESTRICT v,  // num_tokens * kRows
+void MatMulVJP(const float* HWY_RESTRICT weights,  // kRows * kCols,
+               const float* HWY_RESTRICT x,       // num_tokens * kCols
+               const float* HWY_RESTRICT v,       // num_tokens * kRows
                size_t num_tokens,
-               std::array<float, kRows * kCols>& grad_w,
-               float* HWY_RESTRICT grad_x,  // num_tokens * kCols
+               float* HWY_RESTRICT grad_w,         // kRows * kCols,
+               float* HWY_RESTRICT grad_x,        // num_tokens * kCols
                hwy::ThreadPool& pool) {
   hwy::ZeroBytes(grad_x, num_tokens * kCols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -72,12 +71,12 @@ void MatMulVJP(const std::array<float, kRows * kCols>& weights,
 
 template <size_t kHeads, size_t kCols, size_t kRows>
 void MultiHeadMatMulVJP(
-    const std::array<float, kHeads * kRows * kCols>& weights,
-    const float* HWY_RESTRICT x,  // num_tokens * kHeads * kCols
-    const float* HWY_RESTRICT v,  // num_tokens * kRows
+    const float* HWY_RESTRICT weights,  // kHeads * kRows * kCols
+    const float* HWY_RESTRICT x,        // num_tokens * kHeads * kCols
+    const float* HWY_RESTRICT v,        // num_tokens * kRows
     size_t num_tokens,
-    std::array<float, kHeads * kRows * kCols>& grad_w,
-    float* HWY_RESTRICT grad_x,   // num_tokens * kHeads * kCols
+    float* HWY_RESTRICT grad_w,         // kHeads * kRows * kCols
+    float* HWY_RESTRICT grad_x,         // num_tokens * kHeads * kCols
     hwy::ThreadPool& pool) {
   hwy::ZeroBytes(grad_x, num_tokens * kHeads * kCols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -166,12 +165,12 @@ static HWY_NOINLINE void InputEmbeddingVJP(
   }
 }
 
-template <typename TConfig>
-void LayerVJP(const Layer<float, TConfig>& weights,
+template <typename TConfig, template<typename> typename LayerT>
+void LayerVJP(const LayerT<TConfig>& weights,
               const ForwardLayer<float, TConfig>& forward,
               const float* HWY_RESTRICT next_layer_grad,
               size_t num_tokens,
-              Layer<float, TConfig>& grad,
+              LayerT<TConfig>& grad,
               ForwardLayer<float, TConfig>& backward,
               hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -184,8 +183,8 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   HWY_ASSERT(num_tokens <= kSeqLen);
 
   MatMulVJP<kFFHiddenDim, kModelDim>(
-      weights.linear_w, forward.ffw_hidden_gated.data(), next_layer_grad,
-      num_tokens, grad.linear_w, backward.ffw_hidden_gated.data(),
+      weights.linear_w.data(), forward.ffw_hidden_gated.data(), next_layer_grad,
+      num_tokens, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
       pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -210,9 +209,9 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   }
 
   MatMulVJP<kModelDim, kFFHiddenDim * 2>(
-      weights.gating_einsum_w,
+      weights.gating_einsum_w.data(),
       forward.bf_pre_ffw_rms_out.data(), backward.ffw_hidden.data(),
-      num_tokens, grad.gating_einsum_w,
+      num_tokens, grad.gating_einsum_w.data(),
       backward.bf_pre_ffw_rms_out.data(), pool);
   RMSNormVJP(weights.pre_ffw_norm_scale.data(),
              forward.attention_out.data(),
@@ -230,9 +229,9 @@ void LayerVJP(const Layer<float, TConfig>& weights,
                  num_tokens * (kHeads + 2) * kQKVDim * sizeof(backward.qkv[0]));
 
   MultiHeadMatMulVJP<kHeads, kQKVDim, kModelDim>(
-      weights.attn_vec_einsum_w, forward.att_out.data(),
+      weights.attn_vec_einsum_w.data(), forward.att_out.data(),
       backward.attention_out.data(), num_tokens,
-      grad.attn_vec_einsum_w, backward.att_out.data(), pool);
+      grad.attn_vec_einsum_w.data(), backward.att_out.data(), pool);
 
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -293,9 +292,9 @@ void LayerVJP(const Layer<float, TConfig>& weights,
   }
 
   MatMulVJP<kModelDim, (kHeads + 2) * kQKVDim>(
-        weights.qkv_einsum_w, forward.pre_att_rms_out.data(),
-        backward.qkv.data(), num_tokens,
-        grad.qkv_einsum_w, backward.pre_att_rms_out.data(), pool);
+      weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
+      backward.qkv.data(), num_tokens,
+      grad.qkv_einsum_w.data(), backward.pre_att_rms_out.data(), pool);
   RMSNormVJP(weights.pre_attention_norm_scale.data(),
              forward.input.data(),
              backward.pre_att_rms_out.data(),
@@ -345,11 +344,12 @@ static HWY_NOINLINE void CrossEntropyLossGrad(
   }
 }
 
-template <typename TConfig>
+template <typename TConfig, template<typename> typename WeightsT,
+          template<typename> typename LayerT>
 void CrossEntropyLossBackwardPass(const Prompt& prompt,
-                                  const Weights<float, TConfig>& weights,
+                                  const WeightsT<TConfig>& weights,
                                   const ForwardPass<float, TConfig>& forward,
-                                  Weights<float, TConfig>& grad,
+                                  WeightsT<TConfig>& grad,
                                   ForwardPass<float, TConfig>& backward,
                                   hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -379,9 +379,9 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   }
 
   MatMulVJP<kModelDim, kVocabSize>(
-      weights.embedder_input_embedding, forward.final_norm_output.data(),
+      weights.embedder_input_embedding.data(), forward.final_norm_output.data(),
       backward.logits.data(), num_tokens,
-      grad.embedder_input_embedding, backward.final_norm_output.data(),
+      grad.embedder_input_embedding.data(), backward.final_norm_output.data(),
       pool);
 
   RMSNormVJP(weights.final_norm_scale.data(),
@@ -398,8 +398,9 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
     float* next_layer_grad = layer + 1 < kLayers
                              ? backward.layers[layer + 1].input.data()
                              : backward.final_layer_output.data();
-    LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
-             num_tokens, *grad.GetLayer(layer), backward.layers[layer], pool);
+    LayerVJP<TConfig, LayerT>(
+        *weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
+        num_tokens, *grad.GetLayer(layer), backward.layers[layer], pool);
   }
 
   InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt.tokens,
