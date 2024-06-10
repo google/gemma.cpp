@@ -9,6 +9,7 @@
 #include <utility>  // std::pair
 #include <vector>
 
+// Placeholder for internal header, do not modify.
 #include "compression/io.h"  // Path
 #include "gemma/cross_entropy.h"
 #include "gemma/gemma.h"
@@ -262,6 +263,10 @@ int BenchmarkTriviaQA(gcpp::Gemma& model, gcpp::InferenceArgs& args,
  2b-it-sfp.sbs --goldens_dir "../goldens"
 */
 int main(int argc, char** argv) {
+  {
+    // Placeholder for internal init, do not modify.
+  }
+
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs args(argc, argv);  // inference
   gcpp::AppArgs app(argc, argv);

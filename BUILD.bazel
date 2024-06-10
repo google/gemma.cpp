@@ -214,6 +214,7 @@ cc_binary(
         ":common",
         ":cross_entropy",
         ":gemma_lib",
+        # "//base",
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
