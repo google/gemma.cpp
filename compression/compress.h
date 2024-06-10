@@ -79,6 +79,9 @@ class CompressedArray {
   MatT* data() { return data_.data(); }
   const MatT* data() const { return data_.data(); }
 
+  MatT& operator[](size_t pos) { return data_[pos]; }
+  const MatT& operator[](size_t pos) const { return data_[pos]; }
+
   float scale() const { return scale_[0]; }
   void set_scale(float scale) { scale_[0] = scale; }
 

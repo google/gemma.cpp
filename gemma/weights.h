@@ -25,9 +25,6 @@
 
 namespace gcpp {
 
-// Setting this to false will load and use uncompressed weights.
-constexpr bool kWeightsAreCompressed = true;
-
 // ----------------------------------------------------------------------------
 // Uncompressed
 
@@ -213,11 +210,16 @@ struct CompressedLayerPointers {
 template <class TConfig>
 struct CompressedWeights {
   // No ctor/dtor, allocated via AllocateAligned.
+  using Weight = typename TConfig::Weight;
 
-  CompressedArray<EmbedderInputT, TConfig::kVocabSize * TConfig::kModelDim>
+  using WeightF32OrInputT =
+      hwy::If<hwy::IsSame<Weight, float>(), float, EmbedderInputT>;
+  CompressedArray<WeightF32OrInputT, TConfig::kVocabSize * TConfig::kModelDim>
       embedder_input_embedding;
 
-  CompressedArray<hwy::bfloat16_t, TConfig::kModelDim> final_norm_scale;
+  using WeightF32OrBF16 =
+      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
+  CompressedArray<WeightF32OrBF16, TConfig::kModelDim> final_norm_scale;
 
   // Must be last so that the other arrays remain aligned.
   CompressedLayerPointers<TConfig> c_layer_ptrs;
@@ -232,10 +234,6 @@ struct CompressedWeights {
 
 // ----------------------------------------------------------------------------
 // Interface
-
-template <class TConfig>
-using WeightsT = hwy::If<kWeightsAreCompressed, CompressedWeights<TConfig>,
-                         WeightsF<TConfig>>;
 
 // TODO: can we use TConfig::Weight instead of T?
 template <typename T, typename TConfig>
@@ -253,6 +251,17 @@ template <typename TConfig>
 struct AllocateWeightsF {
   ByteStorageT operator()(hwy::ThreadPool& pool) const {
     return AllocateWeights<float, TConfig>()(pool);
+  }
+};
+
+template <typename TConfig>
+struct AllocateCompressedWeights {
+  ByteStorageT operator()(hwy::ThreadPool& pool) const {
+    using TWeights = CompressedWeights<TConfig>;
+    ByteStorageT weights_u8 = AllocateSizeof<TWeights>();
+    TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
+    new (&weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
+    return weights_u8;
   }
 };
 
@@ -277,6 +286,20 @@ struct ZeroInitWeightsF {
   }
 };
 
+template <typename TConfig>
+struct ZeroInitCompressedWeights {
+  void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
+    CompressedWeights<TConfig>& w =
+        *reinterpret_cast<CompressedWeights<TConfig>*>(weights.get());
+    hwy::ZeroBytes(&w.embedder_input_embedding,
+                   sizeof(w.embedder_input_embedding));
+    hwy::ZeroBytes(&w.final_norm_scale, sizeof(w.final_norm_scale));
+    for (int i = 0; i < TConfig::kLayers; ++i) {
+      hwy::ZeroBytes(w.GetLayer(i), sizeof(*w.GetLayer(i)));
+    }
+  }
+};
+
 template <typename T, typename TConfig>
 struct CopyWeights {
 void operator()(Weights<T, TConfig>& dst,
@@ -295,12 +318,9 @@ void operator()(Weights<T, TConfig>& dst,
 template <class TConfig>
 struct DeleteLayersPtrs {
   void operator()(ByteStorageT& weights_u8) const {
-    auto* weights = reinterpret_cast<WeightsT<TConfig>*>(weights_u8.get());
-    if constexpr (kWeightsAreCompressed) {
-      weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
-    } else {
-      weights->layer_ptrs.~LayerPointers<float, TConfig>();
-    }
+    auto* weights =
+        reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
+    weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
   }
 };
 
@@ -330,14 +350,8 @@ class WeightsWrapper {
   Weights<T, TConfig>* weights_;
 };
 
-// For use by compress_weights.cc.
-ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
-                            Type weight_type, hwy::ThreadPool& pool,
-                            bool scale_for_compression);
-
-// For gemma.cc; calls LoadRawWeights if !kWeightsAreCompressed.
-ByteStorageT LoadWeights(const Path& weights, Model model_type,
-                         Type weight_type, hwy::ThreadPool& pool);
+ByteStorageT LoadCompressedWeights(const Path& weights, Model model_type,
+                                   Type weight_type, hwy::ThreadPool& pool);
 
 void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
 
@@ -467,62 +481,62 @@ void ForEachTensor(const WeightsF<TConfig>* weights,
     GEMMA_CALL_LAYER_FUNC ## N("attn_ob", attention_output_biases);           \
   }
 
-template <typename T, typename TConfig, class Func>
-void ForEachTensor1(Func& func, const Weights<T, TConfig>& weights1) {
+template <typename TConfig, class Func>
+void ForEachTensor1(Func& func, const CompressedWeights<TConfig>& weights1) {
   GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
+    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
     GEMMA_CALL_ALL_LAYER_FUNC(1)
   }
 }
 
-template <typename T, typename TConfig, class Func>
-void ForEachTensor1(Func& func, Weights<T, TConfig>& weights1) {
+template <typename TConfig, class Func>
+void ForEachTensor1(Func& func, CompressedWeights<TConfig>& weights1) {
   GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
+    CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
     GEMMA_CALL_ALL_LAYER_FUNC(1)
   }
 }
 
-template <typename T, typename TConfig, class Func>
-void ForEachTensor2(Func& func, const Weights<T, TConfig>& weights1,
-                    Weights<T, TConfig>& weights2) {
+template <typename TConfig, class Func>
+void ForEachTensor2(Func& func, const CompressedWeights<TConfig>& weights1,
+                    CompressedWeights<TConfig>& weights2) {
   GEMMA_CALL_TOP_FUNC2("embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC2("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
-    LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
+    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
+    CompressedLayer<TConfig>& layer2 = *weights2.GetLayer(idx);
     GEMMA_CALL_ALL_LAYER_FUNC(2)
   }
 }
 
-template <typename T, typename TConfig, class Func>
-void ForEachTensor4(Func& func, const Weights<T, TConfig>& weights1,
-                    Weights<T, TConfig>& weights2,
-                    Weights<T, TConfig>& weights3,
-                    Weights<T, TConfig>& weights4) {
+template <typename TConfig, class Func>
+void ForEachTensor4(Func& func, const CompressedWeights<TConfig>& weights1,
+                    CompressedWeights<TConfig>& weights2,
+                    CompressedWeights<TConfig>& weights3,
+                    CompressedWeights<TConfig>& weights4) {
   GEMMA_CALL_TOP_FUNC4("embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC4("final_norm", final_norm_scale);
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const LayerF<TConfig>& layer1 = *weights1.GetLayer(idx);
-    LayerF<TConfig>& layer2 = *weights2.GetLayer(idx);
-    LayerF<TConfig>& layer3 = *weights3.GetLayer(idx);
-    LayerF<TConfig>& layer4 = *weights4.GetLayer(idx);
+    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
+    CompressedLayer<TConfig>& layer2 = *weights2.GetLayer(idx);
+    CompressedLayer<TConfig>& layer3 = *weights3.GetLayer(idx);
+    CompressedLayer<TConfig>& layer4 = *weights4.GetLayer(idx);
     GEMMA_CALL_ALL_LAYER_FUNC(4)
   }
 }

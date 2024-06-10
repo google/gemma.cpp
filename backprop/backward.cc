@@ -42,13 +42,14 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   ByteStorageT& grad_u8,
                                   ByteStorageT& backward_u8,
                                   hwy::ThreadPool& pool) {
-  using TWeights = WeightsF<TConfig>;
+  using TWeights = CompressedWeights<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
   auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
   using TAct = ForwardPass<float, TConfig>;
   const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
   auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
-  CrossEntropyLossBackwardPass(prompt, weights, forward, grad, backward, pool);
+  CrossEntropyLossBackwardPass<TConfig, CompressedWeights, CompressedLayer>(
+      prompt, weights, forward, grad, backward, pool);
 }
 
 void CrossEntropyLossBackwardPassT(Model model,

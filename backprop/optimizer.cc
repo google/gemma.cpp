@@ -32,10 +32,11 @@ class WeightInitializer {
   WeightInitializer(std::mt19937& gen) : dist_(0.0f, 1.0f), gen_(gen) {}
 
   template <size_t N>
-  void operator()(const char* name, std::array<float, N>& tensor) {
+  void operator()(const char* name, CompressedArray<float, N>& tensor) {
     for (size_t i = 0; i < N; ++i) {
       tensor[i] = dist_(gen_);
     }
+    tensor.set_scale(1.0f);
   }
  private:
   std::normal_distribution<float> dist_;
@@ -46,11 +47,12 @@ template <typename TConfig>
 struct RandInitWeightsT {
   void operator()(const ByteStorageT& weights_u8, hwy::ThreadPool& pool,
                   std::mt19937& gen) const {
-    auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+    auto& weights =
+        *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
     // TODO(szabadka) Use the same weight initialization method as in the python
     // version.
     WeightInitializer init(gen);
-    ForEachTensor1<float, TConfig>(init, weights);
+    ForEachTensor1<TConfig>(init, weights);
   }
 };
 
@@ -63,10 +65,11 @@ class AdamUpdater {
         norm2_(1.0 / (1.0 - std::pow(beta2, t))), epsilon_(epsilon) {}
 
   template <size_t kCapacity>
-  void operator()(const char* name, const std::array<float, kCapacity>& grad,
-                  std::array<float, kCapacity>& weights,
-                  std::array<float, kCapacity>& grad_m,
-                  std::array<float, kCapacity>& grad_v) {
+  void operator()(const char* name,
+                  const CompressedArray<float, kCapacity>& grad,
+                  CompressedArray<float, kCapacity>& weights,
+                  CompressedArray<float, kCapacity>& grad_m,
+                  CompressedArray<float, kCapacity>& grad_v) {
     for (size_t i = 0; i < kCapacity; ++i) {
       grad_m[i] *= beta1_;
       grad_m[i] += cbeta1_ * grad[i];
@@ -95,13 +98,13 @@ struct AdamUpdateT {
                   float beta2, float epsilon, size_t t,
                   const ByteStorageT& weights_u8, const ByteStorageT& grad_m_u8,
                   const ByteStorageT& grad_v_u8, hwy::ThreadPool& pool) const {
-    const auto& grad =
-        *reinterpret_cast<const WeightsF<TConfig>*>(grad_u8.get());
-    auto& weights = *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-    auto& grad_m = *reinterpret_cast<WeightsF<TConfig>*>(grad_m_u8.get());
-    auto& grad_v = *reinterpret_cast<WeightsF<TConfig>*>(grad_v_u8.get());
+    using TWeights = CompressedWeights<TConfig>;
+    const auto& grad = *reinterpret_cast<const TWeights*>(grad_u8.get());
+    auto& weights = *reinterpret_cast<TWeights*>(weights_u8.get());
+    auto& grad_m = *reinterpret_cast<TWeights*>(grad_m_u8.get());
+    auto& grad_v = *reinterpret_cast<TWeights*>(grad_v_u8.get());
     AdamUpdater updater(alpha, beta1, beta2, epsilon, t);
-    ForEachTensor4<float, TConfig>(updater, grad, weights, grad_m, grad_v);
+    ForEachTensor4<TConfig>(updater, grad, weights, grad_m, grad_v);
   }
 };
 
@@ -110,17 +113,17 @@ struct AdamUpdateT {
 void RandInitWeights(Model model_type, Type weight_type,
                      const ByteStorageT& weights, hwy::ThreadPool& pool,
                      std::mt19937& gen) {
-  CallForModelAndWeight<RandInitWeightsT>(model_type, weight_type, weights,
-                                          pool, gen);
+  HWY_ASSERT(weight_type == Type::kF32);
+  CallForModel<float, RandInitWeightsT>(model_type, weights, pool, gen);
 }
 
 void AdamUpdate(Model model_type, Type weight_type, const ByteStorageT& grad,
                 float alpha, float beta1, float beta2, float epsilon, size_t t,
                 const ByteStorageT& weights, const ByteStorageT& grad_m,
                 const ByteStorageT& grad_v, hwy::ThreadPool& pool) {
-  CallForModelAndWeight<AdamUpdateT>(model_type, weight_type, grad, alpha,
-                                     beta1, beta2, epsilon, t, weights, grad_m,
-                                     grad_v, pool);
+  HWY_ASSERT(weight_type == Type::kF32);
+  CallForModel<float, AdamUpdateT>(model_type, grad, alpha, beta1, beta2,
+                                   epsilon, t, weights, grad_m, grad_v, pool);
 }
 
 }  // namespace gcpp

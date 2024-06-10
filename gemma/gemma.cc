@@ -717,8 +717,8 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
 }
 
 template <class TConfig>
-const WeightsT<TConfig>& GetWeights(const ByteStorageT& weights_u8) {
-  return *reinterpret_cast<const WeightsT<TConfig>*>(weights_u8.get());
+const CompressedWeights<TConfig>& GetWeights(const ByteStorageT& weights_u8) {
+  return *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
 }
 
 template <class TConfig, size_t kBatchSize>
@@ -735,7 +735,7 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
                const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
                hwy::ThreadPool& pool, TimingInfo& timing_info,
                LayersOutputT* layers_output) {
-  const WeightsT<TConfig>& weights = GetWeights<TConfig>(weights_u8);
+  const CompressedWeights<TConfig>& weights = GetWeights<TConfig>(weights_u8);
   auto& prefill_activations =
       GetActivations<TConfig, kPrefillBatchSize>(prefill_u8);
   auto& activations = GetActivations<TConfig, 1>(decode_u8);
@@ -878,7 +878,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
       tokenizer_(tokenizer_path),
       model_type_(model_type),
       weight_type_(weight_type) {
-  weights_u8_ = LoadWeights(weights, model_type, weight_type, pool);
+  weights_u8_ = LoadCompressedWeights(weights, model_type, weight_type, pool);
   prefill_u8_ = CallForModelAndWeight<AllocatePrefill>(model_type, weight_type);
   decode_u8_ = CallForModelAndWeight<AllocateDecode>(model_type, weight_type);
 }
@@ -889,8 +889,9 @@ Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
       tokenizer_(std::move(tokenizer)),
       model_type_(model_type),
       weight_type_(weight_type) {
-  weights_u8_ =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
+  HWY_ASSERT(weight_type == Type::kF32);
+  weights_u8_ = CallForModel<float, AllocateCompressedWeights>(
+      model_type, pool);
   prefill_u8_ = CallForModelAndWeight<AllocatePrefill>(model_type, weight_type);
   decode_u8_ = CallForModelAndWeight<AllocateDecode>(model_type, weight_type);
 }

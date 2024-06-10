@@ -41,11 +41,12 @@ float CrossEntropyLossForwardPass(const Prompt& prompt,
                                   ByteStorageT& forward_u8,
                                   hwy::ThreadPool& pool) {
   const auto& weights =
-      *reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+      *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
   auto& forward =
       *reinterpret_cast<ForwardPass<float, TConfig>*>(forward_u8.get());
-  return CrossEntropyLossForwardPass<TConfig, WeightsF, LayerF>(
-      prompt.tokens, prompt.context_size, weights, forward, pool);
+  return
+      CrossEntropyLossForwardPass<TConfig, CompressedWeights, CompressedLayer>(
+          prompt.tokens, prompt.context_size, weights, forward, pool);
 }
 
 float CrossEntropyLossForwardPassT(Model model, const Prompt& prompt,

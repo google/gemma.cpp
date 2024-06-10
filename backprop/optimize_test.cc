@@ -34,19 +34,17 @@
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  if (kWeightsAreCompressed) return;
-
   hwy::ThreadPool pool(0);
   std::mt19937 gen(42);
 
   Model model_type = Model::GEMMA_TINY;
   Type weight_type = Type::kF32;
-  ByteStorageT grad =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
-  ByteStorageT grad_m =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
-  ByteStorageT grad_v =
-      CallForModelAndWeight<AllocateWeightsF>(model_type, weight_type, pool);
+  ByteStorageT grad = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
+  ByteStorageT grad_m = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
+  ByteStorageT grad_v = CallForModelAndWeight<AllocateCompressedWeights>(
+      model_type, weight_type, pool);
   ByteStorageT forward =
       CallForModelAndWeight<AllocateForwardPass>(model_type, weight_type);
   ByteStorageT backward =
@@ -88,10 +86,10 @@ TEST(OptimizeTest, GradientDescent) {
   };
 
   RandInitWeights(model_type, weight_type, gemma.Weights(), pool, gen);
-  CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_m,
-                                          pool);
-  CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad_v,
-                                          pool);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(
+      model_type, weight_type, grad_m, pool);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(
+      model_type, weight_type, grad_v, pool);
 
   printf("Initial weights:\n");
   LogWeightStats(model_type, weight_type, gemma.Weights());
@@ -109,8 +107,8 @@ TEST(OptimizeTest, GradientDescent) {
   size_t num_ok;
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
-    CallForModelAndWeight<ZeroInitWeightsF>(model_type, weight_type, grad,
-                                            pool);
+    CallForModelAndWeight<ZeroInitCompressedWeights>(
+        model_type, weight_type, grad, pool);
     float total_loss = 0.0f;
     num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {

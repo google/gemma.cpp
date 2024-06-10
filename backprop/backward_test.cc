@@ -84,8 +84,8 @@ void TestMatMulVJP() {
     };
 
     hwy::ZeroBytes(&grad, sizeof(grad));
-    MatMulVJP<kCols, kRows>(weights, x.data(), dy.data(), kTokens,
-                            grad, dx.data(), pool);
+    MatMulVJP<kCols, kRows>(weights.data(), x.data(), dy.data(), kTokens,
+                            grad.data(), dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
 
@@ -130,7 +130,8 @@ void TestMultiHeadMatMulVJP() {
 
     hwy::ZeroBytes(&grad, sizeof(grad));
     MultiHeadMatMulVJP<kHeads, kCols, kRows>(
-        weights, x.data(), dy.data(), kTokens, grad, dx.data(), pool);
+        weights.data(), x.data(), dy.data(), kTokens, grad.data(), dx.data(),
+        pool);
     TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
 
@@ -235,7 +236,7 @@ void TestEndToEnd() {
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.clear();
-    CrossEntropyLossBackwardPass(
+    CrossEntropyLossBackwardPass<TestConfig, WeightsF, LayerF>(
         prompt, weights.get(), forward1.get(), grad.get(), backward.get(),
         pool);
 
