@@ -49,6 +49,7 @@
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
+// Placeholder for internal test1, do not remove
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -215,6 +216,8 @@ bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
   return impl_->Decode(ids, detokenized);
 }
+
+// Placeholder for internal test2, do not remove
 
 }  // namespace gcpp
 #endif  // GEMMA_ONCE
@@ -543,6 +546,8 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   }
 }
 
+// Placeholder for internal test3, do not remove
+
 template <size_t kBatchSize, typename WeightArrayT, typename TConfig>
 HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
                           const WeightArrayT& weights,
@@ -677,6 +682,9 @@ HWY_NOINLINE void Transformer(int token, size_t pos,
       (*layers_output)(pos, block_name, activations.x.data(), kModelDim);
     }
   }
+
+  // Placeholder for internal test4, do not remove
+
   RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
                  kModelDim);
   if (layers_output != nullptr) {

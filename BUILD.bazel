@@ -93,6 +93,10 @@ cc_library(
         "gemma/activations.h",
         "gemma/gemma.h",
     ],
+    textual_hdrs = [
+        # Placeholder for internal file1, do not remove,
+        # Placeholder for internal file2, do not remove,
+    ],
     deps = [
         ":common",
         ":ops",
