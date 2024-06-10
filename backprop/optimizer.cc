@@ -19,7 +19,6 @@
 #include <random>
 
 #include "gemma/common.h"
-#include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 

@@ -194,10 +194,8 @@ GemmaTokenizer::GemmaTokenizer(const Path& tokenizer_path) {
   impl_ = std::make_unique<Impl>(tokenizer_path);
 }
 
-GemmaTokenizer::GemmaTokenizer() {
-  impl_ = std::make_unique<Impl>();
-}
-
+// Default suffices, but they must be defined after GemmaTokenizer::Impl.
+GemmaTokenizer::GemmaTokenizer() = default;
 GemmaTokenizer::~GemmaTokenizer() = default;
 GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
 GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;

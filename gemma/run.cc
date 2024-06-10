@@ -35,9 +35,13 @@
 #include "hwy/highway.h"
 #include "hwy/per_target.h"
 #include "hwy/profiler.h"
+#include "hwy/timer.h"
 
 #if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
 #error "Please update to version 1.2 of github.com/google/highway."
+#endif
+#if HWY_CXX_LANG < 201703L
+#error "Gemma.cpp requires C++17, please pass -std=c++17."
 #endif
 
 static constexpr bool kVerboseLogTokens = false;
@@ -68,8 +72,12 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
               << std::thread::hardware_concurrency() << "\n"
               << "Instruction set               : "
               << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)" << "\n"
-              << "Compiled config               : " << CompiledConfig() << "\n"
+              << hwy::VectorBytes() * 8 << " bits)" << "\n";
+    char cpu100[100];
+    if (hwy::platform::GetCpuString(cpu100)) {
+      std::cout << "CPU                           : " << cpu100 << "\n";
+    }
+    std::cout << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
               << gcpp::StringFromType(loader.WeightType()) << "\n"
               << "EmbedderInput Type            : "
