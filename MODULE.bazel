@@ -63,3 +63,10 @@ http_archive(
     strip_prefix = "abseil-cpp-9687a8ea750bfcddf790372093245a1d041b21a3",
     urls = ["https://github.com/abseil/abseil-cpp/archive//9687a8ea750bfcddf790372093245a1d041b21a3.tar.gz"],
 )
+# Benchmark
+http_archive(
+    name = "benchmark",
+    urls = ["https://github.com/google/benchmark/archive/refs/tags/v1.8.2.tar.gz"],
+    integrity = "sha256-KqspgNA3YTf5adkoSPu2gharsHYzA0U0/IxlzE56DpM=",
+    strip_prefix = "benchmark-1.8.2",
+)

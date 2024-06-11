@@ -165,7 +165,7 @@ cc_test(
         ":cross_entropy",
         ":gemma_lib",
         ":ops",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "@googletest//:gtest_main",
         "//compression:io",
         "@hwy//:hwy_test_util",
@@ -181,7 +181,7 @@ cc_binary(
         ":args",
         ":common",
         ":gemma_lib",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
@@ -198,7 +198,7 @@ cc_binary(
         ":common",
         ":gemma_lib",
         ":weights",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
@@ -208,7 +208,7 @@ cc_binary(
 )
 
 cc_binary(
-    name = "benchmark",
+    name = "single_benchmark",
     srcs = ["gemma/benchmark.cc"],
     deps = [
         ":app",
@@ -216,12 +216,22 @@ cc_binary(
         ":common",
         ":cross_entropy",
         ":gemma_lib",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
         "@nlohmann_json//:json",
+    ],
+)
+
+cc_binary(
+    name = "benchmarks",
+    srcs = ["gemma/benchmarks.cc"],
+    deps = [
+        ":benchmark_helper",
+        # Placeholder for internal dep, do not remove.,
+        "@benchmark//:benchmark",
     ],
 )
 
@@ -234,7 +244,7 @@ cc_binary(
         ":app",
         ":args",
         ":gemma_lib",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:thread_pool",
@@ -248,7 +258,7 @@ cc_binary(
     deps = [
         ":app",
         ":gemma_lib",
-        # "//base",
+        # Placeholder for internal dep, do not remove.,
         "@hwy//:hwy",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
@@ -305,6 +315,25 @@ cc_library(
         ":gemma_lib",
         ":prompt",
         ":weights",
+    ],
+)
+
+cc_library(
+    name = "benchmark_helper",
+    srcs = [
+        "gemma/benchmark_helper.cc",
+    ],
+    hdrs = [
+        "gemma/benchmark_helper.h",
+    ],
+    deps = [
+        ":app",
+        ":common",
+        ":gemma_lib",
+        "@benchmark//:benchmark",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:thread_pool",
     ],
 )
 

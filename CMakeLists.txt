@@ -97,8 +97,11 @@ add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
 install(TARGETS gemma DESTINATION bin)
 
-add_executable(benchmark gemma/benchmark.cc)
-target_link_libraries(benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+add_executable(single_benchmark gemma/benchmark.cc)
+target_link_libraries(single_benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+
+add_executable(benchmarks gemma/benchmarks.cc)
+target_link_libraries(benchmarks libgemma hwy hwy_contrib nlohmann_json::nlohmann_json benchmark)
 
 add_executable(debug_prompt debug_prompt.cc)
 target_link_libraries(debug_prompt libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
