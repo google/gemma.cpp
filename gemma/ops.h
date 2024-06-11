@@ -942,18 +942,20 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED float SquaredL2(
   return hn::ReduceSum(d, hn::Add(sum0, sum1));
 }
 
+// float, float -> float; simple loop.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     const float* HWY_RESTRICT x, const float* HWY_RESTRICT weight,
     float* HWY_RESTRICT out, size_t size) {
-  constexpr float eps = 1e-6f;
+  constexpr float kEps = 1e-6f;
   float ss = SquaredL2(x, size);
-  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + eps);
+  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
   for (size_t j = 0; j < size; j++) {
     // Note 1.0f centering here
     out[j] = (1.0f + weight[j]) * (ss * x[j]);
   }
 }
 
+// x=f, w=bf16 -> out=f
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     const float* HWY_RESTRICT x, const hwy::bfloat16_t* HWY_RESTRICT weight,
     float* HWY_RESTRICT out, size_t size) {
@@ -984,11 +986,12 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
   }
 }
 
+// float -> float; simple loop.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const float* HWY_RESTRICT weight, float* HWY_RESTRICT inout, size_t size) {
-  constexpr float eps = 1e-6f;
+  constexpr float kEps = 1e-6f;
   float ss = SquaredL2(inout, size);
-  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + eps);
+  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
   for (size_t j = 0; j < size; j++) {
     // Note 1.0f centering here
     inout[j] = (1.0f + weight[j]) * (ss * inout[j]);
@@ -1005,10 +1008,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
   using VF = hn::Vec<decltype(df32)>;
   const size_t N32 = hn::Lanes(df32);
 
-  constexpr float eps = 1e-6f;
+  constexpr float kEps = 1e-6f;
   const float ss = SquaredL2(inout, size);
   const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + eps));
+      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {
@@ -1034,10 +1037,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
   using VF = hn::Vec<decltype(df32)>;
   const size_t N32 = hn::Lanes(df32);
 
-  constexpr float eps = 1e-6f;
+  constexpr float kEps = 1e-6f;
   const float ss = SquaredL2(x, size);
   const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + eps));
+      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {
@@ -1062,10 +1065,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
   using VF = hn::Vec<decltype(df32)>;
   const size_t N32 = hn::Lanes(df32);
 
-  constexpr float eps = 1e-6f;
+  constexpr float kEps = 1e-6f;
   const float ss = SquaredL2(x, size);
   const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + eps));
+      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
 
   HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
   for (size_t i = 0; i < size; i += 2 * N32) {

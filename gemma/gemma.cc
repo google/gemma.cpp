@@ -546,6 +546,37 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   }
 }
 
+// The below "batched" versions are just simple loops for now.
+template <size_t kBatchSize, typename WeightT, typename OutT>
+static void RMSNormBatched(size_t num_tokens, const float* activations,
+                           const WeightT* weights, OutT* out,
+                           const size_t model_dim) {
+  HWY_DASSERT(num_tokens <= kBatchSize);
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    RMSNorm(activations + token_idx * model_dim, weights,
+            out + token_idx * model_dim, model_dim);
+  }
+}
+
+template <size_t kBatchSize, typename WeightT, typename InOutT>
+static void RMSNormInplaceBatched(size_t num_tokens, const WeightT* weights,
+                                  InOutT* inout, const size_t model_dim) {
+  HWY_DASSERT(num_tokens <= kBatchSize);
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    RMSNormInplace(weights, inout + token_idx * model_dim, model_dim);
+  }
+}
+
+template <size_t kBatchSize>
+static void AddFromBatched(size_t num_tokens, const float* other, float* x,
+                           const size_t model_dim) {
+  HWY_DASSERT(num_tokens <= kBatchSize);
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    AddFrom(other + token_idx * model_dim, x + token_idx * model_dim,
+            model_dim);
+  }
+}
+
 // Placeholder for internal test3, do not remove
 
 template <size_t kBatchSize, typename WeightArrayT, typename TConfig>
@@ -580,12 +611,9 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
     size_t layer_of_type =
         NumLayersOfTypeBefore(TConfig::kLayerConfig, type, layer);
 
-    for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-      RMSNorm(activations.x.data() + token_idx * kModelDim,
-              layer_weights->pre_attention_norm_scale.data(),
-              activations.pre_att_rms_out.data() + token_idx * kModelDim,
-              kModelDim);
-    }
+    RMSNormBatched<kBatchSize>(num_tokens, activations.x.data(),
+                               layer_weights->pre_attention_norm_scale.data(),
+                               activations.pre_att_rms_out.data(), kModelDim);
     if (type == LayerAttentionType::kGemma) {
       Attention<kBatchSize>(pos, num_tokens, layer_of_type, activations,
                             layer_weights, kv_cache, pool);
@@ -593,38 +621,29 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
       GriffinRecurrent<kBatchSize>(pos, num_tokens, layer_of_type, activations,
                                    layer_weights, kv_cache, pool);
     }
-
-    pool.Run(0, num_tokens, [&](const uint64_t token_idx,
-                                size_t /*thread*/) HWY_ATTR {
-      if (TConfig::kPostNormScale) {
-        RMSNormInplace(layer_weights->post_attention_norm_scale.data(),
-                       activations.att_post2.data() + token_idx * kModelDim,
-                       kModelDim);
-      }
-      AddFrom(activations.att_post2.data() + token_idx * kModelDim,
-              activations.x.data() + token_idx * kModelDim, kModelDim);
-      RMSNorm(activations.x.data() + token_idx * kModelDim,
-              layer_weights->pre_ffw_norm_scale.data(),
-              activations.bf_pre_ffw_rms_out.data() + token_idx * kModelDim,
-              kModelDim);
-    });
-    FFW<kBatchSize>(activations, num_tokens, layer_weights, pool);
-    for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-      if (TConfig::kPostNormScale) {
-        RMSNormInplace(layer_weights->post_ffw_norm_scale.data(),
-                       activations.ffw_out.data() + token_idx * kModelDim,
-                       kModelDim);
-      }
-      AddFrom(activations.ffw_out.data() + token_idx * kModelDim,
-              activations.x.data() + token_idx * kModelDim, kModelDim);
+    if (TConfig::kPostNormScale) {
+      RMSNormInplaceBatched<kBatchSize>(
+          num_tokens, layer_weights->post_attention_norm_scale.data(),
+          activations.att_post2.data(), kModelDim);
     }
+    AddFromBatched<kBatchSize>(num_tokens, activations.att_post2.data(),
+                               activations.x.data(), kModelDim);
+    RMSNormBatched<kBatchSize>(num_tokens, activations.x.data(),
+                               layer_weights->pre_ffw_norm_scale.data(),
+                               activations.bf_pre_ffw_rms_out.data(),
+                               kModelDim);
+    FFW<kBatchSize>(activations, num_tokens, layer_weights, pool);
+    if (TConfig::kPostNormScale) {
+      RMSNormInplaceBatched<kBatchSize>(
+          num_tokens, layer_weights->post_ffw_norm_scale.data(),
+          activations.ffw_out.data(), kModelDim);
+    }
+    AddFromBatched<kBatchSize>(num_tokens, activations.ffw_out.data(),
+                               activations.x.data(), kModelDim);
   }  // foreach layer
 
-  pool.Run(
-      0, num_tokens, [&](const uint64_t token_idx, size_t /*thread*/) HWY_ATTR {
-        RMSNormInplace(weights.final_norm_scale.data(),
-                       activations.x.data() + token_idx * kModelDim, kModelDim);
-      });
+  RMSNormInplaceBatched<kBatchSize>(num_tokens, weights.final_norm_scale.data(),
+                                    activations.x.data(), kModelDim);
 }
 
 // n = 1 specialization
@@ -654,9 +673,9 @@ HWY_NOINLINE void Transformer(int token, size_t pos,
     const auto* layer_weights = weights.GetLayer(layer);
     size_t layer_of_type =
         NumLayersOfTypeBefore(TConfig::kLayerConfig, type, layer);
-    RMSNorm(activations.x.data(),
-            layer_weights->pre_attention_norm_scale.data(),
-            activations.pre_att_rms_out.data(), kModelDim);
+    RMSNormBatched<1>(1, activations.x.data(),
+                layer_weights->pre_attention_norm_scale.data(),
+                activations.pre_att_rms_out.data(), kModelDim);
     if (type == LayerAttentionType::kGemma) {
       Attention<1>(pos, 1, layer_of_type, activations, layer_weights, kv_cache,
                    pool);
@@ -665,18 +684,22 @@ HWY_NOINLINE void Transformer(int token, size_t pos,
                           kv_cache, pool);
     }
     if (TConfig::kPostNormScale) {
-      RMSNormInplace(layer_weights->post_attention_norm_scale.data(),
-                     activations.att_post2.data(), kModelDim);
+      RMSNormInplaceBatched<1>(1,
+                               layer_weights->post_attention_norm_scale.data(),
+                               activations.att_post2.data(), kModelDim);
     }
-    AddFrom(activations.att_post2.data(), activations.x.data(), kModelDim);
-    RMSNorm(activations.x.data(), layer_weights->pre_ffw_norm_scale.data(),
-            activations.bf_pre_ffw_rms_out.data(), kModelDim);
+    AddFromBatched<1>(1, activations.att_post2.data(), activations.x.data(),
+                      kModelDim);
+    RMSNormBatched<1>(1, activations.x.data(),
+                layer_weights->pre_ffw_norm_scale.data(),
+                activations.bf_pre_ffw_rms_out.data(), kModelDim);
     FFW<1>(activations, /* num_tokens = */ 1, layer_weights, pool);
     if (TConfig::kPostNormScale) {
-      RMSNormInplace(layer_weights->post_ffw_norm_scale.data(),
-                     activations.ffw_out.data(), kModelDim);
+      RMSNormInplaceBatched<1>(1, layer_weights->post_ffw_norm_scale.data(),
+                               activations.ffw_out.data(), kModelDim);
     }
-    AddFrom(activations.ffw_out.data(), activations.x.data(), kModelDim);
+    AddFromBatched<1>(1, activations.ffw_out.data(), activations.x.data(),
+                      kModelDim);
     if (layers_output != nullptr) {
       std::string block_name = "blocks." + std::to_string(layer);
       (*layers_output)(pos, block_name, activations.x.data(), kModelDim);
@@ -685,8 +708,8 @@ HWY_NOINLINE void Transformer(int token, size_t pos,
 
   // Placeholder for internal test4, do not remove
 
-  RMSNormInplace(weights.final_norm_scale.data(), activations.x.data(),
-                 kModelDim);
+  RMSNormInplaceBatched<1>(1, weights.final_norm_scale.data(),
+                           activations.x.data(), kModelDim);
   if (layers_output != nullptr) {
     (*layers_output)(pos, "final_norm", activations.x.data(), kModelDim);
   }
