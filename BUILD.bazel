@@ -32,7 +32,6 @@ cc_library(
         "@hwy//:matvec",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
-        "@hwy//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -46,7 +45,7 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":ops",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
