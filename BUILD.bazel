@@ -234,6 +234,7 @@ cc_binary(
         ":app",
         ":args",
         ":gemma_lib",
+        # "//base",
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:thread_pool",

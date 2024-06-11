@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+// Placeholder for internal header, do not modify.
 #include "compression/io.h"
 #include "gemma/gemma.h"
 #include "util/app.h"
@@ -41,7 +42,7 @@ std::pair<std::string, int> QueryModel(
 
   // For both pre-trained and instruction-tuned models: prepend "<bos>" token
   // if needed.
-  prompt.insert(prompt.begin(), 2);
+  prompt.insert(prompt.begin(), gcpp::BOS_ID);
   std::string res;
   size_t total_tokens = 0;
   std::mt19937 gen;
@@ -89,6 +90,10 @@ class OutputJsonLogger {
  2b-it-sfp.sbs --prompt "..." --layers_output [path]
 */
 int main(int argc, char** argv) {
+  {
+    // Placeholder for internal init, do not modify.
+  }
+
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs args(argc, argv);  // inference
   gcpp::AppArgs app(argc, argv);
