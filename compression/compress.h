@@ -79,6 +79,9 @@ class CompressedArray {
   MatT* data() { return data_.data(); }
   const MatT* data() const { return data_.data(); }
 
+  // Decoded elements should be multiplied by this to restore their original
+  // range. This is required because SfpStream can only encode a limited range
+  // of magnitudes.
   float scale() const { return scale_[0]; }
   void set_scale(float scale) { scale_[0] = scale; }
 
@@ -90,6 +93,7 @@ class CompressedArray {
 
  private:
   std::array<MatT, NumCompressed()> data_;
+  // Blobs are at least kBlobAlign bytes anyway.
   float scale_[kBlobAlign / sizeof(float)];
 };
 
@@ -172,6 +176,8 @@ hwy::uint128_t CacheKey(const char* name) {
   return MakeKey((std::string(1, prefix) + name).c_str());
 }
 
+// Functor called for each tensor, which loads them and their scaling factors
+// from BlobStore.
 class CacheLoader {
  public:
   explicit CacheLoader(const Path& blob_filename) {

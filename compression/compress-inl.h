@@ -22,6 +22,7 @@
 #include <stdio.h>
 
 #include <array>
+#include <cmath>  // lroundf, only if COMPRESS_STATS
 
 #include "compression/blob_store.h"
 #include "compression/compress.h"
@@ -55,6 +56,7 @@ namespace hn = hwy::HWY_NAMESPACE;
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
 
+// Useful for backprop/, where weights are currently f32.
 template <>
 struct CompressTraits<float> {
   using MatT = float;
@@ -267,11 +269,14 @@ struct CompressTraits<hwy::bfloat16_t> {
   }
 };
 
+// Switching floating point: 8-bit, 2..3 mantissa bits.
 template <>
 struct CompressTraits<SfpStream> {
   using MatT = SfpStream;
   static constexpr bool kSupportsEvenOdd = true;
 
+  // Callers are responsible for scaling `in` such that its magnitudes do not
+  // exceed 1.875. See CompressedArray::scale().
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT in,
                                   size_t num, CompressPerThread& tls,
@@ -351,6 +356,7 @@ struct CompressTraits<SfpStream> {
   }
 };
 
+// Nonuniform quantization, 4.5 bits per element, two separate streams.
 template <>
 struct CompressTraits<NuqStream> {
   using MatT = NuqStream;
@@ -525,12 +531,12 @@ HWY_INLINE float Dot(DF df, const CompressedArray<MatT, kCapacity>& compressed,
   return compressed.scale() * dot_result;
 }
 
-// Callback used by ForeachTensor.
+// Functor called for each tensor, which compresses and stores them along with
+// their scaling factors to BlobStore.
 class Compressor {
  public:
   explicit Compressor(hwy::ThreadPool& pool) : pool_(pool) {}
 
-  // Called for each tensor; compresses it and stores to the cache.
   template <typename MatT, size_t kCapacity>
   void operator()(const char* name, const float* weights,
                   CompressedArray<MatT, kCapacity>& compressed) {

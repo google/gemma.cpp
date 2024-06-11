@@ -260,7 +260,8 @@ class SfpCodec {
     hi = hn::BitwiseIfThenElse(k80, sign_in_msb, hn::ShiftRight<1>(biased_e));
   }
 
-  // Encodes `num` bf16 values from `in_bf` to `out_packed`.
+  // Encodes `num` bf16 values from `in_bf` to `out_packed`. Their magnitude
+  // must be at most 1.875.
   template <class DBF, HWY_IF_BF16_D(DBF)>
   static HWY_INLINE void Enc(DBF dbf, const hwy::bfloat16_t* HWY_RESTRICT in_bf,
                              size_t num, SfpStream* HWY_RESTRICT out_packed) {
@@ -288,7 +289,8 @@ class SfpCodec {
     }
   }
 
-  // Encodes `num` f32 values from `in_f` to `packed`.
+  // Encodes `num` f32 values from `in_f` to `packed`. Their magnitude
+  // must be at most 1.875.
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Enc(DF df, const float* HWY_RESTRICT in_f, size_t num,
                              SfpStream* HWY_RESTRICT out_packed) {
