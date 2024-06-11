@@ -18,8 +18,10 @@
 #include <cmath>
 #include <random>
 
+#include "compression/compress.h"
 #include "gemma/common.h"
 #include "gemma/weights.h"
+#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {

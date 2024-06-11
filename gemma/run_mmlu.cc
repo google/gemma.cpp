@@ -98,8 +98,8 @@ void JsonGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
       return true;
     };
 
-    auto accept_token = [&current_pos, &prompt_size,
-                         &accept_token_set](int token) {
+    const AcceptFunc accept_token = [&current_pos, &prompt_size,
+                                     &accept_token_set](int token) {
       // i.e. we have no constraints on accepted tokens
       if (accept_token_set.empty()) {
         return true;

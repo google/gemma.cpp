@@ -68,15 +68,15 @@ class GemmaTokenizer {
 };
 
 // StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f. StreamFunc should return False to stop generation and
-// True to continue generation.
+// probability is 0.0f. StreamFunc should return false to stop generation and
+// true to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
-// AcceptFunc is called with token. It should return False for tokens you don't
-// want to generate and True for tokens you want to generate.
+// If not empty, AcceptFunc is called with token. It should return false for
+// tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int)>;
-// CustomSampleFunc is called with the probability distribution for the next
-// token, and its return value is used as the next generated token.
-using CustomSampleFunc = std::function<int(const float*, size_t)>;
+// If not empty, SampleFunc is called with the probability distribution for the
+// next token, and its return value is used as the next generated token.
+using SampleFunc = std::function<int(const float*, size_t)>;
 
 struct RuntimeConfig {
   size_t max_tokens;
@@ -84,9 +84,9 @@ struct RuntimeConfig {
   float temperature;
   int verbosity;
   std::mt19937* gen;
-  const StreamFunc& stream_token;
-  const AcceptFunc& accept_token;
-  const CustomSampleFunc* sample_func = nullptr;
+  StreamFunc stream_token;
+  AcceptFunc accept_token;  // if empty, accepts all tokens.
+  SampleFunc sample_func;   // if empty, uses SampleTopK.
   int eos_id = EOS_ID;
 };
 

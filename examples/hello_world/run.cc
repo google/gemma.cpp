@@ -13,12 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <iostream>
+#include <stddef.h>
+
+#include <random>
+#include <string>
+#include <vector>
 
 #include "third_party/gemma_cpp/gemma.h"
 #include "util/app.h"  // LoaderArgs
+#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "util/args.h"
 
 std::vector<int> tokenize(const std::string& prompt_string,
                           const gcpp::GemmaTokenizer* tokenizer) {
@@ -26,19 +30,16 @@ std::vector<int> tokenize(const std::string& prompt_string,
                           "<end_of_turn>\n<start_of_turn>model\n";
   std::vector<int> tokens;
   HWY_ASSERT(tokenizer->Encode(formatted, &tokens));
-  tokens.insert(tokens.begin(), 2);  // BOS token
+  tokens.insert(tokens.begin(), BOS_ID);
   return tokens;
 }
 
 int main(int argc, char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
-
-  // Rough heuristic for the number of threads to use
-  size_t num_threads = static_cast<size_t>(std::clamp(
-      static_cast<int>(std::thread::hardware_concurrency()) - 2, 1, 18));
-  hwy::ThreadPool pool(num_threads);
+  gcpp::AppArgs app(argc, argv);
 
   // Instantiate model and KV Cache
+  hwy::ThreadPool pool(app.num_threads);
   gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
   gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
   size_t pos = 0;  // KV Cache position
@@ -53,7 +54,7 @@ int main(int argc, char** argv) {
       tokenize("Write a greeting to the world.", model.Tokenizer());
   size_t ntokens = tokens.size();
 
-  // This callback function gets invoked everytime a token is generated
+  // This callback function gets invoked every time a token is generated
   auto stream_token = [&pos, &ntokens, tokenizer = model.Tokenizer()](int token,
                                                                       float) {
     ++pos;
@@ -74,5 +75,4 @@ int main(int argc, char** argv) {
                  .verbosity = 0},
                 tokens, /*KV cache position = */ 0, kv_cache, pool,
                 stream_token, gen);
-  std::cout << "\n";
 }

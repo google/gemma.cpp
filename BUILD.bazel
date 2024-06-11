@@ -123,6 +123,7 @@ cc_library(
     deps = [
         ":common",
         ":gemma_lib",
+        "@hwy//:hwy",
     ],
 )
 
@@ -159,11 +160,13 @@ cc_test(
         "no_tap",
     ],
     deps = [
+        ":app",
         ":args",
         ":common",
         ":cross_entropy",
         ":gemma_lib",
         ":ops",
+        # "//base",
         "@googletest//:gtest_main",
         "//compression:io",
         "@hwy//:hwy_test_util",
@@ -355,6 +358,8 @@ cc_library(
     deps = [
         ":common",
         ":weights",
+        "//compression:compress",
+        "@hwy//:hwy",
         "@hwy//:thread_pool",
     ],
 )

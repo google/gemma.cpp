@@ -781,6 +781,15 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
   }
   HWY_ASSERT(prompt_size > 0);
 
+  const SampleFunc sample_token =
+      runtime_config.sample_func
+          ? runtime_config.sample_func
+          : [&](const float* logits, size_t vocab_size) -> int {
+    return SampleTopK<TConfig::kTopK>(logits, vocab_size, *runtime_config.gen,
+                                      runtime_config.temperature,
+                                      runtime_config.accept_token);
+  };
+
   // pos indexes the KV cache. In the first turn of a chat, pos = 0.
   //
   // After the first turn, pos gets passed in with > 0 corresponding to the
@@ -844,16 +853,9 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
       LogitsSoftCap(30.0f, activations.logits.data(), kVocabSize);
       // Barrier: must have all logits so we can subtract max.
       Softmax(activations.logits.data(), kVocabSize);
-      if (runtime_config.sample_func) {
-        token = (*runtime_config.sample_func)(activations.logits.data(),
-                                              kVocabSize);
-      } else {
-        token = SampleTopK<TConfig::kTopK>(
-            activations.logits.data(), kVocabSize, *runtime_config.gen,
-            runtime_config.temperature, runtime_config.accept_token);
-        if (!runtime_config.stream_token(token, activations.logits[token])) {
-          token = runtime_config.eos_id;
-        }
+      token = sample_token(activations.logits.data(), kVocabSize);
+      if (!runtime_config.stream_token(token, activations.logits[token])) {
+        token = runtime_config.eos_id;
       }
       if (generate_pos == 0) {
         timing_info.time_to_first_token = hwy::platform::Now() - gen_start;

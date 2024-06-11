@@ -32,6 +32,7 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::clamp
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <thread>  // NOLINT
@@ -41,8 +42,8 @@
 #include "gemma/weights.h"
 #include "util/args.h"
 #include "hwy/base.h"
-#include "hwy/profiler.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 

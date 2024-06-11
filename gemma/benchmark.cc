@@ -72,7 +72,6 @@ std::pair<std::string, int> QueryModel(
   prompt.insert(prompt.begin(), 2);
   std::string res;
   size_t total_tokens = 0;
-  auto accept_token = [](int) { return true; };
   std::mt19937 gen;
   gen.seed(42);
 
@@ -100,7 +99,6 @@ std::pair<std::string, int> QueryModel(
       .verbosity = app.verbosity,
       .gen = &gen,
       .stream_token = stream_token,
-      .accept_token = accept_token,
   };
   model.Generate(runtime_config, prompt, /*start_pos=*/0, kv_cache, timing_info,
                  /*layers_output=*/nullptr);

@@ -18,6 +18,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 
+#include <memory>
+
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #if HWY_OS_LINUX
 #include <sched.h>
@@ -240,6 +242,12 @@ static inline Gemma CreateGemma(const LoaderArgs& loader,
                                 hwy::ThreadPool& pool) {
   return Gemma(loader.tokenizer, loader.weights, loader.ModelType(),
                loader.WeightType(), pool);
+}
+
+static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
+                                                   hwy::ThreadPool& pool) {
+  return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
+                                 loader.ModelType(), loader.WeightType(), pool);
 }
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

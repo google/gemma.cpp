@@ -284,10 +284,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(
-      model, loader.ModelTrainingType(), kv_cache, pool, inference,
-      app.verbosity,
-      /*accept_token=*/[](int) { return true; }, app.eot_line);
+  ReplGemma(model, loader.ModelTrainingType(), kv_cache, pool, inference,
+            app.verbosity, AcceptFunc(), app.eot_line);
 }
 
 }  // namespace gcpp

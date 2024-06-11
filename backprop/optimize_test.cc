@@ -50,11 +50,6 @@ TEST(OptimizeTest, GradientDescent) {
   ByteStorageT backward =
       CallForModelAndWeight<AllocateForwardPass>(model_type, weight_type);
   KVCache kv_cache = KVCache::Create(model_type);
-  size_t max_tokens = 32;
-  size_t max_generated_tokens = 16;
-  float temperature = 1.0f;
-  int verbosity = 0;
-  const auto accept_token = [](int) { return true; };
 
   Gemma gemma(GemmaTokenizer(), model_type, weight_type, pool);
 
@@ -65,8 +60,13 @@ TEST(OptimizeTest, GradientDescent) {
       return token != ReverseSequenceSampler::kEndToken;
     };
     RuntimeConfig runtime = {
-      max_tokens, max_generated_tokens, temperature, verbosity, &gen,
-      stream_token, accept_token, nullptr, ReverseSequenceSampler::kEndToken,
+        .max_tokens = 32,
+        .max_generated_tokens = 16,
+        .temperature = 1.0f,
+        .verbosity = 0,
+        .gen = &gen,
+        .stream_token = stream_token,
+        .eos_id = ReverseSequenceSampler::kEndToken,
     };
     TimingInfo timing_info;
     gemma.Generate(runtime, prompt, 0, kv_cache, timing_info);
