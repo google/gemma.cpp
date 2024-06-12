@@ -293,8 +293,8 @@ struct TestSoftmax {
     for (size_t i = 0; i < count; ++i) {
       sum += x[i];
       double rel = std::abs(x[i] - e[i]) / e[i];
-      ASSERT_LT(rel, 1e-6)
-          << "Mismatch on coordinate " << i << " out of " << count;
+      ASSERT_LT(rel, 1e-6) << "Mismatch on coordinate " << i << " out of "
+                           << count;
     }
     ASSERT_NEAR(sum, 1.0, 1e-6);
   }
@@ -388,7 +388,7 @@ std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> GenerateMatHeap(
           new CompressedArray<MatT, kOuter * kInner>);
   hwy::AlignedFreeUniquePtr<float[]> content =
       hwy::AllocateAligned<float>(kOuter * kInner);
-  const float scale = 1.0f / kInner;
+  const float scale = 1.875f / (kInner * kOuter + offset);
   pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kInner; j++) {
       content[i * kInner + j] =
@@ -411,7 +411,7 @@ GenerateTransposeMatHeap(size_t offset, hwy::ThreadPool& pool) {
           new CompressedArray<MatT, kOuter * kInner>);
   hwy::AlignedFreeUniquePtr<float[]> content =
       hwy::AllocateAligned<float>(kOuter * kInner);
-  const float scale = 1.0f / kInner;
+  const float scale = 1.875f / (kInner * kOuter + offset);
   pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kInner; j++) {
       content[j * kOuter + i] =
@@ -554,17 +554,17 @@ void TestAllTiledMatMul() {
   TestTiledMatMul<512, 512, 512, float>();
   TestTiledMatMul<512, 512, 512, hwy::bfloat16_t>();
   TestTiledMatMul<512, 512, 512, float, hwy::bfloat16_t>();
+  TestTiledMatMul<512, 512, 512, float, SfpStream>();
 
   // minimal non-square test
   TestTiledMatMul<4, 128, 4, float>();
   TestTiledMatMul<4, 128, 4, hwy::bfloat16_t>();
   TestTiledMatMul<4, 128, 4, float, hwy::bfloat16_t>();
+  TestTiledMatMul<32, 128, 32, float, SfpStream>();
 
   // large-scale test
   // TODO(philculliton): investigate rounding issues with large matrices
   TestTiledMatMul<512, 24576, 3072, float>();
-
-  // TODO(janwas): SFP
 }
 
 void TestMatVecAdd() {
@@ -666,6 +666,7 @@ HWY_AFTER_NAMESPACE();
 
 namespace gcpp {
 HWY_BEFORE_TEST(OpsTest);
+
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllAddFrom);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
