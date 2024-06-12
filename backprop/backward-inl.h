@@ -22,6 +22,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -319,12 +320,24 @@ static HWY_NOINLINE void SoftcapVJP(const float* HWY_RESTRICT forward,
   const auto vcap = hn::Set(d, cap);
   const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
 
+  // TODO(szabadka): Investigate what to do when the argmax is not unique.
+  // TODO(szabadka): Use IndexOfMax from hwy when it is available.
+  size_t imax = std::max_element(forward, forward + size) - forward;
+
   hn::Transform1(
       d, backward, size, forward,
       [&](const auto d, const auto v, const auto y) HWY_ATTR {
         const auto scaled = hn::Mul(vinv_cap, y);
         return hn::Mul(v, hn::Sub(one, hn::Mul(scaled, scaled)));
       });
+
+  backward[imax] = 0;
+  auto sum = hn::Zero(d);
+  Foreach(d, backward, size, sum,
+          [&sum](const auto d, const auto value) HWY_ATTR {
+            sum = hn::Add(sum, value);
+          });
+  backward[imax] = -hn::ReduceSum(d, sum);
 }
 
 static HWY_NOINLINE void CrossEntropyLossGrad(

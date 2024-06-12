@@ -210,7 +210,7 @@ TEST(BackPropTest, SoftcapVJP) {
     Softcap(x.data(), N);
     memcpy(dx.data(), dy.data(), N * sizeof(dx[0]));
     SoftcapVJPT(x.data(), dx.data(), N);
-    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
   }
 }
 

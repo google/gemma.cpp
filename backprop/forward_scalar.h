@@ -95,10 +95,19 @@ void Softmax(T* x, size_t N, size_t K) {
 }
 template<typename T>
 void Softcap(T* x, size_t N) {
+  auto maxreal = std::real(x[0]);
+  size_t imax = 0;
+  for (size_t i = 1; i < N; ++i) {
+    if (std::real(x[i]) > maxreal) {
+      maxreal = std::real(x[i]);
+      imax = i;
+    }
+  }
   T cap = 30.0;
   T inv_cap = T(1.0) / cap;
+  T xmax = x[imax];
   for (size_t i = 0; i < N; ++i) {
-    x[i] = cap * std::tanh(x[i] * inv_cap);
+    x[i] = cap * std::tanh((x[i] - xmax) * inv_cap);
   }
 }
 
@@ -275,7 +284,9 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
           forward.final_norm_output.data(),
           forward.logits.data(), kVocabSize, kModelDim, num_tokens);
 
-  Softcap(forward.logits.data(), num_tokens * kVocabSize);
+  for (size_t pos = 0; pos < num_tokens; ++pos) {
+    Softcap(forward.logits.data() + pos * kVocabSize, kVocabSize);
+  }
 
   memcpy(forward.probs.data(), forward.logits.data(),
          num_tokens * kVocabSize * sizeof(forward.logits[0]));

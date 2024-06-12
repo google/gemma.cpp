@@ -277,11 +277,18 @@ void LayerVJP(const Layer<T, TConfig>& weights,
 
 template<typename T>
 void SoftcapVJPT(const T* y, T* dy, size_t N) {
+  size_t imax = std::max_element(y, y + N) - y;
   T cap = 30.0;
   T inv_cap = T(1.0) / cap;
   for (size_t i = 0; i < N; ++i) {
     T scaled = y[i] * inv_cap;
     dy[i] *= (T(1.0) - scaled * scaled);
+  }
+  dy[imax] = T(0.0);
+  for (size_t i = 0; i < N; ++i) {
+    if (i != imax) {
+      dy[imax] -= dy[i];
+    }
   }
 }
 
@@ -318,8 +325,11 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   SoftmaxVJPT(forward.probs.data(), backward.logits.data(),
               kVocabSize, num_tokens);
 
-  SoftcapVJPT(forward.logits.data(), backward.logits.data(),
-              num_tokens * kVocabSize);
+  for (size_t i = 0; i < num_tokens; ++i) {
+    SoftcapVJPT(forward.logits.data() + i * kVocabSize,
+                backward.logits.data() + i * kVocabSize,
+                kVocabSize);
+  }
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
              forward.final_norm_output.data(),
