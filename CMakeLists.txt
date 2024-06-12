@@ -33,6 +33,9 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
 
+FetchContent_Declare(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.2 EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(benchmark)
+
 set(SOURCES
   compression/blob_store.cc
   compression/blob_store.h
@@ -59,6 +62,8 @@ set(SOURCES
   backprop/optimizer.h
   gemma/configs.h
   gemma/activations.h
+  gemma/benchmark_helper.cc
+  gemma/benchmark_helper.h
   gemma/common.cc
   gemma/common.h
   gemma/cross_entropy.cc
