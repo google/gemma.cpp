@@ -60,7 +60,7 @@ class GemmaTokenizer {
   GemmaTokenizer& operator=(GemmaTokenizer&& other);
 
   bool Encode(const std::string& input, std::vector<std::string>* pieces) const;
-  bool Encode(const std::string& input, std::vector<int>* pieces) const;
+  bool Encode(const std::string& input, std::vector<int>* ids) const;
   bool Decode(const std::vector<int>& ids, std::string* detokenized) const;
 
  private:

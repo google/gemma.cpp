@@ -171,15 +171,15 @@ class GemmaTokenizer::Impl {
     return spp_ && spp_->Encode(input, pieces).ok();
   }
 
-  bool Encode(const std::string& input, std::vector<int>* pieces) const {
+  bool Encode(const std::string& input, std::vector<int>* ids) const {
     if constexpr (kShowTokenization) {
-      bool is_ok = spp_ && spp_->Encode(input, pieces).ok();
-      for (int i = 0; i < static_cast<int>(pieces->size()); i++) {
-        fprintf(stderr, "%3d: %d\n", i, (*pieces)[i]);
+      bool is_ok = spp_ && spp_->Encode(input, ids).ok();
+      for (int i = 0; i < static_cast<int>(ids->size()); i++) {
+        fprintf(stderr, "%3d: %d\n", i, (*ids)[i]);
       }
       return is_ok;
     } else {
-      return spp_ && spp_->Encode(input, pieces).ok();
+      return spp_ && spp_->Encode(input, ids).ok();
     }
   }
 
