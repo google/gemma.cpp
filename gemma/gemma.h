@@ -31,6 +31,7 @@
 namespace gcpp {
 
 constexpr size_t kPrefillBatchSize = 16;
+constexpr size_t kDecodeBatchSize = 1;
 constexpr bool kSystemPrompt = false;
 
 struct KVCache {
