@@ -1384,13 +1384,29 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D d;
+  using V = hn::Vec<D>;
 
-  const auto vcap = hn::Set(d, cap);
-  const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
+  const V vcap = hn::Set(d, cap);
+  const V vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
 
-  hn::Transform(d, x, size, [&vcap, &vinv_cap](D d, hn::Vec<D> v) HWY_ATTR {
-    return hn::Mul(vcap, hn::Tanh(d, hn::Mul(v, vinv_cap)));
-  });
+  // If we do not subtract the max as in softmax, values > 100 (which do occur)
+  // will all saturate to the cap, and then this function is no longer
+  // monotonic, which would change the results on TopK.
+  const V vmin = hn::Set(d, hwy::LowestValue<float>());
+  V vmax = vmin;
+  Foreach(d, x, max_pos, vmin,
+          [&vmax](const auto d, const auto value)
+              HWY_ATTR { vmax = hn::Max(vmax, value); });
+  vmax = hn::MaxOfLanes(d, vmax);
+
+  // We want (v-vmax) * vinv_cap. To take advantage of FMA, multiply this out to
+  // v * vinv_cap + (-vmax*vinv_cap).
+  const V add = hn::Neg(hn::Mul(vmax, vinv_cap));
+
+  hn::Transform(
+      d, x, size, [&vcap, &vinv_cap, &add](D d, hn::Vec<D> v) HWY_ATTR {
+        return hn::Mul(vcap, hn::Tanh(d, hn::MulAdd(v, vinv_cap, add)));
+      });
 }
 
 static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
