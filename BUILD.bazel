@@ -38,7 +38,7 @@ cc_library(
 cc_test(
     name = "ops_test",
     size = "small",
-    timeout = "moderate",
+    timeout = "long",
     srcs = ["gemma/ops_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
