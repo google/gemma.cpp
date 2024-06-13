@@ -36,7 +36,12 @@ ByteStorageT AllocateSizeof() {
 }
 
 // Model variants: see configs.h for details.
-enum class Model { GEMMA_2B, GEMMA_7B, GRIFFIN_2B, GEMMA_TINY };
+enum class Model {
+  GEMMA_2B,
+  GEMMA_7B,
+  GRIFFIN_2B,
+  GEMMA_TINY,
+};
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
