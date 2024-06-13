@@ -555,12 +555,14 @@ void TestAllTiledMatMul() {
   TestTiledMatMul<512, 512, 512, hwy::bfloat16_t>();
   TestTiledMatMul<512, 512, 512, float, hwy::bfloat16_t>();
   TestTiledMatMul<512, 512, 512, float, SfpStream>();
+  TestTiledMatMul<512, 512, 512, hwy::bfloat16_t, SfpStream>();
 
   // minimal non-square test
   TestTiledMatMul<4, 128, 4, float>();
   TestTiledMatMul<4, 128, 4, hwy::bfloat16_t>();
   TestTiledMatMul<4, 128, 4, float, hwy::bfloat16_t>();
   TestTiledMatMul<32, 128, 32, float, SfpStream>();
+  TestTiledMatMul<32, 128, 32, hwy::bfloat16_t, SfpStream>();
 
   // large-scale test
   // TODO(philculliton): investigate rounding issues with large matrices
