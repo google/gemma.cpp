@@ -531,7 +531,7 @@ void AssertClose(const MatT* HWY_RESTRICT expected,
 template <size_t kM, size_t kN, size_t kK, typename MatTA,
           typename MatTB = MatTA>
 void TestTiledMatMul() {
-  hwy::ThreadPool pool(3);
+  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   std::unique_ptr<CompressedArray<MatTA, kM * kN>> a =
       GenerateMatHeap<MatTA, kM, kN>(0, pool);
   std::unique_ptr<CompressedArray<MatTB, kN * kK>> b =
@@ -570,7 +570,7 @@ void TestAllTiledMatMul() {
 }
 
 void TestMatVecAdd() {
-  hwy::ThreadPool pool(0);
+  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
   CompressedArray<float, kOuter * kInner> mat =
@@ -590,7 +590,7 @@ void TestMatVecAdd() {
 }
 
 void TestTwoMatVecAdd() {
-  hwy::ThreadPool pool(0);
+  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
   CompressedArray<float, kOuter * kInner> mat0 =
@@ -617,7 +617,7 @@ void TestTwoMatVecAdd() {
 }
 
 void TestTwoOfsMatVecAddLoop() {
-  hwy::ThreadPool pool(0);
+  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
   CompressedArray<float, kOuter * kInner> mat =
