@@ -104,30 +104,30 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
 
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
 // calls FUNC<ConfigT<TWEIGHT>> where ConfigT is chosen via MODEL enum.
-#define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                \
-  switch (MODEL) {                                                      \
-    case Model::GEMMA_TINY: {                                           \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemmaTiny<TWEIGHT>>) \
-      ARGS;                                                             \
-      break;                                                            \
-    }                                                                   \
-    case Model::GEMMA_2B: {                                             \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2B<TWEIGHT>>)   \
-      ARGS;                                                             \
-      break;                                                            \
-    }                                                                   \
-    case Model::GEMMA_7B: {                                             \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B<TWEIGHT>>)   \
-      ARGS;                                                             \
-      break;                                                            \
-    }                                                                   \
-    case Model::GRIFFIN_2B: {                                           \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>) \
-      ARGS;                                                             \
-      break;                                                            \
-    }                                                                   \
-    default:                                                            \
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL));     \
+#define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                   \
+  switch (MODEL) {                                                         \
+    case Model::GEMMA_TINY: {                                              \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemmaTiny<TWEIGHT>>)    \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA_2B: {                                                \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2B<TWEIGHT>>)      \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA_7B: {                                                \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B<TWEIGHT>>)      \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GRIFFIN_2B: {                                              \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>)    \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    default:                                                               \
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL));        \
   }
 
 // Like CallForModelAndWeight, but for SIMD function templates. This is a macro
