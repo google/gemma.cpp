@@ -530,54 +530,6 @@ void AssertClose(const MatT* HWY_RESTRICT expected,
 
 template <size_t kM, size_t kN, size_t kK, typename MatTA,
           typename MatTB = MatTA>
-void TestTiledMatMul() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
-  std::unique_ptr<CompressedArray<MatTA, kM * kN>> a =
-      GenerateMatHeap<MatTA, kM, kN>(0, pool);
-  std::unique_ptr<CompressedArray<MatTB, kN * kK>> b =
-      GenerateMatHeap<MatTB, kN, kK>(0, pool);
-  std::unique_ptr<CompressedArray<float, kM * kK>> c_slow =
-      GenerateZeroMatHeap<float, kM, kK>(pool);
-  std::unique_ptr<CompressedArray<float, kM * kK>> c_slow_batch =
-      GenerateZeroMatHeap<float, kM, kK>(pool);
-
-  MatMulSlow<kM, kN, kK>(a->data(), b->data(), c_slow->data());
-  MatMulSlowBatch<kN, kK>(kM, a->data(), b->data(), c_slow_batch->data());
-  AssertClose(c_slow->data(), c_slow_batch->data(), kM * kK);
-
-  hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
-  std::unique_ptr<CompressedArray<MatTB, kN * kK>> b_trans =
-      GenerateTransposeMatHeap<MatTB, kN, kK>(0, pool);
-  MatMul_4x4<kM, kN, kK>(a->data(), b_trans->data(), c.get(), pool);
-
-  AssertClose(c_slow->data(), c.get(), kM * kK);
-}
-
-void TestAllTiledMatMul() {
-  // medium-sized square test
-  TestTiledMatMul<512, 512, 512, float>();
-  TestTiledMatMul<512, 512, 512, hwy::bfloat16_t>();
-  TestTiledMatMul<512, 512, 512, float, hwy::bfloat16_t>();
-  TestTiledMatMul<512, 512, 512, hwy::bfloat16_t, float>();
-  TestTiledMatMul<512, 512, 512, float, SfpStream>();
-  TestTiledMatMul<512, 512, 512, hwy::bfloat16_t, SfpStream>();
-
-  // minimal non-square test
-  TestTiledMatMul<4, 128, 4, float>();
-  TestTiledMatMul<4, 128, 4, hwy::bfloat16_t>();
-  TestTiledMatMul<4, 128, 4, float, hwy::bfloat16_t>();
-  TestTiledMatMul<4, 128, 4, hwy::bfloat16_t, float>();
-  TestTiledMatMul<32, 128, 32, float, SfpStream>();
-  TestTiledMatMul<32, 128, 32, hwy::bfloat16_t, SfpStream>();
-
-  // large-scale test
-  // TODO(philculliton): investigate rounding issues with large matrices.
-  // Causes test timeout.
-  // TestTiledMatMul<512, 24576, 3072, float>();
-}
-
-template <size_t kM, size_t kN, size_t kK, typename MatTA,
-          typename MatTB = MatTA>
 void TestTiledBatchMatMul() {
   fprintf(stderr, "TestTiledBatchMatMul %lu, %lu, %lu", kM, kN, kK);
   hwy::ThreadPool pool(3);
@@ -638,6 +590,11 @@ void TestAllTiledBatchMatMul() {
   TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, float>();
   TestTiledBatchMatMul<1, 128, 32, float, SfpStream>();
   TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, SfpStream>();
+
+  // large-scale test
+  // TODO(philculliton): investigate rounding issues with large matrices.
+  // Causes test timeout.
+  // TestTiledBatchMatMul<512, 24576, 3072, float>();
 }
 
 void TestMatVecAdd() {
@@ -746,7 +703,6 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllTiledBatchMatMul);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllTiledMatMul);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);

@@ -753,71 +753,6 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
                                 c20, c21, c22, c23, c30, c31, c32, c33, tile_c,
                                 stride_c);
 }
-
-// Tiled 4x4 GEMM. Typically kRowsAC is 4..512, kColsA_RowsB is 3k or 24k, and
-// kColsBC is 24k or 3k. Note: B is transposed (column-major).
-// This function loops over all tiles (static scheduling). TODO(janwas): we can
-// possibly remove this if ThreadPool(0) is as efficient as the loop.
-template <size_t kRowsAC, size_t kColsA_RowsB, size_t kColsBC, typename MatT>
-void GEMM_4x4_Static(const MatT* HWY_RESTRICT A, const MatT* HWY_RESTRICT B,
-                     MatT* HWY_RESTRICT C) {
-  const hn::ScalableTag<MatT> d;
-  const size_t N = hn::Lanes(d);  // column step size
-  constexpr size_t kRegRows = 4;
-  constexpr size_t kRegCols = 4;  // in vectors
-
-  static_assert(kRowsAC % kRegRows == 0);
-  static_assert(kColsBC % kRegCols == 0);
-  HWY_ASSERT(kColsA_RowsB % (N * kRegCols) == 0);
-  constexpr size_t kTilesY = kRowsAC / kRegRows;
-  constexpr size_t kTilesX = kColsBC / kRegCols;
-  constexpr size_t kTiles = kTilesX * kTilesY;
-
-  constexpr size_t kStrideA = kColsA_RowsB;
-  constexpr size_t kStrideB = kColsA_RowsB;  // B is column-major
-  constexpr size_t kStrideC = kColsBC;
-
-  HWY_UNROLL(1)
-  for (size_t idx_tile = 0; idx_tile < kTiles; ++idx_tile) {
-    GEMM_4x4_Tile<kRegRows, kColsA_RowsB>(
-        A, B, C, idx_tile, kTilesX, kStrideA, kStrideB, kStrideC);
-  }
-}
-
-// Tiled 4x4 GEMM. Typically kRowsAC is 4..512, kColsA_RowsB is 3k or 24k, and
-// kColsBC is 24k or 3k. Note: B is transposed (column-major).
-// This function processes tiles in parallel with a work-stealing thread pool.
-template <size_t kRowsAC, size_t kColsA_RowsB, size_t kColsBC, typename MatTA,
-          typename MatTB, typename OutT>
-HWY_NOINLINE void MatMul_4x4(const MatTA* HWY_RESTRICT A,
-                             const MatTB* HWY_RESTRICT B, OutT* HWY_RESTRICT C,
-                             hwy::ThreadPool& pool) {
-  // Process reg-sized tiles of C in parallel. We currently write C directly,
-  // which touches more memory than fits in L3. TODO: add another level of loops
-  // so that we finish one L3-sized piece of C at a time.
-  const hn::ScalableTag<MatTA> d;
-  const size_t N = Lanes(d);
-  constexpr size_t kRegRows = 4;
-  constexpr size_t kRegCols = 4;  // in vectors
-
-  static_assert(kRowsAC % kRegRows == 0);
-  static_assert(kColsBC % kRegCols == 0);
-  HWY_ASSERT(kColsA_RowsB % (N * kRegCols) == 0);
-  const size_t kTilesY = kRowsAC / kRegRows;
-  const size_t kTilesX = kColsBC / kRegCols;
-  const size_t kTiles = kTilesX * kTilesY;
-
-  constexpr size_t kStrideA = kColsA_RowsB;
-  constexpr size_t kStrideB = kColsA_RowsB;
-  constexpr size_t kStrideC = kColsBC;
-
-  pool.Run(0, kTiles, [&](const uint64_t idx_tile, size_t /*thread*/) HWY_ATTR {
-    // Computes the finished product of one 4x4N tile and writes to C.
-    GEMM_4x4_Tile<kRegRows, kColsA_RowsB>(
-        A, B, C, idx_tile, kTilesX, kStrideA, kStrideB, kStrideC);
-  });
-}
-
 // Tiled 4x4 GEMM. Typically batch_size is 1..512, kColsA_RowsB is 3k or 24k,
 // and kColsBC is 24k or 3k. Note: B is transposed (column-major).
 // NOTE that batch_size is the number of rows of A and C.
@@ -867,35 +802,6 @@ HWY_NOINLINE void MatMul_4x4_Batch(
             A, B, C, idx_tile, kTilesX, kStrideA, kStrideB, kStrideC);
     }
   });
-}
-
-// Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
-// ops_test across instruction sets.
-template <size_t kM, size_t kN, size_t kK, typename MatTA, typename MatTB>
-HWY_INLINE void MatMulSlow(const MatTA* HWY_RESTRICT a,
-                           const MatTB* HWY_RESTRICT b,
-                           float* HWY_RESTRICT out) {
-  for (size_t i = 0; i < kM; ++i) {
-    for (size_t k = 0; k < kN; ++k) {
-      for (size_t j = 0; j < kK; ++j) {
-        const float a1 = hwy::ConvertScalarTo<float>(a[i * kN + k]);
-        const float b1 = hwy::ConvertScalarTo<float>(b[k * kK + j]);
-        out[i * kK + j] += a1 * b1;
-      }
-    }
-  }
-}
-
-template <size_t kM, size_t kN, size_t kK, typename MatTA>
-HWY_INLINE void MatMulSlow(const MatTA* HWY_RESTRICT a,
-                           const SfpStream* HWY_RESTRICT b_sfp_stream,
-                           float* HWY_RESTRICT out) {
-  const hn::ScalableTag<float> d;
-  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kK * kN);
-  CompressTraits<SfpStream>::Decompress(d,
-                                        /*in_capacity=*/0, b_sfp_stream, 0,
-                                        b.get(), kK * kN);
-  MatMulSlow<kM, kN, kK>(a, b.get(), out);
 }
 
 // Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
