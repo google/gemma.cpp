@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include <array>
+#include <cmath>
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
@@ -68,6 +69,29 @@ StaticCast(From from) noexcept {
         static_cast<hwy::SignedFromSize<sizeof(From)>>(from));
   else
     return static_cast<To>(from);
+}
+
+// For testing.
+template <typename MatT>
+void AssertClose(const MatT* HWY_RESTRICT expected,
+                 const MatT* HWY_RESTRICT actual, size_t num) {
+  for (size_t idx = 0; idx < num; idx++) {
+    const double expected_value = hwy::ConvertScalarTo<double>(expected[idx]);
+    const double actual_value = hwy::ConvertScalarTo<double>(actual[idx]);
+
+    const double magnitude = std::abs(expected_value);
+
+    const double tolerance =
+        256.0 * hwy::ConvertScalarTo<double>(hwy::Epsilon<MatT>()) *
+        HWY_MAX(magnitude, 1.0);
+
+    if (!(expected_value - tolerance <= actual_value &&
+          actual_value <= expected_value + tolerance)) {
+      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f\n", idx,
+              expected_value, idx, actual_value);
+      HWY_ASSERT(0);
+    }
+  }
 }
 
 template <size_t kOuter>
@@ -362,11 +386,11 @@ HWY_INLINE void GEMM_4x4_Tile(const MatT* HWY_RESTRICT A,
       c23, c30, c31, c32, c33, tile_c, stride_c);
 }
 
-// Same as above, but with mixed Mat types: (f32, sfp).
+// Same as above, but with mixed Mat types: (f32, compressed).
 template <size_t kNumRows, size_t kColsA_RowsB, typename MatTA,
-          HWY_IF_F32(MatTA)>
+          HWY_IF_F32(MatTA), typename MatTB, HWY_IF_T_SIZE(MatTB, 1)>
 HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
-                              const SfpStream* HWY_RESTRICT B,
+                              const MatTB* HWY_RESTRICT B,
                               float* HWY_RESTRICT C, const size_t idx_tile,
                               const size_t xtiles, const size_t stride_a,
                               const size_t stride_b, const size_t stride_c) {
@@ -406,7 +430,7 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
 
   hwy::AlignedFreeUniquePtr<float[]> tile_b_unique_ptr =
       hwy::AllocateAligned<float>(kRegRows * kColsA_RowsB);
-  CompressTraits<SfpStream>::Decompress(
+  CompressTraits<MatTB>::Decompress(
       d,
       /*in_capacity=*/0, B, stride_b * row_b_col_c, tile_b_unique_ptr.get(),
       kRegRows * kColsA_RowsB);
@@ -455,11 +479,11 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
       c23, c30, c31, c32, c33, tile_c, stride_c);
 }
 
-// Same as above, but with mixed Mat types: (bf16, sfp).
+// Same as above, but with mixed Mat types: (bf16, compressed)).
 template <size_t kNumRows, size_t kColsA_RowsB, typename MatTA,
-          HWY_IF_BF16(MatTA)>
+          HWY_IF_BF16(MatTA), typename MatTB, HWY_IF_T_SIZE(MatTB, 1)>
 HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
-                              const SfpStream* HWY_RESTRICT B,
+                              const MatTB* HWY_RESTRICT B,
                               float* HWY_RESTRICT C, const size_t idx_tile,
                               const size_t xtiles, const size_t stride_a,
                               const size_t stride_b, const size_t stride_c) {
@@ -504,7 +528,7 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
 
   hwy::AlignedFreeUniquePtr<float[]> tile_b_unique_ptr =
       hwy::AllocateAligned<float>(kRegRows * kColsA_RowsB);
-  CompressTraits<SfpStream>::Decompress(
+  CompressTraits<MatTB>::Decompress(
       d32,
       /*in_capacity=*/0, B, stride_b * row_b_col_c, tile_b_unique_ptr.get(),
       kRegRows * kColsA_RowsB);
@@ -806,7 +830,37 @@ HWY_NOINLINE void MatMul_4x4_Batch(
 
 // Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
 // ops_test across instruction sets.
-template <size_t kN, size_t kK, typename MatTA, typename MatTB>
+template <size_t kM, size_t kN, size_t kK, typename MatTA, typename MatTB>
+HWY_INLINE void MatMulSlow(const MatTA* HWY_RESTRICT a,
+                           const MatTB* HWY_RESTRICT b,
+                           float* HWY_RESTRICT out) {
+  for (size_t i = 0; i < kM; ++i) {
+    for (size_t k = 0; k < kN; ++k) {
+      for (size_t j = 0; j < kK; ++j) {
+        const float a1 = hwy::ConvertScalarTo<float>(a[i * kN + k]);
+        const float b1 = hwy::ConvertScalarTo<float>(b[k * kK + j]);
+        out[i * kK + j] += a1 * b1;
+      }
+    }
+  }
+}
+
+template <size_t kM, size_t kN, size_t kK, typename MatTA>
+HWY_INLINE void MatMulSlow(const MatTA* HWY_RESTRICT a,
+                           const SfpStream* HWY_RESTRICT b_sfp_stream,
+                           float* HWY_RESTRICT out) {
+  const hn::ScalableTag<float> d;
+  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kK * kN);
+  CompressTraits<SfpStream>::Decompress(d,
+                                        /*in_capacity=*/0, b_sfp_stream, 0,
+                                        b.get(), kK * kN);
+  MatMulSlow<kM, kN, kK>(a, b.get(), out);
+}
+
+// Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
+// ops_test across instruction sets.
+template <size_t kN, size_t kK, typename MatTA, typename MatTB,
+          HWY_IF_T_SIZE_GT(MatTB, 1)>
 HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
                                 const MatTB* HWY_RESTRICT b,
                                 float* HWY_RESTRICT out) {
@@ -821,15 +875,18 @@ HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
   }
 }
 
-template <size_t kN, size_t kK, typename MatTA>
+// The above overload can handle combinations of f32 and bf16, but this one
+// is required for MatTB = {SFP, NUQ}.
+template <size_t kN, size_t kK, typename MatTA, typename MatTB,
+          HWY_IF_T_SIZE(MatTB, 1)>
 HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
-                                const SfpStream* HWY_RESTRICT b_sfp_stream,
+                                const MatTB* HWY_RESTRICT b_compr,
                                 float* HWY_RESTRICT out) {
   const hn::ScalableTag<float> d;
   hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kK * kN);
-  CompressTraits<SfpStream>::Decompress(d,
-                                        /*in_capacity=*/0, b_sfp_stream, 0,
-                                        b.get(), kK * kN);
+  CompressTraits<MatTB>::Decompress(d,
+                                    /*in_capacity=*/0, b_compr, 0, b.get(),
+                                    kK * kN);
   MatMulSlowBatch<kN, kK>(batch_size, a, b.get(), out);
 }
 

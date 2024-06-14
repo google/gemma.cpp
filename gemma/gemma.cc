@@ -88,6 +88,11 @@ struct Activations {
       att_post2;  // accumulation of attention outputs over heads
   std::array<hwy::bfloat16_t, kBatchSize * kModelDim> bf_pre_ffw_rms_out;
   std::array<float, kBatchSize * TConfig::kFFHiddenDim * 2> ffw_hidden;
+
+  // For FFW MatMul.
+  std::array<float, kBatchSize * TConfig::kFFHiddenDim> C1;
+  std::array<float, kBatchSize * TConfig::kFFHiddenDim> C2;
+
   // bf_ version can't be used until GeluMulToBF16 issue in FFW() is resolved.
   // std::array<hwy::bfloat16_t, kBatchSize * 2 * TConfig::kFFHiddenDim>
   //     bf_ffw_hidden;
@@ -508,41 +513,70 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
   float* HWY_RESTRICT even_odd = activations.even_odd.data();
 
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
+  // TODO: MatMul does not yet support adding another matrix to the result.
+  if constexpr (!TConfig::kFFBiases) {
     PROFILER_ZONE("Gen.FFW.GatedGELU");
-    const hwy::bfloat16_t* HWY_RESTRICT vec =
-        activations.bf_pre_ffw_rms_out.data() + batch_idx * kModelDim;
-    float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
-    float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
 
-    // Same matrix, first and second half of rows. Could fuse into one MatVec.
-    MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-        layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-        TConfig::kFFBiases ?
-        layer_weights->ffw_gating_biases.data() + kFFHiddenDim : nullptr,
-        even_odd, out_mul, pool);
-    // Gate, will go through the nonlinearity.
-    MatVecT</*kAdd=*/TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
-        layer_weights->gating_einsum_w, 0, vec,
-        layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
+    // MatMul expects col-major B, which is what we have: kModelDim consecutive
+    // elements in memory, repeated kFFHiddenDim times.
+    const auto b1 = layer_weights->gating_einsum_w.data();
+    constexpr size_t kColsA = kModelDim;
+    constexpr size_t kColsB = kFFHiddenDim;
+    const auto b2 = b1 + kColsA * kColsB;
+    auto A = activations.bf_pre_ffw_rms_out.data();
+    // Will go through GELU.
+    MatMul_4x4_Batch<kColsA, kColsB>(num_tokens, A, b1, activations.C1.data(),
+                                     pool);
+    // What to multiply by.
+    MatMul_4x4_Batch<kColsA, kColsB>(num_tokens, A, b2, activations.C2.data(),
+                                     pool);
 
+    // Gelu and multiply by gate.
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     using VF = hn::Vec<DF>;
-    hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
-                   [](DF df, VF v, VF mul)
-                       HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
-  }
+    hn::Transform1(DF(), activations.C1.data(), kFFHiddenDim * num_tokens,
+                   activations.C2.data(), [](DF df, VF v, VF mul) HWY_ATTR {
+                     return hn::Mul(mul, Gelu(df, v));
+                   });
 
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    PROFILER_ZONE("Gen.FFW\\GatedGELU");
-    const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
-    MatVecT</*kAdd=*/TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
-        layer_weights->linear_w, 0,
-        activations.ffw_hidden.data() + hidden_offset,
-        layer_weights->ffw_output_biases.data(), even_odd,
-        activations.ffw_out.data() + batch_idx * kModelDim, pool);
+    MatMul_4x4_Batch<kFFHiddenDim, kModelDim>(num_tokens, activations.C1.data(),
+                                              layer_weights->linear_w.data(),
+                                              activations.ffw_out.data(), pool);
+  } else {
+    for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
+      const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
+      const hwy::bfloat16_t* HWY_RESTRICT vec =
+          activations.bf_pre_ffw_rms_out.data() + batch_idx * kModelDim;
+      float* HWY_RESTRICT out = activations.ffw_hidden.data() + hidden_offset;
+      float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
+
+      PROFILER_ZONE("Gen.FFW.GatedGELU");
+      // Same matrix, first and second half of rows. Could fuse into one MatVec.
+      MatVecT<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+          layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
+          TConfig::kFFBiases
+              ? layer_weights->ffw_gating_biases.data() + kFFHiddenDim
+              : nullptr,
+          even_odd, out_mul, pool);
+      // Gate, will go through the nonlinearity.
+      MatVecT<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+          layer_weights->gating_einsum_w, 0, vec,
+          layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
+
+      namespace hn = hwy::HWY_NAMESPACE;
+      using DF = hn::ScalableTag<float>;
+      using VF = hn::Vec<DF>;
+      hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
+                     [](DF df, VF v, VF mul)
+                         HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
+
+      MatVecT</*kAdd=*/TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
+          layer_weights->linear_w, 0,
+          activations.ffw_hidden.data() + hidden_offset,
+          layer_weights->ffw_output_biases.data(), even_odd,
+          activations.ffw_out.data() + batch_idx * kModelDim, pool);
+    }
   }
 }
 

@@ -136,7 +136,7 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 32;
-  static constexpr int kVocabSize = 16;
+  static constexpr int kVocabSize = 64;
   static constexpr std::array<LayerAttentionType, 3> kLayerConfig =
       FixedLayerConfig<3>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
@@ -146,8 +146,8 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
       NumLayersOfTypeBefore(kLayerConfig,
                             LayerAttentionType::kGriffinRecurrentBlock,
                             kLayers);
-  static constexpr int kModelDim = 64;
-  static constexpr int kFFHiddenDim = 128;
+  static constexpr int kModelDim = 128;
+  static constexpr int kFFHiddenDim = 256;
   static constexpr int kHeads = 4;
   static constexpr int kKVHeads = 1;
   static constexpr int kQKVDim = 16;  // query size == key size == value size
