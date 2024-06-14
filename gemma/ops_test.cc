@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdio>
 #include <memory>
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS HWY_SCALAR
@@ -506,68 +507,80 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
   }
 }
 
-template <size_t kM, size_t kN, size_t kK, typename MatTA,
+template <size_t kM, size_t kN, size_t kK, bool kAdd, typename MatTA,
           typename MatTB = MatTA>
 void TestTiledBatchMatMul() {
-  fprintf(stderr, "TestTiledBatchMatMul %lu, %lu, %lu", kM, kN, kK);
+  fprintf(stderr, "TestTiledBatchMatMul %lu, %lu, %lu, add=%d ", kM, kN, kK,
+          kAdd);
   hwy::ThreadPool pool(3);
   std::unique_ptr<CompressedArray<MatTA, kM * kN>> a =
       GenerateMatHeap<MatTA, kM, kN>(0, pool);
   std::unique_ptr<CompressedArray<MatTB, kN * kK>> b =
       GenerateMatHeap<MatTB, kN, kK>(0, pool);
+  std::unique_ptr<CompressedArray<float, kK>> add =
+      GenerateMatHeap<float, 1, kK>(0, pool);
   std::unique_ptr<CompressedArray<float, kM * kK>> c_slow =
       GenerateZeroMatHeap<float, kM, kK>(pool);
 
-  MatMulSlowBatch<kN, kK>(kM, a->data(), b->data(), c_slow->data());
+  MatMulSlowBatch<kN, kK>(kM, a->data(), b->data(),
+                          kAdd ? add->data() : nullptr, c_slow->data());
 
   hwy::AlignedFreeUniquePtr<float[]> c = hwy::AllocateAligned<float>(kM * kK);
   std::unique_ptr<CompressedArray<MatTB, kN * kK>> b_trans =
       GenerateTransposeMatHeap<MatTB, kN, kK>(0, pool);
-  MatMul_4x4_Batch<kN, kK>(kM, a->data(), b_trans->data(), c.get(), pool);
+  if (kAdd) {
+    MatMul_4x4_Batch_Add<kN, kK, kAdd>(kM, a->data(), b_trans->data(), c.get(),
+                                       add->data(), pool);
+  } else {
+    MatMul_4x4_Batch<kN, kK>(kM, a->data(), b_trans->data(), c.get(), pool);
+  }
 
   AssertClose(c_slow->data(), c.get(), kM * kK);
 }
 
 void TestAllTiledBatchMatMul() {
   // medium-sized square test
-  TestTiledBatchMatMul<512, 512, 512, float>();
-  TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<512, 512, 512, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<512, 512, 512, float, SfpStream>();
-  TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/false, float>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/true, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/false, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/true, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/false, float, SfpStream>();
+  TestTiledBatchMatMul<512, 512, 512, /*kAdd=*/true, hwy::bfloat16_t,
+                       SfpStream>();
 
   // minimal non-square test
-  TestTiledBatchMatMul<35, 128, 32, float>();
-  TestTiledBatchMatMul<34, 128, 32, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<33, 128, 32, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<33, 128, 32, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<31, 128, 32, float, SfpStream>();
-  TestTiledBatchMatMul<29, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<4, 128, 8, float>();
-  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<4, 128, 8, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<4, 128, 8, float, SfpStream>();
-  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<3, 128, 32, float>();
-  TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<3, 128, 32, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<3, 128, 32, float, SfpStream>();
-  TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<2, 128, 16, float>();
-  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<2, 128, 16, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<2, 128, 16, float, SfpStream>();
-  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<1, 128, 32, float>();
-  TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<1, 128, 32, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, float>();
-  TestTiledBatchMatMul<1, 128, 32, float, SfpStream>();
-  TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<35, 128, 32, /*kAdd=*/false, float>();
+  TestTiledBatchMatMul<34, 128, 32, /*kAdd=*/true, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<33, 128, 32, /*kAdd=*/false, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<33, 128, 32, /*kAdd=*/true, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<31, 128, 32, /*kAdd=*/false, float, SfpStream>();
+  TestTiledBatchMatMul<29, 128, 32, /*kAdd=*/true, hwy::bfloat16_t,
+                       SfpStream>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/true, float>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/false, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/true, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/false, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/true, float, SfpStream>();
+  TestTiledBatchMatMul<4, 128, 8, /*kAdd=*/false, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/false, float>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/true, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/false, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/true, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/false, float, SfpStream>();
+  TestTiledBatchMatMul<3, 128, 32, /*kAdd=*/true, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/true, float>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/false, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/true, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/false, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/true, float, SfpStream>();
+  TestTiledBatchMatMul<2, 128, 16, /*kAdd=*/false, hwy::bfloat16_t,
+                       SfpStream>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/false, float>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/true, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/false, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/true, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/false, float, SfpStream>();
+  TestTiledBatchMatMul<1, 128, 32, /*kAdd=*/true, hwy::bfloat16_t, SfpStream>();
 
   // large-scale test
   // TODO(philculliton): investigate rounding issues with large matrices.
