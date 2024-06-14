@@ -521,8 +521,8 @@ void AssertClose(const MatT* HWY_RESTRICT expected,
 
     if (!(expected_value - tolerance <= actual_value &&
           actual_value <= expected_value + tolerance)) {
-      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f\n", idx,
-              expected_value, idx, actual_value);
+      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f, tolerance: %f\n",
+              idx, expected_value, idx, actual_value, tolerance);
       HWY_ASSERT(0);
     }
   }
@@ -558,6 +558,7 @@ void TestAllTiledMatMul() {
   TestTiledMatMul<512, 512, 512, float>();
   TestTiledMatMul<512, 512, 512, hwy::bfloat16_t>();
   TestTiledMatMul<512, 512, 512, float, hwy::bfloat16_t>();
+  TestTiledMatMul<512, 512, 512, hwy::bfloat16_t, float>();
   TestTiledMatMul<512, 512, 512, float, SfpStream>();
   TestTiledMatMul<512, 512, 512, hwy::bfloat16_t, SfpStream>();
 
@@ -565,6 +566,7 @@ void TestAllTiledMatMul() {
   TestTiledMatMul<4, 128, 4, float>();
   TestTiledMatMul<4, 128, 4, hwy::bfloat16_t>();
   TestTiledMatMul<4, 128, 4, float, hwy::bfloat16_t>();
+  TestTiledMatMul<4, 128, 4, hwy::bfloat16_t, float>();
   TestTiledMatMul<32, 128, 32, float, SfpStream>();
   TestTiledMatMul<32, 128, 32, hwy::bfloat16_t, SfpStream>();
 
@@ -577,6 +579,7 @@ void TestAllTiledMatMul() {
 template <size_t kM, size_t kN, size_t kK, typename MatTA,
           typename MatTB = MatTA>
 void TestTiledBatchMatMul() {
+  fprintf(stderr, "TestTiledBatchMatMul %lu, %lu, %lu", kM, kN, kK);
   hwy::ThreadPool pool(3);
   std::unique_ptr<CompressedArray<MatTA, kM * kN>> a =
       GenerateMatHeap<MatTA, kM, kN>(0, pool);
@@ -600,33 +603,39 @@ void TestAllTiledBatchMatMul() {
   TestTiledBatchMatMul<512, 512, 512, float>();
   TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t>();
   TestTiledBatchMatMul<512, 512, 512, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t, float>();
   TestTiledBatchMatMul<512, 512, 512, float, SfpStream>();
   TestTiledBatchMatMul<512, 512, 512, hwy::bfloat16_t, SfpStream>();
 
   // minimal non-square test
-  TestTiledBatchMatMul<35, 128, 4, float>();
-  TestTiledBatchMatMul<34, 128, 4, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<33, 128, 4, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<35, 128, 32, float>();
+  TestTiledBatchMatMul<34, 128, 32, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<33, 128, 32, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<33, 128, 32, hwy::bfloat16_t, float>();
   TestTiledBatchMatMul<31, 128, 32, float, SfpStream>();
   TestTiledBatchMatMul<29, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<4, 128, 4, float>();
-  TestTiledBatchMatMul<4, 128, 4, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<4, 128, 4, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<4, 128, 32, float, SfpStream>();
-  TestTiledBatchMatMul<4, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<3, 128, 4, float>();
-  TestTiledBatchMatMul<3, 128, 4, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<3, 128, 4, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<4, 128, 8, float>();
+  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<4, 128, 8, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<4, 128, 8, float, SfpStream>();
+  TestTiledBatchMatMul<4, 128, 8, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<3, 128, 32, float>();
+  TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<3, 128, 32, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t, float>();
   TestTiledBatchMatMul<3, 128, 32, float, SfpStream>();
   TestTiledBatchMatMul<3, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<2, 128, 4, float>();
-  TestTiledBatchMatMul<2, 128, 4, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<2, 128, 4, float, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<2, 128, 32, float, SfpStream>();
-  TestTiledBatchMatMul<2, 128, 32, hwy::bfloat16_t, SfpStream>();
-  TestTiledBatchMatMul<1, 128, 4, float>();
-  TestTiledBatchMatMul<1, 128, 4, hwy::bfloat16_t>();
-  TestTiledBatchMatMul<1, 128, 4, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<2, 128, 16, float>();
+  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<2, 128, 16, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t, float>();
+  TestTiledBatchMatMul<2, 128, 16, float, SfpStream>();
+  TestTiledBatchMatMul<2, 128, 16, hwy::bfloat16_t, SfpStream>();
+  TestTiledBatchMatMul<1, 128, 32, float>();
+  TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<1, 128, 32, float, hwy::bfloat16_t>();
+  TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, float>();
   TestTiledBatchMatMul<1, 128, 32, float, SfpStream>();
   TestTiledBatchMatMul<1, 128, 32, hwy::bfloat16_t, SfpStream>();
 }
@@ -730,7 +739,6 @@ HWY_AFTER_NAMESPACE();
 
 namespace gcpp {
 HWY_BEFORE_TEST(OpsTest);
-
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllAddFrom);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
