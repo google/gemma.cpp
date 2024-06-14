@@ -113,12 +113,8 @@ cc_library(
 
 cc_library(
     name = "cross_entropy",
-    srcs = [
-        "gemma/cross_entropy.cc",
-    ],
-    hdrs = [
-        "gemma/cross_entropy.h",
-    ],
+    srcs = ["gemma/cross_entropy.cc"],
+    hdrs = ["gemma/cross_entropy.h"],
     deps = [
         ":common",
         ":gemma_lib",
@@ -149,6 +145,25 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "benchmark_helper",
+    srcs = ["gemma/benchmark_helper.cc"],
+    hdrs = ["gemma/benchmark_helper.h"],
+    deps = [
+        ":app",
+        ":args",
+        ":common",
+        ":cross_entropy",
+        ":gemma_lib",
+        # Placeholder for internal dep, do not remove.,
+        "@benchmark//:benchmark",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:thread_pool",
+    ],
+)
+
 cc_test(
     name = "gemma_test",
     srcs = ["gemma/gemma_test.cc"],
@@ -161,11 +176,11 @@ cc_test(
     deps = [
         ":app",
         ":args",
+        ":benchmark_helper",
         ":common",
         ":cross_entropy",
         ":gemma_lib",
         ":ops",
-        # Placeholder for internal dep, do not remove.,
         "@googletest//:gtest_main",
         "//compression:io",
         "@hwy//:hwy_test_util",
@@ -179,6 +194,7 @@ cc_binary(
     deps = [
         ":app",
         ":args",
+        ":benchmark_helper",
         ":common",
         ":gemma_lib",
         # Placeholder for internal dep, do not remove.,
@@ -213,10 +229,10 @@ cc_binary(
     deps = [
         ":app",
         ":args",
+        ":benchmark_helper",
         ":common",
         ":cross_entropy",
         ":gemma_lib",
-        # Placeholder for internal dep, do not remove.,
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
@@ -230,7 +246,6 @@ cc_binary(
     srcs = ["gemma/benchmarks.cc"],
     deps = [
         ":benchmark_helper",
-        # Placeholder for internal dep, do not remove.,
         "@benchmark//:benchmark",
     ],
 )
@@ -243,8 +258,8 @@ cc_binary(
     deps = [
         ":app",
         ":args",
+        ":benchmark_helper",
         ":gemma_lib",
-        # Placeholder for internal dep, do not remove.,
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:thread_pool",
@@ -257,8 +272,10 @@ cc_binary(
     srcs = ["gemma/run_mmlu.cc"],
     deps = [
         ":app",
+        ":args",
+        ":benchmark_helper",
         ":gemma_lib",
-        # Placeholder for internal dep, do not remove.,
+        "//compression:io",
         "@hwy//:hwy",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
@@ -315,25 +332,6 @@ cc_library(
         ":gemma_lib",
         ":prompt",
         ":weights",
-    ],
-)
-
-cc_library(
-    name = "benchmark_helper",
-    srcs = [
-        "gemma/benchmark_helper.cc",
-    ],
-    hdrs = [
-        "gemma/benchmark_helper.h",
-    ],
-    deps = [
-        ":app",
-        ":common",
-        ":gemma_lib",
-        "@benchmark//:benchmark",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
-        "@hwy//:thread_pool",
     ],
 )
 

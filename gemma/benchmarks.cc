@@ -13,108 +13,81 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <fstream>
-#include <iostream>
-#include <ostream>
-#include <random>
-#include <sstream>
+#include <stddef.h>
+#include <stdio.h>
+
 #include <string>
 
-// Placeholder for internal header, do not modify.
 #include "benchmark/benchmark.h"
 #include "gemma/benchmark_helper.h"
 
-void run_gemma_prompt(const std::string& prompt_string,
-                      gcpp::GemmaEnv& env,
-                      benchmark::State& state) {
-  std::mt19937 gen;
+namespace gcpp {
 
-  if (prompt_string.empty()) return;
+// Shared state for benchmarks - unfortunately the library does not allow
+// passing context nor closures. Raw pointer because style guide forbids
+// non-local static objects with dtors.t
+GemmaEnv* s_env = nullptr;
 
-  int token_counter = 0;
+void RunPrompt(const std::string& original_prompt, benchmark::State& state) {
+  size_t total_tokens = 0;
   for (auto s : state) {
-    auto [response, n] = env.QueryModel(prompt_string);
-    std::cout << "response: " << response << "\n";
-    std::cout << "n: " << n << "\n";
-    token_counter += n;
+    std::string prompt = original_prompt;  // reset from original
+    auto [response, n] = s_env->QueryModel(prompt);
+    if (s_env->Verbosity() != 0) {
+      fprintf(stdout, "|%s|\n", response.c_str());
+    }
+    total_tokens += n;
   }
 
-  state.SetItemsProcessed(token_counter);
+  state.SetItemsProcessed(total_tokens);
 }
 
-// Awkward global because benchmarks don't support additional state, so it is
-// either this or cast to int64_t.
-gcpp::GemmaEnv* global_env = nullptr;
+}  // namespace gcpp
 
 static void BM_short_prompt(benchmark::State& state) {
-  run_gemma_prompt("What is the capital of Spain?", *global_env,
-                   state);
+  gcpp::RunPrompt("What is the capital of Spain?", state);
 }
 
 static void BM_factuality_prompt(benchmark::State& state) {
-  run_gemma_prompt("How does an inkjet printer work?",
-                   *global_env, state);
+  gcpp::RunPrompt("How does an inkjet printer work?", state);
 }
 
 static void BM_creative_prompt(benchmark::State& state) {
-  run_gemma_prompt(
-      "Tell me a story about a magical bunny and their TRS-80.",
-      *global_env, state);
+  gcpp::RunPrompt("Tell me a story about a magical bunny and their TRS-80.",
+                  state);
 }
 
 static void BM_coding_prompt(benchmark::State& state) {
-  run_gemma_prompt(
-      "Write a python program to generate a fibonacci sequence.",
-      *global_env, state);
+  gcpp::RunPrompt("Write a python program to generate a fibonacci sequence.",
+                  state);
 }
 
-static void BM_long_coding_prompt(benchmark::State& state) {
-  std::ifstream t("benchmarks.cc", std::ios_base::in);
-  std::stringstream buffer;
-  buffer << t.rdbuf();
-  std::string prompt_string = buffer.str();
-  t.close();
+BENCHMARK(BM_short_prompt)
+    ->Iterations(3)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
-  run_gemma_prompt("Make improvements to the following code:\n " +
-                   prompt_string, *global_env, state);
-}
+BENCHMARK(BM_factuality_prompt)
+    ->Iterations(3)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+
+BENCHMARK(BM_creative_prompt)
+    ->Iterations(3)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
+
+BENCHMARK(BM_coding_prompt)
+    ->Iterations(3)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
 int main(int argc, char** argv) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
   gcpp::GemmaEnv env(argc, argv);
+  env.SetMaxGeneratedTokens(256);
+  gcpp::s_env = &env;
 
-  env.set_max_generated_tokens(128);
-  global_env = &env;
-  BENCHMARK(BM_short_prompt)
-      ->Iterations(3)
-      ->Unit(benchmark::kMillisecond)
-      ->UseRealTime();
-
-  env.set_max_generated_tokens(256);
-  BENCHMARK(BM_factuality_prompt)
-      ->Iterations(3)
-      ->Unit(benchmark::kMillisecond)
-      ->UseRealTime();
-
-  BENCHMARK(BM_creative_prompt)
-      ->Iterations(3)
-      ->Unit(benchmark::kMillisecond)
-      ->UseRealTime();
-
-  BENCHMARK(BM_coding_prompt)
-      ->Iterations(3)
-      ->Unit(benchmark::kMillisecond)
-      ->UseRealTime();
-
-  env.set_max_generated_tokens(1024);
-  BENCHMARK(BM_long_coding_prompt)
-      ->Iterations(3)
-      ->Unit(benchmark::kMillisecond)
-      ->UseRealTime();
-
-  ::benchmark ::RunSpecifiedBenchmarks();
-  ::benchmark ::Shutdown();
+  ::benchmark::RunSpecifiedBenchmarks();
+  ::benchmark::Shutdown();
   return 0;
 }

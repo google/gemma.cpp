@@ -111,7 +111,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
   };
   TimingInfo timing_info;
 
-  gemma.Generate(runtime, prompt0, 0, kv_cache, timing_info, nullptr);
+  gemma.Generate(runtime, prompt0, 0, kv_cache, timing_info);
 
   const float scale = 1.0f / std::log(2.0f);
   return cross_entropy * scale;

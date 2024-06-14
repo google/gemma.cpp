@@ -1668,12 +1668,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
   std::array<int, k> indices{};
   for (size_t i = 0; i < vocab_size; ++i) {
     if (probabilities[i] < top_k[k - 1] &&
-        (!accept_token || accept_token(StaticCast<int>(i)))) {
+        (!accept_token || accept_token(StaticCast<int>(i), probabilities[i]))) {
       continue;
     }
     for (size_t j = 0; j < k; ++j) {
       if (probabilities[i] > top_k[j] &&
-          (!accept_token || accept_token(StaticCast<int>(i)))) {
+          (!accept_token ||
+           accept_token(StaticCast<int>(i), probabilities[i]))) {
         // shift elements by 1, insert the new value, move on to next value
         for (size_t idx = k - 1; idx > j; --idx) {
           top_k[idx] = top_k[idx - 1];

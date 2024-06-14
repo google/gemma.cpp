@@ -17,7 +17,6 @@
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
-#include <cstdio>
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "gemma/gemma.cc"  // NOLINT
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
@@ -208,8 +207,8 @@ bool GemmaTokenizer::Encode(const std::string& input,
 }
 
 bool GemmaTokenizer::Encode(const std::string& input,
-                            std::vector<int>* pieces) const {
-  return impl_->Encode(input, pieces);
+                            std::vector<int>* ids) const {
+  return impl_->Encode(input, ids);
 }
 
 // Given a sequence of ids, decodes it into a detokenized output.
@@ -649,16 +648,16 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
 // Compute the transformer for a batch of input tokens. During generation,
 // we usually have num_tokens == 1 (and also kBatchSize == 1).
 template <size_t kBatchSize, typename WeightArrayT, class TConfig>
-HWY_NOINLINE void Transformer(const int *tokens, size_t num_tokens, size_t pos,
+HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens, size_t pos,
                               const WeightArrayT& weights,
                               Activations<TConfig, kBatchSize>& activations,
                               KVCache& kv_cache, hwy::ThreadPool& pool,
-                              LayersOutputT* layers_output) {
+                              const LayersOutputFunc& layers_output) {
   HWY_ASSERT(num_tokens <= kBatchSize);
-  if (layers_output != nullptr) {
+  if (layers_output) {
     for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
       float token_f = tokens[token_idx];
-      (*layers_output)(pos + token_idx, "Tokens", &token_f, 1);
+      layers_output(pos + token_idx, "Tokens", &token_f, 1);
     }
   }
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -713,12 +712,11 @@ HWY_NOINLINE void Transformer(const int *tokens, size_t num_tokens, size_t pos,
     }
     AddFromBatched<kBatchSize>(num_tokens, activations.ffw_out.data(),
                                activations.x.data(), kModelDim);
-    if (layers_output != nullptr) {
+    if (layers_output) {
       std::string block_name = "blocks." + std::to_string(layer);
       for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-        (*layers_output)(pos + token_idx, block_name,
-                         activations.x.data() + token_idx * kModelDim,
-                         kModelDim);
+        layers_output(pos + token_idx, block_name,
+                      activations.x.data() + token_idx * kModelDim, kModelDim);
       }
     }
   }
@@ -727,10 +725,10 @@ HWY_NOINLINE void Transformer(const int *tokens, size_t num_tokens, size_t pos,
 
   RMSNormInplaceBatched<kBatchSize>(num_tokens, weights.final_norm_scale.data(),
                                     activations.x.data(), kModelDim);
-  if (layers_output != nullptr) {
+  if (layers_output) {
     for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-      (*layers_output)(pos + token_idx, "final_norm",
-                       activations.x.data() + token_idx * kModelDim, kModelDim);
+      layers_output(pos + token_idx, "final_norm",
+                    activations.x.data() + token_idx * kModelDim, kModelDim);
     }
   }
 }
@@ -782,8 +780,7 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
                const ByteStorageT& decode_u8,
                const RuntimeConfig& runtime_config,
                const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
-               hwy::ThreadPool& pool, TimingInfo& timing_info,
-               LayersOutputT* layers_output) {
+               hwy::ThreadPool& pool, TimingInfo& timing_info) {
   const CompressedWeights<TConfig>& weights = GetWeights<TConfig>(weights_u8);
   auto& prefill_activations =
       GetActivations<TConfig, kPrefillBatchSize>(prefill_u8);
@@ -860,7 +857,8 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
        pos < max_tokens && generate_pos < max_generated_tokens;
        ++pos, ++pos_offset, ++generate_pos) {
     Transformer<kDecodeBatchSize>(&token, kDecodeBatchSize, pos, weights,
-                                  activations, kv_cache, pool, layers_output);
+                                  activations, kv_cache, pool,
+                                  runtime_config.layers_output);
     float token_logit = 0.0f;
     // The condition below is always true if we are doing Prefill above.
     // We keep it here for clarity so that the code is correct even if Prefill
@@ -953,16 +951,36 @@ Gemma::~Gemma() {
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const std::vector<int>& prompt, size_t start_pos,
-                     KVCache& kv_cache, TimingInfo& timing_info,
-                     LayersOutputT* layers_output) {
+                     KVCache& kv_cache, TimingInfo& timing_info) {
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
   GEMMA_EXPORT_AND_DISPATCH(
       model_type_, weight_type_, GenerateT,
       (weights_u8_, prefill_u8_, decode_u8_, runtime_config, prompt, start_pos,
-       kv_cache, pool_, timing_info, layers_output));
+       kv_cache, pool_, timing_info));
 
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
+}
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const ModelTraining training, size_t pos,
+                                 std::string& prompt) {
+  // Instruction-tuned models are trained to expect control tokens.
+  if (training == ModelTraining::GEMMA_IT) {
+    // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
+    const std::string start = (pos == 0)
+                                  ? "<start_of_turn>user\n"
+                                  : "<end_of_turn>\n<start_of_turn>user\n";
+    prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
+  }
+
+  std::vector<int> tokens;
+  HWY_ASSERT(tokenizer.Encode(prompt, &tokens));
+  // Both pre-trained and instruction-tuned require BOS as first token.
+  if (pos == 0) {
+    tokens.insert(tokens.begin(), gcpp::BOS_ID);
+  }
+  return tokens;
 }
 
 }  // namespace gcpp

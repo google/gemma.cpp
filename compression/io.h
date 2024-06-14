@@ -23,6 +23,8 @@
 #include <string>
 #include <utility>  // std::move
 
+#include "hwy/base.h"
+
 namespace gcpp {
 
 // Forward-declare to break the circular dependency: OpenFileOrNull returns
@@ -77,11 +79,29 @@ struct Path {
     return path;
   }
 
+  bool Empty() const { return path.empty(); }
+
   // Returns whether the file existed when this was called.
   bool Exists() const { return !!OpenFileOrNull(*this, "r"); }
 
   std::string path;
 };
+
+static inline HWY_MAYBE_UNUSED std::string ReadFileToString(const Path& path) {
+  std::unique_ptr<File> file = OpenFileOrNull(path, "r");
+  if (!file) {
+    HWY_ABORT("Failed to open %s", path.path.c_str());
+  }
+  const size_t size = file->FileSize();
+  if (size == 0) {
+    HWY_ABORT("Empty file %s", path.path.c_str());
+  }
+  std::string content(size, ' ');
+  if (!file->Read(0, size, content.data())) {
+    HWY_ABORT("Failed to read %s", path.path.c_str());
+  }
+  return content;
+}
 
 }  // namespace gcpp
 

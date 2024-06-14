@@ -154,18 +154,12 @@ const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training);
 const char* ParseType(const std::string& type_string, Type& type);
 
-static inline const char* StringFromType(Type type) {
-  switch (type) {
-    case Type::kF32:
-      return "f32";
-    case Type::kBF16:
-      return "bf16";
-    case Type::kSFP:
-      return "sfp";
-    default:
-      return "?";
-  }
-}
+// Inverse of ParseModelTypeAndTraining.
+const char* ModelString(Model model, ModelTraining training);
+const char* StringFromType(Type type);
+
+// ----------------------------------------------------------------------------
+//
 
 // __builtin_sqrt is not constexpr as of Clang 17.
 #if HWY_COMPILER_GCC_ACTUAL

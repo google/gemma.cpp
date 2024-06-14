@@ -13,19 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Command line text interface to gemma.
+#include <stdio.h>
 
-#include <fstream>
-#include <iostream>
-#include <random>
-#include <set>
-#include <sstream>
+#include <algorithm>
 #include <string>
 #include <vector>
 
-// Placeholder for internal header, do not modify.
+#include "compression/io.h"  // Path
+#include "gemma/benchmark_helper.h"
 #include "gemma/gemma.h"  // Gemma
-#include "util/app.h"
+#include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -34,164 +31,134 @@
 
 namespace gcpp {
 
-void JsonGemma(gcpp::Gemma& model, gcpp::KVCache& kv_cache,
-               hwy::ThreadPool& pool,
-               const InferenceArgs& args, int verbosity,
-               std::string& eot_line) {
-  PROFILER_ZONE("Gen.misc");
-  // token index within the current turn
-  int max_tokens = 4096;
+struct JsonArgs : public ArgsBase<JsonArgs> {
+  JsonArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  std::mt19937 gen;
-  if (args.deterministic) {
-    gen.seed(42);
-  } else {
-    std::random_device rd;
-    gen.seed(rd());
+  Path input;
+
+  // Returns error string or nullptr if OK.
+  const char* Validate() const {
+    if (input.Empty()) return "Must specify --input";
+    if (!input.Exists()) return "--input file does not exist";
+    return nullptr;
   }
 
-  float answers = 0.0;
-  float correct_answers = 0.0;
+  template <class Visitor>
+  void ForEach(const Visitor& visitor) {
+    visitor(input, "input", Path(), "Full pathname of mmlu.json.");
+  };
+};
 
-  std::ifstream fJson("/tmp/mmlu.json");
-  std::stringstream buffer;
-  buffer << fJson.rdbuf();
-  auto json = nlohmann::json::parse(buffer.str());
-
-  std::vector<std::string> accept_tokens = {"A", "B", "C", "D"};
-  std::set<int> accept_token_set{};
-  for (const std::string& accept_token : accept_tokens) {
-    std::vector<int> accept_token_ids;
-    HWY_ASSERT(model.Tokenizer().Encode(accept_token, &accept_token_ids));
-    accept_token_set.insert(accept_token_ids.begin(), accept_token_ids.end());
+// Linear search for a few tokens is faster than std::set.
+// TODO: instead of accepting for each vocab entry, filter the logits once.
+class TokenSet {
+ public:
+  TokenSet(const GemmaTokenizer& tokenizer,
+           const std::vector<std::string>& strings) {
+    all_tokens_.reserve(strings.size());
+    for (const std::string& str : strings) {
+      std::vector<int> tokens;
+      fprintf(stderr, "%s -> ", str.c_str());
+      HWY_ASSERT(tokenizer.Encode(str, &tokens));
+      for (int token : tokens) {
+        fprintf(stderr, "%d, ", token);
+        all_tokens_.push_back(token);
+      }
+      fprintf(stderr, "\n");
+    }
   }
 
-  for (auto sample : json["samples"]) {
-    int abs_pos = 0;  // absolute token index over all turns
-    int current_pos = 0;
-    int prompt_size{};
+  bool Contains(int token) const {
+    return std::find(all_tokens_.begin(), all_tokens_.end(), token) !=
+           all_tokens_.end();
+  }
 
-    // cout << "prompt:" << sample["prompt"] << endl;
-    const std::string& prompt_string = sample["prompt"];
-    std::vector<int> prompt;
+ private:
+  std::vector<int> all_tokens_;
+};
 
-    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
-    prompt_size = prompt.size();
+void Run(GemmaEnv& env, JsonArgs& json) {
+  PROFILER_ZONE("Run.all");
 
-    const std::string& correct_answer = accept_tokens[sample["input_label"]];
+  float answers = 0.0f;
+  float correct_answers = 0.0f;
 
-    // max_tokens = prompt_size + max_tokens;
+  auto json_data = nlohmann::json::parse(ReadFileToString(json.input));
+
+  const std::vector<std::string> accept_strings = {
+      "A",  "B",   "C",   "D",   //
+      " A", " B",  " C",  " D",  //
+      "**", "**:", ":**", "The", "Answer", "is", ":", "."};
+  const TokenSet accept_set(env.GetModel()->Tokenizer(), accept_strings);
+
+  for (auto sample : json_data["samples"]) {
+    const int id = sample["i"];
+    fprintf(stderr, "Processing question %d\n", id);
+    const std::string& correct_answer = accept_strings[sample["input_label"]];
+    std::string prompt_string = sample["prompt"];
+    // AcceptFunc restricts the output to one of these four tokens, so make an
+    // effort to steer the model towards that. See
+    // https://huggingface.co/blog/open-llm-leaderboard-mmlu
+    prompt_string +=
+        "What is start of the line with the correct answer? "
+        "Do not include any justifications or explanations. Reply only with a "
+        "letter.";
+    const std::vector<int> prompt =
+        WrapAndTokenize(env.GetModel()->Tokenizer(), env.ModelTrainingType(),
+                        /*pos=*/0, prompt_string);
+    const size_t prompt_size = prompt.size();
 
     std::vector<int> predicted_token_ids;
-    predicted_token_ids.reserve(max_tokens);
-    auto stream_token = [&current_pos, &prompt_size, &predicted_token_ids,
-                         &accept_token_set](int token, float proba) {
+    predicted_token_ids.reserve(4096);
+    size_t current_pos = 0;
+    const StreamFunc stream_token = [&current_pos, prompt_size,
+                                     &predicted_token_ids](int token,
+                                                           float proba) {
+      PROFILER_ZONE("Stream");
       ++current_pos;
       if (current_pos > prompt_size) {
         predicted_token_ids.push_back(token);
-
-        // If the generated token is in the accepted token set, return False.
-        // This will stop further generation.
-        return accept_token_set.find(token) == accept_token_set.end();
       }
-
       return true;
     };
 
-    const AcceptFunc accept_token = [&current_pos, &prompt_size,
-                                     &accept_token_set](int token) {
-      // i.e. we have no constraints on accepted tokens
-      if (accept_token_set.empty()) {
-        return true;
-      }
-
-      if (current_pos >= prompt_size) {
-        return accept_token_set.find(token) != accept_token_set.end();
-      } else {
-        // auto-accept early tokens
-        return true;
-      }
-    };
-
+    // Although " A" is a token, it is difficult to associate that with the
+    // correct answer. Only accepting certain tokens is risky: (A) is easily
+    // confused with the word "A".
     gcpp::TimingInfo timing_info;
     gcpp::RuntimeConfig runtime_config = {
-        .max_tokens = args.max_tokens,
-        .max_generated_tokens = args.max_generated_tokens,
-        .temperature = args.temperature,
-        .verbosity = verbosity,
-        .gen = &gen,
+        .max_tokens = env.MaxTokens(),
+        .max_generated_tokens = 30,
+        .temperature = 0.0f,
+        .verbosity = env.Verbosity(),
+        .gen = &env.MutableGen(),
         .stream_token = stream_token,
-        .accept_token = accept_token,
     };
-    model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
+    env.GetModel()->Generate(runtime_config, prompt, /*pos=*/0,
+                             env.MutableKVCache(), timing_info);
 
-    std::string output_string;
-    HWY_ASSERT(model.Tokenizer().Decode(predicted_token_ids, &output_string));
-    std::cout << "QuestionId: " << sample["i"] << "; "
-              << "Predicted Answer: " << output_string << "; "
-              << "Correct Answer: " << correct_answer << std::endl;
+    std::string output_string = env.StringFromTokens(predicted_token_ids);
+    fprintf(stderr, "Correct %s, model '%s'\n", correct_answer.c_str(),
+            output_string.c_str());
 
-    answers += 1.0;
+    answers += 1.0f;
     if (output_string == correct_answer) {
-      correct_answers += 1.0;
+      correct_answers += 1.0f;
     }
-    std::cout << "Running accuracy = " << "["
-              << static_cast<int>(correct_answers) << "/"
-              << static_cast<int>(answers) << "]" << " = "
-              << correct_answers / answers << std::endl;
+    fprintf(stderr, "%.0f/%.0f = %.2f%%\n", correct_answers, answers,
+            correct_answers / answers);
   }
-}
-
-void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
-  loader.Print(app.verbosity);
-  inference.Print(app.verbosity);
-  app.Print(app.verbosity);
-}
-
-void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
-  PROFILER_ZONE("Run.misc");
-
-  hwy::ThreadPool pool(app.num_threads);
-  // For many-core, pinning workers to cores helps.
-  if (app.num_threads > 10) {
-    PinWorkersToCores(pool);
-  }
-
-  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
-  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
-
-  JsonGemma(model, kv_cache, pool, inference, app.verbosity, app.eot_line);
 }
 
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
   {
-    PROFILER_ZONE("Startup.misc");
-
-    // Placeholder for internal init, do not modify.
-
-    gcpp::LoaderArgs loader(argc, argv);
-    gcpp::InferenceArgs inference(argc, argv);
-    gcpp::AppArgs app(argc, argv);
-
-    if (const char* error = loader.Validate()) {
-      fprintf(stderr,
-              "\ngemma.cpp\n---------\n\nTo run gemma.cpp, you need to "
-              "specify 3 required model loading arguments: --tokenizer, "
-              "--compressed_weights, "
-              "and --model.\n\nModel Loading Arguments\n\n");
-
-      loader.Help();
-      fprintf(stderr, "\nInference Arguments\n\n");
-      inference.Help();
-      fprintf(stderr, "\nApplication Arguments\n\n");
-      app.Help();
-      fprintf(stderr, "\n\n");
-      HWY_ABORT("\nInvalid args: %s", error);
-    }
-
-    gcpp::Run(loader, inference, app);
+    PROFILER_ZONE("Startup.all");
+    gcpp::GemmaEnv env(argc, argv);
+    gcpp::JsonArgs json(argc, argv);
+    gcpp::AbortIfInvalidArgs(json);
+    gcpp::Run(env, json);
   }
   PROFILER_PRINT_RESULTS();  // Must call outside the zone above.
   return 0;

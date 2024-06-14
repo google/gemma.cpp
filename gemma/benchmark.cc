@@ -1,36 +1,36 @@
+#include <stdio.h>
+
 #include <algorithm>
 #include <cstdlib>  // EXIT_FAILURE
 #include <fstream>
 #include <iostream>
 #include <ostream>
-#include <random>
-#include <sstream>
 #include <string>
 #include <utility>  // std::pair
 #include <vector>
 
-// Placeholder for internal header, do not modify.
 #include "compression/io.h"  // Path
+#include "gemma/benchmark_helper.h"
+#include "gemma/common.h"
 #include "gemma/cross_entropy.h"
 #include "gemma/gemma.h"
-#include "util/app.h"
 #include "util/args.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/highway.h"
 #include "hwy/timer.h"
 #include "nlohmann/json.hpp"
 
+namespace gcpp {
+
 using json = nlohmann::json;
 
-class BenchmarkArgs : public gcpp::ArgsBase<BenchmarkArgs> {
+class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
  public:
   BenchmarkArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  gcpp::Path goldens;
-  gcpp::Path summarize_text;
-  gcpp::Path cross_entropy;
-  gcpp::Path trivia_qa;
+  Path goldens;
+  Path summarize_text;
+  Path cross_entropy;
+  Path trivia_qa;
   size_t max_questions;
   size_t batch_tokens;
 
@@ -53,61 +53,6 @@ class BenchmarkArgs : public gcpp::ArgsBase<BenchmarkArgs> {
   }
 };
 
-void LogSpeedStats(const double time_start, size_t total_tokens) {
-  const double time_end = hwy::platform::Now();
-  const double time_elapsed = time_end - time_start;
-  const double tok_sec = total_tokens / time_elapsed;
-  std::cout << total_tokens << " tokens in " << time_elapsed << " seconds"
-            << " [" << tok_sec << " tokens / sec" << "]\n";
-}
-
-std::pair<std::string, int> QueryModel(
-    gcpp::Gemma& model, gcpp::InferenceArgs& args, gcpp::AppArgs& app,
-    gcpp::KVCache& kv_cache, hwy::ThreadPool& pool, const std::string& input) {
-  std::vector<int> prompt;
-  HWY_ASSERT(model.Tokenizer().Encode(input, &prompt));
-
-  // For both pre-trained and instruction-tuned models: prepend "<bos>" token
-  // if needed.
-  prompt.insert(prompt.begin(), 2);
-  std::string res;
-  size_t total_tokens = 0;
-  std::mt19937 gen;
-  gen.seed(42);
-
-  const double time_start = hwy::platform::Now();
-  auto stream_token = [&res, &total_tokens, &time_start, &app, &model](
-                          int token, float) {
-    ++total_tokens;
-    std::string token_text;
-    HWY_ASSERT(model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    res += token_text;
-    if (app.verbosity >= 1 && total_tokens % 100 == 0) {
-      LogSpeedStats(time_start, total_tokens);
-    }
-    return true;
-  };
-  if (app.verbosity >= 2) {
-    std::cout << args.max_tokens << " " << args.max_generated_tokens << " "
-              << args.temperature;
-  }
-  gcpp::TimingInfo timing_info;
-  gcpp::RuntimeConfig runtime_config = {
-      .max_tokens = args.max_tokens,
-      .max_generated_tokens = args.max_generated_tokens,
-      .temperature = args.temperature,
-      .verbosity = app.verbosity,
-      .gen = &gen,
-      .stream_token = stream_token,
-  };
-  model.Generate(runtime_config, prompt, /*start_pos=*/0, kv_cache, timing_info,
-                 /*layers_output=*/nullptr);
-  if (app.verbosity >= 1) {
-    LogSpeedStats(time_start, total_tokens);
-  }
-  return {res, total_tokens};
-}
-
 std::vector<std::pair<std::string, std::string>> load_goldens(
     const std::string& path) {
   std::ifstream goldens_file(path);
@@ -129,28 +74,14 @@ std::vector<std::pair<std::string, std::string>> load_goldens(
   return res;
 }
 
-std::string ReadFile(const gcpp::Path& path) {
-  std::ifstream text_file(path.path);
-  if (!text_file) {
-    std::cout << "Could not open file: " << path.path << "\n" << std::flush;
-    return {};
-  }
-  std::stringstream buffer;
-  buffer << text_file.rdbuf();
-  return buffer.str();
-}
-
-int BenchmarkGoldens(gcpp::Gemma& model, gcpp::InferenceArgs& args,
-                     gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                     hwy::ThreadPool& pool, const std::string& golden_path) {
-  const std::vector<std::pair<std::string, std::string>> queries_answers =
+int BenchmarkGoldens(GemmaEnv& env, const std::string& golden_path) {
+  std::vector<std::pair<std::string, std::string>> queries_answers =
       load_goldens(golden_path);
-  int correct_answers = 0;
-  int total_tokens = 0;
+  size_t correct_answers = 0;
+  size_t total_tokens = 0;
   const double time_start = hwy::platform::Now();
-  for (const auto& [question, expected_answer] : queries_answers) {
-    const auto [answer, token_count] =
-        QueryModel(model, args, app, kv_cache, pool, question);
+  for (auto& [question, expected_answer] : queries_answers) {
+    const auto [answer, token_count] = env.QueryModel(question);
     total_tokens += token_count;
     if (answer.find(expected_answer) != std::string::npos) {
       correct_answers++;
@@ -172,28 +103,22 @@ int BenchmarkGoldens(gcpp::Gemma& model, gcpp::InferenceArgs& args,
   return EXIT_SUCCESS;
 }
 
-int BenchmarkSummary(gcpp::Gemma& model, gcpp::InferenceArgs& args,
-                     gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                     hwy::ThreadPool& pool, const gcpp::Path& text) {
+int BenchmarkSummary(GemmaEnv& env, const Path& text) {
   std::string prompt("Here is some text to summarize:\n");
-  prompt.append(ReadFile(text));
+  prompt.append(ReadFileToString(text));
   prompt.append("\nSummarize this text.\n");
   const double time_start = hwy::platform::Now();
-  const auto [answer, token_count] =
-      QueryModel(model, args, app, kv_cache, pool, prompt);
+  const auto [answer, token_count] = env.QueryModel(prompt);
   std::cout << answer.substr(prompt.size()) << "\n" << std::flush;
   LogSpeedStats(time_start, token_count);
   return EXIT_SUCCESS;
 }
 
-int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
-                          gcpp::InferenceArgs& args, gcpp::AppArgs& app,
-                          hwy::ThreadPool& pool, const gcpp::Path& text,
+int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
                           size_t batch_tokens) {
-  std::string input = ReadFile(text);
-  std::vector<int> prompt;
-  HWY_ASSERT(model.Tokenizer().Encode(input, &prompt));
-  prompt.resize(std::min<size_t>(args.max_tokens, prompt.size()));
+  std::string input = ReadFileToString(text);
+  std::vector<int> prompt = env.Tokenize(input);
+  prompt.resize(std::min<size_t>(env.MaxTokens(), prompt.size()));
   std::cout << "Number of input tokens: " << prompt.size() << "\n";
   const double time_start = hwy::platform::Now();
   float total_entropy = 0.0f;
@@ -203,13 +128,12 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-    gcpp::KVCache kv_cache = gcpp::KVCache::Create(model_type);
-    float entropy = ComputeCrossEntropy(model, num_tokens, prompt_slice,
-                                        kv_cache, app.verbosity);
+    KVCache kv_cache = KVCache::Create(env.ModelType());
+    float entropy = ComputeCrossEntropy(
+        *env.GetModel(), num_tokens, prompt_slice, kv_cache, env.Verbosity());
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
-    std::string text_slice;
-    HWY_ASSERT(model.Tokenizer().Decode(prompt_slice, &text_slice));
+    std::string text_slice = env.StringFromTokens(prompt_slice);
     total_input_len += text_slice.size();
     printf("Total cross entropy: %f [cumulative: %f]\n",
            entropy, total_entropy);
@@ -219,23 +143,19 @@ int BenchmarkCrossEntropy(gcpp::Gemma& model, gcpp::Model model_type,
   return EXIT_SUCCESS;
 }
 
-int BenchmarkTriviaQA(gcpp::Gemma& model, gcpp::InferenceArgs& args,
-                      gcpp::AppArgs& app, gcpp::KVCache& kv_cache,
-                      hwy::ThreadPool& pool, const gcpp::Path& json_file,
+int BenchmarkTriviaQA(GemmaEnv& env, const Path& json_file,
                       size_t max_questions) {
   std::ifstream trivia_file(json_file.path);
   if (!trivia_file) {
-    std::cout << "Could not load file: " << json_file.path << "\n"
-              << std::flush;
-    return EXIT_FAILURE;
+    HWY_ABORT("Could not load file %s\n", json_file.path.c_str());
   }
   std::string line;
   size_t correct_answers = 0;
   size_t i = 0;
   while (std::getline(trivia_file, line)) {
     json data = json::parse(line);
-    const auto [answer, token_count] = QueryModel(
-        model, args, app, kv_cache, pool, data["question"]);
+    std::string q(data["question"]);
+    const auto [answer, token_count] = env.QueryModel(q);
     std::cout << answer << "\n";
     bool correct = false;
     for (const std::string expected : data["answer"]["aliases"]) {
@@ -256,52 +176,25 @@ int BenchmarkTriviaQA(gcpp::Gemma& model, gcpp::InferenceArgs& args,
   return EXIT_SUCCESS;
 }
 
-/* Run this in the same way as gemma, p.ex.:
- ./benchmark --tokenizer tokenizer.spm --model 2b-it --weights \
- 2b-it-sfp.sbs --goldens_dir "../goldens"
-*/
+}  // namespace gcpp
+
 int main(int argc, char** argv) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
+  gcpp::GemmaEnv env(argc, argv);
+  gcpp::BenchmarkArgs benchmark_args(argc, argv);
 
-  gcpp::LoaderArgs loader(argc, argv);
-  gcpp::InferenceArgs args(argc, argv);  // inference
-  gcpp::AppArgs app(argc, argv);
-  BenchmarkArgs benchmark_args(argc, argv);
-
-  if (const char* error = loader.Validate()) {
-    HWY_ABORT("\nInvalid loader args: %s", error);
-  }
-  if (const char* error = args.Validate()) {
-    HWY_ABORT("\nInvalid inference args: %s", error);
-  }
-
-  hwy::ThreadPool pool(app.num_threads);
-  // For many-core, pinning workers to cores helps.
-  if (app.num_threads > 10) {
-    gcpp::PinWorkersToCores(pool);
-  }
-
-  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
-  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.ModelType());
-
-  if (!benchmark_args.goldens.path.empty()) {
+  if (!benchmark_args.goldens.Empty()) {
     const std::string golden_path =
-        benchmark_args.goldens.path + "/" + loader.model_type_str + ".txt";
-    return BenchmarkGoldens(model, args, app, kv_cache, pool, golden_path);
-  } else if (!benchmark_args.summarize_text.path.empty()) {
-    return BenchmarkSummary(model, args, app, kv_cache, pool,
-                            benchmark_args.summarize_text);
-  } else if (!benchmark_args.cross_entropy.path.empty()) {
-    return BenchmarkCrossEntropy(model, loader.ModelType(), args, app,
-                                 pool, benchmark_args.cross_entropy,
+        benchmark_args.goldens.path + "/" +
+        gcpp::ModelString(env.ModelType(), env.ModelTrainingType()) + ".txt";
+    return BenchmarkGoldens(env, golden_path);
+  } else if (!benchmark_args.summarize_text.Empty()) {
+    return BenchmarkSummary(env, benchmark_args.summarize_text);
+  } else if (!benchmark_args.cross_entropy.Empty()) {
+    return BenchmarkCrossEntropy(env, benchmark_args.cross_entropy,
                                  benchmark_args.batch_tokens);
-  } else if (!benchmark_args.trivia_qa.path.empty()) {
-    return BenchmarkTriviaQA(model, args, app, kv_cache, pool,
-                             benchmark_args.trivia_qa,
+  } else if (!benchmark_args.trivia_qa.Empty()) {
+    return BenchmarkTriviaQA(env, benchmark_args.trivia_qa,
                              benchmark_args.max_questions);
   }
-  std::cout << "No benchmark command given." << "\n" << std::flush;
-  return EXIT_FAILURE;
+  HWY_ABORT("No benchmark command given.");
 }

@@ -17,89 +17,35 @@
 
 #include <stdio.h>
 
-#include <memory>
-#include <random>
 #include <string>
 #include <vector>
 
-// Placeholder for internal header, do not modify.
+#include "gemma/benchmark_helper.h"
 #include "gemma/common.h"
-#include "gemma/cross_entropy.h"
-#include "gemma/ops.h"
-#include "util/app.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/tests/test_util-inl.h"
+#include "hwy/tests/hwy_gtest.h"
 
 namespace gcpp {
 namespace {
 
-int s_argc = 0;
-char** s_argv = nullptr;
+// Shared state. Requires argc/argv, so construct in main and use the same raw
+// pointer approach as in benchmarks.cc. Note that the style guide forbids
+// non-local static variables with dtors.
+GemmaEnv* s_env = nullptr;
 
 class GemmaTest : public ::testing::Test {
  protected:
-  static void SetUpTestSuite() {
-    gcpp::AppArgs app(s_argc, s_argv);
-    gcpp::LoaderArgs loader(s_argc, s_argv);
-    if (const char* err = loader.Validate()) {
-      fprintf(stderr, "Insufficient LoaderArgs, skipping e2e tests.\n");
-    } else {
-      fprintf(stderr, "Loading model..\n");
-      s_pool = std::make_unique<hwy::ThreadPool>(app.num_threads);
-      s_gemma = AllocateGemma(loader, *s_pool);
-      s_kv_cache = KVCache::Create(loader.ModelType());
-      s_model = loader.ModelType();
-    }
-  }
-
-  static void TearDownTestSuite() {
-    s_pool.reset();
-    s_gemma.reset();
-  }
-
-  std::string GemmaReply(const std::string& prompt_string) {
-    std::mt19937 gen;
-    gen.seed(42);
-
-    std::vector<int> prompt;
-    HWY_ASSERT(s_gemma->Tokenizer().Encode(prompt_string, &prompt));
-    // For both pre-trained and instruction-tuned models: prepend "<bos>" token
-    // if needed.
-    prompt.insert(prompt.begin(), BOS_ID);
-
-    std::vector<int> response;
-    auto stream_token = [&response](int token, float) {
-      response.push_back(token);
-      return true;
-    };
-    gcpp::RuntimeConfig runtime_config = {
-        .max_tokens = 3072,
-        .max_generated_tokens = 2048,
-        .temperature = 1.0,
-        .verbosity = 0,
-        .gen = &gen,
-        .stream_token = stream_token,
-    };
-    gcpp::TimingInfo timing_info;
-    s_gemma->Generate(runtime_config, prompt, /*start_pos=*/0, s_kv_cache,
-                      timing_info, /*layers_output=*/nullptr);
-    std::string response_text;
-    HWY_ASSERT(s_gemma->Tokenizer().Decode(response, &response_text));
-    return response_text;
-  }
-
-  float GemmaCrossEntropy(const std::string& prompt_string) {
-    std::vector<int> prompt;
-    HWY_ASSERT(s_gemma->Tokenizer().Encode(prompt_string, &prompt));
-    prompt.insert(prompt.begin(), BOS_ID);
-    return ComputeCrossEntropy(*s_gemma, /*max_tokens=*/3072, prompt,
-                               s_kv_cache,
-                               /*verbosity=*/0) /
-           prompt_string.size();
+  std::string GemmaReply(const std::string& prompt) {
+    s_env->SetMaxGeneratedTokens(2048);
+    s_env->MutableConfig().temperature = 0.0f;  // deterministic
+    s_env->MutableConfig().verbosity = 0;
+    // Using the turn structure worsens results.
+    const std::vector<int> tokens = s_env->TokenizeAndPrependBOS(prompt);
+    auto [response, n] = s_env->QueryModel(tokens);
+    return response;
   }
 
   void TestQuestions(const char* kQA[][2], size_t num_questions) {
-    if (!s_gemma) return;
+    if (!s_env->GetModel()) return;
     for (size_t i = 0; i < num_questions; ++i) {
       fprintf(stderr, "Question %zu\n\n", i + 1);
       std::string response = GemmaReply(kQA[i][0]);
@@ -107,17 +53,7 @@ class GemmaTest : public ::testing::Test {
       EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
     }
   }
-
-  static std::unique_ptr<hwy::ThreadPool> s_pool;
-  static std::unique_ptr<gcpp::Gemma> s_gemma;
-  static gcpp::KVCache s_kv_cache;
-  static gcpp::Model s_model;
 };
-
-/*static*/ std::unique_ptr<hwy::ThreadPool> GemmaTest::s_pool;
-/*static*/ std::unique_ptr<gcpp::Gemma> GemmaTest::s_gemma;
-/*static*/ gcpp::KVCache GemmaTest::s_kv_cache;
-/*static*/ gcpp::Model GemmaTest::s_model;
 
 TEST_F(GemmaTest, Geography) {
   static const char* kQA[][2] = {
@@ -130,7 +66,7 @@ TEST_F(GemmaTest, Geography) {
 
 TEST_F(GemmaTest, History) {
   static const char* kQA[][2] = {
-      {"When was the Battle of Hastings?", "1066"},
+      {"When was the battle of Hastings?", "1066"},
   };
   static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
   TestQuestions(kQA, kNum);
@@ -181,42 +117,39 @@ static const char kGettysburg[] = {
     "people, for the people, shall not perish from the earth.\n"};
 
 TEST_F(GemmaTest, CrossEntropySmall) {
-  if (!s_gemma) return;
+  if (!s_env->GetModel()) return;
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
-  float entropy = GemmaCrossEntropy(kSmall);
+  float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy, (s_model == gcpp::Model::GEMMA_7B) ? 2.1f : 2.0f);
+  EXPECT_LT(entropy,
+            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 2.1f : 2.0f);
 }
 
 TEST_F(GemmaTest, CrossEntropyJingleBells) {
-  if (!s_gemma) return;
-  float entropy = GemmaCrossEntropy(kJingleBells);
+  if (!s_env->GetModel()) return;
+  float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy, (s_model == gcpp::Model::GEMMA_7B) ? 0.9f : 1.8f);
+  EXPECT_LT(entropy,
+            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.9f : 1.8f);
 }
 
 TEST_F(GemmaTest, CrossEntropyGettysburg) {
-  if (!s_gemma) return;
-  float entropy = GemmaCrossEntropy(kGettysburg);
+  if (!s_env->GetModel()) return;
+  float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy, (s_model == gcpp::Model::GEMMA_7B) ? 0.8f : 1.2f);
+  EXPECT_LT(entropy,
+            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.8f : 1.2f);
 }
 
 }  // namespace
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
+  gcpp::GemmaEnv env(argc, argv);
+  gcpp::s_env = &env;
 
-  // For later use by SetUp.
-  gcpp::s_argc = argc;
-  gcpp::s_argv = argv;
-
-  // Probably should be called before SetUpTestSuite.
-  testing::InitGoogleTest(&gcpp::s_argc, argv);
+  testing::InitGoogleTest(&argc, argv);
 
   return RUN_ALL_TESTS();
 }

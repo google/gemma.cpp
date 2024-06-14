@@ -197,6 +197,14 @@ static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, char* argv[]) {
   return false;
 }
 
+template <class TArgs>
+static inline HWY_MAYBE_UNUSED void AbortIfInvalidArgs(TArgs& args) {
+  if (const char* err = args.Validate()) {
+    args.Help();
+    HWY_ABORT("Problem with args: %s\n", err);
+  }
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_ARGS_H_

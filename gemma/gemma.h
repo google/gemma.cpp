@@ -74,10 +74,17 @@ class GemmaTokenizer {
 using StreamFunc = std::function<bool(int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
-using AcceptFunc = std::function<bool(int)>;
+using AcceptFunc = std::function<bool(int, float)>;
 // If not empty, SampleFunc is called with the probability distribution for the
 // next token, and its return value is used as the next generated token.
 using SampleFunc = std::function<int(const float*, size_t)>;
+// Will be called for layers output with:
+// - position in the tokens sequence
+// - name of the data, p.ex. "tokens", "block.1", "final_norm"
+// - pointer to the data array
+// - size of the data array
+using LayersOutputFunc =
+    std::function<void(int, const std::string&, const float*, size_t)>;
 
 struct RuntimeConfig {
   size_t max_tokens;
@@ -88,6 +95,7 @@ struct RuntimeConfig {
   StreamFunc stream_token;
   AcceptFunc accept_token;  // if empty, accepts all tokens.
   SampleFunc sample_func;   // if empty, uses SampleTopK.
+  LayersOutputFunc layers_output;  // if not empty, called after each layer.
   int eos_id = EOS_ID;
 };
 
@@ -96,14 +104,6 @@ struct TimingInfo {
   double gen_tok_sec = 0.0;
   double time_to_first_token = 0.0;
 };
-
-// Will be called for layers output with:
-// - position in the tokens sequence
-// - name of the data, p.ex. "tokens", "block.1", "final_norm"
-// - pointer to the data array
-// - size of the data array
-using LayersOutputT =
-    std::function<void(int, const std::string&, const float*, size_t)>;
 
 class Gemma {
  public:
@@ -121,12 +121,9 @@ class Gemma {
   const ByteStorageT& Prefill() const { return prefill_u8_; }
   const ByteStorageT& Decode() const { return decode_u8_; }
 
-  // layers_output is optional; if set - it will be called with the activations
-  // output after applying each layer.
   void Generate(const RuntimeConfig& runtime_config,
                 const std::vector<int>& prompt, size_t start_pos,
-                KVCache& kv_cache, TimingInfo& timing_info,
-                LayersOutputT* layers_output = nullptr);
+                KVCache& kv_cache, TimingInfo& timing_info);
 
  private:
   hwy::ThreadPool& pool_;
@@ -141,14 +138,19 @@ class Gemma {
   Type weight_type_;
 };
 
+// Adds BOS token and possibly 'turn' annotations, which depend on `training`
+// and `pos`, the number of tokens decoded so far; returns the corresponding
+// tokens. Asserts that tokenization is successful.
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 ModelTraining training, size_t pos,
+                                 std::string& prompt);
+
 // DEPRECATED, call Gemma::Generate directly.
 HWY_INLINE void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
                               const std::vector<int>& prompt, size_t start_pos,
                               KVCache& kv_cache, hwy::ThreadPool& /*pool*/,
-                              TimingInfo& timing_info,
-                              LayersOutputT* layers_output) {
-  gemma.Generate(runtime_config, prompt, start_pos, kv_cache, timing_info,
-                 layers_output);
+                              TimingInfo& timing_info) {
+  gemma.Generate(runtime_config, prompt, start_pos, kv_cache, timing_info);
 }
 
 }  // namespace gcpp

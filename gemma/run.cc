@@ -15,27 +15,22 @@
 
 // Command line text interface to gemma.
 
-#include <ctime>
 #include <iostream>
 #include <random>
 #include <string>
 #include <string_view>
-#include <thread>  // NOLINT
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "compression/compress.h"
+#include "gemma/benchmark_helper.h"
 #include "gemma/common.h"
-#include "gemma/configs.h"
 #include "gemma/gemma.h"  // Gemma
 #include "util/app.h"
 #include "util/args.h"  // HasHelp
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
-#include "hwy/per_target.h"
 #include "hwy/profiler.h"
-#include "hwy/timer.h"
 
 #if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
 #error "Please update to version 1.2 of github.com/google/highway."
@@ -57,56 +52,6 @@ static constexpr std::string_view kAsciiArtBanner = R""(
  |___/                                     |_|   |_|
 )"";
 
-void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
-  loader.Print(app.verbosity);
-  inference.Print(app.verbosity);
-  app.Print(app.verbosity);
-
-  if (app.verbosity >= 2) {
-    time_t now = time(nullptr);
-    char* dt = ctime(&now);  // NOLINT
-    std::cout << "Date & Time                   : " << dt
-              << "Prefill Token Batch Size      : " << gcpp::kPrefillBatchSize
-              << "\n"
-              << "Hardware concurrency          : "
-              << std::thread::hardware_concurrency() << "\n"
-              << "Instruction set               : "
-              << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)" << "\n";
-    char cpu100[100];
-    if (hwy::platform::GetCpuString(cpu100)) {
-      std::cout << "CPU                           : " << cpu100 << "\n";
-    }
-    std::cout << "Compiled config               : " << CompiledConfig() << "\n"
-              << "Weight Type                   : "
-              << gcpp::StringFromType(loader.WeightType()) << "\n"
-              << "EmbedderInput Type            : "
-              << gcpp::TypeName(gcpp::EmbedderInputT()) << "\n";
-  }
-}
-
-void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
-              gcpp::AppArgs& app) {
-  std::cerr
-      << kAsciiArtBanner
-      << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
-         "==========================================================\n\n"
-         "To run gemma.cpp, you need to "
-         "specify 3 required model loading arguments:\n"
-         "    --tokenizer\n"
-         "    --weights\n"
-         "    --model.\n";
-  std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
-               "--weights 2b-it-sfp.sbs --model 2b-it\n";
-  std::cerr << "\n*Model Loading Arguments*\n\n";
-  loader.Help();
-  std::cerr << "\n*Inference Arguments*\n\n";
-  inference.Help();
-  std::cerr << "\n*Application Arguments*\n\n";
-  app.Help();
-  std::cerr << "\n";
-}
-
 // The main Read-Eval-Print Loop.
 void ReplGemma(gcpp::Gemma& model, ModelTraining training,
                gcpp::KVCache& kv_cache, hwy::ThreadPool& pool,
@@ -118,12 +63,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
   int prompt_size{};
 
   std::mt19937 gen;
-  if (args.deterministic) {
-    gen.seed(42);
-  } else {
-    std::random_device rd;
-    gen.seed(rd());
-  }
+  InitGenerator(args, gen);
 
   // callback function invoked for each generated token.
   auto stream_token = [&abs_pos, &current_pos, &args, &gen, &prompt_size,
@@ -162,7 +102,6 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
 
   while (abs_pos < args.max_tokens) {
     std::string prompt_string;
-    std::vector<int> prompt;
     current_pos = 0;
     {
       PROFILER_ZONE("Gen.input");
@@ -192,30 +131,11 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       continue;
     }
 
-    if (training == ModelTraining::GEMMA_IT) {
-      // For instruction-tuned models: add control tokens.
-      prompt_string = "<start_of_turn>user\n" + prompt_string +
-                      "<end_of_turn>\n<start_of_turn>model\n";
-      if (abs_pos != 0) {
-        // Prepend "<end_of_turn>" token if this is a multi-turn dialogue
-        // continuation.
-        prompt_string = "<end_of_turn>\n" + prompt_string;
-      }
-    }
-
-    HWY_ASSERT(model.Tokenizer().Encode(prompt_string, &prompt));
-
-    // For both pre-trained and instruction-tuned models: prepend "<bos>" token
-    // if needed.
-    if (abs_pos == 0) {
-      prompt.insert(prompt.begin(), gcpp::BOS_ID);
-    }
-
+    const std::vector<int> prompt =
+        WrapAndTokenize(model.Tokenizer(), training, abs_pos, prompt_string);
     prompt_size = prompt.size();
-
     std::cerr << "\n"
               << "[ Reading prompt ] " << std::flush;
-
     if constexpr (kVerboseLogTokens) {
       for (int i = 0; i < prompt_size; ++i) {
         fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
@@ -301,17 +221,20 @@ int main(int argc, char** argv) {
     gcpp::AppArgs app(argc, argv);
 
     if (gcpp::HasHelp(argc, argv)) {
-      ShowHelp(loader, inference, app);
+      std::cerr << gcpp::kAsciiArtBanner;
+      gcpp::ShowHelp(loader, inference, app);
       return 0;
     }
 
     if (const char* error = loader.Validate()) {
-      ShowHelp(loader, inference, app);
+      std::cerr << gcpp::kAsciiArtBanner;
+      gcpp::ShowHelp(loader, inference, app);
       HWY_ABORT("\nInvalid args: %s", error);
     }
 
     if (const char* error = inference.Validate()) {
-      ShowHelp(loader, inference, app);
+      std::cerr << gcpp::kAsciiArtBanner;
+      gcpp::ShowHelp(loader, inference, app);
       HWY_ABORT("\nInvalid args: %s", error);
     }
 
