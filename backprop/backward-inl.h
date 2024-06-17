@@ -357,7 +357,7 @@ static HWY_NOINLINE void CrossEntropyLossGrad(
   }
 }
 
-template <typename TConfig, template<typename> typename WeightsT,
+template <typename TConfig, template<typename...> typename WeightsT,
           template<typename> typename LayerT>
 void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const WeightsT<TConfig>& weights,

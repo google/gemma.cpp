@@ -30,15 +30,18 @@ namespace gcpp {
 
 const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training) {
-  constexpr const char* kModelFlags[] = {"2b-pt", "7b-pt",   "gr2b-pt", "2b-it",
-                                         "7b-it", "gr2b-it", "tiny"};
+  constexpr const char* kModelFlags[] = {
+      "2b-pt", "7b-pt", "gr2b-pt", "2b-it", "7b-it", "gr2b-it", "tiny",
+  };
   constexpr Model kModelTypes[] = {
-      Model::GEMMA_2B, Model::GEMMA_7B,   Model::GRIFFIN_2B, Model::GEMMA_2B,
-      Model::GEMMA_7B, Model::GRIFFIN_2B, Model::GEMMA_TINY};
+      Model::GEMMA_2B, Model::GEMMA_7B, Model::GRIFFIN_2B, Model::GEMMA_2B,
+      Model::GEMMA_7B, Model::GRIFFIN_2B, Model::GEMMA_TINY,
+  };
   constexpr ModelTraining kModelTraining[] = {
       ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT, ModelTraining::GEMMA_PT,
       ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT, ModelTraining::GEMMA_IT,
-      ModelTraining::GEMMA_IT};
+      ModelTraining::GEMMA_IT,
+  };
 
   constexpr size_t kNum = std::end(kModelFlags) - std::begin(kModelFlags);
   static char kErrorMessageBuffer[kNum * 8 + 1024] =

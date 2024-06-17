@@ -222,7 +222,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   }
 }
 
-template <typename TConfig, template<typename> typename WeightsT,
+template <typename TConfig, template<typename...> typename WeightsT,
           template<typename> typename LayerT>
 float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
                                   size_t context_size,

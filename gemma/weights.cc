@@ -43,7 +43,7 @@ struct LoadCompressedWeightsT {
     using CWeights = CompressedWeights<TConfig>;
     ByteStorageT c_weights_u8 = AllocateSizeof<CWeights>();
     CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-    new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
+    new (c_weights) CWeights(pool);
 
     std::array<float, TConfig::kNumTensorScales> scales;
     CacheLoader loader(weights);
