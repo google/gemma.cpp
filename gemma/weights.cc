@@ -46,8 +46,7 @@ struct LoadCompressedWeightsT {
 
     std::array<float, TConfig::kNumTensorScales> scales;
     CacheLoader loader(weights);
-    const void* raw_weights = nullptr;  // ForEachTensor requires const.
-    ForEachTensor</*kHaveRaw=*/false, TConfig>(raw_weights, *c_weights, loader);
+    ForEachTensor<TConfig>(nullptr, *c_weights, loader);
     loader.LoadScales(scales.data(), scales.size());
     if (!loader.ReadAll(pool)) {
       HWY_ABORT("Failed to load model weights.");

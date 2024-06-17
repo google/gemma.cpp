@@ -16,6 +16,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
+#include <stddef.h>
+
 #include "compression/compress.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
@@ -221,17 +223,17 @@ void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
   }
 
 // Calls func(name, float*, CompressedArray&) for each tensor. float* is
-// null if !kHaveRaw, in which case raw_weights can be nullptr. This happens
-// when loading weights from BlobStore. If kHaveRaw, then RawLayer must be
-// specified and we pass a float* pointing to the raw float weights for that
-// tensor for use by compress_weights.cc.
+// null if raw_weights is nullptr, e.g., when loading weights from BlobStore.
+// Otherwise, RawLayer must be specified and we pass a float* pointing to the
+// raw float weights for that tensor for use by compress_weights.cc.
 //
 // This avoids repeating the list of tensors between loading and compressing,
 // while also avoiding dependency on raw_weights.h.
-template <bool kHaveRaw, class TConfig, class RawLayer = void,
-          class RawWeights = void, class Func>
-void ForEachTensor(const RawWeights* raw_weights,
+template <class TConfig, class RawLayer = void, class RawWeightsPtr, class Func>
+void ForEachTensor(RawWeightsPtr raw_weights,
                    CompressedWeights<TConfig>& c_weights, Func& func) {
+  constexpr bool kHaveRaw = !hwy::IsSame<RawWeightsPtr, nullptr_t>();
+
   GEMMA_CALL_TOP_FUNC("c_embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC("c_final_norm", final_norm_scale);
 

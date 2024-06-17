@@ -318,8 +318,7 @@ void CompressWeights(const Path& weights_path,
   WeightsF<TConfig>* weights =
       reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
-  ForEachTensor</*kHaveRaw=*/true, TConfig, LayerF<TConfig>>(
-      weights, *c_weights, compressor);
+  ForEachTensor<TConfig, LayerF<TConfig>>(weights, *c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
   compressor.WriteAll(pool, compressed_weights_path);
 
