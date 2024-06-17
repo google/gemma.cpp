@@ -73,6 +73,7 @@ set(SOURCES
   gemma/ops.h
   gemma/weights.cc
   gemma/weights.h
+  gemma/weights_raw.h
   util/app.h
   util/args.h
   )

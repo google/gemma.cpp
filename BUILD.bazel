@@ -84,6 +84,18 @@ cc_library(
 )
 
 cc_library(
+    name = "weights_raw",
+    hdrs = ["gemma/weights_raw.h"],
+    deps = [
+        ":common",
+        ":weights",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
@@ -214,6 +226,7 @@ cc_binary(
         ":common",
         ":gemma_lib",
         ":weights",
+        ":weights_raw",
         # Placeholder for internal dep, do not remove.,
         "//compression:compress",
         "@hwy//:hwy",
@@ -331,7 +344,7 @@ cc_library(
         ":common",
         ":gemma_lib",
         ":prompt",
-        ":weights",
+        ":weights_raw",
     ],
 )
 
@@ -346,7 +359,7 @@ cc_test(
         ":backprop_scalar",
         ":prompt",
         ":sampler",
-        ":weights",
+        ":weights_raw",
         "@googletest//:gtest_main",
     ],
 )
@@ -363,11 +376,9 @@ cc_test(
         ":backprop_scalar",
         ":gemma_lib",
         ":ops",
-        ":prompt",
         ":sampler",
-        ":weights",
+        ":weights_raw",
         "@googletest//:gtest_main",
-        "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",

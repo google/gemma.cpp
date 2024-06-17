@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 
-#include <algorithm>
 #include <array>
 #include <complex>
 #include <random>
@@ -29,10 +28,8 @@
 #include "backprop/forward_scalar.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "compression/compress.h"
-#include "gemma/gemma.h"
-#include "gemma/weights.h"
-#include "hwy/aligned_allocator.h"
+#include "gemma/activations.h"
+#include "gemma/weights_raw.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -51,8 +48,6 @@
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
-
-namespace hn = hwy::HWY_NAMESPACE;
 
 void TestMatMulVJP() {
   static const size_t kRows = 8;

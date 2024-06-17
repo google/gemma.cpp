@@ -20,8 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <array>
 #include <cmath>
+#include <vector>
 
 #include "gemma/activations.h"
 #include "gemma/common.h"
@@ -40,11 +40,11 @@
 #endif
 
 #include "gemma/ops.h"
+#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
-namespace hn = hwy::HWY_NAMESPACE;
 
 template <typename ArrayT>
 void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
@@ -202,11 +202,10 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
-    using VF = hn::Vec<DF>;
     DF df;
     for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
-      const auto y = Load(df, out + i);
-      const auto x = Load(df, out_mul + i);
+      const auto y = hn::Load(df, out + i);
+      const auto x = hn::Load(df, out_mul + i);
       hn::Store(hn::Mul(x, Gelu(df, y)), df, out_gated + i);
     }
   }

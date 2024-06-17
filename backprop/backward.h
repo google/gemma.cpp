@@ -16,8 +16,6 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_H_
 
-#include <vector>
-
 #include "backprop/prompt.h"
 #include "gemma/common.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"

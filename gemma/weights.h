@@ -25,12 +25,17 @@
 
 namespace gcpp {
 
-// ----------------------------------------------------------------------------
-// Uncompressed
+template <class TConfig>
+struct CompressedLayer {
+  // No ctor/dtor, allocated via AllocateAligned.
 
-template <typename T, class TConfig>
-struct Layer {
-  Layer() {}
+  using Weight = typename TConfig::Weight;
+  // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
+  // do not yet support smaller compressed types, or require at least bf16. When
+  // weights are f32, we also want such tensors to be f32.
+  using WeightF32OrBF16 =
+      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
+
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -49,111 +54,6 @@ struct Layer {
   static constexpr size_t kGriffinDim =
       TConfig::kGriffinLayers > 0 ? kModelDim : 0;
 
-  union {
-    struct {
-      std::array<T, kAttVecEinsumWSize> attn_vec_einsum_w;
-      std::array<T, kQKVEinsumWSize> qkv_einsum_w;
-      std::array<T, kAOBiasDim> attention_output_biases;
-    };
-
-    struct {
-      std::array<T, kGriffinDim * kGriffinDim> linear_x_w;
-      std::array<T, kGriffinDim> linear_x_biases;
-      std::array<T, kGriffinDim * kGriffinDim> linear_y_w;
-      std::array<T, kGriffinDim> linear_y_biases;
-      std::array<T, kGriffinDim * kGriffinDim> linear_out_w;
-      std::array<T, kGriffinDim> linear_out_biases;
-      std::array<T, kConv1dWidth * kGriffinDim> conv_w;
-      std::array<T, kGriffinDim> conv_biases;
-      std::array<T, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
-      std::array<T, kGriffinDim * 2> gate_biases;
-      std::array<T, kGriffinDim> a;
-    } griffin;
-  };
-
-  std::array<T, kGatingEinsumWSize> gating_einsum_w;
-  std::array<T, kModelDim * kFFHiddenDim> linear_w;
-  std::array<T, kModelDim> pre_attention_norm_scale;
-  std::array<T, kModelDim> pre_ffw_norm_scale;
-  std::array<T, kPostNormScale ? kModelDim : 0> post_attention_norm_scale;
-  std::array<T, kPostNormScale ? kModelDim : 0> post_ffw_norm_scale;
-
-  std::array<T, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
-  std::array<T, kFFBiases ? kModelDim : 0> ffw_output_biases;
-};
-
-template <class TConfig>
-using LayerF = Layer<float, TConfig>;
-
-// Array instead of single large allocation for parallel mem init. Split out of
-// Weights so that only these pointers are initialized.
-template <typename T, class TConfig>
-struct LayerPointers {
-  explicit LayerPointers(hwy::ThreadPool& pool) {
-    pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
-      this->layers[task] = hwy::AllocateAligned<Layer<T, TConfig>>(1);
-    });
-  }
-
-  using TLayer = Layer<T, TConfig>;
-  std::array<hwy::AlignedFreeUniquePtr<TLayer[]>, TConfig::kLayers> layers;
-};
-
-template <typename T, class TConfig>
-struct Weights {
-  // No ctor/dtor, allocated via AllocateAligned.
-
-  std::array<T, TConfig::kVocabSize * TConfig::kModelDim>
-      embedder_input_embedding;
-
-  std::array<T, TConfig::kModelDim> final_norm_scale;
-
-  LayerPointers<T, TConfig> layer_ptrs;
-
-  std::array<T, TConfig::kNumTensorScales> scales;
-
-  const Layer<T, TConfig>* GetLayer(size_t layer) const {
-    return layer_ptrs.layers[layer].get();
-  }
-  Layer<T, TConfig>* GetLayer(size_t layer) {
-    return layer_ptrs.layers[layer].get();
-  }
-};
-
-template <class TConfig>
-using WeightsF = Weights<float, TConfig>;
-
-// ----------------------------------------------------------------------------
-// Compressed
-
-template <class TConfig>
-struct CompressedLayer {
-  // No ctor/dtor, allocated via AllocateAligned.
-
-  using TLayer = gcpp::LayerF<TConfig>;
-  using Weight = typename TConfig::Weight;
-  // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
-  // do not yet support smaller compressed types, or require at least bf16. When
-  // weights are f32, we also want such tensors to be f32.
-  using WeightF32OrBF16 =
-      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
-
-  static constexpr size_t kHeads = TLayer::kHeads;
-  static constexpr size_t kKVHeads = TLayer::kKVHeads;
-  static constexpr size_t kModelDim = TLayer::kModelDim;
-  static constexpr size_t kQKVDim = TLayer::kQKVDim;
-  static constexpr size_t kFFHiddenDim = TLayer::kFFHiddenDim;
-  static constexpr size_t kAttVecEinsumWSize = TLayer::kAttVecEinsumWSize;
-  static constexpr size_t kQKVEinsumWSize = TLayer::kQKVEinsumWSize;
-  static constexpr size_t kGatingEinsumWSize = TLayer::kGatingEinsumWSize;
-  static constexpr size_t kConv1dWidth = TLayer::kConv1dWidth;
-  static constexpr bool kFFBiases = TLayer::kFFBiases;
-  static constexpr bool kPostNormScale = TConfig::kPostNormScale;
-  static constexpr size_t kAOBiasDim = TLayer::kAOBiasDim;
-  static constexpr size_t kGriffinDim = TLayer::kGriffinDim;
-
-  // Compressed Parameters
-
   template <class T, size_t N>
   using ArrayT = CompressedArray<T, N>;
 
@@ -171,7 +71,7 @@ struct CompressedLayer {
       ArrayT<float, kGriffinDim> linear_y_biases;
       ArrayT<Weight, kGriffinDim * kGriffinDim> linear_out_w;
       ArrayT<float, kGriffinDim> linear_out_biases;
-      ArrayT<float, TConfig::kConv1dWidth * kGriffinDim> conv_w;
+      ArrayT<float, kConv1dWidth * kGriffinDim> conv_w;
       ArrayT<float, kGriffinDim> conv_biases;
       ArrayT<Weight, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
       ArrayT<float, kGriffinDim * 2> gate_biases;
@@ -179,7 +79,7 @@ struct CompressedLayer {
     } griffin;
   };
 
-  ArrayT<Weight, TLayer::kGatingEinsumWSize> gating_einsum_w;
+  ArrayT<Weight, kGatingEinsumWSize> gating_einsum_w;
   ArrayT<Weight, kModelDim * kFFHiddenDim> linear_w;
   // We don't yet have an RMSNorm that accepts all Weight.
   ArrayT<WeightF32OrBF16, kModelDim> pre_attention_norm_scale;
@@ -251,25 +151,6 @@ struct CompressedWeights {
 // ----------------------------------------------------------------------------
 // Interface
 
-// TODO: can we use TConfig::Weight instead of T?
-template <typename T, typename TConfig>
-struct AllocateWeights {
-  ByteStorageT operator()(hwy::ThreadPool& pool) const {
-    using TWeights = Weights<T, TConfig>;
-    ByteStorageT weights_u8 = AllocateSizeof<TWeights>();
-    TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
-    new (&weights->layer_ptrs) LayerPointers<T, TConfig>(pool);
-    return weights_u8;
-  }
-};
-
-template <typename TConfig>
-struct AllocateWeightsF {
-  ByteStorageT operator()(hwy::ThreadPool& pool) const {
-    return AllocateWeights<float, TConfig>()(pool);
-  }
-};
-
 template <typename TConfig>
 struct AllocateCompressedWeights {
   ByteStorageT operator()(hwy::ThreadPool& pool) const {
@@ -281,84 +162,24 @@ struct AllocateCompressedWeights {
   }
 };
 
-template <typename T, typename TConfig>
-struct ZeroInitWeights {
-  void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
-    Weights<T, TConfig>& w =
-        *reinterpret_cast<Weights<T, TConfig>*>(weights.get());
-    hwy::ZeroBytes(&w.embedder_input_embedding,
-                   sizeof(w.embedder_input_embedding));
-    hwy::ZeroBytes(&w.final_norm_scale, sizeof(w.final_norm_scale));
-    for (int i = 0; i < TConfig::kLayers; ++i) {
-      hwy::ZeroBytes(w.GetLayer(i), sizeof(*w.GetLayer(i)));
-    }
-  }
-};
-
-template <typename TConfig>
-struct ZeroInitWeightsF {
-  void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
-    ZeroInitWeights<float, TConfig>()(weights, pool);
-  }
-};
-
 template <typename TConfig>
 struct ZeroInitCompressedWeights {
-  void operator()(ByteStorageT& weights, hwy::ThreadPool& pool) const {
-    CompressedWeights<TConfig>& w =
-        *reinterpret_cast<CompressedWeights<TConfig>*>(weights.get());
-    w.ZeroInit();
+  void operator()(ByteStorageT& weights_u8, hwy::ThreadPool& pool) const {
+    CompressedWeights<TConfig>& weights =
+        *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
+    weights.ZeroInit();
   }
 };
 
-template <typename T, typename TConfig>
-struct CopyWeights {
-void operator()(Weights<T, TConfig>& dst,
-                const Weights<T, TConfig>& src) const {
-    hwy::CopyBytes(&src.embedder_input_embedding, &dst.embedder_input_embedding,
-                   sizeof(src.embedder_input_embedding));
-    hwy::CopyBytes(&src.final_norm_scale, &dst.final_norm_scale,
-                   sizeof(src.final_norm_scale));
-    for (int i = 0; i < TConfig::kLayers; ++i) {
-      hwy::CopyBytes(src.GetLayer(i), dst.GetLayer(i),
-                     sizeof(*dst.GetLayer(i)));
-    }
-  }
-};
+// TODO: also add RandInitCompressedWeights
 
 template <class TConfig>
-struct DeleteLayersPtrs {
+struct DeleteCompressedWeights {
   void operator()(ByteStorageT& weights_u8) const {
-    auto* weights =
-        reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
-    weights->~CompressedWeights<TConfig>();
+    CompressedWeights<TConfig>& weights =
+        *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
+    weights.~CompressedWeights<TConfig>();
   }
-};
-
-// Owns weights and provides access to TConfig.
-template <typename T, typename TConfig>
-class WeightsWrapper {
- public:
-  WeightsWrapper()
-      : pool_(0),
-        data_(AllocateWeights<T, TConfig>()(pool_)),
-        weights_(reinterpret_cast<Weights<T, TConfig>*>(data_.get())) {}
-
-  ~WeightsWrapper() {
-    get().layer_ptrs.~LayerPointers<T, TConfig>();
-  }
-
-  const Weights<T, TConfig>& get() const { return *weights_; }
-  Weights<T, TConfig>& get() { return *weights_; }
-  void clear() { ZeroInitWeights<T, TConfig>()(data_, pool_); }
-  void copy(const WeightsWrapper<T, TConfig>& other) {
-    CopyWeights<T, TConfig>()(get(), other.get());
-  }
-
- private:
-  hwy::ThreadPool pool_;
-  ByteStorageT data_;
-  Weights<T, TConfig>* weights_;
 };
 
 ByteStorageT LoadCompressedWeights(const Path& weights, Model model_type,
@@ -369,30 +190,60 @@ void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
 // ----------------------------------------------------------------------------
 // Iterators
 
-// Calls func(name, float*, CompressedArray&) for each tensor. float* is null
-// if weights = null, which happens during the first call where we attempt to
-// load from cache.
-//
-// This avoids repeating the list of tensors between loading and compressing.
-template <class TConfig, class Func>
-void ForEachTensor(const WeightsF<TConfig>* weights,
-                   CompressedWeights<TConfig>& c_weights, Func& func) {
-  func("c_embedding",
-       weights ? weights->embedder_input_embedding.data() : nullptr,
-       c_weights.embedder_input_embedding);
-  func("c_final_norm", weights ? weights->final_norm_scale.data() : nullptr,
-       c_weights.final_norm_scale);
+// We rely on `if constexpr` to ensure raw_weights->member is only compiled
+// when valid, i.e., kHaveRaw == true, but the IDE analysis does not understand
+// this, hence hide the member access from it.
+#if HWY_IDE
+#define GEMMA_MEMBER(aggregate, member) nullptr
+#else
+#define GEMMA_MEMBER(aggregate, member) aggregate->member
+#endif
 
+// Used by ForEachTensor for tensors that are not in a layer.
+#define GEMMA_CALL_TOP_FUNC(name, member)                    \
+  {                                                          \
+    const float* raw_tensor = nullptr;                       \
+    if constexpr (kHaveRaw) {                                \
+      raw_tensor = GEMMA_MEMBER(raw_weights, member.data()); \
+    }                                                        \
+    func(name, raw_tensor, c_weights.member);                \
+  }
+
+// Used by ForEachTensor for per-layer tensors. Writes into name_buf.
 #define GEMMA_CALL_FUNC(name, member)                          \
   snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx); \
-  func(name_buf, layer ? layer->member.data() : nullptr, layer_weights->member)
+  {                                                            \
+    const float* raw_tensor = nullptr;                         \
+    if constexpr (kHaveRaw) {                                  \
+      raw_tensor = GEMMA_MEMBER(raw_layer, member.data());     \
+    }                                                          \
+    func(name_buf, raw_tensor, c_layer->member);               \
+  }
+
+// Calls func(name, float*, CompressedArray&) for each tensor. float* is
+// null if !kHaveRaw, in which case raw_weights can be nullptr. This happens
+// when loading weights from BlobStore. If kHaveRaw, then RawLayer must be
+// specified and we pass a float* pointing to the raw float weights for that
+// tensor for use by compress_weights.cc.
+//
+// This avoids repeating the list of tensors between loading and compressing,
+// while also avoiding dependency on raw_weights.h.
+template <bool kHaveRaw, class TConfig, class RawLayer = void,
+          class RawWeights = void, class Func>
+void ForEachTensor(const RawWeights* raw_weights,
+                   CompressedWeights<TConfig>& c_weights, Func& func) {
+  GEMMA_CALL_TOP_FUNC("c_embedding", embedder_input_embedding);
+  GEMMA_CALL_TOP_FUNC("c_final_norm", final_norm_scale);
 
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
     const size_t idx = static_cast<size_t>(layer_idx);
-    const LayerF<TConfig>* layer = weights ? weights->GetLayer(idx) : nullptr;
-    CompressedLayer<TConfig>* layer_weights = c_weights.GetLayer(idx);
+    const RawLayer* raw_layer = nullptr;
+    if constexpr (kHaveRaw) {
+      raw_layer = raw_weights->GetLayer(idx);
+    }
+    CompressedLayer<TConfig>* c_layer = c_weights.GetLayer(idx);
 
     GEMMA_CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
     GEMMA_CALL_FUNC("gating_ein", gating_einsum_w);
@@ -430,6 +281,7 @@ void ForEachTensor(const WeightsF<TConfig>* weights,
     }
   }
 #undef GEMMA_CALL_FUNC
+#undef GEMMA_CALL_TOP_FUNC
 }  // ForEachTensor
 
 #define GEMMA_CALL_TOP_FUNC1(name, member) func(name, weights1.member)

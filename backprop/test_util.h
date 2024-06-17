@@ -16,42 +16,15 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_TEST_UTIL_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_TEST_UTIL_H_
 
+#include <stddef.h>
+
 #include <array>
 #include <complex>
-#include <random>
 
-#include "gemma/weights.h"
 #include "gtest/gtest.h"
+#include "gemma/weights_raw.h"
 
 namespace gcpp {
-
-template<typename T, size_t kLen>
-void RandInit(std::array<T, kLen>& x, T stddev, std::mt19937& gen) {
-  std::normal_distribution<T> dist(0.0, stddev);
-  for (size_t i = 0; i < kLen; ++i) {
-    x[i] = dist(gen);
-  }
-}
-
-template<typename T, typename TConfig>
-void RandInit(Layer<T, TConfig>& w, T stddev, std::mt19937& gen) {
-  RandInit(w.pre_attention_norm_scale, stddev, gen);
-  RandInit(w.attn_vec_einsum_w, stddev, gen);
-  RandInit(w.qkv_einsum_w, stddev, gen);
-  RandInit(w.pre_ffw_norm_scale, stddev, gen);
-  RandInit(w.gating_einsum_w, stddev, gen);
-  RandInit(w.linear_w, stddev, gen);
-}
-
-template<typename T, typename TConfig>
-void RandInit(Weights<T, TConfig>& w, T stddev, std::mt19937& gen) {
-  static constexpr size_t kLayers = TConfig::kLayers;
-  RandInit(w.embedder_input_embedding, stddev, gen);
-  RandInit(w.final_norm_scale, stddev, gen);
-  for (size_t i = 0; i < kLayers; ++i) {
-    RandInit(*w.GetLayer(i), stddev, gen);
-  }
-}
 
 template<typename T, typename U, size_t kLen>
 void Complexify(const std::array<T, kLen>& x,

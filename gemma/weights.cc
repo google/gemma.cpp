@@ -15,7 +15,6 @@
 
 #include "gemma/weights.h"
 
-#include <algorithm>
 #include <cstdlib>
 
 #include "compression/compress.h"
@@ -47,7 +46,8 @@ struct LoadCompressedWeightsT {
 
     std::array<float, TConfig::kNumTensorScales> scales;
     CacheLoader loader(weights);
-    ForEachTensor<TConfig>(nullptr, *c_weights, loader);
+    const void* raw_weights = nullptr;  // ForEachTensor requires const.
+    ForEachTensor</*kHaveRaw=*/false, TConfig>(raw_weights, *c_weights, loader);
     loader.LoadScales(scales.data(), scales.size());
     if (!loader.ReadAll(pool)) {
       HWY_ABORT("Failed to load model weights.");

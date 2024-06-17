@@ -23,7 +23,6 @@
 #include <stddef.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 
 #include "backprop/prompt.h"

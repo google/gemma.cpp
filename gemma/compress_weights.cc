@@ -40,6 +40,7 @@
 #include "compression/io.h"  // Path
 #include "gemma/common.h"    // Model
 #include "gemma/weights.h"
+#include "gemma/weights_raw.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -317,7 +318,8 @@ void CompressWeights(const Path& weights_path,
   WeightsF<TConfig>* weights =
       reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
   Compressor compressor(pool);
-  ForEachTensor<TConfig>(weights, *c_weights, compressor);
+  ForEachTensor</*kHaveRaw=*/true, TConfig, LayerF<TConfig>>(
+      weights, *c_weights, compressor);
   compressor.AddScales(weights->scales.data(), weights->scales.size());
   compressor.WriteAll(pool, compressed_weights_path);
 

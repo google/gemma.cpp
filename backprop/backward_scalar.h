@@ -20,14 +20,13 @@
 #include <string.h>
 
 #include <cmath>
-#include <complex>
 #include <vector>
 
 #include "backprop/common_scalar.h"
 #include "backprop/prompt.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"  // EmbeddingScaling
-#include "gemma/weights.h"
+#include "gemma/weights_raw.h"
 
 namespace gcpp {
 template<typename T>

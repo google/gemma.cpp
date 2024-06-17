@@ -66,7 +66,6 @@ constexpr bool kShowTokenization = false;
 // Must be aligned.
 template <class TConfig, size_t kBatchSize>
 struct Activations {
-  using LayerConfig = LayerF<TConfig>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
@@ -979,8 +978,8 @@ Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
 }
 
 Gemma::~Gemma() {
-  CallForModelAndWeight<DeleteLayersPtrs>(model_type_, weight_type_,
-                                          weights_u8_);
+  CallForModelAndWeight<DeleteCompressedWeights>(model_type_, weight_type_,
+                                                 weights_u8_);
 }
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,

@@ -15,6 +15,9 @@
 
 #include "backprop/backward_scalar.h"
 
+#include <stddef.h>
+#include <string.h>  // memset
+
 #include <array>
 #include <complex>
 #include <random>
@@ -23,6 +26,7 @@
 #include "backprop/forward_scalar.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
+#include "gemma/weights_raw.h"
 
 namespace gcpp {
 
@@ -55,8 +59,8 @@ TEST(BackPropTest, MatMulVJP) {
     memset(&grad, 0, sizeof(grad));
     MatMulVJPT(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
                kRows, kCols, kTokens);
-    TestGradient(dx, c_x, func, 1e-11, 1e-12,__LINE__);
-    TestGradient(grad, c_weights, func, 1e-14, 1e-12,__LINE__);
+    TestGradient(dx, c_x, func, 1e-11, 1e-12, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-14, 1e-12, __LINE__);
   }
 }
 
@@ -91,8 +95,8 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
     memset(&grad, 0, sizeof(grad));
     MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad.data(),
                         dx.data(), kHeads, kRows, kCols, kTokens);
-    TestGradient(dx, c_x, func, 1e-15, 1e-13,__LINE__);
-    TestGradient(grad, c_weights, func, 1e-15, 1e-13,__LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-13, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-13, __LINE__);
   }
 }
 
