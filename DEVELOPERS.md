@@ -120,16 +120,16 @@ the library.
 
 You can regard `run.cc` as an example application that your own application is
 substituting for, so the invocations into gemma.h and gemma.cc you see in
-`run.cc` are probably the functions you'll be invoking. You can find examples
-of the invocations to tokenizer methods and `GenerateGemma` in `run.cc`.
+`run.cc` are probably the functions you'll be invoking. You can find examples of
+the invocations to tokenizer methods and `Generate()` in `run.cc`.
 
 Keep in mind gemma.cpp is oriented at more experimental / prototype / research
 applications. If you're targeting production, there's more standard paths via
-jax / pytorch / keras for NN deployments.
+jax / pytorch / keras / XNNPACK for NN deployments.
 
 ### Gemma struct contains all the state of the inference engine - tokenizer, weights, and activations
 
-`Gemma(...)` - constructor, creates a gemma model object. 
+`Gemma(...)` - constructor, creates a gemma model object.
 
 In a standard LLM chat app, you'll probably use a Gemma object directly, in
 more exotic data processing or research applications, you might decompose
@@ -143,24 +143,26 @@ The Gemma object contains contains a pointer to a Tokenizer object. The main
 operations performed on the tokenizer are to load the tokenizer model from a
 file (usually `tokenizer.spm`), call `Encode()` to go from string prompts to
 token id vectors, or `Decode()` to go from token id vector outputs from the
-model back to strings.
+model back to strings. `benchmark_helper.h` provides wrapper functions that make
+them easier to use.
 
 ### `model.Generate()` is the entrypoint for token generation
 
-Calling into `model.Generate` with a tokenized prompt will 1) mutate the
-activation values in `model` and 2) invoke StreamFunc - a lambda callback for
-each generated token.
+Calling into `model.Generate` with a tokenized prompt will
 
-Your application defines its own StreamFunc as a lambda callback to do
-something everytime a token string is streamed from the engine (eg print to the
-screen, write data to the disk, send the string to a server, etc.). You can see
-in `run.cc` the StreamFunc lambda takes care of printing each token to the
+1.  mutate the activation values in `model` and
+2.  invoke `StreamFunc` - a lambda callback for each generated token.
+
+Your application defines its own `StreamFunc` as a lambda callback to do
+something every time a token string is streamed from the engine (e.g., print to
+the screen, write data to the disk, send the string to a server, etc.). You can
+see in `run.cc` the `StreamFunc` lambda takes care of printing each token to the
 screen as it arrives.
 
-Optionally you can define accept_token as another lambda - this is mostly for
-constrained decoding type of use cases where you want to force the generation
-to fit a grammar. If you're not doing this, you can send an empty lambda as a
-no-op which is what `run.cc` does.
+Optionally you can define `accept_token` as another lambda - this is mostly for
+constrained decoding type of use cases where you want to force the generation to
+fit a grammar. If you're not doing this, you can send an empty lambda or
+`std::function` as a no-op which is what `run.cc` does.
 
 ### `Transformer()` implements the inference (i.e. `forward()` method in PyTorch or Jax) computation of the neural network
 
@@ -169,6 +171,9 @@ interact directly with the neural network, but if you're doing something a bit
 more custom you can call transformer which performs a single inference operation
 on a single token and mutates the Activations and the KVCache through the neural
 network computation.
+
+Note that an experimental backward pass is available in backprop/, which may be
+useful for fine tuning.
 
 ### For low level operations, defining new architectures, call `ops.h` functions directly
 
@@ -183,6 +188,14 @@ provide `bazel/sentencepiece.bazel`. Second, it ships with a vendored subset of
 the Abseil library. `bazel/sentencepiece.patch` changes the code to support
 Abseil as a standalone dependency without third_party/ prefixes, similar to the
 transforms we apply to Gemma via Copybara.
+
+## Debugging
+
+At the first sign of incorrect or unexpected results, we recommend running with
+ASan/MSan enabled. When using blaze/bazel, you can add `--config=asan` or
+`--config=msan-track-origins` to the build command. In addition to their checks
+for memory overruns or uninitialized memory, we also enable debug-only asserts
+in Gemma.cpp for those build configurations.
 
 ## Discord
 
