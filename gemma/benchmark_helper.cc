@@ -86,14 +86,20 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
   };
 }
 
-// Note: the delegating ctor above is called before any other initializers here.
-GemmaEnv::GemmaEnv(int argc, char** argv)
-    : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
-               AppArgs(argc, argv)) {
+// Internal init must run before the GemmaEnv ctor above, hence it cannot occur
+// in the argv ctor below because its body runs *after* the delegating ctor.
+// This helper function takes care of the init, and could be applied to any of
+// the *Args classes, it does not matter which.
+static AppArgs MakeAppArgs(int argc, char** argv) {
   {  // So that indentation matches expectations.
     // Placeholder for internal init, do not modify.
   }
+  return AppArgs(argc, argv);
 }
+
+GemmaEnv::GemmaEnv(int argc, char** argv)
+    : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
+               MakeAppArgs(argc, argv)) {}
 
 std::pair<std::string, size_t> GemmaEnv::QueryModel(
     const std::vector<int>& tokens) {
