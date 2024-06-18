@@ -53,15 +53,12 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
   }
 }
 
-GemmaEnv::GemmaEnv(int argc, char** argv)
-    : loader_(argc, argv),
-      inference_args_(argc, argv),
-      app_(argc, argv),
+GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
+                   const AppArgs& app)
+    : loader_(loader),
+      inference_args_(inference),
+      app_(app),
       pool_(app_.num_threads) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
-
   // For many-core, pinning workers to cores helps.
   if (app_.num_threads > 10) {
     gcpp::PinWorkersToCores(pool_);
@@ -89,6 +86,15 @@ GemmaEnv::GemmaEnv(int argc, char** argv)
   };
 }
 
+// Note: the delegating ctor above is called before any other initializers here.
+GemmaEnv::GemmaEnv(int argc, char** argv)
+    : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
+               AppArgs(argc, argv)) {
+  {  // So that indentation matches expectations.
+    // Placeholder for internal init, do not modify.
+  }
+}
+
 std::pair<std::string, size_t> GemmaEnv::QueryModel(
     const std::vector<int>& tokens) {
   std::string res;
@@ -98,10 +104,7 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   const StreamFunc stream_token = [&res, &total_tokens, &time_start, this](
                                       int token, float) {
     ++total_tokens;
-    std::string token_text;
-    HWY_ASSERT(
-        model_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    res += token_text;
+    res += StringFromTokens(std::vector<int>{token});
     if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
       LogSpeedStats(time_start, total_tokens);
     }

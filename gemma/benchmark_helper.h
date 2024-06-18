@@ -37,7 +37,10 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen);
 // Convenience class to load a model and run inference.
 class GemmaEnv {
  public:
+  // Calls the other constructor with *Args arguments initialized from argv.
   GemmaEnv(int argc, char** argv);
+  GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
+           const AppArgs& app);
 
   size_t MaxTokens() const { return inference_args_.max_tokens; }
   // Sets the maximum number of output tokens to generate.
@@ -81,7 +84,8 @@ class GemmaEnv {
     return loader_.ModelTrainingType();
   }
   int Verbosity() const { return app_.verbosity; }
-  gcpp::RuntimeConfig& MutableConfig() { return runtime_config_; }
+  RuntimeConfig& MutableConfig() { return runtime_config_; }
+  InferenceArgs& MutableInferenceArgs() { return inference_args_; }
   std::mt19937& MutableGen() { return gen_; }
   KVCache& MutableKVCache() { return kv_cache_; }
 
@@ -100,15 +104,14 @@ class GemmaEnv {
   std::unique_ptr<Gemma> model_;
   // The KV cache to use for inference.
   KVCache kv_cache_;
-  gcpp::RuntimeConfig runtime_config_;
+  RuntimeConfig runtime_config_;
 };
 
 // Logs the inference speed in tokens/sec.
 void LogSpeedStats(double time_start, size_t total_tokens);
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
-void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
-              gcpp::AppArgs& app);
+void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
 
 }  // namespace gcpp
 
