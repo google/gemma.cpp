@@ -881,6 +881,7 @@ template <size_t kColsA_RowsB, size_t kColsBC, bool kAdd, typename MatTA,
 HWY_NOINLINE void MatMul_4x4_Batch_Add(
     size_t batch_size, const MatTA* HWY_RESTRICT A, const MatTB* HWY_RESTRICT B,
     OutT* HWY_RESTRICT C, const AddT* add, hwy::ThreadPool& pool) {
+  PROFILER_ZONE("Matmul");
   // Process reg-sized tiles of C in parallel. We currently write C directly,
   // which touches more memory than fits in L3. TODO: add another level of loops
   // so that we finish one L3-sized piece of C at a time.
