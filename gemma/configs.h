@@ -73,6 +73,20 @@ constexpr size_t NumLayersOfTypeBefore(
   return count;
 }
 
+template <class TConfig, typename = void>
+struct CacheLayerSize {
+  constexpr size_t operator()() const {
+    return TConfig::kKVHeads * TConfig::kQKVDim * 2;
+  }
+};
+
+template <class TConfig, typename = void>
+struct CachePosSize {
+  constexpr size_t operator()() const {
+    return TConfig::kGemmaLayers * CacheLayerSize<TConfig>()();
+  }
+};
+
 struct ConfigNoSSM {
   static constexpr int kGriffinLayers = 0;
 

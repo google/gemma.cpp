@@ -69,9 +69,6 @@ struct Activations {
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
-  static constexpr size_t kCacheLayerSize = kKVHeads * kQKVDim * 2;
-  static constexpr size_t kCachePosSize =
-      TConfig::kGemmaLayers * kCacheLayerSize;
   static constexpr bool kIsMHA = kHeads == kKVHeads;  // Multi-Head Attention
   // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
   // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
@@ -117,12 +114,10 @@ struct CreateKVCache {
   KVCache operator()() const {
     KVCache kv_cache = {};
 
-    const size_t size_cache_pos =
-        TConfig::kGemmaLayers * TConfig::kKVHeads * TConfig::kQKVDim;
+    const size_t size_cache_pos = CacheLayerSize<TConfig>()();
     if (size_cache_pos != 0) {
       const size_t seq_len = TConfig::kSeqLen + kPrefillBatchSize;
-      kv_cache.kv_cache =
-          hwy::AllocateAligned<float>(seq_len * size_cache_pos * 2);
+      kv_cache.kv_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
     }
 
     if (TConfig::kGriffinLayers) {
@@ -372,8 +367,8 @@ HWY_NOINLINE void Attention(size_t batch_start, size_t num_tokens, size_t layer,
   using TActivations = Activations<TConfig, kBatchSize>;
   constexpr size_t kQKVDim = TActivations::kQKVDim;
   constexpr size_t kQStride = TActivations::kQStride;
-  constexpr size_t kCachePosSize = TActivations::kCachePosSize;
-  constexpr size_t kCacheLayerSize = TActivations::kCacheLayerSize;
+  constexpr size_t kCachePosSize = CachePosSize<TConfig>()();
+  constexpr size_t kCacheLayerSize = CacheLayerSize<TConfig>()();
   constexpr size_t kModelDim = TActivations::kModelDim;
   constexpr size_t kHeads = TConfig::kHeads;
   constexpr size_t kKVHeads = TConfig::kKVHeads;
