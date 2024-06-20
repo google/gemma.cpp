@@ -153,7 +153,7 @@ class AppArgs : public ArgsBase<AppArgs> {
     visitor(num_threads, "num_threads",
             kDefaultNumThreads,  // see ChooseNumThreads
             "Number of threads to use.\n    Default = Estimate of the "
-            "number of suupported concurrent threads.",
+            "number of supported concurrent threads.",
             2);
     visitor(
         eot_line, "eot_line", std::string(""),
