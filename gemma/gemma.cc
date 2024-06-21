@@ -640,9 +640,6 @@ HWY_NOINLINE void Prefill(const int* tokens, size_t num_tokens, size_t pos,
     TransformerLayer(num_tokens, pos, layer, layer_weights, activations,
                      kv_cache, pool);
   }
-
-  RMSNormInplaceBatched<kBatchSize>(num_tokens, weights.final_norm_scale.data(),
-                                    activations.x.data(), TConfig::kModelDim);
 }
 
 // Compute the transformer for a batch of input tokens. During generation,
