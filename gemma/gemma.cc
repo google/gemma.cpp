@@ -114,7 +114,7 @@ struct CreateKVCache {
   KVCache operator()() const {
     KVCache kv_cache = {};
 
-    const size_t size_cache_pos = CacheLayerSize<TConfig>()();
+    const size_t size_cache_pos = CachePosSize<TConfig>()();
     if (size_cache_pos != 0) {
       const size_t seq_len = TConfig::kSeqLen + kPrefillBatchSize;
       kv_cache.kv_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
