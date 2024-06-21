@@ -232,7 +232,7 @@ void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
 template <class TConfig, class RawLayer = void, class RawWeightsPtr, class Func>
 void ForEachTensor(RawWeightsPtr raw_weights,
                    CompressedWeights<TConfig>& c_weights, Func& func) {
-  constexpr bool kHaveRaw = !hwy::IsSame<RawWeightsPtr, nullptr_t>();
+  constexpr bool kHaveRaw = !hwy::IsSame<RawWeightsPtr, std::nullptr_t>();
 
   GEMMA_CALL_TOP_FUNC("c_embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC("c_final_norm", final_norm_scale);
