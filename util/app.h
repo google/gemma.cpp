@@ -133,9 +133,8 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 
   static inline size_t GetSupportedThreadCount() {
-    return static_cast<size_t>(
-        std::clamp(static_cast<int>(std::thread::hardware_concurrency()) - 2, 1,
-                   HWY_MIN(static_cast<int>(kMaxThreads), 18)));
+    return std::clamp(hwy::ThreadPool::MaxThreads(), size_t{1},
+                      std::min(kMaxThreads, size_t{18}));
   }
 
   Path log;  // output
