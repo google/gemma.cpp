@@ -117,9 +117,10 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
     return true;
   };
   if (app_.verbosity >= 2) {
-    std::cout << inference_args_.max_tokens << " "
-              << inference_args_.max_generated_tokens << " "
-              << inference_args_.temperature;
+    std::cout << "Max tokens: " << inference_args_.max_tokens
+              << "\tmax generated tokens: "
+              << inference_args_.max_generated_tokens
+              << "\ttemperature: " << inference_args_.temperature << "\n";
   }
   gcpp::TimingInfo timing_info;
   runtime_config_.stream_token = stream_token;
