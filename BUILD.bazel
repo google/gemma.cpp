@@ -62,7 +62,6 @@ cc_library(
     ],
     deps = [
         "//compression:compress",
-        "//compression:io",
         "@hwy//:hwy",  # base.h
         "@hwy//:thread_pool",
     ],
