@@ -184,19 +184,23 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   if (app.verbosity >= 1) {
     const std::string instructions =
-        "*Usage*\n"
-        "  Enter an instruction and press enter (%C resets conversation, "
-        "%Q quits).\n" +
-        (inference.multiturn == 0
-             ? std::string("  Since multiturn is set to 0, conversation will "
+        std::string(
+            "*Usage*\n"
+            "  Enter an instruction and press enter (%C resets conversation, "
+            "%Q quits).\n")
+            .append(
+                (inference.multiturn == 0
+                     ? std::string(
+                           "  Since multiturn is set to 0, conversation will "
                            "automatically reset every turn.\n\n")
-             : "\n") +
-        "*Examples*\n"
-        "  - Write an email to grandma thanking her for the cookies.\n"
-        "  - What are some historical attractions to visit around "
-        "Massachusetts?\n"
-        "  - Compute the nth fibonacci number in javascript.\n"
-        "  - Write a standup comedy bit about GPU programming.\n";
+                     : "\n"))
+            .append(
+                "*Examples*\n"
+                "  - Write an email to grandma thanking her for the cookies.\n"
+                "  - What are some historical attractions to visit around "
+                "Massachusetts?\n"
+                "  - Compute the nth fibonacci number in javascript.\n"
+                "  - Write a standup comedy bit about GPU programming.\n");
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
               << kAsciiArtBanner << "\n\n";
