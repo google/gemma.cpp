@@ -39,6 +39,8 @@ ByteStorageT AllocateSizeof() {
 enum class Model {
   GEMMA_2B,
   GEMMA_7B,
+  GEMMA_9B,
+  GEMMA_27B,
   GRIFFIN_2B,
   GEMMA_TINY,
 };
@@ -69,6 +71,10 @@ decltype(auto) CallForModel(Model model, TArgs&&... args) {
       return FuncT<ConfigGemma2B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA_7B:
       return FuncT<ConfigGemma7B<TWeight>>()(std::forward<TArgs>(args)...);
+    case Model::GEMMA_9B:
+      return FuncT<ConfigGemma9B<TWeight>>()(std::forward<TArgs>(args)...);
+    case Model::GEMMA_27B:
+      return FuncT<ConfigGemma27B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GRIFFIN_2B:
       return FuncT<ConfigGriffin2B<TWeight>>()(std::forward<TArgs>(args)...);
     default:
@@ -118,6 +124,16 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
     }                                                                      \
     case Model::GEMMA_7B: {                                                \
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B<TWEIGHT>>)      \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA_9B: {                                                \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma9B<TWEIGHT>>)      \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA_27B: {                                               \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma27B<TWEIGHT>>)     \
       ARGS;                                                                \
       break;                                                               \
     }                                                                      \

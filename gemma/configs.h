@@ -100,6 +100,46 @@ struct ConfigNoSSM {
 };
 
 template <typename TWeight>
+struct ConfigGemma27B : public ConfigNoSSM {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
+  static constexpr int kSeqLen = gcpp::kSeqLen;
+  static constexpr int kVocabSize = 256000;
+  static constexpr std::array<LayerAttentionType, 46> kLayerConfig =
+      FixedLayerConfig<46>(LayerAttentionType::kGemma);
+  static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers = kLayers;
+  static constexpr int kModelDim = 4608;
+  static constexpr int kFFHiddenDim = 16 * 4608 / 2;  // = 36864
+  static constexpr int kHeads = 32;
+  static constexpr int kKVHeads = 16;
+  static constexpr int kQKVDim = 128;  // query size == key size == value size
+  static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
+  static constexpr bool kPostNormScale = true;
+};
+
+template <typename TWeight>
+struct ConfigGemma9B : public ConfigNoSSM {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
+  static constexpr int kSeqLen = gcpp::kSeqLen;
+  static constexpr int kVocabSize = 256000;
+  static constexpr std::array<LayerAttentionType, 42> kLayerConfig =
+      FixedLayerConfig<42>(LayerAttentionType::kGemma);
+  static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers = kLayers;
+  static constexpr int kModelDim = 3584;
+  static constexpr int kFFHiddenDim = 8 * 3584 / 2;  // = 14336
+  static constexpr int kHeads = 16;
+  static constexpr int kKVHeads = 8;
+  static constexpr int kQKVDim = 256;  // query size == key size == value size
+  static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
+  static constexpr bool kPostNormScale = true;
+};
+
+template <typename TWeight>
 struct ConfigGemma7B : public ConfigNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
