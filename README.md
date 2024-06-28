@@ -85,7 +85,7 @@ weights enable faster inference. In general, we recommend starting with the
 `-sfp` checkpoints.
 
 Alternatively, visit the [gemma.cpp](https://huggingface.co/models?other=gemma.cpp)
-models on the Hugging Face Hub. First go the the model repository of the model of interest
+models on the Hugging Face Hub. First go the model repository of the model of interest
 (see recommendations below). Then, click the `Files and versions` tab and download the 
 model and tokenizer files. For programmatic downloading, if you have `huggingface_hub`
 installed, you can also download by running:
