@@ -32,6 +32,9 @@ namespace gcpp {
 
 constexpr size_t kPrefillBatchSize = 16;
 constexpr size_t kDecodeBatchSize = 1;
+constexpr size_t kBatchedQueryBatchSize = 16;
+constexpr size_t kMinAdjustedPrefillBatchSize =
+    HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
 constexpr bool kSystemPrompt = false;
 
 struct KVCache {
@@ -72,6 +75,11 @@ class GemmaTokenizer {
 // probability is 0.0f. StreamFunc should return false to stop generation and
 // true to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
+// BatchStreamFunc is called with (query_idx, pos, token, probability). 
+// For prompt tokens,
+// probability is 0.0f. StreamFunc should return false to stop generation and
+// true to continue generation.
+using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int, float)>;
@@ -93,6 +101,7 @@ struct RuntimeConfig {
   int verbosity;
   std::mt19937* gen;
   StreamFunc stream_token;
+  BatchStreamFunc batch_stream_token;
   AcceptFunc accept_token;  // if empty, accepts all tokens.
   SampleFunc sample_func;   // if empty, uses SampleTopK.
   LayersOutputFunc layers_output;  // if not empty, called after each layer.
@@ -124,6 +133,11 @@ class Gemma {
   void Generate(const RuntimeConfig& runtime_config,
                 const std::vector<int>& prompt, size_t start_pos,
                 KVCache& kv_cache, TimingInfo& timing_info);
+
+  void GenerateBatch(const RuntimeConfig& runtime_config,
+                     const hwy::Span<const hwy::Span<int>>& prompts,
+                     size_t start_pos, const std::vector<KVCache*>& kv_caches,
+                     TimingInfo& timing_info);
 
  private:
   hwy::ThreadPool& pool_;

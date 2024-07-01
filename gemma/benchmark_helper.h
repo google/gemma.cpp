@@ -69,8 +69,12 @@ class GemmaEnv {
   // Runs inference on the given input and returns the top-1 result string and
   // the number of tokens that were generated.
   std::pair<std::string, size_t> QueryModel(const std::vector<int>& tokens);
+  std::vector<std::pair<std::string, size_t>> BatchQueryModel2(
+      const hwy::Span<const hwy::Span<int>>& prompts);
   // Adds turn structure to input, tokenizes and calls the above overload.
   std::pair<std::string, size_t> QueryModel(std::string& input);
+  std::vector<std::pair<std::string, size_t>> BatchQueryModel(
+      const std::vector<std::string>& inputs);
 
   // Runs inference on the given input and returns the cross entropy, a measure
   // of how well the model predicts the correct output. It is the average
@@ -87,7 +91,7 @@ class GemmaEnv {
   RuntimeConfig& MutableConfig() { return runtime_config_; }
   InferenceArgs& MutableInferenceArgs() { return inference_args_; }
   std::mt19937& MutableGen() { return gen_; }
-  KVCache& MutableKVCache() { return kv_cache_; }
+  KVCache& MutableKVCache() { return *kv_caches_[0]; }
 
  private:
   // Arguments to the model loader: file locations, etc.
@@ -103,7 +107,7 @@ class GemmaEnv {
   // The model to run inference on.
   std::unique_ptr<Gemma> model_;
   // The KV cache to use for inference.
-  KVCache kv_cache_;
+  std::vector<KVCache*> kv_caches_;
   RuntimeConfig runtime_config_;
 };
 

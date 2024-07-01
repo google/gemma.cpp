@@ -103,6 +103,10 @@ cc_library(
         "gemma/activations.h",
         "gemma/gemma.h",
     ],
+    exec_properties = {
+        # Avoid linker OOMs when building with sanitizer instrumentation.
+        "mem": "28g",
+    },
     textual_hdrs = [
         # Placeholder for internal file1, do not remove,
         # Placeholder for internal file2, do not remove,
@@ -194,6 +198,7 @@ cc_test(
         ":ops",
         "@googletest//:gtest_main",
         "//compression:io",
+        "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",
     ],
@@ -370,6 +375,10 @@ cc_test(
         "backprop/backward_test.cc",
         "backprop/test_util.h",
     ],
+    exec_properties = {
+        # Avoid linker OOMs when building with sanitizer instrumentation.
+        "mem": "28g",
+    },
     deps = [
         ":backprop",
         ":backprop_scalar",
@@ -406,6 +415,10 @@ cc_test(
     srcs = [
         "backprop/optimize_test.cc",
     ],
+    exec_properties = {
+        # Avoid linker OOMs when building with sanitizer instrumentation.
+        "mem": "28g",
+    },
     deps = [
         ":backprop",
         ":common",

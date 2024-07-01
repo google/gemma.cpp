@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <time.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <ostream>
@@ -34,6 +36,7 @@
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -72,7 +75,11 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
   } else {
     fprintf(stderr, "Loading model...\n");
     model_ = AllocateGemma(loader_, pool_);
-    kv_cache_ = KVCache::Create(loader_.ModelType());
+
+    kv_caches_.reserve(16);
+    for (int i = 0; i < 16; ++i) {
+      kv_caches_.push_back(new KVCache(KVCache::Create(loader_.ModelType())));
+    }
   }
 
   InitGenerator(inference_args_, gen_);
@@ -107,8 +114,9 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   size_t total_tokens = 0;
 
   const double time_start = hwy::platform::Now();
-  const StreamFunc stream_token = [&res, &total_tokens, &time_start, this](
-                                      int token, float) {
+  const BatchStreamFunc batch_stream_token =
+      [&res, &total_tokens, &time_start, this](
+          size_t query_index, size_t pos, int token, float) {
     ++total_tokens;
     res += StringFromTokens(std::vector<int>{token});
     if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
@@ -123,8 +131,8 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
               << "\ttemperature: " << inference_args_.temperature << "\n";
   }
   gcpp::TimingInfo timing_info;
-  runtime_config_.stream_token = stream_token;
-  model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_cache_,
+  runtime_config_.batch_stream_token = batch_stream_token;
+  model_->Generate(runtime_config_, tokens, /*start_pos=*/0, *kv_caches_[0],
                    timing_info);
   if (app_.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
@@ -132,11 +140,72 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   return {res, total_tokens};
 }
 
+std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
+    const hwy::Span<const hwy::Span<int>>& prompts) {
+  std::vector<std::pair<std::string, size_t>> res(prompts.size());
+  std::fill(res.begin(), res.end(), std::make_pair("", 0));
+  size_t total_tokens = 0;
+
+  const double time_start = hwy::platform::Now();
+  const BatchStreamFunc batch_stream_token =
+      [&res, &total_tokens, &time_start, this](
+          size_t query_index, size_t pos, int token, float) {
+    std::string token_text;
+    HWY_ASSERT(
+        model_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
+    // fprintf(stderr, "Query %zu returned token \"%s\"\n\n", query_index,
+    //         token_text.c_str());
+    std::string single_res = res[query_index].first + token_text;
+    size_t current_token_count = res[query_index].second + 1;
+    res[query_index] = std::make_pair(single_res, current_token_count);
+
+    ++total_tokens;
+    if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
+      LogSpeedStats(time_start, total_tokens);
+    }
+    return true;
+  };
+  if (app_.verbosity >= 2) {
+    std::cout << inference_args_.max_tokens << " "
+              << inference_args_.max_generated_tokens << " "
+              << inference_args_.temperature;
+  }
+  gcpp::TimingInfo timing_info;
+  runtime_config_.batch_stream_token = batch_stream_token;
+  model_->GenerateBatch(runtime_config_, prompts, /*start_pos=*/0, kv_caches_,
+                        timing_info);
+  if (app_.verbosity >= 1) {
+    LogSpeedStats(time_start, total_tokens);
+  }
+  return res;
+}
+
 std::pair<std::string, size_t> GemmaEnv::QueryModel(std::string& input) {
   const std::vector<int> prompt =
       WrapAndTokenize(model_->Tokenizer(), loader_.ModelTrainingType(),
                       /*pos=*/0, input);
   return QueryModel(prompt);
+}
+std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
+    const std::vector<std::string>& inputs) {
+  std::vector<std::unique_ptr<std::vector<int>>> prompts;
+  prompts.reserve(inputs.size());
+  for (auto& input : inputs) {
+    std::string mutable_prompt = input;
+    prompts.push_back(std::make_unique<std::vector<int>>(
+        WrapAndTokenize(model_->Tokenizer(),
+                                       loader_.ModelTrainingType(),
+                                       /*pos=*/0, mutable_prompt)));
+  }
+  std::vector<hwy::Span<int>> prompt_vector;
+  prompt_vector.reserve(prompts.size());
+  for (auto& prompt : prompts) {
+    prompt_vector.push_back(hwy::Span<int>(
+        prompt->data(), prompt->size()));
+  }
+  hwy::Span<const hwy::Span<int>> prompt_span = hwy::Span<const hwy::Span<int>>(
+      prompt_vector.data(), prompt_vector.size());
+  return BatchQueryModel2(prompt_span);
 }
 
 float GemmaEnv::CrossEntropy(const std::string& input) {
