@@ -25,14 +25,14 @@
 #include <ostream>
 #include <random>
 #include <string>
-#include <thread>  // NOLINT
+#include <thread>   // NOLINT
 #include <utility>  // std::pair
 #include <vector>
 
 // Placeholder for internal header, do not modify.
 #include "compression/compress.h"  // TypeName
-#include "gemma/common.h"          // StringFromType
-#include "gemma/cross_entropy.h"
+#include "evals/cross_entropy.h"
+#include "gemma/common.h"  // StringFromType
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "util/args.h"

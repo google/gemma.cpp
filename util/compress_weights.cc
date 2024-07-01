@@ -19,7 +19,7 @@
 // which we pass the filename via macro 'argument'.
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
-  "gemma/compress_weights.cc"  // NOLINT
+  "util/compress_weights.cc"   // NOLINT
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 #include "compression/compress-inl.h"

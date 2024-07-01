@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_CROSS_ENTROPY_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_CROSS_ENTROPY_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_EVALS_CROSS_ENTROPY_H_
+#define THIRD_PARTY_GEMMA_CPP_EVALS_CROSS_ENTROPY_H_
 
 #include <stddef.h>
 
@@ -30,4 +30,4 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_CROSS_ENTROPY_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_EVALS_CROSS_ENTROPY_H_

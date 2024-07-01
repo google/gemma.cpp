@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemma/cross_entropy.h"
+#include "evals/cross_entropy.h"
 
 #include <stddef.h>
 #include <stdio.h>

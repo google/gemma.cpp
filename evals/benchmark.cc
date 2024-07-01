@@ -10,9 +10,9 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "evals/cross_entropy.h"
 #include "gemma/benchmark_helper.h"
 #include "gemma/common.h"
-#include "gemma/cross_entropy.h"
 #include "gemma/gemma.h"
 #include "util/args.h"
 #include "hwy/base.h"

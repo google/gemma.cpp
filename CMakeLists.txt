@@ -60,14 +60,14 @@ set(SOURCES
   backprop/forward_scalar.h
   backprop/optimizer.cc
   backprop/optimizer.h
+  evals/cross_entropy.cc
+  evals/cross_entropy.h
   gemma/configs.h
   gemma/activations.h
   gemma/benchmark_helper.cc
   gemma/benchmark_helper.h
   gemma/common.cc
   gemma/common.h
-  gemma/cross_entropy.cc
-  gemma/cross_entropy.h
   gemma/gemma.cc
   gemma/gemma.h
   gemma/ops.h
@@ -103,13 +103,13 @@ add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
 install(TARGETS gemma DESTINATION bin)
 
-add_executable(single_benchmark gemma/benchmark.cc)
+add_executable(single_benchmark evals/benchmark.cc)
 target_link_libraries(single_benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
-add_executable(benchmarks gemma/benchmarks.cc)
+add_executable(benchmarks evals/benchmarks.cc)
 target_link_libraries(benchmarks libgemma hwy hwy_contrib nlohmann_json::nlohmann_json benchmark)
 
-add_executable(debug_prompt debug_prompt.cc)
+add_executable(debug_prompt evals/debug_prompt.cc)
 target_link_libraries(debug_prompt libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
 ## Tests
@@ -124,7 +124,7 @@ set(GEMMA_TEST_FILES
   backprop/backward_scalar_test.cc
   backprop/optimize_test.cc
   gemma/ops_test.cc
-  gemma/gemma_test.cc
+  evals/gemma_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
@@ -145,5 +145,5 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
-add_executable(compress_weights gemma/compress_weights.cc)
+add_executable(compress_weights util/compress_weights.cc)
 target_link_libraries(compress_weights libgemma hwy hwy_contrib)

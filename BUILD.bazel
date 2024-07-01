@@ -128,8 +128,8 @@ cc_library(
 
 cc_library(
     name = "cross_entropy",
-    srcs = ["gemma/cross_entropy.cc"],
-    hdrs = ["gemma/cross_entropy.h"],
+    srcs = ["evals/cross_entropy.cc"],
+    hdrs = ["evals/cross_entropy.h"],
     deps = [
         ":common",
         ":gemma_lib",
@@ -224,7 +224,7 @@ cc_binary(
 
 cc_binary(
     name = "compress_weights",
-    srcs = ["gemma/compress_weights.cc"],
+    srcs = ["util/compress_weights.cc"],
     deps = [
         ":args",
         ":common",
@@ -242,7 +242,7 @@ cc_binary(
 
 cc_binary(
     name = "single_benchmark",
-    srcs = ["gemma/benchmark.cc"],
+    srcs = ["evals/benchmark.cc"],
     deps = [
         ":app",
         ":args",
@@ -260,7 +260,7 @@ cc_binary(
 
 cc_binary(
     name = "benchmarks",
-    srcs = ["gemma/benchmarks.cc"],
+    srcs = ["evals/benchmarks.cc"],
     deps = [
         ":benchmark_helper",
         "@benchmark//:benchmark",
@@ -270,7 +270,7 @@ cc_binary(
 cc_binary(
     name = "debug_prompt",
     srcs = [
-        "debug_prompt.cc",
+        "evals/debug_prompt.cc",
     ],
     deps = [
         ":app",
@@ -286,7 +286,7 @@ cc_binary(
 
 cc_binary(
     name = "gemma_mmlu",
-    srcs = ["gemma/run_mmlu.cc"],
+    srcs = ["evals/run_mmlu.cc"],
     deps = [
         ":app",
         ":args",
