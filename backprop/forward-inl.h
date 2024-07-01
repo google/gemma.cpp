@@ -266,8 +266,11 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
         forward.logits.data() + pos * kVocabSize, pool);
   }
 
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    LogitsSoftCap(30.0f, forward.logits.data() + pos * kVocabSize, kVocabSize);
+  if constexpr (TConfig::kFinalCap > 0.0f) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      LogitsSoftCap(TConfig::kFinalCap,
+                    forward.logits.data() + pos * kVocabSize, kVocabSize);
+    }
   }
 
   hwy::CopyBytes(forward.logits.data(), forward.probs.data(),

@@ -25,10 +25,12 @@
 #include <vector>
 
 #include "backprop/backward_scalar.h"
+#include "backprop/common_scalar.h"
 #include "backprop/forward_scalar.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
 #include "gemma/activations.h"
+#include "gemma/configs.h"
 #include "gemma/weights_raw.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -180,7 +182,7 @@ void TestRMSNormVJP() {
   }
 }
 
-struct TestConfig {
+struct TestConfig : public ConfigCapNoSSM {
   static constexpr int kSeqLen = 24;
   static constexpr int kVocabSize = 16;
   static constexpr int kModelDim = 32;
@@ -194,12 +196,7 @@ struct TestConfig {
   static constexpr bool kPostNormScale = false;
 
   static constexpr int kKVHeads = 1;
-  static constexpr int kConv1dWidth = 0;
-  static constexpr bool kFFBiases = false;
-  static constexpr bool kSoftmaxAttnOutputBiases = false;
   static constexpr int kGemmaLayers = kLayers;
-  static constexpr int kGriffinLayers = 0;
-  static constexpr int kNumTensorScales = 0;
 };
 
 void TestEndToEnd() {

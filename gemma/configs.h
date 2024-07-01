@@ -99,8 +99,19 @@ struct ConfigNoSSM {
   static constexpr int kNumTensorScales = 0;
 };
 
+struct ConfigNoCapNoSSM : ConfigNoSSM {
+  static constexpr float kAttCap = 0.0f;
+  static constexpr float kFinalCap = 0.0f;
+};
+
+// For Gemma2 with SoftCap
+struct ConfigCapNoSSM : ConfigNoSSM {
+  static constexpr float kAttCap = 50.0f;
+  static constexpr float kFinalCap = 30.0f;
+};
+
 template <typename TWeight>
-struct ConfigGemma27B : public ConfigNoSSM {
+struct ConfigGemma27B : public ConfigCapNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
@@ -120,7 +131,7 @@ struct ConfigGemma27B : public ConfigNoSSM {
 };
 
 template <typename TWeight>
-struct ConfigGemma9B : public ConfigNoSSM {
+struct ConfigGemma9B : public ConfigCapNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
@@ -140,7 +151,7 @@ struct ConfigGemma9B : public ConfigNoSSM {
 };
 
 template <typename TWeight>
-struct ConfigGemma7B : public ConfigNoSSM {
+struct ConfigGemma7B : public ConfigNoCapNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
@@ -160,7 +171,7 @@ struct ConfigGemma7B : public ConfigNoSSM {
 };
 
 template <typename TWeight>
-struct ConfigGemma2B : public ConfigNoSSM {
+struct ConfigGemma2B : public ConfigNoCapNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
@@ -197,6 +208,10 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
   static constexpr bool kPostNormScale = false;
+
+  static constexpr float kAttCap = 0.0f;
+  // This is required for optimize_test to pass.
+  static constexpr float kFinalCap = 30.0f;
 };
 
 template <typename TWeight>
@@ -250,6 +265,10 @@ struct ConfigGriffin2B {
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
   static constexpr bool kPostNormScale = false;
+
+  // No SoftCap.
+  static constexpr float kAttCap = 0.0f;
+  static constexpr float kFinalCap = 0.0f;
 
   // SSM config.
   static constexpr int kConv1dWidth = 4;

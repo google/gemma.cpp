@@ -19,6 +19,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <cmath>
 #include <complex>
 
 #include "gtest/gtest.h"

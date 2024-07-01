@@ -361,6 +361,8 @@ cc_test(
     ],
     deps = [
         ":backprop_scalar",
+        ":common",
+        ":gemma_lib",
         ":prompt",
         ":sampler",
         ":weights_raw",
@@ -382,6 +384,7 @@ cc_test(
     deps = [
         ":backprop",
         ":backprop_scalar",
+        ":common",
         ":gemma_lib",
         ":ops",
         ":sampler",

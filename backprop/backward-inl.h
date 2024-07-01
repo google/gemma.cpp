@@ -307,9 +307,9 @@ void LayerVJP(const LayerT<TConfig>& weights,
   }
 }
 
-static HWY_NOINLINE void SoftcapVJP(const float* HWY_RESTRICT forward,
+static HWY_NOINLINE void SoftcapVJP(const float cap,
+                                    const float* HWY_RESTRICT forward,
                                     float* HWY_RESTRICT backward,
-                                    const float cap,
                                     const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -318,25 +318,11 @@ static HWY_NOINLINE void SoftcapVJP(const float* HWY_RESTRICT forward,
   const auto one = hn::Set(d, 1.0f);
   const auto vcap = hn::Set(d, cap);
   const auto vinv_cap = hn::Div(hn::Set(d, 1.0f), vcap);
-
-  // TODO(szabadka): Investigate what to do when the argmax is not unique.
-  // TODO(szabadka): Use IndexOfMax from hwy when it is available.
-  size_t imax = std::max_element(forward, forward + size) - forward;
-
-  hn::Transform1(
-      d, backward, size, forward,
-      [&](const auto d, const auto v, const auto y) HWY_ATTR {
-        const auto scaled = hn::Mul(vinv_cap, y);
-        return hn::Mul(v, hn::Sub(one, hn::Mul(scaled, scaled)));
-      });
-
-  backward[imax] = 0;
-  auto sum = hn::Zero(d);
-  Foreach(d, backward, size, sum,
-          [&sum](const auto d, const auto value) HWY_ATTR {
-            sum = hn::Add(sum, value);
-          });
-  backward[imax] = -hn::ReduceSum(d, sum);
+  hn::Transform1(d, backward, size, forward,
+                 [&](const auto d, const auto v, const auto y) HWY_ATTR {
+                   const auto scaled = hn::Mul(vinv_cap, y);  // = tanh
+                   return hn::Mul(v, hn::Sub(one, hn::Mul(scaled, scaled)));
+                 });
 }
 
 static HWY_NOINLINE void CrossEntropyLossGrad(
@@ -385,9 +371,11 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                kVocabSize);
   }
 
-  for (size_t pos = 0; pos < num_tokens; ++pos) {
-    SoftcapVJP(forward.logits.data() + pos * kVocabSize,
-               backward.logits.data() + pos * kVocabSize, 30.0f, kVocabSize);
+  if constexpr (TConfig::kFinalCap > 0.0f) {
+    for (size_t pos = 0; pos < num_tokens; ++pos) {
+      SoftcapVJP(TConfig::kFinalCap, forward.logits.data() + pos * kVocabSize,
+                 backward.logits.data() + pos * kVocabSize, kVocabSize);
+    }
   }
 
   MatMulVJP<kModelDim, kVocabSize>(

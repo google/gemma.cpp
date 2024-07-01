@@ -484,7 +484,11 @@ HWY_NOINLINE void Attention(
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2 % kSeqLen] = score;
     }
-    Softmax(head_att, std::min(pos + 1, kSeqLen));
+    const size_t head_att_len = std::min(pos + 1, kSeqLen);
+    if constexpr (TConfig::kAttCap > 0.0f) {
+      LogitsSoftCap(TConfig::kAttCap, head_att, head_att_len);
+    }
+    Softmax(head_att, head_att_len);
 
     // Weighted summation
     float* HWY_RESTRICT att_out = activations.att_out.data() + head * kQKVDim +
@@ -979,7 +983,10 @@ void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
         MatVec<kVocabSize, TConfig::kModelDim>(
             weights.embedder_input_embedding, 0, x, activations.even_odd.data(),
             logits, pool);
-        LogitsSoftCap(30.0f, logits, kVocabSize);
+        if constexpr (TConfig::kFinalCap > 0.0f) {
+          LogitsSoftCap(TConfig::kFinalCap, activations.logits.data(),
+                        kVocabSize);
+        }
         // Barrier: must have all logits so we can subtract max.
         Softmax(logits, kVocabSize);
         token = sample_token(logits, kVocabSize);

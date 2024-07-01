@@ -16,16 +16,23 @@
 #include "backprop/backward_scalar.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>  // memset
 
 #include <array>
 #include <complex>
+#include <limits>
 #include <random>
+#include <vector>
 
 #include "gtest/gtest.h"
+#include "backprop/common_scalar.h"
 #include "backprop/forward_scalar.h"
+#include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
+#include "gemma/activations.h"
+#include "gemma/configs.h"
 #include "gemma/weights_raw.h"
 
 namespace gcpp {
@@ -202,18 +209,19 @@ TEST(BackPropTest, SoftcapVJP) {
   std::array<TC, N> c_x;
   std::array<TC, N> c_y;
 
+  constexpr float kCap = 30.0f;
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
       memcpy(c_y.data(), c_x.data(), N * sizeof(c_x[0]));
-      Softcap(c_y.data(), N);
+      Softcap(kCap, c_y.data(), N);
       return DotT(dy.data(), c_y.data(), N);
     };
-    Softcap(x.data(), N);
+    Softcap(kCap, x.data(), N);
     memcpy(dx.data(), dy.data(), N * sizeof(dx[0]));
-    SoftcapVJPT(x.data(), dx.data(), N);
+    SoftcapVJPT(kCap, x.data(), dx.data(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
   }
 }
@@ -230,10 +238,11 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   Prompt prompt;
   prompt.tokens = { 0, 1, 2, 3, 0, 3, 2, 1, 0 };
 
+  const float kCap = 30.0f;
   for (int iter = 0; iter < 10; ++iter) {
     prompt.context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
-    Softcap(x.data(), V * K);
+    Softcap(kCap, x.data(), V * K);
     Softmax(x.data(), V, K);
     CrossEntropyLossGrad(x.data(), dx.data(), prompt, V);
     Complexify(x, c_x);
@@ -368,7 +377,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   }
 }
 
-struct TestConfig {
+struct TestConfig : ConfigCapNoSSM {
   static constexpr int kSeqLen = 18;
   static constexpr int kVocabSize = 12;
   static constexpr int kModelDim = 32;
@@ -382,12 +391,7 @@ struct TestConfig {
   static constexpr bool kPostNormScale = false;
 
   static constexpr int kKVHeads = 1;
-  static constexpr int kConv1dWidth = 0;
-  static constexpr bool kFFBiases = false;
-  static constexpr bool kSoftmaxAttnOutputBiases = false;
   static constexpr int kGemmaLayers = kLayers;
-  static constexpr int kGriffinLayers = 0;
-  static constexpr int kNumTensorScales = 0;
 };
 
 TEST(BackPropTest, LayerVJP) {

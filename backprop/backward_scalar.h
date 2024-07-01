@@ -274,20 +274,12 @@ void LayerVJP(const Layer<T, TConfig>& weights,
            num_tokens * kModelDim);
 }
 
-template<typename T>
-void SoftcapVJPT(const T* y, T* dy, size_t N) {
-  size_t imax = std::max_element(y, y + N) - y;
-  T cap = 30.0;
-  T inv_cap = T(1.0) / cap;
+template <typename T>
+void SoftcapVJPT(float cap, const T* y, T* dy, size_t N) {
+  const T inv_cap = T{1.0} / static_cast<T>(cap);
   for (size_t i = 0; i < N; ++i) {
-    T scaled = y[i] * inv_cap;
-    dy[i] *= (T(1.0) - scaled * scaled);
-  }
-  dy[imax] = T(0.0);
-  for (size_t i = 0; i < N; ++i) {
-    if (i != imax) {
-      dy[imax] -= dy[i];
-    }
+    T scaled = y[i] * inv_cap;  // tanh
+    dy[i] *= (T{1.0} - scaled * scaled);
   }
 }
 
@@ -324,10 +316,11 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   SoftmaxVJPT(forward.probs.data(), backward.logits.data(),
               kVocabSize, num_tokens);
 
-  for (size_t i = 0; i < num_tokens; ++i) {
-    SoftcapVJPT(forward.logits.data() + i * kVocabSize,
-                backward.logits.data() + i * kVocabSize,
-                kVocabSize);
+  if constexpr (TConfig::kFinalCap > 0.0f) {
+    for (size_t i = 0; i < num_tokens; ++i) {
+      SoftcapVJPT(TConfig::kFinalCap, forward.logits.data() + i * kVocabSize,
+                  backward.logits.data() + i * kVocabSize, kVocabSize);
+    }
   }
 
   MatMulVJPT(weights.embedder_input_embedding.data(),
