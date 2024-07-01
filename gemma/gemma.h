@@ -35,7 +35,6 @@ constexpr size_t kDecodeBatchSize = 1;
 constexpr size_t kBatchedQueryBatchSize = 16;
 constexpr size_t kMinAdjustedPrefillBatchSize =
     HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
-constexpr bool kSystemPrompt = false;
 
 struct KVCache {
   hwy::AlignedFreeUniquePtr<float[]>
@@ -75,7 +74,7 @@ class GemmaTokenizer {
 // probability is 0.0f. StreamFunc should return false to stop generation and
 // true to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
-// BatchStreamFunc is called with (query_idx, pos, token, probability). 
+// BatchStreamFunc is called with (query_idx, pos, token, probability).
 // For prompt tokens,
 // probability is 0.0f. StreamFunc should return false to stop generation and
 // true to continue generation.
