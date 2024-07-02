@@ -133,8 +133,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 
   static inline size_t GetSupportedThreadCount() {
-    return std::clamp(hwy::ThreadPool::MaxThreads(), size_t{1},
-                      std::min(kMaxThreads, size_t{18}));
+    return std::min(hwy::ThreadPool::MaxThreads(), kMaxThreads);
   }
 
   Path log;  // output

@@ -806,15 +806,15 @@ Activations<TConfig, kBatchSize>& GetActivations(
 
 }  // namespace
 
-// Placeholder for internal test3, do not remove
-
-bool StreamToken(size_t query_idx, size_t pos, int token, float weight,
+bool StreamToken(size_t query_idx, size_t pos, int token, float prob,
                  const RuntimeConfig& runtime_config) {
   if (runtime_config.batch_stream_token) {
-    return runtime_config.batch_stream_token(query_idx, pos, token, weight);
+    return runtime_config.batch_stream_token(query_idx, pos, token, prob);
   }
-  return runtime_config.stream_token(token, weight);
+  return runtime_config.stream_token(token, prob);
 }
+
+// Placeholder for internal test3, do not remove
 
 template <class TConfig, size_t kQueryBatchSize>
 void GenerateT(const ByteStorageT& weights_u8, const ByteStorageT& prefill_u8,
