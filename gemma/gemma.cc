@@ -377,7 +377,8 @@ HWY_NOINLINE void Attention(
     MulByConst(kQueryScale, q, kQKVDim);
 
     // Compute Q dot K scores
-    const size_t start_pos = pos - std::min(kSeqLen - 1, pos);
+    const size_t start_pos =
+        pos - std::min(TConfig::kAttentionWindowSizes[layer] - 1, pos);
     for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
       const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
       const size_t kv_offset =
