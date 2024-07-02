@@ -22,11 +22,11 @@
 
 #include <stddef.h>
 
-#include <algorithm>
 #include <cmath>
+#include <vector>
 
+#include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"

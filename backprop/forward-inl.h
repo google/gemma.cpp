@@ -23,7 +23,7 @@
 #include <cmath>
 #include <vector>
 
-#include "gemma/activations.h"
+#include "backprop/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "hwy/base.h"

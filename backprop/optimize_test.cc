@@ -20,12 +20,12 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "backprop/activations.h"
 #include "backprop/backward.h"
 #include "backprop/forward.h"
 #include "backprop/optimizer.h"
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"

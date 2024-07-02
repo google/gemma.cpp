@@ -95,12 +95,34 @@ cc_library(
 )
 
 cc_library(
+    name = "tokenizer",
+    srcs = ["gemma/tokenizer.cc"],
+    hdrs = ["gemma/tokenizer.h"],
+    deps = [
+        "//compression:io",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",  # timer
+        "@hwy//:profiler",
+        "@com_google_sentencepiece//:sentencepiece_processor",
+    ],
+)
+
+cc_library(
+    name = "kv_cache",
+    srcs = ["gemma/kv_cache.cc"],
+    hdrs = ["gemma/kv_cache.h"],
+    deps = [
+        ":common",
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
     ],
     hdrs = [
-        "gemma/activations.h",
         "gemma/gemma.h",
     ],
     exec_properties = {
@@ -114,6 +136,8 @@ cc_library(
     deps = [
         ":common",
         ":ops",
+        ":tokenizer",
+        ":kv_cache",
         ":weights",
         "//compression:compress",
         "//compression:io",
@@ -122,7 +146,6 @@ cc_library(
         "@hwy//:nanobenchmark",  # timer
         "@hwy//:profiler",
         "@hwy//:thread_pool",
-        "@com_google_sentencepiece//:sentencepiece_processor",
     ],
 )
 
@@ -321,6 +344,7 @@ cc_library(
         "backprop/forward.cc",
     ],
     hdrs = [
+        "backprop/activations.h",
         "backprop/backward.h",
         "backprop/backward-inl.h",
         "backprop/forward.h",
@@ -340,6 +364,7 @@ cc_library(
 cc_library(
     name = "backprop_scalar",
     hdrs = [
+        "backprop/activations.h",
         "backprop/backward_scalar.h",
         "backprop/common_scalar.h",
         "backprop/forward_scalar.h",

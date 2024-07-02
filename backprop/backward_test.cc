@@ -24,12 +24,12 @@
 #include <random>
 #include <vector>
 
+#include "backprop/activations.h"
 #include "backprop/backward_scalar.h"
 #include "backprop/common_scalar.h"
 #include "backprop/forward_scalar.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "gemma/weights_raw.h"
 #include "hwy/base.h"

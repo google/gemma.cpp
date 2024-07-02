@@ -49,6 +49,7 @@ set(SOURCES
   compression/sfp.h
   compression/sfp-inl.h
   compression/test_util.h
+  backprop/activations.h
   backprop/backward.cc
   backprop/backward.h
   backprop/backward-inl.h
@@ -62,18 +63,21 @@ set(SOURCES
   backprop/optimizer.h
   evals/cross_entropy.cc
   evals/cross_entropy.h
-  gemma/configs.h
-  gemma/activations.h
   gemma/benchmark_helper.cc
   gemma/benchmark_helper.h
   gemma/common.cc
   gemma/common.h
+  gemma/configs.h
   gemma/gemma.cc
   gemma/gemma.h
+  gemma/kv_cache.cc
+  gemma/kv_cache.h
   gemma/ops.h
+  gemma/tokenizer.cc
+  gemma/tokenizer.h
+  gemma/weights_raw.h
   gemma/weights.cc
   gemma/weights.h
-  gemma/weights_raw.h
   util/app.h
   util/args.h
   )

@@ -37,7 +37,6 @@
 
 #include <algorithm>
 #include <array>
-#include <memory>
 #include <string>
 #include <utility>  // std::move
 #include <vector>
@@ -54,13 +53,8 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
-// copybara:import_next_line:sentencepiece
-#include "src/sentencepiece_processor.h"
 
 namespace gcpp {
-
-// Set this to true to debug tokenizer tokens.
-constexpr bool kShowTokenization = false;
 
 // Must be aligned.
 template <class TConfig, size_t kBatchSize>
@@ -115,114 +109,22 @@ struct Activations {
       griffin_multiplier;
 };
 
-namespace {
-
-template <class TConfig>
-struct CreateKVCache {
-  KVCache operator()() const {
-    KVCache kv_cache = {};
-
-    const size_t size_cache_pos = CachePosSize<TConfig>()();
-    if (size_cache_pos != 0) {
-      const size_t seq_len =
-          (TConfig::kSeqLen + kPrefillBatchSize);
-      kv_cache.kv_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
-    }
-
-    // TODO(patrickms): Add query batching support for Griffin.
-    if (TConfig::kGriffinLayers) {
-      constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
-      const size_t conv1d_cache_size =
-          TConfig::kGriffinLayers * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
-          TConfig::kModelDim;
-      if (conv1d_cache_size != 0) {
-        kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
-        hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
-                       conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
-      }
-
-      const size_t rglru_cache_size =
-          TConfig::kGriffinLayers * TConfig::kModelDim;
-      if (rglru_cache_size != 0) {
-        kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
-        hwy::ZeroBytes(kv_cache.rglru_cache.get(),
-                       rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
-      }
-    }  // kGriffinLayers
-
-    return kv_cache;
+template <typename TConfig>
+struct AllocateState {
+  void operator()(ByteStorageT& prefill, ByteStorageT& decode) const {
+    // When batching queries, the prefill batch size is reduced by a factor
+    // of kBatchedQueryBatchSize
+    prefill =
+        AllocateSizeof<Activations<TConfig, kMinAdjustedPrefillBatchSize *
+                                                kBatchedQueryBatchSize>>();
+    decode = AllocateSizeof<
+        Activations<TConfig, kDecodeBatchSize * kBatchedQueryBatchSize>>();
   }
 };
 
-}  // namespace
-
-KVCache KVCache::Create(Model model_type) {
-  // TWeight=float is a placeholder and unused because CreateKVCache does not
-  // use TConfig::Weight.
-  return CallForModel</*TWeight=*/float, CreateKVCache>(model_type);
-}
-
-class GemmaTokenizer::Impl {
- public:
-  Impl() = default;
-  explicit Impl(const Path& tokenizer_path) {
-    PROFILER_ZONE("Startup.tokenizer");
-    spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
-    if (!spp_->Load(tokenizer_path.path).ok()) {
-      HWY_ABORT("Failed to load the tokenizer file.");
-    }
-  }
-
-  bool Encode(const std::string& input,
-              std::vector<std::string>* pieces) const {
-    return spp_ && spp_->Encode(input, pieces).ok();
-  }
-
-  bool Encode(const std::string& input, std::vector<int>* ids) const {
-    if constexpr (kShowTokenization) {
-      bool is_ok = spp_ && spp_->Encode(input, ids).ok();
-      for (int i = 0; i < static_cast<int>(ids->size()); i++) {
-        fprintf(stderr, "%3d: %d\n", i, (*ids)[i]);
-      }
-      return is_ok;
-    } else {
-      return spp_ && spp_->Encode(input, ids).ok();
-    }
-  }
-
-  // Given a sequence of ids, decodes it into a detokenized output.
-  bool Decode(const std::vector<int>& ids, std::string* detokenized) const {
-    return spp_ && spp_->Decode(ids, detokenized).ok();
-  }
-
- private:
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> spp_;
-};
-
-GemmaTokenizer::GemmaTokenizer(const Path& tokenizer_path) {
-  impl_ = std::make_unique<Impl>(tokenizer_path);
-}
-
-// Default suffices, but they must be defined after GemmaTokenizer::Impl.
-GemmaTokenizer::GemmaTokenizer() = default;
-GemmaTokenizer::~GemmaTokenizer() = default;
-GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
-GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;
-
-bool GemmaTokenizer::Encode(const std::string& input,
-                            std::vector<std::string>* pieces) const {
-  return impl_->Encode(input, pieces);
-}
-
-bool GemmaTokenizer::Encode(const std::string& input,
-                            std::vector<int>* ids) const {
-  return impl_->Encode(input, ids);
-}
-
-// Given a sequence of ids, decodes it into a detokenized output.
-bool GemmaTokenizer::Decode(const std::vector<int>& ids,
-                            std::string* detokenized) const {
-  return impl_->Decode(ids, detokenized);
+template <class TConfig, size_t kBatchSize>
+Activations<TConfig, kBatchSize>& GetActivations(const ByteStorageT& state_u8) {
+  return *reinterpret_cast<Activations<TConfig, kBatchSize>*>(state_u8.get());
 }
 
 // Placeholder for internal test2, do not remove
@@ -797,15 +699,9 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
   HWY_ASSERT(prompt_size > 0);
 }
 
-template <class TConfig, size_t kBatchSize>
-Activations<TConfig, kBatchSize>& GetActivations(
-    const ByteStorageT& state_u8) {
-  return *reinterpret_cast<Activations<TConfig, kBatchSize>*>(
-      state_u8.get());
-}
-
 }  // namespace
 
+// TODO(janwas): move into RuntimeConfig
 bool StreamToken(size_t query_idx, size_t pos, int token, float prob,
                  const RuntimeConfig& runtime_config) {
   if (runtime_config.batch_stream_token) {
@@ -1069,22 +965,6 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 
-namespace {
-template <typename TConfig>
-struct AllocateState {
-  void operator()(ByteStorageT& prefill, ByteStorageT& decode) const {
-    // When batching queries, the prefill batch size is reduced by a factor
-    // of kBatchedQueryBatchSize
-    prefill = AllocateSizeof<
-        Activations<TConfig,
-                    kMinAdjustedPrefillBatchSize * kBatchedQueryBatchSize>>();
-    decode = AllocateSizeof<
-        Activations<TConfig, kDecodeBatchSize * kBatchedQueryBatchSize>>();
-  }
-};
-
-}  // namespace
-
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, hwy::ThreadPool& pool)
     : pool_(pool), tokenizer_(tokenizer_path), info_(info) {
@@ -1136,6 +1016,7 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
+// TODO(janwas): move to common.h.
 void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
 
   // Instruction-tuned models are trained to expect control tokens.

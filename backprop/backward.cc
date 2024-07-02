@@ -15,8 +15,8 @@
 
 #include "backprop/backward.h"
 
+#include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 

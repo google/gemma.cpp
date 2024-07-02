@@ -17,58 +17,21 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 
 #include <functional>
-#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
+// IWYU pragma: begin_exports
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
+#include "gemma/kv_cache.h"
+#include "gemma/tokenizer.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
+// IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
-
-constexpr size_t kPrefillBatchSize = 16;
-constexpr size_t kDecodeBatchSize = 1;
-constexpr size_t kBatchedQueryBatchSize = 16;
-constexpr size_t kMinAdjustedPrefillBatchSize =
-    HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
-
-struct KVCache {
-  hwy::AlignedFreeUniquePtr<float[]>
-      kv_cache;  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim * 2
-  hwy::AlignedFreeUniquePtr<float[]>
-      conv1d_cache;  // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
-  hwy::AlignedFreeUniquePtr<float[]>
-      rglru_cache;  // kModelDim * kGriffinLayers
-
-  static KVCache Create(Model type);
-};
-
-// The tokenizer's end of sentence and beginning of sentence token ids.
-constexpr int EOS_ID = 1;
-constexpr int BOS_ID = 2;
-
-class GemmaTokenizer {
- public:
-  GemmaTokenizer();
-  explicit GemmaTokenizer(const Path& tokenizer_path);
-
-  // must come after definition of Impl
-  ~GemmaTokenizer();
-  GemmaTokenizer(GemmaTokenizer&& other);
-  GemmaTokenizer& operator=(GemmaTokenizer&& other);
-
-  bool Encode(const std::string& input, std::vector<std::string>* pieces) const;
-  bool Encode(const std::string& input, std::vector<int>* ids) const;
-  bool Decode(const std::vector<int>& ids, std::string* detokenized) const;
-
- private:
-  class Impl;
-  std::unique_ptr<Impl> impl_;
-};
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f. StreamFunc should return false to stop generation and
@@ -92,13 +55,6 @@ using SampleFunc = std::function<int(const float*, size_t)>;
 // - size of the data array
 using LayersOutputFunc =
     std::function<void(int, const std::string&, const float*, size_t)>;
-
-// TODO(janwas): move into common.h, merge with parser/ToString.
-struct ModelInfo {
-  Model model;
-  ModelTraining training;
-  Type weight;
-};
 
 struct RuntimeConfig {
   size_t max_tokens;

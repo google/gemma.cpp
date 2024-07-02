@@ -17,6 +17,7 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_
 
 #include <math.h>  // sqrtf
+#include <stddef.h>
 #include <stdint.h>
 
 #include <string>
@@ -35,6 +36,12 @@ ByteStorageT AllocateSizeof() {
   return hwy::AllocateAligned<uint8_t>(sizeof(T));
 }
 
+constexpr size_t kPrefillBatchSize = 16;
+constexpr size_t kDecodeBatchSize = 1;
+constexpr size_t kBatchedQueryBatchSize = 16;
+constexpr size_t kMinAdjustedPrefillBatchSize =
+    HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
+
 // Model variants: see configs.h for details.
 enum class Model {
   GEMMA_2B,
@@ -50,6 +57,13 @@ enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
 // Tensor types for loading weights.
 enum class Type { kF32, kBF16, kSFP };
+
+// TODO(janwas): merge with parser/ToString.
+struct ModelInfo {
+  Model model;
+  ModelTraining training;
+  Type weight;
+};
 
 // Returns the return value of FuncT<Config*<TWeight>>().operator()(args), where
 // Config* is selected via `model`. Typically called by CallForModelAndWeight,
