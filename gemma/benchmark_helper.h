@@ -24,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "util/app.h"
 #include "hwy/base.h"
@@ -83,12 +82,10 @@ class GemmaEnv {
 
   // Returns nullptr if the model failed to load.
   Gemma* GetModel() const { return model_.get(); }
-  Model ModelType() const { return loader_.ModelType(); }
-  ModelTraining ModelTrainingType() const {
-    return loader_.ModelTrainingType();
-  }
+
   int Verbosity() const { return app_.verbosity; }
   RuntimeConfig& MutableConfig() { return runtime_config_; }
+  const ModelInfo& Info() const { return loader_.Info(); }
   InferenceArgs& MutableInferenceArgs() { return inference_args_; }
   std::mt19937& MutableGen() { return gen_; }
   KVCache& MutableKVCache() { return *kv_caches_[0]; }

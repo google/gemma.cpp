@@ -39,7 +39,7 @@
 #include <array>
 #include <memory>
 #include <string>
-#include <utility>
+#include <utility>  // std::move
 #include <vector>
 
 #include "compression/io.h"  // Path
@@ -1085,32 +1085,26 @@ struct AllocateState {
 
 }  // namespace
 
-Gemma::Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-             Type weight_type, hwy::ThreadPool& pool)
-    : pool_(pool),
-      tokenizer_(tokenizer_path),
-      model_type_(model_type),
-      weight_type_(weight_type) {
-  weights_u8_ = LoadCompressedWeights(weights, model_type, weight_type, pool);
-  CallForModelAndWeight<AllocateState>(model_type, weight_type, prefill_u8_,
+Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
+             const ModelInfo& info, hwy::ThreadPool& pool)
+    : pool_(pool), tokenizer_(tokenizer_path), info_(info) {
+  weights_u8_ = LoadCompressedWeights(weights, info.model, info.weight, pool);
+  CallForModelAndWeight<AllocateState>(info.model, info.weight, prefill_u8_,
                                        decode_u8_);
 }
 
-Gemma::Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
+Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
              hwy::ThreadPool& pool)
-    : pool_(pool),
-      tokenizer_(std::move(tokenizer)),
-      model_type_(model_type),
-      weight_type_(weight_type) {
-  HWY_ASSERT(weight_type == Type::kF32);
-  weights_u8_ = CallForModel<float, AllocateCompressedWeights>(
-      model_type, pool);
-  CallForModelAndWeight<AllocateState>(model_type, weight_type, prefill_u8_,
+    : pool_(pool), tokenizer_(std::move(tokenizer)), info_(info) {
+  HWY_ASSERT(info.weight == Type::kF32);
+  weights_u8_ =
+      CallForModel<float, AllocateCompressedWeights>(info.model, pool);
+  CallForModelAndWeight<AllocateState>(info.model, info.weight, prefill_u8_,
                                        decode_u8_);
 }
 
 Gemma::~Gemma() {
-  CallForModelAndWeight<DeleteCompressedWeights>(model_type_, weight_type_,
+  CallForModelAndWeight<DeleteCompressedWeights>(info_.model, info_.weight,
                                                  weights_u8_);
 }
 
@@ -1120,7 +1114,7 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
   GEMMA_EXPORT_AND_DISPATCH(
-      model_type_, weight_type_, GenerateOneQueryT,
+      info_.model, info_.weight, GenerateOneQueryT,
       (weights_u8_, prefill_u8_, decode_u8_, runtime_config, prompt, start_pos,
        kv_cache, pool_, timing_info));
 
@@ -1135,24 +1129,29 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
   GEMMA_EXPORT_AND_DISPATCH(
-      model_type_, weight_type_, GenerateBatchT,
+      info_.model, info_.weight, GenerateBatchT,
       (weights_u8_, prefill_u8_, decode_u8_, runtime_config, prompts, start_pos,
        kv_caches, pool_, timing_info));
 
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
 
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelTraining training, size_t pos,
-                                 std::string& prompt) {
+void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
+
   // Instruction-tuned models are trained to expect control tokens.
-  if (training == ModelTraining::GEMMA_IT) {
+  if (info.training == ModelTraining::GEMMA_IT) {
     // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
     const std::string start = (pos == 0)
                                   ? "<start_of_turn>user\n"
                                   : "<end_of_turn>\n<start_of_turn>user\n";
     prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
   }
+}
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const ModelInfo& info, size_t pos,
+                                 std::string& prompt) {
+  Wrap(info, pos, prompt);
 
   std::vector<int> tokens;
   HWY_ASSERT(tokenizer.Encode(prompt, &tokens));

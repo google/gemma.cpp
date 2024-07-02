@@ -53,10 +53,9 @@ static constexpr std::string_view kAsciiArtBanner = R""(
 )"";
 
 // The main Read-Eval-Print Loop.
-void ReplGemma(gcpp::Gemma& model, ModelTraining training,
-               gcpp::KVCache& kv_cache, hwy::ThreadPool& pool,
+void ReplGemma(Gemma& model, KVCache& kv_cache, hwy::ThreadPool& pool,
                const InferenceArgs& args, int verbosity,
-               const gcpp::AcceptFunc& accept_token, std::string& eot_line) {
+               const AcceptFunc& accept_token, std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;   // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -73,7 +72,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
     // <= since position is incremented before
     if (current_pos <= prompt_size) {
       std::cerr << "." << std::flush;
-    } else if (token == gcpp::EOS_ID) {
+    } else if (token == EOS_ID) {
       if (!args.multiturn) {
         abs_pos = 0;
         if (args.deterministic) {
@@ -131,8 +130,8 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
       continue;
     }
 
-    const std::vector<int> prompt =
-        WrapAndTokenize(model.Tokenizer(), training, abs_pos, prompt_string);
+    const std::vector<int> prompt = WrapAndTokenize(
+        model.Tokenizer(), model.Info(), abs_pos, prompt_string);
     prompt_size = prompt.size();
     std::cerr << "\n"
               << "[ Reading prompt ] " << std::flush;
@@ -143,7 +142,7 @@ void ReplGemma(gcpp::Gemma& model, ModelTraining training,
     }
 
     TimingInfo timing_info;
-    gcpp::RuntimeConfig runtime_config = {
+    RuntimeConfig runtime_config = {
         .max_tokens = args.max_tokens,
         .max_generated_tokens = args.max_generated_tokens,
         .temperature = args.temperature,
@@ -179,8 +178,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     PinWorkersToCores(pool);
   }
 
-  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
-  KVCache kv_cache = KVCache::Create(loader.ModelType());
+  Gemma model = CreateGemma(loader, pool);
+  KVCache kv_cache = KVCache::Create(model.Info().model);
 
   if (app.verbosity >= 1) {
     const std::string instructions =
@@ -208,8 +207,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(model, loader.ModelTrainingType(), kv_cache, pool, inference,
-            app.verbosity, AcceptFunc(), app.eot_line);
+  ReplGemma(model, kv_cache, pool, inference, app.verbosity, AcceptFunc(),
+            app.eot_line);
 }
 
 }  // namespace gcpp

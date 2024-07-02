@@ -64,7 +64,7 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
       pool_(app_.num_threads) {
   // For many-core, pinning workers to cores helps.
   if (app_.num_threads > 10) {
-    gcpp::PinWorkersToCores(pool_);
+    PinWorkersToCores(pool_);
   }
 
   AbortIfInvalidArgs(inference_args_);
@@ -78,7 +78,7 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
 
     kv_caches_.reserve(16);
     for (int i = 0; i < 16; ++i) {
-      kv_caches_.push_back(new KVCache(KVCache::Create(loader_.ModelType())));
+      kv_caches_.push_back(new KVCache(KVCache::Create(model_->Info().model)));
     }
   }
 
@@ -181,9 +181,8 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
 }
 
 std::pair<std::string, size_t> GemmaEnv::QueryModel(std::string& input) {
-  const std::vector<int> prompt =
-      WrapAndTokenize(model_->Tokenizer(), loader_.ModelTrainingType(),
-                      /*pos=*/0, input);
+  const std::vector<int> prompt = WrapAndTokenize(model_->Tokenizer(), Info(),
+                                                  /*pos=*/0, input);
   return QueryModel(prompt);
 }
 std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
@@ -193,9 +192,8 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
   for (auto& input : inputs) {
     std::string mutable_prompt = input;
     prompts.push_back(std::make_unique<std::vector<int>>(
-        WrapAndTokenize(model_->Tokenizer(),
-                                       loader_.ModelTrainingType(),
-                                       /*pos=*/0, mutable_prompt)));
+        WrapAndTokenize(model_->Tokenizer(), model_->Info(),
+                        /*pos=*/0, mutable_prompt)));
   }
   std::vector<hwy::Span<int>> prompt_vector;
   prompt_vector.reserve(prompts.size());
@@ -234,8 +232,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     time_t now = time(nullptr);
     char* dt = ctime(&now);  // NOLINT
     std::cout << "Date & Time                   : " << dt
-              << "Prefill Token Batch Size      : " << gcpp::kPrefillBatchSize
-              << "\n"
+              << "Prefill Token Batch Size      : " << kPrefillBatchSize << "\n"
               << "Hardware concurrency          : "
               << std::thread::hardware_concurrency() << "\n"
               << "Instruction set               : "
@@ -247,14 +244,13 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     }
     std::cout << "Compiled config               : " << CompiledConfig() << "\n"
               << "Weight Type                   : "
-              << gcpp::StringFromType(loader.WeightType()) << "\n"
+              << StringFromType(loader.Info().weight) << "\n"
               << "EmbedderInput Type            : "
-              << gcpp::TypeName(gcpp::EmbedderInputT()) << "\n";
+              << TypeName(EmbedderInputT()) << "\n";
   }
 }
 
-void ShowHelp(gcpp::LoaderArgs& loader, gcpp::InferenceArgs& inference,
-              gcpp::AppArgs& app) {
+void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   std::cerr
       << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
          "==========================================================\n\n"

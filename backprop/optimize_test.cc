@@ -37,21 +37,24 @@ TEST(OptimizeTest, GradientDescent) {
   hwy::ThreadPool pool(0);
   std::mt19937 gen(42);
 
-  Model model_type = Model::GEMMA_TINY;
-  Type weight_type = Type::kF32;
+  const ModelInfo info = {
+      .model = Model::GEMMA_TINY,
+      .training = ModelTraining::GEMMA_IT,
+      .weight = Type::kF32,
+  };
   ByteStorageT grad = CallForModelAndWeight<AllocateCompressedWeights>(
-      model_type, weight_type, pool);
+      info.model, info.weight, pool);
   ByteStorageT grad_m = CallForModelAndWeight<AllocateCompressedWeights>(
-      model_type, weight_type, pool);
+      info.model, info.weight, pool);
   ByteStorageT grad_v = CallForModelAndWeight<AllocateCompressedWeights>(
-      model_type, weight_type, pool);
+      info.model, info.weight, pool);
   ByteStorageT forward =
-      CallForModelAndWeight<AllocateForwardPass>(model_type, weight_type);
+      CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
   ByteStorageT backward =
-      CallForModelAndWeight<AllocateForwardPass>(model_type, weight_type);
-  KVCache kv_cache = KVCache::Create(model_type);
+      CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
+  KVCache kv_cache = KVCache::Create(info.model);
 
-  Gemma gemma(GemmaTokenizer(), model_type, weight_type, pool);
+  Gemma gemma(GemmaTokenizer(), info, pool);
 
   const auto generate = [&](const std::vector<int>& prompt) {
     std::vector<int> reply;
@@ -85,14 +88,14 @@ TEST(OptimizeTest, GradientDescent) {
     return ok;
   };
 
-  RandInitWeights(model_type, weight_type, gemma.Weights(), pool, gen);
-  CallForModelAndWeight<ZeroInitCompressedWeights>(
-      model_type, weight_type, grad_m, pool);
-  CallForModelAndWeight<ZeroInitCompressedWeights>(
-      model_type, weight_type, grad_v, pool);
+  RandInitWeights(info.model, info.weight, gemma.Weights(), pool, gen);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
+                                                   grad_m, pool);
+  CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
+                                                   grad_v, pool);
 
   printf("Initial weights:\n");
-  LogWeightStats(model_type, weight_type, gemma.Weights());
+  LogWeightStats(info.model, info.weight, gemma.Weights());
 
   constexpr size_t kBatchSize = 8;
   const float alpha = 0.001f;
@@ -107,27 +110,27 @@ TEST(OptimizeTest, GradientDescent) {
   size_t num_ok;
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
-    CallForModelAndWeight<ZeroInitCompressedWeights>(
-        model_type, weight_type, grad, pool);
+    CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
+                                                     grad, pool);
     float total_loss = 0.0f;
     num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
-      total_loss += CrossEntropyLossForwardPass(model_type, prompt,
+      total_loss += CrossEntropyLossForwardPass(info.model, prompt,
                                                 gemma.Weights(), forward, pool);
-      CrossEntropyLossBackwardPass(model_type, prompt, gemma.Weights(), forward,
+      CrossEntropyLossBackwardPass(info.model, prompt, gemma.Weights(), forward,
                                    grad, backward, pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;
 
-    AdamUpdate(model_type, weight_type, grad, alpha, beta1, beta2, epsilon,
+    AdamUpdate(info.model, info.weight, grad, alpha, beta1, beta2, epsilon,
                steps + 1, gemma.Weights(), grad_m, grad_v, pool);
     printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
            steps, total_loss, num_ok, kBatchSize);
     if (steps % 100 == 0) {
       printf("Batch gradient:\n");
-      LogWeightStats(model_type, weight_type, grad);
+      LogWeightStats(info.model, info.weight, grad);
     }
     if (total_loss < 0.5f) {
       break;
@@ -136,7 +139,7 @@ TEST(OptimizeTest, GradientDescent) {
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
-  LogWeightStats(model_type, weight_type, gemma.Weights());
+  LogWeightStats(info.model, info.weight, gemma.Weights());
   EXPECT_LT(steps, 300);
   EXPECT_EQ(num_ok, kBatchSize);
 }

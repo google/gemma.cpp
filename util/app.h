@@ -18,18 +18,12 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
 
-#include <memory>
-
-#include "hwy/contrib/thread_pool/thread_pool.h"
-#if HWY_OS_LINUX
-#include <sched.h>
-#endif  // HWY_OS_LINUX
 #include <stddef.h>
 #include <stdio.h>
 
 #include <algorithm>  // std::clamp
+#include <memory>
 #include <string>
-#include <thread>  // NOLINT>
 #include <vector>
 
 #include "compression/io.h"  // Path
@@ -38,7 +32,12 @@
 #include "gemma/gemma.h"
 #include "util/args.h"
 #include "hwy/base.h"  // HWY_ASSERT
+#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/contrib/thread_pool/topology.h"
+
+#if HWY_OS_LINUX
+#include <sched.h>
+#endif  // HWY_OS_LINUX
 
 namespace gcpp {
 
@@ -168,11 +167,11 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    if (const char* err = ParseModelTypeAndTraining(model_type_str, model_type_,
-                                                    model_training_)) {
+    if (const char* err = ParseModelTypeAndTraining(model_type_str, info_.model,
+                                                    info_.training)) {
       return err;
     }
-    if (const char* err = ParseType(weight_type_str, weight_type_)) {
+    if (const char* err = ParseType(weight_type_str, info_.weight)) {
       return err;
     }
     if (tokenizer.path.empty()) {
@@ -226,26 +225,21 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   }
 
   // Uninitialized before Validate, must call after that.
-  gcpp::Model ModelType() const { return model_type_; }
-  gcpp::ModelTraining ModelTrainingType() const { return model_training_; }
-  gcpp::Type WeightType() const { return weight_type_; }
+  const ModelInfo& Info() const { return info_; }
 
  private:
-  Model model_type_;
-  ModelTraining model_training_;
-  Type weight_type_;
+  ModelInfo info_;
 };
 
 static inline Gemma CreateGemma(const LoaderArgs& loader,
                                 hwy::ThreadPool& pool) {
-  return Gemma(loader.tokenizer, loader.weights, loader.ModelType(),
-               loader.WeightType(), pool);
+  return Gemma(loader.tokenizer, loader.weights, loader.Info(), pool);
 }
 
 static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
                                                    hwy::ThreadPool& pool) {
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
-                                 loader.ModelType(), loader.WeightType(), pool);
+                                 loader.Info(), pool);
 }
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

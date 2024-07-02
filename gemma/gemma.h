@@ -93,6 +93,13 @@ using SampleFunc = std::function<int(const float*, size_t)>;
 using LayersOutputFunc =
     std::function<void(int, const std::string&, const float*, size_t)>;
 
+// TODO(janwas): move into common.h, merge with parser/ToString.
+struct ModelInfo {
+  Model model;
+  ModelTraining training;
+  Type weight;
+};
+
 struct RuntimeConfig {
   size_t max_tokens;
   size_t max_generated_tokens;
@@ -115,15 +122,15 @@ struct TimingInfo {
 
 class Gemma {
  public:
-  Gemma(const Path& tokenizer_path, const Path& weights, Model model_type,
-        Type weight_type, hwy::ThreadPool& pool);
+  Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
+        hwy::ThreadPool& pool);
 
   // Allocates weights, caller is responsible for filling them.
-  Gemma(GemmaTokenizer&& tokenizer, Model model_type, Type weight_type,
+  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
         hwy::ThreadPool& pool);
   ~Gemma();
 
-  Model ModelType() const { return model_type_; }
+  const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
   const ByteStorageT& Prefill() const { return prefill_u8_; }
@@ -147,15 +154,14 @@ class Gemma {
   ByteStorageT weights_u8_;
   ByteStorageT prefill_u8_;
   ByteStorageT decode_u8_;
-  Model model_type_;
-  Type weight_type_;
+  ModelInfo info_;
 };
 
 // Adds BOS token and possibly 'turn' annotations, which depend on `training`
 // and `pos`, the number of tokens decoded so far; returns the corresponding
 // tokens. Asserts that tokenization is successful.
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 ModelTraining training, size_t pos,
+                                 const ModelInfo& info, size_t pos,
                                  std::string& prompt);
 
 // DEPRECATED, call Gemma::Generate directly.
