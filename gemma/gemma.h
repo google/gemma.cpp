@@ -56,6 +56,13 @@ using LayersOutputFunc =
     std::function<void(int, const std::string&, const float*, size_t)>;
 
 struct RuntimeConfig {
+  bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
+    if (batch_stream_token) {
+      return batch_stream_token(query_idx, pos, token, prob);
+    }
+    return stream_token(token, prob);
+  }
+
   size_t max_tokens;
   size_t max_generated_tokens;
   float temperature;

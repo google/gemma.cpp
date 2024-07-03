@@ -22,7 +22,8 @@
 #include <vector>
 
 #include "compression/io.h"  // Path
-#include "hwy/base.h"
+#include "gemma/common.h"    // Wrap
+#include "hwy/base.h"          // HWY_ASSERT
 #include "hwy/profiler.h"
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
@@ -93,6 +94,20 @@ bool GemmaTokenizer::Encode(const std::string& input,
 bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
   return impl_->Decode(ids, detokenized);
+}
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const ModelInfo& info, size_t pos,
+                                 std::string& prompt) {
+  Wrap(info, pos, prompt);
+
+  std::vector<int> tokens;
+  HWY_ASSERT(tokenizer.Encode(prompt, &tokens));
+  // Both pre-trained and instruction-tuned require BOS as first token.
+  if (pos == 0) {
+    tokens.insert(tokens.begin(), BOS_ID);
+  }
+  return tokens;
 }
 
 }  // namespace gcpp

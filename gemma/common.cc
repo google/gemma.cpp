@@ -53,7 +53,8 @@ constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_IT,                           // Gemma Tiny
 };
 
-constexpr size_t kNumModelFlags = std::end(kModelFlags) - std::begin(kModelFlags);
+constexpr size_t kNumModelFlags =
+    std::end(kModelFlags) - std::begin(kModelFlags);
 static_assert(kNumModelFlags ==
               std::end(kModelTypes) - std::begin(kModelTypes));
 static_assert(kNumModelFlags ==
@@ -123,4 +124,15 @@ const char* ParseType(const std::string& type_string, Type& type) {
   return kErrorMessageBuffer;
 }
 
+void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
+
+  // Instruction-tuned models are trained to expect control tokens.
+  if (info.training == ModelTraining::GEMMA_IT) {
+    // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
+    const std::string start = (pos == 0)
+                                  ? "<start_of_turn>user\n"
+                                  : "<end_of_turn>\n<start_of_turn>user\n";
+    prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
+  }
+}
 }  // namespace gcpp

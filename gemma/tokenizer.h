@@ -16,11 +16,14 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_TOKENIZER_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_TOKENIZER_H_
 
+#include <stddef.h>
+
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "compression/io.h"  // Path
+#include "gemma/common.h"    // ModelInfo
 
 namespace gcpp {
 
@@ -46,6 +49,10 @@ class GemmaTokenizer {
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const ModelInfo& info, size_t pos,
+                                 std::string& prompt);
 
 }  // namespace gcpp
 

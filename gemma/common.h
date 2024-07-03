@@ -42,7 +42,8 @@ constexpr size_t kBatchedQueryBatchSize = 16;
 constexpr size_t kMinAdjustedPrefillBatchSize =
     HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
 
-// Model variants: see configs.h for details.
+// Model variants: see configs.h for details. When adding a new one, also
+// update GEMMA_FOREACH* and Call* below, and add instantiations/*.cc.
 enum class Model {
   GEMMA_2B,
   GEMMA_7B,
@@ -55,15 +56,28 @@ enum class Model {
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class ModelTraining { GEMMA_IT, GEMMA_PT };
 
-// Tensor types for loading weights.
+// Tensor types for loading weights. When adding a new one, also
+// update GEMMA_FOREACH* and Call* below, and add instantiations/*.cc.
 enum class Type { kF32, kBF16, kSFP };
 
-// TODO(janwas): merge with parser/ToString.
+// TODO(janwas): merge with functions below.
 struct ModelInfo {
   Model model;
   ModelTraining training;
   Type weight;
 };
+
+// Returns error string or nullptr if OK.
+// Thread-hostile.
+const char* ParseModelTypeAndTraining(const std::string& model_flag,
+                                      Model& model, ModelTraining& training);
+const char* ParseType(const std::string& type_string, Type& type);
+
+// Inverse of ParseModelTypeAndTraining.
+const char* ModelString(Model model, ModelTraining training);
+const char* StringFromType(Type type);
+
+void Wrap(const ModelInfo& info, size_t pos, std::string& prompt);
 
 // Returns the return value of FuncT<Config*<TWeight>>().operator()(args), where
 // Config* is selected via `model`. Typically called by CallForModelAndWeight,
@@ -122,6 +136,20 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
   }
 }
 
+#define GEMMA_FOREACH_WEIGHT(X, CONFIGT) \
+  X(CONFIGT, float)                      \
+  X(CONFIGT, hwy::bfloat16_t)            \
+  X(CONFIGT, SfpStream)
+
+#define GEMMA_FOREACH_CONFIG_AND_WEIGHT(X)              \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemmaTiny)              \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2B)                \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma7B)                \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma9B)                \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma27B)               \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGriffin2B)              \
+  static_assert(true, "Allow trailing ;")
+
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
 // calls FUNC<ConfigT<TWEIGHT>> where ConfigT is chosen via MODEL enum.
 #define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                   \
@@ -163,6 +191,8 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
 // Like CallForModelAndWeight, but for SIMD function templates. This is a macro
 // because it boils down to N_SSE4::FUNC, which would not work if FUNC was a
 // normal function argument. MODEL and WEIGHT are enums.
+// For gemma.cc, we use overloaded extern functions for faster builds. However,
+// this is still used in compress_weights because its compile time is OK.
 #define GEMMA_EXPORT_AND_DISPATCH(MODEL, WEIGHT, FUNC, ARGS)          \
   switch (WEIGHT) {                                                   \
     case Type::kF32:                                                  \
@@ -177,16 +207,6 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
     default:                                                          \
       HWY_ABORT("Weight type %d unknown.", static_cast<int>(WEIGHT)); \
   }
-
-// Returns error string or nullptr if OK.
-// Thread-hostile.
-const char* ParseModelTypeAndTraining(const std::string& model_flag,
-                                      Model& model, ModelTraining& training);
-const char* ParseType(const std::string& type_string, Type& type);
-
-// Inverse of ParseModelTypeAndTraining.
-const char* ModelString(Model model, ModelTraining training);
-const char* StringFromType(Type type);
 
 // ----------------------------------------------------------------------------
 //

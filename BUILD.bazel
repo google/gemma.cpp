@@ -99,6 +99,7 @@ cc_library(
     srcs = ["gemma/tokenizer.cc"],
     hdrs = ["gemma/tokenizer.h"],
     deps = [
+        ":common",
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",  # timer
@@ -121,8 +122,27 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
+        "gemma/instantiations/27b_bf16.cc",
+        "gemma/instantiations/27b_f32.cc",
+        "gemma/instantiations/27b_sfp.cc",
+        "gemma/instantiations/2b_bf16.cc",
+        "gemma/instantiations/2b_f32.cc",
+        "gemma/instantiations/2b_sfp.cc",
+        "gemma/instantiations/7b_bf16.cc",
+        "gemma/instantiations/7b_f32.cc",
+        "gemma/instantiations/7b_sfp.cc",
+        "gemma/instantiations/9b_bf16.cc",
+        "gemma/instantiations/9b_f32.cc",
+        "gemma/instantiations/9b_sfp.cc",
+        "gemma/instantiations/tiny_bf16.cc",
+        "gemma/instantiations/tiny_f32.cc",
+        "gemma/instantiations/tiny_sfp.cc",
+        "gemma/instantiations/gr2b_bf16.cc",
+        "gemma/instantiations/gr2b_f32.cc",
+        "gemma/instantiations/gr2b_sfp.cc",
     ],
     hdrs = [
+        "gemma/activations.h",
         "gemma/gemma.h",
     ],
     exec_properties = {
@@ -130,7 +150,7 @@ cc_library(
         "mem": "28g",
     },
     textual_hdrs = [
-        # Placeholder for internal file1, do not remove,
+        "gemma/gemma-inl.h",
         # Placeholder for internal file2, do not remove,
     ],
     deps = [
