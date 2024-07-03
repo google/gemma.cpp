@@ -52,6 +52,32 @@ enum class LayerAttentionType {
   kGriffinRecurrentBlock,
 };
 
+// Post attention and ffw normalization type.
+enum class PostNormType {
+  None,
+  Scale,
+};
+
+// Post qk projection operation type.
+enum class PostQKType {
+  Rope,
+};
+
+// FFW activation function.
+enum class ActivationType {
+  Gelu,
+};
+
+// Attention query scale.
+enum class QueryScaleType {
+  Sqrt,
+};
+
+// Residual connection type.
+enum class ResidualType {
+  Add,
+};
+
 template <size_t kNum>
 constexpr std::array<LayerAttentionType, kNum> FixedLayerConfig(
     LayerAttentionType type) {
@@ -107,6 +133,11 @@ struct ConfigNoSSM {
   static constexpr bool kUseLocalAttention = false;
   static constexpr bool kInterleaveQKV = true;
   static constexpr int kNumTensorScales = 0;
+
+  static constexpr PostQKType kPostQK = PostQKType::Rope;
+  static constexpr ActivationType kActivation = ActivationType::Gelu;
+  static constexpr QueryScaleType kQueryScale = QueryScaleType::Sqrt;
+  static constexpr ResidualType kResidual = ResidualType::Add;
 };
 
 struct ConfigNoCapNoSSM : ConfigNoSSM {
@@ -143,7 +174,7 @@ struct ConfigGemma27B : public ConfigCapNoSSM {
   static constexpr int kQKVDim = 128;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = true;
+  static constexpr PostNormType kPostNorm = PostNormType::Scale;
 };
 
 template <typename TWeight>
@@ -169,7 +200,7 @@ struct ConfigGemma9B : public ConfigCapNoSSM {
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = true;
+  static constexpr PostNormType kPostNorm = PostNormType::Scale;
 };
 
 template <typename TWeight>
@@ -191,7 +222,7 @@ struct ConfigGemma7B : public ConfigNoCapNoSSM {
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 };
 
 template <typename TWeight>
@@ -213,7 +244,7 @@ struct ConfigGemma2B : public ConfigNoCapNoSSM {
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 };
 
 template <typename TWeight>
@@ -235,7 +266,7 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
   static constexpr int kQKVDim = 16;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 
   static constexpr float kAttCap = 0.0f;
   // This is required for optimize_test to pass.
@@ -294,7 +325,7 @@ struct ConfigGriffin2B {
   static constexpr int kQKVDim = 256;  // query size == key size == value size
   static constexpr int kTopK = gcpp::kTopK;
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 
   // No SoftCap.
   static constexpr float kAttCap = 0.0f;
@@ -308,6 +339,9 @@ struct ConfigGriffin2B {
   static constexpr bool kUseLocalAttention = true;
   static constexpr bool kInterleaveQKV = false;
   static constexpr int kNumTensorScales = 140;
+  static constexpr PostQKType kPostQK = PostQKType::Rope;
+  static constexpr QueryScaleType kQueryScale = QueryScaleType::Sqrt;
+  static constexpr ResidualType kResidual = ResidualType::Add;
 };
 
 }  // namespace gcpp

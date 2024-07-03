@@ -295,8 +295,9 @@ HWY_NOINLINE void Attention(
   constexpr size_t kHeads = TConfig::kHeads;
   constexpr size_t kKVHeads = TConfig::kKVHeads;
   constexpr size_t kSeqLen = TConfig::kSeqLen;
-  GEMMA_CONSTEXPR_SQRT const float kQueryScale =
+  GEMMA_CONSTEXPR_SQRT float kQueryScale =
       1.0f / Sqrt(static_cast<float>(kQKVDim));
+
   constexpr bool kIsMHA = TActivations::kIsMHA;  // Multi-Head Attention
   const size_t batch_start = batch_and_query_start / num_queries;
   const size_t num_tokens_and_queries = num_tokens * num_queries;
@@ -350,7 +351,9 @@ HWY_NOINLINE void Attention(
           // Skip past the Q part of `q`, and copy KV to `kv`.
           memcpy(kv, q + kQKVDim, 2 * kQKVDim * sizeof(float));
         }
-        Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+        if (TConfig::kPostQK == PostQKType::Rope) {
+          Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+        }
       });
 
   static_assert((kHeads % kKVHeads) == 0,
@@ -373,7 +376,10 @@ HWY_NOINLINE void Attention(
         activations.att.data() + head * kSeqLen
         + batch_and_query_idx * kHeads * kSeqLen;
 
-    Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+    if (TConfig::kPostQK == PostQKType::Rope) {
+      Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+    }
+
     MulByConst(kQueryScale, q, kQKVDim);
 
     // Compute Q dot K scores
@@ -465,10 +471,12 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     using VF = hn::Vec<DF>;
-    hn::Transform1(DF(), activations.C1.data(), kFFHiddenDim * num_tokens,
-                   activations.C2.data(), [](DF df, VF v, VF mul) HWY_ATTR {
-                     return hn::Mul(mul, Gelu(df, v));
-                   });
+    if (TConfig::kActivation == ActivationType::Gelu) {
+      hn::Transform1(DF(), activations.C1.data(), kFFHiddenDim * num_tokens,
+                     activations.C2.data(), [](DF df, VF v, VF mul) HWY_ATTR {
+                       return hn::Mul(mul, Gelu(df, v));
+                     });
+    }
 
     MatMul_4x4_Batch<kFFHiddenDim, kModelDim>(num_tokens, activations.C1.data(),
                                               layer_weights->linear_w.data(),
@@ -560,29 +568,34 @@ HWY_NOINLINE void TransformerLayer(
                       layer_weights, kv_caches, pool);
     }
   }
-  if (TConfig::kPostNormScale) {
+
+  if (TConfig::kPostNorm == PostNormType::Scale) {
     RMSNormInplaceBatched<kBatchSize * kQueryBatchSize>(
         num_tokens_and_queries,
         layer_weights->post_attention_norm_scale.data(),
         activations.att_post2.data(), kModelDim);
   }
-  AddFromBatched<kBatchSize * kQueryBatchSize>(num_tokens_and_queries,
-                                               activations.att_post2.data(),
-                                               activations.x.data(), kModelDim);
+  if (TConfig::kResidual == ResidualType::Add) {
+    AddFromBatched<kBatchSize * kQueryBatchSize>(
+        num_tokens_and_queries, activations.att_post2.data(),
+        activations.x.data(), kModelDim);
+  }
   RMSNormBatched<kBatchSize * kQueryBatchSize>(
       num_tokens_and_queries, activations.x.data(),
       layer_weights->pre_ffw_norm_scale.data(),
       activations.bf_pre_ffw_rms_out.data(), kModelDim);
   FFW<TConfig, kBatchSize * kQueryBatchSize>(
       activations, num_tokens_and_queries, layer_weights, pool);
-  if (TConfig::kPostNormScale) {
+  if (TConfig::kPostNorm == PostNormType::Scale) {
     RMSNormInplaceBatched<kBatchSize * kQueryBatchSize>(
         num_tokens_and_queries, layer_weights->post_ffw_norm_scale.data(),
         activations.ffw_out.data(), kModelDim);
   }
-  AddFromBatched<kBatchSize * kQueryBatchSize>(
-      num_tokens_and_queries, activations.ffw_out.data(),
-      activations.x.data(), kModelDim);
+  if (TConfig::kResidual == ResidualType::Add) {
+    AddFromBatched<kBatchSize * kQueryBatchSize>(
+        num_tokens_and_queries, activations.ffw_out.data(),
+        activations.x.data(), kModelDim);
+  }
 }
 
 template <class TConfig, size_t kBatchSize, size_t kQueryBatchSize>
