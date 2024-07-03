@@ -105,8 +105,7 @@ struct Activations {
   std::array<float, kBatchSize * kGriffinDim> griffin_x;
   std::array<float, kBatchSize * kGriffinDim> griffin_y;
   std::array<float, kBatchSize * kGriffinDim> griffin_gate_x;
-  std::array<float, kBatchSize * kGriffinDim>
-      griffin_multiplier;
+  std::array<float, kBatchSize * kGriffinDim> griffin_multiplier;
 };
 
 template <typename TConfig>
@@ -473,7 +472,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     MatMul_4x4_Batch<kFFHiddenDim, kModelDim>(num_tokens, activations.C1.data(),
                                               layer_weights->linear_w.data(),
                                               activations.ffw_out.data(), pool);
-  } else {
+  } else {  // TConfig::kFFBiases == true
     for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
       const size_t hidden_offset = batch_idx * kFFHiddenDim * 2;
       const hwy::bfloat16_t* HWY_RESTRICT vec =
@@ -483,14 +482,12 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
 
       PROFILER_ZONE("Gen.FFW.GatedGELU");
       // Same matrix, first and second half of rows. Could fuse into one MatVec.
-      MatVecT<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+      MatVecT</*kAdd=*/true, kFFHiddenDim, kModelDim>(
           layer_weights->gating_einsum_w, kFFHiddenDim * kModelDim, vec,
-          TConfig::kFFBiases
-              ? layer_weights->ffw_gating_biases.data() + kFFHiddenDim
-              : nullptr,
-          even_odd, out_mul, pool);
+          layer_weights->ffw_gating_biases.data() + kFFHiddenDim, even_odd,
+          out_mul, pool);
       // Gate, will go through the nonlinearity.
-      MatVecT<TConfig::kFFBiases, kFFHiddenDim, kModelDim>(
+      MatVecT</*kAdd=*/true, kFFHiddenDim, kModelDim>(
           layer_weights->gating_einsum_w, 0, vec,
           layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
 
@@ -501,7 +498,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
                      [](DF df, VF v, VF mul)
                          HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
 
-      MatVecT</*kAdd=*/TConfig::kFFBiases, kModelDim, kFFHiddenDim>(
+      MatVecT</*kAdd=*/true, kModelDim, kFFHiddenDim>(
           layer_weights->linear_w, 0,
           activations.ffw_hidden.data() + hidden_offset,
           layer_weights->ffw_output_biases.data(), even_odd,

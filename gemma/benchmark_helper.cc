@@ -153,12 +153,8 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
     std::string token_text;
     HWY_ASSERT(
         model_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    // fprintf(stderr, "Query %zu returned token \"%s\"\n\n", query_index,
-    //         token_text.c_str());
-    std::string single_res = res[query_index].first + token_text;
-    size_t current_token_count = res[query_index].second + 1;
-    res[query_index] = std::make_pair(single_res, current_token_count);
-
+    res[query_index].first.append(token_text);
+    res[query_index].second += 1;
     ++total_tokens;
     if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
       LogSpeedStats(time_start, total_tokens);
@@ -185,21 +181,20 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(std::string& input) {
                                                   /*pos=*/0, input);
   return QueryModel(prompt);
 }
+
 std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
     const std::vector<std::string>& inputs) {
-  std::vector<std::unique_ptr<std::vector<int>>> prompts;
+  std::vector<std::vector<int>> prompts;
   prompts.reserve(inputs.size());
   for (auto& input : inputs) {
     std::string mutable_prompt = input;
-    prompts.push_back(std::make_unique<std::vector<int>>(
-        WrapAndTokenize(model_->Tokenizer(), model_->Info(),
-                        /*pos=*/0, mutable_prompt)));
+    prompts.push_back(WrapAndTokenize(model_->Tokenizer(), model_->Info(),
+                                      /*pos=*/0, mutable_prompt));
   }
   std::vector<hwy::Span<int>> prompt_vector;
   prompt_vector.reserve(prompts.size());
   for (auto& prompt : prompts) {
-    prompt_vector.push_back(hwy::Span<int>(
-        prompt->data(), prompt->size()));
+    prompt_vector.push_back(hwy::Span<int>(prompt.data(), prompt.size()));
   }
   hwy::Span<const hwy::Span<int>> prompt_span = hwy::Span<const hwy::Span<int>>(
       prompt_vector.data(), prompt_vector.size());

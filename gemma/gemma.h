@@ -38,9 +38,8 @@ namespace gcpp {
 // true to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
 // BatchStreamFunc is called with (query_idx, pos, token, probability).
-// For prompt tokens,
-// probability is 0.0f. StreamFunc should return false to stop generation and
-// true to continue generation.
+// For prompt tokens, probability is 0.0f.
+// StreamFunc should return false to stop generation and true to continue.
 using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.

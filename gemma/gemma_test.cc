@@ -172,24 +172,24 @@ TEST_F(GemmaTest, CrossEntropySmall) {
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 2.1f : 2.0f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 2.1f : 2.0f);
 }
 
 TEST_F(GemmaTest, CrossEntropyJingleBells) {
   if (!s_env->GetModel()) return;
   float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.9f : 1.8f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 0.9f : 1.8f);
 }
 
 TEST_F(GemmaTest, CrossEntropyGettysburg) {
   if (!s_env->GetModel()) return;
   float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.8f : 1.2f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 0.8f : 1.2f);
 }
 
 }  // namespace
