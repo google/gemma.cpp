@@ -50,7 +50,7 @@ struct CompressedLayer {
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
   static constexpr bool kFFBiases = TConfig::kFFBiases;
-  static constexpr bool kPostNormScale = TConfig::kPostNormScale;
+  static constexpr PostNormType kPostNorm = TConfig::kPostNorm;
   static constexpr size_t kAOBiasDim =
       TConfig::kSoftmaxAttnOutputBiases ? kModelDim : 0;
   static constexpr size_t kGriffinDim =
@@ -86,9 +86,10 @@ struct CompressedLayer {
   // We don't yet have an RMSNorm that accepts all Weight.
   ArrayT<WeightF32OrBF16, kModelDim> pre_attention_norm_scale;
   ArrayT<WeightF32OrBF16, kModelDim> pre_ffw_norm_scale;
-  ArrayT<WeightF32OrBF16, kPostNormScale ? kModelDim : 0>
+  ArrayT<WeightF32OrBF16, kPostNorm == PostNormType::Scale ? kModelDim : 0>
       post_attention_norm_scale;
-  ArrayT<WeightF32OrBF16, kPostNormScale ? kModelDim : 0> post_ffw_norm_scale;
+  ArrayT<WeightF32OrBF16, kPostNorm == PostNormType::Scale ? kModelDim : 0>
+      post_ffw_norm_scale;
 
   ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
   ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
@@ -267,7 +268,7 @@ void ForEachTensor(RawWeightsPtr raw_weights,
       GEMMA_CALL_FUNC("gr_a", griffin.a);
     }
     GEMMA_CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
-    if (TConfig::kPostNormScale) {
+    if (TConfig::kPostNorm == PostNormType::Scale) {
       GEMMA_CALL_FUNC("post_att_ns", post_attention_norm_scale);
       GEMMA_CALL_FUNC("post_ff_ns", post_ffw_norm_scale);
     }
@@ -331,7 +332,7 @@ void ForEachTensor(RawWeightsPtr raw_weights,
   GEMMA_CALL_LAYER_FUNC ## N("gating_ein", gating_einsum_w);                  \
   GEMMA_CALL_LAYER_FUNC ## N("linear_w", linear_w);                           \
   GEMMA_CALL_LAYER_FUNC ## N("pre_att_ns", pre_attention_norm_scale);         \
-  if (TConfig::kPostNormScale) {                                              \
+  if (TConfig::kPostNorm == PostNormType::Scale) {                            \
     GEMMA_CALL_LAYER_FUNC ## N("post_att_ns", post_attention_norm_scale);     \
     GEMMA_CALL_LAYER_FUNC ## N("post_ff_ns", post_ffw_norm_scale);            \
   }                                                                           \

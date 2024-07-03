@@ -159,7 +159,7 @@ struct LoadRawWeightsT {
       SCALE_WEIGHTS(linear_w);
       READ_WEIGHTS(pre_attention_norm_scale);
       READ_WEIGHTS(pre_ffw_norm_scale);
-      if (TConfig::kPostNormScale) {
+      if (TConfig::kPostNorm == PostNormType::Scale) {
         READ_WEIGHTS(post_attention_norm_scale);
         READ_WEIGHTS(post_ffw_norm_scale);
       }

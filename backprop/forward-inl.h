@@ -233,7 +233,7 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
   static constexpr size_t kLayers = TConfig::kLayers;
   const float kEmbScaling = EmbeddingScaling<TConfig>();
   static_assert(!TConfig::kAbsolutePE);
-  static_assert(!TConfig::kPostNormScale);
+  static_assert(TConfig::kPostNorm == PostNormType::None);
   static_assert(TConfig::kKVHeads == 1);
 
   HWY_DASSERT(context_size > 0);
