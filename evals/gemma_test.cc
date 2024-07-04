@@ -17,11 +17,13 @@
 
 #include <stdio.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "gemma/benchmark_helper.h"
 #include "gemma/common.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/tests/hwy_gtest.h"
 
 namespace gcpp {
@@ -44,13 +46,54 @@ class GemmaTest : public ::testing::Test {
     return response;
   }
 
-  void TestQuestions(const char* kQA[][2], size_t num_questions) {
+  std::vector<std::string> BatchGemmaReply(
+      const std::vector<std::string>& inputs) {
+    s_env->SetMaxGeneratedTokens(64);
+    s_env->MutableConfig().temperature = 0.0f;  // deterministic
+    s_env->MutableConfig().verbosity = 0;
+    // Using the turn structure worsens results.
+    std::vector<std::unique_ptr<std::vector<int>>> prompts;
+    prompts.reserve(inputs.size());
+    for (auto input_string : inputs) {
+      std::string mutable_input_string = input_string;
+      prompts.push_back(std::make_unique<std::vector<int>>(
+          s_env->TokenizeAndPrependBOS(input_string)));
+    }
+    std::vector<hwy::Span<int>> prompt_vector;
+    for (auto& prompt : prompts) {
+      prompt_vector.push_back(hwy::Span<int>(prompt->data(), prompt->size()));
+    }
+    hwy::Span<const hwy::Span<int>> prompt_span =
+        hwy::Span<const hwy::Span<int>>(prompt_vector.data(),
+                                        prompt_vector.size());
+    std::vector<std::string> replies;
+    for (auto [response, n] : s_env->BatchQueryModel2(prompt_span)) {
+      replies.push_back(response);
+    }
+    return replies;
+  }
+
+  void TestQuestions(const char* kQA[][2], size_t num_questions, bool batch) {
     if (!s_env->GetModel()) return;
-    for (size_t i = 0; i < num_questions; ++i) {
-      fprintf(stderr, "Question %zu\n\n", i + 1);
-      std::string response = GemmaReply(kQA[i][0]);
-      fprintf(stderr, "'%s'\n\n", response.c_str());
-      EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
+    if (batch) {
+      std::vector<std::string> inputs;
+      for (size_t i = 0; i < num_questions; ++i) {
+        fprintf(stderr, "Batch Question %zu\n\n", i + 1);
+        inputs.push_back(kQA[i][0]);
+      }
+      std::vector<std::string> responses = BatchGemmaReply(inputs);
+      for (size_t i = 0; i < num_questions; ++i) {
+        std::string response = responses.at(i);
+        fprintf(stderr, "Batch answer %zu '%s'\n\n", i + 1, response.c_str());
+        EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
+      }
+    } else {
+      for (size_t i = 0; i < num_questions; ++i) {
+        fprintf(stderr, "Question %zu\n\n", i + 1);
+        std::string response = GemmaReply(kQA[i][0]);
+        fprintf(stderr, "'%s'\n\n", response.c_str());
+        EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
+      }
     }
   }
 };
@@ -58,10 +101,16 @@ class GemmaTest : public ::testing::Test {
 TEST_F(GemmaTest, Geography) {
   static const char* kQA[][2] = {
       {"What is the capital of Hungary?", "Budapest"},
+      {"What is the capital of Australia?", "Canberra"},
       {"How many states does the US have?", "50"},
   };
   static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
-  TestQuestions(kQA, kNum);
+  TestQuestions(kQA, kNum, /*batch=*/false);
+  static const char* kQA_single_question[][2] = {
+      {"What is the capital of Australia?", "Canberra"},
+  };
+  TestQuestions(kQA_single_question, 1, /*batch=*/true);
+  TestQuestions(kQA, kNum, /*batch=*/true);
 }
 
 TEST_F(GemmaTest, History) {
@@ -69,7 +118,7 @@ TEST_F(GemmaTest, History) {
       {"When was the battle of Hastings?", "1066"},
   };
   static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
-  TestQuestions(kQA, kNum);
+  TestQuestions(kQA, kNum, /*batch=*/false);
 }
 
 TEST_F(GemmaTest, Arithmetic) {
@@ -78,7 +127,7 @@ TEST_F(GemmaTest, Arithmetic) {
       {"what is 7 * 8?", "56"},
   };
   static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
-  TestQuestions(kQA, kNum);
+  TestQuestions(kQA, kNum, /*batch=*/false);
 }
 
 static const char kJingleBells[] = R"(
@@ -122,24 +171,24 @@ TEST_F(GemmaTest, CrossEntropySmall) {
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 2.1f : 2.0f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 2.1f : 2.0f);
 }
 
 TEST_F(GemmaTest, CrossEntropyJingleBells) {
   if (!s_env->GetModel()) return;
   float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.9f : 1.8f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 0.9f : 1.8f);
 }
 
 TEST_F(GemmaTest, CrossEntropyGettysburg) {
   if (!s_env->GetModel()) return;
   float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-byte entropy: %f\n", entropy);
-  EXPECT_LT(entropy,
-            (s_env->ModelType() == gcpp::Model::GEMMA_7B) ? 0.8f : 1.2f);
+  const bool is_7b = s_env->GetModel()->Info().model == gcpp::Model::GEMMA_7B;
+  EXPECT_LT(entropy, is_7b ? 0.8f : 1.2f);
 }
 
 }  // namespace
