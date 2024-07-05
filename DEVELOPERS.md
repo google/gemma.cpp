@@ -94,11 +94,11 @@ If starting with Keras, first run this script to convert to Pytorch:
 https://github.com/keras-team/keras-nlp/blob/master/tools/gemma/export_gemma_to_torch_xla.py
 
 From Pytorch, use the following script to generate uncompressed weights:
-https://github.com/google/gemma.cpp/blob/dev/util/convert_weights.py
+https://github.com/google/gemma.cpp/blob/dev/compression/convert_weights.py
 
-Then run gemma/compress_weights.cc (Bazel target :compress_weights), specifying
-the resulting file as `--weights` and the desired .sbs name as the
-`--compressed_weights`.
+Then run `compression/compress_weights.cc` (Bazel target
+`compression:compress_weights`), specifying the resulting file as `--weights`
+and the desired .sbs name as the `--compressed_weights`.
 
 ## Compile-Time Flags (Advanced)
 
@@ -192,7 +192,7 @@ transforms we apply to Gemma via Copybara.
 ## Debugging
 
 At the first sign of incorrect or unexpected results, we recommend running with
-ASan/MSan enabled. When using blaze/bazel, you can add `--config=asan` or
+ASan/MSan enabled. When using bazel, you can add `--config=asan` or
 `--config=msan-track-origins` to the build command. In addition to their checks
 for memory overruns or uninitialized memory, we also enable debug-only asserts
 in Gemma.cpp for those build configurations.

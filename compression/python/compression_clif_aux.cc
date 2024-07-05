@@ -2,7 +2,7 @@
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
-  "third_party/gemma_cpp/compression/python/compression_clif_aux.cc"  // NOLINT
+  "compression/python/compression_clif_aux.cc"  // NOLINT
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Must come after foreach_target.h to avoid redefinition errors.
 #include "compression/compress-inl.h"

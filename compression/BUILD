@@ -180,3 +180,21 @@ cc_library(
         "@hwy//hwy/contrib/sort:vqsort",
     ],
 )
+
+cc_binary(
+    name = "compress_weights",
+    srcs = ["compress_weights.cc"],
+    deps = [
+        ":compress",
+        # Placeholder for internal dep, do not remove.,
+        "//third_party/gemma_cpp:args",
+        "//third_party/gemma_cpp:common",
+        "//third_party/gemma_cpp:gemma_lib",
+        "//third_party/gemma_cpp:weights",
+        "//third_party/gemma_cpp:weights_raw",
+        "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
+        "@hwy//:thread_pool",
+    ],
+)

@@ -260,24 +260,6 @@ cc_binary(
 )
 
 cc_binary(
-    name = "compress_weights",
-    srcs = ["util/compress_weights.cc"],
-    deps = [
-        ":args",
-        ":common",
-        ":gemma_lib",
-        ":weights",
-        ":weights_raw",
-        # Placeholder for internal dep, do not remove.,
-        "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
-        "@hwy//:profiler",
-        "@hwy//:thread_pool",
-    ],
-)
-
-cc_binary(
     name = "single_benchmark",
     srcs = ["evals/benchmark.cc"],
     deps = [
