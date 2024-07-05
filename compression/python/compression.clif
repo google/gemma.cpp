@@ -1,0 +1,13 @@
+from "third_party/absl/python/numpy/span.h" import *
+from "third_party/gemma_cpp/compression/python/compression_clif_aux.h":
+  namespace `gcpp`:
+    class SbsWriter:
+      # NOTE: Individual compression backends may impose constraints on the
+      # array length, such as a minimum of (say) 32 elements.
+      def `Insert` as insert(self, name: str, weights: NumpyArray<float>)
+      def `InsertNUQ` as insert_nuq(self, name: str, weights: NumpyArray<float>)
+      def `InsertBfloat16` as insert_bf16(self, name: str, weights: NumpyArray<float>)
+
+      def `AddScales` as add_scales(self, scales: list<float>)
+
+      def `Write` as write(self, path: str)
