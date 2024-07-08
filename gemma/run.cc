@@ -186,24 +186,25 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   KVCache kv_cache = KVCache::Create(model.Info().model);
 
   if (app.verbosity >= 1) {
-    const std::string instructions =
-        std::string(
-            "*Usage*\n"
-            "  Enter an instruction and press enter (%C resets conversation, "
-            "%Q quits).\n")
-            .append(
-                (inference.multiturn == 0
-                     ? std::string(
-                           "  Since multiturn is set to 0, conversation will "
-                           "automatically reset every turn.\n\n")
-                     : "\n"))
-            .append(
-                "*Examples*\n"
-                "  - Write an email to grandma thanking her for the cookies.\n"
-                "  - What are some historical attractions to visit around "
-                "Massachusetts?\n"
-                "  - Compute the nth fibonacci number in javascript.\n"
-                "  - Write a standup comedy bit about GPU programming.\n");
+    std::string instructions =
+        "*Usage*\n"
+        "  Enter an instruction and press enter (%C resets conversation, "
+        "%Q quits).\n";
+    const std::string multiturn =
+        inference.multiturn == 0
+            ? std::string(
+                  "  Since multiturn is set to 0, conversation will "
+                  "automatically reset every turn.\n\n")
+            : "\n";
+    const std::string examples =
+        "*Examples*\n"
+        "  - Write an email to grandma thanking her for the cookies.\n"
+        "  - What are some historical attractions to visit around "
+        "Massachusetts?\n"
+        "  - Compute the nth fibonacci number in javascript.\n"
+        "  - Write a standup comedy bit about GPU programming.\n";
+    instructions += multiturn;
+    instructions += examples;
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
               << kAsciiArtBanner << "\n\n";

@@ -184,7 +184,6 @@ class ArgsBase {
 };
 
 static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, char* argv[]) {
-  // TODO(austinvhuang): handle case insensitivity
   if (argc == 1) {
     // no arguments - print help
     return true;
