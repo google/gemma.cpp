@@ -213,19 +213,20 @@ cc_library(
 cc_test(
     name = "gemma_test",
     srcs = ["evals/gemma_test.cc"],
+    # Requires model files
+    tags = [
+        "local",
+        "manual",
+        "no_tap",
+    ],
     deps = [
-        ":app",
-        ":args",
         ":benchmark_helper",
         ":common",
-        ":cross_entropy",
         ":gemma_lib",
-        ":ops",
+        ":tokenizer",
         "@googletest//:gtest_main",
-        "//compression:io",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
-        "@hwy//:thread_pool",
     ],
 )
 
