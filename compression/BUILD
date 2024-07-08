@@ -181,17 +181,28 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "weights_raw",
+    hdrs = ["weights_raw.h"],
+    deps = [
+        "//:common",
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:thread_pool",
+    ],
+)
+
 cc_binary(
     name = "compress_weights",
     srcs = ["compress_weights.cc"],
     deps = [
         ":compress",
+        ":weights_raw",
         # Placeholder for internal dep, do not remove.,
-        "//third_party/gemma_cpp:args",
-        "//third_party/gemma_cpp:common",
-        "//third_party/gemma_cpp:gemma_lib",
-        "//third_party/gemma_cpp:weights",
-        "//third_party/gemma_cpp:weights_raw",
+        "//:args",
+        "//:common",
+        "//:gemma_lib",
+        "//:weights",
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
         "@hwy//:profiler",

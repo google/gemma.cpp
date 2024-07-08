@@ -22,7 +22,7 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "gemma/benchmark_helper.h"
+#include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
 #include "util/app.h"

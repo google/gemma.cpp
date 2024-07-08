@@ -83,18 +83,6 @@ cc_library(
 )
 
 cc_library(
-    name = "weights_raw",
-    hdrs = ["gemma/weights_raw.h"],
-    deps = [
-        ":common",
-        ":weights",
-        "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
-    ],
-)
-
-cc_library(
     name = "tokenizer",
     srcs = ["gemma/tokenizer.cc"],
     hdrs = ["gemma/tokenizer.h"],
@@ -205,8 +193,8 @@ cc_library(
 
 cc_library(
     name = "benchmark_helper",
-    srcs = ["gemma/benchmark_helper.cc"],
-    hdrs = ["gemma/benchmark_helper.h"],
+    srcs = ["evals/benchmark_helper.cc"],
+    hdrs = ["evals/benchmark_helper.h"],
     deps = [
         ":app",
         ":args",
@@ -369,7 +357,7 @@ cc_library(
         ":common",
         ":gemma_lib",
         ":prompt",
-        ":weights_raw",
+        "//compression:weights_raw",
     ],
 )
 
@@ -386,8 +374,8 @@ cc_test(
         ":gemma_lib",
         ":prompt",
         ":sampler",
-        ":weights_raw",
         "@googletest//:gtest_main",
+        "//compression:weights_raw",
     ],
 )
 
@@ -409,8 +397,8 @@ cc_test(
         ":gemma_lib",
         ":ops",
         ":sampler",
-        ":weights_raw",
         "@googletest//:gtest_main",
+        "//compression:weights_raw",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",

@@ -32,8 +32,8 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
+#include "compression/weights_raw.h"
 #include "gemma/configs.h"
-#include "gemma/weights_raw.h"
 
 namespace gcpp {
 

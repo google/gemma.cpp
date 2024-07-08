@@ -26,8 +26,8 @@
 #include "backprop/activations.h"
 #include "backprop/common_scalar.h"
 #include "backprop/prompt.h"
+#include "compression/weights_raw.h"
 #include "gemma/common.h"  // EmbeddingScaling
-#include "gemma/weights_raw.h"
 
 namespace gcpp {
 

@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "compression/io.h"
-#include "gemma/benchmark_helper.h"
+#include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // LayersOutputFunc
 #include "util/args.h"
 #include "hwy/base.h"

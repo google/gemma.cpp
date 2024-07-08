@@ -13,14 +13,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_RAW_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_RAW_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_WEIGHTS_RAW_H_
+#define THIRD_PARTY_GEMMA_CPP_COMPRESSION_WEIGHTS_RAW_H_
 
-// NOTE: this file should only be used by compress_weights; it is currently
-// also referenced by backprop, but we plan to remove that. Historical note:
-// this was the original f32-only simple on-disk format created by a Python
-// export script. BlobStore is now the preferred on-disk format, and we load
-// that into CompressedWeights.
+// Historical note: this was the original f32-only simple on-disk format
+// created by convert_weights.py. BlobStore is now the preferred on-disk
+// format, and we load that into CompressedWeights.
+//
+// NOTE: this file should only be used by compress_weights. It is currently
+// also referenced by backprop because it supports T = std::complex, and
+// CompressedWeights might not yet.
 
 #include <random>
 
@@ -239,4 +241,4 @@ class WeightsWrapper {
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_RAW_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_WEIGHTS_RAW_H_

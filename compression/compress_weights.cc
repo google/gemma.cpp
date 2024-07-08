@@ -38,9 +38,9 @@
 #include <thread>  // NOLINT
 
 #include "compression/io.h"  // Path
-#include "gemma/common.h"    // Model
+#include "compression/weights_raw.h"
+#include "gemma/common.h"  // Model
 #include "gemma/weights.h"
-#include "gemma/weights_raw.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"

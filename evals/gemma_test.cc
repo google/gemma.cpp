@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "gemma/benchmark_helper.h"
+#include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/tests/hwy_gtest.h"

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemma/benchmark_helper.h"
+#include "evals/benchmark_helper.h"
 
 #include <stdio.h>
 #include <time.h>

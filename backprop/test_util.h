@@ -23,7 +23,7 @@
 #include <complex>
 
 #include "gtest/gtest.h"
-#include "gemma/weights_raw.h"
+#include "compression/weights_raw.h"
 
 namespace gcpp {
 

@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_BENCHMARK_HELPER_H_
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_BENCHMARK_HELPER_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_EVALS_BENCHMARK_HELPER_H_
+#define THIRD_PARTY_GEMMA_CPP_EVALS_BENCHMARK_HELPER_H_
 
 #include <stddef.h>
 
@@ -116,4 +116,4 @@ void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_BENCHMARK_HELPER_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_EVALS_BENCHMARK_HELPER_H_

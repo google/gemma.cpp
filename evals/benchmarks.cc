@@ -19,7 +19,7 @@
 #include <string>
 
 #include "benchmark/benchmark.h"
-#include "gemma/benchmark_helper.h"
+#include "evals/benchmark_helper.h"
 
 namespace gcpp {
 
