@@ -197,7 +197,6 @@ void LayerVJP(const LayerT<TConfig>& weights,
     float* HWY_RESTRICT b_out_mul = b_out + kFFHiddenDim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
-    using VF = hn::Vec<DF>;
     DF df;
     for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
       const auto y = Load(df, f_out + i);

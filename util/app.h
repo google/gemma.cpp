@@ -21,7 +21,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include <algorithm>  // std::clamp
 #include <memory>
 #include <string>
 #include <vector>
@@ -132,7 +131,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 
   static inline size_t GetSupportedThreadCount() {
-    return std::min(hwy::ThreadPool::MaxThreads(), kMaxThreads);
+    return HWY_MIN(hwy::ThreadPool::MaxThreads(), kMaxThreads);
   }
 
   Path log;  // output
