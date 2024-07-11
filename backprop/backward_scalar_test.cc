@@ -377,7 +377,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   }
 }
 
-struct TestConfig : ConfigCapNoSSM {
+struct TestConfig : ConfigBaseGemmaV2 {
   static constexpr int kSeqLen = 18;
   static constexpr int kVocabSize = 12;
   static constexpr int kModelDim = 32;
@@ -388,7 +388,7 @@ struct TestConfig : ConfigCapNoSSM {
       FixedLayerConfig<2>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 
   static constexpr int kKVHeads = 1;
   static constexpr int kGemmaLayers = kLayers;

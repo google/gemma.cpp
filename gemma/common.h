@@ -244,6 +244,13 @@ static HWY_INLINE GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling(
       Sqrt(static_cast<float>(model_dim))));
 }
 
+template <class TConfig>
+GEMMA_CONSTEXPR_SQRT float ChooseQueryScale() {
+  constexpr size_t kQKVDim = TConfig::kQKVDim;
+  // QueryScaleType::Sqrt
+  return 1.0f / Sqrt(static_cast<float>(kQKVDim));
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_

@@ -195,6 +195,13 @@ HWY_NOINLINE void GriffinRecurrent(
   }
 }
 
+template <class TConfig, typename T>
+HWY_NOINLINE void PostQK(T* HWY_RESTRICT t, size_t pos, size_t layer) {
+  constexpr size_t kQKVDim = TConfig::kQKVDim;
+  // PostQKType::Rope
+  Rope(t, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+}
+
 template <class TConfig, size_t kBatchSize, size_t kQueryBatchSize>
 HWY_NOINLINE void Attention(
     size_t batch_and_query_start, size_t num_tokens, size_t num_queries,
@@ -216,8 +223,7 @@ HWY_NOINLINE void Attention(
   constexpr size_t kHeads = TConfig::kHeads;
   constexpr size_t kKVHeads = TConfig::kKVHeads;
   constexpr size_t kSeqLen = TConfig::kSeqLen;
-  GEMMA_CONSTEXPR_SQRT const float kQueryScale =
-      1.0f / Sqrt(static_cast<float>(kQKVDim));
+  GEMMA_CONSTEXPR_SQRT float kQueryScale = ChooseQueryScale<TConfig>();
   // Multi-Head Attention a.k.a. "use_qkv_einsum".
   constexpr bool kIsMHA = TActivations::kIsMHA;
   static_assert(!kIsMHA || TConfig::kInterleaveQKV);  // MHA => interleaved
@@ -278,8 +284,7 @@ HWY_NOINLINE void Attention(
           // Skip past the Q part of `q`, and copy KV to `kv`.
           memcpy(kv, q + kQKVDim, 2 * kQKVDim * sizeof(float));
         }
-        // Apply rope to K.
-        Rope(kv, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+        PostQK<TConfig>(kv, pos, layer);
       });
 
   static_assert((kHeads % kKVHeads) == 0,
@@ -299,13 +304,16 @@ HWY_NOINLINE void Attention(
 
     // Apply rope and scaling to Q.
     const size_t pos = batch_start + batch_idx;
-    Rope(q, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
+    PostQK<TConfig>(q, pos, layer);
     MulByConst(kQueryScale, q, kQKVDim);
 
     // Compute Q.K scores, yielding "logits" (or scores) in head_att.
     float* HWY_RESTRICT head_att =
         activations.att.data() + head * kSeqLen
         + batch_and_query_idx * kHeads * kSeqLen;
+
+
+    // Compute Q dot K scores
     const size_t start_pos =
         pos - std::min(TConfig::kAttentionWindowSizes[layer] - 1, pos);
     for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
@@ -372,6 +380,18 @@ HWY_NOINLINE void Attention(
   }
 }
 
+template <class TConfig, typename T>
+HWY_NOINLINE void Activation(T* HWY_RESTRICT c1, T* HWY_RESTRICT c2,
+                             size_t count) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<T>;
+  using VF = hn::Vec<DF>;
+  // ActivationType::Gelu
+  hn::Transform1(DF(), c1, count, c2, [](DF df, VF v, VF mul) HWY_ATTR {
+    return hn::Mul(mul, Gelu(df, v));
+  });
+}
+
 template <class TConfig, size_t kBatchSize>
 HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
                       size_t num_tokens,
@@ -400,14 +420,9 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
     MatMul_4x4_Batch<kColsA, kColsB>(num_tokens, A, b2, activations.C2.data(),
                                      pool);
 
-    // Gelu and multiply by gate.
-    namespace hn = hwy::HWY_NAMESPACE;
-    using DF = hn::ScalableTag<float>;
-    using VF = hn::Vec<DF>;
-    hn::Transform1(DF(), activations.C1.data(), kFFHiddenDim * num_tokens,
-                   activations.C2.data(), [](DF df, VF v, VF mul) HWY_ATTR {
-                     return hn::Mul(mul, Gelu(df, v));
-                   });
+    // Activation (Gelu) and multiply by gate.
+    Activation<TConfig>(activations.C1.data(), activations.C2.data(),
+                        kFFHiddenDim * num_tokens);
 
     MatMul_4x4_Batch<kFFHiddenDim, kModelDim>(num_tokens, activations.C1.data(),
                                               layer_weights->linear_w.data(),
@@ -431,12 +446,7 @@ HWY_NOINLINE void FFW(Activations<TConfig, kBatchSize>& activations,
           layer_weights->gating_einsum_w, 0, vec,
           layer_weights->ffw_gating_biases.data(), even_odd, out, pool);
 
-      namespace hn = hwy::HWY_NAMESPACE;
-      using DF = hn::ScalableTag<float>;
-      using VF = hn::Vec<DF>;
-      hn::Transform1(DF(), out, kFFHiddenDim, out_mul,
-                     [](DF df, VF v, VF mul)
-                         HWY_ATTR { return hn::Mul(mul, Gelu(df, v)); });
+      Activation<TConfig>(out, out_mul, kFFHiddenDim);
 
       MatVecT</*kAdd=*/true, kModelDim, kFFHiddenDim>(
           layer_weights->linear_w, 0,
@@ -465,6 +475,16 @@ HWY_NOINLINE void EmbedToken(int token, size_t token_idx, size_t pos,
         activations.x.data() + token_idx * kModelDim, kModelDim,
         pos + token_idx);
   };
+}
+
+template <class TConfig, size_t kBatchSize, size_t kQueryBatchSize, typename T>
+HWY_NOINLINE void ResidualConnection(
+    size_t num_tokens_and_queries, T* HWY_RESTRICT other, T* HWY_RESTRICT x,
+    const CompressedLayer<TConfig>* layer_weights, bool is_attention) {
+  constexpr size_t kModelDim = TConfig::kModelDim;
+  // ResidualType::Add
+  AddFromBatched<kBatchSize * kQueryBatchSize>(num_tokens_and_queries, other, x,
+                                               kModelDim);
 }
 
 template <class TConfig, size_t kBatchSize, size_t kQueryBatchSize>
@@ -497,29 +517,31 @@ HWY_NOINLINE void TransformerLayer(
                       layer_weights, kv_caches, pool);
     }
   }
-  if (TConfig::kPostNormScale) {
+
+  if (TConfig::kPostNorm == PostNormType::Scale) {
     RMSNormInplaceBatched<kBatchSize * kQueryBatchSize>(
         num_tokens_and_queries,
         layer_weights->post_attention_norm_scale.data(),
         activations.att_post2.data(), kModelDim);
   }
-  AddFromBatched<kBatchSize * kQueryBatchSize>(num_tokens_and_queries,
-                                               activations.att_post2.data(),
-                                               activations.x.data(), kModelDim);
+
+  ResidualConnection<TConfig, kBatchSize, kQueryBatchSize>(
+      num_tokens_and_queries, activations.att_post2.data(),
+      activations.x.data(), layer_weights, /*is_attention*/ true);
   RMSNormBatched<kBatchSize * kQueryBatchSize>(
       num_tokens_and_queries, activations.x.data(),
       layer_weights->pre_ffw_norm_scale.data(),
       activations.bf_pre_ffw_rms_out.data(), kModelDim);
   FFW<TConfig, kBatchSize * kQueryBatchSize>(
       activations, num_tokens_and_queries, layer_weights, pool);
-  if (TConfig::kPostNormScale) {
+  if (TConfig::kPostNorm == PostNormType::Scale) {
     RMSNormInplaceBatched<kBatchSize * kQueryBatchSize>(
         num_tokens_and_queries, layer_weights->post_ffw_norm_scale.data(),
         activations.ffw_out.data(), kModelDim);
   }
-  AddFromBatched<kBatchSize * kQueryBatchSize>(
-      num_tokens_and_queries, activations.ffw_out.data(),
-      activations.x.data(), kModelDim);
+  ResidualConnection<TConfig, kBatchSize, kQueryBatchSize>(
+      num_tokens_and_queries, activations.ffw_out.data(), activations.x.data(),
+      layer_weights, /*is_attention*/ false);
 }
 
 template <class TConfig, size_t kBatchSize, size_t kQueryBatchSize>

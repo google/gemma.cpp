@@ -27,6 +27,7 @@
 #include <random>
 
 #include "gemma/common.h"
+#include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -48,7 +49,7 @@ struct Layer {
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
   static constexpr bool kFFBiases = TConfig::kFFBiases;
-  static constexpr bool kPostNormScale = TConfig::kPostNormScale;
+  static constexpr PostNormType kPostNorm = TConfig::kPostNorm;
   static constexpr size_t kAOBiasDim =
       TConfig::kSoftmaxAttnOutputBiases ? kModelDim : 0;
   static constexpr size_t kGriffinDim =
@@ -80,8 +81,10 @@ struct Layer {
   std::array<T, kModelDim * kFFHiddenDim> linear_w;
   std::array<T, kModelDim> pre_attention_norm_scale;
   std::array<T, kModelDim> pre_ffw_norm_scale;
-  std::array<T, kPostNormScale ? kModelDim : 0> post_attention_norm_scale;
-  std::array<T, kPostNormScale ? kModelDim : 0> post_ffw_norm_scale;
+  std::array<T, kPostNorm == PostNormType::Scale ? kModelDim : 0>
+      post_attention_norm_scale;
+  std::array<T, kPostNorm == PostNormType::Scale ? kModelDim : 0>
+      post_ffw_norm_scale;
 
   std::array<T, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
   std::array<T, kFFBiases ? kModelDim : 0> ffw_output_biases;

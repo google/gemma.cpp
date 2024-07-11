@@ -182,7 +182,7 @@ void TestRMSNormVJP() {
   }
 }
 
-struct TestConfig : public ConfigCapNoSSM {
+struct TestConfig : public ConfigBaseGemmaV2 {
   static constexpr int kSeqLen = 24;
   static constexpr int kVocabSize = 16;
   static constexpr int kModelDim = 32;
@@ -193,7 +193,7 @@ struct TestConfig : public ConfigCapNoSSM {
       FixedLayerConfig<2>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
   static constexpr bool kAbsolutePE = false;
-  static constexpr bool kPostNormScale = false;
+  static constexpr PostNormType kPostNorm = PostNormType::None;
 
   static constexpr int kKVHeads = 1;
   static constexpr int kGemmaLayers = kLayers;
