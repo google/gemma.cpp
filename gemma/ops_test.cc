@@ -508,6 +508,43 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
   }
 }
 
+// Largely unoptimized; reordered innermost loops nets ~5-10X speedup on
+// ops_test across instruction sets.
+template <size_t kN, size_t kK, typename MatTA, typename MatTB,
+          HWY_IF_T_SIZE_GT(MatTB, 1)>
+HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
+                                const MatTB* HWY_RESTRICT b, const float* add,
+                                float* HWY_RESTRICT out) {
+  for (size_t i = 0; i < batch_size; ++i) {
+    for (size_t k = 0; k < kN; ++k) {
+      for (size_t j = 0; j < kK; ++j) {
+        const float a1 = hwy::ConvertScalarTo<float>(a[i * kN + k]);
+        const float b1 = hwy::ConvertScalarTo<float>(b[k * kK + j]);
+        out[i * kK + j] += a1 * b1;
+      }
+    }
+    if (add != nullptr) {
+      for (size_t j = 0; j < kK; ++j) {
+        out[i * kK + j] += add[j];
+      }
+    }
+  }
+}
+
+// The above overload can handle combinations of f32 and bf16, but this one
+// is required for MatTB = {SFP, NUQ}.
+template <size_t kN, size_t kK, typename MatTA, typename MatTB,
+          HWY_IF_T_SIZE(MatTB, 1)>
+HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
+                                const MatTB* HWY_RESTRICT b_compr,
+                                const float* add, float* HWY_RESTRICT out) {
+  const hn::ScalableTag<float> d;
+  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kK * kN);
+  CompressTraits<MatTB>::Decompress(d, /*in_capacity=*/0, b_compr, 0, b.get(),
+                                    kK * kN);
+  MatMulSlowBatch<kN, kK>(batch_size, a, b.get(), add, out);
+}
+
 template <size_t kM, size_t kN, size_t kK, bool kAdd, typename MatTA,
           typename MatTB = MatTA>
 void TestTiledBatchMatMul() {
