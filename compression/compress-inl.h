@@ -80,6 +80,15 @@ struct CompressTraits<float> {
   }
 
   template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Decompress2(DF df, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, hn::Vec<DF>& f0,
+                                     hn::Vec<DF>& f1) {
+    const size_t N = hn::Lanes(df);
+    f0 = hn::LoadU(df, in + in_ofs);
+    f1 = hn::LoadU(df, in + in_ofs + N);
+  }
+
+  template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Decompress(DF df, size_t /*in_capacity*/,
                                     const MatT* HWY_RESTRICT in, size_t in_ofs,
                                     float* HWY_RESTRICT out, size_t num) {
@@ -88,8 +97,8 @@ struct CompressTraits<float> {
     HWY_DASSERT(num >= 2 * N && num % (2 * N) == 0);
 
     for (size_t i = 0; i < num; i += 2 * N) {
-      const VF in0 = hn::LoadU(df, in + in_ofs + i);
-      const VF in1 = hn::LoadU(df, in + in_ofs + i + N);
+      VF in0, in1;
+      Decompress2(df, in, in_ofs + i, in0, in1);
       hn::StoreU(in0, df, out + i);
       hn::StoreU(in1, df, out + i + N);
     }
@@ -175,6 +184,17 @@ struct CompressTraits<hwy::bfloat16_t> {
   }
 
   template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Decompress2(DF df, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, hn::Vec<DF>& f0,
+                                     hn::Vec<DF>& f1) {
+    const hn::Repartition<hwy::bfloat16_t, decltype(df)> dbf;
+    using VBF = hn::Vec<decltype(dbf)>;
+    const VBF in16 = hn::LoadU(dbf, in + in_ofs);
+    f0 = hn::PromoteLowerTo(df, in16);
+    f1 = hn::PromoteUpperTo(df, in16);
+  }
+
+  template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Decompress(DF df, size_t /*in_capacity*/,
                                     const MatT* HWY_RESTRICT in, size_t in_ofs,
                                     float* HWY_RESTRICT out, size_t num) {
@@ -186,9 +206,8 @@ struct CompressTraits<hwy::bfloat16_t> {
     size_t i = 0;
     if (num >= N16) {
       for (i = 0; i <= num - N16; i += N16) {
-        const VBF in16 = hn::LoadU(dbf, in + in_ofs + i);
-        const VF in0 = hn::PromoteLowerTo(df, in16);
-        const VF in1 = hn::PromoteUpperTo(df, in16);
+        VF in0, in1;
+        Decompress2(df, in, in_ofs + i, in0, in1);
         hn::StoreU(in0, df, out + i);
         hn::StoreU(in1, df, out + i + N16 / 2);
       }
@@ -294,6 +313,16 @@ struct CompressTraits<SfpStream> {
       }
       tls.stats.Notify(stats);
     }
+  }
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Decompress2(DF df, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, hn::Vec<DF>& f0,
+                                     hn::Vec<DF>& f1) {
+    const hn::Twice<hn::Rebind<uint8_t, DF>> d8;
+    using V8 = hn::Vec<decltype(d8)>;
+    const V8 packed = hn::LoadU(d8, &in->byte + in_ofs);
+    SfpCodec::Dec2F(df, packed, f0, f1);
   }
 
   template <class D, typename OutT>

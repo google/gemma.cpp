@@ -535,6 +535,18 @@ class SfpCodec {
     }
   }
 
+  template <class DF, HWY_IF_F32_D(DF),
+            class V8 = hn::Vec<hn::Twice<hn::Rebind<uint8_t, DF>>>>
+  static HWY_INLINE void Dec2F(DF df, V8 packed, hn::Vec<DF>& f0,
+                               hn::Vec<DF>& f1) {
+    const hn::Rebind<hwy::bfloat16_t, DF> dbf;
+    using VBF = hn::Vec<decltype(dbf)>;
+    VBF bf0, bf1;
+    Dec2B(dbf, packed, bf0, bf1);
+    f0 = hn::PromoteTo(df, bf0);
+    f1 = hn::PromoteTo(df, bf1);
+  }
+
  private:
   // Wrappers to avoid code duplication across float/bf16 input types and
   // the main loop/remainder.

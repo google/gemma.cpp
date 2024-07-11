@@ -25,6 +25,7 @@ cc_library(
     hdrs = ["gemma/ops.h"],
     deps = [
         "//compression:compress",
+        "//compression:sfp",
         "@hwy//:algo",
         "@hwy//:dot",
         "@hwy//:hwy",
@@ -49,6 +50,7 @@ cc_test(
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
     ],
 )
