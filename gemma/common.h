@@ -36,7 +36,7 @@ ByteStorageT AllocateSizeof() {
   return hwy::AllocateAligned<uint8_t>(sizeof(T));
 }
 
-constexpr size_t kPrefillBatchSize = 64;
+constexpr size_t kPrefillBatchSize = 512;
 constexpr size_t kDecodeBatchSize = 1;
 constexpr size_t kBatchedQueryBatchSize = 16;
 constexpr size_t kMinAdjustedPrefillBatchSize =
