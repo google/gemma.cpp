@@ -30,12 +30,6 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 int main(int argc, char** argv) {
-  int argc_dummy = 1;
-  // Required because sentencepiece uses Google I/O which requires InitGoogle.
-  // argc_dummy = 1 avoids sentencepiece absl flags attempting to parse
-  // arguments
-  InitGoogle("usage", &argc_dummy, &argv, false);
-
   gcpp::LoaderArgs loader(argc, argv);
   if (gcpp::HasHelp(argc, argv)) {
     loader.Help();
