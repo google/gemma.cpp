@@ -59,6 +59,7 @@ struct Activations {
 
   // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
   // per-thread storage.
+  // TODO: only used for MatVec, remove once that is gone.
   std::array<float, kModelDim * kMaxThreads> even_odd;
 
   // Griffin layer internal activations

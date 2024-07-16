@@ -76,6 +76,8 @@ class CompressedArray {
  public:
   using value_type = MatT;
 
+  // Note that whenever you access data(), you have to consider a scale() that
+  // may be different from 1.0f.
   MatT* data() { return data_.data(); }
   const MatT* data() const { return data_.data(); }
 
