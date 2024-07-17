@@ -246,9 +246,11 @@ static HWY_INLINE GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling(
 
 template <class TConfig>
 GEMMA_CONSTEXPR_SQRT float ChooseQueryScale() {
-  constexpr size_t kQKVDim = TConfig::kQKVDim;
-  // QueryScaleType::Sqrt
-  return 1.0f / Sqrt(static_cast<float>(kQKVDim));
+  if (TConfig::kQueryScale == QueryScaleType::SqrtModelDimDivNumHeads)
+    return 1.0f /
+           Sqrt(static_cast<float>(TConfig::kModelDim / TConfig::kHeads));
+  // QueryScaleType::SqrtKeySize
+  return 1.0f / Sqrt(static_cast<float>(TConfig::kQKVDim));
 }
 
 }  // namespace gcpp
