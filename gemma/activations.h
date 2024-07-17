@@ -18,76 +18,129 @@
 
 #include <stddef.h>
 
-#include <array>
-
-#include "gemma/common.h"  // AllocateSizeof
-#include "hwy/base.h"        // hwy::bfloat16_t
+#include "gemma/common.h"  // kMaxThreads - TODO: remove
+#include "hwy/aligned_allocator.h"
+#include "hwy/base.h"  // HWY_DASSERT
 
 namespace gcpp {
 
-// Must be aligned.
-template <class TConfig, size_t kBatchSize>
+// Owns dynamically-allocated aligned memory for a batch of row vectors.
+// This can be seen as a (batch_size x len) matrix.
+template <typename T>
+class RowVectorBatch {
+ public:
+  // Default ctor for Activations ctor.
+  RowVectorBatch() : batch_size_(0), len_(0) {}
+  // Main ctor, called from Activations::Allocate.
+  RowVectorBatch(size_t batch_size, size_t len)
+      : batch_size_(batch_size), len_(len) {
+    mem_ = hwy::AllocateAligned<T>(batch_size * len);
+  }
+
+  // Move-only
+  RowVectorBatch(RowVectorBatch&) noexcept = delete;
+  RowVectorBatch& operator=(RowVectorBatch&) noexcept = delete;
+  RowVectorBatch(RowVectorBatch&&) noexcept = default;
+  RowVectorBatch& operator=(RowVectorBatch&&) noexcept = default;
+
+  size_t BatchSize() const { return batch_size_; }
+  size_t Len() const { return len_; }
+
+  // Returns the given row vector of length `Len()`.
+  T* Batch(size_t batch_idx) {
+    HWY_DASSERT(batch_idx < batch_size_);
+    return mem_.get() + batch_idx * len_;
+  }
+
+  // For MatMul or other operations that process the entire batch at once.
+  T* All() { return mem_.get(); }
+  size_t NumBytes() const { return batch_size_ * len_ * sizeof(T); }
+
+ private:
+  hwy::AlignedFreeUniquePtr<T[]> mem_;
+  size_t batch_size_;  // rows in the matrix
+  size_t len_;         // columns in the matrix = vector length
+};
+
 struct Activations {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kKVHeads = TConfig::kKVHeads;
-  static constexpr bool kIsMHA = kHeads == kKVHeads;  // Multi-Head Attention
-  // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
-  // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
-  static constexpr size_t kQStride = kQKVDim * (kIsMHA ? 3 : 1);
+  RowVectorBatch<float> x;  // input
+  RowVectorBatch<float> q;  // query, also KV if MHA.
+  RowVectorBatch<float> logits;
 
-  std::array<float, kBatchSize * kModelDim> x;  // input
-  std::array<float, kBatchSize * kModelDim> pre_att_rms_out;
-  std::array<float, kBatchSize * kHeads * kQStride> q;  // query vector
-  std::array<float, kBatchSize * kHeads * TConfig::kSeqLen>
-      att;                                                   // attention vector
-  std::array<float, kBatchSize * kHeads * kQKVDim> att_out;  // attention output
-  std::array<float, kHeads * kBatchSize * kModelDim>
-      att_post1;  // attention output after linear transformation, per head
-  std::array<float, kBatchSize * kModelDim>
-      att_post2;  // accumulation of attention outputs over heads
-  std::array<hwy::bfloat16_t, kBatchSize * kModelDim> bf_pre_ffw_rms_out;
-  std::array<float, kBatchSize * TConfig::kFFHiddenDim * 2> ffw_hidden;
+  // Attention
+  RowVectorBatch<float> pre_att_rms_out;
+  RowVectorBatch<float> att;      // attention vector
+  RowVectorBatch<float> att_out;  // attention output
+  // After linear transformation, shared by all heads
+  RowVectorBatch<float> att_post1;
+  // Accumulation of attention outputs over heads
+  RowVectorBatch<float> att_post2;
 
-  // For FFW MatMul.
-  std::array<float, kBatchSize * TConfig::kFFHiddenDim> C1;
-  std::array<float, kBatchSize * TConfig::kFFHiddenDim> C2;
+  // Gated FFW
+  RowVectorBatch<hwy::bfloat16_t> bf_pre_ffw_rms_out;
+  RowVectorBatch<float> C1;
+  RowVectorBatch<float> C2;
+  RowVectorBatch<float> ffw_out;
 
-  std::array<float, kBatchSize * kModelDim> ffw_out;
-  std::array<float, kBatchSize * TConfig::kVocabSize> logits;
+  // Griffin
+  RowVectorBatch<float> griffin_x;
+  RowVectorBatch<float> griffin_y;
+  RowVectorBatch<float> griffin_gate_x;
+  RowVectorBatch<float> griffin_multiplier;
 
   // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
   // per-thread storage.
-  // TODO: only used for MatVec, remove once that is gone.
-  std::array<float, kModelDim * kMaxThreads> even_odd;
+  // TODO: remove once MatVec is gone.
+  RowVectorBatch<float> even_odd;
 
-  // Griffin layer internal activations
-  static constexpr size_t kGriffinDim =
-      TConfig::kGriffinLayers > 0 ? kModelDim : 0;
-  std::array<float, kBatchSize * kGriffinDim> griffin_x;
-  std::array<float, kBatchSize * kGriffinDim> griffin_y;
-  std::array<float, kBatchSize * kGriffinDim> griffin_gate_x;
-  std::array<float, kBatchSize * kGriffinDim> griffin_multiplier;
-};
+  // Multi-Head Attention?
+  template <class TConfig>
+  static constexpr bool IsMHA() {
+    return TConfig::kHeads == TConfig::kKVHeads;
+  }
 
-template <typename TConfig>
-struct AllocateState {
-  void operator()(ByteStorageT& prefill, ByteStorageT& decode) const {
-    // When batching queries, the prefill batch size is reduced by a factor
-    // of kBatchedQueryBatchSize
-    prefill =
-        AllocateSizeof<Activations<TConfig, kMinAdjustedPrefillBatchSize *
-                                                kBatchedQueryBatchSize>>();
-    decode = AllocateSizeof<
-        Activations<TConfig, kDecodeBatchSize * kBatchedQueryBatchSize>>();
+  // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
+  // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
+  template <class TConfig>
+  static constexpr size_t QStride() {
+    return TConfig::kQKVDim * (IsMHA<TConfig>() ? 3 : 1);
+  }
+
+  template <class TConfig>
+  void Allocate(size_t batch_size) {
+    constexpr size_t kModelDim = TConfig::kModelDim;
+    constexpr size_t kQKVDim = TConfig::kQKVDim;
+    constexpr size_t kHeads = TConfig::kHeads;
+    constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+    constexpr size_t kVocabSize = TConfig::kVocabSize;
+    constexpr size_t kSeqLen = TConfig::kSeqLen;
+    constexpr size_t kGriffinLayers = TConfig::kGriffinLayers;
+
+    x = RowVectorBatch<float>(batch_size, kModelDim);
+    q = RowVectorBatch<float>(batch_size, kHeads * QStride<TConfig>());
+    logits = RowVectorBatch<float>(batch_size, kVocabSize);
+
+    pre_att_rms_out = RowVectorBatch<float>(batch_size, kModelDim);
+    att = RowVectorBatch<float>(batch_size, kHeads * kSeqLen);
+    att_out = RowVectorBatch<float>(batch_size, kHeads * kQKVDim);
+    att_post1 = RowVectorBatch<float>(1, kModelDim);
+    att_post2 = RowVectorBatch<float>(batch_size, kModelDim);
+
+    bf_pre_ffw_rms_out = RowVectorBatch<hwy::bfloat16_t>(batch_size, kModelDim);
+    C1 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
+    C2 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
+    ffw_out = RowVectorBatch<float>(batch_size, kModelDim);
+
+    if (kGriffinLayers > 0) {
+      griffin_x = RowVectorBatch<float>(batch_size, kModelDim);
+      griffin_y = RowVectorBatch<float>(batch_size, kModelDim);
+      griffin_gate_x = RowVectorBatch<float>(batch_size, kModelDim);
+      griffin_multiplier = RowVectorBatch<float>(batch_size, kModelDim);
+    }
+
+    even_odd = RowVectorBatch<float>(1, kModelDim * kMaxThreads);
   }
 };
-
-template <class TConfig, size_t kBatchSize>
-Activations<TConfig, kBatchSize>& GetActivations(const ByteStorageT& state_u8) {
-  return *reinterpret_cast<Activations<TConfig, kBatchSize>*>(state_u8.get());
-}
 
 }  // namespace gcpp
 

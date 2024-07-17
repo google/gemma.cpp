@@ -1140,29 +1140,26 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
 }
 
 // Simple loops unless/until batch sizes are large enough to parallelize.
-template <size_t kBatchSize, typename WeightT, typename OutT>
+template <typename WeightT, typename OutT>
 void RMSNormBatched(size_t num_tokens, const float* activations,
                     const WeightT* weights, OutT* out, const size_t model_dim) {
-  HWY_DASSERT(num_tokens <= kBatchSize);
   for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
     RMSNorm(activations + token_idx * model_dim, weights,
             out + token_idx * model_dim, model_dim);
   }
 }
 
-template <size_t kBatchSize, typename WeightT, typename InOutT>
+// TODO: pass RowVectorBatch argument.
+template <typename WeightT, typename InOutT>
 void RMSNormInplaceBatched(size_t num_tokens, const WeightT* weights,
                            InOutT* inout, const size_t model_dim) {
-  HWY_DASSERT(num_tokens <= kBatchSize);
   for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
     RMSNormInplace(weights, inout + token_idx * model_dim, model_dim);
   }
 }
 
-template <size_t kBatchSize>
-void AddFromBatched(size_t num_tokens, const float* other, float* x,
-                    const size_t model_dim) {
-  HWY_DASSERT(num_tokens <= kBatchSize);
+static HWY_INLINE void AddFromBatched(size_t num_tokens, const float* other,
+                                      float* x, const size_t model_dim) {
   for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
     AddFrom(other + token_idx * model_dim, x + token_idx * model_dim,
             model_dim);

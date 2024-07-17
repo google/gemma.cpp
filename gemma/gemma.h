@@ -23,6 +23,7 @@
 
 // IWYU pragma: begin_exports
 #include "compression/io.h"  // Path
+#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
@@ -95,8 +96,8 @@ class Gemma {
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
-  const ByteStorageT& Prefill() const { return prefill_u8_; }
-  const ByteStorageT& Decode() const { return decode_u8_; }
+  const Activations& Prefill() const { return prefill_; }
+  const Activations& Decode() const { return decode_; }
 
   void Generate(const RuntimeConfig& runtime_config,
                 const std::vector<int>& prompt, size_t start_pos,
@@ -114,8 +115,8 @@ class Gemma {
   // Type-erased so that this can be defined in the header, without requiring
   // forwarding functions.
   ByteStorageT weights_u8_;
-  ByteStorageT prefill_u8_;
-  ByteStorageT decode_u8_;
+  Activations prefill_;
+  Activations decode_;
   ModelInfo info_;
 };
 
