@@ -276,11 +276,21 @@ void ForEachTensor(RawWeightsPtr raw_weights,
     if (TConfig::kFFBiases) {
       GEMMA_CALL_FUNC("ffw_gat_b", ffw_gating_biases);
       GEMMA_CALL_FUNC("ffw_out_b", ffw_output_biases);
+    } else {
+      // Ensure initialized so we can call data_scale1, which happens even if
+      // the tensor turns out to be unused.
+      c_layer->ffw_gating_biases.set_scale(1.0f);
+      c_layer->ffw_output_biases.set_scale(1.0f);
     }
 
-    if (TConfig::kSoftmaxAttnOutputBiases &&
-        type == LayerAttentionType::kGemma) {
-      GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
+    if (type == LayerAttentionType::kGemma) {
+      if (TConfig::kSoftmaxAttnOutputBiases) {
+        GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
+      } else {
+        // Ensure initialized so we can call data_scale1, which happens even if
+        // the tensor turns out to be unused.
+        c_layer->attention_output_biases.set_scale(1.0f);
+      }
     }
   }
 #undef GEMMA_CALL_FUNC
