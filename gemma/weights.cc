@@ -15,6 +15,7 @@
 
 #include "gemma/weights.h"
 
+#include <cstdio>
 #include <cstdlib>
 
 #include "compression/compress.h"
@@ -96,6 +97,9 @@ class WeightLogger {
  public:
   template <size_t N>
   void operator()(const char* name, const CompressedArray<float, N>& tensor) {
+    if (tensor.scale() != 1.0f) {
+      printf("[scale=%f] ", tensor.scale());
+    }
     LogVec(name, tensor.data(), N);
     total_weights += N;
   }

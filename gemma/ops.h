@@ -27,6 +27,7 @@
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
+#include "compression/compress.h"
 #include "compression/sfp.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -106,47 +107,50 @@ HWY_INLINE constexpr size_t RowsPerStrip() {
 
 // Shared between f32 and bf16, which also accumulates into f32 vectors.
 template <size_t kNumRows, class DF, class VF = hn::Vec<DF>>
-HWY_INLINE void StoreHorizontalSums(DF df, VF c00, VF c01, VF c02, VF c03,
+HWY_INLINE void StoreHorizontalSums(DF df,                           //
+                                    VF c00, VF c01, VF c02, VF c03,  //
                                     VF c10, VF c11, VF c12, VF c13,  //
                                     VF c20, VF c21, VF c22, VF c23,  //
-                                    VF c30, VF c31, VF c32, VF c33,
-                                    float* HWY_RESTRICT tile_c,
+                                    VF c30, VF c31, VF c32, VF c33,  //
+                                    float scale, float* HWY_RESTRICT tile_c,
                                     size_t stride_c) {
   // We are computing the product of (4, 4N) * (4N, 4) = (4, 4) tiles.
   // Each entry of C[r,c] is a dot product of A.row and B.col, which reside in
   // the lanes of `c$r$c`, so we store their horizontal sum (ReduceSum). This is
   // expensive, but only a fraction of the kColsA_RowsB/N FMAs.
-  tile_c[stride_c * 0 + 0] = hn::ReduceSum(df, c00);
-  tile_c[stride_c * 0 + 1] = hn::ReduceSum(df, c01);
-  tile_c[stride_c * 0 + 2] = hn::ReduceSum(df, c02);
-  tile_c[stride_c * 0 + 3] = hn::ReduceSum(df, c03);
+  tile_c[stride_c * 0 + 0] = scale * hn::ReduceSum(df, c00);
+  tile_c[stride_c * 0 + 1] = scale * hn::ReduceSum(df, c01);
+  tile_c[stride_c * 0 + 2] = scale * hn::ReduceSum(df, c02);
+  tile_c[stride_c * 0 + 3] = scale * hn::ReduceSum(df, c03);
   if (kNumRows == 1) return;
 
-  tile_c[stride_c * 1 + 0] = hn::ReduceSum(df, c10);
-  tile_c[stride_c * 1 + 1] = hn::ReduceSum(df, c11);
-  tile_c[stride_c * 1 + 2] = hn::ReduceSum(df, c12);
-  tile_c[stride_c * 1 + 3] = hn::ReduceSum(df, c13);
+  tile_c[stride_c * 1 + 0] = scale * hn::ReduceSum(df, c10);
+  tile_c[stride_c * 1 + 1] = scale * hn::ReduceSum(df, c11);
+  tile_c[stride_c * 1 + 2] = scale * hn::ReduceSum(df, c12);
+  tile_c[stride_c * 1 + 3] = scale * hn::ReduceSum(df, c13);
   if (kNumRows == 2) return;
 
-  tile_c[stride_c * 2 + 0] = hn::ReduceSum(df, c20);
-  tile_c[stride_c * 2 + 1] = hn::ReduceSum(df, c21);
-  tile_c[stride_c * 2 + 2] = hn::ReduceSum(df, c22);
-  tile_c[stride_c * 2 + 3] = hn::ReduceSum(df, c23);
+  tile_c[stride_c * 2 + 0] = scale * hn::ReduceSum(df, c20);
+  tile_c[stride_c * 2 + 1] = scale * hn::ReduceSum(df, c21);
+  tile_c[stride_c * 2 + 2] = scale * hn::ReduceSum(df, c22);
+  tile_c[stride_c * 2 + 3] = scale * hn::ReduceSum(df, c23);
   if (kNumRows == 3) return;
 
-  tile_c[stride_c * 3 + 0] = hn::ReduceSum(df, c30);
-  tile_c[stride_c * 3 + 1] = hn::ReduceSum(df, c31);
-  tile_c[stride_c * 3 + 2] = hn::ReduceSum(df, c32);
-  tile_c[stride_c * 3 + 3] = hn::ReduceSum(df, c33);
+  tile_c[stride_c * 3 + 0] = scale * hn::ReduceSum(df, c30);
+  tile_c[stride_c * 3 + 1] = scale * hn::ReduceSum(df, c31);
+  tile_c[stride_c * 3 + 2] = scale * hn::ReduceSum(df, c32);
+  tile_c[stride_c * 3 + 3] = scale * hn::ReduceSum(df, c33);
 }
 
 // Completes the tile by summing across the vectors, and adds the biases.
 template <size_t kNumRows, class DF, class VF = hn::Vec<DF>>
-HWY_INLINE void StoreHorizontalSumsAdd(DF df, VF c00, VF c01, VF c02, VF c03,
+HWY_INLINE void StoreHorizontalSumsAdd(DF df,                           //
+                                       VF c00, VF c01, VF c02, VF c03,  //
                                        VF c10, VF c11, VF c12, VF c13,  //
                                        VF c20, VF c21, VF c22, VF c23,  //
                                        VF c30, VF c31, VF c32, VF c33,
                                        const float* HWY_RESTRICT add,
+                                       const float scale,
                                        float* HWY_RESTRICT tile_c,
                                        size_t stride_c) {
   // We are computing the product of (4, 4N) * (4N, 4) = (4, 4) tiles.
@@ -154,31 +158,31 @@ HWY_INLINE void StoreHorizontalSumsAdd(DF df, VF c00, VF c01, VF c02, VF c03,
   // the lanes of `c$r$c`, so we store their horizontal sum (ReduceSum). This is
   // expensive, but only a fraction of the kColsA_RowsB/N FMAs.
   float addon0 = hwy::ConvertScalarTo<float>(add[0]);
-  tile_c[stride_c * 0 + 0] = hn::ReduceSum(df, c00) + addon0;
+  tile_c[stride_c * 0 + 0] = scale * hn::ReduceSum(df, c00) + addon0;
   float addon1 = hwy::ConvertScalarTo<float>(add[1]);
-  tile_c[stride_c * 0 + 1] = hn::ReduceSum(df, c01) + addon1;
+  tile_c[stride_c * 0 + 1] = scale * hn::ReduceSum(df, c01) + addon1;
   float addon2 = hwy::ConvertScalarTo<float>(add[2]);
-  tile_c[stride_c * 0 + 2] = hn::ReduceSum(df, c02) + addon2;
+  tile_c[stride_c * 0 + 2] = scale * hn::ReduceSum(df, c02) + addon2;
   float addon3 = hwy::ConvertScalarTo<float>(add[3]);
-  tile_c[stride_c * 0 + 3] = hn::ReduceSum(df, c03) + addon3;
+  tile_c[stride_c * 0 + 3] = scale * hn::ReduceSum(df, c03) + addon3;
   if (kNumRows == 1) return;
 
-  tile_c[stride_c * 1 + 0] = hn::ReduceSum(df, c10) + addon0;
-  tile_c[stride_c * 1 + 1] = hn::ReduceSum(df, c11) + addon1;
-  tile_c[stride_c * 1 + 2] = hn::ReduceSum(df, c12) + addon2;
-  tile_c[stride_c * 1 + 3] = hn::ReduceSum(df, c13) + addon3;
+  tile_c[stride_c * 1 + 0] = scale * hn::ReduceSum(df, c10) + addon0;
+  tile_c[stride_c * 1 + 1] = scale * hn::ReduceSum(df, c11) + addon1;
+  tile_c[stride_c * 1 + 2] = scale * hn::ReduceSum(df, c12) + addon2;
+  tile_c[stride_c * 1 + 3] = scale * hn::ReduceSum(df, c13) + addon3;
   if (kNumRows == 2) return;
 
-  tile_c[stride_c * 2 + 0] = hn::ReduceSum(df, c20) + addon0;
-  tile_c[stride_c * 2 + 1] = hn::ReduceSum(df, c21) + addon1;
-  tile_c[stride_c * 2 + 2] = hn::ReduceSum(df, c22) + addon2;
-  tile_c[stride_c * 2 + 3] = hn::ReduceSum(df, c23) + addon3;
+  tile_c[stride_c * 2 + 0] = scale * hn::ReduceSum(df, c20) + addon0;
+  tile_c[stride_c * 2 + 1] = scale * hn::ReduceSum(df, c21) + addon1;
+  tile_c[stride_c * 2 + 2] = scale * hn::ReduceSum(df, c22) + addon2;
+  tile_c[stride_c * 2 + 3] = scale * hn::ReduceSum(df, c23) + addon3;
   if (kNumRows == 3) return;
 
-  tile_c[stride_c * 3 + 0] = hn::ReduceSum(df, c30) + addon0;
-  tile_c[stride_c * 3 + 1] = hn::ReduceSum(df, c31) + addon1;
-  tile_c[stride_c * 3 + 2] = hn::ReduceSum(df, c32) + addon2;
-  tile_c[stride_c * 3 + 3] = hn::ReduceSum(df, c33) + addon3;
+  tile_c[stride_c * 3 + 0] = scale * hn::ReduceSum(df, c30) + addon0;
+  tile_c[stride_c * 3 + 1] = scale * hn::ReduceSum(df, c31) + addon1;
+  tile_c[stride_c * 3 + 2] = scale * hn::ReduceSum(df, c32) + addon2;
+  tile_c[stride_c * 3 + 3] = scale * hn::ReduceSum(df, c33) + addon3;
 }
 
 // Wrapper around StoreHorizontalSums and StoreHorizontalSumsAdd to shorten call
@@ -188,16 +192,16 @@ template <bool kAdd, size_t kNumRows, class DF, class VF = hn::Vec<DF>>
 HWY_INLINE void StoreHorizontalSumsMaybeAdd(
     DF df, VF c00, VF c01, VF c02, VF c03, VF c10, VF c11, VF c12, VF c13,
     VF c20, VF c21, VF c22, VF c23, VF c30, VF c31, VF c32, VF c33,
-    const float* HWY_RESTRICT add, size_t add_offset,
+    const float* HWY_RESTRICT add, size_t add_offset, const float scale,
     float* HWY_RESTRICT tile_c, size_t stride_c) {
   if constexpr (kAdd) {
     StoreHorizontalSumsAdd<kNumRows>(df, c00, c01, c02, c03, c10, c11, c12, c13,
                                      c20, c21, c22, c23, c30, c31, c32, c33,
-                                     add + add_offset, tile_c, stride_c);
+                                     add + add_offset, scale, tile_c, stride_c);
   } else {
     StoreHorizontalSums<kNumRows>(df, c00, c01, c02, c03, c10, c11, c12, c13,
                                   c20, c21, c22, c23, c30, c31, c32, c33,
-                                  tile_c, stride_c);
+                                  scale, tile_c, stride_c);
   }
 }
 
@@ -215,7 +219,9 @@ HWY_INLINE void StoreHorizontalSumsMaybeAdd(
 template <size_t kNumRows, size_t kColsA_RowsB, bool kAdd>
 HWY_INLINE void GEMM_4x4_Tile(const hwy::bfloat16_t* HWY_RESTRICT A,
                               const hwy::bfloat16_t* HWY_RESTRICT B,
-                              float* HWY_RESTRICT C, const float* add,
+                              float* HWY_RESTRICT C,
+                              const float scale,
+                              const float* HWY_RESTRICT add,
                               const size_t idx_tile, const size_t xtiles,
                               const size_t stride_a, const size_t stride_b,
                               const size_t stride_c) {
@@ -303,7 +309,7 @@ HWY_INLINE void GEMM_4x4_Tile(const hwy::bfloat16_t* HWY_RESTRICT A,
   float* HWY_RESTRICT tile_c = C + stride_c * row_a + row_b_col_c;
   StoreHorizontalSumsMaybeAdd<kAdd, kNumRows>(
       df, c00, c01, c02, c03, c10, c11, c12, c13, c20, c21, c22, c23, c30, c31,
-      c32, c33, add, row_b_col_c, tile_c, stride_c);
+      c32, c33, add, row_b_col_c, scale, tile_c, stride_c);
 }
 
 #endif  // GEMMA_NATIVE_BF16
@@ -332,7 +338,9 @@ template <size_t kNumRows, size_t kColsA_RowsB, bool kAdd, typename MatTA,
           typename MatTB>
 HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
                               const MatTB* HWY_RESTRICT B,
-                              float* HWY_RESTRICT C, const float* add,
+                              float* HWY_RESTRICT C,
+                              const float scale,
+                              const float* HWY_RESTRICT add,
                               const size_t idx_tile, const size_t xtiles,
                               const size_t stride_a, const size_t stride_b,
                               const size_t stride_c) {
@@ -417,18 +425,28 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A,
   float* HWY_RESTRICT tile_c = C + stride_c * row_a + row_b_col_c;
   StoreHorizontalSumsMaybeAdd<kAdd, kNumRows>(
       d32, c00, c01, c02, c03, c10, c11, c12, c13, c20, c21, c22, c23, c30, c31,
-      c32, c33, add, row_b_col_c, tile_c, stride_c);
+      c32, c33, add, row_b_col_c, scale, tile_c, stride_c);
 }
 
+// C = A * B * scale [+ add].
+// Computes the matrix product of A and B and stores this in C.
+// If kAdd is true, the row-vector `add` is added to each row of C.
+// A is a matrix of size (batch_size, kColsA_RowsB).
+// B is passed transposed (column-major), so a matrix of size
+// (kColsBC, kColsA_RowsB), representing a B of size (kColsA_RowsB, kColsBC).
+// C is a matrix of size (batch_size, kColsBC).
+// The product is scaled by `scale` to support CompressedArray with scale != 1,
+// the caller can pass the product of the scales of A and B.
+// A scale for `add` is not supported, so make sure its scale is 1.
 // Tiled 4x4 GEMM. Typically batch_size is 1..512, kColsA_RowsB is 3k or 24k,
-// and kColsBC is 24k or 3k. Note: B is transposed (column-major).
-// NOTE that batch_size is the number of rows of A and C.
+// and kColsBC is 24k or 3k.
 // This function processes tiles in parallel with a work-stealing thread pool.
 template <size_t kColsA_RowsB, size_t kColsBC, bool kAdd, typename MatTA,
           typename MatTB, typename OutT, typename AddT>
 HWY_NOINLINE void MatMul_4x4_Batch_Add(
     size_t batch_size, const MatTA* HWY_RESTRICT A, const MatTB* HWY_RESTRICT B,
-    OutT* HWY_RESTRICT C, const AddT* add, hwy::ThreadPool& pool) {
+    float scale, OutT* HWY_RESTRICT C, const AddT* HWY_RESTRICT add,
+    hwy::ThreadPool& pool) {
   PROFILER_ZONE("Matmul");
   // Process reg-sized tiles of C in parallel. We currently write C directly,
   // which touches more memory than fits in L3. TODO: add another level of loops
@@ -454,31 +472,36 @@ HWY_NOINLINE void MatMul_4x4_Batch_Add(
     HWY_ASSERT(num_rows > 0);
     switch (num_rows) {
       case 1:
-        GEMM_4x4_Tile<1, kColsA_RowsB, kAdd>(A, B, C, add, idx_tile, kTilesX,
-                                             kStrideA, kStrideB, kStrideC);
+        GEMM_4x4_Tile<1, kColsA_RowsB, kAdd>(A, B, C, scale, add, idx_tile,
+                                             kTilesX, kStrideA, kStrideB,
+                                             kStrideC);
         break;
       case 2:
-        GEMM_4x4_Tile<2, kColsA_RowsB, kAdd>(A, B, C, add, idx_tile, kTilesX,
-                                             kStrideA, kStrideB, kStrideC);
+        GEMM_4x4_Tile<2, kColsA_RowsB, kAdd>(A, B, C, scale, add, idx_tile,
+                                             kTilesX, kStrideA, kStrideB,
+                                             kStrideC);
         break;
       case 3:
-        GEMM_4x4_Tile<3, kColsA_RowsB, kAdd>(A, B, C, add, idx_tile, kTilesX,
-                                             kStrideA, kStrideB, kStrideC);
+        GEMM_4x4_Tile<3, kColsA_RowsB, kAdd>(A, B, C, scale, add, idx_tile,
+                                             kTilesX, kStrideA, kStrideB,
+                                             kStrideC);
         break;
       default:
-        GEMM_4x4_Tile<4, kColsA_RowsB, kAdd>(A, B, C, add, idx_tile, kTilesX,
-                                             kStrideA, kStrideB, kStrideC);
+        GEMM_4x4_Tile<4, kColsA_RowsB, kAdd>(A, B, C, scale, add, idx_tile,
+                                             kTilesX, kStrideA, kStrideB,
+                                             kStrideC);
     }
   });
 }
 
+// As above, without the add.
 template <size_t kColsA_RowsB, size_t kColsBC, typename MatTA,
           typename MatTB, typename OutT>
 HWY_NOINLINE void MatMul_4x4_Batch(
     size_t batch_size, const MatTA* HWY_RESTRICT A, const MatTB* HWY_RESTRICT B,
-    OutT* HWY_RESTRICT C, hwy::ThreadPool& pool) {
+    float scale, OutT* HWY_RESTRICT C, hwy::ThreadPool& pool) {
   MatMul_4x4_Batch_Add<kColsA_RowsB, kColsBC, /*kAdd=*/false>(
-    batch_size, A, B, C, /*add=*/static_cast<OutT*>(nullptr), pool);
+    batch_size, A, B, scale, C, /*add=*/static_cast<OutT*>(nullptr), pool);
 }
 
 //------------------------------------------------------------------------------

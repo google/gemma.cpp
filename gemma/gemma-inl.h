@@ -81,9 +81,9 @@ HWY_NOINLINE void GriffinRecurrent(
     TwoMatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_x_w, layer_weights->griffin.linear_y_w, 0,
         activations.pre_att_rms_out.Batch(batch_idx),
-        /*add0=*/layer_weights->griffin.linear_x_biases.data(),
-        /*add1=*/layer_weights->griffin.linear_y_biases.data(), /*out0=*/x,
-        /*out1=*/y, pool);
+        /*add0=*/layer_weights->griffin.linear_x_biases.data_scale1(),
+        /*add1=*/layer_weights->griffin.linear_y_biases.data_scale1(),
+        /*out0=*/x, /*out1=*/y, pool);
     Gelu(y, kModelDim);
   }
 
@@ -106,13 +106,13 @@ HWY_NOINLINE void GriffinRecurrent(
     for (size_t i = 0; i < kModelDim; i += hn::Lanes(df)) {
       auto xv = hn::Load(df, x + i);
       auto accum0 =
-          hn::Load(df, layer_weights->griffin.conv_biases.data() + i);
+          hn::Load(df, layer_weights->griffin.conv_biases.data_scale1() + i);
       auto accum1 = hn::Zero(df);
       static_assert(kConv1dWidth % 2 == 0, "Conv width must be even");
       for (size_t l = 0; 2 * l < kConv1dWidth; l++) {
-        auto wv0 = hn::Load(df, layer_weights->griffin.conv_w.data() +
+        auto wv0 = hn::Load(df, layer_weights->griffin.conv_w.data_scale1() +
                                 (kConv1dWidth - 1 - 2 * l) * kModelDim + i);
-        auto wv1 = hn::Load(df, layer_weights->griffin.conv_w.data() +
+        auto wv1 = hn::Load(df, layer_weights->griffin.conv_w.data_scale1() +
                                 (kConv1dWidth - 2 - 2 * l) * kModelDim + i);
         accum0 = hn::MulAdd(wv0, hn::Load(df, cache[l * 2] + i), accum0);
         accum1 = hn::MulAdd(wv1, hn::Load(df, cache[l * 2 + 1] + i), accum1);
@@ -139,16 +139,18 @@ HWY_NOINLINE void GriffinRecurrent(
       TwoOfsMatVecAddLoop<kHeadDim, kHeadDim>(
           layer_weights->griffin.gate_w, kMatrixSize * head,
           kMatrixSize * (kHeads + head), x + head_offset,
-          /*add0=*/layer_weights->griffin.gate_biases.data() + head_offset,
-          /*add1=*/layer_weights->griffin.gate_biases.data() + kModelDim +
+          /*add0=*/layer_weights->griffin.gate_biases.data_scale1() +
               head_offset,
+          /*add1=*/layer_weights->griffin.gate_biases.data_scale1() +
+              kModelDim + head_offset,
           /*out0=*/gate_x + head_offset, /*out1=*/a + head_offset);
       Sigmoid(gate_x + head_offset, kHeadDim);
       Sigmoid(a + head_offset, kHeadDim);
       const auto fn_mul = [](D d, hn::Vec<D> x, hn::Vec<D> gate_x)
                           HWY_ATTR { return hn::Mul(x, gate_x); };
       hn::Transform1(D(), a + head_offset, kHeadDim,
-                     layer_weights->griffin.a.data() + head_offset, fn_mul);
+                     layer_weights->griffin.a.data_scale1() + head_offset,
+                     fn_mul);
       hn::Transform1(D(), x + head_offset, kHeadDim, gate_x + head_offset,
                      fn_mul);
       // RNN scan
@@ -180,7 +182,7 @@ HWY_NOINLINE void GriffinRecurrent(
     float* out_ptr = activations.att_post2.Batch(batch_idx);
     MatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_out_w, 0, x,
-        layer_weights->griffin.linear_out_biases.data(),
+        layer_weights->griffin.linear_out_biases.data_scale1(),
         activations.even_odd.All(), out_ptr, pool);
   }
 }
@@ -222,9 +224,10 @@ HWY_NOINLINE void Attention(size_t batch_and_query_start, size_t num_tokens,
   //
   // Compute Q only or QKV (if MHA).
   // If MHA, this also computes KV, which we copy to the KV cache below.
+  const float scale = layer_weights->qkv_einsum_w.scale();
   MatMul_4x4_Batch<kModelDim, kHeads * kQStride>(
       num_tokens_and_queries, activations.pre_att_rms_out.All(),
-      layer_weights->qkv_einsum_w.data(), activations.q.All(), pool);
+      layer_weights->qkv_einsum_w.data(), scale, activations.q.All(), pool);
 
   // Compute KV if not MHA.
   if constexpr (!kIsMHA) {
@@ -342,7 +345,7 @@ HWY_NOINLINE void Attention(size_t batch_and_query_start, size_t num_tokens,
     // attn_vec_einsum_w has shape [kHeads, kQKVDim, kModelDim].
     MatVecT</*kAdd=*/TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
         layer_weights->attn_vec_einsum_w, 0, att_out,
-        layer_weights->attention_output_biases.data(),
+        layer_weights->attention_output_biases.data_scale1(),
         activations.even_odd.All(), layer_out, pool);
     // Head 1 and following are added to layer_out.
     for (size_t head = 1; head < kHeads; ++head) {
@@ -384,34 +387,30 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_tokens,
   constexpr size_t kColsB = kFFHiddenDim;
   HWY_DASSERT(num_tokens <= activations.bf_pre_ffw_rms_out.BatchSize());
   const auto A = activations.bf_pre_ffw_rms_out.All();
+  const float scale = layer_weights->gating_einsum_w.scale();
   const auto B1 = layer_weights->gating_einsum_w.data();
   const auto B2 = B1 + kColsA * kColsB;
   auto C1 = activations.C1.All();
   auto C2 = activations.C2.All();
   constexpr bool kAddBias = TConfig::kFFBiases;
-  const auto bias = layer_weights->ffw_gating_biases.data();
+  const auto bias1 = layer_weights->ffw_gating_biases.data_scale1();
+  const auto bias2 = bias1 + kFFHiddenDim;
 
   // Will go through GELU.
-  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_tokens, A, B1, C1,
-                                                 bias, pool);
+  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_tokens, A, B1, scale, C1,
+                                                 bias1, pool);
   // What to multiply by.
-  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_tokens, A, B2, C2,
-                                                 bias + kFFHiddenDim, pool);
+  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_tokens, A, B2, scale, C2,
+                                                 bias2, pool);
 
   // Activation (Gelu) and multiply by gate. Store activations in C1.
   Activation<TConfig>(C1, C2, kFFHiddenDim * num_tokens);
 
-  // linear_w may have a scale value different from 1, apply that here.
-  // We multiply all activations by the scale value to compensate for the
-  // missing scale value in the weights.
-  if (layer_weights->linear_w.scale() != 1.0f) {
-    MulByConst(layer_weights->linear_w.scale(), C1, kFFHiddenDim * num_tokens);
-  }
-
   // Hidden layer -> output layer.
   MatMul_4x4_Batch_Add<kFFHiddenDim, kModelDim, kAddBias>(
-      num_tokens, C1, layer_weights->linear_w.data(), activations.ffw_out.All(),
-      layer_weights->ffw_output_biases.data(), pool);
+      num_tokens, C1, layer_weights->linear_w.data(),
+      layer_weights->linear_w.scale(), activations.ffw_out.All(),
+      layer_weights->ffw_output_biases.data_scale1(), pool);
 }
 
 // TODO: pass Activations.x instead of Activations.
@@ -453,7 +452,7 @@ HWY_NOINLINE void TransformerLayer(
   size_t layer_of_type =
       NumLayersOfTypeBefore(TConfig::kLayerConfig, type, layer);
   RMSNormBatched(num_tokens_and_queries, activations.x.All(),
-                 layer_weights->pre_attention_norm_scale.data(),
+                 layer_weights->pre_attention_norm_scale.data_scale1(),
                  activations.pre_att_rms_out.All(), kModelDim);
   if (type == LayerAttentionType::kGemma) {
     Attention<TConfig>(pos, num_tokens, num_queries, layer_of_type, activations,
@@ -472,21 +471,22 @@ HWY_NOINLINE void TransformerLayer(
   }
 
   if (TConfig::kPostNorm == PostNormType::Scale) {
-    RMSNormInplaceBatched(num_tokens_and_queries,
-                          layer_weights->post_attention_norm_scale.data(),
-                          activations.att_post2.All(), kModelDim);
+    RMSNormInplaceBatched(
+        num_tokens_and_queries,
+        layer_weights->post_attention_norm_scale.data_scale1(),
+        activations.att_post2.All(), kModelDim);
   }
 
   ResidualConnection<TConfig>(num_tokens_and_queries,
                               activations.att_post2.All(), activations.x.All(),
                               layer_weights, /*is_attention=*/true);
   RMSNormBatched(num_tokens_and_queries, activations.x.All(),
-                 layer_weights->pre_ffw_norm_scale.data(),
+                 layer_weights->pre_ffw_norm_scale.data_scale1(),
                  activations.bf_pre_ffw_rms_out.All(), kModelDim);
   FFW<TConfig>(activations, num_tokens_and_queries, layer_weights, pool);
   if (TConfig::kPostNorm == PostNormType::Scale) {
     RMSNormInplaceBatched(num_tokens_and_queries,
-                          layer_weights->post_ffw_norm_scale.data(),
+                          layer_weights->post_ffw_norm_scale.data_scale1(),
                           activations.ffw_out.All(), kModelDim);
   }
   ResidualConnection<TConfig>(num_tokens_and_queries, activations.ffw_out.All(),
@@ -564,7 +564,8 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
     }
   }
 
-  RMSNormInplaceBatched(num_tokens_and_queries, weights.final_norm_scale.data(),
+  RMSNormInplaceBatched(num_tokens_and_queries,
+                        weights.final_norm_scale.data_scale1(),
                         activations.x.All(), kModelDim);
   if (layers_output) {
     for (size_t token_idx = 0; token_idx < num_tokens_and_queries;

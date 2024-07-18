@@ -80,6 +80,14 @@ class CompressedArray {
   // may be different from 1.0f.
   MatT* data() { return data_.data(); }
   const MatT* data() const { return data_.data(); }
+  // The const accessor data_scale1() asserts (!) that the scale is 1.0f, so
+  // calling it means "I am sure the scale is 1 and therefore ignore the scale".
+  // A scale of 0 indicates that the scale has likely never been set, so is
+  // "implicitly 1".
+  const MatT* data_scale1() const {
+    HWY_ASSERT(scale() == 1.f || scale() == 0.f);
+    return data_.data();
+  }
 
   // Decoded elements should be multiplied by this to restore their original
   // range. This is required because SfpStream can only encode a limited range

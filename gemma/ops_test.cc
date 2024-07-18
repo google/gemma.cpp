@@ -32,10 +32,11 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/timer.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma/ops_test.cc"  //NOLINT
+#define HWY_TARGET_INCLUDE "gemma/ops_test.cc"  // NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
@@ -362,7 +363,7 @@ CompressedArray<MatT, kOuter * kInner> GenerateMat(size_t offset,
   });
 
   Compress(content, ws, mat, pool);
-  mat.set_scale(1.0f);
+  mat.set_scale(1.9f);  // Arbitrary value, different from 1.
   return mat;
 }
 
@@ -377,7 +378,7 @@ CompressedArray<MatT, kOuter * kInner> GenerateZeroMat(hwy::ThreadPool& pool) {
   });
 
   Compress(content, ws, mat, pool);
-  mat.set_scale(1.0f);
+  mat.set_scale(1.2f);  // Arbitrary value, different from 1.
   return mat;
 }
 
@@ -400,7 +401,7 @@ std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> GenerateMatHeap(
 
   Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
            pool);
-  mat->set_scale(1.0f);
+  mat->set_scale(0.6f);  // Arbitrary value, different from 1.
   return mat;
 }
 
@@ -423,7 +424,8 @@ GenerateTransposeMatHeap(size_t offset, hwy::ThreadPool& pool) {
 
   Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
            pool);
-  mat->set_scale(1.0f);
+  // Arbitrary value, different from 1, must match GenerateMatHeap.
+  mat->set_scale(0.6f);
   return mat;
 }
 
@@ -443,7 +445,7 @@ std::unique_ptr<CompressedArray<MatT, kOuter * kInner>> GenerateZeroMatHeap(
 
   Compress(content.get(), kOuter * kInner, ws, kOuter * kInner, mat->data(), 0,
            pool);
-  mat->set_scale(1.0f);
+  mat->set_scale(1.2f);  // Arbitrary value, different from 1.
   return mat;
 }
 
@@ -487,6 +489,7 @@ hwy::AlignedFreeUniquePtr<float[]> SimpleMatVecAdd(
   hwy::AlignedFreeUniquePtr<float[]> out = hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(uncompressed_mat && out);
   Decompress(mat, 0, uncompressed_mat.get(), kOuter * kInner);
+  MulByConst(mat.scale(), uncompressed_mat.get(), kOuter * kInner);
   for (size_t idx_row = 0; idx_row < kOuter; idx_row++) {
     out[idx_row] = add[idx_row];
     for (size_t idx_col = 0; idx_col < kInner; idx_col++) {
@@ -513,14 +516,14 @@ void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
 template <size_t kN, size_t kK, typename MatTA, typename MatTB,
           HWY_IF_T_SIZE_GT(MatTB, 1)>
 HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
-                                const MatTB* HWY_RESTRICT b, const float* add,
-                                float* HWY_RESTRICT out) {
+                                const MatTB* HWY_RESTRICT b, const float scale,
+                                const float* add, float* HWY_RESTRICT out) {
   for (size_t i = 0; i < batch_size; ++i) {
     for (size_t k = 0; k < kN; ++k) {
       for (size_t j = 0; j < kK; ++j) {
         const float a1 = hwy::ConvertScalarTo<float>(a[i * kN + k]);
         const float b1 = hwy::ConvertScalarTo<float>(b[k * kK + j]);
-        out[i * kK + j] += a1 * b1;
+        out[i * kK + j] += scale * a1 * b1;
       }
     }
     if (add != nullptr) {
@@ -537,12 +540,13 @@ template <size_t kN, size_t kK, typename MatTA, typename MatTB,
           HWY_IF_T_SIZE(MatTB, 1)>
 HWY_INLINE void MatMulSlowBatch(size_t batch_size, const MatTA* HWY_RESTRICT a,
                                 const MatTB* HWY_RESTRICT b_compr,
-                                const float* add, float* HWY_RESTRICT out) {
+                                const float scale, const float* add,
+                                float* HWY_RESTRICT out) {
   const hn::ScalableTag<float> d;
   hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(kK * kN);
   CompressTraits<MatTB>::Decompress(d, /*in_capacity=*/0, b_compr, 0, b.get(),
                                     kK * kN);
-  MatMulSlowBatch<kN, kK>(batch_size, a, b.get(), add, out);
+  MatMulSlowBatch<kN, kK>(batch_size, a, b.get(), scale, add, out);
 }
 
 template <size_t kM, size_t kN, size_t kK, bool kAdd, typename MatTA,
@@ -558,11 +562,13 @@ void TestTiledBatchMatMul() {
       GenerateMatHeap<MatTB, kN, kK>(0, pool);
   std::unique_ptr<CompressedArray<float, kK>> add =
       GenerateMatHeap<float, 1, kK>(0, pool);
+  add->set_scale(1.0f);
   std::unique_ptr<CompressedArray<float, kM * kK>> c_slow =
       GenerateZeroMatHeap<float, kM, kK>(pool);
+  const float scale = a->scale() * b->scale();
 
   const double start_slow = hwy::platform::Now();
-  MatMulSlowBatch<kN, kK>(kM, a->data(), b->data(),
+  MatMulSlowBatch<kN, kK>(kM, a->data(), b->data(), scale,
                           kAdd ? add->data() : nullptr, c_slow->data());
   const double slow_matmul_seconds = hwy::platform::Now() - start_slow;
   fprintf(stderr, "MatMulSlowBatch took %f seconds.\n", slow_matmul_seconds);
@@ -572,11 +578,13 @@ void TestTiledBatchMatMul() {
       GenerateTransposeMatHeap<MatTB, kN, kK>(0, pool);
 
   const double start_tiled = hwy::platform::Now();
+  EXPECT_EQ(scale, a->scale() * b_trans->scale());
   if (kAdd) {
-    MatMul_4x4_Batch_Add<kN, kK, kAdd>(kM, a->data(), b_trans->data(), c.get(),
-                                       add->data(), pool);
+    MatMul_4x4_Batch_Add<kN, kK, kAdd>(kM, a->data(), b_trans->data(), scale,
+                                       c.get(), add->data(), pool);
   } else {
-    MatMul_4x4_Batch<kN, kK>(kM, a->data(), b_trans->data(), c.get(), pool);
+    MatMul_4x4_Batch<kN, kK>(kM, a->data(), b_trans->data(), scale, c.get(),
+                             pool);
   }
   const double tiled_matmul_seconds = hwy::platform::Now() - start_tiled;
   fprintf(stderr, "MatMul_4x4_Batch took %f seconds.\n", tiled_matmul_seconds);
