@@ -76,8 +76,8 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     fprintf(stderr, "Loading model...\n");
     model_ = AllocateGemma(loader_, pool_);
 
-    kv_caches_.reserve(16);
-    for (int i = 0; i < 16; ++i) {
+    kv_caches_.reserve(kBatchedQueryBatchSize);
+    for (int i = 0; i < kBatchedQueryBatchSize; ++i) {
       kv_caches_.push_back(new KVCache(KVCache::Create(model_->Info().model)));
     }
   }

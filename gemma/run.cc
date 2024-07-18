@@ -97,9 +97,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, hwy::ThreadPool& pool,
     } else if (token == EOS_ID) {
       if (!args.multiturn) {
         abs_pos = 0;
-        if (args.deterministic) {
-          gen.seed(42);
-        }
+        InitGenerator(args, gen);
       }
       if (verbosity >= 2) {
         std::cout << "\n[ End ]\n";

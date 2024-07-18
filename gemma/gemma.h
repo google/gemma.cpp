@@ -28,6 +28,7 @@
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/timer.h"
 // IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // hwy::bfloat16_t
@@ -78,9 +79,30 @@ struct RuntimeConfig {
 };
 
 struct TimingInfo {
-  double prefill_tok_sec = 0.0;
-  double gen_tok_sec = 0.0;
-  double time_to_first_token = 0.0;
+  void NotifyPrefill(size_t tokens, double start) {
+    prefill_tok_sec =
+        static_cast<double>(tokens) / (hwy::platform::Now() - start);
+    gen_tok_sec = 0.0;
+    time_to_first_token = 0.0;
+    tokens_generated = 0;
+  }
+
+  void NotifyGenerated(double prefill_start) {
+    ++tokens_generated;
+    if (HWY_UNLIKELY(tokens_generated == 1)) {
+      time_to_first_token = hwy::platform::Now() - prefill_start;
+    }
+  }
+
+  void NotifyGenerateDone(double gen_start) {
+    gen_tok_sec = static_cast<double>(tokens_generated) /
+                  (hwy::platform::Now() - gen_start);
+  }
+
+  double prefill_tok_sec;
+  double gen_tok_sec;
+  double time_to_first_token;
+  size_t tokens_generated;
 };
 
 class Gemma {
@@ -96,7 +118,6 @@ class Gemma {
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
-  const Activations& Prefill() const { return prefill_; }
   const Activations& Decode() const { return decode_; }
 
   void Generate(const RuntimeConfig& runtime_config,
@@ -115,7 +136,6 @@ class Gemma {
   // Type-erased so that this can be defined in the header, without requiring
   // forwarding functions.
   ByteStorageT weights_u8_;
-  Activations prefill_;
   Activations decode_;
   ModelInfo info_;
 };

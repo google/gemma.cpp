@@ -36,11 +36,10 @@ ByteStorageT AllocateSizeof() {
   return hwy::AllocateAligned<uint8_t>(sizeof(T));
 }
 
-constexpr size_t kPrefillBatchSize = 512;
-constexpr size_t kDecodeBatchSize = 1;
+// Relatively small so that we can also parallelize non-Matmul work. There is
+// one outer thread per batch, each with --num_threads / batches inner threads.
+constexpr size_t kPrefillBatchSize = 64;
 constexpr size_t kBatchedQueryBatchSize = 16;
-constexpr size_t kMinAdjustedPrefillBatchSize =
-    HWY_MAX((size_t)1, kPrefillBatchSize / kBatchedQueryBatchSize);
 
 // Model variants: see configs.h for details. When adding a new one, also
 // update GEMMA_FOREACH* and Call* below, and add instantiations/*.cc.

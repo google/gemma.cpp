@@ -149,13 +149,14 @@ cc_library(
         ":tokenizer",
         ":kv_cache",
         ":weights",
-        "//compression:compress",
         "//compression:io",
         "@hwy//:hwy",
+        "@hwy//:bit_set",
         "@hwy//:matvec",
         "@hwy//:nanobenchmark",  # timer
         "@hwy//:profiler",
         "@hwy//:thread_pool",
+        "@hwy//:topology",
     ],
 )
 

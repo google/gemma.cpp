@@ -37,13 +37,11 @@
 namespace gcpp {
 
 template <typename TConfig>
-struct AllocateState {
-  void operator()(Activations& prefill, Activations& decode) const {
-    // When batching queries, the prefill batch size is reduced by a factor
-    // of kBatchedQueryBatchSize
-    prefill.Allocate<TConfig>(kMinAdjustedPrefillBatchSize *
-                              kBatchedQueryBatchSize);
-    decode.Allocate<TConfig>(kDecodeBatchSize * kBatchedQueryBatchSize);
+struct AllocateActivations {
+  void operator()(Activations& decode) const {
+    // TODO: this is wasted if we only have single-batch queries. Instead
+    // re-allocate when the query batch size is actually > 1?
+    decode.Allocate<TConfig>(kBatchedQueryBatchSize);
   }
 };
 
@@ -51,8 +49,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, hwy::ThreadPool& pool)
     : pool_(pool), tokenizer_(tokenizer_path), info_(info) {
   weights_u8_ = LoadCompressedWeights(weights, info.model, info.weight, pool);
-  CallForModelAndWeight<AllocateState>(info.model, info.weight, prefill_,
-                                       decode_);
+  CallForModelAndWeight<AllocateActivations>(info.model, info.weight, decode_);
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
@@ -61,8 +58,7 @@ Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
   HWY_ASSERT(info.weight == Type::kF32);
   weights_u8_ =
       CallForModel<float, AllocateCompressedWeights>(info.model, pool);
-  CallForModelAndWeight<AllocateState>(info.model, info.weight, prefill_,
-                                       decode_);
+  CallForModelAndWeight<AllocateActivations>(info.model, info.weight, decode_);
 }
 
 Gemma::~Gemma() {
@@ -74,17 +70,17 @@ Gemma::~Gemma() {
 // we shard them across multiple translation units in instantiations/*.cc.
 // This declares the functions defined there. We use overloading because
 // explicit instantiations are still too slow to compile.
-#define GEMMA_DECLARE(CONFIGT, TWEIGHT)                                       \
-  extern void GenerateSingle(                                                 \
-      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8, Activations& prefill, \
-      Activations& decode, const RuntimeConfig& runtime_config,               \
-      const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,          \
-      hwy::ThreadPool& pool, TimingInfo& timing_info);                        \
-  extern void GenerateBatch(                                                  \
-      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8, Activations& prefill, \
-      Activations& decode, const RuntimeConfig& runtime_config,               \
-      const hwy::Span<const hwy::Span<int>>& prompts, size_t pos,             \
-      const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool,          \
+#define GEMMA_DECLARE(CONFIGT, TWEIGHT)                                      \
+  extern void GenerateSingle(                                                \
+      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8, Activations& decode, \
+      const RuntimeConfig& runtime_config, const std::vector<int>& prompt,   \
+      size_t pos, KVCache& kv_cache, hwy::ThreadPool& pool,                  \
+      TimingInfo& timing_info);                                              \
+  extern void GenerateBatch(                                                 \
+      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8, Activations& decode, \
+      const RuntimeConfig& runtime_config,                                   \
+      const hwy::Span<const hwy::Span<int>>& prompts, size_t pos,            \
+      const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool,         \
       TimingInfo& timing_info);
 GEMMA_FOREACH_CONFIG_AND_WEIGHT(GEMMA_DECLARE);
 
@@ -92,24 +88,24 @@ GEMMA_FOREACH_CONFIG_AND_WEIGHT(GEMMA_DECLARE);
 // TODO: gather all ByteStorageT into a type-erased model struct?
 template <class TConfig>
 struct GenerateSingleT {
-  void operator()(const ByteStorageT& weights_u8, Activations& prefill,
-                  Activations& decode, const RuntimeConfig& runtime_config,
+  void operator()(const ByteStorageT& weights_u8, Activations& decode,
+                  const RuntimeConfig& runtime_config,
                   const std::vector<int>& prompt, size_t pos, KVCache& kv_cache,
                   hwy::ThreadPool& pool, TimingInfo& timing_info) const {
-    GenerateSingle(TConfig(), weights_u8, prefill, decode, runtime_config,
-                   prompt, pos, kv_cache, pool, timing_info);
+    GenerateSingle(TConfig(), weights_u8, decode, runtime_config, prompt, pos,
+                   kv_cache, pool, timing_info);
   }
 };
 
 template <class TConfig>
 struct GenerateBatchT {
-  void operator()(const ByteStorageT& weights_u8, Activations& prefill,
-                  Activations& decode, const RuntimeConfig& runtime_config,
+  void operator()(const ByteStorageT& weights_u8, Activations& decode,
+                  const RuntimeConfig& runtime_config,
                   const hwy::Span<const hwy::Span<int>>& prompts, size_t pos,
                   const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool,
                   TimingInfo& timing_info) const {
-    GenerateBatch(TConfig(), weights_u8, prefill, decode, runtime_config,
-                  prompts, pos, kv_caches, pool, timing_info);
+    GenerateBatch(TConfig(), weights_u8, decode, runtime_config, prompts, pos,
+                  kv_caches, pool, timing_info);
   }
 };
 
@@ -119,8 +115,8 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
   CallForModelAndWeight<GenerateSingleT>(
-      info_.model, info_.weight, weights_u8_, prefill_, decode_, runtime_config,
-      prompt, start_pos, kv_cache, pool_, timing_info);
+      info_.model, info_.weight, weights_u8_, decode_, runtime_config, prompt,
+      start_pos, kv_cache, pool_, timing_info);
 
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
@@ -133,8 +129,8 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
   pool_.SetWaitMode(hwy::PoolWaitMode::kSpin);
 
   CallForModelAndWeight<GenerateBatchT>(
-      info_.model, info_.weight, weights_u8_, prefill_, decode_, runtime_config,
-      prompts, start_pos, kv_caches, pool_, timing_info);
+      info_.model, info_.weight, weights_u8_, decode_, runtime_config, prompts,
+      start_pos, kv_caches, pool_, timing_info);
 
   pool_.SetWaitMode(hwy::PoolWaitMode::kBlock);
 }
