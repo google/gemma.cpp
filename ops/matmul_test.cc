@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <memory>
-
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
@@ -25,8 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <random>
-#include <vector>
+#include <memory>
 
 #include "compression/compress.h"
 #include "hwy/aligned_allocator.h"
@@ -36,317 +33,20 @@
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "gemma/ops_test.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "ops/matmul_test.cc"  // NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 // After highway.h
-#include "gemma/ops.h"
+#include "ops/matmul-inl.h"
+#include "ops/ops-inl.h"  // MulByConst
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
-
-template <class Test>
-struct ForeachCountAndMisalign {
-  template <typename T, class D>
-  HWY_NOINLINE void operator()(T /*unused*/, D d) const {
-    hwy::RandomState rng;
-    const size_t N = Lanes(d);
-    const size_t misalignments[3] = {0, N / 4, 3 * N / 5};
-
-    for (size_t count = 0; count < 2 * N; ++count) {
-      for (size_t ma : misalignments) {
-        for (size_t mb : misalignments) {
-          Test()(d, count, ma, mb, rng);
-        }
-      }
-    }
-  }
-};
-
-template <typename T>
-T Random(hwy::RandomState& rng) {
-  const int32_t bits = static_cast<int32_t>(Random32(&rng)) & 1023;
-  const double val = (bits - 512) / 64.0;
-  // Clamp negative to zero for unsigned types.
-  return hwy::ConvertScalarTo<T>(
-      HWY_MAX(hwy::ConvertScalarTo<double>(hwy::LowestValue<T>()), val));
-}
-
-HWY_NOINLINE void SourceAddFrom(const float* HWY_RESTRICT other,
-                                float* HWY_RESTRICT x, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    x[i] += other[i];
-  }
-}
-
-HWY_NOINLINE void SourceMulBy(const float* HWY_RESTRICT other,
-                              float* HWY_RESTRICT x, size_t size,
-                              size_t max_pos) {
-  HWY_DASSERT(max_pos <= size);
-  for (size_t i = 0; i < max_pos; ++i) {
-    x[i] *= other[i];
-  }
-}
-
-HWY_NOINLINE void SourceMulByConst(float c, float* HWY_RESTRICT x, size_t size,
-                                   size_t max_pos) {
-  for (size_t i = 0; i < max_pos; ++i) {
-    x[i] *= c;
-  }
-}
-
-HWY_NOINLINE void SourceMulByConstAndAdd(float c, const float* HWY_RESTRICT x,
-                                         float* HWY_RESTRICT out, size_t size,
-                                         size_t max_pos) {
-  for (size_t i = 0; i < max_pos; ++i) {
-    out[i] += x[i] * c;
-  }
-}
-
-HWY_NOINLINE void SourceSoftmax(float* HWY_RESTRICT x, size_t size,
-                                size_t mask_pos) {
-  HWY_DASSERT(size != 0);
-  HWY_DASSERT(mask_pos <= size);
-  float sum = 0.0;
-  const float maxval = *std::max_element(x, x + mask_pos);
-  for (size_t i = 0; i < mask_pos; ++i) {
-    x[i] = std::exp(x[i] - maxval);
-    sum += x[i];
-  }
-  const float scale = 1.0f / sum;
-  for (size_t i = 0; i < mask_pos; ++i) {
-    x[i] *= scale;
-  }
-}
-
-template <size_t k>
-HWY_NOINLINE std::discrete_distribution<int> SourceCreateDistribution(
-    std::array<float, k>& top_k, float temperature) {
-  // re-normalize distribution
-  for (size_t i = 0; i < k; ++i) {
-    top_k[i] = exp(log(top_k[i]) / temperature);
-  }
-  float denominator = 0.0f;
-  for (size_t i = 0; i < k; ++i) {
-    denominator += top_k[i];
-  }
-  denominator = 1.0f / denominator;
-  MulByConst(denominator, top_k.data(), k);
-  return std::discrete_distribution<int>(std::begin(top_k), std::end(top_k));
-}
-
-struct TestAddFrom {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> po =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_b + count));
-    HWY_ASSERT(px && pe && po);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-    T* o = po.get() + misalign_b;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-      o[i] = Random<T>(rng);
-    }
-
-    SourceAddFrom(o, e, count);
-    AddFrom(o, x, count);
-
-    hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
-                            __LINE__);
-  }
-};
-
-struct TestMulBy {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> po =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_b + count));
-    HWY_ASSERT(px && pe && po);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-    T* o = po.get() + misalign_b;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-      o[i] = Random<T>(rng);
-    }
-
-    SourceMulBy(o, e, count, count);
-    MulBy(o, x, count, count);
-
-    hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
-                            __LINE__);
-  }
-};
-
-struct TestMulByConstAndAdd {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> po =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_b + count));
-    HWY_ASSERT(px && pe && po);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-    T* o = po.get() + misalign_b;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-      o[i] = Random<T>(rng);
-    }
-    T constant = Random<T>(rng);
-
-    SourceMulByConstAndAdd(constant, o, e, count, count);
-    MulByConstAndAdd(constant, o, x, count, count);
-
-    hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
-                            __LINE__);
-  }
-};
-
-struct TestMulByConst {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    if (misalign_b == 0) return;
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    HWY_ASSERT(px && pe);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-    }
-    T constant = Random<T>(rng);
-
-    SourceMulByConst(constant, e, count, count);
-    MulByConst(constant, x, count, count);
-
-    hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
-                            __LINE__);
-  }
-};
-
-struct TestSoftmax {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    if (count == 0) return;  // *Softmax would assert
-    if (misalign_b == 0) return;
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    HWY_ASSERT(px && pe);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-    }
-
-    SourceSoftmax(e, count, count);
-    Softmax(x, count, count);
-
-    T sum = 0.0f;
-    for (size_t i = 0; i < count; ++i) {
-      sum += x[i];
-      double rel = std::abs(x[i] - e[i]) / e[i];
-      ASSERT_LT(rel, 1e-6) << "Mismatch on coordinate " << i << " out of "
-                           << count;
-    }
-    ASSERT_NEAR(sum, 1.0, 1e-6);
-  }
-};
-
-template <size_t k>
-struct TestCreateDistribution {
-  void operator()(hwy::RandomState& rng) {
-    std::array<float, k> x;
-    std::array<float, k> e;
-
-    for (size_t i = 0; i < k; ++i) {
-      x[i] = Random<float>(rng);
-      e[i] = x[i];
-    }
-    const float constant = Random<float>(rng);
-    auto expected = SourceCreateDistribution(e, constant);
-    auto output = create_distribution(x, constant);
-
-    AssertEqual(expected, output, hwy::TargetName(HWY_TARGET), __FILE__,
-                __LINE__);
-  }
-};
-
-void TestAllAddFrom() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestAddFrom>>()(float());
-}
-
-void TestAllMulBy() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulBy>>()(float());
-}
-
-void TestAllMulByConst() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConst>>()(float());
-}
-
-void TestAllMulByConstAndAdd() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConstAndAdd>>()(
-      float());
-}
-
-void TestAllSoftmax() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
-}
-
-void TestAllCreateDistribution() {
-  TestCreateDistribution<2048>();
-  TestCreateDistribution<5000>();
-}
 
 template <typename MatT, size_t kOuter, size_t kInner>
 CompressedArray<MatT, kOuter * kInner> GenerateMat(size_t offset,
@@ -498,6 +198,28 @@ hwy::AlignedFreeUniquePtr<float[]> SimpleMatVecAdd(
     }
   }
   return out;
+}
+
+template <typename MatT>
+void AssertClose(const MatT* HWY_RESTRICT expected,
+                 const MatT* HWY_RESTRICT actual, size_t num) {
+  for (size_t idx = 0; idx < num; idx++) {
+    const double expected_value = hwy::ConvertScalarTo<double>(expected[idx]);
+    const double actual_value = hwy::ConvertScalarTo<double>(actual[idx]);
+
+    const double magnitude = std::abs(expected_value);
+
+    const double tolerance =
+        256.0 * hwy::ConvertScalarTo<double>(hwy::Epsilon<MatT>()) *
+        HWY_MAX(magnitude, 1.0);
+
+    if (!(expected_value - tolerance <= actual_value &&
+          actual_value <= expected_value + tolerance)) {
+      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f\n", idx,
+              expected_value, idx, actual_value);
+      HWY_ASSERT(0);
+    }
+  }
 }
 
 template <size_t length>
@@ -715,23 +437,6 @@ void TestTwoOfsMatVecAddLoop() {
   AssertClose<kOuter>(actual_out1, expected_out1);
 }
 
-void TestSigmoid() {
-  std::vector<float> values;
-  for (int i = -150; i <= 150; ++i) {
-    values.push_back(.1f * i);
-  }
-  std::vector<float> result = values;
-  Sigmoid(result.data(), result.size());
-
-  for (size_t i = 0; i < values.size(); i++) {
-    const float max_error = 0.00007;
-    float value = values[i];
-    float approx = result[i];
-    float expected = (1 / (1 + std::exp(-values[i])));
-    EXPECT_NEAR(approx, expected, max_error) << "Input: " << value;
-  }
-}
-
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -740,21 +445,12 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 
 namespace gcpp {
-HWY_BEFORE_TEST(OpsTest);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllAddFrom);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulBy);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllTiledBatchMatMul);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestMatVecAdd);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoMatVecAdd);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestTwoOfsMatVecAddLoop);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
-#ifdef HWY_AFTER_TEST
+HWY_BEFORE_TEST(MatmulTest);
+HWY_EXPORT_AND_TEST_P(MatmulTest, TestAllTiledBatchMatMul);
+HWY_EXPORT_AND_TEST_P(MatmulTest, TestMatVecAdd);
+HWY_EXPORT_AND_TEST_P(MatmulTest, TestTwoMatVecAdd);
+HWY_EXPORT_AND_TEST_P(MatmulTest, TestTwoOfsMatVecAddLoop);
 HWY_AFTER_TEST();
-#endif
 
 }  // namespace gcpp
 

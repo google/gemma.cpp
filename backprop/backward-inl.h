@@ -41,7 +41,8 @@
 #define THIRD_PARTY_GEMMA_CPP_BACKWARD_TOGGLE
 #endif
 
-#include "gemma/ops.h"
+#include "ops/matmul-inl.h"
+#include "ops/ops-inl.h"
 #include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();

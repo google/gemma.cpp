@@ -22,7 +22,10 @@ exports_files(["LICENSE"])
 
 cc_library(
     name = "ops",
-    hdrs = ["gemma/ops.h"],
+    textual_hdrs = [
+        "ops/ops-inl.h",
+        "ops/matmul-inl.h",
+    ],
     deps = [
         "//compression:compress",
         "//compression:sfp",
@@ -40,7 +43,24 @@ cc_test(
     name = "ops_test",
     size = "small",
     timeout = "long",
-    srcs = ["gemma/ops_test.cc"],
+    srcs = ["ops/ops_test.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":ops",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",
+    ],
+)
+
+cc_test(
+    name = "matmul_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["ops/matmul_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["hwy_ops_test"],

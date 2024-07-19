@@ -45,7 +45,7 @@
 // After highway.h
 #include "backprop/backward-inl.h"
 #include "backprop/forward-inl.h"
-#include "gemma/ops.h"
+#include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

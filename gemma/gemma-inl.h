@@ -37,9 +37,10 @@
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
-#include "gemma/ops.h"
 #include "gemma/weights.h"
 // Placeholder for internal test4, do not remove
+#include "ops/matmul-inl.h"
+#include "ops/ops-inl.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/bit_set.h"

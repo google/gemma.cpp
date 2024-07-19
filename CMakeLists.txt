@@ -93,11 +93,12 @@ set(SOURCES
   gemma/instantiations/tiny_sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
-  gemma/ops.h
   gemma/tokenizer.cc
   gemma/tokenizer.h
   gemma/weights.cc
   gemma/weights.h
+  ops/matmul-inl.h
+  ops/ops-inl.h
   util/app.h
   util/args.h
   )
