@@ -268,17 +268,24 @@ void ForEachTensor(RawWeightsPtr raw_weights,
       GEMMA_CALL_FUNC("gr_a", griffin.a);
     }
     GEMMA_CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
+
+    // For conditionally-included tensors, the else branch must ensure their
+    // scale is initialized, because wrapper functions call data_scale1 even if
+    // the tensor turns out to be unused. If unused, the arrays are zero-length
+    // and data() returns a non-null but unusable pointer.
+
     if (TConfig::kPostNorm == PostNormType::Scale) {
       GEMMA_CALL_FUNC("post_att_ns", post_attention_norm_scale);
       GEMMA_CALL_FUNC("post_ff_ns", post_ffw_norm_scale);
+    } else {
+      c_layer->post_attention_norm_scale.set_scale(1.0f);
+      c_layer->post_ffw_norm_scale.set_scale(1.0f);
     }
 
     if (TConfig::kFFBiases) {
       GEMMA_CALL_FUNC("ffw_gat_b", ffw_gating_biases);
       GEMMA_CALL_FUNC("ffw_out_b", ffw_output_biases);
     } else {
-      // Ensure initialized so we can call data_scale1, which happens even if
-      // the tensor turns out to be unused.
       c_layer->ffw_gating_biases.set_scale(1.0f);
       c_layer->ffw_output_biases.set_scale(1.0f);
     }
@@ -287,8 +294,6 @@ void ForEachTensor(RawWeightsPtr raw_weights,
       if (TConfig::kSoftmaxAttnOutputBiases) {
         GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
       } else {
-        // Ensure initialized so we can call data_scale1, which happens even if
-        // the tensor turns out to be unused.
         c_layer->attention_output_biases.set_scale(1.0f);
       }
     }
