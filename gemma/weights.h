@@ -230,6 +230,11 @@ void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
 //
 // This avoids repeating the list of tensors between loading and compressing,
 // while also avoiding dependency on raw_weights.h.
+//
+// This only calls Func for tensors that TConfig requests/specifies, which means
+// scale() is uninitialized for the other tensors, so their data_scale1() must
+// not be called. (In other words, if the config doesn't specify a tensor, it
+// shouldn't be used.)
 template <class TConfig, class RawLayer = void, class RawWeightsPtr, class Func>
 void ForEachTensor(RawWeightsPtr raw_weights,
                    CompressedWeights<TConfig>& c_weights, Func& func) {
@@ -269,33 +274,19 @@ void ForEachTensor(RawWeightsPtr raw_weights,
     }
     GEMMA_CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
 
-    // For conditionally-included tensors, the else branch must ensure their
-    // scale is initialized, because wrapper functions call data_scale1 even if
-    // the tensor turns out to be unused. If unused, the arrays are zero-length
-    // and data() returns a non-null but unusable pointer.
-
     if (TConfig::kPostNorm == PostNormType::Scale) {
       GEMMA_CALL_FUNC("post_att_ns", post_attention_norm_scale);
       GEMMA_CALL_FUNC("post_ff_ns", post_ffw_norm_scale);
-    } else {
-      c_layer->post_attention_norm_scale.set_scale(1.0f);
-      c_layer->post_ffw_norm_scale.set_scale(1.0f);
     }
 
     if (TConfig::kFFBiases) {
       GEMMA_CALL_FUNC("ffw_gat_b", ffw_gating_biases);
       GEMMA_CALL_FUNC("ffw_out_b", ffw_output_biases);
-    } else {
-      c_layer->ffw_gating_biases.set_scale(1.0f);
-      c_layer->ffw_output_biases.set_scale(1.0f);
     }
 
-    if (type == LayerAttentionType::kGemma) {
-      if (TConfig::kSoftmaxAttnOutputBiases) {
-        GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
-      } else {
-        c_layer->attention_output_biases.set_scale(1.0f);
-      }
+    if (TConfig::kSoftmaxAttnOutputBiases &&
+        type == LayerAttentionType::kGemma) {
+      GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
     }
   }
 #undef GEMMA_CALL_FUNC

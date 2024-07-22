@@ -353,9 +353,11 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
         activations.att_post2.Batch(interleaved_idx);
     // Head 0 (and potentially biases) -> layer_out.
     // attn_vec_einsum_w has shape [kHeads, kQKVDim, kModelDim].
-    MatVecT</*kAdd=*/TConfig::kSoftmaxAttnOutputBiases, kModelDim, kQKVDim>(
-        layer_weights->attn_vec_einsum_w, 0, att_out,
-        layer_weights->attention_output_biases.data_scale1(),
+    constexpr bool kAdd = TConfig::kSoftmaxAttnOutputBiases;
+    const float* bias =
+        kAdd ? layer_weights->attention_output_biases.data_scale1() : nullptr;
+    MatVecT<kAdd, kModelDim, kQKVDim>(
+        layer_weights->attn_vec_einsum_w, 0, att_out, bias,
         activations.even_odd.All(), layer_out, pool);
     // Head 1 and following are added to layer_out.
     for (size_t head = 1; head < kHeads; ++head) {
@@ -425,8 +427,14 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
   auto C1 = activations.C1.All();
   auto C2 = activations.C2.All();
   constexpr bool kAddBias = TConfig::kFFBiases;
-  const auto bias1 = layer_weights->ffw_gating_biases.data_scale1();
-  const auto bias2 = bias1 + kFFHiddenDim;
+  const float* bias1 = nullptr;
+  const float* bias2 = nullptr;
+  const float* output_bias = nullptr;
+  if constexpr (kAddBias) {
+    bias1 = layer_weights->ffw_gating_biases.data_scale1();
+    bias2 = bias1 + kFFHiddenDim;
+    output_bias = layer_weights->ffw_output_biases.data_scale1();
+  }
 
   // Will go through GELU.
   MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_interleaved, A, B1, scale,
@@ -442,7 +450,7 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
   MatMul_4x4_Batch_Add<kFFHiddenDim, kModelDim, kAddBias>(
       num_interleaved, C1, layer_weights->linear_w.data(),
       layer_weights->linear_w.scale(), activations.ffw_out.All(),
-      layer_weights->ffw_output_biases.data_scale1(), pool);
+      output_bias, pool);
 }
 
 // TODO: pass Activations.x instead of Activations.
@@ -477,9 +485,10 @@ HWY_NOINLINE void ResidualConnection(
 }
 
 template <class TConfig, typename WeightT, typename InOutT>
-void PostNorm(size_t num_interleaved, const WeightT* weights, InOutT* inout) {
+void PostNorm(size_t num_interleaved, const WeightT& weights, InOutT* inout) {
   if (TConfig::kPostNorm == PostNormType::Scale) {
-    RMSNormInplaceBatched(num_interleaved, weights, inout, TConfig::kModelDim);
+    RMSNormInplaceBatched(num_interleaved, weights.data_scale1(), inout,
+                          TConfig::kModelDim);
   }
 }
 
@@ -501,8 +510,7 @@ HWY_NOINLINE void TransformerLayer(
   Attention<TConfig>(type, pos, num_tokens, num_queries, layer_of_type,
                      activations, layer_weights, kv_caches, pool);
 
-  PostNorm<TConfig>(num_interleaved,
-                    layer_weights->post_attention_norm_scale.data_scale1(),
+  PostNorm<TConfig>(num_interleaved, layer_weights->post_attention_norm_scale,
                     activations.att_post2.All());
 
   ResidualConnection<TConfig>(num_interleaved, activations.att_post2.All(),
@@ -515,8 +523,7 @@ HWY_NOINLINE void TransformerLayer(
 
   FFW<TConfig>(activations, num_interleaved, layer_weights, pool);
 
-  PostNorm<TConfig>(num_interleaved,
-                    layer_weights->post_ffw_norm_scale.data_scale1(),
+  PostNorm<TConfig>(num_interleaved, layer_weights->post_ffw_norm_scale,
                     activations.ffw_out.All());
 
   ResidualConnection<TConfig>(num_interleaved, activations.ffw_out.All(),
