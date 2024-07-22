@@ -83,9 +83,10 @@ static inline std::vector<size_t> AssignCpusFromTopology(
   // This would result in the least amount of sharing of the last-level
   // cache slices. All assignments are made from Package 0.
   std::vector<std::vector<size_t>> clusters;
-  clusters.reserve(topology.packages[0].clusters.size());
-  for (auto& cluster : topology.packages[0].clusters) {
-    clusters.push_back(LpsToCpus(cluster.lps));
+  for (auto& package : topology.packages) {
+    for (auto& cluster : package.clusters) {
+      clusters.push_back(LpsToCpus(cluster.lps));
+    }
   }
   std::vector<size_t> assigned_cpus;
   assigned_cpus.reserve(num_workers);
