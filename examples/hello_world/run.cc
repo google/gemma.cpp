@@ -31,6 +31,7 @@
 
 int main(int argc, char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
+  gcpp::InferenceArgs inference(argc, argv);
   if (gcpp::HasHelp(argc, argv)) {
     loader.Help();
     return 0;
@@ -42,7 +43,8 @@ int main(int argc, char** argv) {
   // Instantiate model and KV Cache
   hwy::ThreadPool pool(gcpp::AppArgs::GetSupportedThreadCount());
   gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
-  gcpp::KVCache kv_cache = gcpp::KVCache::Create(loader.Info().model);
+  gcpp::KVCache kv_cache =
+      gcpp::KVCache::Create(loader.Info().model, inference.prefill_tbatch_size);
   size_t pos = 0;  // KV Cache position
 
   // Initialize random number generator

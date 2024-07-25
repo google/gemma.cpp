@@ -69,7 +69,7 @@ class GemmaEnv {
   // the number of tokens that were generated.
   std::pair<std::string, size_t> QueryModel(const std::vector<int>& tokens);
   std::vector<std::pair<std::string, size_t>> BatchQueryModel2(
-      const hwy::Span<const hwy::Span<int>>& prompts);
+      const MultiplePromptsTokens& prompts);
   // Adds turn structure to input, tokenizes and calls the above overload.
   std::pair<std::string, size_t> QueryModel(std::string& input);
   std::vector<std::pair<std::string, size_t>> BatchQueryModel(
@@ -88,7 +88,7 @@ class GemmaEnv {
   const ModelInfo& Info() const { return loader_.Info(); }
   InferenceArgs& MutableInferenceArgs() { return inference_args_; }
   std::mt19937& MutableGen() { return gen_; }
-  KVCache& MutableKVCache() { return *kv_caches_[0]; }
+  KVCache& MutableKVCache() { return kv_caches_[0]; }
 
  private:
   // Arguments to the model loader: file locations, etc.
@@ -103,8 +103,8 @@ class GemmaEnv {
   std::mt19937 gen_;
   // The model to run inference on.
   std::unique_ptr<Gemma> model_;
-  // The KV cache to use for inference.
-  std::vector<KVCache*> kv_caches_;
+  // KV caches, same number as query batch.
+  std::vector<KVCache> kv_caches_;
   RuntimeConfig runtime_config_;
 };
 

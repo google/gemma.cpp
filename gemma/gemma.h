@@ -30,7 +30,7 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
-#include "hwy/aligned_allocator.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"  // hwy::bfloat16_t
 
 namespace gcpp {
@@ -67,6 +67,13 @@ struct RuntimeConfig {
 
   size_t max_tokens;
   size_t max_generated_tokens;
+
+  // These defaults are overridden by InferenceArgs::CopyTo(*this):
+  // Max tokens per batch during prefill.
+  size_t prefill_tbatch_size = 32;
+  // Max queries per batch (one token from each) during decode.
+  size_t decode_qbatch_size = 16;
+
   float temperature;
   int verbosity;
   std::mt19937* gen;
@@ -105,6 +112,10 @@ struct TimingInfo {
   size_t tokens_generated;
 };
 
+using PromptTokens = hwy::Span<const int>;
+using MultiplePromptsTokens = hwy::Span<const PromptTokens>;
+using KVCaches = hwy::Span<KVCache>;
+
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
@@ -118,25 +129,20 @@ class Gemma {
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
-  const Activations& Decode() const { return decode_; }
 
-  void Generate(const RuntimeConfig& runtime_config,
-                const std::vector<int>& prompt, size_t start_pos,
-                KVCache& kv_cache, TimingInfo& timing_info);
+  void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
+                size_t start_pos, KVCache& kv_cache, TimingInfo& timing_info);
 
   void GenerateBatch(const RuntimeConfig& runtime_config,
-                     const hwy::Span<const hwy::Span<int>>& prompts,
-                     size_t start_pos, const std::vector<KVCache*>& kv_caches,
-                     TimingInfo& timing_info);
+                     const MultiplePromptsTokens& prompts, size_t start_pos,
+                     const KVCaches& kv_caches, TimingInfo& timing_info);
 
  private:
   hwy::ThreadPool& pool_;
 
   GemmaTokenizer tokenizer_;
-  // Type-erased so that this can be defined in the header, without requiring
-  // forwarding functions.
+  // Type-erased so that this can be defined in the header.
   ByteStorageT weights_u8_;
-  Activations decode_;
   ModelInfo info_;
 };
 

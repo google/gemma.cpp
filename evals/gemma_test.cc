@@ -17,14 +17,12 @@
 
 #include <stdio.h>
 
-#include <memory>
 #include <string>
 #include <vector>
 
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
-#include "gemma/tokenizer.h"
-#include "hwy/aligned_allocator.h"
+#include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // This test can be run manually with the downloaded gemma weights.
@@ -75,21 +73,17 @@ class GemmaTest : public ::testing::Test {
         replies.push_back(response);
       }
     } else {  // Not Gemma-2 27B. Do not use turn structure.
-      std::vector<std::unique_ptr<std::vector<int>>> prompts;
-      prompts.reserve(inputs.size());
-      for (auto input_string : inputs) {
-        std::string mutable_input_string = input_string;
-        prompts.push_back(std::make_unique<std::vector<int>>(
-            s_env->TokenizeAndPrependBOS(input_string)));
+      std::vector<std::vector<int>> prompts_vector;
+      prompts_vector.reserve(inputs.size());
+      for (const auto& input_string : inputs) {
+        prompts_vector.push_back(s_env->TokenizeAndPrependBOS(input_string));
       }
-      std::vector<hwy::Span<int>> prompt_vector;
-      for (auto& prompt : prompts) {
-        prompt_vector.push_back(hwy::Span<int>(prompt->data(), prompt->size()));
+      std::vector<PromptTokens> prompt_spans;
+      for (const auto& prompt : prompts_vector) {
+        prompt_spans.push_back(PromptTokens(prompt.data(), prompt.size()));
       }
-      hwy::Span<const hwy::Span<int>> prompt_span =
-          hwy::Span<const hwy::Span<int>>(prompt_vector.data(),
-                                          prompt_vector.size());
-      for (auto [response, n] : s_env->BatchQueryModel2(prompt_span)) {
+      MultiplePromptsTokens prompts(prompt_spans.data(), prompt_spans.size());
+      for (auto [response, n] : s_env->BatchQueryModel2(prompts)) {
         replies.push_back(response);
       }
     }
@@ -121,18 +115,20 @@ class GemmaTest : public ::testing::Test {
   }
 };
 
-TEST_F(GemmaTest, Geography) {
+TEST_F(GemmaTest, GeographyBatched) {
+  s_env->MutableInferenceArgs().decode_qbatch_size = 3;
+  // 6 are enough to test batching and the loop.
   static const char* kQA[][2] = {
-      {"What is the capital of Hungary?", "Budapest"},
       {"What is the capital of Australia?", "Canberra"},
+      {"What is the capital of Denmark?", "Copenhagen"},
+      {"Ljubljana is the capital of which country?", "Slovenia"},
+      {"Is Chicago a country?", "not"},
       {"How many states does the US have?", "50"},
+      {"What is the Pacific?", "ocean"},
   };
   static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
-  TestQuestions(kQA, kNum, /*batch=*/false);
-  static const char* kQA_single_question[][2] = {
-      {"What is the capital of Australia?", "Canberra"},
-  };
-  TestQuestions(kQA_single_question, 1, /*batch=*/true);
+  TestQuestions(kQA, HWY_MIN(kNum, 3), /*batch=*/false);
+  TestQuestions(kQA, 1, /*batch=*/true);
   TestQuestions(kQA, kNum, /*batch=*/true);
 }
 

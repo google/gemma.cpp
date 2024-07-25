@@ -248,6 +248,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   size_t max_tokens;
   size_t max_generated_tokens;
 
+  size_t prefill_tbatch_size;
+  size_t decode_qbatch_size;
+
   float temperature;
   bool deterministic;
   bool multiturn;
@@ -272,6 +275,11 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
 
+    visitor(prefill_tbatch_size, "prefill_tbatch", size_t{64},
+            "Prefill: max tokens per batch.");
+    visitor(decode_qbatch_size, "decode_qbatch", size_t{16},
+            "Decode: max queries per batch.");
+
     visitor(temperature, "temperature", 1.0f, "Temperature for top-K", 2);
     visitor(deterministic, "deterministic", false,
             "Make top-k sampling deterministic", 2);
@@ -280,6 +288,16 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "interaction\n    1 = continue KV cache after every interaction\n  "
             "  Default : 0 (conversation "
             "resets every turn)");
+  }
+
+  void CopyTo(RuntimeConfig& runtime_config) const {
+    runtime_config.max_tokens = max_tokens;
+    runtime_config.max_generated_tokens = max_generated_tokens;
+
+    runtime_config.prefill_tbatch_size = prefill_tbatch_size;
+    runtime_config.decode_qbatch_size = decode_qbatch_size;
+
+    runtime_config.temperature = temperature;
   }
 };
 

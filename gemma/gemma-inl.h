@@ -73,10 +73,10 @@ template <class TConfig>
 HWY_NOINLINE void GriffinRecurrent(
     size_t batch_start, size_t num_tokens, size_t num_queries, size_t layer,
     Activations& activations, const CompressedLayer<TConfig>* layer_weights,
-    const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool) {
+    const KVCaches& kv_caches, hwy::ThreadPool& pool) {
   PROFILER_ZONE("Gen.Griffin");
   HWY_ASSERT(num_queries == 1);  // TODO: add batch query support for Griffin.
-  KVCache& kv_cache = *kv_caches[0];
+  KVCache& kv_cache = kv_caches[0];
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -208,7 +208,7 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
                                  size_t num_queries, size_t layer,
                                  Activations& activations,
                                  const CompressedLayer<TConfig>* layer_weights,
-                                 const std::vector<KVCache*>& kv_caches,
+                                 const KVCaches& kv_caches,
                                  hwy::ThreadPool& pool) {
   PROFILER_ZONE("Gen.Attention");
   HWY_DASSERT(interleaved_start % num_queries == 0);
@@ -221,6 +221,10 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
   constexpr size_t kKVHeads = TConfig::kKVHeads;
   constexpr size_t kSeqLen = TConfig::kSeqLen;
   GEMMA_CONSTEXPR_SQRT float kQueryScale = ChooseQueryScale<TConfig>();
+
+  HWY_ASSERT(num_queries <= kv_caches.size());
+  const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
+
   // Multi-Head Attention a.k.a. "use_qkv_einsum".
   constexpr bool kIsMHA = Activations::IsMHA<TConfig>();
   static_assert(!kIsMHA || TConfig::kInterleaveQKV);  // MHA => interleaved
@@ -245,9 +249,9 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
       const float* x = activations.pre_att_rms_out.Batch(interleaved_idx);
       const size_t query_idx = interleaved_idx % num_queries;
       const size_t batch_idx = interleaved_idx / num_queries;
-      KVCache& kv_cache = *kv_caches[query_idx];
+      KVCache& kv_cache = kv_caches[query_idx];
       const size_t pos = batch_start + batch_idx;
-      const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
+      const size_t cache_pos = div_seq_len.Remainder(pos);
       const size_t kv_offset =
           cache_pos * kCachePosSize + layer * kCacheLayerSize;
       float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
@@ -268,10 +272,10 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
         const size_t query_idx = interleaved_idx % num_queries;
         const size_t batch_idx = interleaved_idx / num_queries;
         const size_t pos = batch_start + batch_idx;
-        const size_t cache_pos = pos % (kSeqLen + kPrefillBatchSize);
+        const size_t cache_pos = div_seq_len.Remainder(pos);
         const size_t kv_offset = cache_pos * kCachePosSize +
                                  layer * kCacheLayerSize + head * kQKVDim * 2;
-        KVCache& kv_cache = *kv_caches[query_idx];
+        KVCache& kv_cache = kv_caches[query_idx];
         float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
         if constexpr (kIsMHA) {
           // For MHA, copy KV into the KV cache from scratch space (see above).
@@ -297,7 +301,7 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
         const size_t query_idx = interleaved_idx % num_queries;
         const size_t batch_idx = interleaved_idx / num_queries;
         const size_t head_offset = (head / kHeadGroups) * kQKVDim * 2;
-        KVCache& kv_cache = *kv_caches[query_idx];
+        KVCache& kv_cache = kv_caches[query_idx];
         float* HWY_RESTRICT q =
             activations.q.Batch(interleaved_idx) + head * kQStride;
 
@@ -314,10 +318,10 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
         const size_t start_pos =
             pos - std::min(TConfig::kAttentionWindowSizes[layer] - 1, pos);
         for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+          const size_t cache_pos = div_seq_len.Remainder(pos2);
           const size_t kv_offset =
               cache_pos * kCachePosSize + layer * kCacheLayerSize + head_offset;
-          const float* HWY_RESTRICT k = kv_cache.kv_cache.get() + kv_offset;
+          const float* HWY_RESTRICT k = &kv_cache.kv_cache[kv_offset];
           const float score = Dot(q, k, kQKVDim);
           head_att[pos2 % kSeqLen] = score;
         }
@@ -337,7 +341,7 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
             activations.att_out.Batch(interleaved_idx) + head * kQKVDim;
         hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
         for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = pos2 % (kSeqLen + kPrefillBatchSize);
+          const size_t cache_pos = div_seq_len.Remainder(pos2);
           const size_t kv_offset =
               cache_pos * kCachePosSize + layer * kCacheLayerSize + head_offset;
           float* HWY_RESTRICT v =
@@ -383,8 +387,7 @@ HWY_NOINLINE void Attention(LayerAttentionType type, size_t interleaved_start,
                             size_t num_tokens, size_t num_queries, size_t layer,
                             Activations& activations,
                             const CompressedLayer<TConfig>* layer_weights,
-                            const std::vector<KVCache*>& kv_caches,
-                            hwy::ThreadPool& pool) {
+                            const KVCaches& kv_caches, hwy::ThreadPool& pool) {
   if (type == LayerAttentionType::kGemma) {
     GemmaAttention<TConfig>(interleaved_start, num_tokens, num_queries, layer,
                             activations, layer_weights, kv_caches, pool);
@@ -458,12 +461,13 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
       output_bias, pool);
 }
 
-// TODO: pass Activations.x instead of Activations.
-// `pos` is for the entire batch and does not include `batch_idx`.
+// `batch_idx` indicates which row of `x` to write to.
+// `pos` is the *token*'s position, not the start of the batch, because this is
+// called for batches of tokens in prefill, but batches of queries in decode.
 template <class TConfig>
 HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
                              const CompressedWeights<TConfig>& weights,
-                             Activations& activations) {
+                             RowVectorBatch<float>& x) {
   constexpr size_t kModelDim = TConfig::kModelDim;
   GEMMA_CONSTEXPR_EMBSCALING const float kEmbScaling =
       EmbeddingScaling<TConfig>();
@@ -472,11 +476,10 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
   HWY_DASSERT(token < TConfig::kVocabSize);
 
   Decompress(weights.embedder_input_embedding, token * kModelDim,
-             activations.x.Batch(batch_idx), kModelDim);
-  MulByConst(kEmbScaling, activations.x.Batch(batch_idx), kModelDim);
+             x.Batch(batch_idx), kModelDim);
+  MulByConst(kEmbScaling, x.Batch(batch_idx), kModelDim);
   if constexpr (TConfig::kAbsolutePE) {
-    AddAbsolutePositionalEmbeddings(activations.x.Batch(batch_idx), kModelDim,
-                                    pos + batch_idx);
+    AddAbsolutePositionalEmbeddings(x.Batch(batch_idx), kModelDim, pos);
   };
 }
 
@@ -501,7 +504,7 @@ template <class TConfig>
 HWY_NOINLINE void TransformerLayer(
     size_t num_tokens, size_t num_queries, size_t pos, size_t layer,
     const CompressedLayer<TConfig>* layer_weights, Activations& activations,
-    const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool) {
+    const KVCaches& kv_caches, hwy::ThreadPool& pool) {
   constexpr size_t kModelDim = TConfig::kModelDim;
   const size_t num_interleaved = num_tokens * num_queries;
   auto type = TConfig::kLayerConfig[layer];
@@ -536,116 +539,220 @@ HWY_NOINLINE void TransformerLayer(
                               /*is_attention=*/false);
 }
 
-// For prefill, we have two-level parallelism:
-// - Outer: input tokens are split into batches, each of which is one task
-//   processed by a worker in `outer_pool_`, which includes the main thread
-//   because it is the one that calls `Prefill`.
+// Batches are important for amortizing loading weights over multiple tokens.
+// This is possible in prefill because we know all tokens beforehand, whereas
+// decode depends on the previous output token. However, each prefill batch of a
+// query requires that preceding batches already wrote to the KV cache, hence we
+// sequentially loop over token batches. We can reduce the number of iterations
+// by increasing the batch size, but this also increases arithmetic intensity,
+// and so we are eventually compute-limited. The tensor parallelism (number of
+// threads collaborating on MatMul) is also limited by the CPU topology:
+// fork/join barriers are slow(er) when some threads reside in a different NUMA
+// node. To allow more threads to help, we also support parallelizing over
+// queries in case GenerateBatch was called.
+//
+// Thus we have two-level parallelism:
+// - Outer: handles one 'qbatch' of entire queries. The set of outer workers
+//   includes the main thread because it is the one that calls `Prefill`, and is
+//   determined by the number of 'clusters' (shared L3 caches or sockets).
 // - Inner: each `outer` worker passes `inner_pools_[outer]` to
-//   `TransformerLayer` for tensor-level parallelism.
+//   `TransformerLayer` for tensor-level parallelism, and processes
+//   `tbatch_size` tokens from a single query at a time.
 //
-// This class holds the thread pools and activations, recreated for each query.
-//
-// It is safe to parallelize batches because we write to KVCache at
-// `pos % kSeqLen`, which is far greater than the number of workers.
-// Note however that this currently leads to nondeterministic results because
-// the RNG is invoked in different order.
+// This class holds the thread pools and one activation per outer worker. It is
+// NOT reused across calls to GenerateSingle/GenerateBatch so that we can adapt
+// to their num_queries.
 class PrefillState {
- public:
-  explicit PrefillState(hwy::ThreadPool& main_pool) : main_pool_(&main_pool) {}
-
-  ~PrefillState() { DeleteInnerPools(); }
-
-  // Called before each query. Recreates thread pools, which has the advantage
-  // of tailoring the parallelism to the prompt length.
-  template <class TConfig>
-  void Init(size_t prefill_size) {
-    // Would be zero for single-token prompts (prefill_size == num_tokens - 1).
-    num_batches_ =
-        HWY_MAX(size_t{1}, hwy::DivCeil(prefill_size, kPrefillBatchSize));
-    // More than num_batches_ would waste workers on idling in the outer Run;
-    // more than NumWorkers() would exceed the global --num_threads.
-    const size_t outer_workers =
-        HWY_MIN(num_batches_, main_pool_->NumWorkers());
-    HWY_ASSERT(outer_workers != 0);  // Otherwise activations_ is empty.
-
-    // One activation per outer worker. Allocating in parallel saves 30 ms.
-    activations_.resize(outer_workers);
-    main_pool_->Run(0, outer_workers, [this](uint64_t task, size_t /*thread*/) {
-      activations_[task].Allocate<TConfig>(kPrefillBatchSize);
+  // TODO: move helper functions, also those in app.h, to a threading header
+  using LPS = hwy::LogicalProcessorSet;
+  LPS Intersection(const LPS& big, const LPS& small) {
+    LPS both;
+    // Reduce expected work by iterating over the smaller set.
+    small.Foreach([big, &both](size_t idx) {
+      if (big.Get(idx)) both.Set(idx);
     });
+    return both;
+  }
 
-    DeleteInnerPools();
+  std::vector<size_t> CoresInLPS(const LPS& cluster) {
+    std::vector<size_t> cores;
+    cores.reserve(cluster.Count());
+    cluster.Foreach([&cores](size_t idx) { cores.push_back(idx); });
+    return cores;
+  }
 
-    // If we'd create just one inner pool with all the workers, skip the cost of
-    // thread creation and pinning (about 60 ms) by reusing the main pool.
-    if (outer_workers <= 1) {
-      // Still allocate a dummy pool to simplify Prefill().
-      outer_pool_ = std::make_unique<hwy::ThreadPool>(1);
-      inner_pools_.push_back(main_pool_);
-      return;
+  // For each cluster (shared L3 cache), a bitset of cores.
+  using CoresPerCluster = std::vector<LPS>;
+
+  // Returns empty if detection failed.
+  CoresPerCluster DetectClusters() {
+    CoresPerCluster clusters;
+    // Which processors are not disabled via OS, taskset, or numactl.
+    LPS enabled;
+    // If we don't know, better to use just a single inner pool rather than risk
+    // oversubscribing to enabled cores.
+    if (!GetThreadAffinity(enabled)) return clusters;
+
+    hwy::Topology topology;
+    if (topology.packages.empty()) return clusters;
+
+    // For each cluster = outer, the cores that will be used for an inner pool.
+    CoresPerCluster inner_lps;
+    for (const hwy::Topology::Package& package : topology.packages) {
+      for (const hwy::Topology::Cluster& cluster : package.clusters) {
+        // Only use enabled cores, and only add if not empty.
+        const LPS lps = Intersection(enabled, cluster.lps);
+        if (lps.Any()) clusters.push_back(lps);
+      }
     }
+
+    // Sort by descending number of enabled cores, so that we preferentially
+    // use the largest clusters.
+    std::sort(clusters.begin(), clusters.end(),
+              [](const LPS& a, const LPS& b) { return a.Count() > b.Count(); });
+
+    return clusters;
+  }
+
+  // Returns false if the main pool should be reused instead.
+  bool AssignInnerPoolsToClusters(const size_t num_queries) {
+    HWY_ASSERT(num_queries != 0);
+
+    CoresPerCluster inner_lps = DetectClusters();
+    // If we have more outer workers than queries, discard the excess.
+    if (inner_lps.size() > num_queries) inner_lps.resize(num_queries);
+    // If we're not going to create multiple pools, avoid the overhead of
+    // re-pinning (60 ms) and reuse the main pool.
+    if (inner_lps.size() <= 1) return false;
 
     // Before creating new threads, stop the old ones from spinning. Caller is
     // responsible for undoing this by calling `ResumeMainSpinning`.
     main_pool_->SetWaitMode(hwy::PoolWaitMode::kBlock);
-    outer_pool_ = std::make_unique<hwy::ThreadPool>(outer_workers);
+
+    outer_pool_ = std::make_unique<hwy::ThreadPool>(inner_lps.size());
     outer_pool_->SetWaitMode(hwy::PoolWaitMode::kSpin);
 
-    // Assign up to `max_workers` to inner pools. Each inner pool creates
-    // `workers_per_outer - 1` threads in addition to its 'main' thread, which
-    // is the one calling `inner_pools[outer]->Run`, i.e., `outer`. In total,
-    // `outer_workers * (max_workers / outer_workers)` workers are used.
-    const size_t workers_per_outer = main_pool_->NumWorkers() / outer_workers;
-    for (size_t outer = 0; outer < outer_workers; ++outer) {
-      inner_pools_.push_back(new hwy::ThreadPool(workers_per_outer));
+    HWY_ASSERT(inner_pools_.empty());
+    for (const LPS& inner : inner_lps) {
+      inner_pools_.push_back(new hwy::ThreadPool(inner.Count()));
       inner_pools_.back()->SetWaitMode(hwy::PoolWaitMode::kSpin);
     }
 
-    PinThreads(outer_workers, workers_per_outer);
+    // For each inner pool, pin their threads AND the associated outer thread
+    // to the enabled cores in the cluster.
+    outer_pool_->Run(
+        0, inner_lps.size(),
+        [this, &inner_lps](uint64_t outer, size_t outer_thread) {
+          HWY_ASSERT(outer == outer_thread);  // each outer has one task
+          const std::vector<size_t> cores = CoresInLPS(inner_lps[outer]);
+
+          inner_pools_[outer]->Run(
+              0, cores.size(), [&cores](uint64_t task, size_t thread) {
+                HWY_ASSERT(task == thread);  // each inner has one task
+                hwy::PinThreadToLogicalProcessor(cores[task]);
+              });
+        });
+
+    return true;
   }
 
-  // `tokens` are from interleaved queries. (See InterleaveQueries() below.)
+  void ReuseMainPoolAsInner() {
+    // Still allocate an empty pool to simplify Prefill().
+    outer_pool_ = std::make_unique<hwy::ThreadPool>(1);
+
+    HWY_ASSERT(inner_pools_.empty());
+    inner_pools_.push_back(main_pool_);
+  }
+
+ public:
+  // Creates pools. AllocateActivations must still be called separately; it has
+  // a template argument.
+  PrefillState(hwy::ThreadPool& main_pool, size_t num_queries)
+      : main_pool_(&main_pool) {
+    PROFILER_ZONE("Init.Prefill.Ctor");
+    if (!AssignInnerPoolsToClusters(num_queries)) {
+      ReuseMainPoolAsInner();
+    }
+  }
+
+  ~PrefillState() {
+    for (hwy::ThreadPool* p : inner_pools_) {
+      if (p != main_pool_) delete p;
+    }
+  }
+
+  // `tbatch_size` is the number of tokens from one query to prefill at a time.
   template <class TConfig>
-  HWY_NOINLINE void Prefill(hwy::Span<const int> tokens, size_t num_queries,
-                            size_t pos,
+  void AllocateActivations(size_t num_queries, size_t tbatch_size) {
+    PROFILER_ZONE("Init.Prefill.AllocateActivations");
+
+    const size_t outer_workers = outer_pool_->NumWorkers();
+    HWY_ASSERT(outer_workers != 0);  // Otherwise activations_ is empty.
+
+    HWY_ASSERT(activations_.empty());  // only call once.
+    activations_.resize(outer_workers);
+
+    if (outer_workers == 1) {
+      activations_[0].Allocate<TConfig>(tbatch_size);
+    } else {
+      // Allocating in parallel can save 30 ms.
+      main_pool_->Run(0, outer_workers,
+                      [this, tbatch_size](uint64_t task, size_t /*thread*/) {
+                        activations_[task].Allocate<TConfig>(tbatch_size);
+                      });
+    }
+  }
+
+  template <class TConfig>
+  HWY_NOINLINE void Prefill(const MultiplePromptsTokens& prompts,
+                            const size_t prefill_per_query, const size_t pos,
+                            const size_t query_idx_start,
                             const CompressedWeights<TConfig>& weights,
                             const RuntimeConfig& runtime_config,
-                            const std::vector<KVCache*>& kv_caches) {
+                            const KVCaches& kv_caches) {
     PROFILER_ZONE("Gen.Prefill");
+    const size_t num_queries = prompts.size();
+    HWY_ASSERT(kv_caches.size() == num_queries);
+    const size_t max_tbatch_size = activations_[0].x.BatchSize();
 
-    HWY_ASSERT(activations_.size() == outer_pool_->NumWorkers());
-    HWY_ASSERT(inner_pools_.size() == outer_pool_->NumWorkers());
-
+    // For each query (parallel): an outer worker processes all its tokens.
+    // `qi` is relative to the batch, not the global query index.
     outer_pool_->Run(
-        0, num_batches_, [&](const uint64_t batch_num, size_t thread) HWY_ATTR {
-          const size_t batch_start = batch_num * kPrefillBatchSize;
-          const size_t batch_size =
-              HWY_MIN(kPrefillBatchSize, tokens.size() - batch_start);
-          HWY_DASSERT(batch_start % num_queries == 0);
-          HWY_DASSERT(batch_size % num_queries == 0);
-          const size_t pos_per_query = pos + batch_start / num_queries;
-          const size_t num_tokens = batch_size / num_queries;
+        0, num_queries, [&](const uint64_t qi, size_t qthread) HWY_ATTR {
+          Activations& activations = activations_[qthread];
+          hwy::ThreadPool& inner_pool = *inner_pools_[qthread];
 
-          // Negligible time compared to TransformerLayer.
-          for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
-            EmbedToken<TConfig>(tokens[batch_start + batch_idx], batch_idx,
-                                pos_per_query, weights, activations_[thread]);
-          }
+          // Single query at a time, so pass a slice of the KV cache because
+          // GemmaAttention will only access the first.
+          const size_t kPrefillQueries = 1;
+          KVCaches prefill_kv_caches(&kv_caches[qi], kPrefillQueries);
 
-          for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-            const auto* layer_weights = weights.GetLayer(layer);
-            TransformerLayer<TConfig>(
-                num_tokens, num_queries, pos_per_query, layer, layer_weights,
-                activations_[thread], kv_caches, *inner_pools_[thread]);
-          }
+          // For each batch of tokens in the query:
+          for (size_t tbatch_start = 0; tbatch_start < prefill_per_query;
+               tbatch_start += max_tbatch_size) {
+            // Fill activations.x (much faster than TransformerLayer).
+            const size_t tbatch_size =
+                HWY_MIN(max_tbatch_size, prefill_per_query - tbatch_start);
+            for (size_t ti = 0; ti < tbatch_size; ++ti) {
+              const int token = prompts[qi][tbatch_start + ti];
+              EmbedToken<TConfig>(token, ti, pos + ti, weights, activations.x);
+            }
 
-          // NOTE: we unconditionally call StreamToken, even if EOS.
-          for (size_t i = 0; i < batch_size; ++i) {
-            const size_t query_idx = i % num_queries;
-            const size_t batch_idx = i / num_queries;
-            runtime_config.StreamToken(query_idx, pos_per_query + batch_idx,
-                                       tokens[i], 0.0f);
-          }
+            // Transformer with one batch of tokens from a single query.
+            for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+              const auto* layer_weights = weights.GetLayer(layer);
+              TransformerLayer<TConfig>(
+                  tbatch_size, kPrefillQueries, pos + tbatch_start, layer,
+                  layer_weights, activations, prefill_kv_caches, inner_pool);
+            }
+
+            // NOTE: we unconditionally call StreamToken, even if EOS.
+            for (size_t ti = 0; ti < tbatch_size; ++ti) {
+              const int token = prompts[qi][tbatch_start + ti];
+              runtime_config.StreamToken(query_idx_start + qi,
+                                         pos + tbatch_start + ti, token, 0.0f);
+            }
+          }  // for tbatch_start
         });
   }
 
@@ -663,39 +770,15 @@ class PrefillState {
   }
 
  private:
-  // Pins each outer thread after their inner threads so they are likely to
-  // run on the same socket.
-  void PinThreads(size_t outer_workers, size_t workers_per_outer) {
-    outer_pool_->Run(
-        0, outer_workers,
-        [this, workers_per_outer](uint64_t outer, size_t outer_thread) {
-          HWY_ASSERT(outer == outer_thread);
-          // Pins inner *and* `outer` - the latter is the calling thread.
-          inner_pools_[outer]->Run(
-              0, workers_per_outer,
-              [outer, workers_per_outer](uint64_t task, size_t thread) {
-                HWY_ASSERT(task == thread);  // each worker has one task
-                const size_t lp = outer * workers_per_outer + task;
-                hwy::PinThreadToLogicalProcessor(lp);
-              });
-        });
-  }
-
-  void DeleteInnerPools() {
-    for (hwy::ThreadPool* p : inner_pools_) {
-      if (p != main_pool_) delete p;
-    }
-    inner_pools_.clear();
-  }
-
   hwy::ThreadPool* main_pool_;
   std::unique_ptr<hwy::ThreadPool> outer_pool_;  // always allocated
-  std::vector<Activations> activations_;  // size == outer_pool->NumWorkers()
-  // Either there is a single pointer equal to main_pool, or newly created pools
-  // that we own. The former case avoids thread creation overhead for prompts
-  // that fit in a single batch.
+  // Holds a single pointer equal to main_pool_, or new allocations; in either
+  // case, size() is equal to outer_pool_->NumWorkers(). The first case avoids
+  // allocation overhead for the common case of a single query.
   std::vector<hwy::ThreadPool*> inner_pools_;
-  size_t num_batches_ = 0;
+
+  // size() == outer_pool_->NumWorkers(); filled by AllocateActivations.
+  std::vector<Activations> activations_;
 };
 
 // `tokens` is length `num_tokens * num_queries`. In autoregressive decode,
@@ -705,8 +788,7 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
                               size_t num_queries, size_t pos,
                               const CompressedWeights<TConfig>& weights,
                               Activations& activations,
-                              const std::vector<KVCache*>& kv_caches,
-                              hwy::ThreadPool& pool,
+                              const KVCaches& kv_caches, hwy::ThreadPool& pool,
                               const LayersOutputFunc& layers_output) {
   const size_t num_interleaved = num_tokens * num_queries;
   if (layers_output) {
@@ -718,7 +800,7 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
   constexpr size_t kModelDim = TConfig::kModelDim;
   for (size_t token_idx = 0; token_idx < num_interleaved; ++token_idx) {
     EmbedToken<TConfig>(tokens[token_idx], token_idx, pos, weights,
-                        activations);
+                        activations.x);
   }
 
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
@@ -781,10 +863,10 @@ void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
 
 // Returns interleaved tokens: one from each query, followed by the second from
 // all queries, with EOS padding.
-static std::vector<int> InterleaveQueries(
-    const hwy::Span<const hwy::Span<int>>& queries,
-    const RuntimeConfig& runtime_config, size_t& min_prompt_size,
-    size_t& max_prompt_size) {
+static std::vector<int> InterleaveQueries(const MultiplePromptsTokens& queries,
+                                          const RuntimeConfig& runtime_config,
+                                          size_t& min_prompt_size,
+                                          size_t& max_prompt_size) {
   const size_t num_queries = queries.size();
   min_prompt_size = hwy::LimitsMax<size_t>();
   max_prompt_size = 0;
@@ -829,28 +911,34 @@ class TokenStreamer {
 
  private:
   const RuntimeConfig& runtime_config_;
-  // BitSet4096 divides the arg by 64, so ensure it is at least 64.
-  hwy::BitSet4096<HWY_MAX(64, kBatchedQueryBatchSize)> is_eos_;
+  hwy::BitSet4096<> is_eos_;
 };
 
-// Generates one token per query in the batch.
+// Generates one token for each query in `prompts`, which is one qbatch whose
+// size is at most the `batch_size` passed to `activations.Allocate`.
 //
-// pos indexes the KV cache. In the first turn of a chat, pos = 0, and it
+// `pos` indexes the KV cache. In the first turn of a chat, pos = 0, and it
 // continues to increase by one for each prefilled/generated token per query.
-// query_idx_start is the first query index in the batch.
-template <class TConfig, size_t kQueryBatchSize>
+//
+// `query_idx_start` is the query_idx of the first query in the batch, so that
+// `StreamFunc` gets the global query index, not relative to the batch.
+//
+// `kv_caches` is for the batch, size must match `prompts`.
+template <class TConfig>
 void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
                const RuntimeConfig& runtime_config,
-               const hwy::Span<const hwy::Span<int>>& prompts, const size_t pos,
-               const size_t query_idx_start,
-               const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool,
-               TimingInfo& timing_info) {
+               const MultiplePromptsTokens& prompts, const size_t pos,
+               const size_t query_idx_start, const KVCaches& kv_caches,
+               hwy::ThreadPool& pool, TimingInfo& timing_info) {
   constexpr size_t kVocabSize = TConfig::kVocabSize;
   const CompressedWeights<TConfig>& weights =
       *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
 
   const size_t num_queries = prompts.size();
-  HWY_DASSERT(num_queries <= kQueryBatchSize);
+  HWY_ASSERT(num_queries <= 4096);  // TokenStreamer uses BitSet4096.
+  HWY_ASSERT(num_queries <= activations.x.BatchSize());
+  HWY_ASSERT(kv_caches.size() == num_queries);
+
   size_t min_prompt_size, max_prompt_size;
   const std::vector<int> prompt = InterleaveQueries(
       prompts, runtime_config, min_prompt_size, max_prompt_size);
@@ -877,28 +965,28 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   // Prefill stops before min_prompt_size - 1 because the last prompt token is
   // the first input token for generation.
   const size_t prefill_per_query = min_prompt_size - 1;
-  const hwy::Span<const int> prefill_tokens(prompt.data(),
-                                            prefill_per_query * num_queries);
-  PrefillState prefill(pool);
-  prefill.Init<TConfig>(prefill_tokens.size());
-  const double prefill_start = hwy::platform::Now();
-  size_t interleaved_pos = pos * num_queries;
-  prefill.Prefill<TConfig>(prefill_tokens, num_queries, interleaved_pos,
-                           weights, runtime_config, kv_caches);
-  interleaved_pos += prefill_tokens.size();
-  timing_info.NotifyPrefill(prefill_tokens.size(), prefill_start);
+  double prefill_start;
+  {
+    PrefillState prefill(pool, num_queries);
+    prefill.AllocateActivations<TConfig>(num_queries,
+                                         runtime_config.prefill_tbatch_size);
+    prefill_start = hwy::platform::Now();
+    prefill.Prefill<TConfig>(prompts, prefill_per_query, pos, query_idx_start,
+                             weights, runtime_config, kv_caches);
+    timing_info.NotifyPrefill(prefill_per_query * num_queries, prefill_start);
+    prefill.ResumeMainSpinning();
+  }
 
-  prefill.ResumeMainSpinning();
+  size_t interleaved_pos = (pos + prefill_per_query) * num_queries;
 
   // Storage for the last generated token from each query, passed to the next
   // Transformer() call.
   std::vector<int> gen_tokens(num_queries);
 
   // Stream the last prompt token from each query and fill gen_tokens.
-  hwy::CopyBytes(&prompt[prefill_tokens.size()], gen_tokens.data(),
-                 num_queries * sizeof(prompt[0]));
   TokenStreamer token_streamer(runtime_config);
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
+    gen_tokens[query_idx] = prompts[query_idx][prefill_per_query];
     (void)token_streamer(query_idx_start + query_idx, prefill_per_query,
                          gen_tokens[query_idx], 0.0f);
   }
@@ -940,42 +1028,49 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   timing_info.NotifyGenerateDone(gen_start);
 }
 
-// TODO: prompt should also be span, not a vector.
 template <class TConfig>
-void GenerateSingleT(const ByteStorageT& weights_u8, Activations& activations,
+void GenerateSingleT(const ByteStorageT& weights_u8,
                      const RuntimeConfig& runtime_config,
-                     const std::vector<int>& prompt, size_t pos,
-                     KVCache& kv_cache, hwy::ThreadPool& pool,
-                     TimingInfo& timing_info) {
-  const hwy::Span<int> prompt_span(const_cast<int*>(prompt.data()),
-                                   prompt.size());
-  const hwy::Span<const hwy::Span<int>> prompts(&prompt_span, 1);
-  // TODO: also span of kv_cache, or batching inside KVCache?
-  std::vector<KVCache*> kv_caches = {&kv_cache};
-  const size_t query_idx_start = 0;
-  GenerateT<TConfig, /*kQueryBatchSize=*/1>(
-      weights_u8, activations, runtime_config, prompts, pos, query_idx_start,
-      kv_caches, pool, timing_info);
+                     const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
+                     hwy::ThreadPool& pool, TimingInfo& timing_info) {
+  const size_t num_queries = 1;
+  const size_t qbatch_start = 0;
+
+  Activations activations;
+  activations.Allocate<TConfig>(num_queries);
+
+  const MultiplePromptsTokens prompts(&prompt, num_queries);
+  const KVCaches kv_caches{&kv_cache, num_queries};
+
+  GenerateT<TConfig>(weights_u8, activations, runtime_config, prompts, pos,
+                     qbatch_start, kv_caches, pool, timing_info);
 }
 
 template <class TConfig>
-void GenerateBatchT(const ByteStorageT& weights_u8, Activations& activations,
+void GenerateBatchT(const ByteStorageT& weights_u8,
                     const RuntimeConfig& runtime_config,
-                    const hwy::Span<const hwy::Span<int>>& prompts, size_t pos,
-                    const std::vector<KVCache*>& kv_caches,
-                    hwy::ThreadPool& pool, TimingInfo& timing_info) {
-  // Disable query batching for Griffin models.
-  constexpr size_t kQueryBatchSize =
-      (TConfig::kGriffinLayers > 0) ? 1 : kBatchedQueryBatchSize;
-  for (size_t query_idx_start = 0; query_idx_start < prompts.size();
-       query_idx_start += kQueryBatchSize) {
-    const size_t num_queries =
-        std::min(prompts.size() - query_idx_start, kQueryBatchSize);
-    const hwy::Span<const hwy::Span<int>> query_batch(
-        prompts.data() + query_idx_start, num_queries);
-    GenerateT<TConfig, kQueryBatchSize>(weights_u8, activations, runtime_config,
-                                        query_batch, pos, query_idx_start,
-                                        kv_caches, pool, timing_info);
+                    const MultiplePromptsTokens& prompts, size_t pos,
+                    const KVCaches& kv_caches, hwy::ThreadPool& pool,
+                    TimingInfo& timing_info) {
+  HWY_ASSERT(prompts.size() == kv_caches.size());
+  // Griffin does not support query batching.
+  const size_t max_qbatch_size =
+      (TConfig::kGriffinLayers > 0) ? 1 : runtime_config.decode_qbatch_size;
+
+  Activations activations;
+  activations.Allocate<TConfig>(max_qbatch_size);
+
+  const size_t num_queries = prompts.size();
+  for (size_t qbatch_start = 0; qbatch_start < num_queries;
+       qbatch_start += max_qbatch_size) {
+    // Generate one batch of tokens from `qbatch_size` queries.
+    const size_t qbatch_size =
+        HWY_MIN(num_queries - qbatch_start, max_qbatch_size);
+    const MultiplePromptsTokens qbatch_prompts(&prompts[qbatch_start],
+                                               qbatch_size);
+    const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
+    GenerateT<TConfig>(weights_u8, activations, runtime_config, qbatch_prompts,
+                       pos, qbatch_start, qbatch_kv, pool, timing_info);
   }
 }
 
@@ -986,24 +1081,20 @@ void GenerateBatchT(const ByteStorageT& weights_u8, Activations& activations,
 // These are extern functions defined by instantiations/*.cc, which include this
 // 'header' after defining GEMMA_CONFIG, which is for function overloading.
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
-    GEMMA_CONFIG, const ByteStorageT& weights_u8, Activations& activations,
-    const RuntimeConfig& runtime_config, const std::vector<int>& prompt,
-    size_t pos, KVCache& kv_cache, hwy::ThreadPool& pool,
-    TimingInfo& timing_info) {
+    GEMMA_CONFIG, const ByteStorageT& weights_u8,
+    const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
+    KVCache& kv_cache, hwy::ThreadPool& pool, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_CONFIG>)
-  (weights_u8, activations, runtime_config, prompt, pos, kv_cache, pool,
-   timing_info);
+  (weights_u8, runtime_config, prompt, pos, kv_cache, pool, timing_info);
 }
 
 void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
-    GEMMA_CONFIG, const ByteStorageT& weights_u8, Activations& activations,
-    const RuntimeConfig& runtime_config,
-    const hwy::Span<const hwy::Span<int>>& prompts, size_t pos,
-    const std::vector<KVCache*>& kv_caches, hwy::ThreadPool& pool,
+    GEMMA_CONFIG, const ByteStorageT& weights_u8,
+    const RuntimeConfig& runtime_config, const MultiplePromptsTokens& prompts,
+    size_t pos, const KVCaches& kv_caches, hwy::ThreadPool& pool,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_CONFIG>)
-  (weights_u8, activations, runtime_config, prompts, pos, kv_caches, pool,
-   timing_info);
+  (weights_u8, runtime_config, prompts, pos, kv_caches, pool, timing_info);
 }
 
 #endif  // HWY_ONCE

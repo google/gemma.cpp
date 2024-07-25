@@ -16,13 +16,17 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_KV_CACHE_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_KV_CACHE_H_
 
+#include <stddef.h>
+
 #include "gemma/common.h"  // Model
 #include "hwy/aligned_allocator.h"
 
 namespace gcpp {
 
 struct KVCache {
-  // kSeqLen * kGemmaLayers * kKVHeads * kQKVDim * 2
+  size_t seq_len = 0;  // = kSeqLen + prefill_tbatch_size
+
+  // seq_len * kGemmaLayers * kKVHeads * kQKVDim * 2
   hwy::AlignedFreeUniquePtr<float[]> kv_cache;
 
   // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
@@ -31,7 +35,7 @@ struct KVCache {
   // kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]> rglru_cache;
 
-  static KVCache Create(Model type);
+  static KVCache Create(Model type, size_t prefill_tbatch_size);
 };
 
 }  // namespace gcpp

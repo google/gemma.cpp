@@ -23,13 +23,16 @@ namespace gcpp {
 namespace {
 template <class TConfig>
 struct CreateKVCache {
-  KVCache operator()() const {
+  KVCache operator()(size_t prefill_tbatch_size) const {
     KVCache kv_cache = {};
 
     const size_t size_cache_pos = CachePosSize<TConfig>()();
     if (size_cache_pos != 0) {
-      const size_t seq_len = (TConfig::kSeqLen + kPrefillBatchSize);
-      kv_cache.kv_cache = hwy::AllocateAligned<float>(seq_len * size_cache_pos);
+      // Allocate more so that prefill can always access one batch, even if
+      // near the end of the sequence.
+      kv_cache.seq_len = TConfig::kSeqLen + prefill_tbatch_size;
+      kv_cache.kv_cache =
+          hwy::AllocateAligned<float>(kv_cache.seq_len * size_cache_pos);
     }
 
     // TODO(patrickms): Add query batching support for Griffin.
@@ -58,10 +61,13 @@ struct CreateKVCache {
 };
 }  // namespace
 
-KVCache KVCache::Create(Model model_type) {
+// prefill_tbatch_size is the maximum number of tokens from one query to
+// prefill at a time.
+KVCache KVCache::Create(Model model_type, size_t prefill_tbatch_size) {
   // TWeight=float is a placeholder and unused because CreateKVCache does not
   // use TConfig::Weight.
-  return CallForModel</*TWeight=*/float, CreateKVCache>(model_type);
+  return CallForModel</*TWeight=*/float, CreateKVCache>(model_type,
+                                                        prefill_tbatch_size);
 }
 
 }  // namespace gcpp

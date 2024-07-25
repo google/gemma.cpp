@@ -145,14 +145,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, hwy::ThreadPool& pool,
 
     TimingInfo timing_info;
     RuntimeConfig runtime_config = {
-        .max_tokens = args.max_tokens,
-        .max_generated_tokens = args.max_generated_tokens,
-        .temperature = args.temperature,
         .verbosity = verbosity,
         .gen = &gen,
         .stream_token = stream_token,
         .accept_token = accept_token,
     };
+    args.CopyTo(runtime_config);
     model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
     if (verbosity >= 2) {
       std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
@@ -181,7 +179,8 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   }
 
   Gemma model = CreateGemma(loader, pool);
-  KVCache kv_cache = KVCache::Create(model.Info().model);
+  KVCache kv_cache =
+      KVCache::Create(model.Info().model, inference.prefill_tbatch_size);
 
   if (app.verbosity >= 1) {
     std::string instructions =

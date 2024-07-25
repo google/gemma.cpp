@@ -52,7 +52,7 @@ TEST(OptimizeTest, GradientDescent) {
       CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
   ByteStorageT backward =
       CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
-  KVCache kv_cache = KVCache::Create(info.model);
+  KVCache kv_cache = KVCache::Create(info.model, /*prefill_tbatch_size=*/16);
 
   Gemma gemma(GemmaTokenizer(), info, pool);
 

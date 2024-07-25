@@ -128,7 +128,8 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-    KVCache kv_cache = KVCache::Create(env.Info().model);
+    KVCache kv_cache = KVCache::Create(
+        env.Info().model, env.MutableInferenceArgs().prefill_tbatch_size);
     float entropy = ComputeCrossEntropy(
         *env.GetModel(), num_tokens, prompt_slice, kv_cache, env.Verbosity());
     total_entropy += entropy;

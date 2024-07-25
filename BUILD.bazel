@@ -224,6 +224,7 @@ cc_library(
         ":common",
         ":cross_entropy",
         ":gemma_lib",
+        ":kv_cache",
         # Placeholder for internal dep, do not remove.,
         "@benchmark//:benchmark",
         "//compression:compress",

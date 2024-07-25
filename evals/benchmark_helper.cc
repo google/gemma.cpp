@@ -34,9 +34,9 @@
 #include "evals/cross_entropy.h"
 #include "gemma/common.h"  // StringFromType
 #include "gemma/gemma.h"
+#include "gemma/kv_cache.h"
 #include "util/app.h"
 #include "util/args.h"
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -76,10 +76,10 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     fprintf(stderr, "Loading model...\n");
     model_ = AllocateGemma(loader_, pool_);
 
-    kv_caches_.reserve(kBatchedQueryBatchSize);
-    for (int i = 0; i < kBatchedQueryBatchSize; ++i) {
-      kv_caches_.push_back(new KVCache(KVCache::Create(model_->Info().model)));
-    }
+    // Only allocate one for starters because GenerateBatch might not be called.
+    kv_caches_.resize(1);
+    kv_caches_[0] =
+        KVCache::Create(model_->Info().model, inference.prefill_tbatch_size);
   }
 
   InitGenerator(inference_args_, gen_);
@@ -132,7 +132,7 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   }
   gcpp::TimingInfo timing_info;
   runtime_config_.batch_stream_token = batch_stream_token;
-  model_->Generate(runtime_config_, tokens, /*start_pos=*/0, *kv_caches_[0],
+  model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
                    timing_info);
   if (app_.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
@@ -141,8 +141,10 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
 }
 
 std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
-    const hwy::Span<const hwy::Span<int>>& prompts) {
-  std::vector<std::pair<std::string, size_t>> res(prompts.size());
+    const MultiplePromptsTokens& prompts) {
+  const size_t num_queries = prompts.size();
+  HWY_ASSERT(num_queries != 0);
+  std::vector<std::pair<std::string, size_t>> res(num_queries);
   std::fill(res.begin(), res.end(), std::make_pair("", 0));
   size_t total_tokens = 0;
 
@@ -162,14 +164,29 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
     return true;
   };
   if (app_.verbosity >= 2) {
-    std::cout << inference_args_.max_tokens << " "
-              << inference_args_.max_generated_tokens << " "
-              << inference_args_.temperature;
+    fprintf(stderr,
+            "Max tok: %zu max gen: %zu temp: %f tbatch: %zu qbatch: %zu\n",
+            inference_args_.max_tokens, inference_args_.max_generated_tokens,
+            inference_args_.temperature, inference_args_.prefill_tbatch_size,
+            inference_args_.decode_qbatch_size);
   }
+
+  // Ensure we have one KVCache per query.
+  if (kv_caches_.size() < num_queries) {
+    kv_caches_.resize(num_queries);
+  }
+  for (size_t i = 1; i < num_queries; ++i) {
+    if (kv_caches_[i].seq_len == 0) {
+      kv_caches_[i] = KVCache::Create(model_->Info().model,
+                                      inference_args_.prefill_tbatch_size);
+    }
+  }
+
   gcpp::TimingInfo timing_info;
   runtime_config_.batch_stream_token = batch_stream_token;
-  model_->GenerateBatch(runtime_config_, prompts, /*start_pos=*/0, kv_caches_,
-                        timing_info);
+  inference_args_.CopyTo(runtime_config_);
+  model_->GenerateBatch(runtime_config_, prompts, /*start_pos=*/0,
+                        KVCaches(&kv_caches_[0], num_queries), timing_info);
   if (app_.verbosity >= 1) {
     LogSpeedStats(time_start, total_tokens);
   }
@@ -191,13 +208,12 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
     prompts.push_back(WrapAndTokenize(model_->Tokenizer(), model_->Info(),
                                       /*pos=*/0, mutable_prompt));
   }
-  std::vector<hwy::Span<int>> prompt_vector;
+  std::vector<PromptTokens> prompt_vector;
   prompt_vector.reserve(prompts.size());
   for (auto& prompt : prompts) {
-    prompt_vector.push_back(hwy::Span<int>(prompt.data(), prompt.size()));
+    prompt_vector.push_back(PromptTokens(prompt.data(), prompt.size()));
   }
-  hwy::Span<const hwy::Span<int>> prompt_span = hwy::Span<const hwy::Span<int>>(
-      prompt_vector.data(), prompt_vector.size());
+  MultiplePromptsTokens prompt_span(prompt_vector.data(), prompt_vector.size());
   return BatchQueryModel2(prompt_span);
 }
 
@@ -226,8 +242,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   if (app.verbosity >= 2) {
     time_t now = time(nullptr);
     char* dt = ctime(&now);  // NOLINT
+    // TODO: replace hardware_concurrency with detected topology.
     std::cout << "Date & Time                   : " << dt
-              << "Prefill Token Batch Size      : " << kPrefillBatchSize << "\n"
               << "Hardware concurrency          : "
               << std::thread::hardware_concurrency() << "\n"
               << "Instruction set               : "
