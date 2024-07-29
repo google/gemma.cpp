@@ -378,69 +378,74 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A, const size_t A_ofs,
 //
 // If kAdd is true, the row-vector `add` is added to each row of C, otherwise
 // `add` is ignored and can be nullptr.
-// A is a row-major matrix of size (batch_size, kColsA_RowsB).
+// A is a row-major matrix of size (batch_size, colsA_rowsB).
 // B is passed transposed (column-major), so a matrix of size
-// (kColsBC, kColsA_RowsB), representing a B of size (kColsA_RowsB, kColsBC).
+// (colsBC, colsA_rowsB), representing a B of size (colsA_rowsB, colsBC).
 // A_ofs and B_ofs are offsets into A and B, respectively; they remain separate
 // from the pointers because some MatTA/B such as NuqStream do not support
 // pointer arithmetic.
-// C is a matrix of size (batch_size, kColsBC).
+// C is a row-major matrix of size (batch_size, colsBC), with `C_stride`
+// elements between rows, which is typically the same as `colsBC`. There is no
+// `C_ofs` because callers can simply add it to `C`.
 // The product is scaled by `scale` to support CompressedArray with scale != 1,
 // the caller can pass the product of the scales of A and B.
 // A scale for `add` is not supported, so make sure its scale is 1.
-// Typically batch_size is 1..512, kColsA_RowsB and kColsBC are 3k or 24k.
-template <size_t kColsA_RowsB, size_t kColsBC, bool kAdd, typename MatTA,
-          typename MatTB, typename OutT>
+// Typically batch_size is 1..512, colsA_rowsB and colsBC are 3k or 24k.
+template <bool kAdd, typename MatTA, typename MatTB>
 HWY_NOINLINE void MatMul_4x4(const size_t batch_size,
                              const MatTA* HWY_RESTRICT A, const size_t A_ofs,
+                             const size_t colsA_rowsB,
                              const MatTB* HWY_RESTRICT B, const size_t B_ofs,
-                             const float scale, OutT* HWY_RESTRICT C,
+                             const size_t colsBC, const float scale,
+                             float* HWY_RESTRICT C, const size_t C_stride,
                              const float* HWY_RESTRICT add,
                              hwy::ThreadPool& pool) {
   PROFILER_ZONE("Matmul");
   // We currently write C directly, which touches more memory than fits in L3.
   // TODO: add another level of loops to finish L3-sized pieces of C at a time.
   const hn::ScalableTag<MatTA> d;
-  const size_t N = Lanes(d);
-  constexpr size_t kRegRows = 4;
+  // Use float instead of MatTA/MatTB because we decompress to float here.
+  const size_t Nf = hn::Lanes(hn::ScalableTag<float>());
+  (void)Nf;                       // For HWY_DASSERT
+  constexpr size_t kRegRows = 4;  // if changing, also update the switch below.
   constexpr size_t kRegCols = 4;  // in vectors
 
-  static_assert(kColsBC % kRegCols == 0);
-  HWY_ASSERT(kColsA_RowsB % (N * kRegCols) == 0);
-  const size_t kTilesY = (batch_size + kRegRows - 1) / kRegRows;
-  const size_t kTilesX = kColsBC / kRegCols;
-  const size_t kTiles = kTilesX * kTilesY;
+  HWY_DASSERT(colsA_rowsB % (Nf * 2) == 0);  // For Decompress2.
+  HWY_DASSERT(colsBC % kRegCols == 0);
+  const size_t tilesY = hwy::DivCeil(batch_size, kRegRows);
+  const size_t tilesX = colsBC / kRegCols;
 
-  constexpr size_t kStrideA = kColsA_RowsB;
-  constexpr size_t kStrideB = kColsA_RowsB;
-  constexpr size_t kStrideC = kColsBC;
+  const size_t strideA = colsA_rowsB;
+  const size_t strideB = colsA_rowsB;
 
-  pool.Run(0, kTiles, [&](const uint64_t idx_tile, size_t /*thread*/) HWY_ATTR {
-    // Computes the finished product of one 4x4N tile and writes to C.
-    const size_t num_rows = batch_size - idx_tile / kTilesX * kRegRows;
-    HWY_ASSERT(num_rows > 0);
-    switch (num_rows) {
-      case 1:
-        GEMM_4x4_Tile<1, kAdd>(A, A_ofs, B, B_ofs, C, scale, add, idx_tile,
-                               kTilesX, kColsA_RowsB, kStrideA, kStrideB,
-                               kStrideC);
-        break;
-      case 2:
-        GEMM_4x4_Tile<2, kAdd>(A, A_ofs, B, B_ofs, C, scale, add, idx_tile,
-                               kTilesX, kColsA_RowsB, kStrideA, kStrideB,
-                               kStrideC);
-        break;
-      case 3:
-        GEMM_4x4_Tile<3, kAdd>(A, A_ofs, B, B_ofs, C, scale, add, idx_tile,
-                               kTilesX, kColsA_RowsB, kStrideA, kStrideB,
-                               kStrideC);
-        break;
-      default:
-        GEMM_4x4_Tile<4, kAdd>(A, A_ofs, B, B_ofs, C, scale, add, idx_tile,
-                               kTilesX, kColsA_RowsB, kStrideA, kStrideB,
-                               kStrideC);
-    }
-  });
+  pool.Run(0, tilesX * tilesY,
+           [&](const uint64_t idx_tile, size_t /*thread*/) HWY_ATTR {
+             // How many rows of C are left to compute. If more than 4, this
+             // tile still only computes 4 rows.
+             const size_t num_rows = batch_size - idx_tile / tilesX * kRegRows;
+             HWY_ASSERT(num_rows > 0);
+             switch (num_rows) {
+               case 1:
+                 GEMM_4x4_Tile<1, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
+                                        idx_tile, tilesX, colsA_rowsB, strideA,
+                                        strideB, C_stride);
+                 break;
+               case 2:
+                 GEMM_4x4_Tile<2, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
+                                        idx_tile, tilesX, colsA_rowsB, strideA,
+                                        strideB, C_stride);
+                 break;
+               case 3:
+                 GEMM_4x4_Tile<3, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
+                                        idx_tile, tilesX, colsA_rowsB, strideA,
+                                        strideB, C_stride);
+                 break;
+               default:
+                 GEMM_4x4_Tile<4, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
+                                        idx_tile, tilesX, colsA_rowsB, strideA,
+                                        strideB, C_stride);
+             }
+           });
 }
 
 //------------------------------------------------------------------------------

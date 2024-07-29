@@ -301,8 +301,8 @@ void TestTiledBatchMatMul() {
 
   const double start_tiled = hwy::platform::Now();
   EXPECT_EQ(scale, a->scale() * b_trans->scale());
-  MatMul_4x4<kN, kK, kAdd>(kM, a->data(), 0, b_trans->data(), 0, scale, c.get(),
-                           add->data(), pool);
+  MatMul_4x4<kAdd>(kM, a->data(), 0, kN, b_trans->data(), 0, kK, scale, c.get(),
+                   kK, add->data(), pool);
   const double tiled_matmul_seconds = hwy::platform::Now() - start_tiled;
   fprintf(stderr, "MatMul_4x4 took %f seconds.\n", tiled_matmul_seconds);
 
