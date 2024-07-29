@@ -301,15 +301,10 @@ void TestTiledBatchMatMul() {
 
   const double start_tiled = hwy::platform::Now();
   EXPECT_EQ(scale, a->scale() * b_trans->scale());
-  if (kAdd) {
-    MatMul_4x4_Batch_Add<kN, kK, kAdd>(kM, a->data(), b_trans->data(), scale,
-                                       c.get(), add->data(), pool);
-  } else {
-    MatMul_4x4_Batch<kN, kK>(kM, a->data(), b_trans->data(), scale, c.get(),
-                             pool);
-  }
+  MatMul_4x4<kN, kK, kAdd>(kM, a->data(), 0, b_trans->data(), 0, scale, c.get(),
+                           add->data(), pool);
   const double tiled_matmul_seconds = hwy::platform::Now() - start_tiled;
-  fprintf(stderr, "MatMul_4x4_Batch took %f seconds.\n", tiled_matmul_seconds);
+  fprintf(stderr, "MatMul_4x4 took %f seconds.\n", tiled_matmul_seconds);
 
   AssertClose(c_slow->data(), c.get(), kM * kK);
 }

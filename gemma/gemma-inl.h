@@ -238,9 +238,10 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
   // Compute Q only or QKV (if MHA).
   // If MHA, this also computes KV, which we copy to the KV cache below.
   const float scale = layer_weights->qkv_einsum_w.scale();
-  MatMul_4x4_Batch<kModelDim, kHeads * kQStride>(
-      num_interleaved, activations.pre_att_rms_out.All(),
-      layer_weights->qkv_einsum_w.data(), scale, activations.q.All(), pool);
+  MatMul_4x4<kModelDim, kHeads * kQStride, /*kAdd=*/false>(
+      num_interleaved, activations.pre_att_rms_out.All(), 0,
+      layer_weights->qkv_einsum_w.data(), 0, scale, activations.q.All(),
+      /*add=*/nullptr, pool);
 
   // Compute KV if not MHA.
   if constexpr (!kIsMHA) {
@@ -256,7 +257,7 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
           cache_pos * kCachePosSize + layer * kCacheLayerSize;
       float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
       // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
-      // TODO: requires MatMul support for offsets.
+      // TODO: requires batched KVCache support.
       MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
           layer_weights->qkv_einsum_w, kHeads * kQKVDim * kModelDim, x,
           activations.even_odd.All(), kv, pool);
@@ -431,7 +432,6 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
   const auto A = activations.bf_pre_ffw_rms_out.All();
   const float scale = layer_weights->gating_einsum_w.scale();
   const auto B1 = layer_weights->gating_einsum_w.data();
-  const auto B2 = B1 + kColsA * kColsB;
   auto C1 = activations.C1.All();
   auto C2 = activations.C2.All();
   constexpr bool kAddBias = TConfig::kFFBiases;
@@ -444,21 +444,23 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
     output_bias = layer_weights->ffw_output_biases.data_scale1();
   }
 
+  const size_t A_ofs = 0;  // no offset, using the same activations for both.
   // Will go through GELU.
-  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_interleaved, A, B1, scale,
-                                                 C1, bias1, pool);
+  MatMul_4x4<kColsA, kColsB, kAddBias>(num_interleaved, A, A_ofs, B1,
+                                       /*B_ofs=*/0, scale, C1, bias1, pool);
   // What to multiply by.
-  MatMul_4x4_Batch_Add<kColsA, kColsB, kAddBias>(num_interleaved, A, B2, scale,
-                                                 C2, bias2, pool);
+  MatMul_4x4<kColsA, kColsB, kAddBias>(num_interleaved, A, A_ofs, B1,
+                                       /*B_ofs=*/kColsA * kColsB, scale, C2,
+                                       bias2, pool);
 
   // Activation (Gelu) and multiply by gate. Store activations in C1.
   Activation<TConfig>(C1, C2, kFFHiddenDim * num_interleaved);
 
   // Hidden layer -> output layer.
-  MatMul_4x4_Batch_Add<kFFHiddenDim, kModelDim, kAddBias>(
-      num_interleaved, C1, layer_weights->linear_w.data(),
-      layer_weights->linear_w.scale(), activations.ffw_out.All(),
-      output_bias, pool);
+  MatMul_4x4<kFFHiddenDim, kModelDim, kAddBias>(
+      num_interleaved, C1, 0, layer_weights->linear_w.data(), 0,
+      layer_weights->linear_w.scale(), activations.ffw_out.All(), output_bias,
+      pool);
 }
 
 // `batch_idx` indicates which row of `x` to write to.
@@ -1003,12 +1005,14 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
 
     bool all_queries_eos = true;
     PROFILER_ZONE("Gen.Embedding");
+    // Compute logits from last layer activations.
+    MatMul_4x4<TConfig::kModelDim, kVocabSize, /*kAdd=*/false>(
+        num_queries, activations.x.All(), 0,
+        weights.embedder_input_embedding.data(), 0,
+        weights.embedder_input_embedding.scale(), activations.logits.All(),
+        /*add=*/nullptr, pool);
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
       float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
-      // Compute logits from last layer activations. TODO: MatMul
-      MatVec<kVocabSize, TConfig::kModelDim>(
-          weights.embedder_input_embedding, 0, activations.x.Batch(query_idx),
-          activations.even_odd.All(), logits, pool);
       if constexpr (TConfig::kFinalCap > 0.0f) {
         LogitsSoftCap(TConfig::kFinalCap, logits, kVocabSize);
       }
