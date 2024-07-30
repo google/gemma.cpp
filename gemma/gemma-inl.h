@@ -805,8 +805,10 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
   const size_t num_interleaved = num_tokens * num_queries;
   if (layers_output) {
     for (size_t token_idx = 0; token_idx < num_interleaved; ++token_idx) {
-      float token_f = tokens[token_idx];
-      layers_output(pos + token_idx, "Tokens", &token_f, 1);
+      const size_t query_idx = token_idx % num_queries;
+      const size_t logical_pos = (pos + token_idx) / num_queries;
+      const float token_f = tokens[token_idx];
+      layers_output(query_idx, logical_pos, "tokens", -1, &token_f, 1);
     }
   }
   constexpr size_t kModelDim = TConfig::kModelDim;
@@ -821,9 +823,9 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
                               layer_weights, activations, kv_caches, pool);
 
     if (layers_output) {
-      const std::string block_name = "blocks." + std::to_string(layer);
       for (size_t token_idx = 0; token_idx < num_interleaved; ++token_idx) {
-        layers_output(pos + token_idx, block_name,
+        const size_t logical_pos = (pos + token_idx) / num_queries;
+        layers_output(token_idx % num_queries, logical_pos, "blocks", layer,
                       activations.x.Batch(token_idx), kModelDim);
       }
     }
@@ -833,7 +835,9 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
                         activations.x.All(), kModelDim);
   if (layers_output) {
     for (size_t token_idx = 0; token_idx < num_interleaved; ++token_idx) {
-      layers_output(pos + token_idx, "final_norm",
+      const size_t query_idx = token_idx % num_queries;
+      const size_t logical_pos = (pos + token_idx) / num_queries;
+      layers_output(query_idx, logical_pos, "final_norm", -1,
                     activations.x.Batch(token_idx), kModelDim);
     }
   }

@@ -59,10 +59,13 @@ int Run(int argc, char** argv) {
   env.MutableConfig().layers_output =
       prompt_args.layers_output.Empty()
           ? LayersOutputFunc()
-          : [&json_output](int pos, const std::string& key, const float* values,
-                           size_t values_len) {
-              std::vector<float> v{values, values + values_len};
-              json_output[std::to_string(pos)][key] = v;
+          : [&json_output](size_t query_idx, size_t pos, const std::string& key,
+                           int layer, const float* values, size_t values_len) {
+              const std::string& debug_key =
+                  layer < 0 ? key : (key + "." + std::to_string(layer));
+              const std::vector<float> v{values, values + values_len};
+              json& json_base = json_output[std::to_string(query_idx)];
+              json_base[std::to_string(pos)][debug_key] = v;
             };
 
   const auto [answer, token_count] = env.QueryModel(prompt_args.prompt);

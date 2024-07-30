@@ -49,13 +49,15 @@ using AcceptFunc = std::function<bool(int, float)>;
 // If not empty, SampleFunc is called with the probability distribution for the
 // next token, and its return value is used as the next generated token.
 using SampleFunc = std::function<int(const float*, size_t)>;
-// Will be called for layers output with:
+// If not empty, LayersOutputFunc is called for layer outputs, specified with:
+// - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence
-// - name of the data, p.ex. "tokens", "block.1", "final_norm"
+// - name of the data, e.g. "tokens", "blocks", "final_norm"
+// - layer index (or -1 for global outputs), e.g. "blocks" exposes x per-layer
 // - pointer to the data array
 // - size of the data array
 using LayersOutputFunc =
-    std::function<void(int, const std::string&, const float*, size_t)>;
+    std::function<void(size_t, size_t, const std::string&, int, const float*, size_t)>;
 
 struct RuntimeConfig {
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
