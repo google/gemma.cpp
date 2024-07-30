@@ -60,7 +60,7 @@ HWY_INLINE void StoreHorizontalSums(DF df,                           //
   // We are computing the product of (4, 4N) * (4N, 4) = (4, 4) tiles.
   // Each entry of C[r,c] is a dot product of A.row and B.col, which reside in
   // the lanes of `c$r$c`, so we store their horizontal sum (ReduceSum). This is
-  // expensive, but only a fraction of the kColsA_RowsB/N FMAs.
+  // expensive, but only a fraction of the A.cols/N FMAs.
   tile_c[stride_c * 0 + 0] = scale * hn::ReduceSum(df, c00);
   tile_c[stride_c * 0 + 1] = scale * hn::ReduceSum(df, c01);
   tile_c[stride_c * 0 + 2] = scale * hn::ReduceSum(df, c02);
@@ -93,14 +93,14 @@ HWY_INLINE void StoreHorizontalSumsAdd(DF df,                           //
                                        VF c10, VF c11, VF c12, VF c13,  //
                                        VF c20, VF c21, VF c22, VF c23,  //
                                        VF c30, VF c31, VF c32, VF c33,
-                                       const float* HWY_RESTRICT add,
                                        const float scale,
+                                       const float* HWY_RESTRICT add,
                                        float* HWY_RESTRICT tile_c,
                                        size_t stride_c) {
   // We are computing the product of (4, 4N) * (4N, 4) = (4, 4) tiles.
   // Each entry of C[r,c] is a dot product of A.row and B.col, which reside in
   // the lanes of `c$r$c`, so we store their horizontal sum (ReduceSum). This is
-  // expensive, but only a fraction of the kColsA_RowsB/N FMAs.
+  // expensive, but only a fraction of the A.cols/N FMAs.
   const float add0 = add[0];
   // TODO: 4x4 transpose, then 128-bit vector FMA?
   tile_c[stride_c * 0 + 0] = scale * hn::ReduceSum(df, c00) + add0;
@@ -137,17 +137,47 @@ template <bool kAdd, size_t kNumRows, class DF, class VF = hn::Vec<DF>>
 HWY_INLINE void StoreHorizontalSumsMaybeAdd(
     DF df, VF c00, VF c01, VF c02, VF c03, VF c10, VF c11, VF c12, VF c13,
     VF c20, VF c21, VF c22, VF c23, VF c30, VF c31, VF c32, VF c33,
-    const float* HWY_RESTRICT add, size_t add_offset, const float scale,
+    const float scale, const float* HWY_RESTRICT add, size_t add_offset,
     float* HWY_RESTRICT tile_c, size_t stride_c) {
   if constexpr (kAdd) {
     StoreHorizontalSumsAdd<kNumRows>(df, c00, c01, c02, c03, c10, c11, c12, c13,
                                      c20, c21, c22, c23, c30, c31, c32, c33,
-                                     add + add_offset, scale, tile_c, stride_c);
+                                     scale, add + add_offset, tile_c, stride_c);
   } else {
     StoreHorizontalSums<kNumRows>(df, c00, c01, c02, c03, c10, c11, c12, c13,
                                   c20, c21, c22, c23, c30, c31, c32, c33,
                                   scale, tile_c, stride_c);
   }
+}
+
+// Wrapper to simplify call sites. T can be const or non-const.
+template <typename T>
+struct Mat {
+  bool NotEmpty() const {
+    return ptr != nullptr && cols != 0 && stride >= cols;
+  }
+  size_t Row(size_t r) const { return ofs + stride * r; }
+
+  T* HWY_RESTRICT ptr;
+  size_t cols;
+
+  // elements between rows, which is typically the same as `cols`.
+  size_t stride;
+
+  // Offset to add to `ptr`; separate because T=NuqStream does not support
+  // pointer arithmetic.
+  size_t ofs;
+};
+
+template <typename T>
+Mat<T> MakeMat(T* HWY_RESTRICT ptr, size_t cols, size_t stride,
+               size_t ofs = 0) {
+  return Mat<T>{.ptr = ptr, .cols = cols, .stride = stride, .ofs = ofs};
+}
+
+template <typename T>
+Mat<T> MakeMat(T* HWY_RESTRICT ptr, size_t cols) {
+  return MakeMat(ptr, cols, cols);
 }
 
 #undef GEMMA_NATIVE_BF16
@@ -162,31 +192,18 @@ HWY_INLINE void StoreHorizontalSumsMaybeAdd(
 
 // Specialization for f32 += bf16 * bf16 that avoids promoting to f32.
 template <size_t kNumRows, bool kAdd>
-HWY_INLINE void GEMM_4x4_Tile(const hwy::bfloat16_t* HWY_RESTRICT A,
-                              const size_t A_ofs,
-                              const hwy::bfloat16_t* HWY_RESTRICT B,
-                              const size_t B_ofs, float* HWY_RESTRICT C,
-                              const float scale, const float* HWY_RESTRICT add,
-                              const size_t idx_tile, const size_t xtiles,
-                              const size_t cols_a, const size_t stride_a,
-                              const size_t stride_b, const size_t stride_c) {
-  constexpr size_t kRegRows = 4;
-  constexpr size_t kRegCols = 4;
-  static_assert(kNumRows <= kRegRows);
-
-  // Top-left of tile is (row_a, col_ab) for A, and (row_b_col_c, col_ab) for B.
-  const size_t row_a = idx_tile / xtiles * kRegRows;
-  const size_t row_b_col_c = idx_tile % xtiles * kRegCols;
-
+HWY_INLINE void MatMulTile(const Mat<const hwy::bfloat16_t>& A,
+                           const Mat<const hwy::bfloat16_t>& B,
+                           const size_t row_a, const size_t row_b_col_c,
+                           const float scale, const float* HWY_RESTRICT add,
+                           const Mat<float>& C) {
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
   // ReorderWidenMulAccumulate does not use its sum1 arg and we can use full
   // bf16 vectors.
   const hn::Repartition<hwy::bfloat16_t, decltype(df)> d;
-  VF unused_sum1 = hn::Zero(df);
-
   const size_t N = Lanes(d);
-
+  VF unused_sum1 = hn::Zero(df);
   VF c00 = hn::Zero(df);
   VF c01 = hn::Zero(df);
   VF c02 = hn::Zero(df);
@@ -207,42 +224,41 @@ HWY_INLINE void GEMM_4x4_Tile(const hwy::bfloat16_t* HWY_RESTRICT A,
   VF c32 = hn::Zero(df);
   VF c33 = hn::Zero(df);
 
-  const hwy::bfloat16_t* HWY_RESTRICT A_tile = A + A_ofs + stride_a * row_a;
-  const hwy::bfloat16_t* HWY_RESTRICT B_tile =
-      B + B_ofs + stride_b * row_b_col_c;
+  const hwy::bfloat16_t* HWY_RESTRICT A_tile = A.ptr + A.Row(row_a);
+  const hwy::bfloat16_t* HWY_RESTRICT B_tile = B.ptr + B.Row(row_b_col_c);
 
   // Loop over columns of A and columns of the transposed B, in steps of N.
   // Accumulates into the c## vectors.
   HWY_UNROLL(1)
-  for (size_t col_ab = 0; col_ab < cols_a; col_ab += N) {
+  for (size_t col_ab = 0; col_ab < A.cols; col_ab += N) {
     using V = hn::Vec<decltype(d)>;
-    const V b0 = hn::LoadU(d, B_tile + stride_b * 0 + col_ab);
-    const V b1 = hn::LoadU(d, B_tile + stride_b * 1 + col_ab);
-    const V b2 = hn::LoadU(d, B_tile + stride_b * 2 + col_ab);
-    const V b3 = hn::LoadU(d, B_tile + stride_b * 3 + col_ab);
+    const V b0 = hn::LoadU(d, B_tile + B.stride * 0 + col_ab);
+    const V b1 = hn::LoadU(d, B_tile + B.stride * 1 + col_ab);
+    const V b2 = hn::LoadU(d, B_tile + B.stride * 2 + col_ab);
+    const V b3 = hn::LoadU(d, B_tile + B.stride * 3 + col_ab);
 
-    const V a0 = hn::LoadU(d, A_tile + stride_a * 0 + col_ab);
+    const V a0 = hn::LoadU(d, A_tile + A.stride * 0 + col_ab);
     c00 = hn::ReorderWidenMulAccumulate(df, a0, b0, c00, unused_sum1);
     c01 = hn::ReorderWidenMulAccumulate(df, a0, b1, c01, unused_sum1);
     c02 = hn::ReorderWidenMulAccumulate(df, a0, b2, c02, unused_sum1);
     c03 = hn::ReorderWidenMulAccumulate(df, a0, b3, c03, unused_sum1);
     if constexpr (kNumRows == 1) continue;
 
-    const V a1 = hn::LoadU(d, A_tile + stride_a * 1 + col_ab);
+    const V a1 = hn::LoadU(d, A_tile + A.stride * 1 + col_ab);
     c10 = hn::ReorderWidenMulAccumulate(df, a1, b0, c10, unused_sum1);
     c11 = hn::ReorderWidenMulAccumulate(df, a1, b1, c11, unused_sum1);
     c12 = hn::ReorderWidenMulAccumulate(df, a1, b2, c12, unused_sum1);
     c13 = hn::ReorderWidenMulAccumulate(df, a1, b3, c13, unused_sum1);
     if constexpr (kNumRows == 2) continue;
 
-    const V a2 = hn::LoadU(d, A_tile + stride_a * 2 + col_ab);
+    const V a2 = hn::LoadU(d, A_tile + A.stride * 2 + col_ab);
     c20 = hn::ReorderWidenMulAccumulate(df, a2, b0, c20, unused_sum1);
     c21 = hn::ReorderWidenMulAccumulate(df, a2, b1, c21, unused_sum1);
     c22 = hn::ReorderWidenMulAccumulate(df, a2, b2, c22, unused_sum1);
     c23 = hn::ReorderWidenMulAccumulate(df, a2, b3, c23, unused_sum1);
     if constexpr (kNumRows == 3) continue;
 
-    const V a3 = hn::LoadU(d, A_tile + stride_a * 3 + col_ab);
+    const V a3 = hn::LoadU(d, A_tile + A.stride * 3 + col_ab);
     c30 = hn::ReorderWidenMulAccumulate(df, a3, b0, c30, unused_sum1);
     c31 = hn::ReorderWidenMulAccumulate(df, a3, b1, c31, unused_sum1);
     c32 = hn::ReorderWidenMulAccumulate(df, a3, b2, c32, unused_sum1);
@@ -252,10 +268,10 @@ HWY_INLINE void GEMM_4x4_Tile(const hwy::bfloat16_t* HWY_RESTRICT A,
   // Ensure sum1 was indeed unused.
   HWY_DASSERT(hn::AllTrue(df, hn::Eq(unused_sum1, hn::Zero(df))));
 
-  float* HWY_RESTRICT C_tile = C + stride_c * row_a + row_b_col_c;
+  float* HWY_RESTRICT C_tile = C.ptr + C.Row(row_a) + row_b_col_c;
   StoreHorizontalSumsMaybeAdd<kAdd, kNumRows>(
       df, c00, c01, c02, c03, c10, c11, c12, c13, c20, c21, c22, c23, c30, c31,
-      c32, c33, add, row_b_col_c, scale, C_tile, stride_c);
+      c32, c33, scale, add, row_b_col_c, C_tile, C.stride);
 }
 
 #endif  // GEMMA_NATIVE_BF16
@@ -277,32 +293,20 @@ HWY_INLINE void UpdateTileRow(const VF& a0, const VF& a1, const VF& b00,
   c3 = hn::MulAdd(a1, b31, c3);
 }
 
-// Accumulates a single kNumRows (<= 4) x 4 tile of A x B into C. B is
-// transposed, so we iterate over both A and B with consecutive vector loads.
+// Streams a `(kNumRows, 4)` strip of `A` and the transposed `B`, then writes a
+// finished tile of `C`.
 // General case: uses CompressTraits to load from A and B.
 template <size_t kNumRows, bool kAdd, typename MatTA, typename MatTB>
-HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A, const size_t A_ofs,
-                              const MatTB* HWY_RESTRICT B, const size_t B_ofs,
-                              float* HWY_RESTRICT C, const float scale,
-                              const float* HWY_RESTRICT add,
-                              const size_t idx_tile, const size_t xtiles,
-                              const size_t cols_a, const size_t stride_a,
-                              const size_t stride_b, const size_t stride_c) {
-  constexpr size_t kRegRows = 4;
-  constexpr size_t kRegCols = 4;
-  static_assert(kNumRows <= kRegRows);
-
-  using TraitsA = CompressTraits<MatTA>;
-  using TraitsB = CompressTraits<MatTB>;
-
-  // Top-left of tile is (row_a, col_ab) for A, and (row_b_col_c, col_ab) for B.
-  const size_t row_a = idx_tile / xtiles * kRegRows;
-  const size_t row_b_col_c = idx_tile % xtiles * kRegCols;
+HWY_INLINE void MatMulTile(const Mat<MatTA>& A, const Mat<MatTB>& B,
+                           const size_t row_a, const size_t row_b_col_c,
+                           const float scale, const float* HWY_RESTRICT add,
+                           const Mat<float>& C) {
+  using TraitsA = CompressTraits<hwy::RemoveConst<MatTA>>;
+  using TraitsB = CompressTraits<hwy::RemoveConst<MatTB>>;
 
   const hn::ScalableTag<float> d32;
   const size_t N = hn::Lanes(d32);
   using V = hn::Vec<decltype(d32)>;
-
   V c00 = hn::Zero(d32);
   V c01 = hn::Zero(d32);
   V c02 = hn::Zero(d32);
@@ -323,127 +327,118 @@ HWY_INLINE void GEMM_4x4_Tile(const MatTA* HWY_RESTRICT A, const size_t A_ofs,
   V c32 = hn::Zero(d32);
   V c33 = hn::Zero(d32);
 
-  const size_t A_tile_ofs = A_ofs + stride_a * row_a;
-  const size_t B_tile_ofs = B_ofs + stride_b * row_b_col_c;
+  const size_t A_ofs = A.Row(row_a);
+  const size_t B_ofs = B.Row(row_b_col_c);
 
   // Loop over columns of A and columns of the transposed B, in steps of 2*N
   // (since we are decoding consecutive bytes at each iteration).
-  // Accumulates into the c## vectors.
+  // Top-left of tile is (row_a, col_ab) for A, and (row_b_col_c,
+  // col_ab) for B. Accumulates into the c## vectors.
   size_t col_ab = 0;
 
   HWY_UNROLL(1)
-  for (; col_ab <= cols_a - 2 * N; col_ab += 2 * N) {
+  for (; col_ab <= A.cols - 2 * N; col_ab += 2 * N) {
     V b00, b01;
-    TraitsB::Decompress2(d32, B, B_tile_ofs + stride_b * 0 + col_ab, b00, b01);
+    TraitsB::Decompress2(d32, B.ptr, B_ofs + B.stride * 0 + col_ab, b00, b01);
     V b10, b11;
-    TraitsB::Decompress2(d32, B, B_tile_ofs + stride_b * 1 + col_ab, b10, b11);
+    TraitsB::Decompress2(d32, B.ptr, B_ofs + B.stride * 1 + col_ab, b10, b11);
     V b20, b21;
-    TraitsB::Decompress2(d32, B, B_tile_ofs + stride_b * 2 + col_ab, b20, b21);
+    TraitsB::Decompress2(d32, B.ptr, B_ofs + B.stride * 2 + col_ab, b20, b21);
     V b30, b31;
-    TraitsB::Decompress2(d32, B, B_tile_ofs + stride_b * 3 + col_ab, b30, b31);
+    TraitsB::Decompress2(d32, B.ptr, B_ofs + B.stride * 3 + col_ab, b30, b31);
 
     V a00, a01;
-    TraitsA::Decompress2(d32, A, A_tile_ofs + stride_a * 0 + col_ab, a00, a01);
+    TraitsA::Decompress2(d32, A.ptr, A_ofs + A.stride * 0 + col_ab, a00, a01);
     UpdateTileRow(a00, a01, b00, b01, b10, b11, b20, b21, b30, b31, c00, c01,
                   c02, c03);
     if constexpr (kNumRows == 1) continue;
 
     V a10, a11;
-    TraitsA::Decompress2(d32, A, A_tile_ofs + stride_a * 1 + col_ab, a10, a11);
+    TraitsA::Decompress2(d32, A.ptr, A_ofs + A.stride * 1 + col_ab, a10, a11);
     UpdateTileRow(a10, a11, b00, b01, b10, b11, b20, b21, b30, b31, c10, c11,
                   c12, c13);
     if constexpr (kNumRows == 2) continue;
 
     V a20, a21;
-    TraitsA::Decompress2(d32, A, A_tile_ofs + stride_a * 2 + col_ab, a20, a21);
+    TraitsA::Decompress2(d32, A.ptr, A_ofs + A.stride * 2 + col_ab, a20, a21);
     UpdateTileRow(a20, a21, b00, b01, b10, b11, b20, b21, b30, b31, c20, c21,
                   c22, c23);
     if constexpr (kNumRows == 3) continue;
 
     V a30, a31;
-    TraitsA::Decompress2(d32, A, A_tile_ofs + stride_a * 3 + col_ab, a30, a31);
+    TraitsA::Decompress2(d32, A.ptr, A_ofs + A.stride * 3 + col_ab, a30, a31);
     UpdateTileRow(a30, a31, b00, b01, b10, b11, b20, b21, b30, b31, c30, c31,
                   c32, c33);
   }
 
-  float* HWY_RESTRICT C_tile = C + stride_c * row_a + row_b_col_c;
+  float* HWY_RESTRICT C_tile = C.ptr + C.Row(row_a) + row_b_col_c;
   StoreHorizontalSumsMaybeAdd<kAdd, kNumRows>(
       d32, c00, c01, c02, c03, c10, c11, c12, c13, c20, c21, c22, c23, c30, c31,
-      c32, c33, add, row_b_col_c, scale, C_tile, stride_c);
+      c32, c33, scale, add, row_b_col_c, C_tile, C.stride);
 }
 
-// Tiled 4x4 GEMM: C = A * B * scale [+ add].
-// Computes the matrix product of A and B and stores this in C. Processes tiles
-// of 4x4 vectors in parallel with a work-stealing thread pool.
+// Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
 //
-// If kAdd is true, the row-vector `add` is added to each row of C, otherwise
-// `add` is ignored and can be nullptr.
-// A is a row-major matrix of size (batch_size, colsA_rowsB).
-// B is passed transposed (column-major), so a matrix of size
-// (colsBC, colsA_rowsB), representing a B of size (colsA_rowsB, colsBC).
-// A_ofs and B_ofs are offsets into A and B, respectively; they remain separate
-// from the pointers because some MatTA/B such as NuqStream do not support
-// pointer arithmetic.
-// C is a row-major matrix of size (batch_size, colsBC), with `C_stride`
-// elements between rows, which is typically the same as `colsBC`. There is no
-// `C_ofs` because callers can simply add it to `C`.
-// The product is scaled by `scale` to support CompressedArray with scale != 1,
-// the caller can pass the product of the scales of A and B.
-// A scale for `add` is not supported, so make sure its scale is 1.
-// Typically batch_size is 1..512, colsA_rowsB and colsBC are 3k or 24k.
+// `A` is a row-major matrix of shape `(batch_size, A.cols)`.
+// `B` is transposed; `B.cols`, which must match `A.cols`, denotes the number of
+// rows in the original B, and `C.cols` the number of columns in the original B.
+//
+// `scale` allows expanding the smaller range of `SfpStream` to the original
+// values. When `A` and/or `B` are from CompressedArray, `scale` should be the
+// product of their `.scale()` values.
+//
+// If `kAdd` is true, the row-vector `add` is added to each row of `C`,
+// otherwise `add` is ignored and can be nullptr. A scale for `add` is not
+// supported, so make sure its scale is 1.
+//
+// `C` is a row-major matrix of size `(batch_size, C.cols)`.
+// Writes 4x4 tiles of C in parallel using a work-stealing thread pool.
+// Typically batch_size is 1..512, A.cols and C.cols are 3k or 24k.
 template <bool kAdd, typename MatTA, typename MatTB>
-HWY_NOINLINE void MatMul_4x4(const size_t batch_size,
-                             const MatTA* HWY_RESTRICT A, const size_t A_ofs,
-                             const size_t colsA_rowsB,
-                             const MatTB* HWY_RESTRICT B, const size_t B_ofs,
-                             const size_t colsBC, const float scale,
-                             float* HWY_RESTRICT C, const size_t C_stride,
-                             const float* HWY_RESTRICT add,
+HWY_NOINLINE void MatMul_4x4(const size_t batch_size, const Mat<MatTA>& A,
+                             const Mat<MatTB>& B, const float scale,
+                             const float* HWY_RESTRICT add, const Mat<float>& C,
                              hwy::ThreadPool& pool) {
   PROFILER_ZONE("Matmul");
+  constexpr size_t kRegRows = 4;  // if changing, also update the switch below.
+  constexpr size_t kRegCols = 4;
+
+  HWY_DASSERT(A.NotEmpty() && B.NotEmpty() && C.NotEmpty());
+  HWY_DASSERT(A.cols == B.cols);
+
+  // Use float instead of MatTA/MatTB because we decompress to float here.
+  const size_t N = hn::Lanes(hn::ScalableTag<float>());
+  (void)N;
+  HWY_DASSERT(A.cols % (N * 2) == 0);  // For Decompress2.
+  HWY_DASSERT(C.cols % kRegCols == 0);
+
   // We currently write C directly, which touches more memory than fits in L3.
   // TODO: add another level of loops to finish L3-sized pieces of C at a time.
-  const hn::ScalableTag<MatTA> d;
-  // Use float instead of MatTA/MatTB because we decompress to float here.
-  const size_t Nf = hn::Lanes(hn::ScalableTag<float>());
-  (void)Nf;                       // For HWY_DASSERT
-  constexpr size_t kRegRows = 4;  // if changing, also update the switch below.
-  constexpr size_t kRegCols = 4;  // in vectors
-
-  HWY_DASSERT(colsA_rowsB % (Nf * 2) == 0);  // For Decompress2.
-  HWY_DASSERT(colsBC % kRegCols == 0);
   const size_t tilesY = hwy::DivCeil(batch_size, kRegRows);
-  const size_t tilesX = colsBC / kRegCols;
-
-  const size_t strideA = colsA_rowsB;
-  const size_t strideB = colsA_rowsB;
+  const size_t tilesX = C.cols / kRegCols;
 
   pool.Run(0, tilesX * tilesY,
            [&](const uint64_t idx_tile, size_t /*thread*/) HWY_ATTR {
+             const size_t tx = idx_tile % tilesX;
+             const size_t ty = idx_tile / tilesX;
+             const size_t row_a = ty * kRegRows;
+             const size_t row_b_col_c = tx * kRegCols;
              // How many rows of C are left to compute. If more than 4, this
              // tile still only computes 4 rows.
-             const size_t num_rows = batch_size - idx_tile / tilesX * kRegRows;
-             HWY_ASSERT(num_rows > 0);
+             const size_t num_rows = batch_size - row_a;
+             HWY_DASSERT(num_rows != 0);
              switch (num_rows) {
                case 1:
-                 GEMM_4x4_Tile<1, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
-                                        idx_tile, tilesX, colsA_rowsB, strideA,
-                                        strideB, C_stride);
+                 MatMulTile<1, kAdd>(A, B, row_a, row_b_col_c, scale, add, C);
                  break;
                case 2:
-                 GEMM_4x4_Tile<2, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
-                                        idx_tile, tilesX, colsA_rowsB, strideA,
-                                        strideB, C_stride);
+                 MatMulTile<2, kAdd>(A, B, row_a, row_b_col_c, scale, add, C);
                  break;
                case 3:
-                 GEMM_4x4_Tile<3, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
-                                        idx_tile, tilesX, colsA_rowsB, strideA,
-                                        strideB, C_stride);
+                 MatMulTile<3, kAdd>(A, B, row_a, row_b_col_c, scale, add, C);
                  break;
                default:
-                 GEMM_4x4_Tile<4, kAdd>(A, A_ofs, B, B_ofs, C, scale, add,
-                                        idx_tile, tilesX, colsA_rowsB, strideA,
-                                        strideB, C_stride);
+                 MatMulTile<4, kAdd>(A, B, row_a, row_b_col_c, scale, add, C);
              }
            });
 }

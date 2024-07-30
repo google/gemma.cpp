@@ -237,12 +237,11 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
   //
   // Compute Q only or QKV (if MHA).
   // If MHA, this also computes KV, which we copy to the KV cache below.
-  MatMul_4x4</*kAdd=*/false>(num_interleaved, activations.pre_att_rms_out.All(),
-                             0, kModelDim, layer_weights->qkv_einsum_w.data(),
-                             0, kHeads * kQStride,
-                             layer_weights->qkv_einsum_w.scale(),
-                             activations.q.All(), kHeads * kQStride,
-                             /*add=*/nullptr, pool);
+  MatMul_4x4</*kAdd=*/false>(
+      num_interleaved, MakeMat(activations.pre_att_rms_out.All(), kModelDim),
+      MakeMat(layer_weights->qkv_einsum_w.data(), kModelDim),
+      layer_weights->qkv_einsum_w.scale(), /*add=*/nullptr,
+      MakeMat(activations.q.All(), kHeads * kQStride), pool);
 
   // Compute KV if not MHA.
   if constexpr (!kIsMHA) {
@@ -250,16 +249,16 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
     // directly into the KV cache with a stride of kCachePosSize.
     if (num_queries == 1 &&
         batch_start + num_tokens <= div_seq_len.GetDivisor()) {
-      const size_t colsBC = kKVHeads * 2 * kQKVDim;
       const size_t kv_ofs =
           batch_start * kCachePosSize + layer * kCacheLayerSize;
       // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
       float* HWY_RESTRICT kv = kv_caches[0].kv_cache.get() + kv_ofs;
       MatMul_4x4</*kAdd=*/false>(
-          num_tokens, activations.pre_att_rms_out.All(), 0, kModelDim,
-          layer_weights->qkv_einsum_w.data(), kHeads * kQKVDim * kModelDim,
-          colsBC, layer_weights->qkv_einsum_w.scale(), kv, kCachePosSize,
-          /*add=*/nullptr, pool);
+          num_tokens, MakeMat(activations.pre_att_rms_out.All(), kModelDim),
+          MakeMat(layer_weights->qkv_einsum_w.data(), kModelDim, kModelDim,
+                  kHeads * kQKVDim * kModelDim),
+          layer_weights->qkv_einsum_w.scale(), /*add=*/nullptr,
+          MakeMat(kv, kKVHeads * 2 * kQKVDim, kCachePosSize), pool);
     } else {
       for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
            ++interleaved_idx) {
@@ -441,14 +440,12 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
 
   // MatMul expects col-major B, which is what we have: kModelDim consecutive
   // elements in memory, repeated kFFHiddenDim times.
-  constexpr size_t kColsA = kModelDim;
-  constexpr size_t kColsBC = kFFHiddenDim;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
-  const auto A = activations.bf_pre_ffw_rms_out.All();
+  const auto A = MakeMat(activations.bf_pre_ffw_rms_out.All(), kModelDim);
+  const auto B1 = MakeMat(layer_weights->gating_einsum_w.data(), kModelDim);
+  const auto B2 = MakeMat(layer_weights->gating_einsum_w.data(), kModelDim,
+                          kModelDim, kModelDim * kFFHiddenDim);
   const float scale = layer_weights->gating_einsum_w.scale();
-  const auto B1 = layer_weights->gating_einsum_w.data();
-  auto C1 = activations.C1.All();
-  auto C2 = activations.C2.All();
   constexpr bool kAddBias = TConfig::kFFBiases;
   const float* bias1 = nullptr;
   const float* bias2 = nullptr;
@@ -458,24 +455,22 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
     bias2 = bias1 + kFFHiddenDim;
     output_bias = layer_weights->ffw_output_biases.data_scale1();
   }
+  auto C1 = MakeMat(activations.C1.All(), kFFHiddenDim);
+  auto C2 = MakeMat(activations.C2.All(), kFFHiddenDim);
 
-  const size_t A_ofs = 0;  // no offset, using the same activations for both.
   // Will go through GELU.
-  MatMul_4x4<kAddBias>(num_interleaved, A, A_ofs, kColsA, B1,
-                       /*B_ofs=*/0, kColsBC, scale, C1, kColsBC, bias1, pool);
+  MatMul_4x4<kAddBias>(num_interleaved, A, B1, scale, bias1, C1, pool);
   // What to multiply by.
-  MatMul_4x4<kAddBias>(num_interleaved, A, A_ofs, kColsA, B1,
-                       /*B_ofs=*/kColsA * kColsBC, kColsBC, scale, C2, kColsBC,
-                       bias2, pool);
+  MatMul_4x4<kAddBias>(num_interleaved, A, B2, scale, bias2, C2, pool);
 
   // Activation (Gelu) and multiply by gate. Store activations in C1.
-  Activation<TConfig>(C1, C2, kFFHiddenDim * num_interleaved);
+  Activation<TConfig>(C1.ptr, C2.ptr, kFFHiddenDim * num_interleaved);
 
   // Hidden layer -> output layer.
-  MatMul_4x4<kAddBias>(num_interleaved, C1, 0, kFFHiddenDim,
-                       layer_weights->linear_w.data(), 0, kModelDim,
-                       layer_weights->linear_w.scale(),
-                       activations.ffw_out.All(), kModelDim, output_bias, pool);
+  MatMul_4x4<kAddBias>(num_interleaved, C1,
+                       MakeMat(layer_weights->linear_w.data(), kFFHiddenDim),
+                       layer_weights->linear_w.scale(), output_bias,
+                       MakeMat(activations.ffw_out.All(), kModelDim), pool);
 }
 
 // `batch_idx` indicates which row of `x` to write to.
@@ -1022,12 +1017,11 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
     bool all_queries_eos = true;
     PROFILER_ZONE("Gen.Embedding");
     // Compute logits from last layer activations.
-    MatMul_4x4</*kAdd=*/false>(num_queries, activations.x.All(), 0, kModelDim,
-                               weights.embedder_input_embedding.data(), 0,
-                               kVocabSize,
-                               weights.embedder_input_embedding.scale(),
-                               activations.logits.All(), kVocabSize,
-                               /*add=*/nullptr, pool);
+    MatMul_4x4</*kAdd=*/false>(
+        num_queries, MakeMat(activations.x.All(), kModelDim),
+        MakeMat(weights.embedder_input_embedding.data(), kModelDim),
+        weights.embedder_input_embedding.scale(), /*add=*/nullptr,
+        MakeMat(activations.logits.All(), kVocabSize), pool);
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
       float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
       if constexpr (TConfig::kFinalCap > 0.0f) {

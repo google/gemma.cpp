@@ -60,6 +60,7 @@ struct CompressTraits {};
 template <>
 struct CompressTraits<float> {
   using MatT = float;
+  static const char* Name() { return "f32"; }
   static constexpr bool kSupportsEvenOdd = false;  // unnecessary
 
   template <class DF, HWY_IF_F32_D(DF)>
@@ -123,6 +124,7 @@ struct CompressTraits<float> {
 template <>
 struct CompressTraits<hwy::bfloat16_t> {
   using MatT = hwy::bfloat16_t;
+  static const char* Name() { return "bf16"; }
   static constexpr bool kSupportsEvenOdd = true;
 
   template <class DF, HWY_IF_F32_D(DF)>
@@ -292,6 +294,7 @@ struct CompressTraits<hwy::bfloat16_t> {
 template <>
 struct CompressTraits<SfpStream> {
   using MatT = SfpStream;
+  static const char* Name() { return "sfp"; }
   static constexpr bool kSupportsEvenOdd = true;
 
   // Callers are responsible for scaling `in` such that its magnitudes do not
@@ -389,6 +392,7 @@ struct CompressTraits<SfpStream> {
 template <>
 struct CompressTraits<NuqStream> {
   using MatT = NuqStream;
+  static const char* Name() { return "nuq"; }
   static constexpr bool kSupportsEvenOdd = false;
 
   template <class DF, HWY_IF_F32_D(DF)>
