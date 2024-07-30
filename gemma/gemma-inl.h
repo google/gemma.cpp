@@ -577,13 +577,13 @@ HWY_NOINLINE void TransformerLayer(
 class PrefillState {
   // TODO: move helper functions, also those in app.h, to a threading header
   using LPS = hwy::LogicalProcessorSet;
-  LPS Intersection(const LPS& big, const LPS& small) {
-    LPS both;
+  LPS Intersection(const LPS& big_set, const LPS& small_set) {
+    LPS both_set;
     // Reduce expected work by iterating over the smaller set.
-    small.Foreach([big, &both](size_t idx) {
-      if (big.Get(idx)) both.Set(idx);
+    small_set.Foreach([&big_set, &both_set](size_t idx) {
+      if (big_set.Get(idx)) both_set.Set(idx);
     });
-    return both;
+    return both_set;
   }
 
   std::vector<size_t> CoresInLPS(const LPS& cluster) {
