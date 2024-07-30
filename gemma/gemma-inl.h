@@ -40,11 +40,11 @@
 #include "gemma/weights.h"
 // Placeholder for internal test4, do not remove
 #include "ops/matmul-inl.h"
+#include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
-#include "hwy/contrib/matvec/matvec-inl.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/highway.h"

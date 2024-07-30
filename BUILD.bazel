@@ -25,6 +25,7 @@ cc_library(
     textual_hdrs = [
         "ops/ops-inl.h",
         "ops/matmul-inl.h",
+        "ops/matvec-inl.h",
     ],
     deps = [
         "//compression:compress",
@@ -53,6 +54,25 @@ cc_test(
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",
+    ],
+)
+
+cc_test(
+    name = "matvec_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["ops/matvec_test.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":ops",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",
+        "@hwy//:thread_pool",
     ],
 )
 

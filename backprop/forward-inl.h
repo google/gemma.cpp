@@ -39,7 +39,7 @@
 #define THIRD_PARTY_GEMMA_CPP_FORWARD_TOGGLE
 #endif
 
-#include "ops/matmul-inl.h"
+#include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
 #include "hwy/highway.h"
 
