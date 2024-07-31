@@ -254,6 +254,28 @@ struct ConfigGemma2B : public ConfigBaseGemmaV1 {
 };
 
 template <typename TWeight>
+struct ConfigGemma2_2B : public ConfigBaseGemmaV2 {
+  using Weight = TWeight;  // make accessible where we only have a TConfig
+
+  static constexpr int kSeqLen = 8192;
+  static constexpr int kVocabSize = 256000;
+  static constexpr std::array<LayerAttentionType, 26> kLayerConfig =
+      FixedLayerConfig<26>(LayerAttentionType::kGemma);
+  static constexpr std::array<size_t, 26> kAttentionWindowSizes =
+      RepeatedAttentionWindowSizes<26, 2>({4096, kSeqLen});
+  static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kGemmaLayers = kLayers;
+  static constexpr int kModelDim = 2304;
+  static constexpr int kFFHiddenDim = 8 * 2304 / 2;  // = 9216
+  static constexpr int kHeads = 8;
+  static constexpr int kKVHeads = 4;
+  static constexpr int kQKVDim = 256;  // query size == key size == value size
+  static constexpr int kTopK = gcpp::kTopK;
+  static constexpr bool kAbsolutePE = false;
+  static constexpr QueryScaleType kQueryScale = QueryScaleType::SqrtKeySize;
+};
+
+template <typename TWeight>
 struct ConfigGemmaTiny : public ConfigNoSSM {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 

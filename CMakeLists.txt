@@ -91,6 +91,9 @@ set(SOURCES
   gemma/instantiations/tiny_bf16.cc
   gemma/instantiations/tiny_f32.cc
   gemma/instantiations/tiny_sfp.cc
+  gemma/instantiations/gemma2_2b_bf16.cc
+  gemma/instantiations/gemma2_2b_f32.cc
+  gemma/instantiations/gemma2_2b_sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/tokenizer.cc

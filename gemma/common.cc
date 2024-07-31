@@ -29,12 +29,13 @@
 namespace gcpp {
 
 constexpr const char* kModelFlags[] = {
-    "2b-pt", "2b-it",        // Gemma 2B
-    "7b-pt", "7b-it",        // Gemma 7B
-    "9b-pt", "9b-it",        // Gemma 9B
-    "27b-pt", "27b-it",      // Gemma 27B
-    "gr2b-pt", "gr2b-it",    // RecurrentGemma
-    "tiny",                  // Gemma Tiny (mostly for debugging)
+    "2b-pt", "2b-it",                // Gemma 2B
+    "7b-pt", "7b-it",                // Gemma 7B
+    "9b-pt", "9b-it",                // Gemma 9B
+    "27b-pt", "27b-it",              // Gemma 27B
+    "gr2b-pt", "gr2b-it",            // RecurrentGemma
+    "tiny",                          // Gemma Tiny (mostly for debugging)
+    "gemma2-2b-pt", "gemma2-2b-it",  // Gemma2 2B
 };
 constexpr Model kModelTypes[] = {
     Model::GEMMA_2B, Model::GEMMA_2B,      // Gemma 2B
@@ -43,6 +44,7 @@ constexpr Model kModelTypes[] = {
     Model::GEMMA_27B, Model::GEMMA_27B,    // Gemma 27B
     Model::GRIFFIN_2B, Model::GRIFFIN_2B,  // RecurrentGemma
     Model::GEMMA_TINY,                     // Gemma Tiny
+    Model::GEMMA2_2B, Model::GEMMA2_2B,    // Gemma2 2B
 };
 constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 2B
@@ -51,6 +53,7 @@ constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 27B
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // RecurrentGemma
     ModelTraining::GEMMA_IT,                           // Gemma Tiny
+    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 2B2
 };
 
 constexpr size_t kNumModelFlags =

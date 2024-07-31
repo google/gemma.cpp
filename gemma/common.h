@@ -45,6 +45,7 @@ enum class Model {
   GEMMA_27B,
   GRIFFIN_2B,
   GEMMA_TINY,
+  GEMMA2_2B,
 };
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
@@ -99,6 +100,9 @@ decltype(auto) CallForModel(Model model, TArgs&&... args) {
       return FuncT<ConfigGemma27B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GRIFFIN_2B:
       return FuncT<ConfigGriffin2B<TWeight>>()(std::forward<TArgs>(args)...);
+    case Model::GEMMA2_2B:
+      return FuncT<ConfigGemma2_2B<TWeight>>()(std::forward<TArgs>(args)...);
+
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -142,6 +146,7 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma9B)                \
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma27B)               \
   GEMMA_FOREACH_WEIGHT(X, ConfigGriffin2B)              \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_2B)              \
   static_assert(true, "Allow trailing ;")
 
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
@@ -175,6 +180,11 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
     }                                                                      \
     case Model::GRIFFIN_2B: {                                              \
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>)    \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA2_2B: {                                               \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_2B<TWEIGHT>>)    \
       ARGS;                                                                \
       break;                                                               \
     }                                                                      \

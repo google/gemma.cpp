@@ -170,6 +170,9 @@ cc_library(
         "gemma/instantiations/gr2b_bf16.cc",
         "gemma/instantiations/gr2b_f32.cc",
         "gemma/instantiations/gr2b_sfp.cc",
+        "gemma/instantiations/gemma2_2b_bf16.cc",
+        "gemma/instantiations/gemma2_2b_f32.cc",
+        "gemma/instantiations/gemma2_2b_sfp.cc",
     ],
     hdrs = [
         "gemma/activations.h",
