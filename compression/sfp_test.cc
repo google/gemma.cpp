@@ -101,6 +101,29 @@ void TestAllUnique() {
   }
 }
 
+// For deriving the new shift-based decoder, which is 3 ops faster than the
+// previous "assemble from binary32 bits" method.
+void TestAllFastDecode() {
+  for (size_t sfp = 0; sfp < 128; ++sfp) {
+    const float f = F32FromSFP8(sfp);
+    const uint32_t u = hwy::BitCastScalar<uint32_t>(f);
+    const uint32_t lo = (u >> 16) & 0xFF;
+    const uint32_t hi = u >> 24;
+    const bool is_small = sfp < 0x40;
+    const uint32_t base = is_small ? 0x34 : 0x38;
+    const uint32_t fast_lo = (sfp << (is_small ? 5 : 4)) & 0xFF;
+    uint32_t fast_hi = base + (sfp >> (is_small ? 3 : 4));
+    if (sfp == 0) fast_hi = 0;
+
+    // fprintf(stderr, "sfp %2zx -> %6.3E %x %x\n", sfp, f, lo, hi);
+    if (fast_lo != lo || fast_hi != hi) {
+      HWY_ABORT(
+          "mismatch sfp %2zx -> %6.3E lo %2x fastLo %2x hi %2x fastHi %2x\n",
+          sfp, f, lo, fast_lo, hi, fast_hi);
+    }
+  }
+}
+
 // ------------------------------ Foreach compressed representation
 
 // Encode
@@ -550,6 +573,7 @@ namespace gcpp {
 HWY_BEFORE_TEST(SfpTest);
 HWY_EXPORT_AND_TEST_P(SfpTest, PrintTables);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllUnique);
+HWY_EXPORT_AND_TEST_P(SfpTest, TestAllFastDecode);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDecEnc);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllGolden);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllEncDec);
