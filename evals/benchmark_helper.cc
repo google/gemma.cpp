@@ -25,7 +25,6 @@
 #include <ostream>
 #include <random>
 #include <string>
-#include <thread>   // NOLINT
 #include <utility>  // std::pair
 #include <vector>
 
@@ -37,6 +36,7 @@
 #include "gemma/kv_cache.h"
 #include "util/app.h"
 #include "util/args.h"
+#include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -61,12 +61,7 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     : loader_(loader),
       inference_args_(inference),
       app_(app),
-      pool_(app_.num_threads) {
-  // For many-core, pinning workers to cores helps.
-  if (app_.num_threads > 10) {
-    PinWorkersToCores(pool_);
-  }
-
+      pools_(app_.max_clusters, app_.num_threads) {
   AbortIfInvalidArgs(inference_args_);
 
   if (const char* err = loader_.Validate()) {
@@ -74,7 +69,7 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     fprintf(stderr, "Skipping model load because: %s\n", err);
   } else {
     fprintf(stderr, "Loading model...\n");
-    model_ = AllocateGemma(loader_, pool_);
+    model_ = AllocateGemma(loader_, pools_);
 
     // Only allocate one for starters because GenerateBatch might not be called.
     kv_caches_.resize(1);
@@ -234,7 +229,8 @@ void LogSpeedStats(double time_start, size_t total_tokens) {
             << " [" << tok_sec << " tokens / sec" << "]\n";
 }
 
-void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
+void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
+                PerClusterPools& pools) {
   loader.Print(app.verbosity);
   inference.Print(app.verbosity);
   app.Print(app.verbosity);
@@ -242,22 +238,23 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   if (app.verbosity >= 2) {
     time_t now = time(nullptr);
     char* dt = ctime(&now);  // NOLINT
-    // TODO: replace hardware_concurrency with detected topology.
-    std::cout << "Date & Time                   : " << dt
-              << "Hardware concurrency          : "
-              << std::thread::hardware_concurrency() << "\n"
-              << "Instruction set               : "
-              << hwy::TargetName(hwy::DispatchedTarget()) << " ("
-              << hwy::VectorBytes() * 8 << " bits)" << "\n";
-    char cpu100[100];
-    if (hwy::platform::GetCpuString(cpu100)) {
-      std::cout << "CPU                           : " << cpu100 << "\n";
-    }
-    std::cout << "Compiled config               : " << CompiledConfig() << "\n"
-              << "Weight Type                   : "
-              << StringFromType(loader.Info().weight) << "\n"
-              << "EmbedderInput Type            : "
-              << TypeName(EmbedderInputT()) << "\n";
+    char cpu100[100] = "unknown";
+    (void)hwy::platform::GetCpuString(cpu100);
+
+    fprintf(stderr,
+            "Date & Time                   : %s"  // dt includes \n
+            "CPU                           : %s\n"
+            "CPU topology                  : %zux%zu, using %zux%zu\n"
+            "Instruction set               : %s (%zu bits)\n"
+            "Compiled config               : %s\n"
+            "Weight Type                   : %s\n"
+            "EmbedderInput Type            : %s\n",
+            dt, cpu100, pools.CoresPerCluster().size(),
+            pools.CoresPerCluster()[0].Count(), pools.Outer().NumWorkers(),
+            pools.Inner(0).NumWorkers(),
+            hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
+            CompiledConfig(), StringFromType(loader.Info().weight),
+            TypeName(EmbedderInputT()));
   }
 }
 

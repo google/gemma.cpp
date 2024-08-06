@@ -26,8 +26,8 @@
 
 #include "gemma/gemma.h"
 #include "util/app.h"
+#include "util/threading.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
@@ -98,7 +98,7 @@ class GemmaEnv {
   // Controls overall behavior of the app.
   AppArgs app_;
   // Thread pool for running inference.
-  hwy::ThreadPool pool_;
+  PerClusterPools pools_;
   // Random number generator.
   std::mt19937 gen_;
   // The model to run inference on.
@@ -111,7 +111,8 @@ class GemmaEnv {
 // Logs the inference speed in tokens/sec.
 void LogSpeedStats(double time_start, size_t total_tokens);
 
-void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
+void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
+                PerClusterPools& pools);
 void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
 
 }  // namespace gcpp

@@ -26,12 +26,14 @@
 #include "gemma/tokenizer.h"
 #include "util/app.h"  // LoaderArgs
 #include "util/args.h"
+#include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 int main(int argc, char** argv) {
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
+  gcpp::AppArgs app(argc, argv);
   if (gcpp::HasHelp(argc, argv)) {
     loader.Help();
     return 0;
@@ -41,8 +43,8 @@ int main(int argc, char** argv) {
   }
 
   // Instantiate model and KV Cache
-  hwy::ThreadPool pool(gcpp::AppArgs::GetSupportedThreadCount());
-  gcpp::Gemma model = gcpp::CreateGemma(loader, pool);
+  gcpp::PerClusterPools pools(app.max_clusters, app.num_threads);
+  gcpp::Gemma model = gcpp::CreateGemma(loader, pools);
   gcpp::KVCache kv_cache =
       gcpp::KVCache::Create(loader.Info().model, inference.prefill_tbatch_size);
   size_t pos = 0;  // KV Cache position

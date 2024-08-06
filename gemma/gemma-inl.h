@@ -42,11 +42,11 @@
 #include "ops/matmul-inl.h"
 #include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
+#include "util/threading.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
@@ -575,143 +575,28 @@ HWY_NOINLINE void TransformerLayer(
 // NOT reused across calls to GenerateSingle/GenerateBatch so that we can adapt
 // to their num_queries.
 class PrefillState {
-  // TODO: move helper functions, also those in app.h, to a threading header
-  using LPS = hwy::LogicalProcessorSet;
-  LPS Intersection(const LPS& big_set, const LPS& small_set) {
-    LPS both_set;
-    // Reduce expected work by iterating over the smaller set.
-    small_set.Foreach([&big_set, &both_set](size_t idx) {
-      if (big_set.Get(idx)) both_set.Set(idx);
-    });
-    return both_set;
-  }
-
-  std::vector<size_t> CoresInLPS(const LPS& cluster) {
-    std::vector<size_t> cores;
-    cores.reserve(cluster.Count());
-    cluster.Foreach([&cores](size_t idx) { cores.push_back(idx); });
-    return cores;
-  }
-
-  // For each cluster (shared L3 cache), a bitset of cores.
-  using CoresPerCluster = std::vector<LPS>;
-
-  // Returns empty if detection failed.
-  CoresPerCluster DetectClusters() {
-    CoresPerCluster clusters;
-    // Which processors are not disabled via OS, taskset, or numactl.
-    LPS enabled;
-    // If we don't know, better to use just a single inner pool rather than risk
-    // oversubscribing to enabled cores.
-    if (!GetThreadAffinity(enabled)) return clusters;
-
-    hwy::Topology topology;
-    if (topology.packages.empty()) return clusters;
-
-    // For each cluster = outer, the cores that will be used for an inner pool.
-    CoresPerCluster inner_lps;
-    for (const hwy::Topology::Package& package : topology.packages) {
-      for (const hwy::Topology::Cluster& cluster : package.clusters) {
-        // Only use enabled cores, and only add if not empty.
-        const LPS lps = Intersection(enabled, cluster.lps);
-        if (lps.Any()) clusters.push_back(lps);
-      }
-    }
-
-    // Sort by descending number of enabled cores, so that we preferentially
-    // use the largest clusters.
-    std::sort(clusters.begin(), clusters.end(),
-              [](const LPS& a, const LPS& b) { return a.Count() > b.Count(); });
-
-    return clusters;
-  }
-
-  // Returns false if the main pool should be reused instead.
-  bool AssignInnerPoolsToClusters(const size_t num_queries) {
-    HWY_ASSERT(num_queries != 0);
-
-    CoresPerCluster inner_lps = DetectClusters();
-    // If we have more outer workers than queries, discard the excess.
-    if (inner_lps.size() > num_queries) inner_lps.resize(num_queries);
-    // If we're not going to create multiple pools, avoid the overhead of
-    // re-pinning (60 ms) and reuse the main pool.
-    if (inner_lps.size() <= 1) return false;
-
-    // Before creating new threads, stop the old ones from spinning. Caller is
-    // responsible for undoing this by calling `ResumeMainSpinning`.
-    main_pool_->SetWaitMode(hwy::PoolWaitMode::kBlock);
-
-    outer_pool_ = std::make_unique<hwy::ThreadPool>(inner_lps.size());
-    outer_pool_->SetWaitMode(hwy::PoolWaitMode::kSpin);
-
-    HWY_ASSERT(inner_pools_.empty());
-    for (const LPS& inner : inner_lps) {
-      inner_pools_.push_back(new hwy::ThreadPool(inner.Count()));
-      inner_pools_.back()->SetWaitMode(hwy::PoolWaitMode::kSpin);
-    }
-
-    // For each inner pool, pin their threads AND the associated outer thread
-    // to the enabled cores in the cluster.
-    outer_pool_->Run(
-        0, inner_lps.size(),
-        [this, &inner_lps](uint64_t outer, size_t outer_thread) {
-          HWY_ASSERT(outer == outer_thread);  // each outer has one task
-          const std::vector<size_t> cores = CoresInLPS(inner_lps[outer]);
-
-          inner_pools_[outer]->Run(
-              0, cores.size(), [&cores](uint64_t task, size_t thread) {
-                HWY_ASSERT(task == thread);  // each inner has one task
-                hwy::PinThreadToLogicalProcessor(cores[task]);
-              });
-        });
-
-    return true;
-  }
-
-  void ReuseMainPoolAsInner() {
-    // Still allocate an empty pool to simplify Prefill().
-    outer_pool_ = std::make_unique<hwy::ThreadPool>(1);
-
-    HWY_ASSERT(inner_pools_.empty());
-    inner_pools_.push_back(main_pool_);
-  }
-
  public:
-  // Creates pools. AllocateActivations must still be called separately; it has
-  // a template argument.
-  PrefillState(hwy::ThreadPool& main_pool, size_t num_queries)
-      : main_pool_(&main_pool) {
-    PROFILER_ZONE("Init.Prefill.Ctor");
-    if (!AssignInnerPoolsToClusters(num_queries)) {
-      ReuseMainPoolAsInner();
-    }
-  }
-
-  ~PrefillState() {
-    for (hwy::ThreadPool* p : inner_pools_) {
-      if (p != main_pool_) delete p;
-    }
-  }
-
   // `tbatch_size` is the number of tokens from one query to prefill at a time.
   template <class TConfig>
-  void AllocateActivations(size_t num_queries, size_t tbatch_size) {
-    PROFILER_ZONE("Init.Prefill.AllocateActivations");
-
-    const size_t outer_workers = outer_pool_->NumWorkers();
-    HWY_ASSERT(outer_workers != 0);  // Otherwise activations_ is empty.
-
+  void Init(size_t num_queries, size_t tbatch_size, PerClusterPools& pools) {
+    PROFILER_ZONE("Init.Prefill");
+    HWY_ASSERT(num_queries != 0);
     HWY_ASSERT(activations_.empty());  // only call once.
-    activations_.resize(outer_workers);
 
-    if (outer_workers == 1) {
+    // Allocate one activation per query, not outer worker, because the common
+    // case is a single query. If we allocate the lesser of the two, it is
+    // unclear how to choose an unused activation in Prefill.
+    activations_.resize(num_queries);
+
+    if (num_queries == 1) {
       activations_[0].Allocate<TConfig>(tbatch_size);
     } else {
-      // Allocating in parallel can save 30 ms.
-      main_pool_->Run(0, outer_workers,
-                      [this, tbatch_size](uint64_t task, size_t /*thread*/) {
-                        activations_[task].Allocate<TConfig>(tbatch_size);
-                      });
+      // Allocating in parallel can save 30 ms. We might have more workers than
+      // queries/tasks, so do not check the `thread` argument.
+      pools.Outer().Run(0, num_queries,
+                        [this, tbatch_size](uint64_t qi, size_t /*thread*/) {
+                          activations_[qi].Allocate<TConfig>(tbatch_size);
+                        });
     }
   }
 
@@ -721,7 +606,7 @@ class PrefillState {
                             const size_t query_idx_start,
                             const CompressedWeights<TConfig>& weights,
                             const RuntimeConfig& runtime_config,
-                            const KVCaches& kv_caches) {
+                            const KVCaches& kv_caches, PerClusterPools& pools) {
     PROFILER_ZONE("Gen.Prefill");
     const size_t num_queries = prompts.size();
     HWY_ASSERT(kv_caches.size() == num_queries);
@@ -729,10 +614,10 @@ class PrefillState {
 
     // For each query (parallel): an outer worker processes all its tokens.
     // `qi` is relative to the batch, not the global query index.
-    outer_pool_->Run(
+    pools.Outer().Run(
         0, num_queries, [&](const uint64_t qi, size_t qthread) HWY_ATTR {
-          Activations& activations = activations_[qthread];
-          hwy::ThreadPool& inner_pool = *inner_pools_[qthread];
+          Activations& activations = activations_[qi];
+          hwy::ThreadPool& inner_pool = pools.Inner(qthread);
 
           // Single query at a time, so pass a slice of the KV cache because
           // GemmaAttention will only access the first.
@@ -768,29 +653,8 @@ class PrefillState {
         });
   }
 
-  // Stops spinning in our pools and resume spinning in main_pool_.
-  void ResumeMainSpinning() {
-    // If we didn't create a new inner pool, we didn't stop spinning on the
-    // main pool, so nothing to do here.
-    if (inner_pools_[0] == main_pool_) return;
-
-    for (hwy::ThreadPool* p : inner_pools_) {
-      p->SetWaitMode(hwy::PoolWaitMode::kBlock);
-    }
-    outer_pool_->SetWaitMode(hwy::PoolWaitMode::kBlock);
-    main_pool_->SetWaitMode(hwy::PoolWaitMode::kSpin);
-  }
-
  private:
-  hwy::ThreadPool* main_pool_;
-  std::unique_ptr<hwy::ThreadPool> outer_pool_;  // always allocated
-  // Holds a single pointer equal to main_pool_, or new allocations; in either
-  // case, size() is equal to outer_pool_->NumWorkers(). The first case avoids
-  // allocation overhead for the common case of a single query.
-  std::vector<hwy::ThreadPool*> inner_pools_;
-
-  // size() == outer_pool_->NumWorkers(); filled by AllocateActivations.
-  std::vector<Activations> activations_;
+  std::vector<Activations> activations_;  // One per query, filled by Init.
 };
 
 // `tokens` is length `num_tokens * num_queries`. In autoregressive decode,
@@ -945,11 +809,14 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
                const RuntimeConfig& runtime_config,
                const MultiplePromptsTokens& prompts, const size_t pos,
                const size_t query_idx_start, const KVCaches& kv_caches,
-               hwy::ThreadPool& pool, TimingInfo& timing_info) {
+               PerClusterPools& pools, TimingInfo& timing_info) {
   constexpr size_t kModelDim = TConfig::kModelDim;
   constexpr size_t kVocabSize = TConfig::kVocabSize;
   const CompressedWeights<TConfig>& weights =
       *reinterpret_cast<const CompressedWeights<TConfig>*>(weights_u8.get());
+
+  // TODO: remove once all parallel sections support hierarchical parallelism.
+  hwy::ThreadPool& pool = pools.Inner(0);
 
   const size_t num_queries = prompts.size();
   HWY_ASSERT(num_queries <= 4096);  // TokenStreamer uses BitSet4096.
@@ -984,14 +851,14 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   const size_t prefill_per_query = min_prompt_size - 1;
   double prefill_start;
   {
-    PrefillState prefill(pool, num_queries);
-    prefill.AllocateActivations<TConfig>(num_queries,
-                                         runtime_config.prefill_tbatch_size);
+    // TODO: move to Gemma, reuse across calls to Generate.
+    PrefillState prefill;
+    prefill.Init<TConfig>(num_queries, runtime_config.prefill_tbatch_size,
+                          pools);
     prefill_start = hwy::platform::Now();
     prefill.Prefill<TConfig>(prompts, prefill_per_query, pos, query_idx_start,
-                             weights, runtime_config, kv_caches);
+                             weights, runtime_config, kv_caches, pools);
     timing_info.NotifyPrefill(prefill_per_query * num_queries, prefill_start);
-    prefill.ResumeMainSpinning();
   }
 
   size_t interleaved_pos = (pos + prefill_per_query) * num_queries;
@@ -1051,7 +918,7 @@ template <class TConfig>
 void GenerateSingleT(const ByteStorageT& weights_u8,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
-                     hwy::ThreadPool& pool, TimingInfo& timing_info) {
+                     PerClusterPools& pools, TimingInfo& timing_info) {
   const size_t num_queries = 1;
   const size_t qbatch_start = 0;
 
@@ -1062,14 +929,14 @@ void GenerateSingleT(const ByteStorageT& weights_u8,
   const KVCaches kv_caches{&kv_cache, num_queries};
 
   GenerateT<TConfig>(weights_u8, activations, runtime_config, prompts, pos,
-                     qbatch_start, kv_caches, pool, timing_info);
+                     qbatch_start, kv_caches, pools, timing_info);
 }
 
 template <class TConfig>
 void GenerateBatchT(const ByteStorageT& weights_u8,
                     const RuntimeConfig& runtime_config,
                     const MultiplePromptsTokens& prompts, size_t pos,
-                    const KVCaches& kv_caches, hwy::ThreadPool& pool,
+                    const KVCaches& kv_caches, PerClusterPools& pools,
                     TimingInfo& timing_info) {
   HWY_ASSERT(prompts.size() == kv_caches.size());
   // Griffin does not support query batching.
@@ -1089,7 +956,7 @@ void GenerateBatchT(const ByteStorageT& weights_u8,
                                                qbatch_size);
     const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
     GenerateT<TConfig>(weights_u8, activations, runtime_config, qbatch_prompts,
-                       pos, qbatch_start, qbatch_kv, pool, timing_info);
+                       pos, qbatch_start, qbatch_kv, pools, timing_info);
   }
 }
 
@@ -1102,18 +969,18 @@ void GenerateBatchT(const ByteStorageT& weights_u8,
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
     GEMMA_CONFIG, const ByteStorageT& weights_u8,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
-    KVCache& kv_cache, hwy::ThreadPool& pool, TimingInfo& timing_info) {
+    KVCache& kv_cache, PerClusterPools& pools, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_CONFIG>)
-  (weights_u8, runtime_config, prompt, pos, kv_cache, pool, timing_info);
+  (weights_u8, runtime_config, prompt, pos, kv_cache, pools, timing_info);
 }
 
 void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
     GEMMA_CONFIG, const ByteStorageT& weights_u8,
     const RuntimeConfig& runtime_config, const MultiplePromptsTokens& prompts,
-    size_t pos, const KVCaches& kv_caches, hwy::ThreadPool& pool,
+    size_t pos, const KVCaches& kv_caches, PerClusterPools& pools,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_CONFIG>)
-  (weights_u8, runtime_config, prompts, pos, kv_caches, pool, timing_info);
+  (weights_u8, runtime_config, prompts, pos, kv_caches, pools, timing_info);
 }
 
 #endif  // HWY_ONCE

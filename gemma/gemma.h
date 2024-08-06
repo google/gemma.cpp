@@ -27,6 +27,7 @@
 #include "gemma/common.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
+#include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
@@ -56,8 +57,8 @@ using SampleFunc = std::function<int(const float*, size_t)>;
 // - layer index (or -1 for global outputs), e.g. "blocks" exposes x per-layer
 // - pointer to the data array
 // - size of the data array
-using LayersOutputFunc =
-    std::function<void(size_t, size_t, const std::string&, int, const float*, size_t)>;
+using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
+                                            int, const float*, size_t)>;
 
 struct RuntimeConfig {
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
@@ -121,11 +122,11 @@ using KVCaches = hwy::Span<KVCache>;
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
-        hwy::ThreadPool& pool);
+        PerClusterPools& pools);
 
   // Allocates weights, caller is responsible for filling them.
   Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
-        hwy::ThreadPool& pool);
+        PerClusterPools& pools);
   ~Gemma();
 
   const ModelInfo& Info() const { return info_; }
@@ -140,7 +141,7 @@ class Gemma {
                      const KVCaches& kv_caches, TimingInfo& timing_info);
 
  private:
-  hwy::ThreadPool& pool_;
+  PerClusterPools& pools_;
 
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.
@@ -154,14 +155,6 @@ class Gemma {
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const ModelInfo& info, size_t pos,
                                  std::string& prompt);
-
-// DEPRECATED, call Gemma::Generate directly.
-HWY_INLINE void GenerateGemma(Gemma& gemma, const RuntimeConfig& runtime_config,
-                              const std::vector<int>& prompt, size_t start_pos,
-                              KVCache& kv_cache, hwy::ThreadPool& /*pool*/,
-                              TimingInfo& timing_info) {
-  gemma.Generate(runtime_config, prompt, start_pos, kv_cache, timing_info);
-}
 
 }  // namespace gcpp
 

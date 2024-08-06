@@ -27,6 +27,7 @@
 #include "gemma/gemma.h"  // Gemma
 #include "util/app.h"
 #include "util/args.h"  // HasHelp
+#include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -75,9 +76,9 @@ std::string GetPrompt(std::istream& input, int verbosity,
 }
 
 // The main Read-Eval-Print Loop.
-void ReplGemma(Gemma& model, KVCache& kv_cache, hwy::ThreadPool& pool,
-               const InferenceArgs& args, int verbosity,
-               const AcceptFunc& accept_token, std::string& eot_line) {
+void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
+               int verbosity, const AcceptFunc& accept_token,
+               std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;   // absolute token index over all turns
   int current_pos = 0;  // token index within the current turn
@@ -172,13 +173,11 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, hwy::ThreadPool& pool,
 void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   PROFILER_ZONE("Run.misc");
 
-  hwy::ThreadPool pool(app.num_threads);
-  // For many-core, pinning workers to cores helps.
-  if (app.num_threads > 10) {
-    PinWorkersToCores(pool);
-  }
+  // Note that num_threads is an upper bound; we also limit to the number of
+  // detected and enabled cores.
+  PerClusterPools pools(app.max_clusters, app.num_threads);
 
-  Gemma model = CreateGemma(loader, pool);
+  Gemma model = CreateGemma(loader, pools);
   KVCache kv_cache =
       KVCache::Create(model.Info().model, inference.prefill_tbatch_size);
 
@@ -205,11 +204,11 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
               << kAsciiArtBanner << "\n\n";
-    ShowConfig(loader, inference, app);
+    ShowConfig(loader, inference, app, pools);
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(model, kv_cache, pool, inference, app.verbosity, AcceptFunc(),
+  ReplGemma(model, kv_cache, inference, app.verbosity, AcceptFunc(),
             app.eot_line);
 }
 

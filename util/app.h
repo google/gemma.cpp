@@ -23,20 +23,12 @@
 
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
-#include "gemma/configs.h"
-#include "gemma/gemma.h"
+#include "gemma/gemma.h"  // For CreateGemma
 #include "util/args.h"
-#include "hwy/base.h"  // HWY_ASSERT
-#include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/contrib/thread_pool/topology.h"
-
-#if HWY_OS_LINUX
-#include <sched.h>
-#endif  // HWY_OS_LINUX
+#include "hwy/base.h"  // HWY_IS_ASAN
 
 namespace gcpp {
 
@@ -58,86 +50,14 @@ static inline const char* CompiledConfig() {
   }
 }
 
-static inline std::vector<size_t> LpsToCpus(
-    const hwy::LogicalProcessorSet& lps) {
-  std::vector<size_t> cpus;
-  cpus.reserve(lps.Count());
-  lps.Foreach([&cpus](size_t lp) { cpus.push_back(lp); });
-  return cpus;
-}
-
-static inline std::vector<size_t> AssignCpusFromTopology(
-    const hwy::Topology& topology, const size_t num_workers) {
-  // Assign CPUs to workers 0 to num_workers - 1 based on the topology.
-  // The assignments are done in a round-robin fashion across all clusters and
-  // Cores.
-  // For example, if we have 4 clusters, the assignments will be:
-  // Thread 0 -> Cluster 0, Core 0
-  // Thread 1 -> Cluster 1, Core 0
-  // Thread 2 -> Cluster 2, Core 0
-  // Thread 3 -> Cluster 3, Core 0
-  // Thread 4 -> Cluster 0, Core 1
-  // Thread 5 -> Cluster 1, Core 1
-  // ... and so on.
-  //
-  // This would result in the least amount of sharing of the last-level
-  // cache slices. All assignments are made from Package 0.
-  std::vector<std::vector<size_t>> clusters;
-  for (auto& package : topology.packages) {
-    for (auto& cluster : package.clusters) {
-      clusters.push_back(LpsToCpus(cluster.lps));
-    }
-  }
-  std::vector<size_t> assigned_cpus;
-  assigned_cpus.reserve(num_workers);
-  for (size_t i = 0; i < num_workers; ++i) {
-    size_t cluster_index = i % clusters.size();
-    size_t cpu_index = (i / clusters.size()) % clusters[cluster_index].size();
-    assigned_cpus.push_back(clusters[cluster_index][cpu_index]);
-  }
-  return assigned_cpus;
-}
-
-static inline void PinWorkersToCores(hwy::ThreadPool& pool) {
-  // Use topology to pin workers to cores if available.
-  hwy::Topology topology;
-  if (!topology.packages.empty()) {
-    std::vector<size_t> assigned_cpus =
-        AssignCpusFromTopology(topology, pool.NumWorkers());
-    pool.Run(0, pool.NumWorkers(),
-             [&assigned_cpus](uint64_t /*task*/, size_t thread) {
-               hwy::PinThreadToLogicalProcessor(assigned_cpus[thread]);
-             });
-  } else {
-    pool.Run(0, pool.NumWorkers(), [](uint64_t /*task*/, size_t thread) {
-      hwy::PinThreadToLogicalProcessor(thread);
-    });
-  }
-}
-
 class AppArgs : public ArgsBase<AppArgs> {
-  static constexpr size_t kDefaultNumThreads = ~size_t{0};
-
-  void ChooseNumThreads() {
-    if (num_threads == kDefaultNumThreads) {
-      // This is a rough heuristic, replace with something better in the future.
-      num_threads = GetSupportedThreadCount();
-    }
-  }
-
  public:
-  AppArgs(int argc, char* argv[]) {
-    InitAndParse(argc, argv);
-    ChooseNumThreads();
-  }
-
-  static inline size_t GetSupportedThreadCount() {
-    return HWY_MIN(hwy::ThreadPool::MaxThreads(), kMaxThreads);
-  }
+  AppArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
   Path log;  // output
   int verbosity;
-  size_t num_threads;
+  size_t num_threads;  // divided among the detected clusters
+  size_t max_clusters;
   std::string eot_line;
 
   template <class Visitor>
@@ -147,11 +67,10 @@ class AppArgs : public ArgsBase<AppArgs> {
             "output\n    1 = standard user-facing terminal ui\n    2 = show "
             "developer/debug info).\n    Default = 1.",
             2);
-    visitor(num_threads, "num_threads",
-            kDefaultNumThreads,  // see ChooseNumThreads
-            "Number of threads to use.\n    Default = Estimate of the "
-            "number of supported concurrent threads.",
-            2);
+    visitor(num_threads, "num_threads", size_t{0},
+            "Maximum number of threads to use; default 0 = unlimited.", 2);
+    visitor(max_clusters, "max_clusters", size_t{0},
+            "Maximum number of sockets/CCXs to use; default 0 = unlimited.", 2);
     visitor(
         eot_line, "eot_line", std::string(""),
         "End of turn line. "
@@ -232,14 +151,14 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 };
 
 static inline Gemma CreateGemma(const LoaderArgs& loader,
-                                hwy::ThreadPool& pool) {
-  return Gemma(loader.tokenizer, loader.weights, loader.Info(), pool);
+                                PerClusterPools& pools) {
+  return Gemma(loader.tokenizer, loader.weights, loader.Info(), pools);
 }
 
 static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
-                                                   hwy::ThreadPool& pool) {
+                                                   PerClusterPools& pools) {
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
-                                 loader.Info(), pool);
+                                 loader.Info(), pools);
 }
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

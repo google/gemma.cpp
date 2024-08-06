@@ -29,12 +29,14 @@
 #include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
+#include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  hwy::ThreadPool pool(0);
+  PerClusterPools pools(1, 1);
+  hwy::ThreadPool& pool = pools.Inner(0);
   std::mt19937 gen(42);
 
   const ModelInfo info = {
@@ -54,7 +56,7 @@ TEST(OptimizeTest, GradientDescent) {
       CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
   KVCache kv_cache = KVCache::Create(info.model, /*prefill_tbatch_size=*/16);
 
-  Gemma gemma(GemmaTokenizer(), info, pool);
+  Gemma gemma(GemmaTokenizer(), info, pools);
 
   const auto generate = [&](const std::vector<int>& prompt) {
     std::vector<int> reply;

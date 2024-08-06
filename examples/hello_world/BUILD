@@ -15,6 +15,7 @@ cc_binary(
         "//:args",
         "//:common",
         "//:gemma_lib",
+        "//:threading",
         "//:tokenizer",
         "@hwy//:hwy",
         "@hwy//:thread_pool",
