@@ -77,18 +77,21 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "-
 
 ### Step 1: Obtain model weights and tokenizer from Kaggle or Hugging Face Hub
 
-Visit [the Gemma model page on
-Kaggle](https://www.kaggle.com/models/google/gemma/frameworks/gemmaCpp) and select `Model Variations
-|> Gemma C++`. On this tab, the `Variation` dropdown includes the options below.
-Note bfloat16 weights are higher fidelity, while 8-bit switched floating point
-weights enable faster inference. In general, we recommend starting with the
-`-sfp` checkpoints.
+Visit the
+[Kaggle page for Gemma](https://www.kaggle.com/models/google/gemma/frameworks/gemmaCpp),
+or [Gemma-2](https://www.kaggle.com/models/google/gemma-2/gemmaCpp), and select
+`Model Variations |> Gemma C++`.
 
-Alternatively, visit the [gemma.cpp](https://huggingface.co/models?other=gemma.cpp)
-models on the Hugging Face Hub. First go the the model repository of the model of interest
-(see recommendations below). Then, click the `Files and versions` tab and download the 
-model and tokenizer files. For programmatic downloading, if you have `huggingface_hub`
-installed, you can also download by running:
+On this tab, the `Variation` dropdown includes the options below. Note bfloat16
+weights are higher fidelity, while 8-bit switched floating point weights enable
+faster inference. In general, we recommend starting with the `-sfp` checkpoints.
+
+Alternatively, visit the
+[gemma.cpp](https://huggingface.co/models?other=gemma.cpp) models on the Hugging
+Face Hub. First go the the model repository of the model of interest (see
+recommendations below). Then, click the `Files and versions` tab and download
+the model and tokenizer files. For programmatic downloading, if you have
+`huggingface_hub` installed, you can also download by running:
 
 ```
 huggingface-cli login # Just the first time
@@ -116,6 +119,9 @@ huggingface-cli download google/gemma-2b-sfp-cpp --local-dir build/
 > [!NOTE]
 > **Important**: We strongly recommend starting off with the `2b-it-sfp` model to
 > get up and running.
+
+Gemma 2 models are named `gemma2-2b-it` for 2B and `9b-it` or `27b-it`. See the
+`kModelFlags` definition in `common.cc`.
 
 ### Step 2: Extract Files
 
