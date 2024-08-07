@@ -900,7 +900,7 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
       }
       Softmax(logits, kVocabSize);
       const int token = sample_token(logits, kVocabSize);
-      timing_info.NotifyGenerated(prefill_start);
+      timing_info.NotifyGenerated(prefill_start, gen_start);
 
       const bool is_eos = token_streamer(query_idx_start + query_idx,
                                          prefill_per_query + 1 + gen_per_query,

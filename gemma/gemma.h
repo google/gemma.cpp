@@ -32,7 +32,7 @@
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"  // Span
-#include "hwy/base.h"  // hwy::bfloat16_t
+#include "hwy/base.h"               // hwy::bfloat16_t
 
 namespace gcpp {
 
@@ -82,37 +82,63 @@ struct RuntimeConfig {
   std::mt19937* gen;
   StreamFunc stream_token;
   BatchStreamFunc batch_stream_token;
-  AcceptFunc accept_token;  // if empty, accepts all tokens.
-  SampleFunc sample_func;   // if empty, uses SampleTopK.
+  AcceptFunc accept_token;         // if empty, accepts all tokens.
+  SampleFunc sample_func;          // if empty, uses SampleTopK.
   LayersOutputFunc layers_output;  // if not empty, called after each layer.
   int eos_id = EOS_ID;
 };
 
 struct TimingInfo {
   void NotifyPrefill(size_t tokens, double start) {
-    prefill_tok_sec =
-        static_cast<double>(tokens) / (hwy::platform::Now() - start);
-    gen_tok_sec = 0.0;
+    prefill_duration = hwy::platform::Now() - start;
+    prefill_tokens = tokens;
     time_to_first_token = 0.0;
     tokens_generated = 0;
   }
 
-  void NotifyGenerated(double prefill_start) {
+  void NotifyGenerated(double prefill_start, double gen_start) {
     ++tokens_generated;
     if (HWY_UNLIKELY(tokens_generated == 1)) {
       time_to_first_token = hwy::platform::Now() - prefill_start;
+      if (verbosity >= 1) {
+        double prefill_tok_sec =
+            static_cast<double>(prefill_tokens) / prefill_duration;
+        fprintf(stderr,
+                "\n\n[ Timing info ] Prefill: %d ms for %zu prompt tokens "
+                "(%.2f tokens / sec); Time to first token: %d ms\n",
+                static_cast<int>(prefill_duration * 1000), prefill_tokens,
+                prefill_tok_sec, static_cast<int>(time_to_first_token * 1000));
+      }
+    }
+    if (verbosity >= 2 && tokens_generated % 128 == 0) {
+      double gen_tok_sec = static_cast<double>(tokens_generated) /
+                           (hwy::platform::Now() - gen_start);
+      fprintf(stderr,
+              "\n\n[ Timing info ] %zu tokens generated "
+              "(avg speed %.2f tokens / sec)\n\n",
+              tokens_generated, gen_tok_sec);
     }
   }
 
   void NotifyGenerateDone(double gen_start) {
-    gen_tok_sec = static_cast<double>(tokens_generated) /
-                  (hwy::platform::Now() - gen_start);
+    generate_duration = hwy::platform::Now() - gen_start;
+    if (verbosity >= 1) {
+      double gen_tok_sec =
+          static_cast<double>(tokens_generated) / generate_duration;
+      fprintf(stderr,
+              "\n[ Timing info ] Generate: %d ms for %zu tokens (%.2f tokens / "
+              "sec)\n",
+              static_cast<int>(generate_duration * 1000), tokens_generated,
+              gen_tok_sec);
+    }
   }
 
-  double prefill_tok_sec;
-  double gen_tok_sec;
-  double time_to_first_token;
-  size_t tokens_generated;
+  int verbosity = 0;
+  double prefill_duration = 0;
+  size_t prefill_tokens = 0;
+  double time_to_first_token = 0;
+  double generate_duration = 0;
+  size_t tokens_generated = 0;
 };
 
 using PromptTokens = hwy::Span<const int>;

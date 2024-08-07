@@ -144,7 +144,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
       }
     }
 
-    TimingInfo timing_info;
+    TimingInfo timing_info = {.verbosity = verbosity};
     RuntimeConfig runtime_config = {
         .verbosity = verbosity,
         .gen = &gen,
@@ -153,15 +153,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
     };
     args.CopyTo(runtime_config);
     model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
-    if (verbosity >= 2) {
-      std::cout << current_pos << " tokens (" << abs_pos << " total tokens)"
-                << "\n"
-                << timing_info.prefill_tok_sec << " prefill tokens / sec"
-                << "\n"
-                << timing_info.gen_tok_sec << " tokens / sec" << "\n"
-                << static_cast<int>(timing_info.time_to_first_token * 1000)
-                << " milliseconds time to first token" << "\n";
-    }
     std::cout << "\n\n";
   }
   std::cout

@@ -114,9 +114,6 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
           size_t query_index, size_t pos, int token, float) {
     ++total_tokens;
     res += StringFromTokens(std::vector<int>{token});
-    if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
-      LogSpeedStats(time_start, total_tokens);
-    }
     return true;
   };
   if (app_.verbosity >= 2) {
@@ -125,13 +122,10 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
               << inference_args_.max_generated_tokens
               << "\ttemperature: " << inference_args_.temperature << "\n";
   }
-  gcpp::TimingInfo timing_info;
+  gcpp::TimingInfo timing_info { .verbosity = app_.verbosity };
   runtime_config_.batch_stream_token = batch_stream_token;
   model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
                    timing_info);
-  if (app_.verbosity >= 1) {
-    LogSpeedStats(time_start, total_tokens);
-  }
   return {res, total_tokens};
 }
 
@@ -153,9 +147,6 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
     res[query_index].first.append(token_text);
     res[query_index].second += 1;
     ++total_tokens;
-    if (app_.verbosity >= 1 && total_tokens % 128 == 0) {
-      LogSpeedStats(time_start, total_tokens);
-    }
     return true;
   };
   if (app_.verbosity >= 2) {
@@ -177,14 +168,11 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
     }
   }
 
-  gcpp::TimingInfo timing_info;
+  gcpp::TimingInfo timing_info = {.verbosity = app_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   inference_args_.CopyTo(runtime_config_);
   model_->GenerateBatch(runtime_config_, prompts, /*start_pos=*/0,
                         KVCaches(&kv_caches_[0], num_queries), timing_info);
-  if (app_.verbosity >= 1) {
-    LogSpeedStats(time_start, total_tokens);
-  }
   return res;
 }
 
