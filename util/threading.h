@@ -120,7 +120,8 @@ class PerClusterPools {
   // result in threads not running on their own core, we only allow for
   // *upper bounds* on the number of clusters and threads. The actual number of
   // clusters and threads are still limited by the detected topology.
-  PerClusterPools(size_t max_clusters, size_t max_threads)
+  PerClusterPools(size_t max_clusters, size_t max_threads,
+                  size_t pin_offset = 0)
       : have_threading_support_(hwy::HaveThreadingSupport()),
         cores_per_cluster_(DetectCoresPerCluster()),
         outer_pool_(CapIfNonzero(cores_per_cluster_.size(), max_clusters)) {
@@ -135,8 +136,11 @@ class PerClusterPools {
       inner_pools_.push_back(std::make_unique<hwy::ThreadPool>(num_threads));
       if (num_threads > 1) {
         inner_pools_.back()->Run(0, num_threads,
-                                 [](uint64_t /*task*/, size_t thread) {
-                                   hwy::PinThreadToLogicalProcessor(thread);
+                                 [pin_offset, num_threads](uint64_t /*task*/,
+                                                           size_t thread) {
+                                   auto lp =
+                                     (thread + pin_offset) % num_threads;
+                                   hwy::PinThreadToLogicalProcessor(lp);
                                  });
       }
       return;
@@ -153,7 +157,7 @@ class PerClusterPools {
     // (the one calling inner.Run()) to the enabled cores in the cluster.
     outer_pool_.Run(
         0, outer_pool_.NumWorkers(),
-        [this](uint64_t outer, size_t outer_thread) {
+        [this, pin_offset](uint64_t outer, size_t outer_thread) {
           HWY_ASSERT(outer == outer_thread);  // each outer has one task
           hwy::ThreadPool& inner = *inner_pools_[outer];
 
@@ -163,9 +167,10 @@ class PerClusterPools {
           HWY_ASSERT(inner.NumWorkers() <= cores.size());
 
           inner.Run(0, inner.NumWorkers(),
-                    [&cores](uint64_t task, size_t thread) {
+                    [pin_offset, &cores](uint64_t task, size_t thread) {
                       HWY_ASSERT(task == thread);  // each inner has one task
-                      hwy::PinThreadToLogicalProcessor(cores[task]);
+                      auto lp = cores[(task + pin_offset) % cores.size()];
+                      hwy::PinThreadToLogicalProcessor(lp);
                     });
         });
   }
