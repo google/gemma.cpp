@@ -17,5 +17,5 @@
 #define HWY_TARGET_INCLUDE \
   "gemma/instantiations/9b_bf16.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-#define GEMMA_CONFIG ConfigGemma9B<hwy::bfloat16_t>
+#define GEMMA_CONFIG ConfigGemma2_9B<hwy::bfloat16_t>
 #include "gemma/gemma-inl.h"

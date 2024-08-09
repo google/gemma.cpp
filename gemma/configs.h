@@ -167,7 +167,7 @@ struct ConfigBaseGemmaV2 : ConfigNoSSM {
 };
 
 template <typename TWeight>
-struct ConfigGemma27B : public ConfigBaseGemmaV2 {
+struct ConfigGemma2_27B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 8192;
@@ -190,7 +190,7 @@ struct ConfigGemma27B : public ConfigBaseGemmaV2 {
 };
 
 template <typename TWeight>
-struct ConfigGemma9B : public ConfigBaseGemmaV2 {
+struct ConfigGemma2_9B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 8192;

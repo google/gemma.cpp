@@ -41,8 +41,8 @@ ByteStorageT AllocateSizeof() {
 enum class Model {
   GEMMA_2B,
   GEMMA_7B,
-  GEMMA_9B,
-  GEMMA_27B,
+  GEMMA2_9B,
+  GEMMA2_27B,
   GRIFFIN_2B,
   GEMMA_TINY,
   GEMMA2_2B,
@@ -94,10 +94,10 @@ decltype(auto) CallForModel(Model model, TArgs&&... args) {
       return FuncT<ConfigGemma2B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA_7B:
       return FuncT<ConfigGemma7B<TWeight>>()(std::forward<TArgs>(args)...);
-    case Model::GEMMA_9B:
-      return FuncT<ConfigGemma9B<TWeight>>()(std::forward<TArgs>(args)...);
-    case Model::GEMMA_27B:
-      return FuncT<ConfigGemma27B<TWeight>>()(std::forward<TArgs>(args)...);
+    case Model::GEMMA2_9B:
+      return FuncT<ConfigGemma2_9B<TWeight>>()(std::forward<TArgs>(args)...);
+    case Model::GEMMA2_27B:
+      return FuncT<ConfigGemma2_27B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GRIFFIN_2B:
       return FuncT<ConfigGriffin2B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA2_2B:
@@ -143,10 +143,10 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
   GEMMA_FOREACH_WEIGHT(X, ConfigGemmaTiny)              \
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma2B)                \
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma7B)                \
-  GEMMA_FOREACH_WEIGHT(X, ConfigGemma9B)                \
-  GEMMA_FOREACH_WEIGHT(X, ConfigGemma27B)               \
   GEMMA_FOREACH_WEIGHT(X, ConfigGriffin2B)              \
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_2B)              \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_9B)                \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_27B)               \
   static_assert(true, "Allow trailing ;")
 
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
@@ -168,16 +168,6 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
       ARGS;                                                                \
       break;                                                               \
     }                                                                      \
-    case Model::GEMMA_9B: {                                                \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma9B<TWEIGHT>>)      \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA_27B: {                                               \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma27B<TWEIGHT>>)     \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
     case Model::GRIFFIN_2B: {                                              \
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>)    \
       ARGS;                                                                \
@@ -185,6 +175,16 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
     }                                                                      \
     case Model::GEMMA2_2B: {                                               \
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_2B<TWEIGHT>>)    \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA2_9B: {                                               \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_9B<TWEIGHT>>)    \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::GEMMA2_27B: {                                              \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_27B<TWEIGHT>>)   \
       ARGS;                                                                \
       break;                                                               \
     }                                                                      \

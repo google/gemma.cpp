@@ -48,7 +48,7 @@ class GemmaTest : public ::testing::Test {
     // Using the turn structure worsens results sometimes.
     // However, gemma-2 27B seems to need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetModel()->Info().model == Model::GEMMA_27B) {
+    if (s_env->GetModel()->Info().model == Model::GEMMA2_27B) {
       std::string mutable_prompt = prompt;
       auto [response, n] = s_env->QueryModel(mutable_prompt);  // Uses turns.
       return response;
@@ -68,7 +68,7 @@ class GemmaTest : public ::testing::Test {
     // Using the turn structure worsens results sometimes.
     // However, gemma-2 27B seems to need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetModel()->Info().model == Model::GEMMA_27B) {
+    if (s_env->GetModel()->Info().model == Model::GEMMA2_27B) {
       for (auto [response, n] : s_env->BatchQueryModel(inputs)) {
         replies.push_back(response);
       }
@@ -199,10 +199,10 @@ TEST_F(GemmaTest, CrossEntropySmall) {
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 2.8f, 0.2f);
       break;
-    case gcpp::Model::GEMMA_9B:
+    case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 1.28f, 0.02f);
       break;
-    case gcpp::Model::GEMMA_27B:
+    case gcpp::Model::GEMMA2_27B:
       EXPECT_NEAR(entropy, 1.30f, 0.02f);
       break;
     default:
@@ -224,10 +224,10 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.07f, 0.05f);
       break;
-    case gcpp::Model::GEMMA_9B:
+    case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 0.37f, 0.02f);
       break;
-    case gcpp::Model::GEMMA_27B:
+    case gcpp::Model::GEMMA2_27B:
       EXPECT_NEAR(entropy, 0.33f, 0.02f);
       break;
     default:
@@ -249,10 +249,10 @@ TEST_F(GemmaTest, CrossEntropyGettysburg) {
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 0.75f, 0.1f);
       break;
-    case gcpp::Model::GEMMA_9B:
+    case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 0.15f, 0.02f);
       break;
-    case gcpp::Model::GEMMA_27B:
+    case gcpp::Model::GEMMA2_27B:
       EXPECT_NEAR(entropy, 0.14f, 0.02f);
       break;
     default:

@@ -17,5 +17,5 @@
 #define HWY_TARGET_INCLUDE \
   "gemma/instantiations/27b_sfp.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-#define GEMMA_CONFIG ConfigGemma27B<SfpStream>
+#define GEMMA_CONFIG ConfigGemma2_27B<SfpStream>
 #include "gemma/gemma-inl.h"
