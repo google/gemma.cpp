@@ -54,10 +54,12 @@ class AppArgs : public ArgsBase<AppArgs> {
  public:
   AppArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  Path log;  // output
   int verbosity;
+
   size_t num_threads;  // divided among the detected clusters
   size_t max_clusters;
+  int pin;  // -1 = auto, 0 = no, 1 = yes
+
   std::string eot_line;
 
   template <class Visitor>
@@ -67,10 +69,13 @@ class AppArgs : public ArgsBase<AppArgs> {
             "output\n    1 = standard user-facing terminal ui\n    2 = show "
             "developer/debug info).\n    Default = 1.",
             2);
+
     visitor(num_threads, "num_threads", size_t{0},
             "Maximum number of threads to use; default 0 = unlimited.", 2);
     visitor(max_clusters, "max_clusters", size_t{0},
             "Maximum number of sockets/CCXs to use; default 0 = unlimited.", 2);
+    visitor(pin, "pin", -1, "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
+
     visitor(
         eot_line, "eot_line", std::string(""),
         "End of turn line. "

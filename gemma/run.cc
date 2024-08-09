@@ -166,7 +166,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   // Note that num_threads is an upper bound; we also limit to the number of
   // detected and enabled cores.
-  PerClusterPools pools(app.max_clusters, app.num_threads);
+  PerClusterPools pools(app.max_clusters, app.num_threads, app.pin);
 
   Gemma model = CreateGemma(loader, pools);
   KVCache kv_cache =

@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
   }
 
   // Instantiate model and KV Cache
-  gcpp::PerClusterPools pools(app.max_clusters, app.num_threads);
+  gcpp::PerClusterPools pools(app.max_clusters, app.num_threads, app.pin);
   gcpp::Gemma model = gcpp::CreateGemma(loader, pools);
   gcpp::KVCache kv_cache =
       gcpp::KVCache::Create(loader.Info().model, inference.prefill_tbatch_size);
