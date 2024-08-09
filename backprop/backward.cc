@@ -29,6 +29,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "backprop/backward-inl.h"
+#include "gemma/activations.h"
 #include "gemma/weights.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -41,6 +42,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const ByteStorageT& forward_u8,
                                   ByteStorageT& grad_u8,
                                   ByteStorageT& backward_u8,
+                                  RowVectorBatch<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
   using TWeights = CompressedWeights<TConfig>;
   const auto& weights = *reinterpret_cast<const TWeights*>(weights_u8.get());
@@ -49,25 +51,24 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
   auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
   CrossEntropyLossBackwardPass<TConfig, CompressedWeights, CompressedLayer>(
-      prompt, weights, forward, grad, backward, pool);
+      prompt, weights, forward, grad, backward, inv_timescale, pool);
 }
 
-void CrossEntropyLossBackwardPassT(Model model,
-                                   const Prompt& prompt,
+void CrossEntropyLossBackwardPassT(Model model, const Prompt& prompt,
                                    const ByteStorageT& weights,
                                    const ByteStorageT& forward,
-                                   ByteStorageT& grad,
-                                   ByteStorageT& backward,
+                                   ByteStorageT& grad, ByteStorageT& backward,
+                                   RowVectorBatch<float>& inv_timescale,
                                    hwy::ThreadPool& pool) {
   // TODO(janwas): use CallFunctorForModel
   switch (model) {
     case Model::GEMMA_2B:
       CrossEntropyLossBackwardPass<ConfigGemma2B<float>>(
-          prompt, weights, forward, grad, backward, pool);
+          prompt, weights, forward, grad, backward, inv_timescale, pool);
       break;
     case Model::GEMMA_TINY:
       CrossEntropyLossBackwardPass<ConfigGemmaTiny<float>>(
-          prompt, weights, forward, grad, backward, pool);
+          prompt, weights, forward, grad, backward, inv_timescale, pool);
       break;
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
@@ -83,12 +84,14 @@ namespace gcpp {
 
 HWY_EXPORT(CrossEntropyLossBackwardPassT);
 
-void CrossEntropyLossBackwardPass(
-    const Model& model, const Prompt& prompt,
-    const ByteStorageT& weights, const ByteStorageT& forward,
-    ByteStorageT& grad, ByteStorageT& backward, hwy::ThreadPool& pool) {
+void CrossEntropyLossBackwardPass(const Model& model, const Prompt& prompt,
+                                  const ByteStorageT& weights,
+                                  const ByteStorageT& forward,
+                                  ByteStorageT& grad, ByteStorageT& backward,
+                                  RowVectorBatch<float>& inv_timescale,
+                                  hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardPassT)(
-      model, prompt, weights, forward, grad, backward, pool);
+      model, prompt, weights, forward, grad, backward, inv_timescale, pool);
 }
 
 }  // namespace gcpp

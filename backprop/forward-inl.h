@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "backprop/activations.h"
+#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "hwy/base.h"
@@ -88,11 +89,11 @@ static HWY_NOINLINE float CrossEntropyLoss(const float* HWY_RESTRICT probs,
   return loss * scaling;
 }
 
-template <typename TConfig, template<typename> typename LayerT>
+template <typename TConfig, template <typename> typename LayerT>
 void ApplyForwardLayer(const LayerT<TConfig>& weights,
                        ForwardLayer<float, TConfig>& activations,
-                       size_t num_tokens,
-                       float* HWY_RESTRICT output,
+                       size_t num_tokens, float* HWY_RESTRICT output,
+                       const RowVectorBatch<float>& inv_timescale,
                        hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
@@ -117,14 +118,14 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* HWY_RESTRICT k =
         activations.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
-    Rope(k, kQKVDim, pos);
+    Rope(k, kQKVDim, inv_timescale.Const(), pos);
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     float* HWY_RESTRICT q =
         activations.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
-    Rope(q, kQKVDim, pos);
+    Rope(q, kQKVDim, inv_timescale.Const(), pos);
     MulByConst(kQueryScale, q, kQKVDim);
   });
 
@@ -222,12 +223,13 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   }
 }
 
-template <typename TConfig, template<typename...> typename WeightsT,
-          template<typename> typename LayerT>
+template <typename TConfig, template <typename...> typename WeightsT,
+          template <typename> typename LayerT>
 float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
                                   size_t context_size,
                                   const WeightsT<TConfig>& weights,
                                   ForwardPass<float, TConfig>& forward,
+                                  const RowVectorBatch<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -251,9 +253,9 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
     float* HWY_RESTRICT output = layer + 1 < kLayers ?
                                  forward.layers[layer + 1].input.data() :
                                  forward.final_layer_output.data();
-    ApplyForwardLayer<TConfig, LayerT>(
-        *weights.GetLayer(layer), forward.layers[layer],
-        num_tokens, output, pool);
+    ApplyForwardLayer<TConfig, LayerT>(*weights.GetLayer(layer),
+                                       forward.layers[layer], num_tokens,
+                                       output, inv_timescale, pool);
   }
 
   ApplyRMSNorm(weights.final_norm_scale.data(),

@@ -26,6 +26,7 @@
 #include "backprop/optimizer.h"
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
+#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
@@ -55,6 +56,9 @@ TEST(OptimizeTest, GradientDescent) {
   ByteStorageT backward =
       CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
   KVCache kv_cache = KVCache::Create(info.model, /*prefill_tbatch_size=*/16);
+
+  RowVectorBatch<float> inv_timescale =
+      Activations::CreateInvTimescale<ConfigGemmaTiny<float>>();
 
   Gemma gemma(GemmaTokenizer(), info, pools);
 
@@ -118,10 +122,10 @@ TEST(OptimizeTest, GradientDescent) {
     num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
-      total_loss += CrossEntropyLossForwardPass(info.model, prompt,
-                                                gemma.Weights(), forward, pool);
+      total_loss += CrossEntropyLossForwardPass(
+          info.model, prompt, gemma.Weights(), forward, inv_timescale, pool);
       CrossEntropyLossBackwardPass(info.model, prompt, gemma.Weights(), forward,
-                                   grad, backward, pool);
+                                   grad, backward, inv_timescale, pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;

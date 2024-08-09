@@ -455,6 +455,7 @@ cc_test(
         ":common",
         ":gemma_lib",
         ":ops",
+        ":prompt",
         ":sampler",
         "@googletest//:gtest_main",
         "//compression:weights_raw",

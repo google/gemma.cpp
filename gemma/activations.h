@@ -18,6 +18,8 @@
 
 #include <stddef.h>
 
+#include <cmath>
+
 #include "gemma/common.h"  // kMaxThreads - TODO: remove
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // HWY_DASSERT
@@ -54,6 +56,7 @@ class RowVectorBatch {
 
   // For MatMul or other operations that process the entire batch at once.
   T* All() { return mem_.get(); }
+  const T* Const() const { return mem_.get(); }
   size_t NumBytes() const { return batch_size_ * len_ * sizeof(T); }
 
  private:
@@ -88,6 +91,9 @@ struct Activations {
   RowVectorBatch<float> griffin_gate_x;
   RowVectorBatch<float> griffin_multiplier;
 
+  // Rope
+  RowVectorBatch<float> inv_timescale;
+
   // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
   // per-thread storage.
   // TODO: remove once MatVec is gone.
@@ -104,6 +110,21 @@ struct Activations {
   template <class TConfig>
   static constexpr size_t QStride() {
     return TConfig::kQKVDim * (IsMHA<TConfig>() ? 3 : 1);
+  }
+
+  template <class TConfig>
+  static RowVectorBatch<float> CreateInvTimescale() {
+    constexpr size_t kQKVDim = TConfig::kQKVDim;
+    const size_t rope_dim = TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim;
+    RowVectorBatch<float> inv_timescale(1, rope_dim / 2);
+    for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
+      const float freq_exponents =
+          static_cast<float>(2 * dim) / static_cast<float>(rope_dim);
+      // Replacing with expf(ln(1E4) * freq_exponents) changes results
+      // noticeably.
+      inv_timescale.Batch(0)[dim] = 1.0f / std::pow(10000.0f, freq_exponents);
+    }
+    return inv_timescale;
   }
 
   template <class TConfig>
@@ -137,6 +158,8 @@ struct Activations {
       griffin_gate_x = RowVectorBatch<float>(batch_size, kModelDim);
       griffin_multiplier = RowVectorBatch<float>(batch_size, kModelDim);
     }
+
+    inv_timescale = CreateInvTimescale<TConfig>();
 
     even_odd = RowVectorBatch<float>(1, kModelDim * kMaxThreads);
   }

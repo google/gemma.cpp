@@ -196,216 +196,317 @@ HWY_NOINLINE void GriffinRecurrent(
   }
 }
 
-template <class TConfig, typename T>
-HWY_NOINLINE void PostQK(T* HWY_RESTRICT inout, size_t pos, size_t layer) {
-  constexpr size_t kQKVDim = TConfig::kQKVDim;
-  // PostQKType::Rope
-  Rope(inout, TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim, pos);
-}
-
+// Wrapper class; holds arguments in member variables to shorten call sites.
 template <class TConfig>
-HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
-                                 size_t num_queries, size_t layer,
-                                 Activations& activations,
-                                 const CompressedLayer<TConfig>* layer_weights,
-                                 const KVCaches& kv_caches,
-                                 hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Gen.Attention");
-  HWY_DASSERT(interleaved_start % num_queries == 0);
-  constexpr size_t kQKVDim = TConfig::kQKVDim;
-  constexpr size_t kQStride = Activations::QStride<TConfig>();
-  constexpr size_t kCachePosSize = CachePosSize<TConfig>()();
-  constexpr size_t kCacheLayerSize = CacheLayerSize<TConfig>()();
-  constexpr size_t kModelDim = TConfig::kModelDim;
-  constexpr size_t kHeads = TConfig::kHeads;
-  constexpr size_t kKVHeads = TConfig::kKVHeads;
-  constexpr size_t kSeqLen = TConfig::kSeqLen;
-  GEMMA_CONSTEXPR_SQRT float kQueryScale = ChooseQueryScale<TConfig>();
+class GemmaAttention {
+  static constexpr size_t kCacheLayerSize = CacheLayerSize<TConfig>()();
+  static constexpr size_t kCachePosSize = CachePosSize<TConfig>()();
+  static constexpr size_t kHeads = TConfig::kHeads;
+  static constexpr size_t kKVHeads = TConfig::kKVHeads;
+  static constexpr size_t kModelDim = TConfig::kModelDim;
+  static constexpr size_t kQKVDim = TConfig::kQKVDim;
+  static constexpr size_t kQStride = Activations::QStride<TConfig>();
+  static constexpr size_t kSeqLen = TConfig::kSeqLen;
+  static constexpr bool kIsMHA = Activations::IsMHA<TConfig>();
 
-  HWY_ASSERT(num_queries <= kv_caches.size());
-  const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
+  // The attention window usually starts at 0 unless unless `pos` is larger than
+  // the attention window size, then it is `pos` - window_size + 1.
+  static HWY_INLINE size_t StartPos(size_t pos, size_t layer) {
+    const size_t att_window_size = TConfig::kAttentionWindowSizes[layer];
+    return pos - std::min(att_window_size - 1, pos);
+  }
 
-  // Multi-Head Attention a.k.a. "use_qkv_einsum".
-  constexpr bool kIsMHA = Activations::IsMHA<TConfig>();
-  static_assert(!kIsMHA || TConfig::kInterleaveQKV);  // MHA => interleaved
-  const size_t batch_start = interleaved_start / num_queries;
-  const size_t num_interleaved = num_tokens * num_queries;
-
-  // For the computation of Q, K, and V, it is useful to remember that
-  // qkv_einsum_w has shape [(kHeads + kKVHeads * 2), kKQVDim, kModelDim]
-  // and kQStride = kQKVDim * (kIsMHA ? 3 : 1);
-  //
-  // Compute Q only or QKV (if MHA).
-  // If MHA, this also computes KV, which we copy to the KV cache below.
-  MatMul_4x4</*kAdd=*/false>(
-      num_interleaved, MakeMat(activations.pre_att_rms_out.All(), kModelDim),
-      MakeMat(layer_weights->qkv_einsum_w.data(), kModelDim),
-      layer_weights->qkv_einsum_w.scale(), /*add=*/nullptr,
-      MakeMat(activations.q.All(), kHeads * kQStride), pool);
-
-  // Compute KV if not MHA.
-  if constexpr (!kIsMHA) {
-    // Single query and no wraparound means we can use a matmul and write
-    // directly into the KV cache with a stride of kCachePosSize.
-    if (num_queries == 1 &&
-        batch_start + num_tokens <= div_seq_len.GetDivisor()) {
-      const size_t kv_ofs =
-          batch_start * kCachePosSize + layer * kCacheLayerSize;
-      // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
-      float* HWY_RESTRICT kv = kv_caches[0].kv_cache.get() + kv_ofs;
-      MatMul_4x4</*kAdd=*/false>(
-          num_tokens, MakeMat(activations.pre_att_rms_out.All(), kModelDim),
-          MakeMat(layer_weights->qkv_einsum_w.data(), kModelDim, kModelDim,
-                  kHeads * kQKVDim * kModelDim),
-          layer_weights->qkv_einsum_w.scale(), /*add=*/nullptr,
-          MakeMat(kv, kKVHeads * 2 * kQKVDim, kCachePosSize), pool);
+  template <typename T>
+  HWY_INLINE void PositionalEncodingQK(const T* qk, size_t pos, size_t layer,
+                                       const float mul, T* qk_out) {
+    const float* inv_timescale = activations_.inv_timescale.Const();
+    // PostQKType::Rope
+    (void)layer;
+    if (TConfig::kUseHalfRope) {
+      hwy::CopyBytes(qk, qk_out, kQKVDim * sizeof(*qk));
+      Rope(qk_out, kQKVDim / 2, inv_timescale, pos);
+      MulByConst(mul, qk_out, kQKVDim);
     } else {
-      for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
-           ++interleaved_idx) {
-        const float* x = activations.pre_att_rms_out.Batch(interleaved_idx);
-        const size_t query_idx = interleaved_idx % num_queries;
-        const size_t batch_idx = interleaved_idx / num_queries;
-        KVCache& kv_cache = kv_caches[query_idx];
-        const size_t cache_pos = div_seq_len.Remainder(batch_start + batch_idx);
-        const size_t kv_offset =
-            cache_pos * kCachePosSize + layer * kCacheLayerSize;
-        float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+      RopeAndMulBy(mul, qk, kQKVDim, inv_timescale, pos, qk_out);
+    }
+  }
+
+  // Fills activations.q and computes KV. For kIsMHA, a single MatMul suffices
+  // and we later copy KV from q to KVCache. Otherwise, a second MatMul writes
+  // KV directly to KVCache.
+  HWY_NOINLINE void ComputeQKV(const size_t batch_start,
+                               const size_t num_interleaved) {
+    PROFILER_ZONE("Gen.Attention.QKV");
+    // For the computation of Q, K, and V, it is useful to remember that
+    // qkv_einsum_w has shape [(kHeads + kKVHeads * 2), kKQVDim, kModelDim]
+    // and kQStride = kQKVDim * (kIsMHA ? 3 : 1);
+
+    const auto pre_att_rms_out =
+        MakeMat(activations_.pre_att_rms_out.All(), kModelDim);
+    MatMul_4x4</*kAdd=*/false>(
+        num_interleaved, pre_att_rms_out,
+        MakeMat(layer_weights_.qkv_einsum_w.data(), kModelDim),
+        layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr,
+        MakeMat(activations_.q.All(), kHeads * kQStride), pool_);
+
+    if constexpr (kIsMHA) {
+      static_assert(TConfig::kInterleaveQKV, "MHA implies interleaved");
+      // Multi-Head Attention a.k.a. "use_qkv_einsum" computed QKV already.
+    } else {
+      // Single query and no wraparound means we can use a matmul and write
+      // directly into the KV cache with a stride of kCachePosSize.
+      if (num_queries_ == 1 &&
+          batch_start + num_tokens_ <= div_seq_len_.GetDivisor()) {
+        const size_t kv_ofs =
+            batch_start * kCachePosSize + layer_ * kCacheLayerSize;
         // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
-        MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
-            layer_weights->qkv_einsum_w, kHeads * kQKVDim * kModelDim, x,
-            activations.even_odd.All(), kv, pool);
+        float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
+        MatMul_4x4</*kAdd=*/false>(
+            num_tokens_, pre_att_rms_out,
+            MakeMat(layer_weights_.qkv_einsum_w.data(), kModelDim, kModelDim,
+                    kHeads * kQKVDim * kModelDim),
+            layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr,
+            MakeMat(kv, kKVHeads * 2 * kQKVDim, kCachePosSize), pool_);
+      } else {
+        // Proceed row by row because there will be wraparound.
+        for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
+             ++interleaved_idx) {
+          const float* x = activations_.pre_att_rms_out.Batch(interleaved_idx);
+          const size_t query_idx = interleaved_idx % num_queries_;
+          const size_t batch_idx = interleaved_idx / num_queries_;
+          KVCache& kv_cache = kv_caches_[query_idx];
+          const size_t cache_pos =
+              div_seq_len_.Remainder(batch_start + batch_idx);
+          const size_t kv_offset =
+              cache_pos * kCachePosSize + layer_ * kCacheLayerSize;
+          float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+          // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
+          MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
+              layer_weights_.qkv_einsum_w, kHeads * kQKVDim * kModelDim, x,
+              activations_.even_odd.All(), kv, pool_);
+        }
+      }
+    }
+
+    // Apply positional encodings for K (and copy KV to cache if MHA).
+    pool_.Run(
+        0, kKVHeads * num_interleaved,
+        [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+          const size_t head = task % kKVHeads;
+          const size_t interleaved_idx = task / kKVHeads;
+          const size_t query_idx = interleaved_idx % num_queries_;
+          const size_t batch_idx = interleaved_idx / num_queries_;
+          const size_t pos = batch_start + batch_idx;
+          const size_t cache_pos = div_seq_len_.Remainder(pos);
+          const size_t kv_offset = cache_pos * kCachePosSize +
+                                   layer_ * kCacheLayerSize +
+                                   head * kQKVDim * 2;
+          KVCache& kv_cache = kv_caches_[query_idx];
+          float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
+          const float* HWY_RESTRICT mha_kv =
+              activations_.q.Batch(interleaved_idx) + head * kQStride + kQKVDim;
+
+          // Copy from `q` if MHA, or apply in-place.
+          PositionalEncodingQK(kIsMHA ? mha_kv : kv, pos, layer_, 1.0f, kv);
+
+          // If MHA, also copy V into KVCache.
+          if (kIsMHA) {
+            hwy::CopyBytes(mha_kv + kQKVDim, kv + kQKVDim,
+                           kQKVDim * sizeof(*kv));
+          }
+        });
+  }
+
+  // Computes Q.K scores, which are "logits" (or scores) stored to head_att.
+  HWY_INLINE void QDotK(const size_t start_pos, const size_t pos,
+                        const size_t head_offset, const float* HWY_RESTRICT q,
+                        const KVCache& kv_cache, float* HWY_RESTRICT head_att) {
+    if (HWY_LIKELY(pos <= kSeqLen)) {
+      // Slightly faster: no wraparound.
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t kv_offset =
+            pos2 * kCachePosSize + layer_ * kCacheLayerSize + head_offset;
+        const float* HWY_RESTRICT k = &kv_cache.kv_cache[kv_offset];
+        const float score = Dot(q, k, kQKVDim);
+        head_att[pos2] = score;
+      }
+    } else {
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t cache_pos = div_seq_len_.Remainder(pos2);
+        const size_t kv_offset =
+            cache_pos * kCachePosSize + layer_ * kCacheLayerSize + head_offset;
+        const float* HWY_RESTRICT k = &kv_cache.kv_cache[kv_offset];
+        const float score = Dot(q, k, kQKVDim);
+        head_att[pos2 % kSeqLen] = score;
       }
     }
   }
 
-  // Apply positional encodings for K (and copy KV to cache if MHA).
-  pool.Run(
-      0, kKVHeads * num_interleaved,
-      [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
-        const size_t head = task % kKVHeads;
-        const size_t interleaved_idx = task / kKVHeads;
-        const size_t query_idx = interleaved_idx % num_queries;
-        const size_t batch_idx = interleaved_idx / num_queries;
-        const size_t pos = batch_start + batch_idx;
-        const size_t cache_pos = div_seq_len.Remainder(pos);
-        const size_t kv_offset = cache_pos * kCachePosSize +
-                                 layer * kCacheLayerSize + head * kQKVDim * 2;
-        KVCache& kv_cache = kv_caches[query_idx];
-        float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-        if constexpr (kIsMHA) {
-          // For MHA, copy KV into the KV cache from scratch space (see above).
-          const float* HWY_RESTRICT q =
-              activations.q.Batch(interleaved_idx) + head * kQStride;
-          // Skip past the Q part of `q`, and copy KV to `kv`.
-          hwy::CopyBytes(q + kQKVDim, kv, 2 * kQKVDim * sizeof(float));
-        }
-        PostQK<TConfig>(kv, pos, layer);
-      });
+  // Accumulates the sum of v (from `kv_cache`) * probability (`head_att`) into
+  // `att_out`. Equivalent in gemma/modules.py:
+  // encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
+  static HWY_INLINE void WeightedSumV(const size_t start_pos, const size_t pos,
+                                      const float* HWY_RESTRICT head_att,
+                                      const size_t layer,
+                                      const size_t head_offset,
+                                      const hwy::Divisor& div_seq_len,
+                                      const KVCache& kv_cache,
+                                      float* HWY_RESTRICT att_out) {
+    hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
 
-  // A "head group" in the context of GQA refers to a collection of query heads
-  // that share the same key and value heads.
-  static_assert((kHeads % kKVHeads) == 0,
-                "query heads must be a multiple of key-value heads");
-  constexpr size_t kHeadGroups = kHeads / kKVHeads;
-  // For each head (token, query), compute Q.K, softmax, and weighted V.
-  pool.Run(
-      0, kHeads * num_interleaved,
-      [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
-        const size_t head = task % kHeads;
-        const size_t interleaved_idx = task / kHeads;
-        const size_t query_idx = interleaved_idx % num_queries;
-        const size_t batch_idx = interleaved_idx / num_queries;
-        const size_t head_offset = (head / kHeadGroups) * kQKVDim * 2;
-        KVCache& kv_cache = kv_caches[query_idx];
-        float* HWY_RESTRICT q =
-            activations.q.Batch(interleaved_idx) + head * kQStride;
-
-        // Apply rope and scaling to Q.
-        const size_t pos = batch_start + batch_idx;
-        PostQK<TConfig>(q, pos, layer);
-        MulByConst(kQueryScale, q, kQKVDim);
-
-        // Compute Q.K scores, yielding "logits" (or scores) in head_att.
-        float* HWY_RESTRICT head_att =
-            activations.att.Batch(interleaved_idx) + head * kSeqLen;
-        // Usually start_pos is 0, unless pos is larger than the attention
-        // window size, then it is pos - window_size + 1.
-        const size_t start_pos =
-            pos - std::min(TConfig::kAttentionWindowSizes[layer] - 1, pos);
-        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = div_seq_len.Remainder(pos2);
-          const size_t kv_offset =
-              cache_pos * kCachePosSize + layer * kCacheLayerSize + head_offset;
-          const float* HWY_RESTRICT k = &kv_cache.kv_cache[kv_offset];
-          const float score = Dot(q, k, kQKVDim);
-          head_att[pos2 % kSeqLen] = score;
-        }
-
-        // SoftMax. May be preceded by SoftCap. Yields "probabilities" in
-        // head_att.
-        const size_t head_att_len = std::min(pos + 1, kSeqLen);
-        if constexpr (TConfig::kAttCap > 0.0f) {
-          LogitsSoftCap(TConfig::kAttCap, head_att, head_att_len);
-        }
-        Softmax(head_att, head_att_len);
-
-        // Summation of v (kv_cache) weighted by probs (head_att)
-        // into "encoded" (att_out). Compare gemma/modules.py:
-        // encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
-        float* HWY_RESTRICT att_out =
-            activations.att_out.Batch(interleaved_idx) + head * kQKVDim;
-        hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
-        for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
-          const size_t cache_pos = div_seq_len.Remainder(pos2);
-          const size_t kv_offset =
-              cache_pos * kCachePosSize + layer * kCacheLayerSize + head_offset;
-          float* HWY_RESTRICT v =
-              kv_cache.kv_cache.get() + kv_offset + kQKVDim;
-          MulByConstAndAdd(head_att[pos2 % kSeqLen], v, att_out, kQKVDim);
-        }
-      });
-
-  // Sum encoded (att_out) over num_heads and head_dim (kQKVDim)
-  // into output (layer_out). Compare gemma/modules.py:
-  // attn_output = self.attn_vec_einsum('BTNH,NHD->BTD', encoded)
-  for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
-       ++interleaved_idx) {
-    // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
-    // rearranging the weights.
-    float* HWY_RESTRICT att_out = activations.att_out.Batch(interleaved_idx);
-    float* HWY_RESTRICT layer_out =
-        activations.att_post2.Batch(interleaved_idx);
-    // Head 0 (and potentially biases) -> layer_out.
-    // attn_vec_einsum_w has shape [kHeads, kQKVDim, kModelDim].
-    constexpr bool kAdd = TConfig::kSoftmaxAttnOutputBiases;
-    const float* bias =
-        kAdd ? layer_weights->attention_output_biases.data_scale1() : nullptr;
-    MatVecT<kAdd, kModelDim, kQKVDim>(
-        layer_weights->attn_vec_einsum_w, 0, att_out, bias,
-        activations.even_odd.All(), layer_out, pool);
-    // Head 1 and following are added to layer_out.
-    for (size_t head = 1; head < kHeads; ++head) {
-      // NOTE: this is a single kModelDim temp output. If parallelized or using
-      // MatMul, add per-thread storage.
-      float* HWY_RESTRICT head_out = activations.att_post1.All();
-      // TODO: requires MatMul support for offsets.
-      MatVec<kModelDim, kQKVDim>(
-          layer_weights->attn_vec_einsum_w, head * kModelDim * kQKVDim,
-          att_out + head * kQKVDim, activations.even_odd.All(), head_out, pool);
-      AddFrom(head_out, layer_out, kModelDim);
+    if (HWY_LIKELY(pos <= kSeqLen)) {
+      // Slightly faster: no wraparound.
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t kv_offset =
+            pos2 * kCachePosSize + layer * kCacheLayerSize + head_offset;
+        const float* HWY_RESTRICT v =
+            kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+        MulByConstAndAdd(head_att[pos2], v, att_out, kQKVDim);
+      }
+    } else {
+      for (size_t pos2 = start_pos; pos2 <= pos; ++pos2) {
+        const size_t cache_pos = div_seq_len.Remainder(pos2);
+        const size_t kv_offset =
+            cache_pos * kCachePosSize + layer * kCacheLayerSize + head_offset;
+        const float* HWY_RESTRICT v =
+            kv_cache.kv_cache.get() + kv_offset + kQKVDim;
+        MulByConstAndAdd(head_att[pos2 % kSeqLen], v, att_out, kQKVDim);
+      }
     }
   }
-}
+
+  HWY_NOINLINE void DotSoftmaxWeightedSum(const size_t batch_start,
+                                          const size_t num_interleaved) {
+    PROFILER_ZONE("Gen.Attention.DotSoftmax");
+    GEMMA_CONSTEXPR_SQRT float kQueryScale = ChooseQueryScale<TConfig>();
+
+    // A "head group" in the context of GQA refers to a collection of query
+    // heads that share the same key and value heads.
+    static_assert((kHeads % kKVHeads) == 0,
+                  "query heads must be a multiple of key-value heads");
+    constexpr size_t kHeadGroups = kHeads / kKVHeads;
+
+    // For each head (token, query), compute Q.K, softmax, and weighted V.
+    pool_.Run(0, kHeads * num_interleaved,
+              [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+                const size_t head = task % kHeads;
+                const size_t interleaved_idx = task / kHeads;
+                const size_t query_idx = interleaved_idx % num_queries_;
+                const size_t batch_idx = interleaved_idx / num_queries_;
+                const size_t head_offset = (head / kHeadGroups) * kQKVDim * 2;
+                KVCache& kv_cache = kv_caches_[query_idx];
+                float* HWY_RESTRICT q =
+                    activations_.q.Batch(interleaved_idx) + head * kQStride;
+
+                // Apply rope and scaling to Q.
+                const size_t pos = batch_start + batch_idx;
+                PositionalEncodingQK(q, pos, layer_, kQueryScale, q);
+
+                const size_t start_pos = StartPos(pos, layer_);
+
+                float* HWY_RESTRICT head_att =
+                    activations_.att.Batch(interleaved_idx) + head * kSeqLen;
+                QDotK(start_pos, pos, head_offset, q, kv_cache, head_att);
+                // SoftMax with optional SoftCap yields "probabilities" in
+                // head_att.
+                const size_t head_att_len = std::min(pos + 1, kSeqLen);
+                MaybeLogitsSoftCap(TConfig::kAttCap, head_att, head_att_len);
+                Softmax(head_att, head_att_len);
+
+                float* HWY_RESTRICT att_out =
+                    activations_.att_out.Batch(interleaved_idx) +
+                    head * kQKVDim;
+                WeightedSumV(start_pos, pos, head_att, layer_, head_offset,
+                             div_seq_len_, kv_cache, att_out);
+              });
+  }
+
+  // Sums encoded (`att_out`) over num_heads and head_dim (kQKVDim) into output
+  // (`layer_out`). Compare gemma/modules.py:
+  // attn_output = self.attn_vec_einsum('BTNH,NHD->BTD', encoded)
+  HWY_NOINLINE void SumHeads(const size_t num_interleaved) {
+    PROFILER_ZONE("Gen.Attention.SumHeads");
+    for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
+         ++interleaved_idx) {
+      // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
+      // rearranging the weights.
+      float* HWY_RESTRICT att_out = activations_.att_out.Batch(interleaved_idx);
+      float* HWY_RESTRICT layer_out =
+          activations_.att_post2.Batch(interleaved_idx);
+      // Head 0 (and potentially biases) -> layer_out.
+      // attn_vec_einsum_w has shape [kHeads, kQKVDim, kModelDim].
+      constexpr bool kAdd = TConfig::kSoftmaxAttnOutputBiases;
+      const float* bias =
+          kAdd ? layer_weights_.attention_output_biases.data_scale1() : nullptr;
+      MatVecT<kAdd, kModelDim, kQKVDim>(
+          layer_weights_.attn_vec_einsum_w, 0, att_out, bias,
+          activations_.even_odd.All(), layer_out, pool_);
+      // Head 1 and following are added to layer_out.
+      for (size_t head = 1; head < kHeads; ++head) {
+        // NOTE: this is a single kModelDim temp output. If parallelized or
+        // using MatMul, add per-thread storage.
+        float* HWY_RESTRICT head_out = activations_.att_post1.All();
+        // TODO: requires MatMul support for offsets.
+        MatVec<kModelDim, kQKVDim>(
+            layer_weights_.attn_vec_einsum_w, head * kModelDim * kQKVDim,
+            att_out + head * kQKVDim, activations_.even_odd.All(), head_out,
+            pool_);
+        AddFrom(head_out, layer_out, kModelDim);
+      }
+    }
+  }
+
+ public:
+  GemmaAttention(size_t interleaved_start, size_t num_tokens,
+                 size_t num_queries, size_t layer, Activations& activations,
+                 const CompressedLayer<TConfig>* layer_weights,
+                 const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
+                 hwy::ThreadPool& pool)
+      : interleaved_start_(interleaved_start),
+        num_tokens_(num_tokens),
+        num_queries_(num_queries),
+        layer_(layer),
+        activations_(activations),
+        layer_weights_(*layer_weights),
+        div_seq_len_(div_seq_len),
+        kv_caches_(kv_caches),
+        pool_(pool) {
+    HWY_DASSERT(interleaved_start_ % num_queries_ == 0);
+    HWY_DASSERT(num_queries_ <= kv_caches_.size());
+  }
+
+  HWY_INLINE void operator()() {
+    const size_t batch_start = interleaved_start_ / num_queries_;
+    const size_t num_interleaved = num_tokens_ * num_queries_;
+
+    ComputeQKV(batch_start, num_interleaved);
+    DotSoftmaxWeightedSum(batch_start, num_interleaved);
+    SumHeads(num_interleaved);
+  }
+
+ private:
+  const size_t interleaved_start_;
+  const size_t num_tokens_;
+  const size_t num_queries_;
+  const size_t layer_;
+  Activations& activations_;
+  const CompressedLayer<TConfig>& layer_weights_;
+  const hwy::Divisor& div_seq_len_;
+  const KVCaches& kv_caches_;
+  hwy::ThreadPool& pool_;
+};
 
 template <class TConfig>
 HWY_NOINLINE void Attention(LayerAttentionType type, size_t interleaved_start,
                             size_t num_tokens, size_t num_queries, size_t layer,
                             Activations& activations,
                             const CompressedLayer<TConfig>* layer_weights,
+                            const hwy::Divisor& div_seq_len,
                             const KVCaches& kv_caches, hwy::ThreadPool& pool) {
   if (type == LayerAttentionType::kGemma) {
     GemmaAttention<TConfig>(interleaved_start, num_tokens, num_queries, layer,
-                            activations, layer_weights, kv_caches, pool);
+                            activations, layer_weights, div_seq_len, kv_caches,
+                            pool)();
   } else {
     // Only reached if the model is Griffin. `if constexpr` prevents generating
     // this code for non-Griffin models.
@@ -421,6 +522,7 @@ HWY_NOINLINE void Attention(LayerAttentionType type, size_t interleaved_start,
 template <class TConfig, typename T>
 HWY_NOINLINE void Activation(T* HWY_RESTRICT c1, T* HWY_RESTRICT c2,
                              size_t count) {
+  PROFILER_ZONE("Gen.Activation");
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<T>;
   using VF = hn::Vec<DF>;
@@ -516,7 +618,8 @@ template <class TConfig>
 HWY_NOINLINE void TransformerLayer(
     size_t num_tokens, size_t num_queries, size_t pos, size_t layer,
     const CompressedLayer<TConfig>* layer_weights, Activations& activations,
-    const KVCaches& kv_caches, hwy::ThreadPool& pool) {
+    const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
+    hwy::ThreadPool& pool) {
   constexpr size_t kModelDim = TConfig::kModelDim;
   const size_t num_interleaved = num_tokens * num_queries;
   auto type = TConfig::kLayerConfig[layer];
@@ -528,7 +631,7 @@ HWY_NOINLINE void TransformerLayer(
                  activations.pre_att_rms_out.All(), kModelDim);
 
   Attention<TConfig>(type, pos, num_tokens, num_queries, layer_of_type,
-                     activations, layer_weights, kv_caches, pool);
+                     activations, layer_weights, div_seq_len, kv_caches, pool);
 
   PostNorm<TConfig>(num_interleaved, layer_weights->post_attention_norm_scale,
                     activations.att_post2.All());
@@ -606,6 +709,7 @@ class PrefillState {
                             const size_t query_idx_start,
                             const CompressedWeights<TConfig>& weights,
                             const RuntimeConfig& runtime_config,
+                            const hwy::Divisor& div_seq_len,
                             const KVCaches& kv_caches, PerClusterPools& pools) {
     PROFILER_ZONE("Gen.Prefill");
     const size_t num_queries = prompts.size();
@@ -638,9 +742,10 @@ class PrefillState {
             // Transformer with one batch of tokens from a single query.
             for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
               const auto* layer_weights = weights.GetLayer(layer);
-              TransformerLayer<TConfig>(
-                  tbatch_size, kPrefillQueries, pos + tbatch_start, layer,
-                  layer_weights, activations, prefill_kv_caches, inner_pool);
+              TransformerLayer<TConfig>(tbatch_size, kPrefillQueries,
+                                        pos + tbatch_start, layer,
+                                        layer_weights, activations, div_seq_len,
+                                        prefill_kv_caches, inner_pool);
             }
 
             // NOTE: we unconditionally call StreamToken, even if EOS.
@@ -664,6 +769,7 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
                               size_t num_queries, size_t pos,
                               const CompressedWeights<TConfig>& weights,
                               Activations& activations,
+                              const hwy::Divisor& div_seq_len,
                               const KVCaches& kv_caches, hwy::ThreadPool& pool,
                               const LayersOutputFunc& layers_output) {
   const size_t num_interleaved = num_tokens * num_queries;
@@ -684,7 +790,8 @@ HWY_NOINLINE void Transformer(const int* tokens, size_t num_tokens,
   for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
     const CompressedLayer<TConfig>* layer_weights = weights.GetLayer(layer);
     TransformerLayer<TConfig>(num_tokens, num_queries, pos, layer,
-                              layer_weights, activations, kv_caches, pool);
+                              layer_weights, activations, div_seq_len,
+                              kv_caches, pool);
 
     if (layers_output) {
       for (size_t token_idx = 0; token_idx < num_interleaved; ++token_idx) {
@@ -822,6 +929,7 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   HWY_ASSERT(num_queries <= 4096);  // TokenStreamer uses BitSet4096.
   HWY_ASSERT(num_queries <= activations.x.BatchSize());
   HWY_ASSERT(kv_caches.size() == num_queries);
+  const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
 
   size_t min_prompt_size, max_prompt_size;
   const std::vector<int> prompt = InterleaveQueries(
@@ -857,7 +965,8 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
                           pools);
     prefill_start = hwy::platform::Now();
     prefill.Prefill<TConfig>(prompts, prefill_per_query, pos, query_idx_start,
-                             weights, runtime_config, kv_caches, pools);
+                             weights, runtime_config, div_seq_len, kv_caches,
+                             pools);
     timing_info.NotifyPrefill(prefill_per_query * num_queries, prefill_start);
   }
 
@@ -881,8 +990,8 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
        ++gen_per_query) {
     // Decode: generate one token for each query.
     Transformer<TConfig>(gen_tokens.data(), /*num_tokens=*/1, num_queries,
-                         interleaved_pos, weights, activations, kv_caches, pool,
-                         runtime_config.layers_output);
+                         interleaved_pos, weights, activations, div_seq_len,
+                         kv_caches, pool, runtime_config.layers_output);
     interleaved_pos += num_queries;
 
     bool all_queries_eos = true;
@@ -895,9 +1004,7 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
         MakeMat(activations.logits.All(), kVocabSize), pool);
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
       float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
-      if constexpr (TConfig::kFinalCap > 0.0f) {
-        LogitsSoftCap(TConfig::kFinalCap, logits, kVocabSize);
-      }
+      MaybeLogitsSoftCap(TConfig::kFinalCap, logits, kVocabSize);
       Softmax(logits, kVocabSize);
       const int token = sample_token(logits, kVocabSize);
       timing_info.NotifyGenerated(prefill_start, gen_start);

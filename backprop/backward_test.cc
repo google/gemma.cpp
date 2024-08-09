@@ -21,6 +21,7 @@
 
 #include <array>
 #include <complex>
+#include <cstdlib>  // std::abs
 #include <random>
 #include <vector>
 
@@ -28,9 +29,11 @@
 #include "backprop/backward_scalar.h"
 #include "backprop/common_scalar.h"
 #include "backprop/forward_scalar.h"
+#include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
 #include "compression/weights_raw.h"
+#include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -214,6 +217,8 @@ void TestEndToEnd() {
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
+  RowVectorBatch<float> inv_timescale =
+      Activations::CreateInvTimescale<TestConfig>();
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
     RandInit(weights.get(), 1.0f, gen);
@@ -223,14 +228,14 @@ void TestEndToEnd() {
 
     float loss1 = CrossEntropyLossForwardPass<TestConfig, WeightsF, LayerF>(
         prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
-        pool);
+        inv_timescale, pool);
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.clear();
     CrossEntropyLossBackwardPass<TestConfig, WeightsF, LayerF>(
         prompt, weights.get(), forward1.get(), grad.get(), backward.get(),
-        pool);
+        inv_timescale, pool);
 
     Complexify(weights.get(), c_weights.get());
     auto func = [&]() {

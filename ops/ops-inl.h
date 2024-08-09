@@ -381,16 +381,16 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
   of this rotation matrix which is simply the same matrix with -pos parameter)
 */
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,
-                                               size_t dim_qkv, int pos) {
+// `inv_timescale[dim_qkv / 2]` is precomputed in Activations::Allocate.
+// This overload is called from backprop/ and if kUseHalfRope.
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
+    float* HWY_RESTRICT x, size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, int pos) {
+  PROFILER_FUNC;
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
-    const float freq_exponents =
-        StaticCast<float>(2 * dim) / StaticCast<float>(dim_qkv);
-    // Replacing with expf(ln(1E4) * freq_exponents) changes results noticeably.
-    const float timescale = powf(10000.0f, freq_exponents);
-    const float theta = StaticCast<float>(pos) / timescale;
+    const float theta = StaticCast<float>(pos) * inv_timescale[dim];
     const float cos_val = cosf(theta);
     const float sin_val = sinf(theta);
     const float x0 = x[dim];
@@ -400,24 +400,23 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(float* HWY_RESTRICT x,
   }
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(const float mul,
-                                                       float* HWY_RESTRICT x,
-                                                       size_t dim_qkv,
-                                                       int pos) {
+// TODO(janwas): vectorize
+// `inv_timescale[dim_qkv / 2]` is precomputed in Activations::Allocate.
+static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
+    const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, int pos,
+    float* HWY_RESTRICT x_out) {
+  PROFILER_FUNC;
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
-    const float freq_exponents =
-        StaticCast<float>(2 * dim) / StaticCast<float>(dim_qkv);
-    // Replacing with expf(ln(1E4) * freq_exponents) changes results noticeably.
-    const float timescale = powf(10000.0f, freq_exponents);
-    const float theta = StaticCast<float>(pos) / timescale;
+    const float theta = StaticCast<float>(pos) * inv_timescale[dim];
     const float cos_val = cosf(theta);
     const float sin_val = sinf(theta);
     const float x0 = x[dim];
     const float x1 = x[dim + half_dim_qkv];
-    x[dim] = mul * (x0 * cos_val - x1 * sin_val);
-    x[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
+    x_out[dim] = mul * (x0 * cos_val - x1 * sin_val);
+    x_out[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
   }
 }
 
@@ -577,10 +576,17 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
   });
 }
 
-static HWY_INLINE HWY_MAYBE_UNUSED void LogitsSoftCap(const float cap,
-                                                      float* HWY_RESTRICT x,
-                                                      const size_t size) {
+static HWY_INLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
+                                     const size_t size) {
   LogitsSoftCap(cap, x, size, size);
+}
+
+// Calls LogitsSoftCap if cap != 0.0f.
+static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
+    const float cap, float* HWY_RESTRICT x, const size_t size) {
+  if (cap != 0.0f) {
+    LogitsSoftCap(cap, x, size, size);
+  }
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
