@@ -120,7 +120,9 @@ class PerClusterPools {
   // result in threads not running on their own core, we only allow for
   // *upper bounds* on the number of clusters and threads. The actual number of
   // clusters and threads are still limited by the detected topology.
-  PerClusterPools(size_t max_clusters, size_t max_threads)
+  //
+  // `pin` is 0 or 1 to force enable/disable, or -1 to choose automatically.
+  PerClusterPools(size_t max_clusters, size_t max_threads, int pin = -1)
       : have_threading_support_(hwy::HaveThreadingSupport()),
         cores_per_cluster_(DetectCoresPerCluster()),
         outer_pool_(CapIfNonzero(cores_per_cluster_.size(), max_clusters)) {
@@ -131,9 +133,11 @@ class PerClusterPools {
       // the first N processors, which are typically on the first socket.
       const size_t num_threads =
           CapIfNonzero(hwy::TotalLogicalProcessors() / 2, max_threads);
-      fprintf(stderr, "CPU topology unknown, using %zu threads\n", num_threads);
+      if (pin == -1) pin = num_threads > 8;
+      fprintf(stderr, "CPU topology unknown, using %zu threads, pin %d\n",
+              num_threads, pin);
       inner_pools_.push_back(std::make_unique<hwy::ThreadPool>(num_threads));
-      if (num_threads > 1) {
+      if (num_threads > 1 && pin) {
         inner_pools_.back()->Run(0, num_threads,
                                  [](uint64_t /*task*/, size_t thread) {
                                    hwy::PinThreadToLogicalProcessor(thread);
@@ -149,25 +153,31 @@ class PerClusterPools {
       inner_pools_.push_back(std::make_unique<hwy::ThreadPool>(num_threads));
     }
 
-    // For each inner pool, pin their threads AND the associated outer thread
-    // (the one calling inner.Run()) to the enabled cores in the cluster.
-    outer_pool_.Run(
-        0, outer_pool_.NumWorkers(),
-        [this](uint64_t outer, size_t outer_thread) {
-          HWY_ASSERT(outer == outer_thread);  // each outer has one task
-          hwy::ThreadPool& inner = *inner_pools_[outer];
+    if (pin == -1) {
+      pin = (outer_pool_.NumWorkers() * inner_pools_[0]->NumWorkers()) >= 12;
+    }
 
-          const std::vector<size_t> cores =
-              CoresInLPS(cores_per_cluster_[outer]);
-          // May have been capped by max_threads.
-          HWY_ASSERT(inner.NumWorkers() <= cores.size());
+    if (pin) {
+      // For each inner pool, pin their threads AND the associated outer thread
+      // (the one calling inner.Run()) to the enabled cores in the cluster.
+      outer_pool_.Run(
+          0, outer_pool_.NumWorkers(),
+          [this](uint64_t outer, size_t outer_thread) {
+            HWY_ASSERT(outer == outer_thread);  // each outer has one task
+            hwy::ThreadPool& inner = *inner_pools_[outer];
 
-          inner.Run(0, inner.NumWorkers(),
-                    [&cores](uint64_t task, size_t thread) {
-                      HWY_ASSERT(task == thread);  // each inner has one task
-                      hwy::PinThreadToLogicalProcessor(cores[task]);
-                    });
-        });
+            const std::vector<size_t> cores =
+                CoresInLPS(cores_per_cluster_[outer]);
+            // May have been capped by max_threads.
+            HWY_ASSERT(inner.NumWorkers() <= cores.size());
+
+            inner.Run(0, inner.NumWorkers(),
+                      [&cores](uint64_t task, size_t thread) {
+                        HWY_ASSERT(task == thread);  // each inner has one task
+                        hwy::PinThreadToLogicalProcessor(cores[task]);
+                      });
+          });
+    }
   }
 
   // Spinning reduces the latency of barrier synchronization, but wastes lots of
