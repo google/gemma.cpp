@@ -33,7 +33,7 @@
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE "ops/matvec_test.cc"  // NOLINT
+#define HWY_TARGET_INCLUDE "ops/gemma_matvec_test.cc"  // NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
