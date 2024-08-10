@@ -154,7 +154,7 @@ set(GEMMA_TEST_FILES
   backprop/optimize_test.cc
   ops/ops_test.cc
   ops/matmul_test.cc
-  ops/matvec_test.cc
+  ops/gemma_matvec_test.cc
   evals/gemma_test.cc
 )
 

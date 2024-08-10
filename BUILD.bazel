@@ -58,10 +58,10 @@ cc_test(
 )
 
 cc_test(
-    name = "matvec_test",
+    name = "gemma_matvec_test",
     size = "small",
     timeout = "long",
-    srcs = ["ops/matvec_test.cc"],
+    srcs = ["ops/gemma_matvec_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["hwy_ops_test"],
