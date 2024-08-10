@@ -171,7 +171,8 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
   gcpp::TimingInfo timing_info = {.verbosity = app_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   inference_args_.CopyTo(runtime_config_);
-  model_->GenerateBatch(runtime_config_, prompts, /*start_pos=*/0,
+  model_->GenerateBatch(runtime_config_, prompts,
+                        std::vector<size_t>(num_queries, 0),
                         KVCaches(&kv_caches_[0], num_queries), timing_info);
   return res;
 }
