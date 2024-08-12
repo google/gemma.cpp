@@ -158,6 +158,7 @@ class Gemma {
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }
+  ByteStorageT& MutableWeights() { return weights_u8_; }
 
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
                 size_t start_pos, KVCache& kv_cache, TimingInfo& timing_info);

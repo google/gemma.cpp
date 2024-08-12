@@ -24,6 +24,7 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -93,6 +94,33 @@ struct CompressedLayer {
 
   ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
   ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
+
+  // Reshaped attention; not loaded from disk via ForEachTensor.
+  ArrayT<Weight, kModelDim * kHeads * kQKVDim> att_weights;
+
+  // Initializes att_weights from attn_vec_einsum_w, hence this must be called
+  // after loading weights via ForEachTensor.
+  // TODO: update compression/convert_weights to bake this in.
+  void Reshape() {
+    PROFILER_ZONE("Startup.Reshape");
+
+    constexpr size_t kModelDim = TConfig::kModelDim;
+    constexpr size_t kHeads = TConfig::kHeads;
+    constexpr size_t kQKVDim = TConfig::kQKVDim;
+
+    // Would have to implement a CompressTraits::Copy for NUQ.
+    static_assert(!hwy::IsSame<Weight, NuqStream>());
+
+    // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
+    for (size_t m = 0; m < kModelDim; ++m) {
+      Weight* HWY_RESTRICT out_row = att_weights.data() + m * kHeads * kQKVDim;
+      for (size_t h = 0; h < kHeads; ++h) {
+        hwy::CopyBytes(
+            attn_vec_einsum_w.data() + h * kModelDim * kQKVDim + m * kQKVDim,
+            out_row + h * kQKVDim, kQKVDim * sizeof(Weight));
+      }
+    }
+  }
 };
 
 // Array instead of single large allocation for parallel mem init. Split out
@@ -135,6 +163,13 @@ struct CompressedWeights {
 
   explicit CompressedWeights(hwy::ThreadPool& pool) : c_layer_ptrs(pool) {}
 
+  // Called by weights.cc after ForEachTensor.
+  void Reshape() {
+    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+      GetLayer(layer)->Reshape();
+    }
+  }
+
   void ZeroInit() {
     hwy::ZeroBytes(&embedder_input_embedding, sizeof(embedder_input_embedding));
     hwy::ZeroBytes(&final_norm_scale, sizeof(final_norm_scale));
@@ -171,6 +206,15 @@ struct ZeroInitCompressedWeights {
     CompressedWeights<TConfig>& weights =
         *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
     weights.ZeroInit();
+  }
+};
+
+template <typename TConfig>
+struct ReshapeCompressedWeights {
+  void operator()(ByteStorageT& weights_u8, hwy::ThreadPool& pool) const {
+    CompressedWeights<TConfig>& weights =
+        *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
+    weights.Reshape();
   }
 };
 

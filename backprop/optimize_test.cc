@@ -126,6 +126,8 @@ TEST(OptimizeTest, GradientDescent) {
           info.model, prompt, gemma.Weights(), forward, inv_timescale, pool);
       CrossEntropyLossBackwardPass(info.model, prompt, gemma.Weights(), forward,
                                    grad, backward, inv_timescale, pool);
+      CallForModelAndWeight<ReshapeCompressedWeights>(
+          info.model, info.weight, gemma.MutableWeights(), pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;

@@ -72,6 +72,7 @@ struct LoadCompressedWeightsT {
       }
       HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
     }
+    c_weights->Reshape();
     return c_weights_u8;
   }
 };

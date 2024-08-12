@@ -28,7 +28,6 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::min
-#include <memory>     // std::unique_ptr
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -188,7 +187,7 @@ HWY_NOINLINE void GriffinRecurrent(
   // Final linear layer.
   for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
     float* HWY_RESTRICT x = activations.griffin_x.Batch(batch_idx);
-    float* out_ptr = activations.att_post2.Batch(batch_idx);
+    float* out_ptr = activations.att_sums.Batch(batch_idx);
     MatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_out_w, 0, x,
         layer_weights->griffin.linear_out_biases.data_scale1(),
@@ -421,39 +420,23 @@ class GemmaAttention {
               });
   }
 
-  // Sums encoded (`att_out`) over num_heads and head_dim (kQKVDim) into output
-  // (`layer_out`). Compare gemma/modules.py:
-  // attn_output = self.attn_vec_einsum('BTNH,NHD->BTD', encoded)
+  // Sums encoded (`att_out`) over num_heads (`kHeads`) and head_dim (`kQKVDim`)
+  // into output (`layer_out`).
   HWY_NOINLINE void SumHeads(const size_t num_interleaved) {
     PROFILER_ZONE("Gen.Attention.SumHeads");
-    for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
-         ++interleaved_idx) {
-      // TODO(szabadka) Use a single MatVecAdd like in GriffinRecurrent() after
-      // rearranging the weights.
-      float* HWY_RESTRICT att_out = activations_.att_out.Batch(interleaved_idx);
-      float* HWY_RESTRICT layer_out =
-          activations_.att_post2.Batch(interleaved_idx);
-      // Head 0 (and potentially biases) -> layer_out.
-      // attn_vec_einsum_w has shape [kHeads, kQKVDim, kModelDim].
-      constexpr bool kAdd = TConfig::kSoftmaxAttnOutputBiases;
-      const float* bias =
-          kAdd ? layer_weights_.attention_output_biases.data_scale1() : nullptr;
-      MatVecT<kAdd, kModelDim, kQKVDim>(
-          layer_weights_.attn_vec_einsum_w, 0, att_out, bias,
-          activations_.even_odd.All(), layer_out, pool_);
-      // Head 1 and following are added to layer_out.
-      for (size_t head = 1; head < kHeads; ++head) {
-        // NOTE: this is a single kModelDim temp output. If parallelized or
-        // using MatMul, add per-thread storage.
-        float* HWY_RESTRICT head_out = activations_.att_post1.All();
-        // TODO: requires MatMul support for offsets.
-        MatVec<kModelDim, kQKVDim>(
-            layer_weights_.attn_vec_einsum_w, head * kModelDim * kQKVDim,
-            att_out + head * kQKVDim, activations_.even_odd.All(), head_out,
-            pool_);
-        AddFrom(head_out, layer_out, kModelDim);
-      }
-    }
+    constexpr bool kAdd = TConfig::kSoftmaxAttnOutputBiases;
+    const float* bias =
+        kAdd ? layer_weights_.attention_output_biases.data_scale1() : nullptr;
+
+    // att_weights and att_out are concatenated heads, each of length kQKVDim.
+    // Thus the [num_interleaved, kModelDim] matmul output is the sum over
+    // heads. Compare gemma/modules.py:
+    // attn_output = self.attn_vec_einsum('BTNH,NHD->BTD', encoded)
+    MatMul_4x4<kAdd>(
+        num_interleaved, MakeMat(activations_.att_out.All(), kHeads * kQKVDim),
+        MakeMat(layer_weights_.att_weights.data(), kHeads * kQKVDim),
+        layer_weights_.attn_vec_einsum_w.scale(), bias,
+        MakeMat(activations_.att_sums.All(), kModelDim), pool_);
   }
 
  public:
@@ -634,9 +617,9 @@ HWY_NOINLINE void TransformerLayer(
                      activations, layer_weights, div_seq_len, kv_caches, pool);
 
   PostNorm<TConfig>(num_interleaved, layer_weights->post_attention_norm_scale,
-                    activations.att_post2.All());
+                    activations.att_sums.All());
 
-  ResidualConnection<TConfig>(num_interleaved, activations.att_post2.All(),
+  ResidualConnection<TConfig>(num_interleaved, activations.att_sums.All(),
                               activations.x.All(), layer_weights,
                               /*is_attention=*/true);
 

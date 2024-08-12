@@ -74,10 +74,8 @@ struct Activations {
   RowVectorBatch<float> pre_att_rms_out;
   RowVectorBatch<float> att;      // attention vector
   RowVectorBatch<float> att_out;  // attention output
-  // After linear transformation, shared by all heads
-  RowVectorBatch<float> att_post1;
   // Accumulation of attention outputs over heads
-  RowVectorBatch<float> att_post2;
+  RowVectorBatch<float> att_sums;
 
   // Gated FFW
   RowVectorBatch<hwy::bfloat16_t> bf_pre_ffw_rms_out;
@@ -144,8 +142,7 @@ struct Activations {
     pre_att_rms_out = RowVectorBatch<float>(batch_size, kModelDim);
     att = RowVectorBatch<float>(batch_size, kHeads * kSeqLen);
     att_out = RowVectorBatch<float>(batch_size, kHeads * kQKVDim);
-    att_post1 = RowVectorBatch<float>(1, kModelDim);
-    att_post2 = RowVectorBatch<float>(batch_size, kModelDim);
+    att_sums = RowVectorBatch<float>(batch_size, kModelDim);
 
     bf_pre_ffw_rms_out = RowVectorBatch<hwy::bfloat16_t>(batch_size, kModelDim);
     C1 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
