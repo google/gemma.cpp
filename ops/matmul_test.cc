@@ -269,7 +269,6 @@ void TestAllMatMul() {
   }
 
   hwy::ThreadPool pool(4);
-  using BF16 = hwy::bfloat16_t;
   using F32 = float;
   using SFP = SfpStream;
 

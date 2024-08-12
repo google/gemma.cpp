@@ -41,8 +41,10 @@
 
 namespace gcpp {
 
+using BF16 = hwy::bfloat16_t;
+
 static inline const char* TypeName(float) { return "f32"; }
-static inline const char* TypeName(hwy::bfloat16_t) { return "b16"; }
+static inline const char* TypeName(BF16) { return "b16"; }
 
 namespace detail {
 // How many MatT are required to store `capacity` weights. For all but
@@ -177,11 +179,11 @@ struct CompressWorkingSet {
 template <typename MatT>
 hwy::uint128_t CacheKey(const char* name) {
   // Already used/retired: s, S, n, 1
-  const char prefix = hwy::IsSame<MatT, float>()             ? 'F'
-                      : hwy::IsSame<MatT, hwy::bfloat16_t>() ? 'B'
-                      : hwy::IsSame<MatT, SfpStream>()       ? '$'
-                      : hwy::IsSame<MatT, NuqStream>()       ? '2'
-                                                             : '?';
+  const char prefix = hwy::IsSame<MatT, float>()       ? 'F'
+                      : hwy::IsSame<MatT, BF16>()      ? 'B'
+                      : hwy::IsSame<MatT, SfpStream>() ? '$'
+                      : hwy::IsSame<MatT, NuqStream>() ? '2'
+                                                       : '?';
 
   return MakeKey((std::string(1, prefix) + name).c_str());
 }

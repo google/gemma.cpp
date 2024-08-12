@@ -15,7 +15,6 @@
 
 #include <stddef.h>
 
-#include <limits>
 #include <random>
 #include <vector>
 
@@ -112,7 +111,6 @@ TEST(OptimizeTest, GradientDescent) {
   ReverseSequenceSampler training_task({
       0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1});
   size_t steps = 0;
-  float prev_loss = std::numeric_limits<float>::max();
   size_t num_ok;
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
@@ -143,7 +141,6 @@ TEST(OptimizeTest, GradientDescent) {
     if (total_loss < 0.5f) {
       break;
     }
-    prev_loss = total_loss;
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
