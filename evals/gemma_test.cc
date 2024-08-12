@@ -29,7 +29,7 @@
 // To run the test, pass the following flags:
 // --model <model> --tokenizer <tokenizer_path> --weights <weights_path>
 // It should pass for the following models:
-// 2b-it (v1 and v1.1), 7b-it (v1 and v1.1), 9b-it, 27b-it
+// 2b-it (v1 and v1.1), 7b-it (v1 and v1.1), gemma2-2b-it, 9b-it, 27b-it
 
 namespace gcpp {
 namespace {
@@ -122,7 +122,7 @@ TEST_F(GemmaTest, GeographyBatched) {
       {"What is the capital of Australia?", "Canberra"},
       {"What is the capital of Denmark?", "Copenhagen"},
       {"Ljubljana is the capital of which country?", "Slovenia"},
-      {"Is Chicago a country?", "not"},
+      {"Is Chicago a country?", "city"},
       {"How many states does the US have?", "50"},
       {"What is the Pacific?", "ocean"},
   };
@@ -199,6 +199,9 @@ TEST_F(GemmaTest, CrossEntropySmall) {
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 2.8f, 0.2f);
       break;
+    case gcpp::Model::GEMMA2_2B:
+      EXPECT_NEAR(entropy, 1.14f, 0.02f);
+      break;
     case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 1.28f, 0.02f);
       break;
@@ -224,6 +227,9 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.07f, 0.05f);
       break;
+    case gcpp::Model::GEMMA2_2B:
+      EXPECT_NEAR(entropy, 0.49f, 0.02f);
+      break;
     case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 0.37f, 0.02f);
       break;
@@ -248,6 +254,9 @@ TEST_F(GemmaTest, CrossEntropyGettysburg) {
     case gcpp::Model::GEMMA_7B:
       // 7B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 0.75f, 0.1f);
+      break;
+    case gcpp::Model::GEMMA2_2B:
+      EXPECT_NEAR(entropy, 0.20f, 0.02f);
       break;
     case gcpp::Model::GEMMA2_9B:
       EXPECT_NEAR(entropy, 0.15f, 0.02f);
