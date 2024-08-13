@@ -143,6 +143,7 @@ struct TimingInfo {
 
 using PromptTokens = hwy::Span<const int>;
 using MultiplePromptsTokens = hwy::Span<const PromptTokens>;
+using MultiplePositions = hwy::Span<const size_t>;
 using KVCaches = hwy::Span<KVCache>;
 
 class Gemma {
@@ -164,7 +165,8 @@ class Gemma {
                 size_t start_pos, KVCache& kv_cache, TimingInfo& timing_info);
 
   void GenerateBatch(const RuntimeConfig& runtime_config,
-                     const MultiplePromptsTokens& prompts, size_t start_pos,
+                     const MultiplePromptsTokens& prompts,
+                     const MultiplePositions& start_pos,
                      const KVCaches& kv_caches, TimingInfo& timing_info);
 
  private:
