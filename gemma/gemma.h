@@ -35,6 +35,14 @@
 #include "hwy/base.h"               // hwy::bfloat16_t
 
 namespace gcpp {
+using PromptTokens = hwy::Span<const int>;
+
+// Batches of independent queries have their own prompt, previous token,
+// position in the sequence, and KVCache.
+using QueriesPromptTokens = hwy::Span<const PromptTokens>;
+using QueriesToken = hwy::Span<const int>;
+using QueriesPos = hwy::Span<const size_t>;
+using KVCaches = hwy::Span<KVCache>;
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f. StreamFunc should return false to stop generation and
@@ -53,12 +61,18 @@ using SampleFunc = std::function<int(const float*, size_t)>;
 // If not empty, LayersOutputFunc is called for layer outputs, specified with:
 // - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence
-// - name of the data, e.g. "tokens", "blocks", "final_norm"
-// - layer index (or -1 for global outputs), e.g. "blocks" exposes x per-layer
+// - name of the data, e.g. "tokens" for token IDs
+// - layer index (or -1 for global outputs)
 // - pointer to the data array
 // - size of the data array
 using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
                                             int, const float*, size_t)>;
+// If not empty, ActivationsObserverFunc is invoked after each layer with:
+// - per-query position within the tokens sequence
+// - layer index (or -1 for post-norm output)
+// - activations
+using ActivationsObserverFunc =
+    std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
 
 struct RuntimeConfig {
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
@@ -85,6 +99,7 @@ struct RuntimeConfig {
   AcceptFunc accept_token;         // if empty, accepts all tokens.
   SampleFunc sample_func;          // if empty, uses SampleTopK.
   LayersOutputFunc layers_output;  // if not empty, called after each layer.
+  ActivationsObserverFunc activations_observer;  // if set, called per-layer
   int eos_id = EOS_ID;
 };
 
@@ -140,15 +155,6 @@ struct TimingInfo {
   double generate_duration = 0;
   size_t tokens_generated = 0;
 };
-
-using PromptTokens = hwy::Span<const int>;
-
-// Batches of independent queries have their own prompt, previous token,
-// position in the sequence, and KVCache.
-using QueriesPromptTokens = hwy::Span<const PromptTokens>;
-using QueriesToken = hwy::Span<const int>;
-using QueriesPos = hwy::Span<const size_t>;
-using KVCaches = hwy::Span<KVCache>;
 
 class Gemma {
  public:

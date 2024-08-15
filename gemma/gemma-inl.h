@@ -748,13 +748,12 @@ class PrefillState {
 // Generates one token for each query. `queries_token` is the previous token
 // from each query, and `queries_pos` are their position in the sequence.
 template <class TConfig>
-HWY_NOINLINE void Transformer(const QueriesToken& queries_token,
-                              const QueriesMutablePos& queries_pos,
-                              const CompressedWeights<TConfig>& weights,
-                              Activations& activations,
-                              const hwy::Divisor& div_seq_len,
-                              const KVCaches& kv_caches, hwy::ThreadPool& pool,
-                              const LayersOutputFunc& layers_output) {
+HWY_NOINLINE void Transformer(
+    const QueriesToken& queries_token, const QueriesMutablePos& queries_pos,
+    const CompressedWeights<TConfig>& weights, Activations& activations,
+    const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
+    hwy::ThreadPool& pool, const LayersOutputFunc& layers_output,
+    const ActivationsObserverFunc& activations_observer) {
   constexpr size_t kModelDim = TConfig::kModelDim;
   const size_t num_queries = queries_token.size();
   HWY_DASSERT(queries_pos.size() == num_queries);
@@ -778,24 +777,17 @@ HWY_NOINLINE void Transformer(const QueriesToken& queries_token,
                               layer_weights, activations, div_seq_len,
                               kv_caches, pool);
 
-    if (layers_output) {
-      for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
-        layers_output(query_idx, queries_pos[query_idx], "blocks", layer,
-                      activations.x.Batch(0), kModelDim);
-      }
+    if (activations_observer) {
+      activations_observer(queries_pos, layer, activations);
     }
   }
 
   RMSNormInplaceBatched(num_queries, weights.final_norm_scale.data_scale1(),
                         activations.x.All(), kModelDim);
 
-  if (layers_output) {
-    for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
-      layers_output(query_idx, queries_pos[query_idx], "final_norm", -1,
-                    activations.x.Batch(0), kModelDim);
-    }
+  if (activations_observer) {
+    activations_observer(queries_pos, -1, activations);
   }
-
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
     queries_pos[query_idx] += 1;
   }
@@ -970,7 +962,8 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
     // Decode generates one token per query and increments queries_mutable_pos.
     Transformer<TConfig>(QueriesToken(gen_tokens.data(), num_queries),
                          queries_mutable_pos, weights, activations, div_seq_len,
-                         kv_caches, pool, runtime_config.layers_output);
+                         kv_caches, pool, runtime_config.layers_output,
+                         runtime_config.activations_observer);
     // queries_pos are incremented by Transformer.
 
     bool all_queries_eos = true;
