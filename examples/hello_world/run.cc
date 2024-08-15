@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
   gcpp::Gemma model = gcpp::CreateGemma(loader, pools);
   gcpp::KVCache kv_cache =
       gcpp::KVCache::Create(loader.Info().model, inference.prefill_tbatch_size);
-  size_t pos = 0;  // KV Cache position
+  size_t generated = 0;
 
   // Initialize random number generator
   std::mt19937 gen;
@@ -56,14 +56,14 @@ int main(int argc, char** argv) {
 
   // Tokenize instructions.
   std::string prompt = "Write a greeting to the world.";
-  const std::vector<int> tokens =
-      gcpp::WrapAndTokenize(model.Tokenizer(), loader.Info(), pos, prompt);
-  size_t ntokens = tokens.size();
+  const std::vector<int> tokens = gcpp::WrapAndTokenize(
+      model.Tokenizer(), loader.Info(), generated, prompt);
+  const size_t prompt_size = tokens.size();
 
   // This callback function gets invoked every time a token is generated
-  auto stream_token = [&pos, &ntokens, &model](int token, float) {
-    ++pos;
-    if (pos < ntokens) {
+  auto stream_token = [&generated, &prompt_size, &model](int token, float) {
+    ++generated;
+    if (generated < prompt_size) {
       // print feedback
     } else if (token != gcpp::EOS_ID) {
       std::string token_text;

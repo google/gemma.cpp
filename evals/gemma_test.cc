@@ -82,7 +82,7 @@ class GemmaTest : public ::testing::Test {
       for (const auto& prompt : prompts_vector) {
         prompt_spans.push_back(PromptTokens(prompt.data(), prompt.size()));
       }
-      MultiplePromptsTokens prompts(prompt_spans.data(), prompt_spans.size());
+      QueriesPromptTokens prompts(prompt_spans.data(), prompt_spans.size());
       for (auto [response, n] : s_env->BatchQueryModel2(prompts)) {
         replies.push_back(response);
       }

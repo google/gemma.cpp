@@ -80,20 +80,19 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
                int verbosity, const AcceptFunc& accept_token,
                std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
-  size_t abs_pos = 0;   // absolute token index over all turns
-  int current_pos = 0;  // token index within the current turn
-  int prompt_size{};
+  size_t abs_pos = 0;                     // across turns
+  size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
+  size_t prompt_size = 0;
 
   std::mt19937 gen;
   InitGenerator(args, gen);
 
   // callback function invoked for each generated token.
-  auto stream_token = [&abs_pos, &current_pos, &args, &gen, &prompt_size,
-                       &model, verbosity](int token, float) {
+  auto stream_token = [&](int token, float) {
     ++abs_pos;
-    ++current_pos;
+    ++tokens_generated_this_turn;
     // <= since position is incremented before
-    if (current_pos <= prompt_size) {
+    if (tokens_generated_this_turn <= prompt_size) {
       std::cerr << "." << std::flush;
     } else if (token == EOS_ID) {
       if (!args.multiturn) {
@@ -108,7 +107,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
       HWY_ASSERT(
           model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
       // +1 since position is incremented above
-      if (current_pos == prompt_size + 1) {
+      if (tokens_generated_this_turn == prompt_size + 1) {
         // first token of response
         token_text.erase(0, token_text.find_first_not_of(" \t\n"));
         if (verbosity >= 1) {
@@ -121,7 +120,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
   };
 
   while (abs_pos < args.max_tokens) {
-    current_pos = 0;
+    tokens_generated_this_turn = 0;
     std::string prompt_string = GetPrompt(std::cin, verbosity, eot_line);
     if (!std::cin) return;
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.

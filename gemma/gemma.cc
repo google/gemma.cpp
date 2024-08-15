@@ -64,12 +64,11 @@ Gemma::~Gemma() {
                              const PromptTokens& prompt, size_t pos,           \
                              KVCache& kv_cache, PerClusterPools& pools,        \
                              TimingInfo& timing_info);                         \
-  extern void GenerateBatch(CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,  \
-                            const RuntimeConfig& runtime_config,               \
-                            const MultiplePromptsTokens& prompts,              \
-                            const MultiplePositions& pos,                      \
-                            const KVCaches& kv_caches, PerClusterPools& pools, \
-                            TimingInfo& timing_info);
+  extern void GenerateBatch(                                                   \
+      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,                        \
+      const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
+      const QueriesPos& queries_pos, const KVCaches& kv_caches,                \
+      PerClusterPools& pools, TimingInfo& timing_info);
 GEMMA_FOREACH_CONFIG_AND_WEIGHT(GEMMA_DECLARE);
 
 // Adapters to select from the above overloads via CallForModelAndWeight.
@@ -88,35 +87,35 @@ template <class TConfig>
 struct GenerateBatchT {
   void operator()(const ByteStorageT& weights_u8,
                   const RuntimeConfig& runtime_config,
-                  const MultiplePromptsTokens& prompts,
-                  const MultiplePositions& pos, const KVCaches& kv_caches,
+                  const QueriesPromptTokens& queries_prompt,
+                  const QueriesPos& queries_pos, const KVCaches& kv_caches,
                   PerClusterPools& pools, TimingInfo& timing_info) const {
-    GenerateBatch(TConfig(), weights_u8, runtime_config, prompts, pos,
-                  kv_caches, pools, timing_info);
+    GenerateBatch(TConfig(), weights_u8, runtime_config, queries_prompt,
+                  queries_pos, kv_caches, pools, timing_info);
   }
 };
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
-                     const PromptTokens& prompt, size_t start_pos,
-                     KVCache& kv_cache, TimingInfo& timing_info) {
+                     const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
+                     TimingInfo& timing_info) {
   pools_.StartSpinning();
 
   CallForModelAndWeight<GenerateSingleT>(info_.model, info_.weight, weights_u8_,
-                                         runtime_config, prompt, start_pos,
-                                         kv_cache, pools_, timing_info);
+                                         runtime_config, prompt, pos, kv_cache,
+                                         pools_, timing_info);
 
   pools_.StopSpinning();
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
-                          const MultiplePromptsTokens& prompts,
-                          const MultiplePositions& start_pos,
+                          const QueriesPromptTokens& queries_prompt,
+                          const QueriesPos& queries_pos,
                           const KVCaches& kv_caches, TimingInfo& timing_info) {
   pools_.StartSpinning();
 
-  CallForModelAndWeight<GenerateBatchT>(info_.model, info_.weight, weights_u8_,
-                                        runtime_config, prompts, start_pos,
-                                        kv_caches, pools_, timing_info);
+  CallForModelAndWeight<GenerateBatchT>(
+      info_.model, info_.weight, weights_u8_, runtime_config, queries_prompt,
+      queries_pos, kv_caches, pools_, timing_info);
 
   pools_.StopSpinning();
 }

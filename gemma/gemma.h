@@ -142,8 +142,12 @@ struct TimingInfo {
 };
 
 using PromptTokens = hwy::Span<const int>;
-using MultiplePromptsTokens = hwy::Span<const PromptTokens>;
-using MultiplePositions = hwy::Span<const size_t>;
+
+// Batches of independent queries have their own prompt, previous token,
+// position in the sequence, and KVCache.
+using QueriesPromptTokens = hwy::Span<const PromptTokens>;
+using QueriesToken = hwy::Span<const int>;
+using QueriesPos = hwy::Span<const size_t>;
 using KVCaches = hwy::Span<KVCache>;
 
 class Gemma {
@@ -161,13 +165,17 @@ class Gemma {
   const ByteStorageT& Weights() const { return weights_u8_; }
   ByteStorageT& MutableWeights() { return weights_u8_; }
 
+  // `pos` is the position in the KV cache. Users are responsible for
+  // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
-                size_t start_pos, KVCache& kv_cache, TimingInfo& timing_info);
+                size_t pos, KVCache& kv_cache, TimingInfo& timing_info);
 
+  // `queries_pos` are the positions in the KV cache. Users are responsible for
+  // incrementing them in `BatchStreamFunc`, or setting to zero for single-turn.
   void GenerateBatch(const RuntimeConfig& runtime_config,
-                     const MultiplePromptsTokens& prompts,
-                     const MultiplePositions& start_pos,
-                     const KVCaches& kv_caches, TimingInfo& timing_info);
+                     const QueriesPromptTokens& queries_prompt,
+                     const QueriesPos& queries_pos, const KVCaches& kv_caches,
+                     TimingInfo& timing_info);
 
  private:
   PerClusterPools& pools_;

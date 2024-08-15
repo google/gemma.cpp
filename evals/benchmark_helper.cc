@@ -108,10 +108,9 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   std::string res;
   size_t total_tokens = 0;
 
-  const double time_start = hwy::platform::Now();
-  const BatchStreamFunc batch_stream_token =
-      [&res, &total_tokens, &time_start, this](
-          size_t query_index, size_t pos, int token, float) {
+  const BatchStreamFunc batch_stream_token = [&res, &total_tokens, this](
+                                                 size_t query_index, size_t pos,
+                                                 int token, float) {
     ++total_tokens;
     res += StringFromTokens(std::vector<int>{token});
     return true;
@@ -130,23 +129,19 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
 }
 
 std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
-    const MultiplePromptsTokens& prompts) {
-  const size_t num_queries = prompts.size();
+    const QueriesPromptTokens& queries_prompt) {
+  const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(num_queries != 0);
   std::vector<std::pair<std::string, size_t>> res(num_queries);
   std::fill(res.begin(), res.end(), std::make_pair("", 0));
-  size_t total_tokens = 0;
-
-  const double time_start = hwy::platform::Now();
-  const BatchStreamFunc batch_stream_token =
-      [&res, &total_tokens, &time_start, this](
-          size_t query_index, size_t pos, int token, float) {
+  const BatchStreamFunc batch_stream_token = [&res, this](size_t query_index,
+                                                          size_t pos, int token,
+                                                          float) {
     std::string token_text;
     HWY_ASSERT(
         model_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
     res[query_index].first.append(token_text);
     res[query_index].second += 1;
-    ++total_tokens;
     return true;
   };
   if (app_.verbosity >= 2) {
@@ -171,8 +166,9 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
   gcpp::TimingInfo timing_info = {.verbosity = app_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   inference_args_.CopyTo(runtime_config_);
-  model_->GenerateBatch(runtime_config_, prompts,
-                        std::vector<size_t>(num_queries, 0),
+  std::vector<size_t> queries_pos(num_queries, 0);
+  model_->GenerateBatch(runtime_config_, queries_prompt,
+                        QueriesPos(queries_pos.data(), num_queries),
                         KVCaches(&kv_caches_[0], num_queries), timing_info);
   return res;
 }
@@ -197,7 +193,7 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
   for (auto& prompt : prompts) {
     prompt_vector.push_back(PromptTokens(prompt.data(), prompt.size()));
   }
-  MultiplePromptsTokens prompt_span(prompt_vector.data(), prompt_vector.size());
+  QueriesPromptTokens prompt_span(prompt_vector.data(), prompt_vector.size());
   return BatchQueryModel2(prompt_span);
 }
 

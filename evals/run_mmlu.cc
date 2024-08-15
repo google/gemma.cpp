@@ -110,13 +110,13 @@ void Run(GemmaEnv& env, JsonArgs& json) {
 
     std::vector<int> predicted_token_ids;
     predicted_token_ids.reserve(4096);
-    size_t current_pos = 0;
-    const StreamFunc stream_token = [&current_pos, prompt_size,
+    size_t generated = 0;
+    const StreamFunc stream_token = [&generated, prompt_size,
                                      &predicted_token_ids](int token,
                                                            float proba) {
       PROFILER_ZONE("Stream");
-      ++current_pos;
-      if (current_pos > prompt_size) {
+      ++generated;
+      if (generated > prompt_size) {
         predicted_token_ids.push_back(token);
       }
       return true;

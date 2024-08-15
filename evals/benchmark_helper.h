@@ -69,7 +69,7 @@ class GemmaEnv {
   // the number of tokens that were generated.
   std::pair<std::string, size_t> QueryModel(const std::vector<int>& tokens);
   std::vector<std::pair<std::string, size_t>> BatchQueryModel2(
-      const MultiplePromptsTokens& prompts);
+      const QueriesPromptTokens& queries_prompt);
   // Adds turn structure to input, tokenizes and calls the above overload.
   std::pair<std::string, size_t> QueryModel(std::string& input);
   std::vector<std::pair<std::string, size_t>> BatchQueryModel(
