@@ -21,13 +21,36 @@ licenses(["notice"])
 exports_files(["LICENSE"])
 
 cc_library(
+    name = "allocator",
+    hdrs = ["util/allocator.h"],
+    deps = [
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
+    name = "threading",
+    hdrs = ["util/threading.h"],
+    deps = [
+        "@hwy//:hwy",
+        "@hwy//:thread_pool",
+        "@hwy//:topology",
+    ],
+)
+
+cc_library(
     name = "ops",
+    hdrs = [
+        "ops/matmul.h",
+    ],
     textual_hdrs = [
         "ops/ops-inl.h",
         "ops/matmul-inl.h",
         "ops/matvec-inl.h",
     ],
     deps = [
+        ":allocator",
+        ":threading",
         "//compression:compress",
         "//compression:sfp",
         "@hwy//:algo",
@@ -86,6 +109,7 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":ops",
+        ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "@hwy//:hwy",
@@ -114,6 +138,7 @@ cc_library(
     srcs = ["gemma/weights.cc"],
     hdrs = ["gemma/weights.h"],
     deps = [
+        ":allocator",
         ":common",
         "//compression:compress",
         "//compression:io",
@@ -145,16 +170,6 @@ cc_library(
     deps = [
         ":common",
         "@hwy//:hwy",
-    ],
-)
-
-cc_library(
-    name = "threading",
-    hdrs = ["util/threading.h"],
-    deps = [
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
-        "@hwy//:topology",
     ],
 )
 
@@ -197,6 +212,7 @@ cc_library(
         # Placeholder for internal file2, do not remove,
     ],
     deps = [
+        ":allocator",
         ":common",
         ":ops",
         ":tokenizer",
@@ -389,11 +405,14 @@ cc_library(
     hdrs = [
         "backprop/activations.h",
         "backprop/backward.h",
-        "backprop/backward-inl.h",
         "backprop/forward.h",
+    ],
+    textual_hdrs = [
+        "backprop/backward-inl.h",
         "backprop/forward-inl.h",
     ],
     deps = [
+        ":allocator",
         ":common",
         ":gemma_lib",
         ":ops",
@@ -413,6 +432,7 @@ cc_library(
         "backprop/forward_scalar.h",
     ],
     deps = [
+        ":allocator",
         ":common",
         ":gemma_lib",
         ":prompt",
@@ -467,13 +487,10 @@ cc_test(
 
 cc_library(
     name = "optimizer",
-    srcs = [
-        "backprop/optimizer.cc",
-    ],
-    hdrs = [
-        "backprop/optimizer.h",
-    ],
+    srcs = ["backprop/optimizer.cc"],
+    hdrs = ["backprop/optimizer.h"],
     deps = [
+        ":allocator",
         ":common",
         ":weights",
         "//compression:compress",

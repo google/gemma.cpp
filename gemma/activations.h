@@ -20,50 +20,13 @@
 
 #include <cmath>
 
-#include "gemma/common.h"  // kMaxThreads - TODO: remove
-#include "hwy/aligned_allocator.h"
+#include "ops/matmul.h"      // MatMulEnv
+#include "util/allocator.h"  // RowVectorBatch
+#include "util/threading.h"
 #include "hwy/base.h"  // HWY_DASSERT
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
-
-// Owns dynamically-allocated aligned memory for a batch of row vectors.
-// This can be seen as a (batch_size x len) matrix.
-template <typename T>
-class RowVectorBatch {
- public:
-  // Default ctor for Activations ctor.
-  RowVectorBatch() : batch_size_(0), len_(0) {}
-  // Main ctor, called from Activations::Allocate.
-  RowVectorBatch(size_t batch_size, size_t len)
-      : batch_size_(batch_size), len_(len) {
-    mem_ = hwy::AllocateAligned<T>(batch_size * len);
-  }
-
-  // Move-only
-  RowVectorBatch(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch& operator=(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch(RowVectorBatch&&) noexcept = default;
-  RowVectorBatch& operator=(RowVectorBatch&&) noexcept = default;
-
-  size_t BatchSize() const { return batch_size_; }
-  size_t Len() const { return len_; }
-
-  // Returns the given row vector of length `Len()`.
-  T* Batch(size_t batch_idx) {
-    HWY_DASSERT(batch_idx < batch_size_);
-    return mem_.get() + batch_idx * len_;
-  }
-
-  // For MatMul or other operations that process the entire batch at once.
-  T* All() { return mem_.get(); }
-  const T* Const() const { return mem_.get(); }
-  size_t NumBytes() const { return batch_size_ * len_ * sizeof(T); }
-
- private:
-  hwy::AlignedFreeUniquePtr<T[]> mem_;
-  size_t batch_size_;  // rows in the matrix
-  size_t len_;         // columns in the matrix = vector length
-};
 
 struct Activations {
   RowVectorBatch<float> x;  // input
@@ -94,8 +57,10 @@ struct Activations {
 
   // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
   // per-thread storage.
-  // TODO: remove once MatVec is gone.
+  // TODO: remove once MatVec is no longer used.
   RowVectorBatch<float> even_odd;
+
+  MatMulEnv env;
 
   // Multi-Head Attention?
   template <class TConfig>
@@ -126,7 +91,7 @@ struct Activations {
   }
 
   template <class TConfig>
-  void Allocate(size_t batch_size) {
+  void Allocate(size_t batch_size, PerClusterPools& pools) {
     constexpr size_t kModelDim = TConfig::kModelDim;
     constexpr size_t kQKVDim = TConfig::kQKVDim;
     constexpr size_t kHeads = TConfig::kHeads;
@@ -158,7 +123,10 @@ struct Activations {
 
     inv_timescale = CreateInvTimescale<TConfig>();
 
-    even_odd = RowVectorBatch<float>(1, kModelDim * kMaxThreads);
+    const size_t num_lp = pools.NumLP();
+    even_odd = RowVectorBatch<float>(1, kModelDim * num_lp);
+
+    env = MatMulEnv(pools);
   }
 };
 

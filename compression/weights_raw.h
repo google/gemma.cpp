@@ -26,8 +26,8 @@
 
 #include <random>
 
-#include "gemma/common.h"
 #include "gemma/configs.h"
+#include "util/allocator.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"

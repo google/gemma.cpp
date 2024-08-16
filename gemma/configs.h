@@ -36,14 +36,8 @@ namespace gcpp {
 #define GEMMA_TOPK 1
 #endif  // !GEMMA_TOPK
 
-// Allow changing upper bound on threads as a compiler flag
-#ifndef GEMMA_MAX_THREADS
-#define GEMMA_MAX_THREADS 128
-#endif  // !GEMMA_MAX_THREADS
-
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
-static constexpr size_t kMaxThreads = GEMMA_MAX_THREADS;
 
 using EmbedderInputT = hwy::bfloat16_t;
 

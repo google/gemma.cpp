@@ -89,6 +89,22 @@ struct CompressTraits<float> {
     f1 = hn::LoadU(df, in + in_ofs + N);
   }
 
+  // Called by MatMul for f32 weights or activations if native
+  // `ReorderWidenMulAccumulate` is available.
+  template <class DBF16, HWY_IF_BF16_D(DBF16), class VBF16 = hn::Vec<DBF16>>
+  static HWY_INLINE void Decompress2(DBF16 dbf16, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, VBF16& v0, VBF16& v1) {
+    const hn::Repartition<float, decltype(dbf16)> df;
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+    const VF f0 = hn::LoadU(df, in + in_ofs + 0 * NF);
+    const VF f1 = hn::LoadU(df, in + in_ofs + 1 * NF);
+    const VF f2 = hn::LoadU(df, in + in_ofs + 2 * NF);
+    const VF f3 = hn::LoadU(df, in + in_ofs + 3 * NF);
+    v0 = hn::OrderedDemote2To(dbf16, f0, f1);
+    v1 = hn::OrderedDemote2To(dbf16, f2, f3);
+  }
+
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Decompress(DF df, size_t /*in_capacity*/,
                                     const MatT* HWY_RESTRICT in, size_t in_ofs,
@@ -194,6 +210,14 @@ struct CompressTraits<hwy::bfloat16_t> {
     const VBF in16 = hn::LoadU(dbf, in + in_ofs);
     f0 = hn::PromoteLowerTo(df, in16);
     f1 = hn::PromoteUpperTo(df, in16);
+  }
+
+  template <class DBF16, HWY_IF_BF16_D(DBF16)>
+  static HWY_INLINE void Decompress2(DBF16 dbf16, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, hn::Vec<DBF16>& v0,
+                                     hn::Vec<DBF16>& v1) {
+    v0 = hn::LoadU(dbf16, in + in_ofs);
+    v1 = hn::LoadU(dbf16, in + in_ofs + hn::Lanes(dbf16));
   }
 
   template <class DF, HWY_IF_F32_D(DF)>
@@ -318,14 +342,14 @@ struct CompressTraits<SfpStream> {
     }
   }
 
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Decompress2(DF df, const MatT* HWY_RESTRICT in,
-                                     size_t in_ofs, hn::Vec<DF>& f0,
-                                     hn::Vec<DF>& f1) {
-    const hn::Twice<hn::Rebind<uint8_t, DF>> d8;
+  template <class D>  // f32 or bf16
+  static HWY_INLINE void Decompress2(D d, const MatT* HWY_RESTRICT in,
+                                     size_t in_ofs, hn::Vec<D>& v0,
+                                     hn::Vec<D>& v1) {
+    const hn::Twice<hn::Rebind<uint8_t, D>> d8;
     using V8 = hn::Vec<decltype(d8)>;
     const V8 packed = hn::LoadU(d8, &in->byte + in_ofs);
-    SfpCodec::Dec2F(df, packed, f0, f1);
+    SfpCodec::Dec2(d, packed, v0, v1);
   }
 
   template <class D, typename OutT>

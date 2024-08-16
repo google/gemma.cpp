@@ -19,6 +19,7 @@
 #include <random>
 
 #include "gemma/common.h"
+#include "util/allocator.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {

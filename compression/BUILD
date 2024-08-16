@@ -185,6 +185,7 @@ cc_library(
     name = "weights_raw",
     hdrs = ["weights_raw.h"],
     deps = [
+        "//:allocator",
         "//:common",
         "//compression:compress",
         "@hwy//:hwy",

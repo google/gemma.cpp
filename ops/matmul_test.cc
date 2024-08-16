@@ -24,6 +24,7 @@
 #include <memory>
 
 #include "compression/compress.h"
+#include "util/threading.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -35,9 +36,10 @@
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
-#include "hwy/tests/test_util-inl.h"
 // After highway.h
+#include "compression/compress-inl.h"
 #include "ops/matmul-inl.h"
+#include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -149,7 +151,7 @@ void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
   const double norm = MaxColAbsSum(a.get(), rows_ac, cols_ab) *
                       MaxColAbsSum(b_trans.get(), cols_c_rows_b, cols_ab);
   const double epsilon = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
-  const double tolerance = 50.0 * norm * epsilon;
+  const double tolerance = 200.0 * norm * epsilon;
 
   for (size_t idx = 0; idx < num_c; idx++) {
     const double expected_value = expected_c[idx];
@@ -157,8 +159,10 @@ void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
 
     if (!(expected_value - tolerance <= actual_value &&
           actual_value <= expected_value + tolerance)) {
-      fprintf(stderr, "expected[%lu]: %f, actual[%lu]: %f\n", idx,
-              expected_value, idx, actual_value);
+      fprintf(
+          stderr,
+          "expected[%lu]: %f, actual[%lu]: %f, norm %f eps %E tolerance %f\n",
+          idx, expected_value, idx, actual_value, norm, epsilon, tolerance);
       HWY_ASSERT(0);
     }
   }
@@ -202,14 +206,15 @@ HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
 
 void PrintSpeed(const char* algo, size_t rows_ac, size_t cols_a_rows_b,
                 size_t cols_bc, double elapsed) {
-  // 2 because of FMA.
-  fprintf(stderr, "%s: %f seconds, %f GFLOPS.\n", algo, elapsed,
-          2E-9 * rows_ac * cols_a_rows_b * cols_bc / elapsed);
+  // 2x because of FMA.
+  fprintf(stderr, "                     %10s: %f seconds, %.1f GFLOPS.\n", algo,
+          elapsed, 2 * 1E-9 * rows_ac * cols_a_rows_b * cols_bc / elapsed);
 }
 
 template <size_t kRowsAC, size_t kColsARowsB, size_t kColsBC, bool kAdd,
           typename MatTA, typename MatTB = MatTA>
-void TestMatMul(hwy::ThreadPool& pool) {
+void TestMatMul(MatMulEnv& env) {
+  hwy::ThreadPool& pool = env.Pool();
   using TraitsA = CompressTraits<MatTA>;
   using TraitsB = CompressTraits<MatTB>;
   const bool want_bench = kColsBC > 2000;  // avoid spam for small matrices
@@ -247,14 +252,14 @@ void TestMatMul(hwy::ThreadPool& pool) {
   double min_elapsed = hwy::HighestValue<double>();
   for (int rep = 0; rep < (want_bench ? 3 : 1); ++rep) {
     const double start_tiled = hwy::platform::Now();
-    MatMul_4x4<kAdd>(kRowsAC, MakeMat(a->data(), kColsARowsB),
-                     MakeMat(b_trans->data(), kColsARowsB), scale,
-                     kAdd ? add->data_scale1() : nullptr,
-                     MakeMat(c.get(), kColsBC), pool);
+    MatMul<kAdd>(kRowsAC, ConstMat(a->data(), kColsARowsB),
+                 ConstMat(b_trans->data(), kColsARowsB), scale,
+                 kAdd ? add->data_scale1() : nullptr, env,
+                 MutableMat(c.get(), kColsBC));
     min_elapsed = HWY_MIN(min_elapsed, hwy::platform::Now() - start_tiled);
   }
   if (want_bench) {
-    PrintSpeed("MatMul_4x4", kRowsAC, kColsARowsB, kColsBC, min_elapsed);
+    PrintSpeed("MatMul", kRowsAC, kColsARowsB, kColsBC, min_elapsed);
   }
 
   AssertClose(kRowsAC, kColsARowsB, kColsBC, a->data(), b_trans->data(),
@@ -268,53 +273,56 @@ void TestAllMatMul() {
     return;
   }
 
-  hwy::ThreadPool pool(4);
+  PerClusterPools pools(/*max_clusters=*/1, /*max_threads=*/4, /*pin=*/1);
+  MatMulEnv env(pools);
   using F32 = float;
   using SFP = SfpStream;
 
   // large-scale test
-  TestMatMul<64, 24576, 3072, /*kAdd=*/false, F32, SFP>(pool);
-  TestMatMul<64, 3072, 24576, /*kAdd=*/false, F32, SFP>(pool);
+  TestMatMul<64, 24576, 3072, /*kAdd=*/false, BF16, SFP>(env);
+  TestMatMul<64, 3072, 24576, /*kAdd=*/false, BF16, SFP>(env);
+  TestMatMul<64, 24576, 3072, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<64, 3072, 24576, /*kAdd=*/false, F32, SFP>(env);
 
   // medium-sized square test
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32>(pool);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16>(pool);
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, BF16>(pool);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, F32>(pool);
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, SFP>(pool);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, SFP>(pool);
+  TestMatMul<512, 512, 512, /*kAdd=*/false, F32>(env);
+  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16>(env);
+  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, BF16>(env);
+  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, F32>(env);
+  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, SFP>(env);
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
-  TestMatMul<35, 128, 32, /*kAdd=*/false, F32>(pool);
-  TestMatMul<34, 128, 32, /*kAdd=*/true, BF16>(pool);
-  TestMatMul<33, 128, 32, /*kAdd=*/false, F32, BF16>(pool);
-  TestMatMul<33, 128, 32, /*kAdd=*/true, BF16, F32>(pool);
-  TestMatMul<31, 128, 32, /*kAdd=*/false, F32, SFP>(pool);
-  TestMatMul<29, 128, 32, /*kAdd=*/true, BF16, SFP>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/true, F32>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/true, F32, BF16>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, F32>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/true, F32, SFP>(pool);
-  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, SFP>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/false, F32>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/false, F32, BF16>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, F32>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/false, F32, SFP>(pool);
-  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, SFP>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/true, F32>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/true, F32, BF16>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, F32>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/true, F32, SFP>(pool);
-  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, SFP>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/false, F32>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/false, F32, BF16>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, F32>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/false, F32, SFP>(pool);
-  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, SFP>(pool);
+  TestMatMul<35, 128, 32, /*kAdd=*/false, F32>(env);
+  TestMatMul<34, 128, 32, /*kAdd=*/true, BF16>(env);
+  TestMatMul<33, 128, 32, /*kAdd=*/false, F32, BF16>(env);
+  TestMatMul<33, 128, 32, /*kAdd=*/true, BF16, F32>(env);
+  TestMatMul<31, 128, 32, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<29, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/true, F32>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/true, F32, BF16>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, F32>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/true, F32, SFP>(env);
+  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, SFP>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/false, F32>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/false, F32, BF16>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, F32>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/true, F32>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/true, F32, BF16>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, F32>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/true, F32, SFP>(env);
+  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, SFP>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/false, F32>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/false, F32, BF16>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, F32>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

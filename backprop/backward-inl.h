@@ -27,7 +27,6 @@
 
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/activations.h"  // CreateInvTimescale
 #include "gemma/common.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -42,9 +41,10 @@
 #define THIRD_PARTY_GEMMA_CPP_BACKWARD_TOGGLE
 #endif
 
+#include "hwy/highway.h"
+// After highway.h
 #include "ops/matmul-inl.h"
 #include "ops/ops-inl.h"
-#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

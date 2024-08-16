@@ -18,6 +18,8 @@
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
 #include "gemma/common.h"
+#include "gemma/weights.h"
+#include "util/allocator.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
@@ -29,8 +31,6 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "backprop/backward-inl.h"
-#include "gemma/activations.h"
-#include "gemma/weights.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

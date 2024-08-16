@@ -18,23 +18,14 @@
 
 #include <math.h>  // sqrtf
 #include <stddef.h>
-#include <stdint.h>
 
 #include <string>
 
 #include "compression/compress.h"
 #include "gemma/configs.h"  // IWYU pragma: export
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // ConvertScalarTo
 
 namespace gcpp {
-
-using ByteStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
-
-template <typename T>
-ByteStorageT AllocateSizeof() {
-  return hwy::AllocateAligned<uint8_t>(sizeof(T));
-}
 
 // Model variants: see configs.h for details. When adding a new one, also
 // update GEMMA_FOREACH* and Call* below, and add instantiations/*.cc.

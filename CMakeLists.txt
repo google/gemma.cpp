@@ -103,8 +103,10 @@ set(SOURCES
   ops/matmul-inl.h
   ops/matvec-inl.h
   ops/ops-inl.h
+  util/allocator.h
   util/app.h
   util/args.h
+  util/threading.h
   )
 
 if(NOT CMAKE_BUILD_TYPE)

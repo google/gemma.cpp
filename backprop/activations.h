@@ -20,7 +20,7 @@
 
 #include <array>
 
-#include "gemma/common.h"  // ByteStorageT
+#include "util/allocator.h"  // ByteStorageT
 
 namespace gcpp {
 

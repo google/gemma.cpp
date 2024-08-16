@@ -197,6 +197,11 @@ class PerClusterPools {
     return *inner_pools_[outer];
   }
 
+  // Returns number of logical processors, for allocating per-thread buffers.
+  size_t NumLP() const {
+    return outer_pool_.NumWorkers() * inner_pools_[0]->NumWorkers();
+  }
+
  private:
   bool have_threading_support_;
   CoreBitSets cores_per_cluster_;
