@@ -156,6 +156,15 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
+// ModelConfigInfo holds model configuration details: number of layers, etc.
+struct ModelConfigInfo {
+  const int layers;
+  const int model_dim;
+  const int heads;
+  const int kv_heads;
+  const int qkv_dim;
+};
+
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
@@ -166,6 +175,7 @@ class Gemma {
         PerClusterPools& pools);
   ~Gemma();
 
+  ModelConfigInfo ModelConfig() const;
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ByteStorageT& Weights() const { return weights_u8_; }

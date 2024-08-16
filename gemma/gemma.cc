@@ -120,4 +120,21 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
   pools_.StopSpinning();
 }
 
+template <typename TConfig>
+struct GetModelConfig {
+  ModelConfigInfo operator()() const {
+    return ModelConfigInfo{
+        .layers = TConfig::kLayers,
+        .model_dim = TConfig::kModelDim,
+        .heads = TConfig::kHeads,
+        .kv_heads = TConfig::kKVHeads,
+        .qkv_dim = TConfig::kQKVDim,
+    };
+  }
+};
+
+ModelConfigInfo Gemma::ModelConfig() const {
+  return CallForModel<float, GetModelConfig>(info_.model);
+}
+
 }  // namespace gcpp
