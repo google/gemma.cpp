@@ -15,7 +15,7 @@ config_setting(
     constraint_values = [
         "@platforms//os:android",
     ],
-    visibility = [":__subpackages__"],
+    visibility = ["//visibility:private"],
 )
 
 FILE_DEPS = select({
