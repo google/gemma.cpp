@@ -149,6 +149,45 @@ TEST_F(GemmaTest, Arithmetic) {
   TestQuestions(kQA, kNum, /*batch=*/false);
 }
 
+TEST_F(GemmaTest, Multiturn) {
+  Gemma* model = s_env->GetModel();
+  ASSERT_NE(model, nullptr);
+  size_t abs_pos = 0;
+  std::string dialog;
+  auto stream_token = [&](int token, float) {
+    ++abs_pos;
+    std::string token_text;
+    EXPECT_TRUE(
+        model->Tokenizer().Decode(std::vector<int>{token}, &token_text));
+    dialog += token_text;
+    return true;
+  };
+  RuntimeConfig runtime_config{
+      .max_tokens = 128,
+      .max_generated_tokens = 64,
+      .temperature = 0.0f,
+      .verbosity = 2,
+      .gen = &s_env->MutableGen(),
+      .stream_token = stream_token,
+  };
+  TimingInfo timing_info{.verbosity = 0};
+  // First "say" something slightly unusual.
+  std::string mutable_prompt = "The color of my car is turquoise.";
+  std::vector<int> tokens = WrapAndTokenize(model->Tokenizer(), model->Info(),
+                                            abs_pos, mutable_prompt);
+  model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
+                  timing_info);
+  mutable_prompt = "Can you repeat to me what I just said?";
+  tokens = WrapAndTokenize(model->Tokenizer(), model->Info(), abs_pos,
+                           mutable_prompt);
+  // Reset the `dialog` string here, then check that the model actually has
+  // access to the previous turn by asking to reproduce.
+  dialog.clear();
+  model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
+                  timing_info);
+  EXPECT_TRUE(dialog.find("turquoise") != std::string::npos);  // NOLINT
+}
+
 static const char kJingleBells[] = R"(
 Dashing through the snow
 In a one-horse open sleigh
