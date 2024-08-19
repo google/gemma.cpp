@@ -72,11 +72,14 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":allocator",
+        ":common",
+        ":gemma_lib",
         ":ops",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
+        "@hwy//:nanobenchmark",  #buildcleaner: keep
     ],
 )
 

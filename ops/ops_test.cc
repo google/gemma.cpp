@@ -38,7 +38,12 @@
 #include "hwy/highway.h"
 #include "hwy/tests/test_util-inl.h"
 // After highway.h
+#include "gemma/activations.h"
+#include "gemma/common.h"
+#include "gemma/configs.h"
 #include "ops/ops-inl.h"
+#include "util/allocator.h"
+#include "hwy/tests/hwy_gtest.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -361,6 +366,55 @@ void TestSigmoid() {
   }
 }
 
+void TestRopeAndMulBy() {
+  using Config = ConfigGemma2_9B<float>;
+  int dim_qkv = Config::kQKVDim;
+  RowVectorBatch<float> x(1, dim_qkv);
+
+  std::mt19937 gen;
+  gen.seed(0x12345678);
+  std::normal_distribution<float> r{0.0, 5.0};
+  auto random_float = [&r, &gen] { return r(gen); };
+
+  for (int i = 0; i < dim_qkv; ++i) {
+    x.All()[i] = random_float();
+  }
+
+  const float qmul = ChooseQueryScale<Config>();
+  const float kmul = 1.0;
+
+  std::vector<float> qexpected(dim_qkv);
+  std::vector<float> qactual(dim_qkv);
+  std::vector<float> kexpected(dim_qkv);
+  std::vector<float> kactual(dim_qkv);
+  RowVectorBatch<float> inv_timescale =
+      gcpp::Activations::CreateInvTimescale<Config>();
+  // Assert VectorizedRope computation is same as regular rope at different pos.
+  for (int pos = 1; pos < 500; pos++) {
+    // Rope'd Q embeddings
+    RopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                 qexpected.data());
+    VectorizedRopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                           qactual.data());
+
+    for (int i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(qactual[i], qexpected[i], 1e-4)
+          << "qIndex:" << i << "qInput:" << qactual[i];
+    }
+
+    // Rope'd K embeddings
+    RopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                 kexpected.data());
+    VectorizedRopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                           kactual.data());
+
+    for (int i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(kactual[i], kexpected[i], 1e-4)
+          << "kIndex:" << i << "kInput:" << kactual[i];
+    }
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -377,6 +431,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp
