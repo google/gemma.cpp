@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <random>
 #include <vector>
 
@@ -81,15 +82,16 @@ TEST(OptimizeTest, GradientDescent) {
     return reply;
   };
 
+  // Sanity check of reply tokens.
+  // 1) Its length should be greater than the prompt.
+  // 2) The prompt should be a prefix of the reply.
   auto verify = [&](const Prompt& prompt) {
     auto context = prompt.context();
     std::vector<int> reply = generate(context);
     bool ok = true;
-    for (size_t i = 0; ok && i < prompt.tokens.size(); ++i) {
-      if (i >= reply.size() || reply[i] != prompt.tokens[i]) {
-        ok = false;
-      }
-    }
+    ok &= (reply.size() > context.size());
+    ok &= std::equal(prompt.tokens.begin(), prompt.tokens.end(),
+                          reply.begin(), reply.begin() + prompt.tokens.size());
     return ok;
   };
 
