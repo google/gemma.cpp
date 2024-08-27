@@ -172,12 +172,12 @@ TEST_F(GemmaTest, Multiturn) {
   };
   TimingInfo timing_info{.verbosity = 0};
   // First "say" something slightly unusual.
-  std::string mutable_prompt = "The color of my car is turquoise.";
+  std::string mutable_prompt = "I have a car and its color is turquoise.";
   std::vector<int> tokens = WrapAndTokenize(model->Tokenizer(), model->Info(),
                                             abs_pos, mutable_prompt);
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
-  mutable_prompt = "Can you repeat to me what I just said?";
+  mutable_prompt = "Please repeat all prior statements.";
   tokens = WrapAndTokenize(model->Tokenizer(), model->Info(), abs_pos,
                            mutable_prompt);
   // Reset the `dialog` string here, then check that the model actually has
