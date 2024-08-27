@@ -33,7 +33,7 @@ namespace gcpp {
 // despite floating-point rounding. `sum` is already the best estimate, so do
 // not actually add `err` to it. Knuth98/Moller65. Unlike Fast2Sum [Dekker71],
 // this does not require any relative ordering of the exponents of a and b.
-template <typename T>
+template <typename T, HWY_IF_FLOAT3264(T)>
 static inline T TwoSum(T a, T b, T& err) {
   const T sum = a + b;
   const T a2 = sum - b;

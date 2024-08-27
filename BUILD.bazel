@@ -44,9 +44,10 @@ cc_library(
         "ops/matmul.h",
     ],
     textual_hdrs = [
-        "ops/ops-inl.h",
+        "ops/dot-inl.h",
         "ops/matmul-inl.h",
         "ops/matvec-inl.h",
+        "ops/ops-inl.h",
     ],
     deps = [
         ":allocator",
@@ -60,6 +61,30 @@ cc_library(
         "@hwy//:matvec",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "dot_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["ops/dot_test.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":allocator",
+        ":common",
+        ":gemma_lib",
+        ":ops",
+        ":threading",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",  #buildcleaner: keep
+        "@hwy//:profiler",
+        "@hwy//:stats",
     ],
 )
 

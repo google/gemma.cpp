@@ -38,6 +38,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 // Any highway.h must come after foreach_target.h
 #include "compression/sfp-inl.h"
+#include "ops/dot-inl.h"
 #include "hwy/highway.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"
@@ -464,16 +465,10 @@ struct TestDot {
     double elapsed_eo = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 200; ++rep) {
       {
-        hn::Vec<decltype(df)> sum0 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum1 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum2 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum3 = hn::Zero(df);
         const double t0 = hwy::platform::Now();
-        SfpCodec::Dot(df, sfp.get(), num, vec.get(), sum0, sum1, sum2, sum3);
+        actual = SimpleDot(df, sfp.get(), 0, vec.get(), num);
         const double t1 = hwy::platform::Now();
         elapsed = HWY_MIN(elapsed, t1 - t0);
-        sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
-        actual = hn::ReduceSum(df, sum0);
       }
       {
         hn::Vec<decltype(df)> sum0 = hn::Zero(df);

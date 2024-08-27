@@ -100,6 +100,7 @@ set(SOURCES
   gemma/tokenizer.h
   gemma/weights.cc
   gemma/weights.h
+  ops/dot-inl.h
   ops/matmul-inl.h
   ops/matvec-inl.h
   ops/ops-inl.h
@@ -154,6 +155,7 @@ set(GEMMA_TEST_FILES
   backprop/backward_test.cc
   backprop/backward_scalar_test.cc
   backprop/optimize_test.cc
+  ops/dot_test.cc
   ops/ops_test.cc
   ops/matmul_test.cc
   ops/gemma_matvec_test.cc

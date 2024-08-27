@@ -52,6 +52,9 @@ HWY_INLINE hn::Mask<DU> SignedLt(DU du, hn::Vec<DU> a, hn::Vec<DU> b) {
   return SignedGt(du, b, a);
 }
 
+// Saturated subtraction; returns 0 if the result would be negative.
+static inline size_t SubOr0(size_t a, size_t b) { return a > b ? a - b : 0; }
+
 // Encode/decode functions.
 class SfpCodec {
  public:
@@ -339,12 +342,10 @@ class SfpCodec {
     HWY_DASSERT(remaining < 2 * N16);
     if (remaining != 0) {
       const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
-      HWY_ALIGN hwy::bfloat16_t padded[2 * hn::MaxLanes(dbf)];
       VBF bf0, bf1;
       Dec2B(dbf, packed, bf0, bf1);
-      hn::StoreU(bf0, dbf, padded);
-      hn::StoreU(bf1, dbf, padded + N16);
-      hwy::CopyBytes(padded, out_bf + i, remaining * sizeof(padded[0]));
+      hn::StoreN(bf0, dbf, out_bf + i, remaining);
+      hn::StoreN(bf1, dbf, out_bf + i + N16, SubOr0(remaining, N16));
     }
   }
 
@@ -375,104 +376,12 @@ class SfpCodec {
     HWY_DASSERT(remaining < 4 * NF);
     if (remaining != 0) {
       const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
-      HWY_ALIGN float padded[4 * hn::MaxLanes(df)];
       VF f0, f1, f2, f3;
       Dec4F(df, packed, f0, f1, f2, f3);
-      hn::StoreU(f0, df, padded + NF * 0);
-      hn::StoreU(f1, df, padded + NF * 1);
-      hn::StoreU(f2, df, padded + NF * 2);
-      hn::StoreU(f3, df, padded + NF * 3);
-      hwy::CopyBytes(padded, out_f + i, remaining * sizeof(padded[0]));
-    }
-  }
-
-  // Fused decode and dot product with bf16 into four output accumulators.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dot(DF df, const SfpStream* HWY_RESTRICT in_packed,
-                             size_t num,
-                             const hwy::bfloat16_t* HWY_RESTRICT vec_aligned,
-                             hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
-                             hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
-    const hn::Repartition<uint8_t, DF> d8;
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
-    using V8 = hn::Vec<decltype(d8)>;
-    using VBF = hn::Vec<decltype(dbf)>;
-    const size_t N16 = hn::Lanes(dbf);
-
-    size_t i = 0;
-    if (num >= 2 * N16) {
-      HWY_UNROLL(1)
-      for (; i <= num - 2 * N16; i += 2 * N16) {
-        const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
-        const VBF v0 = hn::LoadU(dbf, vec_aligned + i);
-        const VBF v1 = hn::LoadU(dbf, vec_aligned + i + N16);
-        VBF bf0, bf1;
-        Dec2B(dbf, packed, bf0, bf1);
-        sum0 = hn::ReorderWidenMulAccumulate(df, bf0, v0, sum0, sum1);
-        sum2 = hn::ReorderWidenMulAccumulate(df, bf1, v1, sum2, sum3);
-      }
-    }
-
-    const size_t remaining = num - i;
-    if (remaining != 0) {
-      const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
-      HWY_ALIGN hwy::bfloat16_t padded[2 * hn::MaxLanes(dbf)];
-      hwy::ZeroBytes(padded, sizeof(padded));
-      hwy::CopyBytes(vec_aligned + i, padded, remaining * sizeof(padded[0]));
-      const VBF v0 = hn::LoadU(dbf, padded);
-      const VBF v1 = hn::LoadU(dbf, padded + N16);
-      VBF bf0, bf1;
-      Dec2B(dbf, packed, bf0, bf1);
-      sum0 = hn::ReorderWidenMulAccumulate(df, bf0, v0, sum0, sum1);
-      sum2 = hn::ReorderWidenMulAccumulate(df, bf1, v1, sum2, sum3);
-    }
-  }
-
-  // Fused decode and dot product with f32 into four output accumulators.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dot(DF df, const SfpStream* HWY_RESTRICT in_packed,
-                             size_t num, const float* HWY_RESTRICT vec_aligned,
-                             hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
-                             hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
-    const hn::Repartition<uint8_t, DF> d8;
-    using V8 = hn::Vec<decltype(d8)>;
-    using VF = hn::Vec<decltype(df)>;
-    const size_t NF = hn::Lanes(df);
-
-    size_t i = 0;
-    if (num >= 4 * NF) {
-      HWY_UNROLL(1)
-      for (; i <= num - 4 * NF; i += 4 * NF) {
-        const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
-        const VF v0 = hn::LoadU(df, vec_aligned + i + NF * 0);
-        const VF v1 = hn::LoadU(df, vec_aligned + i + NF * 1);
-        const VF v2 = hn::LoadU(df, vec_aligned + i + NF * 2);
-        const VF v3 = hn::LoadU(df, vec_aligned + i + NF * 3);
-        VF f0, f1, f2, f3;
-        Dec4F(df, packed, f0, f1, f2, f3);
-        sum0 = hn::MulAdd(f0, v0, sum0);
-        sum1 = hn::MulAdd(f1, v1, sum1);
-        sum2 = hn::MulAdd(f2, v2, sum2);
-        sum3 = hn::MulAdd(f3, v3, sum3);
-      }
-    }
-
-    const size_t remaining = num - i;
-    if (remaining != 0) {
-      const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
-      HWY_ALIGN float padded[4 * hn::MaxLanes(df)];
-      hwy::ZeroBytes(padded, sizeof(padded));
-      hwy::CopyBytes(vec_aligned + i, padded, remaining * sizeof(padded[0]));
-      const VF v0 = hn::LoadU(df, padded + NF * 0);
-      const VF v1 = hn::LoadU(df, padded + NF * 1);
-      const VF v2 = hn::LoadU(df, padded + NF * 2);
-      const VF v3 = hn::LoadU(df, padded + NF * 3);
-      VF f0, f1, f2, f3;
-      Dec4F(df, packed, f0, f1, f2, f3);
-      sum0 = hn::MulAdd(f0, v0, sum0);
-      sum1 = hn::MulAdd(f1, v1, sum1);
-      sum2 = hn::MulAdd(f2, v2, sum2);
-      sum3 = hn::MulAdd(f3, v3, sum3);
+      hn::StoreN(f0, df, out_f + i + 0 * NF, remaining);
+      hn::StoreN(f1, df, out_f + i + 1 * NF, SubOr0(remaining, 1 * NF));
+      hn::StoreN(f2, df, out_f + i + 2 * NF, SubOr0(remaining, 2 * NF));
+      hn::StoreN(f3, df, out_f + i + 3 * NF, SubOr0(remaining, 3 * NF));
     }
   }
 

@@ -44,7 +44,6 @@
 
 #include "compression/nuq-inl.h"
 #include "compression/sfp-inl.h"
-#include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -111,29 +110,11 @@ struct CompressTraits<float> {
                                     float* HWY_RESTRICT out, size_t num) {
     using VF = hn::Vec<decltype(df)>;
     const size_t N = hn::Lanes(df);
-    HWY_DASSERT(num >= 2 * N && num % (2 * N) == 0);
 
-    for (size_t i = 0; i < num; i += 2 * N) {
-      VF in0, in1;
-      Decompress2(df, in, in_ofs + i, in0, in1);
-      hn::StoreU(in0, df, out + i);
-      hn::StoreU(in1, df, out + i + N);
+    for (size_t i = 0; i < num; i += N) {
+      const VF v = hn::LoadU(df, in + in_ofs + i);
+      hn::StoreU(v, df, out + i);
     }
-  }
-
-  // VecT can be float or hwy::bfloat16_t.
-  template <class DF, typename VecT, HWY_IF_F32_D(DF)>
-  static HWY_INLINE float Dot(DF df, size_t /*in_capacity*/,
-                              const MatT* HWY_RESTRICT in, size_t in_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              size_t num) {
-    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-    constexpr int kAssumptions =
-        hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
-    // vec_aligned must be the second argument because hn::Dot supports f32*bf16
-    // and f32*f32.
-    return hn::Dot::Compute<kAssumptions>(df, in + in_ofs, vec_aligned, num);
   }
 };
 
@@ -251,24 +232,6 @@ struct CompressTraits<hwy::bfloat16_t> {
     }
   }
 
-  // VecT can be float or hwy::bfloat16_t.
-  template <class DF, typename VecT, HWY_IF_F32_D(DF)>
-  static HWY_INLINE float Dot(DF df, size_t /*in_capacity*/,
-                              const MatT* HWY_RESTRICT in, size_t in_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              size_t num) {
-    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-
-    const hn::Repartition<VecT, decltype(df)> d_vec;
-
-    constexpr int kAssumptions =
-        hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
-    // vec_aligned must be first argument because hn::Dot supports f32*bf16 and
-    // bf16*bf16.
-    return hn::Dot::Compute<kAssumptions>(d_vec, vec_aligned, in + in_ofs, num);
-  }
-
   // Computes the dot product of an even-odd deinterleaved, f32 `vec_aligned`
   // and a column- major matrix `in`. `vec_aligned` should be aligned and
   // alternate even-indexed `hn::Lanes(df32)` elements followed by odd-indexed
@@ -359,30 +322,6 @@ struct CompressTraits<SfpStream> {
     SfpCodec::Dec(d, in + in_ofs, num, out);
   }
 
-  template <class DF, typename VecT, HWY_IF_F32_D(DF)>
-  static HWY_INLINE float Dot(DF df, size_t /*in_capacity*/,
-                              const MatT* HWY_RESTRICT in, size_t in_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              size_t num) {
-    HWY_DASSERT(num >= hn::Lanes(df) && (num % hn::Lanes(df)) == 0);
-    HWY_DASSERT((in_ofs % hn::Lanes(df)) == 0);
-    HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-
-    using VF = hn::Vec<decltype(df)>;
-    VF sum0 = hn::Zero(df);
-    VF sum1 = hn::Zero(df);
-    VF sum2 = hn::Zero(df);
-    VF sum3 = hn::Zero(df);
-
-    SfpCodec::Dot(df, in + in_ofs, num, vec_aligned, sum0, sum1, sum2, sum3);
-
-    // Reduction tree: sum of all accumulators, then their lanes
-    sum0 = hn::Add(sum0, sum1);
-    sum2 = hn::Add(sum2, sum3);
-    sum0 = hn::Add(sum0, sum2);
-    return hn::ReduceSum(df, sum0);
-  }
-
   // Computes the dot product of an even-odd deinterleaved, f32 or bf16
   // `vec_aligned` and a column-major matrix `in`. `vec_aligned` should be
   // aligned and alternate even-indexed `hn::Lanes(df)` elements followed by
@@ -445,25 +384,6 @@ struct CompressTraits<NuqStream> {
   static HWY_INLINE void Decompress(D d, size_t in_capacity, const MatT* in,
                                     size_t in_ofs, OutT* out, size_t num) {
     NuqCodec::Dec(d, in_capacity, in, in_ofs, out, num);
-  }
-
-  template <class DF, typename VecT, HWY_IF_F32_D(DF)>
-  static HWY_INLINE float Dot(DF df, size_t in_capacity, const MatT* in,
-                              size_t in_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
-                              size_t num) {
-    using VF = hn::Vec<decltype(df)>;
-    VF sum0 = hn::Zero(df);
-    VF sum1 = hn::Zero(df);
-    VF sum2 = hn::Zero(df);
-    VF sum3 = hn::Zero(df);
-
-    NuqCodec::Dot(df, in_capacity, in, in_ofs, vec_aligned, num, sum0, sum1,
-                  sum2, sum3);
-
-    // Reduction tree: sum of all accumulators, then their lanes
-    sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
-    return hn::ReduceSum(df, sum0);
   }
 };
 
@@ -557,35 +477,6 @@ HWY_INLINE void Decompress(const CompressedArray<MatT, kCapacity>& compressed,
   const double mb = num * sizeof(MatT) * 1E-6;
   const double mbps = mb / (t1 - t0);
   fprintf(stderr, "Decompress %.1f MB/s\n", mbps);
-}
-
-// Returns dot product with `vec_aligned` of length `num`.
-template <bool kVecEO, class DF, size_t kCapacity, typename VecT>
-HWY_INLINE float Dot(DF df, const std::array<float, kCapacity>& w, size_t ofs,
-                     const VecT* x, size_t num) {
-  HWY_DASSERT(ofs + num <= kCapacity);
-  HWY_DASSERT(hn::IsAligned(df, x));
-  using Traits = CompressTraits<float>;
-  return Traits::Dot(df, w.size(), w.data(), ofs, x, num);
-}
-
-// Returns dot product with `vec_aligned` of length `num`.
-template <bool kVecEO, class DF, typename MatT, size_t kCapacity, typename VecT>
-HWY_INLINE float Dot(DF df, const CompressedArray<MatT, kCapacity>& compressed,
-                     size_t compressed_ofs, const VecT* vec_aligned,
-                     size_t num) {
-  HWY_DASSERT(compressed_ofs + num <= compressed.size());
-  HWY_DASSERT(hn::IsAligned(df, vec_aligned));
-  using Traits = CompressTraits<MatT>;
-  float dot_result;
-  if constexpr (kVecEO) {
-    dot_result = Traits::DotEO(df, compressed.data(), compressed_ofs,
-                               vec_aligned, num);
-  } else {
-    dot_result = Traits::Dot(df, compressed.size(), compressed.data(),
-                             compressed_ofs, vec_aligned, num);
-  }
-  return compressed.scale() * dot_result;
 }
 
 // Functor called for each tensor, which compresses and stores them along with

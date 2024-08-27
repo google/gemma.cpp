@@ -38,6 +38,7 @@
 #endif
 
 #include "compression/compress-inl.h"
+#include "ops/dot-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
