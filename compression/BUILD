@@ -64,22 +64,11 @@ cc_test(
     srcs = ["distortion_test.cc"],
     deps = [
         ":distortion",
-        ":test_util",
         "@googletest//:gtest_main",
+        "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",  # Unpredictable1
-    ],
-)
-
-cc_library(
-    name = "test_util",
-    hdrs = ["test_util.h"],
-    deps = [
-        ":distortion",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:stats",
     ],
 )
 
@@ -102,10 +91,11 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":distortion",
         ":sfp",
-        ":test_util",
         "@googletest//:gtest_main",
         "//:ops",
+        "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",
@@ -133,10 +123,11 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":distortion",
         ":nuq",
         ":sfp",
-        ":test_util",
         "@googletest//:gtest_main",
+        "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",

@@ -27,7 +27,8 @@
 #include <algorithm>  // std::shuffle
 #include <random>
 
-#include "compression/test_util.h"
+#include "compression/distortion.h"
+#include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/tests/test_util.h"

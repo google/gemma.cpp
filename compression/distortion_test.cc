@@ -17,7 +17,7 @@
 
 #include <stdio.h>
 
-#include "compression/test_util.h"
+#include "util/test_util.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"  // HWY_ASSERT_EQ

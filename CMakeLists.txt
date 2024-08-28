@@ -48,7 +48,6 @@ set(SOURCES
   compression/nuq-inl.h
   compression/sfp.h
   compression/sfp-inl.h
-  compression/test_util.h
   compression/weights_raw.h
   backprop/activations.h
   backprop/backward.cc
@@ -107,6 +106,7 @@ set(SOURCES
   util/allocator.h
   util/app.h
   util/args.h
+  util/test_util.h
   util/threading.h
   )
 

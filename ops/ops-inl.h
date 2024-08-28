@@ -30,7 +30,6 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
 #include "hwy/profiler.h"
-
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_INL_H_
 
 // Include guard for (potentially) SIMD code.
@@ -41,6 +40,7 @@
 #define THIRD_PARTY_GEMMA_CPP_OPS_TOGGLE
 #endif
 
+#include "compression/compress-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
@@ -62,7 +62,7 @@ StaticCast(From from) noexcept {
 }
 
 template <class D, HWY_IF_F32_D(D)>
-static HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
+HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
   const hn::Vec<D> kMul = hn::Set(d, 0.044715f);
   const hn::Vec<D> kSqrt2OverPi = hn::Set(d, 0.797884560804236f);
   const hn::Vec<D> kHalf = hn::Set(d, 0.5f);
@@ -83,40 +83,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
                 [](D d, hn::Vec<D> v) HWY_ATTR { return Gelu(d, v); });
 }
 
-// out[i] = BF(mul[i] * Gelu(gelu_in[i]))
-static HWY_NOINLINE HWY_MAYBE_UNUSED void GeluMulToBF16(
-    const float* HWY_RESTRICT gelu_in, const float* HWY_RESTRICT mul,
-    hwy::bfloat16_t* HWY_RESTRICT out, size_t size) {
-  namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  const hn::Repartition<hwy::bfloat16_t, decltype(df)> dbf;
-  const size_t NF = hn::Lanes(df);
-  using VF = hn::Vec<decltype(df)>;
-
-  size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      const VF mul0 = hn::LoadU(df, mul + i);
-      const VF mul1 = hn::LoadU(df, mul + i + NF);
-      const VF g0 = hn::Mul(mul0, Gelu(df, hn::LoadU(df, gelu_in + i)));
-      const VF g1 = hn::Mul(mul1, Gelu(df, hn::LoadU(df, gelu_in + i + NF)));
-      const hn::Vec<decltype(dbf)> bf = hn::OrderedDemote2To(dbf, g0, g1);
-      hn::StoreU(bf, dbf, out + i);
-    }
-  }
-  if (i != size) {
-    const size_t remaining = size - i;
-    const VF mul0 = hn::LoadN(df, mul + i, remaining);
-    const VF g0 =
-        hn::Mul(mul0, Gelu(df, hn::LoadN(df, gelu_in + i, remaining)));
-    const hn::Half<decltype(dbf)> dbfh;
-    const hn::Vec<decltype(dbfh)> bfh = hn::DemoteTo(dbfh, g0);
-    hn::StoreN(bfh, dbfh, out + i, remaining);
-  }
-}
-
 template <class D, HWY_IF_F32_D(D)>
-static HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
+HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
   using VF = hn::Vec<D>;
   // Chebyshev polynomial coefficients for rational approximation
   const VF c0 = hn::Set(d, 0.00949107017368078f);
@@ -180,173 +148,101 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED float Dot(const float* HWY_RESTRICT a,
   return hn::Dot::Compute<kAssumptions>(d, a, b, size);
 }
 
+namespace detail {
+
 // = Dot(a, a, size), but that is not allowed due to HWY_RESTRICT.
-static HWY_NOINLINE HWY_MAYBE_UNUSED float SquaredL2(
-    const float* HWY_RESTRICT a, size_t size) {
-  PROFILER_ZONE("ops.SquaredL2");
+template <typename VecT>
+float SquaredL2(const VecT* HWY_RESTRICT a, size_t size) {
+  using TraitsV = CompressTraits<VecT>;
+
   const hn::ScalableTag<float> d;
   using V = hn::Vec<decltype(d)>;
   const size_t N = hn::Lanes(d);
   HWY_DASSERT(size >= 2 * N);
   HWY_DASSERT(size % (2 * N) == 0);
 
+  // TODO: use more accurate Dot
   V sum0 = hn::Zero(d);
   V sum1 = hn::Zero(d);
   for (size_t i = 0; i <= size - 2 * N; i += 2 * N) {
-    const V a0 = hn::LoadU(d, a + i);
+    V a0, a1;
+    TraitsV::Decompress2(d, a, i, a0, a1);
     sum0 = hn::MulAdd(a0, a0, sum0);
-    const V a1 = hn::LoadU(d, a + i + N);
     sum1 = hn::MulAdd(a1, a1, sum1);
   }
 
   return hn::ReduceSum(d, hn::Add(sum0, sum1));
 }
 
-// float, float -> float; simple loop.
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
-    const float* HWY_RESTRICT x, const float* HWY_RESTRICT weight,
-    float* HWY_RESTRICT out, size_t size) {
-  PROFILER_ZONE("ops.RMSNormF");
-  constexpr float kEps = 1e-6f;
-  float ss = SquaredL2(x, size);
-  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
-  for (size_t j = 0; j < size; j++) {
-    // Note 1.0f centering here
-    out[j] = (1.0f + weight[j]) * (ss * x[j]);
-  }
+// Shared by RMSNorm and RMSNormInplace.
+template <typename VecT>
+float RMSNormMul(const VecT* HWY_RESTRICT x, size_t size) {
+  const float l2 = SquaredL2(x, size);
+  constexpr float kEps = 1e-6f;  // avoid divide by zero
+  return 1.0f / sqrtf(l2 / StaticCast<float>(size) + kEps);
 }
 
-// x=f, w=bf16 -> out=f
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
-    const float* HWY_RESTRICT x, const hwy::bfloat16_t* HWY_RESTRICT weight,
-    float* HWY_RESTRICT out, size_t size) {
-  PROFILER_ZONE("ops.RMSNormBF16");
+}  // namespace detail
+
+template <typename VecT, typename WeightT, typename OutT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
+                                           const WeightT* HWY_RESTRICT weight,
+                                           OutT* HWY_RESTRICT out,
+                                           const size_t size) {
+  PROFILER_FUNC;
+
+  using TraitsV = CompressTraits<VecT>;
+  using TraitsW = CompressTraits<WeightT>;
+
   namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t NF = hn::Lanes(df);
 
-  constexpr float kEps = 1e-6f;
-  constexpr size_t kUnrollSize = 2;
+  const VF mul = hn::Set(df, detail::RMSNormMul(x, size));
 
-  const hn::ScalableTag<hwy::bfloat16_t> dbf;
-  const hn::Repartition<float, decltype(dbf)> df32;
-  const size_t N32 = hn::Lanes(df32);
-
-  const float ss = SquaredL2(x, size);
-  const auto vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
-
-  HWY_DASSERT(size % (kUnrollSize * MaxLanes(df32)) == 0);
-  for (size_t i = 0; i < size; i += kUnrollSize * N32) {
-    const hn::Vec<decltype(dbf)> w16 = hn::LoadU(dbf, weight + i);
-    const auto w0 = hn::PromoteLowerTo(df32, w16);
-    const auto w1 = hn::PromoteUpperTo(df32, w16);
-    const auto m0 = hn::Mul(vss, hn::LoadU(df32, x + i));
-    const auto m1 = hn::Mul(vss, hn::LoadU(df32, x + i + N32));
-
+  HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
+  for (size_t i = 0; i < size; i += 2 * NF) {
+    VF v0, v1, w0, w1;
+    TraitsV::Decompress2(df, x, i, v0, v1);
+    TraitsW::Decompress2(df, weight, i, w0, w1);
+    const VF m0 = hn::Mul(mul, v0);
+    const VF m1 = hn::Mul(mul, v1);
     // (1+weight) * m = m + weight*m = one FMA.
-    hn::StoreU(hn::MulAdd(m0, w0, m0), df32, out + i);
-    hn::StoreU(hn::MulAdd(m1, w1, m1), df32, out + i + N32);
+    const VF out0 = hn::MulAdd(m0, w0, m0);
+    const VF out1 = hn::MulAdd(m1, w1, m1);
+    detail::Store2(df, out0, out1, out + i);
   }
 }
 
-// float -> float; simple loop.
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
-    const float* HWY_RESTRICT weight, float* HWY_RESTRICT inout, size_t size) {
-  PROFILER_ZONE("ops.RMSNormInplaceF");
-  constexpr float kEps = 1e-6f;
-  float ss = SquaredL2(inout, size);
-  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
-  for (size_t j = 0; j < size; j++) {
-    // Note 1.0f centering here
-    inout[j] = (1.0f + weight[j]) * (ss * inout[j]);
-  }
-}
-
-// w=bf16 -> f
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
-    const hwy::bfloat16_t* HWY_RESTRICT weight, float* HWY_RESTRICT inout,
+// Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
+template <typename VecT, typename WeightT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
+    const WeightT* HWY_RESTRICT weight, VecT* HWY_RESTRICT inout,
     const size_t size) {
-  PROFILER_ZONE("ops.RMSNormInplaceBF");
+  PROFILER_FUNC;
+
+  using TraitsV = CompressTraits<VecT>;
+  using TraitsW = CompressTraits<WeightT>;
+
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<hwy::bfloat16_t> dbf;
-  const hn::Repartition<float, decltype(dbf)> df32;
-  using VF = hn::Vec<decltype(df32)>;
-  const size_t N32 = hn::Lanes(df32);
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t NF = hn::Lanes(df);
 
-  constexpr float kEps = 1e-6f;
-  const float ss = SquaredL2(inout, size);
-  const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
+  const VF mul = hn::Set(df, detail::RMSNormMul(inout, size));
 
-  HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
-  for (size_t i = 0; i < size; i += 2 * N32) {
-    const hn::Vec<decltype(dbf)> w16 = hn::LoadU(dbf, weight + i);
-    const VF w0 = hn::PromoteLowerTo(df32, w16);
-    const VF w1 = hn::PromoteUpperTo(df32, w16);
-    const VF m0 = hn::Mul(vss, hn::LoadU(df32, inout + i));
-    const VF m1 = hn::Mul(vss, hn::LoadU(df32, inout + i + N32));
-    // (1+weight) * m = m + weight*m = one FMA.
-    hn::StoreU(hn::MulAdd(m0, w0, m0), df32, inout + i);
-    hn::StoreU(hn::MulAdd(m1, w1, m1), df32, inout + i + N32);
-  }
-}
-
-// f, f -> bf
-// TODO(janwas): consider generic function with adapter for loading bf16/f32
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
-    const float* HWY_RESTRICT x, const float* HWY_RESTRICT weight,
-    hwy::bfloat16_t* HWY_RESTRICT out, const size_t size) {
-  PROFILER_ZONE("ops.RMSNormF F BF");
-  namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<hwy::bfloat16_t> dbf;
-  const hn::Repartition<float, decltype(dbf)> df32;
-  using VF = hn::Vec<decltype(df32)>;
-  const size_t N32 = hn::Lanes(df32);
-
-  constexpr float kEps = 1e-6f;
-  const float ss = SquaredL2(x, size);
-  const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
-
-  HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
-  for (size_t i = 0; i < size; i += 2 * N32) {
-    const VF w0 = hn::LoadU(df32, weight + i);
-    const VF w1 = hn::LoadU(df32, weight + i + N32);
-    const VF m0 = hn::Mul(vss, hn::LoadU(df32, x + i));
-    const VF m1 = hn::Mul(vss, hn::LoadU(df32, x + i + N32));
+  HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
+  for (size_t i = 0; i < size; i += 2 * NF) {
+    VF v0, v1, w0, w1;
+    TraitsV::Decompress2(df, inout, i, v0, v1);
+    TraitsW::Decompress2(df, weight, i, w0, w1);
+    const VF m0 = hn::Mul(mul, hn::LoadU(df, inout + i));
+    const VF m1 = hn::Mul(mul, hn::LoadU(df, inout + i + NF));
     // (1+weight) * m = m + weight*m = one FMA.
     const VF out0 = hn::MulAdd(m0, w0, m0);
     const VF out1 = hn::MulAdd(m1, w1, m1);
-    hn::StoreU(hn::OrderedDemote2To(dbf, out0, out1), dbf, out + i);
-  }
-}
-
-// x=f, w=bf16 -> bf16 to enable W16A16 MatVec.
-static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
-    const float* HWY_RESTRICT x, const hwy::bfloat16_t* HWY_RESTRICT weight,
-    hwy::bfloat16_t* HWY_RESTRICT out, const size_t size) {
-  PROFILER_ZONE("ops.RMSNormF BF BF");
-  namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<hwy::bfloat16_t> dbf;
-  const hn::Repartition<float, decltype(dbf)> df32;
-  using VF = hn::Vec<decltype(df32)>;
-  const size_t N32 = hn::Lanes(df32);
-
-  constexpr float kEps = 1e-6f;
-  const float ss = SquaredL2(x, size);
-  const VF vss =
-      hn::Set(df32, 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps));
-
-  HWY_DASSERT(size % (2 * MaxLanes(df32)) == 0);
-  for (size_t i = 0; i < size; i += 2 * N32) {
-    const hn::Vec<decltype(dbf)> w16 = hn::LoadU(dbf, weight + i);
-    const VF w0 = hn::PromoteLowerTo(df32, w16);
-    const VF w1 = hn::PromoteUpperTo(df32, w16);
-    const VF m0 = hn::Mul(vss, hn::LoadU(df32, x + i));
-    const VF m1 = hn::Mul(vss, hn::LoadU(df32, x + i + N32));
-    // (1+weight) * m = m + weight*m = one FMA.
-    const VF out0 = hn::MulAdd(m0, w0, m0);
-    const VF out1 = hn::MulAdd(m1, w1, m1);
-    hn::StoreU(hn::OrderedDemote2To(dbf, out0, out1), dbf, out + i);
+    detail::Store2(df, out0, out1, inout + i);
   }
 }
 
@@ -410,27 +306,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
   }
 }
 
-// TODO(janwas): vectorize
 // `inv_timescale[dim_qkv / 2]` is precomputed in Activations::Allocate.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
-    const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, int pos,
-    float* HWY_RESTRICT x_out) {
-  PROFILER_FUNC;
-  HWY_DASSERT(dim_qkv % 2 == 0);
-  const size_t half_dim_qkv = dim_qkv / 2;
-  for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
-    const float theta = StaticCast<float>(pos) * inv_timescale[dim];
-    const float cos_val = cosf(theta);
-    const float sin_val = sinf(theta);
-    const float x0 = x[dim];
-    const float x1 = x[dim + half_dim_qkv];
-    x_out[dim] = mul * (x0 * cos_val - x1 * sin_val);
-    x_out[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
-  }
-}
-
-static HWY_NOINLINE HWY_MAYBE_UNUSED void VectorizedRopeAndMulBy(
     const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, int pos,
     float* HWY_RESTRICT x_out) {
@@ -685,7 +562,7 @@ SampleArgmax(const float* probabilities, size_t vocab_size) {
 }
 
 template <size_t k>
-static HWY_NOINLINE HWY_MAYBE_UNUSED std::discrete_distribution<int>
+HWY_NOINLINE HWY_MAYBE_UNUSED std::discrete_distribution<int>
 create_distribution(std::array<float, k>& top_k, float temperature) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -702,7 +579,7 @@ create_distribution(std::array<float, k>& top_k, float temperature) {
 }
 
 template <size_t k, typename TAcceptToken>
-static HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
+HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
     const float* HWY_RESTRICT probabilities, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
   static_assert(k != 0, "");

@@ -26,11 +26,11 @@
 
 #include <set>
 
-#include "compression/test_util.h"
+#include "compression/distortion.h"
+#include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/timer.h"
-
 // clang-format off
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "compression/sfp_test.cc"  // NOLINT

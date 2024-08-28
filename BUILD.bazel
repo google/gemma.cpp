@@ -29,6 +29,16 @@ cc_library(
 )
 
 cc_library(
+    name = "test_util",
+    hdrs = ["util/test_util.h"],
+    deps = [
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:stats",
+    ],
+)
+
+cc_library(
     name = "threading",
     hdrs = ["util/threading.h"],
     deps = [
@@ -101,7 +111,9 @@ cc_test(
         ":common",
         ":gemma_lib",
         ":ops",
+        ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",  #buildcleaner: keep

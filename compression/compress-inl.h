@@ -51,6 +51,25 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+namespace detail {
+
+// Adapters to store two f32 vectors to f32 or bf16; avoids duplicating
+// RMSNorm and RMSNormInplace for the two output types.
+template <class DF, HWY_IF_F32_D(DF)>
+void Store2(DF df, hn::Vec<DF> v0, hn::Vec<DF> v1, float* HWY_RESTRICT out) {
+  const size_t NF = hn::Lanes(df);
+  hn::StoreU(v0, df, out);
+  hn::StoreU(v1, df, out + NF);
+}
+
+template <class DF, HWY_IF_F32_D(DF)>
+void Store2(DF df, hn::Vec<DF> v0, hn::Vec<DF> v1, BF16* HWY_RESTRICT out) {
+  const hn::Repartition<BF16, decltype(df)> dbf;
+  hn::StoreU(hn::OrderedDemote2To(dbf, v0, v1), dbf, out);
+}
+
+}  // namespace detail
+
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
 struct CompressTraits {};

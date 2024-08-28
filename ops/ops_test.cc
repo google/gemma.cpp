@@ -27,8 +27,15 @@
 #include <random>
 #include <vector>
 
+#include "compression/compress.h"  // BF16
+#include "gemma/activations.h"
+#include "gemma/common.h"
+#include "gemma/configs.h"
+#include "util/allocator.h"
+#include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/tests/hwy_gtest.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -36,14 +43,9 @@
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
-#include "hwy/tests/test_util-inl.h"
 // After highway.h
-#include "gemma/activations.h"
-#include "gemma/common.h"
-#include "gemma/configs.h"
 #include "ops/ops-inl.h"
-#include "util/allocator.h"
-#include "hwy/tests/hwy_gtest.h"
+#include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -366,6 +368,23 @@ void TestSigmoid() {
   }
 }
 
+static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
+    const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, int pos,
+    float* HWY_RESTRICT x_out) {
+  HWY_DASSERT(dim_qkv % 2 == 0);
+  const size_t half_dim_qkv = dim_qkv / 2;
+  for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
+    const float theta = StaticCast<float>(pos) * inv_timescale[dim];
+    const float cos_val = cosf(theta);
+    const float sin_val = sinf(theta);
+    const float x0 = x[dim];
+    const float x1 = x[dim + half_dim_qkv];
+    x_out[dim] = mul * (x0 * cos_val - x1 * sin_val);
+    x_out[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
+  }
+}
+
 void TestRopeAndMulBy() {
   using Config = ConfigGemma2_9B<float>;
   int dim_qkv = Config::kQKVDim;
@@ -392,10 +411,10 @@ void TestRopeAndMulBy() {
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings
+    ScalarRopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                       qexpected.data());
     RopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                 qexpected.data());
-    VectorizedRopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                           qactual.data());
+                 qactual.data());
 
     for (int i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qactual[i], qexpected[i], 1e-4)
@@ -403,16 +422,80 @@ void TestRopeAndMulBy() {
     }
 
     // Rope'd K embeddings
+    ScalarRopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
+                       kexpected.data());
     RopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                 kexpected.data());
-    VectorizedRopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                           kactual.data());
+                 kactual.data());
 
     for (int i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(kactual[i], kexpected[i], 1e-4)
           << "kIndex:" << i << "kInput:" << kactual[i];
     }
   }
+}
+
+template <typename T>
+HWY_NOINLINE float ScalarSquaredL2(const T* HWY_RESTRICT a, size_t size) {
+  double sum = 0.0;
+  for (size_t i = 0; i < size; ++i) {
+    const float f = hwy::ConvertScalarTo<float>(a[i]);
+    sum += f * f;
+  }
+  return static_cast<float>(sum);
+}
+
+// Supports bf16 and f32 inputs/outputs, which can be in-place.
+template <typename VecT, typename WeightT, typename OutT>
+HWY_NOINLINE void ScalarRMSNorm(const VecT* x,
+                                const WeightT* HWY_RESTRICT weight, OutT* out,
+                                size_t size) {
+  constexpr float kEps = 1e-6f;
+  float ss = ScalarSquaredL2(x, size);
+  ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
+  for (size_t j = 0; j < size; j++) {
+    const float v = hwy::ConvertScalarTo<float>(x[j]);
+    const float w = hwy::ConvertScalarTo<float>(weight[j]);
+    // Note 1.0f centering here
+    out[j] = hwy::ConvertScalarTo<OutT>((1.0f + w) * (ss * v));
+  }
+}
+
+template <typename VecT, typename WeightT, typename OutT>
+void TestRMSNorm(hwy::RandomState& rng) {
+  constexpr size_t kSize = 128;
+  VecT vec[kSize];
+  WeightT weight[kSize];
+  OutT expected[kSize];
+  OutT actual[kSize];
+
+  for (size_t i = 0; i < kSize; ++i) {
+    vec[i] = hwy::ConvertScalarTo<VecT>(RandomGaussian(rng));
+    weight[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
+  }
+
+  ScalarRMSNorm(vec, weight, expected, kSize);
+  RMSNorm(vec, weight, actual, kSize);
+
+  for (size_t i = 0; i < kSize; i++) {
+    const float e = hwy::ConvertScalarTo<float>(expected[i]);
+    const float a = hwy::ConvertScalarTo<float>(actual[i]);
+    if (!IsNear(e, a, 1e-5f)) {
+      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName(VecT()),
+                TypeName(WeightT()), TypeName(OutT()), i, e, a);
+    }
+  }
+}
+
+void TestAllRMSNorm() {
+  hwy::RandomState rng;
+  TestRMSNorm<float, float, float>(rng);
+  TestRMSNorm<float, float, BF16>(rng);
+  TestRMSNorm<float, BF16, float>(rng);
+  TestRMSNorm<float, BF16, BF16>(rng);
+  TestRMSNorm<BF16, float, float>(rng);
+  TestRMSNorm<BF16, float, BF16>(rng);
+  TestRMSNorm<BF16, BF16, float>(rng);
+  TestRMSNorm<BF16, BF16, BF16>(rng);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
@@ -432,6 +515,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

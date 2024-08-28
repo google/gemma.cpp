@@ -136,9 +136,8 @@ static HWY_NOINLINE void RMSNormVJP(
     hwy::ThreadPool& pool) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t offset = pos * model_dim;
-    constexpr float eps = 1e-6f;
-    float ss = SquaredL2(x + offset, model_dim);
-    ss = 1.0f / sqrtf(ss / StaticCast<float>(model_dim) + eps);
+    const float ss = detail::RMSNormMul(x + offset, model_dim);
+
     for (size_t i = 0; i < model_dim; ++i) {
       grad_w[i] += v[offset + i] * x[offset + i] * ss;
     }

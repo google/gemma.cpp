@@ -13,8 +13,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_TEST_UTIL_H_
-#define THIRD_PARTY_GEMMA_CPP_COMPRESSION_TEST_UTIL_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_UTIL_TEST_UTIL_H_
+#define THIRD_PARTY_GEMMA_CPP_UTIL_TEST_UTIL_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +24,6 @@
 #include "hwy/base.h"
 
 // IWYU pragma: begin_exports
-#include "compression/distortion.h"
 #include "hwy/stats.h"
 #include "hwy/tests/test_util.h"  // RandomState
 // IWYU pragma: end_exports
@@ -73,4 +72,4 @@ HWY_INLINE void VerifyGaussian(hwy::Stats& stats) {
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_TEST_UTIL_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_UTIL_TEST_UTIL_H_

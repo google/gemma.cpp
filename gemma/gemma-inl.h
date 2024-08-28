@@ -228,7 +228,7 @@ class GemmaAttention {
       Rope(qk_out, kQKVDim / 2, inv_timescale, pos);
       MulByConst(mul, qk_out, kQKVDim);
     } else {
-      VectorizedRopeAndMulBy(mul, qk, kQKVDim, inv_timescale, pos, qk_out);
+      RopeAndMulBy(mul, qk, kQKVDim, inv_timescale, pos, qk_out);
     }
   }
 
