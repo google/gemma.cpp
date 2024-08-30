@@ -49,3 +49,12 @@ Should print a greeting to the terminal:
 ```
 "Hello, world! It's a pleasure to greet you all. May your day be filled with joy, peace, and all the things that make your heart soar.
 ```
+
+For a demonstration of constrained decoding, add the `--reject` flag followed by
+a list of token IDs (note that it must be the last flag, since it consumes every
+subsequent argument). For example, to reject variations of the word "greeting",
+run:
+
+```sh
+./hello_world [...] --reject 32338 42360 78107 106837 132832 143859 154230 190205
+```

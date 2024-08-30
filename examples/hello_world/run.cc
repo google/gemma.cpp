@@ -15,8 +15,11 @@
 
 #include <stddef.h>
 
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -40,6 +43,15 @@ int main(int argc, char** argv) {
   } else if (const char* error = loader.Validate()) {
     loader.Help();
     HWY_ABORT("\nInvalid args: %s", error);
+  }
+
+  // Demonstrate constrained decoding by never outputting certain tokens.
+  std::set<int> reject_tokens;
+  for (int arg = 0; arg < argc; ++arg) {
+    // Find a --reject flag and consume everything after it.
+    if (strcmp(argv[arg], "--reject") == 0) {
+      while (++arg < argc) reject_tokens.insert(atoi(argv[arg]));
+    }
   }
 
   // Instantiate model and KV Cache
@@ -81,6 +93,10 @@ int main(int argc, char** argv) {
       .verbosity = 0,
       .gen = &gen,
       .stream_token = stream_token,
+      .accept_token =
+          [&](int token, float /* prob */) {
+            return !reject_tokens.contains(token);
+          },
   };
   model.Generate(runtime_config, tokens, 0, kv_cache, timing_info);
 }
