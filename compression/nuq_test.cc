@@ -201,7 +201,7 @@ struct TestNormal {
     float centers[kClusters];
     uint16_t indices[kGroupSize];
     double elapsed = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < 100; ++rep) {
+    for (size_t rep = 0; rep < hn::AdjustedReps(40); ++rep) {
       const double t0 = hwy::platform::Now();
       const size_t unused_clusters = NuqClustering::ClusterExactL2(
           df, in.get(), kGroupSize, buf, centers, indices);
@@ -278,6 +278,35 @@ void TestAllOffsetBF16() {
   test(hwy::bfloat16_t());
 }
 
+struct TestNibble {
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    using V = hn::Vec<decltype(d)>;
+    const size_t N = hn::Lanes(d);
+    const size_t num = 4 * N;
+    auto bytes = hwy::AllocateAligned<uint8_t>(num / 2);
+    HWY_ASSERT(bytes);
+    const V v0 = hn::And(hn::Iota(d, 0), hn::Set(d, 15));
+    const V v1 = hn::Set(d, 1);
+    const V v2 = hn::OddEven(v1, hn::Zero(d));
+    const V v3 = hn::Reverse(d, v0);
+    NibbleCodec::OrderedPackU16(d, v0, v1, v2, v3, bytes.get());
+    const V out0 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 0 * N / 2);
+    const V out1 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 1 * N / 2);
+    const V out2 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 2 * N / 2);
+    const V out3 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 3 * N / 2);
+    HWY_ASSERT_VEC_EQ(d, v0, out0);
+    HWY_ASSERT_VEC_EQ(d, v1, out1);
+    HWY_ASSERT_VEC_EQ(d, v2, out2);
+    HWY_ASSERT_VEC_EQ(d, v3, out3);
+  }
+};
+
+void TestAllNibble() {
+  const hn::ForGEVectors<128, TestNibble> test;
+  test(uint16_t());
+}
+
 struct TestStream {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
@@ -298,7 +327,7 @@ struct TestStream {
 
     ClusterBuf buf;
     double elapsed = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < 100; ++rep) {
+    for (size_t rep = 0; rep < hn::AdjustedReps(40); ++rep) {
       const double t0 = hwy::platform::Now();
       const size_t unused_clusters =
           NuqCodec::Enc(df, in.get(), num, buf, num, nuq.get(), 0);
@@ -310,7 +339,7 @@ struct TestStream {
             num * sizeof(float) * 1E-6 / elapsed);
 
     elapsed = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < 100; ++rep) {
+    for (size_t rep = 0; rep < hn::AdjustedReps(40); ++rep) {
       const double t0 = hwy::platform::Now();
       NuqCodec::Dec(d, num, nuq.get(), 0, out.get(), num);
       const double t1 = hwy::platform::Now();
@@ -379,7 +408,7 @@ struct TestDot {
     // Compute dot product without decompression.
     float actual = 0.0f;
     double elapsed = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < 20; ++rep) {
+    for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
       hn::Vec<decltype(df)> sum0 = hn::Zero(df);
       hn::Vec<decltype(df)> sum1 = hn::Zero(df);
       hn::Vec<decltype(df)> sum2 = hn::Zero(df);
@@ -475,6 +504,7 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestAllRamp);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNormal);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllOffsetF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllOffsetBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotF32);

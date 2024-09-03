@@ -394,7 +394,7 @@ class NibbleCodec {
     const V16 u8_2 = combine_u16_pair_to_8(in2);
     const V16 u8_3 = combine_u16_pair_to_8(in3);
     V8 packed;
-    if (HWY_TARGET <= HWY_AVX3_DL || !HWY_ARCH_X86) {
+    if constexpr (HWY_TARGET <= HWY_AVX3_DL || !HWY_ARCH_X86) {
       // 8-bit ConcatEven is efficient. Let digits denote eight u8 lanes
       // of u8_1/0: ?d?3 ?c?2 / ?b?1 ?a?0. 8-bit ConcatEven = d3c2 b1a0, and
       // again with the second x2_1 gives 7654 3210.
@@ -439,13 +439,13 @@ class NibbleCodec {
     // it may trigger asan errors from overrunning the end. We thus special-case
     // vector lengths, handling any non-constexpr, and constexpr <= 512 bit.
     V8 rep4;
-    if (HWY_HAVE_SCALABLE) {
+    if constexpr (HWY_HAVE_SCALABLE) {
       // Non constexpr length: 4 per whole block equals size/4.
       const size_t num_bytes = HWY_MAX(1, hn::Lanes(d8) / 4);
       const V8 bytes = hn::LoadN(d8, packed, num_bytes);
       // Replicate bytes 4x: lowest 4 = 0, next 4 = 1 etc.
-      const V8 idx = hn::And(hn::Iota(d8, 0), hn::Set(d8, 0xFCu));
-      rep4 = hn::TableLookupBytes(bytes, idx);
+      const V8 idx = hn::ShiftRight<2>(hn::Iota(d8, 0));
+      rep4 = hn::TableLookupLanes(bytes, hn::IndicesFromVec(d8, idx));
     } else if (hn::MaxLanes(d16) <= 8) {  // <= 128-bit
       const V8 bytes = hn::ResizeBitCast(d8, hn::LoadU(d_load, packed));
       alignas(16) static constexpr uint8_t kRep4[16] = {
