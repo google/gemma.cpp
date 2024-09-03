@@ -104,7 +104,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         "Do not include any justifications or explanations. Reply only with a "
         "letter.";
     const std::vector<int> prompt =
-        WrapAndTokenize(env.GetModel()->Tokenizer(), env.Info(),
+        WrapAndTokenize(env.GetModel()->Tokenizer(), env.GetModel()->Info(),
                         /*pos=*/0, prompt_string);
     const size_t prompt_size = prompt.size();
 

@@ -83,7 +83,7 @@ class GemmaTest : public ::testing::Test {
         prompt_spans.push_back(PromptTokens(prompt.data(), prompt.size()));
       }
       QueriesPromptTokens prompts(prompt_spans.data(), prompt_spans.size());
-      for (auto [response, n] : s_env->BatchQueryModel2(prompts)) {
+      for (auto [response, n] : s_env->BatchQueryModel(prompts)) {
         replies.push_back(response);
       }
     }
@@ -116,7 +116,7 @@ class GemmaTest : public ::testing::Test {
 };
 
 TEST_F(GemmaTest, GeographyBatched) {
-  s_env->MutableInferenceArgs().decode_qbatch_size = 3;
+  s_env->MutableConfig().decode_qbatch_size = 3;
   // 6 are enough to test batching and the loop.
   static const char* kQA[][2] = {
       {"What is the capital of Australia?", "Canberra"},

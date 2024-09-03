@@ -53,6 +53,7 @@ static inline const char* CompiledConfig() {
 class AppArgs : public ArgsBase<AppArgs> {
  public:
   AppArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  AppArgs() { Init(); };
 
   int verbosity;
 
@@ -88,6 +89,13 @@ class AppArgs : public ArgsBase<AppArgs> {
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  LoaderArgs(const std::string& tokenizer_path, const std::string& weights_path,
+             const std::string& model) {
+    Init();  // Init sets to defaults, so assignments must come after Init().
+    tokenizer.path = tokenizer_path;
+    weights.path = weights_path;
+    model_type_str = model;
+  };
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
@@ -168,6 +176,7 @@ static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  InferenceArgs() { Init(); };
 
   size_t max_tokens;
   size_t max_generated_tokens;

@@ -58,32 +58,27 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
                    const AppArgs& app)
-    : loader_(loader),
-      inference_args_(inference),
-      app_(app),
-      pools_(app_.max_clusters, app_.num_threads) {
-  AbortIfInvalidArgs(inference_args_);
-
-  if (const char* err = loader_.Validate()) {
-    loader_.Help();
+    : pools_(app.max_clusters, app.num_threads, app.pin) {
+  InferenceArgs mutable_inference = inference;
+  AbortIfInvalidArgs(mutable_inference);
+  LoaderArgs mutable_loader = loader;
+  if (const char* err = mutable_loader.Validate()) {
+    mutable_loader.Help();
     fprintf(stderr, "Skipping model load because: %s\n", err);
   } else {
     fprintf(stderr, "Loading model...\n");
-    model_ = AllocateGemma(loader_, pools_);
-
+    model_ = AllocateGemma(mutable_loader, pools_);
     // Only allocate one for starters because GenerateBatch might not be called.
     kv_caches_.resize(1);
     kv_caches_[0] =
         KVCache::Create(model_->Info().model, inference.prefill_tbatch_size);
   }
-
-  InitGenerator(inference_args_, gen_);
-
+  InitGenerator(inference, gen_);
   runtime_config_ = {
-      .max_tokens = inference_args_.max_tokens,
-      .max_generated_tokens = inference_args_.max_generated_tokens,
-      .temperature = inference_args_.temperature,
-      .verbosity = app_.verbosity,
+      .max_tokens = inference.max_tokens,
+      .max_generated_tokens = inference.max_generated_tokens,
+      .temperature = inference.temperature,
+      .verbosity = app.verbosity,
       .gen = &gen_,
   };
 }
@@ -115,20 +110,30 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
     res += StringFromTokens(std::vector<int>{token});
     return true;
   };
-  if (app_.verbosity >= 2) {
-    std::cout << "Max tokens: " << inference_args_.max_tokens
+  if (runtime_config_.verbosity >= 2) {
+    std::cout << "Max tokens: " << runtime_config_.max_tokens
               << "\tmax generated tokens: "
-              << inference_args_.max_generated_tokens
-              << "\ttemperature: " << inference_args_.temperature << "\n";
+              << runtime_config_.max_generated_tokens
+              << "\ttemperature: " << runtime_config_.temperature << "\n";
   }
-  gcpp::TimingInfo timing_info { .verbosity = app_.verbosity };
+  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
   runtime_config_.batch_stream_token = batch_stream_token;
   model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
                    timing_info);
   return {res, total_tokens};
 }
 
-std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
+void GemmaEnv::QueryModel(
+    const std::vector<int>& tokens, const StreamFunc& stream_token) {
+  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
+  const StreamFunc previous_stream_token = runtime_config_.stream_token;
+  runtime_config_.stream_token = stream_token;
+  model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
+                   timing_info);
+  runtime_config_.stream_token = previous_stream_token;
+}
+
+std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
     const QueriesPromptTokens& queries_prompt) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(num_queries != 0);
@@ -144,12 +149,12 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
     res[query_index].second += 1;
     return true;
   };
-  if (app_.verbosity >= 2) {
+  if (runtime_config_.verbosity >= 2) {
     fprintf(stderr,
             "Max tok: %zu max gen: %zu temp: %f tbatch: %zu qbatch: %zu\n",
-            inference_args_.max_tokens, inference_args_.max_generated_tokens,
-            inference_args_.temperature, inference_args_.prefill_tbatch_size,
-            inference_args_.decode_qbatch_size);
+            runtime_config_.max_tokens, runtime_config_.max_generated_tokens,
+            runtime_config_.temperature, runtime_config_.prefill_tbatch_size,
+            runtime_config_.decode_qbatch_size);
   }
 
   // Ensure we have one KVCache per query.
@@ -159,13 +164,12 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
   for (size_t i = 1; i < num_queries; ++i) {
     if (kv_caches_[i].seq_len == 0) {
       kv_caches_[i] = KVCache::Create(model_->Info().model,
-                                      inference_args_.prefill_tbatch_size);
+                                      runtime_config_.prefill_tbatch_size);
     }
   }
 
-  gcpp::TimingInfo timing_info = {.verbosity = app_.verbosity};
+  gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
-  inference_args_.CopyTo(runtime_config_);
   std::vector<size_t> queries_pos(num_queries, 0);
   model_->GenerateBatch(runtime_config_, queries_prompt,
                         QueriesPos(queries_pos.data(), num_queries),
@@ -174,8 +178,9 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel2(
 }
 
 std::pair<std::string, size_t> GemmaEnv::QueryModel(std::string& input) {
-  const std::vector<int> prompt = WrapAndTokenize(model_->Tokenizer(), Info(),
-                                                  /*pos=*/0, input);
+  const std::vector<int> prompt =
+      WrapAndTokenize(model_->Tokenizer(), model_->Info(),
+                      /*pos=*/0, input);
   return QueryModel(prompt);
 }
 
@@ -194,7 +199,7 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
     prompt_vector.push_back(PromptTokens(prompt.data(), prompt.size()));
   }
   QueriesPromptTokens prompt_span(prompt_vector.data(), prompt_vector.size());
-  return BatchQueryModel2(prompt_span);
+  return BatchQueryModel(prompt_span);
 }
 
 float GemmaEnv::CrossEntropy(const std::string& input) {

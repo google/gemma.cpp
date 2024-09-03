@@ -129,7 +129,7 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
     KVCache kv_cache = KVCache::Create(
-        env.Info().model, env.MutableInferenceArgs().prefill_tbatch_size);
+        env.GetModel()->Info().model, env.MutableConfig().prefill_tbatch_size);
     float entropy = ComputeCrossEntropy(
         *env.GetModel(), num_tokens, prompt_slice, kv_cache, env.Verbosity());
     total_entropy += entropy;
@@ -186,7 +186,9 @@ int main(int argc, char** argv) {
   if (!benchmark_args.goldens.Empty()) {
     const std::string golden_path =
         benchmark_args.goldens.path + "/" +
-        gcpp::ModelString(env.Info().model, env.Info().training) + ".txt";
+        gcpp::ModelString(env.GetModel()->Info().model,
+                          env.GetModel()->Info().training) +
+        ".txt";
     return BenchmarkGoldens(env, golden_path);
   } else if (!benchmark_args.summarize_text.Empty()) {
     return BenchmarkSummary(env, benchmark_args.summarize_text);

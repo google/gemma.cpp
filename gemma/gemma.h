@@ -27,6 +27,7 @@
 #include "gemma/common.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
+#include "util/allocator.h"
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
@@ -74,7 +75,10 @@ using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
 using ActivationsObserverFunc =
     std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
 
+// RuntimeConfig holds configuration for a single generation run.
 struct RuntimeConfig {
+  // If not empty, batch_stream_token is called for each token in the batch,
+  // instead of stream_token.
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
     if (batch_stream_token) {
       return batch_stream_token(query_idx, pos, token, prob);
@@ -82,6 +86,7 @@ struct RuntimeConfig {
     return stream_token(token, prob);
   }
 
+  // Limits on the number of tokens generated.
   size_t max_tokens;
   size_t max_generated_tokens;
 
@@ -91,15 +96,24 @@ struct RuntimeConfig {
   // Max queries per batch (one token from each) during decode.
   size_t decode_qbatch_size = 16;
 
-  float temperature;
-  int verbosity;
-  std::mt19937* gen;
+  float temperature;  // Temperature for sampling.
+  int verbosity;  // Controls verbosity of printed messages.
+  std::mt19937* gen;  // Random number generator used for sampling.
+
+  // Functions operating on the generated tokens.
   StreamFunc stream_token;
   BatchStreamFunc batch_stream_token;
   AcceptFunc accept_token;         // if empty, accepts all tokens.
   SampleFunc sample_func;          // if empty, uses SampleTopK.
+
+  // Observer callbacks for intermediate data.
   LayersOutputFunc layers_output;  // if not empty, called after each layer.
-  ActivationsObserverFunc activations_observer;  // if set, called per-layer
+  ActivationsObserverFunc activations_observer;  // if set, called per-layer.
+
+  // Whether to use thread spinning to reduce barrier synchronization latency.
+  bool use_spinning = true;
+
+  // End-of-sequence token.
   int eos_id = EOS_ID;
 };
 

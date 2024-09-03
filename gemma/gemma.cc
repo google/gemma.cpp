@@ -98,26 +98,26 @@ struct GenerateBatchT {
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
                      TimingInfo& timing_info) {
-  pools_.StartSpinning();
+  if (runtime_config.use_spinning) pools_.StartSpinning();
 
   CallForModelAndWeight<GenerateSingleT>(info_.model, info_.weight, weights_u8_,
                                          runtime_config, prompt, pos, kv_cache,
                                          pools_, timing_info);
 
-  pools_.StopSpinning();
+  if (runtime_config.use_spinning) pools_.StopSpinning();
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
                           const QueriesPromptTokens& queries_prompt,
                           const QueriesPos& queries_pos,
                           const KVCaches& kv_caches, TimingInfo& timing_info) {
-  pools_.StartSpinning();
+  if (runtime_config.use_spinning) pools_.StartSpinning();
 
   CallForModelAndWeight<GenerateBatchT>(
       info_.model, info_.weight, weights_u8_, runtime_config, queries_prompt,
       queries_pos, kv_caches, pools_, timing_info);
 
-  pools_.StopSpinning();
+  if (runtime_config.use_spinning) pools_.StopSpinning();
 }
 
 template <typename TConfig>

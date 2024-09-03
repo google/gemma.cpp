@@ -41,10 +41,10 @@ class GemmaEnv {
   GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
            const AppArgs& app);
 
-  size_t MaxTokens() const { return inference_args_.max_tokens; }
+  size_t MaxTokens() const { return runtime_config_.max_tokens; }
   // Sets the maximum number of output tokens to generate.
-  void SetMaxGeneratedTokens(size_t max_tokens) {
-    inference_args_.max_generated_tokens = max_tokens;
+  void SetMaxGeneratedTokens(size_t max_generated_tokens) {
+    runtime_config_.max_generated_tokens = max_generated_tokens;
   }
 
   std::vector<int> Tokenize(const std::string& input) const {
@@ -68,12 +68,16 @@ class GemmaEnv {
   // Runs inference on the given input and returns the top-1 result string and
   // the number of tokens that were generated.
   std::pair<std::string, size_t> QueryModel(const std::vector<int>& tokens);
-  std::vector<std::pair<std::string, size_t>> BatchQueryModel2(
+  std::vector<std::pair<std::string, size_t>> BatchQueryModel(
       const QueriesPromptTokens& queries_prompt);
   // Adds turn structure to input, tokenizes and calls the above overload.
   std::pair<std::string, size_t> QueryModel(std::string& input);
   std::vector<std::pair<std::string, size_t>> BatchQueryModel(
       const std::vector<std::string>& inputs);
+
+  // Runs inference on the given input and calls the callback for each token.
+  void QueryModel(const std::vector<int>& tokens,
+                  const StreamFunc& stream_token);
 
   // Runs inference on the given input and returns the cross entropy, a measure
   // of how well the model predicts the correct output. It is the average
@@ -83,20 +87,12 @@ class GemmaEnv {
   // Returns nullptr if the model failed to load.
   Gemma* GetModel() const { return model_.get(); }
 
-  int Verbosity() const { return app_.verbosity; }
+  int Verbosity() const { return runtime_config_.verbosity; }
   RuntimeConfig& MutableConfig() { return runtime_config_; }
-  const ModelInfo& Info() const { return loader_.Info(); }
-  InferenceArgs& MutableInferenceArgs() { return inference_args_; }
   std::mt19937& MutableGen() { return gen_; }
   KVCache& MutableKVCache() { return kv_caches_[0]; }
 
  private:
-  // Arguments to the model loader: file locations, etc.
-  LoaderArgs loader_;
-  // Arguments to the inference function: max tokens, etc.
-  InferenceArgs inference_args_;
-  // Controls overall behavior of the app.
-  AppArgs app_;
   // Thread pool for running inference.
   PerClusterPools pools_;
   // Random number generator.
@@ -105,6 +101,7 @@ class GemmaEnv {
   std::unique_ptr<Gemma> model_;
   // KV caches, same number as query batch.
   std::vector<KVCache> kv_caches_;
+  // Runtime config for inference.
   RuntimeConfig runtime_config_;
 };
 
