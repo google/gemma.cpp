@@ -66,8 +66,8 @@ struct TestFlat {
     ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
-    const size_t unused_clusters =
-        NuqClustering::ClusterExactL2(df, in.get(), buf, centers, indices);
+    const size_t unused_clusters = NuqClustering::ClusterExactL2(
+        df, in.get(), kGroupSize, buf, centers, indices);
     HWY_ASSERT(unused_clusters == kClusters - 1);
 
     for (size_t i = 0; i < unused_clusters; ++i) {
@@ -108,8 +108,8 @@ struct TestPlateaus {
     ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
-    const size_t unused_clusters =
-        NuqClustering::ClusterExactL2(df, in.get(), buf, centers, indices);
+    const size_t unused_clusters = NuqClustering::ClusterExactL2(
+        df, in.get(), kGroupSize, buf, centers, indices);
     HWY_ASSERT(unused_clusters == 0);
 
     DistortionStats stats;
@@ -155,8 +155,8 @@ struct TestRamp {
     ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
-    const size_t unused_clusters =
-        NuqClustering::ClusterExactL2(df, in.get(), buf, centers, indices);
+    const size_t unused_clusters = NuqClustering::ClusterExactL2(
+        df, in.get(), kGroupSize, buf, centers, indices);
     HWY_ASSERT(unused_clusters == 0);
 
     DistortionStats stats;
@@ -203,8 +203,8 @@ struct TestNormal {
     double elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < 100; ++rep) {
       const double t0 = hwy::platform::Now();
-      const size_t unused_clusters =
-          NuqClustering::ClusterExactL2(df, in.get(), buf, centers, indices);
+      const size_t unused_clusters = NuqClustering::ClusterExactL2(
+          df, in.get(), kGroupSize, buf, centers, indices);
       HWY_ASSERT(unused_clusters == 0);
       const double t1 = hwy::platform::Now();
       elapsed = HWY_MIN(elapsed, t1 - t0);
