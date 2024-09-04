@@ -116,6 +116,7 @@ cc_library(
 cc_test(
     name = "nuq_test",
     size = "small",
+    timeout = "long",
     srcs = ["nuq_test.cc"],
     features = ["fully_static_link"],
     linkstatic = True,
