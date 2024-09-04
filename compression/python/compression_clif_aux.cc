@@ -46,7 +46,7 @@ class SbsWriterImpl : public WriterInterface {
   SbsWriterImpl() : pool_(0), compressor_(pool_) {}
 
   void Insert(std::string name, absl::Span<const float> weights) override {
-    const size_t out_size = CompressedArraySize<SfpStream>(weights.size());
+    const size_t out_size = CompressedArrayElements<SfpStream>(weights.size());
     sfp_streams_.push_back(std::vector<SfpStream>(out_size));
     compressor_.Insert<SfpStream>(name.data(), weights.data(), weights.size(),
                                   working_set_, out_size,
@@ -54,7 +54,7 @@ class SbsWriterImpl : public WriterInterface {
   }
 
   void InsertNUQ(std::string name, absl::Span<const float> weights) override {
-    const size_t out_size = CompressedArraySize<NuqStream>(weights.size());
+    const size_t out_size = CompressedArrayElements<NuqStream>(weights.size());
     nuq_streams_.push_back(std::vector<NuqStream>(out_size));
     compressor_.Insert<NuqStream>(name.data(), weights.data(), weights.size(),
                                   working_set_, out_size,
@@ -64,7 +64,7 @@ class SbsWriterImpl : public WriterInterface {
   void InsertBfloat16(std::string name,
                       absl::Span<const float> weights) override {
     const size_t out_size =
-        CompressedArraySize<hwy::bfloat16_t>(weights.size());
+        CompressedArrayElements<hwy::bfloat16_t>(weights.size());
     bf16_streams_.push_back(std::vector<hwy::bfloat16_t>(out_size));
     compressor_.Insert<hwy::bfloat16_t>(name.data(), weights.data(),
                                         weights.size(), working_set_, out_size,

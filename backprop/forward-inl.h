@@ -24,9 +24,9 @@
 #include <vector>
 
 #include "backprop/activations.h"
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
+#include "util/allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -40,9 +40,10 @@
 #define THIRD_PARTY_GEMMA_CPP_FORWARD_TOGGLE
 #endif
 
+#include "hwy/highway.h"
+// After highway.h
 #include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
-#include "hwy/highway.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -110,7 +111,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<(kHeads + 2) * kQKVDim, kModelDim>(
         weights.qkv_einsum_w, 0,
-        activations.pre_att_rms_out.data() + pos * kModelDim, nullptr,
+        activations.pre_att_rms_out.data() + pos * kModelDim,
         activations.qkv.data() + pos * (kHeads + 2) * kQKVDim, pool);
   }
   const size_t num_tasks = kHeads * num_tokens;
@@ -174,7 +175,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
       MatVec<kModelDim, kQKVDim>(
           weights.attn_vec_einsum_w, head * kModelDim * kQKVDim,
           activations.att_out.data() + pos * kHeads * kQKVDim + head * kQKVDim,
-          nullptr, activations.att_post1.data() + pos * kModelDim, pool);
+          activations.att_post1.data() + pos * kModelDim, pool);
       AddFrom(activations.att_post1.data() + pos * kModelDim,
               activations.attention_out.data() + pos * kModelDim, kModelDim);
     }
@@ -192,7 +193,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kFFHiddenDim * 2, kModelDim>(
         weights.gating_einsum_w, 0,
-        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim, nullptr,
+        activations.bf_pre_ffw_rms_out.data() + pos * kModelDim,
         activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -215,7 +216,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
     MatVec<kModelDim, kFFHiddenDim>(
         weights.linear_w, 0,
         activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
-        nullptr, output + pos * kModelDim, pool);
+        output + pos * kModelDim, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     AddFrom(activations.attention_out.data() + pos * kModelDim,
@@ -265,7 +266,7 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec<kVocabSize, kModelDim>(
         weights.embedder_input_embedding, 0,
-        forward.final_norm_output.data() + pos * kModelDim, nullptr,
+        forward.final_norm_output.data() + pos * kModelDim,
         forward.logits.data() + pos * kVocabSize, pool);
   }
 

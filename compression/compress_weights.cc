@@ -21,9 +21,9 @@
 #define HWY_TARGET_INCLUDE \
   "compression/compress_weights.cc"  // NOLINT
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-// Must come after foreach_target.h to avoid redefinition errors.
-#include "compression/compress-inl.h"
 #include "hwy/highway.h"
+// After highway.h
+#include "compression/compress-inl.h"
 
 #ifndef GEMMA_COMPRESS_WEIGHTS_ONCE
 #define GEMMA_COMPRESS_WEIGHTS_ONCE
@@ -38,9 +38,11 @@
 #include <thread>  // NOLINT
 
 #include "compression/io.h"  // Path
+#include "compression/shared.h"
 #include "compression/weights_raw.h"
 #include "gemma/common.h"  // Model
 #include "gemma/weights.h"
+#include "util/allocator.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -57,11 +59,10 @@ float ScaleWeights(float* data, size_t len) {
   for (size_t i = 0; i < len; ++i) {
     maxabs = std::max(maxabs, std::abs(data[i]));
   }
-  const float kMaxRange = 1.875f;
-  if (maxabs <= kMaxRange) {
+  if (maxabs <= kMaxSFP) {
     return 1.0f;
   }
-  const float scale = maxabs / kMaxRange;
+  const float scale = maxabs / kMaxSFP;
   const float inv_scale = 1.0f / scale;
   for (size_t i = 0; i < len; ++i) {
     data[i] *= inv_scale;

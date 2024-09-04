@@ -18,8 +18,6 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
-#include "compression/sfp.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -27,20 +25,21 @@
 #include <set>
 
 #include "compression/distortion.h"
+#include "compression/shared.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/tests/hwy_gtest.h"
 #include "hwy/timer.h"
 // clang-format off
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "compression/sfp_test.cc"  // NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-// Any highway.h must come after foreach_target.h
+#include "hwy/highway.h"
+// After highway.h
 #include "compression/sfp-inl.h"
 #include "ops/dot-inl.h"
-#include "hwy/highway.h"
-#include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();

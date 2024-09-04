@@ -21,7 +21,7 @@
 #include <stdint.h>
 
 #include "compression/nuq.h"
-#include "compression/sfp.h"
+#include "compression/shared.h"
 #include "hwy/base.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_NUQ_INL_H_

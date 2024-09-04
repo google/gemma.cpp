@@ -64,6 +64,7 @@ cc_test(
     srcs = ["distortion_test.cc"],
     deps = [
         ":distortion",
+        ":shared",
         "@googletest//:gtest_main",
         "//:test_util",
         "@hwy//:hwy",
@@ -73,10 +74,18 @@ cc_test(
 )
 
 cc_library(
+    name = "shared",
+    hdrs = ["shared.h"],
+    deps = [
+        "@hwy//:hwy",
+    ],
+)
+
+cc_library(
     name = "sfp",
-    hdrs = ["sfp.h"],
     textual_hdrs = ["sfp-inl.h"],
     deps = [
+        ":shared",
         "@hwy//:hwy",
     ],
 )
@@ -93,6 +102,7 @@ cc_test(
     deps = [
         ":distortion",
         ":sfp",
+        ":shared",
         "@googletest//:gtest_main",
         "//:ops",
         "//:test_util",
@@ -108,6 +118,7 @@ cc_library(
     textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
+        ":shared",
         "@hwy//:hwy",
         "@hwy//hwy/contrib/sort:vqsort",
     ],
@@ -127,6 +138,7 @@ cc_test(
         ":distortion",
         ":nuq",
         ":sfp",
+        ":shared",
         "@googletest//:gtest_main",
         "//:test_util",
         "@hwy//:hwy",
@@ -137,11 +149,7 @@ cc_test(
 
 cc_library(
     name = "compress",
-    hdrs = [
-        "compress.h",
-        "nuq.h",
-        "sfp.h",
-    ],
+    hdrs = ["compress.h"],
     textual_hdrs = [
         "compress-inl.h",
     ],
@@ -151,8 +159,31 @@ cc_library(
         ":io",
         ":nuq",
         ":sfp",
+        ":shared",
+        "//:fp_arith",
         "@hwy//:hwy",
         "@hwy//:stats",
+        "@hwy//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "compress_test",
+    size = "small",
+    srcs = ["compress_test.cc"],
+    features = ["fully_static_link"],
+    linkstatic = True,
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":compress",
+        ":distortion",
+        "@googletest//:gtest_main",
+        "//:test_util",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+        "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
     ],
 )
@@ -190,6 +221,7 @@ cc_binary(
     srcs = ["compress_weights.cc"],
     deps = [
         ":compress",
+        ":shared",
         ":weights_raw",
         # Placeholder for internal dep, do not remove.,
         "//:args",

@@ -192,8 +192,7 @@ HWY_NOINLINE void GriffinRecurrent(
     float* out_ptr = activations.att_sums.Batch(batch_idx);
     MatVecAdd<kModelDim, kModelDim>(
         layer_weights->griffin.linear_out_w, 0, x,
-        layer_weights->griffin.linear_out_biases.data_scale1(),
-        activations.even_odd.All(), out_ptr, pool);
+        layer_weights->griffin.linear_out_biases.data_scale1(), out_ptr, pool);
   }
 }
 
@@ -283,8 +282,8 @@ class GemmaAttention {
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
           // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
           MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
-              layer_weights_.qkv_einsum_w, kHeads * kQKVDim * kModelDim, x,
-              activations_.even_odd.All(), kv, pool_);
+              layer_weights_.qkv_einsum_w, kHeads * kQKVDim * kModelDim, x, kv,
+              pool_);
         }
       }
     }

@@ -28,6 +28,7 @@
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
 #include "gemma/common.h"
+#include "util/allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 

@@ -40,9 +40,8 @@ static constexpr size_t kGroupSize = 256;
 // Points to the *start* of a NUQ stream. Aligning the allocation (see
 // aligned_allocator.h) may be speed up decoding but is not required.
 //
-// See go/streaming-weight-decode for background and design. Layout: first one
-// table of kClusters entries per group, in ascending order of group index,
-// then two packed indices per byte.
+// Layout: first one table of kClusters entries per group, in ascending order
+// of group index, then two packed indices per byte.
 //
 // Indices are stored in-order to enable vector-length agnostic decode, because
 // streams may be persisted to disk and used by other CPUs.
@@ -54,25 +53,22 @@ static constexpr size_t kGroupSize = 256;
 #pragma pack(push, 1)
 struct NuqStream {
   // Returns offset of packed indices from the start of the stream. This matches
-  // the (padded) total table size because table entries are bytes. `capacity`
-  // is already a multiple of `kGroupSize`.
+  // the (padded) total table size because table entries are bytes.
   static constexpr size_t PackedStart(size_t capacity) {
     // Round up to avoid cache-line splits when loading indices. No effect on
     // size as long as capacity / kGroupSize is a multiple of 4.
-    return hwy::RoundUpTo((capacity / kGroupSize) * kClusters, 64);
+    return hwy::RoundUpTo(hwy::DivCeil(capacity, kGroupSize) * kClusters, 64);
   }
 
   // Returns number of NuqStream to allocate for the stream, which matches its
   // size in bytes. `capacity` is already a multiple of `kGroupSize`.
   static constexpr size_t PackedEnd(size_t capacity) {
-    return PackedStart(capacity) + capacity / 2;  // two 4-bit indices per byte.
+    return PackedStart(capacity) + hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
   }
 
   uint8_t byte;
 };
 #pragma pack(pop)
-
-static inline const char* TypeName(NuqStream) { return "NUQ"; }
 
 // Storage for dynamic programming. There are two matrices; we use separate
 // allocations to avoid type punning.
@@ -101,7 +97,7 @@ struct ClusterBuf {
     num = new_num;
     const size_t num_groups = hwy::DivCeil(num, kGroupSize);
     centers = hwy::AllocateAligned<float>(num_groups * kClusters);
-    idx = hwy::AllocateAligned<uint16_t>(num);
+    idx = hwy::AllocateAligned<uint16_t>(hwy::RoundUpTo(num, kGroupSize));
   }
 
   AlignedMatrix<float> d;

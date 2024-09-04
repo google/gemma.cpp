@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "compression/sfp.h"
+#include "compression/shared.h"
 #include "hwy/base.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_SFP_INL_H_

@@ -115,15 +115,13 @@ void TestMatVecAdd() {
       GenerateMat<float, kOuter, kInner>(0, pool);
   hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
   hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
-  hwy::AlignedFreeUniquePtr<float[]> even_odd =
-      hwy::AllocateAligned<float>(kInner * pool.NumWorkers());
   hwy::AlignedFreeUniquePtr<float[]> expected_out =
       SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
   hwy::AlignedFreeUniquePtr<float[]> actual_out =
       hwy::AllocateAligned<float>(kOuter);
-  HWY_ASSERT(vec && add && even_odd && expected_out && actual_out);
-  MatVecAdd<kOuter, kInner>(mat, 0, vec.get(), add.get(), even_odd.get(),
-                            actual_out.get(), pool);
+  HWY_ASSERT(vec && add && expected_out && actual_out);
+  MatVecAdd<kOuter, kInner>(mat, 0, vec.get(), add.get(), actual_out.get(),
+                            pool);
   AssertClose<kOuter>(actual_out, expected_out);
 }
 

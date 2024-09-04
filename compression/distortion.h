@@ -30,9 +30,12 @@
 namespace gcpp {
 
 // Returns `sum` and `err` such that `sum + err` is exactly equal to `a + b`,
-// despite floating-point rounding. `sum` is already the best estimate, so do
-// not actually add `err` to it. Knuth98/Moller65. Unlike Fast2Sum [Dekker71],
-// this does not require any relative ordering of the exponents of a and b.
+// despite floating-point rounding. `sum` is already the best estimate for the
+// addition, so do not directly add `err` to it.
+//
+// Knuth98/Moller65. Unlike FastTwoSum, this does not require any relative
+// ordering of the exponents of a and b. 6 ops.
+// TODO: move to and use in Highway stats.h?
 template <typename T, HWY_IF_FLOAT3264(T)>
 static inline T TwoSum(T a, T b, T& err) {
   const T sum = a + b;
@@ -88,7 +91,6 @@ class DistortionStats {
     const float l1f = hwy::ScalarAbs(original - distorted);
     const double l1 = static_cast<double>(l1f);
     s_l1_.Notify(l1f);
-    b_l1_.Notify(HWY_MIN(99, static_cast<int>(l1f * 1E4)));
     if (l1f != 0.0f) {
       l1_.push_back(l1f);
     }
@@ -102,7 +104,7 @@ class DistortionStats {
       // as much as an actual sign flip, so do not count them.
       n_sign_flip_ +=
           ((original < 0.0f) != (distorted < 0.0f)) && !rounded_to_zero;
-      n_exact_ += (l1f == 0.0f);
+      n_exact_ += (original == distorted);
       n_rounded_to_zero += rounded_to_zero;
     }
 
@@ -122,7 +124,6 @@ class DistortionStats {
   void Assimilate(const DistortionStats& other) {
     s_original_.Assimilate(other.s_original_);
     s_l1_.Assimilate(other.s_l1_);
-    b_l1_.Assimilate(other.b_l1_);
     sum_l1_.Assimilate(other.sum_l1_);
     sum_l1_rounded_.Assimilate(other.sum_l1_rounded_);
     l1_.insert(l1_.end(), other.l1_.begin(), other.l1_.end());
@@ -204,7 +205,6 @@ class DistortionStats {
  private:
   hwy::Stats s_original_;
   hwy::Stats s_l1_;
-  hwy::Bins<100> b_l1_;
   CascadedSummation<double> sum_l1_;          // all
   CascadedSummation<double> sum_l1_rounded_;  // only if rounded_to_zero
   std::vector<float> l1_;

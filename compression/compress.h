@@ -30,10 +30,10 @@
 #include "compression/blob_store.h"
 #include "compression/io.h"
 #include "compression/nuq.h"
-#include "compression/sfp.h"
+#include "compression/shared.h"
 // IWYU pragma: end_exports
 #include "compression/distortion.h"
-#include "hwy/base.h"  // hwy::bfloat16_t
+#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #if COMPRESS_STATS
 #include "hwy/stats.h"
@@ -41,29 +41,20 @@
 
 namespace gcpp {
 
-using BF16 = hwy::bfloat16_t;
-
 static inline const char* TypeName(float) { return "f32"; }
 static inline const char* TypeName(BF16) { return "b16"; }
+static inline const char* TypeName(SfpStream) { return "SFP"; }
+static inline const char* TypeName(NuqStream) { return "NUQ"; }
 
-namespace detail {
-// How many MatT are required to store `capacity` weights. For all but
-// NuqStream, this is the same as `capacity`. For use by CompressedArray.
+// Returns the number of `MatT` elements required to store `capacity` values,
+// which must not be zero.
 template <typename MatT>
-constexpr size_t CompressedArrayLen(size_t capacity) {
-  return capacity;
-}
-template <>
-constexpr size_t CompressedArrayLen<NuqStream>(size_t capacity) {
-  return NuqStream::PackedEnd(capacity);
-}
-}  // namespace detail
-
-// Returns the number of bytes required to store a compressed array with the
-// given type and capacity.
-template <typename MatT>
-constexpr size_t CompressedArraySize(size_t capacity) {
-  return detail::CompressedArrayLen<MatT>(capacity) * sizeof(MatT);
+constexpr size_t CompressedArrayElements(size_t capacity) {
+  if constexpr (hwy::IsSame<hwy::RemoveCvRef<MatT>, NuqStream>()) {
+    return NuqStream::PackedEnd(capacity);
+  } else {
+    return capacity;
+  }
 }
 
 // Compressed representation of floating-point elements. The array length may
@@ -71,10 +62,6 @@ constexpr size_t CompressedArraySize(size_t capacity) {
 // implemented in SIMD code and are thus non-member functions.
 template <typename MatT, size_t kCapacity>
 class CompressedArray {
-  static constexpr size_t NumCompressed() {
-    return detail::CompressedArrayLen<MatT>(kCapacity);
-  }
-
  public:
   using value_type = MatT;
 
@@ -100,11 +87,11 @@ class CompressedArray {
   constexpr size_t size() const { return kCapacity; }
 
   constexpr size_t CompressedSize() const {
-    return NumCompressed() * sizeof(MatT);
+    return data_.size() * sizeof(MatT);
   }
 
  private:
-  std::array<MatT, NumCompressed()> data_;
+  std::array<MatT, CompressedArrayElements<MatT>(kCapacity)> data_;
   // Blobs are at least kBlobAlign bytes anyway.
   float scale_[kBlobAlign / sizeof(float)];
 };

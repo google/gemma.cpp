@@ -48,6 +48,15 @@ cc_library(
     ],
 )
 
+# Avoids circular dependency: fp_arith-inl -> compress-inl -> ops-inl
+cc_library(
+    name = "fp_arith",
+    textual_hdrs = ["ops/fp_arith-inl.h"],
+    deps = [
+        "@hwy//:hwy",
+    ],
+)
+
 cc_library(
     name = "ops",
     hdrs = [
@@ -61,6 +70,7 @@ cc_library(
     ],
     deps = [
         ":allocator",
+        ":fp_arith",
         ":threading",
         "//compression:compress",
         "//compression:sfp",

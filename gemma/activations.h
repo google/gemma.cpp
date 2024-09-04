@@ -55,11 +55,6 @@ struct Activations {
   // Rope
   RowVectorBatch<float> inv_timescale;
 
-  // For bf16/f32 vectors * bf16 matrix: faster to unpack once beforehand, into
-  // per-thread storage.
-  // TODO: remove once MatVec is no longer used.
-  RowVectorBatch<float> even_odd;
-
   MatMulEnv env;
 
   // Multi-Head Attention?
@@ -122,9 +117,6 @@ struct Activations {
     }
 
     inv_timescale = CreateInvTimescale<TConfig>();
-
-    const size_t num_lp = pools.NumLP();
-    even_odd = RowVectorBatch<float>(1, kModelDim * num_lp);
 
     env = MatMulEnv(pools);
   }
