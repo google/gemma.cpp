@@ -463,10 +463,10 @@ HWY_NOINLINE void ScalarRMSNorm(const VecT* x,
 template <typename VecT, typename WeightT, typename OutT>
 void TestRMSNorm(hwy::RandomState& rng) {
   constexpr size_t kSize = 128;
-  VecT vec[kSize];
-  WeightT weight[kSize];
-  OutT expected[kSize];
-  OutT actual[kSize];
+  HWY_ALIGN VecT vec[kSize];
+  HWY_ALIGN WeightT weight[kSize];
+  HWY_ALIGN OutT expected[kSize];
+  HWY_ALIGN OutT actual[kSize];
 
   for (size_t i = 0; i < kSize; ++i) {
     vec[i] = hwy::ConvertScalarTo<VecT>(RandomGaussian(rng));

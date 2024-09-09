@@ -43,8 +43,8 @@ namespace gcpp {
 
 static inline const char* TypeName(float) { return "f32"; }
 static inline const char* TypeName(BF16) { return "b16"; }
-static inline const char* TypeName(SfpStream) { return "SFP"; }
-static inline const char* TypeName(NuqStream) { return "NUQ"; }
+static inline const char* TypeName(SfpStream) { return "sfp"; }
+static inline const char* TypeName(NuqStream) { return "nuq"; }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
 // which must not be zero.

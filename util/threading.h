@@ -106,12 +106,36 @@ class PerClusterPools {
     }
   }
 
-  // The defaults for `AppArgs` `max_clusters` and `num_threads` are zero, which
-  // means no limit.
-  size_t CapIfNonzero(size_t detected, size_t user_max_or_zero) {
+  // `user_max_or_zero` == 0 means no limit, which is the case for the defaults
+  // of `AppArgs` `max_clusters` and `num_threads`.
+  static inline size_t CapIfNonZero(size_t num_workers,
+                                    size_t user_max_or_zero) {
+    return (user_max_or_zero == 0) ? num_workers
+                                   : HWY_MIN(num_workers, user_max_or_zero);
+  }
+
+  // Returns the number of threads for `ThreadPool` to create: zero if there is
+  // no threading support, otherwise the capped number of workers minus the
+  // caller of `ThreadPool::Run`, which is the outer worker or main thread.
+  size_t CappedNumThreads(size_t num_workers, size_t user_max_or_zero) const {
     if (!have_threading_support_) return 0;
-    return (user_max_or_zero == 0) ? detected
-                                   : HWY_MIN(detected, user_max_or_zero);
+    const size_t capped_num_workers =
+        CapIfNonZero(num_workers, user_max_or_zero);
+    // Avoid underflow if number of workers is zero.
+    return capped_num_workers == 0 ? 0 : capped_num_workers - 1;
+  }
+
+  // Returns the number of workers for the inner pool whose index is `outer`, or
+  // 0 to indicate no limit if `max_threads` is zero.
+  size_t MaxInnerWorkers(const size_t max_threads, const size_t outer_workers,
+                         const size_t outer) const {
+    HWY_DASSERT(outer < outer_workers);
+    if (max_threads == 0) return 0;  // no limit
+    // Round down so we do not exceed the max.
+    const size_t max_threads_per_outer = max_threads / outer_workers;
+    // First outer pool gets the remainder.
+    const size_t remainder = (outer == 0) ? (max_threads % outer_workers) : 0;
+    return 1 + max_threads_per_outer + remainder;
   }
 
  public:
@@ -120,19 +144,21 @@ class PerClusterPools {
   // result in threads not running on their own core, we only allow for
   // *upper bounds* on the number of clusters and threads. The actual number of
   // clusters and threads are still limited by the detected topology.
+  // `max_threads` is the upper bound on threads to distribute among clusters,
+  // not including the one outer thread per cluster.
   //
   // `pin` is 0 or 1 to force enable/disable, or -1 to choose automatically.
   PerClusterPools(size_t max_clusters, size_t max_threads, int pin = -1)
       : have_threading_support_(hwy::HaveThreadingSupport()),
         cores_per_cluster_(DetectCoresPerCluster()),
-        outer_pool_(CapIfNonzero(cores_per_cluster_.size(), max_clusters)) {
+        outer_pool_(CappedNumThreads(cores_per_cluster_.size(), max_clusters)) {
     // Topology detection failed - it currently requires Linux.
     if (cores_per_cluster_.empty()) {
       // Create a single inner pool with up to TotalLogicalProcessors() / 2
       // workers, further limited by `max_threads` if nonzero, and then pin to
       // the first N processors, which are typically on the first socket.
       const size_t num_threads =
-          CapIfNonzero(hwy::TotalLogicalProcessors() / 2, max_threads);
+          CappedNumThreads(hwy::TotalLogicalProcessors() / 2, max_threads);
       if (pin == -1) pin = num_threads > 8;
       fprintf(stderr, "CPU topology unknown, using %zu threads, pin %d\n",
               num_threads, pin);
@@ -146,10 +172,11 @@ class PerClusterPools {
       return;
     }
 
-    const size_t max_per_inner = max_threads / outer_pool_.NumWorkers();
     for (size_t outer = 0; outer < outer_pool_.NumWorkers(); ++outer) {
-      const size_t num_threads =
-          CapIfNonzero(cores_per_cluster_[outer].Count(), max_per_inner);
+      const size_t max_inner_workers =
+          MaxInnerWorkers(max_threads, outer_pool_.NumWorkers(), outer);
+      const size_t num_threads = CappedNumThreads(
+          cores_per_cluster_[outer].Count(), max_inner_workers);
       inner_pools_.push_back(std::make_unique<hwy::ThreadPool>(num_threads));
     }
 

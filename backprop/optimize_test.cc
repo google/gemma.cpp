@@ -86,13 +86,11 @@ TEST(OptimizeTest, GradientDescent) {
   // 1) Its length should be greater than the prompt.
   // 2) The prompt should be a prefix of the reply.
   auto verify = [&](const Prompt& prompt) {
-    auto context = prompt.context();
+    const std::vector<int>& context = prompt.context();
     std::vector<int> reply = generate(context);
-    bool ok = true;
-    ok &= (reply.size() > context.size());
-    ok &= std::equal(prompt.tokens.begin(), prompt.tokens.end(),
-                          reply.begin(), reply.begin() + prompt.tokens.size());
-    return ok;
+    if (reply.size() <= context.size()) return false;
+    return std::equal(context.begin(), context.end(), reply.begin(),
+                      reply.begin() + context.size());
   };
 
   RandInitWeights(info.model, info.weight, gemma.Weights(), pool, gen);

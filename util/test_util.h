@@ -51,6 +51,7 @@ HWY_INLINE double RandomGaussian(hwy::RandomState& rng) {
 // Returns true if val is inside [min, max].
 template <typename T>
 static inline bool IsInside(T expected_min, T expected_max, T val) {
+  HWY_DASSERT(expected_min <= expected_max);
   return expected_min <= val && val <= expected_max;
 }
 

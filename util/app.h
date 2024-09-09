@@ -152,7 +152,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
     visitor(weight_type_str, "weight_type", std::string("sfp"),
-            "Weight type\n    f32 = float, bf16 = bfloat16, SFP = 8-bit FP\n"
+            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit FP\n"
             "    Required argument.");
   }
 

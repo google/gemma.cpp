@@ -1,12 +1,17 @@
 #include "compression/python/compression_clif_aux.h"
 
+#include <string>
+#include <vector>
+
+#include "compression/compress.h"
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
   "compression/python/compression_clif_aux.cc"  // NOLINT
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-// Must come after foreach_target.h to avoid redefinition errors.
-#include "compression/compress-inl.h"
 #include "hwy/highway.h"
+// After highway.h
+#include "compression/compress-inl.h"
 
 // Non-SIMD includes and types. Note that HWY_ONCE is only true on the last
 // compile pass, whereas we want this defined in the first.
