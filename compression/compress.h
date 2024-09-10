@@ -29,7 +29,6 @@
 // IWYU pragma: begin_exports
 #include "compression/blob_store.h"
 #include "compression/io.h"
-#include "compression/nuq.h"
 #include "compression/shared.h"
 // IWYU pragma: end_exports
 #include "compression/distortion.h"
@@ -40,22 +39,6 @@
 #endif
 
 namespace gcpp {
-
-static inline const char* TypeName(float) { return "f32"; }
-static inline const char* TypeName(BF16) { return "b16"; }
-static inline const char* TypeName(SfpStream) { return "sfp"; }
-static inline const char* TypeName(NuqStream) { return "nuq"; }
-
-// Returns the number of `MatT` elements required to store `capacity` values,
-// which must not be zero.
-template <typename MatT>
-constexpr size_t CompressedArrayElements(size_t capacity) {
-  if constexpr (hwy::IsSame<hwy::RemoveCvRef<MatT>, NuqStream>()) {
-    return NuqStream::PackedEnd(capacity);
-  } else {
-    return capacity;
-  }
-}
 
 // Compressed representation of floating-point elements. The array length may
 // differ from the number of elements. Associated operations such as Dot are
@@ -152,8 +135,8 @@ struct CompressStats {
 #endif  // COMPRESS_STATS
 
 struct CompressPerThread {
+  NuqStream::ClusterBuf buf;
   CompressStats stats;
-  ClusterBuf buf;
 };
 
 struct CompressWorkingSet {

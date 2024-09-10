@@ -26,12 +26,10 @@
 #include <cstdlib>  // std::abs
 #include <vector>
 
-#include "compression/distortion.h"
-#include "compression/nuq.h"
+#include "compression/shared.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/stats.h"
-#include "hwy/timer.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_ANALYZE_H_
 
@@ -55,6 +53,7 @@ namespace HWY_NAMESPACE {
 class PerThread {
  public:
   void NotifyGroup(const float* group) {
+    constexpr size_t kGroupSize = NuqStream::kGroupSize;
     hwy::Stats s_group;
     for (size_t i = 0; i < kGroupSize; ++i) {
       // Skip zero so we can see the lowest actual magnitude
@@ -158,7 +157,7 @@ class PerThread {
 class PerLayer {
  public:
   void NotifyGroup(const float* group) {
-    for (size_t i = 0; i < kGroupSize; ++i) {
+    for (size_t i = 0; i < NuqStream::kGroupSize; ++i) {
       s_layer_.Notify(group[i]);
     }
   }
@@ -197,8 +196,8 @@ static HWY_NOINLINE void Analyze(const char* caption, float* mat, size_t layers,
              const float* layer = &mat[idx_layer * weights_per_layer];
              // For each whole group in the layer
              for (size_t group_start = 0;
-                  group_start + kGroupSize <= weights_per_layer;
-                  group_start += kGroupSize) {
+                  group_start + NuqStream::kGroupSize <= weights_per_layer;
+                  group_start += NuqStream::kGroupSize) {
                const float* group = layer + group_start;
                per_layer[idx_layer].NotifyGroup(group);
                self.NotifyGroup(group);
@@ -210,7 +209,7 @@ static HWY_NOINLINE void Analyze(const char* caption, float* mat, size_t layers,
   const int skip = hwy::Stats::kNoGeomean;
   fprintf(stderr, "\n------------%s\n", caption);
 
-  for (size_t i = 1; i < pool.NumThreads(); ++i) {
+  for (size_t i = 1; i < pool.NumWorkers(); ++i) {
     tls[0].Assimilate(tls[i]);
   }
   tls[0].PrintAll();

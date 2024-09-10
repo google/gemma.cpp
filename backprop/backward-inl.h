@@ -46,6 +46,7 @@
 // After highway.h
 #include "ops/matmul-inl.h"
 #include "ops/ops-inl.h"
+#include "hwy/contrib/dot/dot-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

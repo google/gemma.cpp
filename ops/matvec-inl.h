@@ -37,7 +37,6 @@
 
 #include "compression/compress-inl.h"
 #include "ops/dot-inl.h"
-#include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
 
@@ -58,15 +57,14 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
                                     float* HWY_RESTRICT out0,
                                     float* HWY_RESTRICT out1) {
   PROFILER_ZONE("TwoOfsMatVecAddLoop");
-  const hn::ScalableTag<float> df;
 
   for (size_t idx_row = 0; idx_row < kOuter; ++idx_row) {
     const size_t row_ofs0 = mat_ofs0 + (idx_row)*kInner;
     const size_t row_ofs1 = mat_ofs1 + (idx_row)*kInner;
     out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
-                    Dot<false>(df, mat, row_ofs0, vec_aligned, kInner);
+                    Dot(mat, row_ofs0, vec_aligned, kInner);
     out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
-                    Dot<false>(df, mat, row_ofs1, vec_aligned, kInner);
+                    Dot(mat, row_ofs1, vec_aligned, kInner);
   }
 }
 
@@ -98,8 +96,7 @@ HWY_INLINE void AccumulatePartialDotProducts(
     const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out) {
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
     const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
-    out[idx_row] +=
-        Dot<false>(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+    out[idx_row] += Dot(mat, row_ofs + c0, vec_aligned + c0, num_cols);
   }
 }
 
@@ -117,12 +114,10 @@ HWY_INLINE void SetFirstPartialDotProducts(DF df, const ArrayT& mat,
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
     const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
     if constexpr (kInit) {
-      out[idx_row] =
-          hwy::ConvertScalarTo<float>(init[idx_row + r0]) +
-          Dot<false>(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+      out[idx_row] = hwy::ConvertScalarTo<float>(init[idx_row + r0]) +
+                     Dot(mat, row_ofs + c0, vec_aligned + c0, num_cols);
     } else {
-      out[idx_row] =
-          Dot<false>(df, mat, row_ofs + c0, vec_aligned + c0, num_cols);
+      out[idx_row] = Dot(mat, row_ofs + c0, vec_aligned + c0, num_cols);
     }
   }
 }

@@ -244,7 +244,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
             pools.Inner(0).NumWorkers(),
             hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
             CompiledConfig(), StringFromType(loader.Info().weight),
-            TypeName(EmbedderInputT()));
+            TypeName<EmbedderInputT>());
   }
 }
 

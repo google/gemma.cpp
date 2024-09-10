@@ -480,8 +480,8 @@ void TestRMSNorm(hwy::RandomState& rng) {
     const float e = hwy::ConvertScalarTo<float>(expected[i]);
     const float a = hwy::ConvertScalarTo<float>(actual[i]);
     if (!IsNear(e, a, 1e-5f)) {
-      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName(VecT()),
-                TypeName(WeightT()), TypeName(OutT()), i, e, a);
+      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<VecT>(),
+                TypeName<WeightT>(), TypeName<OutT>(), i, e, a);
     }
   }
 }

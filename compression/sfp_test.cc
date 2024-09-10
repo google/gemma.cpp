@@ -39,7 +39,6 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/sfp-inl.h"
-#include "ops/dot-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -128,7 +127,7 @@ void TestAllFastDecode() {
 
 // Encode
 HWY_INLINE uint32_t SFP8FromF32(float f) {
-  HWY_ASSERT(-1.875f <= f && f <= 1.875f);
+  HWY_ASSERT(-SfpStream::kMax <= f && f <= SfpStream::kMax);
 
   constexpr uint32_t kMaskM = hwy::MantissaMask<float>();
   uint32_t binary32;
@@ -182,7 +181,7 @@ struct TestDecEnc {
   template <class T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::RepartitionToWide<D> d16;
-    const hn::Rebind<hwy::bfloat16_t, decltype(d16)> dbf;
+    const hn::Rebind<BF16, decltype(d16)> dbf;
     const hn::Repartition<float, D> df;
     for (uint32_t encoded = 0; encoded < 256; ++encoded) {
       if (encoded == 0x80) continue;  // -0 is reserved
@@ -215,7 +214,7 @@ struct TestGolden {
   template <class T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::Repartition<float, D> df;
-    const hn::Repartition<hwy::bfloat16_t, D> dbf;
+    const hn::Repartition<BF16, D> dbf;
     const hn::RebindToUnsigned<decltype(dbf)> d16;
 
     struct Golden {
@@ -294,9 +293,53 @@ void TestAllGolden() {
   TestGolden()(uint8_t(), hn::ScalableTag<uint8_t>());
 }
 
+// ------------------------------ Order
+
+// Store 8-bit iota, decode, encode, check iota == packed. This ensures
+// Enc/Dec are preserving the order independent of vector length.
+struct TestOrder {
+  template <class T, class DBF>
+  HWY_INLINE void operator()(T /*unused*/, DBF dbf) {
+    const size_t N16 = hn::Lanes(dbf);
+
+    for (size_t num = 1; num < 6 * N16; ++num) {
+      const size_t padded = hwy::RoundUpTo(num, N16);
+
+      auto iota = hwy::AllocateAligned<SfpStream>(num);
+      auto packed = hwy::AllocateAligned<SfpStream>(num);
+      auto bf = hwy::AllocateAligned<BF16>(padded);
+      HWY_ASSERT(iota && packed && bf);
+      for (size_t i = 0; i < num; ++i) {
+        // Clear sign bit so we can also check that bf is in ascending order.
+        iota[i].byte = i & 127;
+      }
+
+      SfpCodec::DecompressAndZeroPad(dbf, MakeConstSpan(iota.get(), num), 0,
+                                     bf.get(), num);
+      for (size_t i = num; i < padded; ++i) {
+        if (hwy::ConvertScalarTo<float>(bf[i]) != 0.0f) {
+          HWY_ABORT("num %zu padded %zu i %zu: not padded", num, padded, i);
+        }
+      }
+
+      SfpCodec::Enc(dbf, bf.get(), num, packed.get());
+
+      for (size_t i = 0; i < num; ++i) {
+        if (iota[i].byte != packed[i].byte) {
+          HWY_ABORT("@%zu: %d %d\n", i, iota[i].byte, packed[i].byte);
+        }
+      }
+    }
+  }
+};
+
+void TestAllOrder() { hn::ForGEVectors<32, TestOrder>()(BF16()); }
+
 // ------------------------------ Foreach bf16 input
 
-// Generate all values, encode, decode back.
+// Checks the distortion from an encode and decode round trip. Unlike
+// `TestShortLengthsT` in compress_test, this covers large `num` and
+// prints the enc/dec throughput.
 struct TestEncDec {
   template <class T, class DBF>
   HWY_INLINE void operator()(T /*unused*/, DBF dbf) {
@@ -309,14 +352,14 @@ struct TestEncDec {
 
     auto in = hwy::AllocateAligned<T>(max);
     auto packed = hwy::AllocateAligned<SfpStream>(max);
-    auto dec = hwy::AllocateAligned<T>(max);
+    auto dec = hwy::AllocateAligned<T>(max);  // already padded
     HWY_ASSERT(in && packed && dec);
     size_t num = 0;
     for (size_t i = 0; i < max; ++i) {
       const uint16_t bits = i * kStep;
       const float f = hwy::F32FromBF16(hwy::BitCastScalar<T>(bits));
       // Keep if within range
-      if (hwy::ScalarIsFinite(f) && f <= 1.875f) {
+      if (hwy::ScalarIsFinite(f) && f <= SfpStream::kMax) {
         in[num] = hwy::BF16FromF32(f);
         in[num + 1] = hwy::BF16FromF32(-f);
         num += 2;
@@ -329,7 +372,8 @@ struct TestEncDec {
       const double t0 = hwy::platform::Now();
       SfpCodec::Enc(dbf, in.get(), num, packed.get());
       const double t1 = hwy::platform::Now();
-      SfpCodec::Dec(dbf, packed.get(), num, dec.get());
+      SfpCodec::DecompressAndZeroPad(dbf, MakeConstSpan(packed.get(), num), 0,
+                                     dec.get(), num);
       const double t2 = hwy::platform::Now();
       enc_elapsed = HWY_MIN(enc_elapsed, t1 - t0);
       dec_elapsed = HWY_MIN(dec_elapsed, t2 - t1);
@@ -358,9 +402,10 @@ struct TestEncDec {
                 stats.SumL1Rounded(), snr, wl1);
       }
       HWY_ASSERT(stats.Original().Count() == stats.L1().Count());
-      // Inputs are in [-1.875, 1.875], symmetric, and heavy-tailed.
-      HWY_ASSERT(stats.Original().Min() == -1.875f);
-      HWY_ASSERT(stats.Original().Max() == 1.875f);
+      // Inputs are in [-SfpStream::kMax, SfpStream::kMax], symmetric, and
+      // heavy-tailed.
+      HWY_ASSERT(stats.Original().Min() == -SfpStream::kMax);
+      HWY_ASSERT(stats.Original().Max() == SfpStream::kMax);
       HWY_ASSERT(gcpp::IsInside(-1E-6, 1E-6, stats.Original().Mean()));
       HWY_ASSERT(gcpp::IsInside(-1E-6, 1E-6, stats.Original().Skewness()));
       HWY_ASSERT(gcpp::IsInside(80.0, 100.0, stats.Original().Kurtosis()));
@@ -382,179 +427,7 @@ struct TestEncDec {
   }
 };
 
-void TestAllEncDec() { hn::ForGEVectors<32, TestEncDec>()(hwy::bfloat16_t()); }
-
-// ------------------------------ Order
-
-// Store 8-bit iota, decode, encode, check iota == packed. This ensures
-// Enc/Dec are preserving the order independent of vector length.
-struct TestOrder {
-  template <class T, class DBF>
-  HWY_INLINE void operator()(T /*unused*/, DBF dbf) {
-    const hn::Repartition<uint8_t, DBF> du8;
-
-    const size_t num = 10 * hn::Lanes(du8) / 3;
-
-    auto iota = hwy::AllocateAligned<SfpStream>(num);
-    auto packed = hwy::AllocateAligned<SfpStream>(num);
-    auto bf = hwy::AllocateAligned<hwy::bfloat16_t>(num);
-    HWY_ASSERT(iota && packed && bf);
-    for (size_t i = 0; i < num; ++i) {
-      // Clear sign bit so we can also check that bf is in ascending order.
-      iota[i].byte = i & 127;
-    }
-
-    SfpCodec::Dec(dbf, iota.get(), num, bf.get());
-    SfpCodec::Enc(dbf, bf.get(), num, packed.get());
-
-    for (size_t i = 0; i < num; ++i) {
-      if (iota[i].byte != packed[i].byte) {
-        HWY_ABORT("@%zu: %d %d\n", i, iota[i].byte, packed[i].byte);
-      }
-    }
-  }
-};
-
-void TestAllOrder() { hn::ForGEVectors<32, TestOrder>()(hwy::bfloat16_t()); }
-
-// ------------------------------ Dot
-
-struct TestDot {
-  template <typename T, class D>
-  HWY_INLINE void operator()(T /*unused*/, D d) {
-    const hn::Repartition<float, D> df;
-    const size_t num = 1024;  // not too many for GeometricMean overflow.
-    const size_t N = hn::Lanes(d);
-    auto in = hwy::AllocateAligned<T>(num);
-    auto dec = hwy::AllocateAligned<T>(num);
-    auto vec = hwy::AllocateAligned<T>(num);
-    auto vec_eo = hwy::AllocateAligned<T>(num);
-    auto sfp = hwy::AllocateAligned<SfpStream>(num);
-    HWY_ASSERT(in && dec && vec && vec_eo && sfp);
-
-    // Generate inputs and verify their distribution.
-    hwy::RandomState rng;
-    hwy::Stats in_stats;
-    for (size_t i = 0; i < num; ++i) {
-      const float r = static_cast<float>(RandomGaussian(rng));
-      in_stats.Notify(r);
-      in[i] = hwy::ConvertScalarTo<T>(r);
-    }
-    for (size_t i = 0; i < num; ++i) {
-      const float r = static_cast<float>(RandomGaussian(rng));
-      in_stats.Notify(r);
-      vec[i] = hwy::ConvertScalarTo<T>(r);
-    }
-    VerifyGaussian(in_stats);
-
-    // Convert vec to even/odd for DotEO
-    for (size_t i = 0; i < num; i += 2 * N) {
-      hn::Vec<D> ve, vo;
-      hn::LoadInterleaved2(d, vec.get() + i, ve, vo);
-      hn::Store(ve, d, vec_eo.get() + i + 0);
-      hn::Store(vo, d, vec_eo.get() + i + N);
-    }
-
-    SfpCodec::Enc(d, in.get(), num, sfp.get());
-
-    // Compute dot product without decompression.
-    float actual = 0.0f;
-    float actual_eo = 0.0f;
-    double elapsed = hwy::HighestValue<double>();
-    double elapsed_eo = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < 200; ++rep) {
-      {
-        const double t0 = hwy::platform::Now();
-        actual = SimpleDot(df, sfp.get(), 0, vec.get(), num);
-        const double t1 = hwy::platform::Now();
-        elapsed = HWY_MIN(elapsed, t1 - t0);
-      }
-      {
-        hn::Vec<decltype(df)> sum0 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum1 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum2 = hn::Zero(df);
-        hn::Vec<decltype(df)> sum3 = hn::Zero(df);
-        const double t0 = hwy::platform::Now();
-        SfpCodec::DotEO(df, sfp.get(), num, vec_eo.get(), sum0, sum1, sum2,
-                        sum3);
-        const double t1 = hwy::platform::Now();
-        elapsed_eo = HWY_MIN(elapsed_eo, t1 - t0);
-        sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
-        actual_eo = hn::ReduceSum(df, sum0);
-      }
-    }
-
-    SfpCodec::Dec(d, sfp.get(), num, dec.get());
-    fprintf(stderr, "Vec %zu Dot %zu-bit %.2f ; %.2f MB/s\n",
-            Lanes(d) * sizeof(T), sizeof(T) * 8,
-            num * sizeof(T) * 1E-6 / elapsed,
-            num * sizeof(T) * 1E-6 / elapsed_eo);
-
-    // Exact and decompressed dot products for comparison.
-    float exact = 0.0f;     // using original input
-    float expected = 0.0f;  // using decoded SFP
-    DistortionStats dec_stats;
-    hwy::Stats ratios;
-    for (size_t i = 0; i < num; ++i) {
-      const float in1 = hwy::ConvertScalarTo<float>(in[i]);
-      const float dec1 = hwy::ConvertScalarTo<float>(dec[i]);
-      const float vec1 = hwy::ConvertScalarTo<float>(vec[i]);
-      dec_stats.Notify(in1, dec1);
-
-      exact += in1 * vec1;
-      expected += dec1 * vec1;
-      if (expected != 0.0f) {
-        ratios.Notify(exact / expected);
-      }
-    }
-    const bool isBF = sizeof(T) == 2;
-    const double dec_snr = dec_stats.GeomeanValueDivL1();
-    const double dec_wl1 = dec_stats.WeightedAverageL1();
-    const double dot_snr = 1.0 / hwy::ScalarAbs(1.0 - ratios.GeometricMean());
-    // exact and actual fluctuate due to the combination of SFP imprecision,
-    // and whether vec[i] is negative or positive, so this is quite loose.
-    const float final_ratio = HWY_MIN(exact / actual, actual / exact);
-    if (HWY_ONCE) {
-      fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
-      fprintf(stderr,
-              "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
-              "dot_snr %.2f dec_wl1 %.5f\n",
-              exact, expected, actual, final_ratio, dec_snr, dot_snr, dec_wl1);
-    }
-    // Final values are not too far apart.
-    HWY_ASSERT(gcpp::IsInside(0.87f, 1.0f, final_ratio));
-    // Decompressed and uncompressed dot should match exactly.
-    HWY_ASSERT(gcpp::IsNear(expected, actual, 1E-4f));
-    // Even/odd dot should also match
-    HWY_ASSERT(gcpp::IsNear(actual, actual_eo, 1E-4f));
-    // Geomean of ratios for each i should be very close to one.
-    HWY_ASSERT(dot_snr >= (isBF ? 70.0 : 1000.0));
-
-    // dec[] is close to in[]. We also check that in TestEncDec, but for much
-    // smaller input magnitudes.
-    HWY_ASSERT(gcpp::IsNear(isBF ? 51.0 : 64.0, dec_snr, 1.0));
-    HWY_ASSERT(gcpp::IsNear(isBF ? 0.013 : 0.012, dec_wl1, 0.001));
-    HWY_ASSERT(gcpp::IsNear(isBF ? 6.2 : 6.3, dec_stats.SumL1(), 0.1));
-    HWY_ASSERT_EQ(0, dec_stats.NumSignFlip());
-    HWY_ASSERT_EQ(0, dec_stats.NumRoundedToZero());
-    HWY_ASSERT_EQ(0.0, dec_stats.SumL1Rounded());
-    // Absolute decode errors are in [0, 5E-2], and somewhat right-tailed.
-    HWY_ASSERT(gcpp::IsInside(0.0f, 2E-6f, dec_stats.L1().Min()));
-    HWY_ASSERT(gcpp::IsInside(3E-2f, 5E-2f, dec_stats.L1().Max()));
-    HWY_ASSERT(gcpp::IsInside(4E-3, 7E-3, dec_stats.L1().Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.8, 1.9, dec_stats.L1().Skewness()));
-    HWY_ASSERT(gcpp::IsInside(6.0, 7.0, dec_stats.L1().Kurtosis()));
-  }
-};
-
-void TestAllDotF32() {
-  const hn::ForGEVectors<128, TestDot> test;
-  test(float());
-}
-void TestAllDotBF16() {
-  const hn::ForGEVectors<128, TestDot> test;
-  test(hwy::bfloat16_t());
-}
+void TestAllEncDec() { hn::ForGEVectors<32, TestEncDec>()(BF16()); }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
@@ -562,7 +435,6 @@ void TestAllDotBF16() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace gcpp {
 HWY_BEFORE_TEST(SfpTest);
 HWY_EXPORT_AND_TEST_P(SfpTest, PrintTables);
@@ -570,13 +442,8 @@ HWY_EXPORT_AND_TEST_P(SfpTest, TestAllUnique);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllFastDecode);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDecEnc);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllGolden);
-HWY_EXPORT_AND_TEST_P(SfpTest, TestAllEncDec);
 HWY_EXPORT_AND_TEST_P(SfpTest, TestAllOrder);
-HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotF32);
-HWY_EXPORT_AND_TEST_P(SfpTest, TestAllDotBF16);
-#ifdef HWY_AFTER_TEST
+HWY_EXPORT_AND_TEST_P(SfpTest, TestAllEncDec);
 HWY_AFTER_TEST();
-#endif
 }  // namespace gcpp
-
-#endif
+#endif  // HWY_ONCE

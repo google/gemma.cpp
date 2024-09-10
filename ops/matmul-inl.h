@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "compression/compress.h"  // IWYU pragma: keep, b/conditionally used
 #include "ops/matmul.h"  // IWYU pragma: export
@@ -57,9 +58,9 @@ constexpr size_t kRegRows = kRegCols;
 // at a time. Any combination of A and B can be bf16: activations may already be
 // bf16, and weights can be decompressed to bf16.
 //
-// The corresponding op is `ReordenWidenMulAccumulate`, and it is always
+// The corresponding op is `ReorderWidenMulAccumulate`, and it is always
 // supported, but only useful if it returns a single vector of pairwise sums
-// `a[0] * b[0] + a[1] * b[1]`. On other targets, `ReordenWidenMulAccumulate`
+// `a[0] * b[0] + a[1] * b[1]`. On other targets, `ReorderWidenMulAccumulate`
 // insteads return `a[1] * b[1]` in its `sum1` output. We cannot afford to keep
 // a `sum1` for each of the `kRegRows * kRegCols` C vectors, and it would be
 // expensive to add each `sum0` and `sum1`, hence we only 'decompress' A and B
@@ -73,20 +74,22 @@ using MulT = hwy::If<HWY_NATIVE_DOT_BF16, BF16, float>;
 template <size_t kRow, typename MatTB>
 class BRow {
   static_assert(kRow < kRegRows);  // which unrolled instance we are
-  using TraitsB = CompressTraits<MatTB>;
 
  public:
-  BRow(const Mat<const MatTB>& B, size_t row_b)
-      : B_(B.ptr), B_ofs_(B.Row(row_b + kRow)) {}
+  BRow(const Mat<const MatTB>& B, size_t row_b, size_t cols_c)
+      // B.cols * C.cols is the total number of elements, required for
+      // PackedSpan::BoundsCheck.
+      : B_(MakeSpan(B.ptr, B.ofs + B.cols * cols_c)),
+        B_ofs_(B.Row(row_b + kRow)) {}
 
   template <class DM, class VM = hn::Vec<DM>>
   HWY_INLINE void Load2(DM d, size_t col_ab, VM& b0, VM& b1) const {
     static_assert(hwy::IsSame<hn::TFromD<DM>, MulT>());
-    TraitsB::Decompress2(d, B_, B_ofs_ + col_ab, b0, b1);
+    Decompress2(d, B_, B_ofs_ + col_ab, b0, b1);
   }
 
  private:
-  const MatTB* HWY_RESTRICT B_;
+  PackedSpan<const MatTB> B_;
   const size_t B_ofs_;
 };
 
@@ -101,7 +104,7 @@ class BRow {
 // `AddHorizontalSums`. Most MatMul instead broadcast one element from A and
 // multiply with one element from N columns in B to obtain N columns of C.
 // This is a poor fit for our setting:
-// - `CompressTraits` decompresses two vectors at a time;
+// - `Decompress2` decompresses two vectors at a time;
 // - B is column-major, so unit-stride SIMD loads return a column, not values
 //   from different columns, i.e. a row.
 // Both could be fixed in a packing stage, which is not implemented yet, and
@@ -113,11 +116,13 @@ class BRow {
 template <size_t kRow, typename MatTA>
 class ALoadAccumulate {
   static_assert(kRow < kRegRows);  // which unrolled instance we are
-  using TraitsA = CompressTraits<MatTA>;
 
  public:
-  ALoadAccumulate(const Mat<const MatTA>& A, size_t row_ac)
-      : A_(A.ptr), A_ofs_(A.Row(row_ac + kRow)) {}
+  ALoadAccumulate(const Mat<const MatTA>& A, size_t row_ac, size_t batch_size)
+      // A.cols * batch_size is the total number of elements, required for
+      // PackedSpan::BoundsCheck.
+      : A_(MakeSpan(A.ptr, A.ofs + A.cols * batch_size)),
+        A_ofs_(A.Row(row_ac + kRow)) {}
 
   // First iteration, col_ab = 0: initialize C0..3 instead of updating them.
   template <size_t kNumRows, class DM, class VM = hn::Vec<DM>, HWY_IF_F32_D(DM)>
@@ -128,7 +133,7 @@ class ALoadAccumulate {
     static_assert(kNumRows <= kRegRows);  // How many rows actually present
     if constexpr (kRow < kNumRows) {
       VM a0, a1;
-      TraitsA::Decompress2(dm, A_, A_ofs_, a0, a1);
+      Decompress2(dm, A_, A_ofs_, a0, a1);
 
       static_assert(kRegCols == 4);
       C0 = hn::Mul(a0, b00);
@@ -153,7 +158,7 @@ class ALoadAccumulate {
     static_assert(kNumRows <= kRegRows);  // How many rows actually present
     if constexpr (kRow < kNumRows) {
       VM a0, a1;
-      TraitsA::Decompress2(dm, A_, A_ofs_, a0, a1);
+      Decompress2(dm, A_, A_ofs_, a0, a1);
 
       const DF df;
       VF unused_sum1 = hn::Zero(df);
@@ -183,7 +188,7 @@ class ALoadAccumulate {
     HWY_DASSERT(col_ab >= 2 * hn::Lanes(dm));  // Should not be first iteration.
     if constexpr (kRow < kNumRows) {
       VM a0, a1;
-      TraitsA::Decompress2(dm, A_, A_ofs_ + col_ab, a0, a1);
+      Decompress2(dm, A_, A_ofs_ + col_ab, a0, a1);
 
       static_assert(kRegCols == 4);
       C0 = hn::MulAdd(a0, b00, C0);
@@ -209,7 +214,7 @@ class ALoadAccumulate {
     HWY_DASSERT(col_ab >= 2 * hn::Lanes(dm));  // Should not be first iteration.
     if constexpr (kRow < kNumRows) {
       VM a0, a1;
-      TraitsA::Decompress2(dm, A_, A_ofs_ + col_ab, a0, a1);
+      Decompress2(dm, A_, A_ofs_ + col_ab, a0, a1);
 
       const DF df;
       hn::Vec<DF> unused_sum1 = hn::Zero(df);
@@ -230,7 +235,7 @@ class ALoadAccumulate {
   }
 
  private:
-  const MatTA* HWY_RESTRICT A_;
+  PackedSpan<const MatTA> A_;
   const size_t A_ofs_;
 };  // ALoadAccumulate
 
@@ -352,9 +357,10 @@ class AddHorizontalSums {
 // *finished* tile of f32 `C` whose top left is (row_ac, row_b_col_c).
 // TODO: loop over sections instead of full rows and accumulate into `tile_c`.
 template <size_t kNumRows, bool kAdd, typename MatTA, typename MatTB>
-HWY_INLINE void MatMulTile(const Mat<const MatTA>& A, const Mat<const MatTB>& B,
-                           const size_t row_ac, const size_t row_b_col_c,
-                           const float scale, const float* HWY_RESTRICT add,
+HWY_INLINE void MatMulTile(const size_t batch_size, const Mat<const MatTA>& A,
+                           const Mat<const MatTB>& B, const size_t row_ac,
+                           const size_t row_b_col_c, const float scale,
+                           const float* HWY_RESTRICT add,
                            float* HWY_RESTRICT buf, const Mat<float>& C) {
   // For 'decompressing' A and B into BF16 or float.
   const hn::ScalableTag<MulT> dm;
@@ -362,15 +368,15 @@ HWY_INLINE void MatMulTile(const Mat<const MatTA>& A, const Mat<const MatTB>& B,
   const size_t NM = hn::Lanes(dm);
 
   static_assert(kRegRows == 4);
-  const BRow<0, MatTB> b_row0(B, row_b_col_c);
-  const BRow<1, MatTB> b_row1(B, row_b_col_c);
-  const BRow<2, MatTB> b_row2(B, row_b_col_c);
-  const BRow<3, MatTB> b_row3(B, row_b_col_c);
+  const BRow<0, MatTB> b_row0(B, row_b_col_c, C.cols);
+  const BRow<1, MatTB> b_row1(B, row_b_col_c, C.cols);
+  const BRow<2, MatTB> b_row2(B, row_b_col_c, C.cols);
+  const BRow<3, MatTB> b_row3(B, row_b_col_c, C.cols);
 
-  const ALoadAccumulate<0, MatTA> a_row0(A, row_ac);
-  const ALoadAccumulate<1, MatTA> a_row1(A, row_ac);
-  const ALoadAccumulate<2, MatTA> a_row2(A, row_ac);
-  const ALoadAccumulate<3, MatTA> a_row3(A, row_ac);
+  const ALoadAccumulate<0, MatTA> a_row0(A, row_ac, batch_size);
+  const ALoadAccumulate<1, MatTA> a_row1(A, row_ac, batch_size);
+  const ALoadAccumulate<2, MatTA> a_row2(A, row_ac, batch_size);
+  const ALoadAccumulate<3, MatTA> a_row3(A, row_ac, batch_size);
 
   const hn::Repartition<float, decltype(dm)> df;
   using VF = hn::Vec<decltype(df)>;
@@ -475,16 +481,20 @@ HWY_NOINLINE void MatMul(const size_t batch_size, const Mat<const MatTA>& A,
         HWY_DASSERT(num_rows != 0);
         switch (num_rows) {
           case 1:
-            MatMulTile<1, kAdd>(A, B, row_ac, row_b_col_c, scale, add, buf, C);
+            MatMulTile<1, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
+                                add, buf, C);
             break;
           case 2:
-            MatMulTile<2, kAdd>(A, B, row_ac, row_b_col_c, scale, add, buf, C);
+            MatMulTile<2, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
+                                add, buf, C);
             break;
           case 3:
-            MatMulTile<3, kAdd>(A, B, row_ac, row_b_col_c, scale, add, buf, C);
+            MatMulTile<3, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
+                                add, buf, C);
             break;
           default:
-            MatMulTile<4, kAdd>(A, B, row_ac, row_b_col_c, scale, add, buf, C);
+            MatMulTile<4, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
+                                add, buf, C);
         }
       });
 }

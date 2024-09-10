@@ -17,7 +17,7 @@
 
 #include <stdio.h>
 
-#include "compression/shared.h"
+#include "compression/shared.h"  // SfpStream::kMax
 #include "util/test_util.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/tests/hwy_gtest.h"
@@ -75,13 +75,15 @@ TEST(DistortionTest, TestDilution) {
   HWY_ASSERT(IsNear(0.001, stats.WeightedAverageL1()));
 
   // Now add a large difference:
-  stats.Notify(kMaxSFP - 0.0625f, kMaxSFP);  // max magnitude, 3-bit mantissa
+  stats.Notify(SfpStream::kMax - 0.0625f,
+               SfpStream::kMax);  // max magnitude, 3-bit mantissa
   // .. WeightedAverageL1 is closer to it.
   HWY_ASSERT(IsInside(0.020, 0.025, stats.WeightedAverageL1()));
 
   // Add a small and large difference:
   stats.Notify((1.75f - 0.125f) / 1024, 1.75f / 1024);  // small, 2-bit mantissa
-  stats.Notify(-kMaxSFP + 0.0625f, -kMaxSFP);           // larger negative
+  stats.Notify(-SfpStream::kMax + 0.0625f,
+               -SfpStream::kMax);  // larger negative
   // .. SNR is still barely affected.
   HWY_ASSERT(IsInside(890.0, 900.0, stats.GeomeanValueDivL1()));
   // .. WeightedAverageL1 is higher after another large error.

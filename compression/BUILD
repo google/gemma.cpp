@@ -50,7 +50,10 @@ cc_library(
 
 cc_library(
     name = "distortion",
-    hdrs = ["distortion.h"],
+    hdrs = [
+        "distortion.h",
+        "shared.h",
+    ],
     deps = [
         "@hwy//:hwy",
         "@hwy//:stats",
@@ -64,29 +67,43 @@ cc_test(
     srcs = ["distortion_test.cc"],
     deps = [
         ":distortion",
-        ":shared",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
-        "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",  # Unpredictable1
     ],
 )
 
 cc_library(
-    name = "shared",
+    name = "sfp",
     hdrs = ["shared.h"],
+    textual_hdrs = ["sfp-inl.h"],
     deps = [
         "@hwy//:hwy",
     ],
 )
 
 cc_library(
-    name = "sfp",
-    textual_hdrs = ["sfp-inl.h"],
+    name = "nuq",
+    hdrs = ["shared.h"],
+    textual_hdrs = ["nuq-inl.h"],
     deps = [
-        ":shared",
+        ":sfp",
         "@hwy//:hwy",
+        "@hwy//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_library(
+    name = "test_util",
+    textual_hdrs = [
+        "test_util-inl.h",
+    ],
+    deps = [
+        ":compress",
+        ":distortion",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
     ],
 )
 
@@ -102,25 +119,11 @@ cc_test(
     deps = [
         ":distortion",
         ":sfp",
-        ":shared",
-        "@googletest//:gtest_main",
-        "//:ops",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",
-    ],
-)
-
-cc_library(
-    name = "nuq",
-    hdrs = ["nuq.h"],
-    textual_hdrs = ["nuq-inl.h"],
-    deps = [
-        ":sfp",
-        ":shared",
-        "@hwy//:hwy",
-        "@hwy//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -138,8 +141,7 @@ cc_test(
         ":distortion",
         ":nuq",
         ":sfp",
-        ":shared",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
@@ -149,19 +151,20 @@ cc_test(
 
 cc_library(
     name = "compress",
-    hdrs = ["compress.h"],
-    textual_hdrs = [
-        "compress-inl.h",
+    hdrs = [
+        "compress.h",
+        "shared.h",
     ],
+    textual_hdrs = ["compress-inl.h"],
     deps = [
         ":blob_store",
         ":distortion",
         ":io",
         ":nuq",
         ":sfp",
-        ":shared",
-        "//:fp_arith",
         "@hwy//:hwy",
+        "@hwy//:nanobenchmark",
+        "@hwy//:profiler",
         "@hwy//:stats",
         "@hwy//:thread_pool",
     ],
@@ -170,6 +173,7 @@ cc_library(
 cc_test(
     name = "compress_test",
     size = "small",
+    timeout = "long",
     srcs = ["compress_test.cc"],
     features = ["fully_static_link"],
     linkstatic = True,
@@ -179,11 +183,11 @@ cc_test(
     deps = [
         ":compress",
         ":distortion",
-        "@googletest//:gtest_main",
+        ":test_util",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
     ],
 )
@@ -193,11 +197,9 @@ cc_library(
     name = "analyze",
     textual_hdrs = ["analyze.h"],
     deps = [
-        ":distortion",
         ":nuq",
         ":sfp",
         "@hwy//:hwy",
-        "@hwy//:nanobenchmark",  # timer
         "@hwy//:stats",
         "@hwy//:thread_pool",
         "@hwy//hwy/contrib/sort:vqsort",
@@ -210,7 +212,6 @@ cc_library(
     deps = [
         "//:allocator",
         "//:common",
-        "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:thread_pool",
     ],
@@ -221,15 +222,13 @@ cc_binary(
     srcs = ["compress_weights.cc"],
     deps = [
         ":compress",
-        ":shared",
+        ":io",
         ":weights_raw",
-        # Placeholder for internal dep, do not remove.,
+        "//:allocator",
         "//:args",
         "//:common",
-        "//:gemma_lib",
         "//:weights",
         "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
     ],

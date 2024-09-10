@@ -560,18 +560,23 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
                              const CompressedWeights<TConfig>& weights,
                              RowVectorBatch<float>& x) {
   constexpr size_t kModelDim = TConfig::kModelDim;
+  constexpr size_t kVocabSize = TConfig::kVocabSize;
   GEMMA_CONSTEXPR_EMBSCALING const float kEmbScaling =
       EmbeddingScaling<TConfig>();
 
   HWY_DASSERT(token >= 0);
-  HWY_DASSERT(token < TConfig::kVocabSize);
+  HWY_DASSERT(token < kVocabSize);
 
-  Decompress(weights.embedder_input_embedding, token * kModelDim,
+  const hn::ScalableTag<float> df;
+  DecompressAndZeroPad(
+      df,
+      MakeSpan(weights.embedder_input_embedding.data(), kVocabSize * kModelDim),
+      token * kModelDim, x.Batch(batch_idx), kModelDim);
+  MulByConst(kEmbScaling * weights.embedder_input_embedding.scale(),
              x.Batch(batch_idx), kModelDim);
-  MulByConst(kEmbScaling, x.Batch(batch_idx), kModelDim);
   if constexpr (TConfig::kAbsolutePE) {
     AddAbsolutePositionalEmbeddings(x.Batch(batch_idx), kModelDim, pos);
-  };
+  }
 }
 
 template <class TConfig, typename T>

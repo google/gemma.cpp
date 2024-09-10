@@ -18,8 +18,6 @@
 #define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_SVE)
 #endif
 
-#include "compression/nuq.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,9 +26,11 @@
 #include <random>
 
 #include "compression/distortion.h"
+#include "compression/shared.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util.h"
 #include "hwy/timer.h"
 
@@ -39,10 +39,9 @@
 #define HWY_TARGET_INCLUDE "compression/nuq_test.cc"  // NOLINT
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-// Other headers that include Highway must come after foreach_target.h
-#include "compression/nuq-inl.h"
 #include "hwy/highway.h"
-#include "hwy/tests/hwy_gtest.h"
+// After highway.h
+#include "compression/nuq-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -50,6 +49,8 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 static constexpr size_t kTimingReps = hn::AdjustedReps(3);
+static constexpr size_t kClusters = NuqStream::kClusters;
+static constexpr size_t kGroupSize = NuqStream::kGroupSize;
 
 // All-equal inputs: only one cluster
 struct TestFlat {
@@ -65,7 +66,7 @@ struct TestFlat {
     for (size_t i = 0; i < kGroupSize; ++i) {
       in[i] = 0.5f;
     }
-    ClusterBuf buf;
+    NuqStream::ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
     const size_t unused_clusters = NuqClustering::ClusterExactL2(
@@ -107,7 +108,7 @@ struct TestPlateaus {
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
-    ClusterBuf buf;
+    NuqStream::ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
     const size_t unused_clusters = NuqClustering::ClusterExactL2(
@@ -154,7 +155,7 @@ struct TestRamp {
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
-    ClusterBuf buf;
+    NuqStream::ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
     const size_t unused_clusters = NuqClustering::ClusterExactL2(
@@ -199,7 +200,7 @@ struct TestNormal {
     }
     VerifyGaussian(in_stats);
 
-    ClusterBuf buf;
+    NuqStream::ClusterBuf buf;
     float centers[kClusters];
     uint16_t indices[kGroupSize];
     double elapsed = hwy::HighestValue<double>();
@@ -239,7 +240,7 @@ struct TestOffset {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::Repartition<float, D> df;
-    const size_t total = 10 * kGroupSize;
+    const size_t total = 10 * kGroupSize;   // already padded
     const size_t kMidLen = 2 * kGroupSize;  // length of middle piece
 
     auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
@@ -247,6 +248,7 @@ struct TestOffset {
     auto dec2 = hwy::AllocateAligned<T>(kMidLen);
     auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
     HWY_ASSERT(in && dec1 && dec2 && nuq);
+    const auto nuq_span = MakeSpan(nuq.get(), total);
 
     hwy::RandomState rng;
     for (size_t i = 0; i < total; ++i) {
@@ -254,53 +256,72 @@ struct TestOffset {
     }
 
     // Encode + decode everything
-    ClusterBuf buf;
-    (void)NuqCodec::Enc(df, in.get(), total, buf, total, nuq.get(), 0);
-    NuqCodec::Dec(d, total, nuq.get(), 0, dec1.get(), total);
+    NuqStream::ClusterBuf buf;
+    (void)NuqCodec::Enc(df, in.get(), total, buf, nuq_span, 0);
+    NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, dec1.get(),
+                                   total);
 
     // Overwrite middle with first inputs
     const size_t offset = 5 * kGroupSize;
-    (void)NuqCodec::Enc(df, in.get(), kMidLen, buf, total, nuq.get(), offset);
+    (void)NuqCodec::Enc(df, in.get(), kMidLen, buf, nuq_span, offset);
 
     // Decoded middle now matches previously decoded first
-    NuqCodec::Dec(d, total, nuq.get(), offset, dec2.get(), kMidLen);
+    NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), offset, dec2.get(),
+                                   kMidLen);
     for (size_t i = 0; i < kMidLen; ++i) {
       HWY_ASSERT(dec1[i] == dec2[i]);
     }
   }
 };
 
-void TestAllOffsetF32() {
-  const hn::ForGEVectors<128, TestOffset> test;
-  test(float());
-}
-
-void TestAllOffsetBF16() {
-  const hn::ForGEVectors<128, TestOffset> test;
-  test(hwy::bfloat16_t());
-}
+void TestOffsetBF16() { hn::ForGEVectors<128, TestOffset>()(BF16()); }
+void TestOffsetF32() { hn::ForGEVectors<128, TestOffset>()(float()); }
 
 struct TestNibble {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
+    const hn::Repartition<uint8_t, D> d8;
+    const hn::Half<decltype(d8)> d8h;
     using V = hn::Vec<decltype(d)>;
-    const size_t N = hn::Lanes(d);
-    const size_t num = 4 * N;
-    auto bytes = hwy::AllocateAligned<uint8_t>(num / 2);
-    HWY_ASSERT(bytes);
-    const V v0 = hn::And(hn::Iota(d, 0), hn::Set(d, 15));
-    const V v1 = hn::Set(d, 1);
-    const V v2 = hn::OddEven(v1, hn::Zero(d));
-    const V v3 = hn::Reverse(d, v0);
-    NibbleCodec::OrderedPackU16(d, v0, v1, v2, v3, bytes.get());
-    const V out0 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 0 * N / 2);
-    const V out1 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 1 * N / 2);
-    const V out2 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 2 * N / 2);
-    const V out3 = NibbleCodec::OrderedUnpackU16(d, bytes.get() + 3 * N / 2);
-    HWY_ASSERT_VEC_EQ(d, v0, out0);
-    HWY_ASSERT_VEC_EQ(d, v1, out1);
-    HWY_ASSERT_VEC_EQ(d, v2, out2);
-    HWY_ASSERT_VEC_EQ(d, v3, out3);
+    using V8 = hn::Vec<decltype(d8)>;
+    using V8H = hn::Vec<decltype(d8h)>;
+    const V mask = hn::Set(d, 15);
+
+    {
+      const V v0 = hn::And(hn::Iota(d, 0), mask);
+      const V v1 = hn::Set(d, 1);
+      const V v2 = hn::OddEven(v1, hn::Zero(d));
+      const V v3 = hn::Reverse(d, v0);
+      const V8 nibbles = NibbleCodec::OrderedPackU16(d, v0, v1, v2, v3);
+      const V8H nibbles0 = hn::LowerHalf(d8h, nibbles);
+      const V8H nibbles1 = hn::UpperHalf(d8h, nibbles);
+      const V out0 = NibbleCodec::OrderedUnpackU16<0>(d, nibbles0);
+      const V out1 = NibbleCodec::OrderedUnpackU16<1>(d, nibbles0);
+      const V out2 = NibbleCodec::OrderedUnpackU16<0>(d, nibbles1);
+      const V out3 = NibbleCodec::OrderedUnpackU16<1>(d, nibbles1);
+      HWY_ASSERT_VEC_EQ(d, v0, out0);
+      HWY_ASSERT_VEC_EQ(d, v1, out1);
+      HWY_ASSERT_VEC_EQ(d, v2, out2);
+      HWY_ASSERT_VEC_EQ(d, v3, out3);
+    }
+    // Same, but with different values in each lane.
+    {
+      const V v0 = hn::And(hn::Iota(d, 0), mask);
+      const V v1 = hn::And(hn::Iota(d, 1), mask);
+      const V v2 = hn::And(hn::Iota(d, 2), mask);
+      const V v3 = hn::And(hn::Iota(d, 3), mask);
+      const V8 nibbles = NibbleCodec::OrderedPackU16(d, v0, v1, v2, v3);
+      const V8H nibbles0 = hn::LowerHalf(d8h, nibbles);
+      const V8H nibbles1 = hn::UpperHalf(d8h, nibbles);
+      const V out0 = NibbleCodec::OrderedUnpackU16<0>(d, nibbles0);
+      const V out1 = NibbleCodec::OrderedUnpackU16<1>(d, nibbles0);
+      const V out2 = NibbleCodec::OrderedUnpackU16<0>(d, nibbles1);
+      const V out3 = NibbleCodec::OrderedUnpackU16<1>(d, nibbles1);
+      HWY_ASSERT_VEC_EQ(d, v0, out0);
+      HWY_ASSERT_VEC_EQ(d, v1, out1);
+      HWY_ASSERT_VEC_EQ(d, v2, out2);
+      HWY_ASSERT_VEC_EQ(d, v3, out3);
+    }
   }
 };
 
@@ -309,15 +330,19 @@ void TestAllNibble() {
   test(uint16_t());
 }
 
-struct TestStream {
+// Checks the distortion from an encode and decode round trip. Unlike
+// `TestShortLengthsT` in compress_test, this covers large `num` and
+// prints the enc/dec throughput.
+struct TestEncDec {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const hn::Repartition<float, D> df;
     const size_t num = 4 * kGroupSize;
     auto in = hwy::AllocateAligned<float>(num);  // Enc() requires f32
-    auto out = hwy::AllocateAligned<T>(num);
+    auto out = hwy::AllocateAligned<T>(num);     // already padded
     auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
     HWY_ASSERT(in && out && nuq);
+    const auto nuq_span = MakeSpan(nuq.get(), num);
 
     hwy::RandomState rng;
     hwy::Stats in_stats;
@@ -327,12 +352,12 @@ struct TestStream {
     }
     VerifyGaussian(in_stats);
 
-    ClusterBuf buf;
+    NuqStream::ClusterBuf buf;
     double elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < kTimingReps; ++rep) {
       const double t0 = hwy::platform::Now();
       const size_t unused_clusters =
-          NuqCodec::Enc(df, in.get(), num, buf, num, nuq.get(), 0);
+          NuqCodec::Enc(df, in.get(), num, buf, nuq_span, 0);
       HWY_ASSERT(unused_clusters == 0);
       const double t1 = hwy::platform::Now();
       elapsed = HWY_MIN(elapsed, t1 - t0);
@@ -343,7 +368,7 @@ struct TestStream {
     elapsed = hwy::HighestValue<double>();
     for (size_t rep = 0; rep < kTimingReps; ++rep) {
       const double t0 = hwy::platform::Now();
-      NuqCodec::Dec(d, num, nuq.get(), 0, out.get(), num);
+      NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, out.get(), num);
       const double t1 = hwy::platform::Now();
       elapsed = HWY_MIN(elapsed, t1 - t0);
     }
@@ -367,129 +392,8 @@ struct TestStream {
   }
 };
 
-void TestAllStreamF32() {
-  const hn::ForGEVectors<128, TestStream> test;
-  test(float());
-}
-
-void TestAllStreamBF16() {
-  const hn::ForGEVectors<128, TestStream> test;
-  test(hwy::bfloat16_t());
-}
-
-struct TestDot {
-  template <typename T, class D>
-  HWY_INLINE void operator()(T /*unused*/, D d) {
-    const hn::Repartition<float, D> df;
-    const size_t num = 4 * kGroupSize;
-    auto in = hwy::AllocateAligned<float>(num);
-    auto dec = hwy::AllocateAligned<float>(num);
-    auto vec = hwy::AllocateAligned<T>(num);
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
-    HWY_ASSERT(in && dec && vec && nuq);
-
-    // Generate inputs and verify their distribution.
-    hwy::RandomState rng;
-    hwy::Stats in_stats;
-    for (size_t i = 0; i < num; ++i) {
-      in[i] = static_cast<float>(RandomGaussian(rng));
-      in_stats.Notify(in[i]);
-    }
-    for (size_t i = 0; i < num; ++i) {
-      const float r = static_cast<float>(RandomGaussian(rng));
-      in_stats.Notify(r);
-      vec[i] = hwy::ConvertScalarTo<T>(r);
-    }
-    VerifyGaussian(in_stats);
-
-    ClusterBuf buf;
-    const size_t unused_clusters =
-        NuqCodec::Enc(df, in.get(), num, buf, num, nuq.get(), 0);
-    HWY_ASSERT(unused_clusters == 0);
-
-    // Compute dot product without decompression.
-    float actual = 0.0f;
-    double elapsed = hwy::HighestValue<double>();
-    for (size_t rep = 0; rep < kTimingReps; ++rep) {
-      hn::Vec<decltype(df)> sum0 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum1 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum2 = hn::Zero(df);
-      hn::Vec<decltype(df)> sum3 = hn::Zero(df);
-      const double t0 = hwy::platform::Now();
-      NuqCodec::Dot(df, num, nuq.get(), 0, vec.get(), num, sum0, sum1, sum2,
-                    sum3);
-      const double t1 = hwy::platform::Now();
-      elapsed = HWY_MIN(elapsed, t1 - t0);
-      sum0 = hn::Add(hn::Add(sum0, sum1), hn::Add(sum2, sum3));
-      actual = hn::ReduceSum(df, sum0);
-    }
-
-    NuqCodec::Dec(df, num, nuq.get(), 0, dec.get(), num);
-    fprintf(stderr, "Vec %zu Dec %.2f MB/s\n", Lanes(d) * sizeof(T),
-            num * sizeof(in[0]) * 1E-6 / elapsed);
-
-    // Exact and decompressed dot products for comparison.
-    float exact = 0.0f;     // using original input
-    float expected = 0.0f;  // using decoded NUQ
-    DistortionStats dec_stats;
-    hwy::Stats ratios;
-    for (size_t i = 0; i < num; ++i) {
-      dec_stats.Notify(in[i], dec[i]);
-      const float v1 = hwy::ConvertScalarTo<float>(vec[i]);
-      exact += in[i] * v1;
-      expected += dec[i] * v1;
-      if (expected != 0.0f) {
-        ratios.Notify(exact / expected);
-      }
-    }
-    const bool isBF = sizeof(T) == 2;
-    const double dec_snr = dec_stats.GeomeanValueDivL1();
-    const double dec_wl1 = dec_stats.WeightedAverageL1();
-    const double dot_snr = 1.0 / hwy::ScalarAbs(1.0 - ratios.GeometricMean());
-    // exact and actual fluctuate due to the combination of NUQ imprecision,
-    // and whether vec[i] is negative or positive, so this is quite loose.
-    const float final_ratio = HWY_MIN(exact / actual, actual / exact);
-    if (HWY_ONCE) {
-      fprintf(stderr, "ratios %s\n", ratios.ToString().c_str());
-      fprintf(stderr,
-              "exact %.3f e2 %.4f actual %.4f final_ratio %.3f dec_snr %.2f "
-              "dot_snr %.2f dec_wl1 %.4f\n",
-              exact, expected, actual, final_ratio, dec_snr, dot_snr, dec_wl1);
-    }
-    // Final values are not too far apart.
-    HWY_ASSERT(gcpp::IsInside(0.88f, 1.0f, final_ratio));
-    // Decompressed and uncompressed dot should match exactly.
-    HWY_ASSERT(gcpp::IsNear(expected, actual, 1E-4f));
-    // Geomean of ratios for each i should be very close to one.
-    HWY_ASSERT(dot_snr >= (isBF ? 17.7 : 14.3));
-
-    // dec[] is close to in[], but we already check that in TestStream with the
-    // same input distribution.
-    HWY_ASSERT(gcpp::IsNear(13.1, dec_snr, 0.1));
-    HWY_ASSERT(gcpp::IsNear(0.034, dec_wl1, 0.001));
-    HWY_ASSERT(gcpp::IsNear(23.5, dec_stats.SumL1(), 0.1));
-    HWY_ASSERT(dec_stats.NumSignFlip() < num / kClusters);
-    HWY_ASSERT_EQ(0, dec_stats.NumExact());
-    HWY_ASSERT_EQ(0, dec_stats.NumRoundedToZero());
-    HWY_ASSERT_EQ(0.0, dec_stats.SumL1Rounded());
-    // Absolute decode errors are in [0, 0.11], and somewhat right-tailed.
-    HWY_ASSERT(gcpp::IsInside(0.0f, 2E-5f, dec_stats.L1().Min()));
-    HWY_ASSERT(gcpp::IsInside(0.09f, 0.11f, dec_stats.L1().Max()));
-    HWY_ASSERT(gcpp::IsInside(0.02, 0.03, dec_stats.L1().Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.0, 1.1, dec_stats.L1().Skewness()));
-    HWY_ASSERT(gcpp::IsInside(4.0, 5.0, dec_stats.L1().Kurtosis()));
-    static_assert(kGroupSize == 256, "Update expected*");
-  }
-};
-
-void TestAllDotF32() {
-  const hn::ForGEVectors<128, TestDot> test;
-  test(float());
-}
-void TestAllDotBF16() {
-  const hn::ForGEVectors<128, TestDot> test;
-  test(hwy::bfloat16_t());
-}
+void TestEncDecBF16() { hn::ForGEVectors<128, TestEncDec>()(BF16()); }
+void TestEncDecF32() { hn::ForGEVectors<128, TestEncDec>()(float()); }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
@@ -497,23 +401,17 @@ void TestAllDotBF16() {
 HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
-
 namespace gcpp {
 HWY_BEFORE_TEST(NuqTest);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllFlat);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllPlateaus);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllRamp);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNormal);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllOffsetF32);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllOffsetBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamF32);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllStreamBF16);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotF32);
-HWY_EXPORT_AND_TEST_P(NuqTest, TestAllDotBF16);
-#ifdef HWY_AFTER_TEST
+HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecF32);
 HWY_AFTER_TEST();
-#endif
 }  // namespace gcpp
-
-#endif
+#endif  // HWY_ONCE

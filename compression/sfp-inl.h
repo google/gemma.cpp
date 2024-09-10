@@ -52,9 +52,6 @@ HWY_INLINE hn::Mask<DU> SignedLt(DU du, hn::Vec<DU> a, hn::Vec<DU> b) {
   return SignedGt(du, b, a);
 }
 
-// Saturated subtraction; returns 0 if the result would be negative.
-static inline size_t SubOr0(size_t a, size_t b) { return a > b ? a - b : 0; }
-
 // Encode/decode functions.
 class SfpCodec {
  public:
@@ -260,9 +257,9 @@ class SfpCodec {
   }
 
   // Encodes `num` bf16 values from `in_bf` to `out_packed`. Their magnitude
-  // must be at most 1.875.
+  // must be at most SfpStream::kMax.
   template <class DBF, HWY_IF_BF16_D(DBF)>
-  static HWY_INLINE void Enc(DBF dbf, const hwy::bfloat16_t* HWY_RESTRICT in_bf,
+  static HWY_INLINE void Enc(DBF dbf, const BF16* HWY_RESTRICT in_bf,
                              size_t num, SfpStream* HWY_RESTRICT out_packed) {
     const hn::Repartition<uint8_t, DBF> d8;
     using V8 = hn::Vec<decltype(d8)>;
@@ -280,7 +277,7 @@ class SfpCodec {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 2 * N16);
     if (remaining != 0) {
-      HWY_ALIGN hwy::bfloat16_t padded[2 * hn::MaxLanes(dbf)];
+      HWY_ALIGN BF16 padded[2 * hn::MaxLanes(dbf)];
       hwy::ZeroBytes(padded, sizeof(padded));
       hwy::CopyBytes(in_bf + i, padded, remaining * sizeof(padded[0]));
       const V8 packed = Enc2B(dbf, padded);
@@ -289,7 +286,7 @@ class SfpCodec {
   }
 
   // Encodes `num` f32 values from `in_f` to `packed`. Their magnitude
-  // must be at most 1.875.
+  // must be at most SfpStream::kMax.
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Enc(DF df, const float* HWY_RESTRICT in_f, size_t num,
                              SfpStream* HWY_RESTRICT out_packed) {
@@ -317,146 +314,110 @@ class SfpCodec {
     }
   }
 
-  // Decodes `num` values from `in_packed` to `out_bf`.
+  template <class DBF16, HWY_IF_BF16_D(DBF16),
+            class V8 = hn::Vec<hn::Repartition<uint8_t, DBF16>>>
+  static HWY_INLINE void Dec2(DBF16 dbf16, V8 packed, hn::Vec<DBF16>& raw0,
+                              hn::Vec<DBF16>& raw1) {
+    Dec2B(dbf16, packed, raw0, raw1);
+  }
+
+  template <class DF, HWY_IF_F32_D(DF),
+            class V8 = hn::Vec<hn::Twice<hn::Rebind<uint8_t, DF>>>>
+  static HWY_INLINE void Dec2(DF df, V8 packed, hn::Vec<DF>& raw0,
+                              hn::Vec<DF>& raw1) {
+    const hn::Rebind<BF16, DF> dbf;  // half-vector
+    using VBF = hn::Vec<decltype(dbf)>;
+    VBF bf0, bf1;
+    Dec2B(dbf, packed, bf0, bf1);
+    raw0 = hn::PromoteTo(df, bf0);
+    raw1 = hn::PromoteTo(df, bf1);
+  }
+
+  // Decompresses to (arbitrary) `num` BF16 elements in `raw_bf`, then appends
+  // `[0, hn::Lanes(dbf))` zeroes as required to round `num` up to one vector,
+  // if it is not already. DBF argument is provided by nuq-inl.h.
   template <class DBF, HWY_IF_BF16_D(DBF)>
-  static HWY_INLINE void Dec(DBF dbf, const SfpStream* HWY_RESTRICT in_packed,
-                             size_t num, hwy::bfloat16_t* HWY_RESTRICT out_bf) {
+  static HWY_INLINE void DecompressAndZeroPad(
+      DBF dbf, const PackedSpan<const SfpStream>& packed, size_t packed_ofs,
+      BF16* HWY_RESTRICT raw_bf, size_t num) {
     const hn::Repartition<uint8_t, DBF> d8;
     using V8 = hn::Vec<decltype(d8)>;
     using VBF = hn::Vec<decltype(dbf)>;
     const size_t N16 = hn::Lanes(dbf);
 
+    const uint8_t* HWY_RESTRICT base = &packed.ptr->byte + packed_ofs;
+
     size_t i = 0;
     if (num >= 2 * N16) {
       HWY_UNROLL(1)
       for (; i <= num - 2 * N16; i += 2 * N16) {
-        const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
+        const V8 packed = hn::LoadU(d8, base + i);
         VBF bf0, bf1;
         Dec2B(dbf, packed, bf0, bf1);
-        hn::StoreU(bf0, dbf, out_bf + i);
-        hn::StoreU(bf1, dbf, out_bf + i + N16);
+        hn::StoreU(bf0, dbf, raw_bf + i);
+        hn::StoreU(bf1, dbf, raw_bf + i + N16);
       }
     }
 
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 2 * N16);
     if (remaining != 0) {
-      const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
+      const V8 packed = hn::LoadN(d8, base + i, remaining);
       VBF bf0, bf1;
       Dec2B(dbf, packed, bf0, bf1);
-      hn::StoreN(bf0, dbf, out_bf + i, remaining);
-      hn::StoreN(bf1, dbf, out_bf + i + N16, SubOr0(remaining, N16));
+      // If at most one vector, the first store adds zero padding. Check before
+      // storing the second, because callers only pad to one vector.
+      hn::StoreU(bf0, dbf, raw_bf + i);
+      if (remaining > N16) hn::StoreU(bf1, dbf, raw_bf + i + N16);
     }
   }
 
-  // Decodes `num` values from `in_packed` to `out_f`.
+  // Decompresses to (arbitrary) `num` float elements in `raw_f`, then appends
+  // `[0, hn::Lanes(df))` zeroes as required to round `num` up to one vector,
+  // if it is not already.
   template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dec(DF df, const SfpStream* HWY_RESTRICT in_packed,
-                             size_t num, float* HWY_RESTRICT out_f) {
+  static HWY_INLINE void DecompressAndZeroPad(
+      DF df, const PackedSpan<const SfpStream>& packed, size_t packed_ofs,
+      float* HWY_RESTRICT raw_f, size_t num) {
     const hn::Repartition<uint8_t, DF> d8;
     using V8 = hn::Vec<decltype(d8)>;
     using VF = hn::Vec<decltype(df)>;
     const size_t NF = hn::Lanes(df);
+
+    const uint8_t* HWY_RESTRICT base = &packed.ptr->byte + packed_ofs;
 
     size_t i = 0;
     if (num >= 4 * NF) {
       HWY_UNROLL(1)
       for (; i <= num - 4 * NF; i += 4 * NF) {
-        const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
+        const V8 packed = hn::LoadU(d8, base + i);
         VF f0, f1, f2, f3;
         Dec4F(df, packed, f0, f1, f2, f3);
-        hn::StoreU(f0, df, out_f + i + NF * 0);
-        hn::StoreU(f1, df, out_f + i + NF * 1);
-        hn::StoreU(f2, df, out_f + i + NF * 2);
-        hn::StoreU(f3, df, out_f + i + NF * 3);
+        hn::StoreU(f0, df, raw_f + i + NF * 0);
+        hn::StoreU(f1, df, raw_f + i + NF * 1);
+        hn::StoreU(f2, df, raw_f + i + NF * 2);
+        hn::StoreU(f3, df, raw_f + i + NF * 3);
       }
     }
 
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 4 * NF);
-    if (remaining != 0) {
-      const V8 packed = hn::LoadN(d8, &in_packed->byte + i, remaining);
+    if (HWY_UNLIKELY(remaining != 0)) {
+      const V8 packed = hn::LoadN(d8, base + i, remaining);
       VF f0, f1, f2, f3;
       Dec4F(df, packed, f0, f1, f2, f3);
-      hn::StoreN(f0, df, out_f + i + 0 * NF, remaining);
-      hn::StoreN(f1, df, out_f + i + 1 * NF, SubOr0(remaining, 1 * NF));
-      hn::StoreN(f2, df, out_f + i + 2 * NF, SubOr0(remaining, 2 * NF));
-      hn::StoreN(f3, df, out_f + i + 3 * NF, SubOr0(remaining, 3 * NF));
+      // We are only guaranteed one vector of padding, so cannot unconditionally
+      // store four vectors. `StoreN` would work, at the cost of saturated
+      // subtraction and creating masks. Because we know that `raw_f` is padded
+      // to at least one vector, we can instead store entire vectors and only
+      // make the address conditional, which potentially avoids branches.
+      // Separate per-vector storage may avoid conflicts.
+      HWY_ALIGN float buf[4 * hn::MaxLanes(df)];
+      hn::StoreU(f0, df, raw_f + i);
+      hn::StoreU(f1, df, (remaining > 1 * NF ? (raw_f + i) : buf) + 1 * NF);
+      hn::StoreU(f2, df, (remaining > 2 * NF ? (raw_f + i) : buf) + 2 * NF);
+      hn::StoreU(f3, df, (remaining > 3 * NF ? (raw_f + i) : buf) + 3 * NF);
     }
-  }
-
-  // Fused decode and dot product with even-odd bf16 into four f32 accumulators.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void DotEO(DF df, const SfpStream* HWY_RESTRICT in_packed,
-                               size_t num,
-                               const hwy::bfloat16_t* HWY_RESTRICT vec_aligned,
-                               hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
-                               hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
-    const hn::Repartition<uint8_t, DF> d8;
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
-    using V8 = hn::Vec<decltype(d8)>;
-    using VBF = hn::Vec<decltype(dbf)>;
-    const size_t N16 = hn::Lanes(dbf);
-    HWY_DASSERT(num % (2 * N16) == 0);  // whole SFP vector -> 2x bf16
-
-    HWY_UNROLL(1)
-    for (size_t i = 0; i < num; i += 2 * N16) {
-      const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
-      const VBF ve = hn::LoadU(dbf, vec_aligned + i);
-      const VBF vo = hn::LoadU(dbf, vec_aligned + i + N16);
-      VBF be, bo;
-      DecEvenOdd(dbf, packed, be, bo);
-      sum0 = hn::ReorderWidenMulAccumulate(df, be, ve, sum0, sum1);
-      sum2 = hn::ReorderWidenMulAccumulate(df, bo, vo, sum2, sum3);
-    }
-  }
-
-  // Fused decode and dot product with even-odd f32 into four f32 accumulators.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void DotEO(DF df, const SfpStream* HWY_RESTRICT in_packed,
-                               size_t num,
-                               const float* HWY_RESTRICT vec_aligned,
-                               hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
-                               hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
-    const hn::Repartition<uint8_t, DF> d8;
-    using V8 = hn::Vec<decltype(d8)>;
-    using VF = hn::Vec<decltype(df)>;
-    const size_t NF = hn::Lanes(df);
-    HWY_DASSERT(num % (4 * NF) == 0);  // whole SFP vector -> 4x f32
-
-    HWY_UNROLL(1)
-    for (size_t i = 0; i < num; i += 4 * NF) {
-      const V8 packed = hn::LoadU(d8, &in_packed->byte + i);
-      const VF ve0 = hn::LoadU(df, vec_aligned + i + NF * 0);
-      const VF vo0 = hn::LoadU(df, vec_aligned + i + NF * 1);
-      const VF ve1 = hn::LoadU(df, vec_aligned + i + NF * 2);
-      const VF vo1 = hn::LoadU(df, vec_aligned + i + NF * 3);
-      VF fe0, fo0, fe1, fo1;
-      DecEvenOddF(df, packed, fe0, fo0, fe1, fo1);
-      sum0 = hn::MulAdd(fe0, ve0, sum0);
-      sum1 = hn::MulAdd(fo0, vo0, sum1);
-      sum2 = hn::MulAdd(fe1, ve1, sum2);
-      sum3 = hn::MulAdd(fo1, vo1, sum3);
-    }
-  }
-
-  template <class DF, HWY_IF_F32_D(DF),
-            class V8 = hn::Vec<hn::Twice<hn::Rebind<uint8_t, DF>>>>
-  static HWY_INLINE void Dec2(DF df, V8 packed, hn::Vec<DF>& f0,
-                              hn::Vec<DF>& f1) {
-    const hn::Rebind<hwy::bfloat16_t, DF> dbf;
-    using VBF = hn::Vec<decltype(dbf)>;
-    VBF bf0, bf1;
-    Dec2B(dbf, packed, bf0, bf1);
-    f0 = hn::PromoteTo(df, bf0);
-    f1 = hn::PromoteTo(df, bf1);
-  }
-
-  template <class DBF16, HWY_IF_BF16_D(DBF16),
-            class V8 = hn::Vec<hn::Repartition<uint8_t, DBF16>>>
-  static HWY_INLINE void Dec2(DBF16 dbf16, V8 packed, hn::Vec<DBF16>& bf0,
-                              hn::Vec<DBF16>& bf1) {
-    Dec2B(dbf16, packed, bf0, bf1);
   }
 
  private:
@@ -479,7 +440,7 @@ class SfpCodec {
 
   template <class DBF, HWY_IF_BF16_D(DBF),
             class V8 = hn::Vec<hn::Repartition<uint8_t, DBF>>>
-  static HWY_INLINE V8 Enc2B(DBF dbf, const hwy::bfloat16_t* HWY_RESTRICT in) {
+  static HWY_INLINE V8 Enc2B(DBF dbf, const BF16* HWY_RESTRICT in) {
     const hn::Repartition<uint16_t, DBF> d16;
     const size_t N16 = hn::Lanes(d16);
     using V16 = hn::Vec<decltype(d16)>;
@@ -505,7 +466,7 @@ class SfpCodec {
             class V8 = hn::Vec<hn::Repartition<uint8_t, DF>>>
   static HWY_INLINE V8 Enc4F(DF df, const float* HWY_RESTRICT in) {
     const hn::Repartition<uint16_t, DF> d16;
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+    const hn::Repartition<BF16, DF> dbf;
     using VF = hn::Vec<decltype(df)>;
     using V16 = hn::Vec<decltype(d16)>;
     const size_t NF = hn::Lanes(df);
@@ -549,7 +510,7 @@ class SfpCodec {
   static HWY_INLINE void Dec4F(DF df, V8 packed, hn::Vec<DF>& f0,
                                hn::Vec<DF>& f1, hn::Vec<DF>& f2,
                                hn::Vec<DF>& f3) {
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+    const hn::Repartition<BF16, DF> dbf;
     using VBF = hn::Vec<decltype(dbf)>;
     VBF bf0, bf1;
     Dec2B(dbf, packed, bf0, bf1);
@@ -559,6 +520,7 @@ class SfpCodec {
     f3 = hn::PromoteUpperTo(df, bf1);
   }
 
+  // TODO: currently unused, but keep for potential later MatMul packing.
   template <class DBF, HWY_IF_BF16_D(DBF),
             class V8 = hn::Vec<hn::Repartition<uint8_t, DBF>>>
   static HWY_INLINE void DecEvenOdd(DBF dbf, V8 packed, hn::Vec<DBF>& even,
@@ -576,7 +538,7 @@ class SfpCodec {
   static HWY_INLINE void DecEvenOddF(DF df, V8 packed, hn::Vec<DF>& even0,
                                      hn::Vec<DF>& odd0, hn::Vec<DF>& even1,
                                      hn::Vec<DF>& odd1) {
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+    const hn::Repartition<BF16, DF> dbf;
     using VBF = hn::Vec<decltype(dbf)>;
     VBF even_bf, odd_bf;
     DecEvenOdd(dbf, packed, even_bf, odd_bf);

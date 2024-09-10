@@ -21,9 +21,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include <algorithm>
-#include <array>
-#include <cmath>
+#include <algorithm>  // std::max
+#include <cmath>      // std::abs
 #include <memory>
 
 #include "compression/compress.h"
@@ -37,58 +36,59 @@
 // clang-format on
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
-#include "hwy/tests/test_util-inl.h"
 // After highway.h
 #include "ops/matvec-inl.h"
-#include "ops/ops-inl.h"  // MulByConst
+#include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <size_t kOuter, size_t kInner>
-hwy::AlignedFreeUniquePtr<float[]> SimpleMatVecAdd(
-    const CompressedArray<float, kOuter * kInner>& mat,
-    const hwy::AlignedFreeUniquePtr<float[]>& vec,
-    const hwy::AlignedFreeUniquePtr<float[]>& add) {
-  hwy::AlignedFreeUniquePtr<float[]> uncompressed_mat =
-      hwy::AllocateAligned<float>(kOuter * kInner);
-  hwy::AlignedFreeUniquePtr<float[]> out = hwy::AllocateAligned<float>(kOuter);
-  HWY_ASSERT(uncompressed_mat && out);
-  Decompress(mat, 0, uncompressed_mat.get(), kOuter * kInner);
-  MulByConst(mat.scale(), uncompressed_mat.get(), kOuter * kInner);
+using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
+
+template <size_t kOuter, size_t kInner, size_t kNum = kOuter * kInner>
+FloatPtr SimpleMatVecAdd(const CompressedArray<float, kNum>& mat,
+                         const FloatPtr& vec, const FloatPtr& add) {
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(kNum);
+  FloatPtr out = hwy::AllocateAligned<float>(kOuter);
+  HWY_ASSERT(raw_mat && out);
+  const hn::ScalableTag<float> df;
+  DecompressAndZeroPad(df, MakeSpan(mat.data(), kNum), 0, raw_mat.get(), kNum);
   for (size_t idx_row = 0; idx_row < kOuter; idx_row++) {
-    out[idx_row] = add[idx_row];
+    out[idx_row] = 0.0f;
     for (size_t idx_col = 0; idx_col < kInner; idx_col++) {
-      out[idx_row] +=
-          uncompressed_mat[kInner * idx_row + idx_col] * vec[idx_col];
+      out[idx_row] += raw_mat[kInner * idx_row + idx_col] * vec[idx_col];
     }
+    out[idx_row] *= mat.scale();
+    out[idx_row] += add[idx_row];
   }
   return out;
 }
 
-template <typename MatT, size_t kOuter, size_t kInner>
-CompressedArray<MatT, kOuter * kInner> GenerateMat(size_t offset,
-                                                   hwy::ThreadPool& pool) {
+template <typename MatT, size_t kOuter, size_t kInner,
+          size_t kNum = kOuter * kInner,
+          class MatPtr = std::unique_ptr<CompressedArray<MatT, kNum>>>
+MatPtr GenerateMat(size_t offset, hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  CompressedArray<MatT, kOuter * kInner> mat;
-  std::array<float, kOuter * kInner> content;
+  MatPtr mat = std::make_unique<CompressedArray<MatT, kNum>>();
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(kNum);
+  HWY_ASSERT(raw_mat);
   const float scale = 1.0f / kInner;
   pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kInner; j++) {
-      content[i * kInner + j] =
+      raw_mat[i * kInner + j] =
           static_cast<float>((i * kInner + j + offset) * scale);
     }
   });
 
-  Compress(content, ws, mat, pool);
-  mat.set_scale(1.9f);  // Arbitrary value, different from 1.
+  CompressScaled(raw_mat.get(), kNum, ws, *mat, pool);
+  mat->set_scale(1.9f);  // Arbitrary value, different from 1.
   return mat;
 }
 
 template <size_t length>
-hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
-  hwy::AlignedFreeUniquePtr<float[]> vec = hwy::AllocateAligned<float>(length);
+FloatPtr GenerateVec(size_t offset) {
+  FloatPtr vec = hwy::AllocateAligned<float>(length);
   HWY_ASSERT(vec);
   for (size_t idx = 0; idx < length; idx++) {
     vec[idx] = static_cast<float>(idx + offset);
@@ -97,8 +97,7 @@ hwy::AlignedFreeUniquePtr<float[]> GenerateVec(size_t offset) {
 }
 
 template <size_t length>
-void AssertClose(const hwy::AlignedFreeUniquePtr<float[]>& a,
-                 const hwy::AlignedFreeUniquePtr<float[]>& b) {
+void AssertClose(const FloatPtr& a, const FloatPtr& b) {
   for (size_t idx = 0; idx < length; idx++) {
     const float rel_abs_delta = std::abs(a[idx] - b[idx]) /
                                 std::max(std::abs(a[idx]), std::abs(b[idx]));
@@ -111,16 +110,13 @@ void TestMatVecAdd() {
   hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat =
-      GenerateMat<float, kOuter, kInner>(0, pool);
-  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add = GenerateVec<kOuter>(0);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out =
-      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out =
-      hwy::AllocateAligned<float>(kOuter);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  FloatPtr vec = GenerateVec<kInner>(0);
+  FloatPtr add = GenerateVec<kOuter>(0);
+  FloatPtr expected_out = SimpleMatVecAdd<kOuter, kInner>(*mat, vec, add);
+  FloatPtr actual_out = hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add && expected_out && actual_out);
-  MatVecAdd<kOuter, kInner>(mat, 0, vec.get(), add.get(), actual_out.get(),
+  MatVecAdd<kOuter, kInner>(*mat, 0, vec.get(), add.get(), actual_out.get(),
                             pool);
   AssertClose<kOuter>(actual_out, expected_out);
 }
@@ -129,25 +125,20 @@ void TestTwoMatVecAdd() {
   hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat0 =
-      GenerateMat<float, kOuter, kInner>(0, pool);
-  CompressedArray<float, kOuter * kInner> mat1 =
-      GenerateMat<float, kOuter, kInner>(1, pool);
-  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out0 =
-      SimpleMatVecAdd<kOuter, kInner>(mat0, vec, add0);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
-      SimpleMatVecAdd<kOuter, kInner>(mat1, vec, add1);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out0 =
-      hwy::AllocateAligned<float>(kOuter);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
-      hwy::AllocateAligned<float>(kOuter);
+  auto mat0 = GenerateMat<float, kOuter, kInner>(0, pool);
+  auto mat1 = GenerateMat<float, kOuter, kInner>(1, pool);
+  FloatPtr vec = GenerateVec<kInner>(0);
+  FloatPtr add0 = GenerateVec<kOuter>(0);
+  FloatPtr add1 = GenerateVec<kOuter>(1);
+  FloatPtr expected_out0 = SimpleMatVecAdd<kOuter, kInner>(*mat0, vec, add0);
+  FloatPtr expected_out1 = SimpleMatVecAdd<kOuter, kInner>(*mat1, vec, add1);
+  FloatPtr actual_out0 = hwy::AllocateAligned<float>(kOuter);
+  FloatPtr actual_out1 = hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
              expected_out1 && actual_out1);
-  TwoMatVecAdd<kOuter, kInner>(mat0, mat1, 0, vec.get(), add0.get(), add1.get(),
-                               actual_out0.get(), actual_out1.get(), pool);
+  TwoMatVecAdd<kOuter, kInner>(*mat0, *mat1, 0, vec.get(), add0.get(),
+                               add1.get(), actual_out0.get(), actual_out1.get(),
+                               pool);
   AssertClose<kOuter>(actual_out0, expected_out0);
   AssertClose<kOuter>(actual_out1, expected_out1);
 }
@@ -156,22 +147,17 @@ void TestTwoOfsMatVecAddLoop() {
   hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  CompressedArray<float, kOuter * kInner> mat =
-      GenerateMat<float, kOuter, kInner>(0, pool);
-  hwy::AlignedFreeUniquePtr<float[]> vec = GenerateVec<kInner>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add0 = GenerateVec<kOuter>(0);
-  hwy::AlignedFreeUniquePtr<float[]> add1 = GenerateVec<kOuter>(1);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out0 =
-      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add0);
-  hwy::AlignedFreeUniquePtr<float[]> expected_out1 =
-      SimpleMatVecAdd<kOuter, kInner>(mat, vec, add1);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out0 =
-      hwy::AllocateAligned<float>(kOuter);
-  hwy::AlignedFreeUniquePtr<float[]> actual_out1 =
-      hwy::AllocateAligned<float>(kOuter);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  FloatPtr vec = GenerateVec<kInner>(0);
+  FloatPtr add0 = GenerateVec<kOuter>(0);
+  FloatPtr add1 = GenerateVec<kOuter>(1);
+  FloatPtr expected_out0 = SimpleMatVecAdd<kOuter, kInner>(*mat, vec, add0);
+  FloatPtr expected_out1 = SimpleMatVecAdd<kOuter, kInner>(*mat, vec, add1);
+  FloatPtr actual_out0 = hwy::AllocateAligned<float>(kOuter);
+  FloatPtr actual_out1 = hwy::AllocateAligned<float>(kOuter);
   HWY_ASSERT(vec && add0 && add1 && expected_out0 && actual_out0 &&
              expected_out1 && actual_out1);
-  TwoOfsMatVecAddLoop<kOuter, kInner>(mat, 0, 0, vec.get(), add0.get(),
+  TwoOfsMatVecAddLoop<kOuter, kInner>(*mat, 0, 0, vec.get(), add0.get(),
                                       add1.get(), actual_out0.get(),
                                       actual_out1.get());
   AssertClose<kOuter>(actual_out0, expected_out0);

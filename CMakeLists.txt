@@ -44,10 +44,10 @@ set(SOURCES
   compression/io_win.cc
   compression/io.cc
   compression/io.h
-  compression/nuq.h
   compression/nuq-inl.h
   compression/sfp-inl.h
   compression/shared.h
+  compression/test_util-inl.h
   compression/weights_raw.h
   backprop/activations.h
   backprop/backward.cc

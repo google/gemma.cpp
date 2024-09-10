@@ -52,11 +52,14 @@ namespace HWY_NAMESPACE {
 template <typename ArrayT>
 void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
                     const float scaling, float* HWY_RESTRICT output,
-                    size_t model_dim) {
+                    size_t model_dim, size_t vocab_size) {
+  const hn::ScalableTag<float> df;
   HWY_ASSERT(!prompt.empty());
   for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     int token = prompt[pos];
-    Decompress(weights, token * model_dim, output + pos * model_dim, model_dim);
+    DecompressAndZeroPad(df, MakeSpan(weights.data(), model_dim * vocab_size),
+                         token * model_dim, output + pos * model_dim,
+                         model_dim);
     MulByConst(scaling, output + pos * model_dim, model_dim);
   }
 }
@@ -245,7 +248,7 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
   const size_t num_tokens = prompt.size() - 1;
 
   InputEmbedding(weights.embedder_input_embedding, prompt, kEmbScaling,
-                 forward.layers[0].input.data(), kModelDim);
+                 forward.layers[0].input.data(), kModelDim, kVocabSize);
 
   for (size_t layer = 0; layer < kLayers; ++layer) {
     auto type = TConfig::kLayerConfig[layer];

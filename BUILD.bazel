@@ -48,15 +48,6 @@ cc_library(
     ],
 )
 
-# Avoids circular dependency: fp_arith-inl -> compress-inl -> ops-inl
-cc_library(
-    name = "fp_arith",
-    textual_hdrs = ["ops/fp_arith-inl.h"],
-    deps = [
-        "@hwy//:hwy",
-    ],
-)
-
 cc_library(
     name = "ops",
     hdrs = [
@@ -64,13 +55,13 @@ cc_library(
     ],
     textual_hdrs = [
         "ops/dot-inl.h",
+        "ops/fp_arith-inl.h",
         "ops/matmul-inl.h",
         "ops/matvec-inl.h",
         "ops/ops-inl.h",
     ],
     deps = [
         ":allocator",
-        ":fp_arith",
         ":threading",
         "//compression:compress",
         "//compression:sfp",
@@ -97,14 +88,17 @@ cc_test(
         ":common",
         ":gemma_lib",
         ":ops",
+        ":test_util",
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
+        "//compression:test_util",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:nanobenchmark",  #buildcleaner: keep
         "@hwy//:profiler",
         "@hwy//:stats",
+        "@hwy//:thread_pool",
     ],
 )
 
@@ -468,6 +462,7 @@ cc_library(
         ":ops",
         ":prompt",
         ":weights",
+        "@hwy//:dot",
         "@hwy//:hwy",  # base.h
         "@hwy//:thread_pool",
     ],

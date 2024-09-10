@@ -26,6 +26,7 @@
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
+#include "compression/compress.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
@@ -41,8 +42,8 @@
 #endif
 
 #include "compression/compress-inl.h"
+#include "ops/dot-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
-#include "hwy/contrib/dot/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -54,11 +55,12 @@ template <typename To, typename From>
 HWY_INLINE constexpr std::enable_if_t<
     std::is_arithmetic_v<To> && std::is_arithmetic_v<From>, To>
 StaticCast(From from) noexcept {
-  if constexpr (std::is_unsigned_v<From> && std::is_floating_point_v<To>)
+  if constexpr (std::is_unsigned_v<From> && std::is_floating_point_v<To>) {
     return static_cast<To>(
         static_cast<hwy::SignedFromSize<sizeof(From)>>(from));
-  else
+  } else {
     return static_cast<To>(from);
+  }
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -136,48 +138,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(float* HWY_RESTRICT x,
                 [](D d, hn::Vec<D> v) HWY_ATTR { return Sigmoid(d, v); });
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED float Dot(const float* HWY_RESTRICT a,
-                                               const float* HWY_RESTRICT b,
-                                               size_t size) {
-  PROFILER_ZONE("ops.Dot");
-  const hn::ScalableTag<float> d;
-  HWY_DASSERT(size >= hn::Lanes(d));
-  HWY_DASSERT(size % hn::Lanes(d) == 0);
-  constexpr int kAssumptions =
-      hn::Dot::kAtLeastOneVector | hn::Dot::kMultipleOfVector;
-  return hn::Dot::Compute<kAssumptions>(d, a, b, size);
-}
-
 namespace detail {
-
-// = Dot(a, a, size), but that is not allowed due to HWY_RESTRICT.
-template <typename VecT>
-float SquaredL2(const VecT* HWY_RESTRICT a, size_t size) {
-  using TraitsV = CompressTraits<VecT>;
-
-  const hn::ScalableTag<float> d;
-  using V = hn::Vec<decltype(d)>;
-  const size_t N = hn::Lanes(d);
-  HWY_DASSERT(size >= 2 * N);
-  HWY_DASSERT(size % (2 * N) == 0);
-
-  // TODO: use more accurate Dot
-  V sum0 = hn::Zero(d);
-  V sum1 = hn::Zero(d);
-  for (size_t i = 0; i <= size - 2 * N; i += 2 * N) {
-    V a0, a1;
-    TraitsV::Decompress2(d, a, i, a0, a1);
-    sum0 = hn::MulAdd(a0, a0, sum0);
-    sum1 = hn::MulAdd(a1, a1, sum1);
-  }
-
-  return hn::ReduceSum(d, hn::Add(sum0, sum1));
-}
 
 // Shared by RMSNorm and RMSNormInplace.
 template <typename VecT>
 float RMSNormMul(const VecT* HWY_RESTRICT x, size_t size) {
-  const float l2 = SquaredL2(x, size);
+  const hn::ScalableTag<float> df;
+  const float l2 = DecompressAndCall(df, x, size, DotKernelCompensated());
   constexpr float kEps = 1e-6f;  // avoid divide by zero
   return 1.0f / sqrtf(l2 / StaticCast<float>(size) + kEps);
 }
@@ -191,9 +158,6 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
                                            const size_t size) {
   PROFILER_FUNC;
 
-  using TraitsV = CompressTraits<VecT>;
-  using TraitsW = CompressTraits<WeightT>;
-
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
@@ -201,17 +165,21 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
 
   const VF mul = hn::Set(df, detail::RMSNormMul(x, size));
 
+  const auto packed_w = MakeSpan(weight, size);
+  const auto packed_v = MakeSpan(x, size);
+  const auto packed_out = MakeSpan(out, size);
+
   HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
   for (size_t i = 0; i < size; i += 2 * NF) {
     VF v0, v1, w0, w1;
-    TraitsV::Decompress2(df, x, i, v0, v1);
-    TraitsW::Decompress2(df, weight, i, w0, w1);
+    Decompress2(df, packed_v, i, v0, v1);
+    Decompress2(df, packed_w, i, w0, w1);
     const VF m0 = hn::Mul(mul, v0);
     const VF m1 = hn::Mul(mul, v1);
     // (1+weight) * m = m + weight*m = one FMA.
     const VF out0 = hn::MulAdd(m0, w0, m0);
     const VF out1 = hn::MulAdd(m1, w1, m1);
-    detail::Store2(df, out0, out1, out + i);
+    Compress2(df, out0, out1, packed_out, i);
   }
 }
 
@@ -222,9 +190,6 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const size_t size) {
   PROFILER_FUNC;
 
-  using TraitsV = CompressTraits<VecT>;
-  using TraitsW = CompressTraits<WeightT>;
-
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
@@ -232,17 +197,20 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
 
   const VF mul = hn::Set(df, detail::RMSNormMul(inout, size));
 
+  const auto packed_w = MakeSpan(weight, size);
+  const auto packed_v = MakeSpan(inout, size);
+
   HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
   for (size_t i = 0; i < size; i += 2 * NF) {
     VF v0, v1, w0, w1;
-    TraitsV::Decompress2(df, inout, i, v0, v1);
-    TraitsW::Decompress2(df, weight, i, w0, w1);
-    const VF m0 = hn::Mul(mul, hn::LoadU(df, inout + i));
-    const VF m1 = hn::Mul(mul, hn::LoadU(df, inout + i + NF));
+    Decompress2(df, MakeConst(packed_v), i, v0, v1);
+    Decompress2(df, packed_w, i, w0, w1);
+    const VF m0 = hn::Mul(mul, v0);
+    const VF m1 = hn::Mul(mul, v1);
     // (1+weight) * m = m + weight*m = one FMA.
     const VF out0 = hn::MulAdd(m0, w0, m0);
     const VF out1 = hn::MulAdd(m1, w1, m1);
-    detail::Store2(df, out0, out1, inout + i);
+    Compress2(df, out0, out1, packed_v, i);
   }
 }
 
@@ -486,9 +454,9 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   const V vmin = hn::Set(d, hwy::LowestValue<float>());
   V vmax = vmin;
   V* pmax = &vmax;  // workaround for SVE: cannot capture &vector directly
-  Foreach(d, x, mask_pos, vmin, [pmax](const auto d, const V value) HWY_ATTR {
-    *pmax = hn::Max(*pmax, value);
-  });
+  hn::Foreach(d, x, mask_pos, vmin,
+              [pmax](const auto d, const V value)
+                  HWY_ATTR { *pmax = hn::Max(*pmax, value); });
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
@@ -504,9 +472,9 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 
   V sum = hn::Zero(d);
   V* psum = &sum;
-  Foreach(d, x, mask_pos, sum, [psum](const auto d, const V value) HWY_ATTR {
-    *psum = hn::Add(*psum, value);
-  });
+  hn::Foreach(d, x, mask_pos, sum,
+              [psum](const auto d, const V value)
+                  HWY_ATTR { *psum = hn::Add(*psum, value); });
 
   // Normalize to probability distribution
   const float mul = 1.0f / hn::ReduceSum(d, sum);

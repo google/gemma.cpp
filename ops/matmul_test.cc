@@ -45,16 +45,17 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-namespace hn = hwy::HWY_NAMESPACE;
+using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
 
 // Generates inputs: deterministic, within max SfpStream range.
-template <typename MatT, size_t kRows, size_t kCols>
-std::unique_ptr<CompressedArray<MatT, kRows * kCols>> GenerateMatHeap(
-    size_t offset, hwy::ThreadPool& pool) {
+template <typename MatT, size_t kRows, size_t kCols,
+          size_t kNum = kRows * kCols,
+          class MatPtr = std::unique_ptr<CompressedArray<MatT, kNum>>>
+MatPtr GenerateMatHeap(size_t offset, hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  hwy::AlignedFreeUniquePtr<float[]> content =
-      hwy::AllocateAligned<float>(kRows * kCols);
-  const float scale = 1.875f / (kCols * kRows + offset);
+  FloatPtr content = hwy::AllocateAligned<float>(kNum);
+  HWY_ASSERT(content);
+  const float scale = SfpStream::kMax / (kNum + offset);
   pool.Run(0, kRows, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kCols; j++) {
       content[i * kCols + j] =
@@ -62,21 +63,19 @@ std::unique_ptr<CompressedArray<MatT, kRows * kCols>> GenerateMatHeap(
     }
   });
 
-  std::unique_ptr<CompressedArray<MatT, kRows * kCols>> mat =
-      std::make_unique<CompressedArray<MatT, kRows * kCols>>();
-  Compress(content.get(), kRows * kCols, ws, kRows * kCols, mat->data(), 0,
-           pool);
+  MatPtr mat = std::make_unique<CompressedArray<MatT, kNum>>();
+  CompressScaled(content.get(), kNum, ws, *mat, pool);
   mat->set_scale(0.6f);  // Arbitrary value, different from 1.
   return mat;
 }
 
-template <typename MatT, size_t kRows, size_t kCols>
-std::unique_ptr<CompressedArray<MatT, kRows * kCols>> GenerateTransposeMatHeap(
-    size_t offset, hwy::ThreadPool& pool) {
+template <typename MatT, size_t kRows, size_t kCols,
+          size_t kNum = kRows * kCols,
+          class MatPtr = std::unique_ptr<CompressedArray<MatT, kNum>>>
+MatPtr GenerateTransposeMatHeap(size_t offset, hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  hwy::AlignedFreeUniquePtr<float[]> content =
-      hwy::AllocateAligned<float>(kRows * kCols);
-  const float scale = 1.875f / (kCols * kRows + offset);
+  FloatPtr content = hwy::AllocateAligned<float>(kNum);
+  const float scale = SfpStream::kMax / (kNum + offset);
   pool.Run(0, kRows, [&](const size_t i, size_t /*thread*/) {
     for (size_t j = 0; j < kCols; j++) {
       content[j * kRows + i] =
@@ -84,40 +83,29 @@ std::unique_ptr<CompressedArray<MatT, kRows * kCols>> GenerateTransposeMatHeap(
     }
   });
 
-  std::unique_ptr<CompressedArray<MatT, kRows * kCols>> mat =
-      std::make_unique<CompressedArray<MatT, kRows * kCols>>();
-  Compress(content.get(), kRows * kCols, ws, kRows * kCols, mat->data(), 0,
-           pool);
+  MatPtr mat = std::make_unique<CompressedArray<MatT, kNum>>();
+  CompressScaled(content.get(), kNum, ws, *mat, pool);
   // Arbitrary value, different from 1, must match GenerateMatHeap.
   mat->set_scale(0.6f);
   return mat;
 }
 
-template <typename MatT, size_t kRows, size_t kCols>
-std::unique_ptr<CompressedArray<MatT, kRows * kCols>> GenerateZeroMatHeap(
-    hwy::ThreadPool& pool) {
+template <typename MatT, size_t kRows, size_t kCols,
+          size_t kNum = kRows * kCols,
+          class MatPtr = std::unique_ptr<CompressedArray<MatT, kNum>>>
+MatPtr GenerateZeroMatHeap(hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  hwy::AlignedFreeUniquePtr<float[]> content =
-      hwy::AllocateAligned<float>(kRows * kCols);
+  FloatPtr content = hwy::AllocateAligned<float>(kNum);
+  HWY_ASSERT(content);
 
   pool.Run(0, kRows, [&](const size_t i, size_t thread) {
     hwy::ZeroBytes(&content[i * kCols], kCols * sizeof(content[0]));
   });
 
-  std::unique_ptr<CompressedArray<MatT, kRows * kCols>> mat =
-      std::make_unique<CompressedArray<MatT, kRows * kCols>>();
-  Compress(content.get(), kRows * kCols, ws, kRows * kCols, mat->data(), 0,
-           pool);
+  MatPtr mat = std::make_unique<CompressedArray<MatT, kNum>>();
+  CompressScaled(content.get(), kNum, ws, *mat, pool);
   mat->set_scale(1.2f);  // Arbitrary value, different from 1.
   return mat;
-}
-
-template <typename MatT>
-void Decompress(const MatT* compressed, size_t num, float* out) {
-  const hn::ScalableTag<float> d;
-  hwy::AlignedFreeUniquePtr<float[]> b = hwy::AllocateAligned<float>(num);
-  CompressTraits<MatT>::Decompress(d, /*in_capacity=*/0, compressed, 0, out,
-                                   num);
 }
 
 // Returns 1-norm, used for estimating tolerable numerical differences.
@@ -135,18 +123,21 @@ double MaxColAbsSum(const float* HWY_RESTRICT a, size_t rows, size_t cols) {
 
 template <typename MatTA, typename MatTB>
 void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
-                 const MatTA* HWY_RESTRICT a_compr,
-                 const MatTB* HWY_RESTRICT b_trans_compr,
+                 const MatTA* HWY_RESTRICT pa,
+                 const MatTB* HWY_RESTRICT pb_trans,
                  const float* HWY_RESTRICT expected_c,
                  const float* HWY_RESTRICT actual_c) {
+  const hn::ScalableTag<float> df;
   const size_t num_a = rows_ac * cols_ab;
   const size_t num_b = cols_c_rows_b * cols_ab;
+  HWY_ASSERT(num_a % hn::Lanes(df) == 0);  // for DecompressAndZeroPad
+  HWY_ASSERT(num_b % hn::Lanes(df) == 0);  // for DecompressAndZeroPad
   const size_t num_c = rows_ac * cols_c_rows_b;
-  hwy::AlignedFreeUniquePtr<float[]> a = hwy::AllocateAligned<float>(num_a);
-  hwy::AlignedFreeUniquePtr<float[]> b_trans =
-      hwy::AllocateAligned<float>(num_b);
-  Decompress(a_compr, num_a, a.get());
-  Decompress(b_trans_compr, num_b, b_trans.get());
+  FloatPtr a = hwy::AllocateAligned<float>(num_a);
+  FloatPtr b_trans = hwy::AllocateAligned<float>(num_b);
+  HWY_ASSERT(a && b_trans);
+  DecompressAndZeroPad(df, MakeSpan(pa, num_a), 0, a.get(), num_a);
+  DecompressAndZeroPad(df, MakeSpan(pb_trans, num_b), 0, b_trans.get(), num_b);
 
   const double norm = MaxColAbsSum(a.get(), rows_ac, cols_ab) *
                       MaxColAbsSum(b_trans.get(), cols_c_rows_b, cols_ab);
@@ -196,38 +187,37 @@ HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
                            const MatTA* HWY_RESTRICT a,
                            const MatTB* HWY_RESTRICT b_compr, const float scale,
                            const float* add, float* HWY_RESTRICT out) {
-  const hn::ScalableTag<float> d;
-  hwy::AlignedFreeUniquePtr<float[]> b =
-      hwy::AllocateAligned<float>(cols_a_rows_b * cols_bc);
-  CompressTraits<MatTB>::Decompress(d, /*in_capacity=*/0, b_compr, 0, b.get(),
-                                    cols_a_rows_b * cols_bc);
+  const size_t num_b = cols_a_rows_b * cols_bc;
+  FloatPtr b = hwy::AllocateAligned<float>(num_b);
+  HWY_ASSERT(b);
+  const hn::ScalableTag<float> df;
+  DecompressAndZeroPad(df, MakeSpan(b_compr, num_b), 0, b.get(), num_b);
   MatMulSlow(rows_ac, cols_a_rows_b, cols_bc, a, b.get(), scale, add, out);
 }
 
 void PrintSpeed(const char* algo, size_t rows_ac, size_t cols_a_rows_b,
                 size_t cols_bc, double elapsed) {
+  const size_t num_b = cols_a_rows_b * cols_bc;
   // 2x because of FMA.
   fprintf(stderr, "                     %10s: %f seconds, %.1f GFLOPS.\n", algo,
-          elapsed, 2 * 1E-9 * rows_ac * cols_a_rows_b * cols_bc / elapsed);
+          elapsed, 2 * 1E-9 * rows_ac * num_b / elapsed);
 }
 
 template <size_t kRowsAC, size_t kColsARowsB, size_t kColsBC, bool kAdd,
           typename MatTA, typename MatTB = MatTA>
 void TestMatMul(MatMulEnv& env) {
   hwy::ThreadPool& pool = env.Pool();
-  using TraitsA = CompressTraits<MatTA>;
-  using TraitsB = CompressTraits<MatTB>;
   const bool want_bench = kColsBC > 2000;  // avoid spam for small matrices
   fprintf(stderr, "TestMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
-          kRowsAC, kColsARowsB, kColsBC, kAdd, TraitsA::Name(),
-          TraitsB::Name());
+          kRowsAC, kColsARowsB, kColsBC, kAdd, TypeName<MatTA>(),
+          TypeName<MatTB>());
 
   std::unique_ptr<CompressedArray<MatTA, kRowsAC * kColsARowsB>> a =
       GenerateMatHeap<MatTA, kRowsAC, kColsARowsB>(0, pool);
   std::unique_ptr<CompressedArray<MatTB, kColsARowsB * kColsBC>> b_trans =
       GenerateTransposeMatHeap<MatTB, kColsARowsB, kColsBC>(0, pool);
-  hwy::AlignedFreeUniquePtr<float[]> c =
-      hwy::AllocateAligned<float>(kRowsAC * kColsBC);
+  FloatPtr c = hwy::AllocateAligned<float>(kRowsAC * kColsBC);
+  HWY_ASSERT(c);
 
   const float scale = a->scale() * b_trans->scale();
   std::unique_ptr<CompressedArray<float, kColsBC>> add;

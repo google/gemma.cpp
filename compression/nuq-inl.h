@@ -19,10 +19,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
-#include "compression/nuq.h"
 #include "compression/shared.h"
 #include "hwy/base.h"
+
+#if HWY_IS_MSAN
+#include <sanitizer/msan_interface.h>
+#endif
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_NUQ_INL_H_
 
@@ -40,17 +44,24 @@
 #include "compression/sfp-inl.h"
 #include "hwy/contrib/sort/vqsort-inl.h"
 
-#ifndef HWY_IF_CONSTEXPR
-#define HWY_IF_CONSTEXPR if
-#endif
-
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
+#if HWY_IS_MSAN
+  __msan_check_mem_is_initialized(ptr, size);
+#else
+  (void)ptr;
+  (void)size;
+#endif
+}
+
 // For internal use by NuqCodec.
 class NuqClustering {
+  static constexpr size_t kGroupSize = NuqStream::kGroupSize;
+
   // To go from sorted order back to the original order in O(1), we store the
   // original index in the lower bits of the float32 mantissa, which means they
   // are sorted alongside the value.
@@ -88,11 +99,13 @@ class NuqClustering {
     explicit ClusterCost(const float* HWY_RESTRICT sorted) {
       double cumsum = 0.0;
       double cumsum2 = 0.0;
-      cumsum_[0] = cumsum2_[0] = 0.0;
+      dcumsum_[0] = 0.0;
+      cumsum_[0] = cumsum2_[0] = 0.0f;
       for (size_t i = 0; i < kGroupSize; ++i) {
         const float x = FloatPayload::Clear(sorted[i]);
         cumsum += x;
         cumsum2 += static_cast<double>(x) * x;
+        dcumsum_[1 + i] = cumsum;
         cumsum_[1 + i] = static_cast<float>(cumsum);
         cumsum2_[1 + i] = static_cast<float>(cumsum2);
       }
@@ -132,8 +145,10 @@ class NuqClustering {
     }
 
     // Returns cost (L2 norm) for a single cluster, used for backtracking.
-    float SumOfSorted(size_t first, size_t last) const {
-      return cumsum_[last + 1] - cumsum_[first];
+    double SumOfSorted(size_t first, size_t last) const {
+      HWY_DASSERT(first < kGroupSize);
+      HWY_DASSERT(last < kGroupSize);
+      return dcumsum_[last + 1] - dcumsum_[first];
     }
 
     // Returns vector of costs of clustering first..last + i with their means.
@@ -199,6 +214,8 @@ class NuqClustering {
     float cumsum2_[kGroupSize + 1 + kMaxLanes];
     float len_[kMaxLanes + kGroupSize + 1 + kMaxLanes];      // = vlen[i]
     float inv_len_[kMaxLanes + kGroupSize + 1 + kMaxLanes];  // = 1 / vlen[i]
+
+    double dcumsum_[kGroupSize + 1];  // for SumOfSorted
   };
 
   // Dynamic programming step: returns costs of clustering 0..last+i, where the
@@ -206,18 +223,17 @@ class NuqClustering {
   // `first`, and `last`; vectorized across `last`. `first` may be greater than
   // `last`. `valid[i]` is `first <= last + i`.
   template <class DF, class VF = hn::Vec<DF>, class MF = hn::Mask<DF>>
-  static HWY_INLINE VF ClusterDynProg(DF df, const AlignedMatrix<float>& D,
-                                      const ClusterCost& cc,
-                                      const size_t idx_cluster,
-                                      const size_t first, const size_t last,
-                                      const MF valid) {
+  static HWY_INLINE VF
+  ClusterDynProg(DF df, const NuqStream::AlignedMatrix<float>& costs,
+                 const ClusterCost& cc, const size_t idx_cluster,
+                 const size_t first, const size_t last, const MF valid) {
     HWY_DASSERT(idx_cluster != 0);
     HWY_DASSERT(0 != first && first < kGroupSize);
     HWY_DASSERT(last < kGroupSize);
     HWY_DASSERT(last % hn::Lanes(df) == 0);  // Called in steps of N
 
     // Cost of clustering 0..first-1 with one fewer cluster than now.
-    const VF prev = hn::Set(df, D(idx_cluster - 1, first - 1));
+    const VF prev = hn::Set(df, costs(idx_cluster - 1, first - 1));
     // Eq2: add to that the cost of another cluster from first..last.
     return hn::Add(prev, cc.SumCosts(df, first, last, valid));
   }
@@ -237,7 +253,8 @@ class NuqClustering {
   // as implemented in FAISS, for our kGroupSize of 256.
   template <class DF>
   static HWY_NOINLINE size_t ClusterExactL2(DF df, const float* HWY_RESTRICT x,
-                                            size_t num, ClusterBuf& buf,
+                                            size_t num,
+                                            NuqStream::ClusterBuf& buf,
                                             float* HWY_RESTRICT centers,
                                             uint16_t* HWY_RESTRICT indices) {
     HWY_DASSERT(num <= kGroupSize);
@@ -268,31 +285,34 @@ class NuqClustering {
     ClusterCost cc(sorted_and_i);  // ignores payload bits.
 
     // Reference: https://arxiv.org/abs/1701.07204
-    // D[k-1][m] is the lowest cost of clustering x1..m into k clusters.
-    AlignedMatrix<float>& D = buf.d;
-    // T[k][m] is the starting index within sorted_and_i[] of the k-th cluster.
-    AlignedMatrix<int32_t>& T = buf.t;
+    // costs[k-1][m] is the lowest cost of clustering x1..m into k clusters.
+    NuqStream::AlignedMatrix<float>& costs = buf.costs;
+    // argmin[k][m] is the starting index within sorted_and_i[] of the k-th
+    // cluster.
+    NuqStream::AlignedMatrix<int32_t>& argmin = buf.argmin;
 
-    // Fill first row of `D` and `T`: single cluster, iterate over all `last`.
+    // Fill first row of `costs` and `argmin`: single cluster, iterate over all
+    // `last`.
     {
       const size_t cluster_idx = 0;
       const size_t first = 0;
       const VI vfirst = hn::Set(di, static_cast<int32_t>(first));
       const MF all_valid = hn::FirstN(df, N);  // first <= last is always true
       for (size_t last = 0; last < kGroupSize; last += N) {
-        const VF costs = cc.SumCosts(df, first, last, all_valid);
-        hn::Store(costs, df, &D(cluster_idx, last));
-        hn::Store(vfirst, di, &T(cluster_idx, last));
+        const VF vcosts = cc.SumCosts(df, first, last, all_valid);
+        hn::Store(vcosts, df, &costs(cluster_idx, last));
+        hn::Store(vfirst, di, &argmin(cluster_idx, last));
       }
     }
 
+    constexpr size_t kClusters = NuqStream::kClusters;
     for (size_t cluster_idx = 1; cluster_idx < kClusters; ++cluster_idx) {
       // For vectors of `last + i` with `i < N`:
       for (size_t last = 0; last < kGroupSize; last += N) {
         const VI vlast = hn::Iota(di, static_cast<int32_t>(last));
-        const VF prev_cost = hn::LoadU(df, &D(cluster_idx - 1, last));
+        const VF prev_cost = hn::LoadU(df, &costs(cluster_idx - 1, last));
         VF min = prev_cost;
-        VI arg = hn::LoadU(di, &T(cluster_idx - 1, last));
+        VI arg = hn::LoadU(di, &argmin(cluster_idx - 1, last));
         // For each `first` (j), which is the start of the rightmost of at least
         // two clusters, hence never zero. `first` also continues past `last`
         // because the last `vlast` lane is `last + N - 1`.
@@ -300,7 +320,7 @@ class NuqClustering {
           const VI vfirst = hn::Set(di, static_cast<int32_t>(first));
           const MF valid = hn::RebindMask(df, hn::Le(vfirst, vlast));
           const VF c =
-              ClusterDynProg(df, D, cc, cluster_idx, first, last, valid);
+              ClusterDynProg(df, costs, cc, cluster_idx, first, last, valid);
 
           // Retain the min cost and the `first` that caused it.
           const MF less = hn::And(valid, hn::Lt(c, min));
@@ -309,21 +329,21 @@ class NuqClustering {
         }
         HWY_DASSERT(hn::AllTrue(df, hn::Le(min, prev_cost)));
 
-        hn::Store(min, df, &D(cluster_idx, last));
-        hn::Store(arg, di, &T(cluster_idx, last));
+        hn::Store(min, df, &costs(cluster_idx, last));
+        hn::Store(arg, di, &argmin(cluster_idx, last));
       }
     }
 
-    // Backtrack to find centers. Clusters are [T(k, last), last].
+    // Backtrack to find centers. Clusters are [argmin(k, last), last].
     size_t last = kGroupSize - 1;
     size_t unused_clusters = 0;
     for (size_t k = kClusters - 1; k < kClusters; --k) {
-      const size_t start = static_cast<size_t>(T(k, last));
+      const size_t start = static_cast<size_t>(argmin(k, last));
       // Center = mean, O(1) thanks to cumulative sums.
-      const float sum = cc.SumOfSorted(start, last);
+      const double sum = cc.SumOfSorted(start, last);
       const int size = static_cast<int>(last) - static_cast<int>(start) + 1;
       HWY_DASSERT(0 < size && size <= static_cast<int>(kGroupSize));
-      centers[k] = sum / static_cast<float>(size);
+      centers[k] = static_cast<float>(sum / size);
 
       // We know the range inside sorted_and_i[]; translate to original indices,
       // which are stored inside each of the sorted_and_i mantissas.
@@ -347,14 +367,33 @@ class NuqClustering {
     }
 
     if (HWY_IS_DEBUG_BUILD) {
-      // Centers are in ascending order.
+      // If centers are not in ascending order, print them.
       for (size_t i = unused_clusters + 1; i < kClusters; ++i) {
-        HWY_DASSERT(centers[i] >= centers[i - 1]);
+        if (centers[i] < centers[i - 1]) {
+          for (size_t i = 0; i < kClusters; ++i) {
+            fprintf(stderr, "%2zu: %.8f\n", i, centers[i]);
+          }
+          for (size_t i = 0; i < kGroupSize; ++i) {
+            fprintf(stderr, "%3zu: %.8f\n", i,
+                    FloatPayload::Clear(sorted_and_i[i]));
+          }
+          for (size_t i = 0; i < num; ++i) {
+            fprintf(stderr, "%3zu: %.8f\n", i, x[i]);
+          }
+          HWY_ABORT("Centers not in ascending order at %zu; unused %zu\n", i,
+                    unused_clusters);
+        }
       }
     }
+
+    MaybeCheckInitialized(centers, kClusters * sizeof(centers[0]));
     return unused_clusters;
   }
 };  // NuqClustering
+
+// Half-vector of u8 from u16/bf16.
+template <class D16>
+using D8HFromD16 = hn::Half<hn::Repartition<uint8_t, D16>>;
 
 // Bit-packing 4-bit values is trivial if we have 2 or 4 independent vectors:
 // simply shift+OR them together into a full vector of 8 or 16-bit lanes.
@@ -371,15 +410,15 @@ class NuqClustering {
 // operations which benefit from special-casing for target and vector length.
 class NibbleCodec {
  public:
-  // Packs four u16 vectors' lanes to nibbles within one vector, in order, and
-  // stores that vector to `out`.
-  template <class D16, class V16 = hn::Vec<D16>>
-  static HWY_INLINE void OrderedPackU16(D16 d16, V16 in0, V16 in1, V16 in2,
-                                        V16 in3, uint8_t* HWY_RESTRICT out) {
-    const hn::Repartition<uint8_t, D16> d8;
+  // Returns a byte vector whose nibbles are the lanes of four u16 vectors, in
+  // the same order.
+  template <class D16, class V16 = hn::Vec<D16>,
+            class D8 = hn::Repartition<uint8_t, D16>, class V8 = hn::Vec<D8>>
+  static HWY_INLINE V8 OrderedPackU16(D16 d16, V16 in0, V16 in1, V16 in2,
+                                      V16 in3) {
+    const D8 d8;
     const hn::Repartition<uint32_t, D16> d32;
     const hn::Repartition<uint64_t, D16> d64;
-    using V8 = hn::Vec<decltype(d8)>;
 
     // Pairwise compaction of a single vector so nibbles are packed in-order.
     // v16 lanes hold a 4-bit value; OR together adjacent pairs into the lower
@@ -393,14 +432,13 @@ class NibbleCodec {
     const V16 u8_1 = combine_u16_pair_to_8(in1);
     const V16 u8_2 = combine_u16_pair_to_8(in2);
     const V16 u8_3 = combine_u16_pair_to_8(in3);
-    V8 packed;
     if constexpr (HWY_TARGET <= HWY_AVX3_DL || !HWY_ARCH_X86) {
       // 8-bit ConcatEven is efficient. Let digits denote eight u8 lanes
       // of u8_1/0: ?d?3 ?c?2 / ?b?1 ?a?0. 8-bit ConcatEven = d3c2 b1a0, and
       // again with the second x2_1 gives 7654 3210.
       const V8 x2_0 = hn::ConcatEven(d8, BitCast(d8, u8_1), BitCast(d8, u8_0));
       const V8 x2_1 = hn::ConcatEven(d8, BitCast(d8, u8_3), BitCast(d8, u8_2));
-      packed = hn::ConcatEven(d8, x2_1, x2_0);
+      return hn::ConcatEven(d8, x2_1, x2_0);
     } else {
       // To avoid expensive 8-bit ConcatEven, compact pairs of u32 into the
       // lower 16 bits in each u64, with other bits undefined.
@@ -416,70 +454,23 @@ class NibbleCodec {
       // u16 of every u64. This is the same as above but with 16-bit Concat.
       const V16 x2_0 = hn::ConcatEven(d16, u16_1, u16_0);
       const V16 x2_1 = hn::ConcatEven(d16, u16_3, u16_2);
-      packed = hn::BitCast(d8, hn::ConcatEven(d16, x2_1, x2_0));
+      return hn::BitCast(d8, hn::ConcatEven(d16, x2_1, x2_0));
     }
-    hn::StoreU(packed, d8, out);
   }
 
-  // Unpacks `Lanes(d16)` nibbles to u16 lanes. The first comes from the low
-  // nibble of packed[0], then its high nibble, then the next low nibble, etc.
-  template <class D16, class V16 = hn::Vec<D16>>
-  static HWY_INLINE V16 OrderedUnpackU16(D16 d16, const uint8_t* packed) {
-    const hn::Repartition<uint8_t, D16> d8;
+  // Unpacks nibbles from the `kHalf` (0 or 1) half of a half-vector of bytes.
+  // Thus we use a quarter of a vector of bytes and expand nibbles 4x into u16,
+  // which fills a whole vector. Its first lane comes from the low nibble of the
+  // first byte, the second from its high nibble, then the next low nibble, etc.
+  template <size_t kHalf, class D16, class V16 = hn::Vec<D16>,
+            class D8H = D8HFromD16<D16>, class V8H = hn::Vec<D8H>>
+  static HWY_INLINE V16 OrderedUnpackU16(D16 d16, const V8H packed) {
+    const hn::Twice<D8H> d8;  // full vector
     using V8 = hn::Vec<decltype(d8)>;
-    const hn::CappedTag<uint8_t, d16.MaxBytes() / 4> d_load;
 
-    // We replicate each byte 4x, so that its two nibbles propagate to both
-    // u16 lanes that they will initialize. The only performance-portable op to
-    // replicate bytes is TableLookupBytes, which shuffles 128-bit blocks
-    // independently. Thus each block receives 4 packed bytes, replicates them
-    // 4x, shifts/masks, and casts to 8 u16 lanes.
-    //
-    // Loading 16 bytes via LoadDup128 only works on AVX3; for smaller vectors,
-    // it may trigger asan errors from overrunning the end. We thus special-case
-    // vector lengths, handling any non-constexpr, and constexpr <= 512 bit.
-    V8 rep4;
-    if constexpr (HWY_HAVE_SCALABLE) {
-      // Non constexpr length: 4 per whole block equals size/4.
-      const size_t num_bytes = HWY_MAX(1, hn::Lanes(d8) / 4);
-      const V8 bytes = hn::LoadN(d8, packed, num_bytes);
-      // Replicate bytes 4x: lowest 4 = 0, next 4 = 1 etc.
-      const V8 idx = hn::ShiftRight<2>(hn::Iota(d8, 0));
-      rep4 = hn::TableLookupLanes(bytes, hn::IndicesFromVec(d8, idx));
-    } else if (hn::MaxLanes(d16) <= 8) {  // <= 128-bit
-      const V8 bytes = hn::ResizeBitCast(d8, hn::LoadU(d_load, packed));
-      alignas(16) static constexpr uint8_t kRep4[16] = {
-          HWY_REP4(0), HWY_REP4(1), HWY_REP4(2), HWY_REP4(3)};
-      rep4 = hn::TableLookupBytes(bytes, hn::Load(d8, kRep4));
-    } else if (HWY_TARGET <= HWY_AVX3_DL || !HWY_ARCH_X86) {
-      // Plain load, can do 256..512-bit permute across blocks.
-      const V8 bytes = hn::ResizeBitCast(d8, hn::LoadU(d_load, packed));
-      alignas(64) static constexpr uint8_t kRep4[64] = {
-          HWY_REP4(0),  HWY_REP4(1),  HWY_REP4(2),  HWY_REP4(3),
-          HWY_REP4(4),  HWY_REP4(5),  HWY_REP4(6),  HWY_REP4(7),
-          HWY_REP4(8),  HWY_REP4(9),  HWY_REP4(10), HWY_REP4(11),
-          HWY_REP4(12), HWY_REP4(13), HWY_REP4(14), HWY_REP4(15)};
-      rep4 = hn::TableLookupLanes(bytes, hn::SetTableIndices(d8, kRep4));
-    } else if (hn::MaxLanes(d16) == 16) {  // 256-bit
-      const V8 bytes = hn::ResizeBitCast(d8, hn::LoadU(d_load, packed));
-      // First copy to upper block for TableLookupBytes. This is slightly
-      // faster than 64-bit BroadcastLane.
-      const V8 bcast = hn::ConcatLowerLower(d8, bytes, bytes);
-      alignas(32) static constexpr uint8_t kRep4[32] = {
-          HWY_REP4(0), HWY_REP4(1), HWY_REP4(2), HWY_REP4(3),
-          HWY_REP4(4), HWY_REP4(5), HWY_REP4(6), HWY_REP4(7)};
-      rep4 = hn::TableLookupBytes(bcast, hn::Load(d8, kRep4));
-    } else if (hn::MaxLanes(d16) == 32) {  // 512-bit
-      const V8 bytes = hn::LoadDup128(d8, packed);
-      alignas(64) static constexpr uint8_t kRep4[64] = {
-          HWY_REP4(0),  HWY_REP4(1),  HWY_REP4(2),  HWY_REP4(3),
-          HWY_REP4(4),  HWY_REP4(5),  HWY_REP4(6),  HWY_REP4(7),
-          HWY_REP4(8),  HWY_REP4(9),  HWY_REP4(10), HWY_REP4(11),
-          HWY_REP4(12), HWY_REP4(13), HWY_REP4(14), HWY_REP4(15)};
-      rep4 = hn::TableLookupBytes(bytes, hn::Load(d8, kRep4));
-    } else {
-      HWY_DASSERT(false);
-    }
+    // Replicate each byte 4x, so that its two nibbles propagate to both u16
+    // lanes that they will initialize.
+    const V8 rep4 = Replicate4x<kHalf>(d8, hn::ResizeBitCast(d8, packed));
 
     const V16 mask4 = hn::Set(d16, 0xF);
     const V16 u16 = BitCast(d16, rep4);
@@ -490,10 +481,60 @@ class NibbleCodec {
     // zz z3 zz z2 | zz z1 zz z0  And (unpacked result)
     return hn::And(mask4, hn::OddEven(hn::ShiftRight<4>(u16), u16));
   }
+
+ private:
+  // Returns `bytes[0 + kHalf * N/2]` in lanes 0..3, `bytes[1 + kHalf * N/2]` in
+  // lanes 4..7, etc. We fuse `kHalf` into the tables, which avoids the caller
+  // having to pass in `UpperHalf(bytes)`.
+  template <size_t kHalf, class D8, class V8 = hn::Vec<D8>>
+  static HWY_INLINE V8 Replicate4x(D8 d8, V8 bytes) {
+    static_assert(kHalf <= 1);
+    const size_t N = hn::Lanes(d8);
+    constexpr size_t kMaxN = hn::MaxLanes(d8);
+    // For kHalf=1 and 512-bit vectors, kAdd would be 16, which is out of
+    // bounds for TableLookupBytes. We instead BroadcastBlock<1> there.
+    constexpr uint8_t kAdd = kMaxN < 64 ? kHalf * kMaxN / 4 : 0;
+    // The only performance-portable op to replicate bytes is TableLookupBytes,
+    // but this only works if vectors are 128-bit or we first BroadcastBlock,
+    // which only works for <= 512-bit vectors. For scalable vectors, we
+    // instead synthesize this table via Iota+ShiftRight.
+    alignas(64) static constexpr uint8_t kRep4[64] = {
+        HWY_REP4(kAdd + 0),  HWY_REP4(kAdd + 1),  HWY_REP4(kAdd + 2),
+        HWY_REP4(kAdd + 3),  HWY_REP4(kAdd + 4),  HWY_REP4(kAdd + 5),
+        HWY_REP4(kAdd + 6),  HWY_REP4(kAdd + 7),  HWY_REP4(kAdd + 8),
+        HWY_REP4(kAdd + 9),  HWY_REP4(kAdd + 10), HWY_REP4(kAdd + 11),
+        HWY_REP4(kAdd + 12), HWY_REP4(kAdd + 13), HWY_REP4(kAdd + 14),
+        HWY_REP4(kAdd + 15)};
+
+    if constexpr (HWY_HAVE_SCALABLE) {
+      // Replicate bytes 4x: lowest 4 = 0, next 4 = 1 etc. This works for up to
+      // 1024-bit vectors: Iota is [128, 256), and [32, 64) after shifting.
+      // For larger vectors, this would overflow and we should instead add kAdd.
+      HWY_DASSERT(N <= 128);
+      const V8 iota = hn::Iota(d8, static_cast<uint8_t>(kHalf * N));
+      const V8 idx = hn::ShiftRight<2>(iota);
+      return hn::TableLookupLanes(bytes, hn::IndicesFromVec(d8, idx));
+    } else if constexpr (kMaxN <= 16) {  // <= 128-bit
+      // No BroadcastBlock, we anyway only have one block.
+      return hn::TableLookupBytes(bytes, hn::Load(d8, kRep4));
+    } else if constexpr (HWY_TARGET <= HWY_AVX3_DL || !HWY_ARCH_X86) {
+      // No BroadcastBlock, can directly permute across blocks.
+      return hn::TableLookupLanes(bytes, hn::SetTableIndices(d8, kRep4));
+    } else {  // 256..512-bit, no efficient TableLookupLanes
+      static_assert(kMaxN <= 64);  // Else BroadcastBlock does not work.
+      // See kAdd comment above.
+      constexpr size_t kBlock = (kMaxN == 64 && kHalf == 1) ? 1 : 0;
+      bytes = hn::BroadcastBlock<kBlock>(bytes);
+      return hn::TableLookupBytes(bytes, hn::Load(d8, kRep4));
+    }
+  }
 };
 
 // Encode/decode functions.
 class NuqCodec {
+  static constexpr size_t kClusters = NuqStream::kClusters;
+  static constexpr size_t kGroupSize = NuqStream::kGroupSize;
+
   // 256-bit vectors can hold 16 bf16, otherwise we require 2x128-bit.
   template <class DU>
   static constexpr size_t NumTables(DU du) {
@@ -508,308 +549,465 @@ class NuqCodec {
                                           hn::Vec<DU>* HWY_RESTRICT tbl1) {
     // Cap to the table size (kClusters) for decoding SFP - sufficient, and may
     // be faster than a large vector.
-    const hn::CappedTag<hwy::bfloat16_t, kClusters> d_table;
+    const hn::CappedTag<BF16, kClusters> d_table;
     // We ResizeCast tables to DU: if DU is bigger, table lookups will only
     // access lanes < kClusters. If DU is smaller (128-bit), we have 2 tables.
     HWY_DASSERT(hn::Lanes(du) >= hn::Lanes(d_table) || NumTables(du) == 2);
 
-    HWY_ALIGN hwy::bfloat16_t table[kClusters];
-    SfpCodec::Dec(d_table, reinterpret_cast<const SfpStream*>(centers),
-                  kClusters, table);
+    HWY_ALIGN BF16 table[kClusters];
+    SfpCodec::DecompressAndZeroPad(
+        d_table,
+        MakeSpan(reinterpret_cast<const SfpStream*>(centers), kClusters), 0,
+        table, kClusters);
 
     // If we assume >= 128-bit vectors, we can use [Two]TableLookupLanes
     // instead of TableLookupBytes, which requires extra interleaving of lo/hi.
     HWY_DASSERT(hn::Lanes(du) >= 8);
 
-    HWY_IF_CONSTEXPR(NumTables(du) == 2) {
+    if constexpr (NumTables(du) == 2) {
       // Reduce cap for second half to avoid loading past the end of the table.
-      const hn::CappedTag<hwy::bfloat16_t, kClusters / 2> d_table2;
+      const hn::CappedTag<BF16, kClusters / 2> d_table2;
       *tbl1 = hn::ResizeBitCast(du, hn::LoadU(d_table2, table + kClusters / 2));
     }
     return hn::ResizeBitCast(du, hn::Load(d_table, table));
   }
 
-  // Unpacks per-weight indices and sets c0/c1 to the corresponding centers.
-  template <class DU>
-  static HWY_INLINE void TableLookups(DU du, hn::Vec<DU> tbl0, hn::Vec<DU> tbl1,
-                                      const uint8_t* packed, hn::Vec<DU>& c0,
-                                      hn::Vec<DU>& c1) {
-    using V16 = hn::Vec<decltype(du)>;
-    const size_t N16 = hn::Lanes(du);
-
-    const V16 idx0 = NibbleCodec::OrderedUnpackU16(du, packed);
-    const V16 idx1 = NibbleCodec::OrderedUnpackU16(du, packed + N16 / 2);
+  // Unpacks a half-vector of nibbles into two vectors of u16 indices and sets
+  // c0/c1 to the corresponding bf16 (stored in u16) centers from tbl0/tbl1.
+  template <class DU, class VU = hn::Vec<DU>, class D8H = D8HFromD16<DU>,
+            class V8H = hn::Vec<D8H>>
+  static HWY_INLINE void TableLookups(DU du, VU tbl0, VU tbl1, const V8H packed,
+                                      VU& c0, VU& c1) {
+    const VU idx0 = NibbleCodec::OrderedUnpackU16<0>(du, packed);
+    const VU idx1 = NibbleCodec::OrderedUnpackU16<1>(du, packed);
 
     const auto indices0 = hn::IndicesFromVec(du, idx0);
     const auto indices1 = hn::IndicesFromVec(du, idx1);
 
-    HWY_IF_CONSTEXPR(NumTables(du) == 1) {
+    if constexpr (NumTables(du) == 1) {
       (void)tbl1;
       c0 = hn::TableLookupLanes(tbl0, indices0);
       c1 = hn::TableLookupLanes(tbl0, indices1);
     }
-    HWY_IF_CONSTEXPR(NumTables(du) == 2) {  // `else` is poorly formatted.
+    if constexpr (NumTables(du) == 2) {  // `else` is poorly formatted.
       c0 = hn::TwoTablesLookupLanes(du, tbl0, tbl1, indices0);
       c1 = hn::TwoTablesLookupLanes(du, tbl0, tbl1, indices1);
     }
   }
 
+  // As above, but returns a single 16-bit output vector for f32 Dec2, thus
+  // packed is only a quarter-vector.
+  template <class DU, class VU = hn::Vec<DU>,
+            class D8Q = hn::Half<D8HFromD16<DU>>, class V8Q = hn::Vec<D8Q>>
+  static HWY_INLINE VU TableLookups(DU du, VU tbl0, VU tbl1, const V8Q packed) {
+    const D8HFromD16<DU> d8h;
+    // OrderedUnpackU16 expects a half-vector, but will only use the lower half
+    // of it.
+    const hn::Vec<decltype(d8h)> packed_h = hn::ZeroExtendVector(d8h, packed);
+    const VU idx0 = NibbleCodec::OrderedUnpackU16<0>(du, packed_h);
+
+    const auto indices0 = hn::IndicesFromVec(du, idx0);
+
+    if constexpr (NumTables(du) == 1) {
+      (void)tbl1;
+      return hn::TableLookupLanes(tbl0, indices0);
+    }
+    if constexpr (NumTables(du) == 2) {  // `else` is poorly formatted.
+      return hn::TwoTablesLookupLanes(du, tbl0, tbl1, indices0);
+    }
+  }
+
  public:
-  // Encodes `num` floats starting from `in`. `out` points to compressed
-  // storage for `out_capacity` values and `out_ofs` indicates the destination
-  // offset within it, in units of float values, for parallel encoding by
-  // multiple threads. `num`, `out_capacity`, and `out_ofs` must all be
-  // multiples of `kGroupSize`. Returns the total number of unused clusters,
-  // which is expected to be zero.
+  // Encodes `num` floats from `raw`. `packed` points to compressed storage and
+  // `packed_ofs` indicates the destination offset within it, in units of float
+  // values, for parallel encoding by multiple threads. Returns the total
+  // number of unused clusters, which is typically zero.
   template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE size_t Enc(DF df, const float* const in, const size_t num,
-                               ClusterBuf& buf, const size_t out_capacity,
-                               NuqStream* const out, const size_t out_ofs) {
+  static HWY_INLINE size_t Enc(DF df, const float* HWY_RESTRICT raw,
+                               const size_t num, NuqStream::ClusterBuf& buf,
+                               const PackedSpan<NuqStream>& packed,
+                               size_t packed_ofs) {
     const hn::Repartition<uint16_t, DF> d16;
+    const hn::Repartition<uint8_t, DF> d8;
     using V16 = hn::Vec<decltype(d16)>;
-
+    using V8 = hn::Vec<decltype(d8)>;
     const size_t N16 = hn::Lanes(d16);
-    HWY_ASSERT(kGroupSize >= 4 * N16);
 
-    HWY_ASSERT(out_ofs + num <= out_capacity);
-    buf.Resize(num);
-    HWY_ASSERT(num % kGroupSize == 0);
-    HWY_ASSERT(out_capacity % kGroupSize == 0);
-    HWY_ASSERT(out_ofs % kGroupSize == 0);
-    const size_t num_groups = num / kGroupSize;
-    const size_t ofs_groups = out_ofs / kGroupSize;
+    HWY_ASSERT(packed_ofs % kGroupSize == 0);
+    const size_t ofs_groups = packed_ofs / kGroupSize;
+    const size_t num_groups = hwy::DivCeil(num, kGroupSize);
+    buf.Resize(num_groups);
 
     size_t unused_clusters = 0;
     for (size_t g = 0; g < num_groups; ++g) {
-      const float* HWY_RESTRICT g_in = in + g * kGroupSize;
+      const size_t g_num = HWY_MIN(num - g * kGroupSize, kGroupSize);
+      const float* HWY_RESTRICT g_in = raw + g * kGroupSize;
       float* HWY_RESTRICT g_centers = buf.centers.get() + g * kClusters;
       uint16_t* HWY_RESTRICT g_idx = buf.idx.get() + g * kGroupSize;
-      unused_clusters += NuqClustering::ClusterExactL2(df, g_in, kGroupSize,
-                                                       buf, g_centers, g_idx);
+      unused_clusters +=
+          NuqClustering::ClusterExactL2(df, g_in, g_num, buf, g_centers, g_idx);
     }
 
-    uint8_t* centers = &out->byte + ofs_groups * kClusters;
+    uint8_t* centers = &packed.ptr->byte + ofs_groups * kClusters;
     SfpCodec::Enc(df, buf.centers.get(), num_groups * kClusters,
                   reinterpret_cast<SfpStream*>(centers));
-    uint8_t* packed_start = &out->byte + NuqStream::PackedStart(out_capacity) +
+    uint8_t* packed_start = &packed.ptr->byte +
+                            NuqStream::PackedStart(packed.num) +
                             ofs_groups * kGroupSize / 2;
 
+    // All but the last group have no remainders.
+    HWY_DASSERT(kGroupSize % (4 * N16) == 0);
     HWY_UNROLL(1)
-    for (size_t g = 0; g < num_groups; ++g) {
+    for (size_t g = 0; g < num_groups - 1; ++g) {
       const uint16_t* HWY_RESTRICT g_idx = buf.idx.get() + g * kGroupSize;
       uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
 
       HWY_UNROLL(1)
       for (size_t i = 0; i < kGroupSize; i += 4 * N16) {
-        const V16 idx0 = hn::LoadU(d16, g_idx + i + N16 * 0);
-        const V16 idx1 = hn::LoadU(d16, g_idx + i + N16 * 1);
-        const V16 idx2 = hn::LoadU(d16, g_idx + i + N16 * 2);
-        const V16 idx3 = hn::LoadU(d16, g_idx + i + N16 * 3);
-        NibbleCodec::OrderedPackU16(d16, idx0, idx1, idx2, idx3,
-                                    g_packed + i / 2);
+        const V16 idx0 = hn::LoadU(d16, g_idx + i + 0 * N16);
+        const V16 idx1 = hn::LoadU(d16, g_idx + i + 1 * N16);
+        const V16 idx2 = hn::LoadU(d16, g_idx + i + 2 * N16);
+        const V16 idx3 = hn::LoadU(d16, g_idx + i + 3 * N16);
+        const V8 nibbles =
+            NibbleCodec::OrderedPackU16(d16, idx0, idx1, idx2, idx3);
+        hn::StoreU(nibbles, d8, g_packed + i / 2);
+      }
+    }
+
+    // Last group may have remainders.
+    {
+      HWY_DASSERT(num_groups != 0);
+      const size_t g = num_groups - 1;
+      const size_t g_num = num - g * kGroupSize;
+      HWY_DASSERT(g_num <= kGroupSize);
+      const uint16_t* HWY_RESTRICT g_idx = buf.idx.get() + g * kGroupSize;
+      uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
+
+      size_t i = 0;
+      if (g_num >= 4 * N16) {
+        HWY_UNROLL(1)
+        for (; i <= g_num - 4 * N16; i += 4 * N16) {
+          const V16 idx0 = hn::LoadU(d16, g_idx + i + 0 * N16);
+          const V16 idx1 = hn::LoadU(d16, g_idx + i + 1 * N16);
+          const V16 idx2 = hn::LoadU(d16, g_idx + i + 2 * N16);
+          const V16 idx3 = hn::LoadU(d16, g_idx + i + 3 * N16);
+          const V8 nibbles =
+              NibbleCodec::OrderedPackU16(d16, idx0, idx1, idx2, idx3);
+          hn::StoreU(nibbles, d8, g_packed + i / 2);
+        }
+      }
+
+      const size_t remaining = g_num - i;
+      HWY_DASSERT(remaining < 4 * N16);
+      if (HWY_UNLIKELY(remaining != 0)) {
+        const V16 idx0 = hn::LoadU(d16, g_idx + i + 0 * N16);
+        const V16 idx1 = hn::LoadU(d16, g_idx + i + 1 * N16);
+        const V16 idx2 = hn::LoadU(d16, g_idx + i + 2 * N16);
+        const V16 idx3 = hn::LoadU(d16, g_idx + i + 3 * N16);
+        const V8 nibbles =
+            NibbleCodec::OrderedPackU16(d16, idx0, idx1, idx2, idx3);
+        // i is even, but remaining might not be.
+        hn::StoreN(nibbles, d8, g_packed + i / 2, hwy::DivCeil(remaining, 2));
       }
     }
 
     return unused_clusters;
   }
 
-  // Decodes `num` values from the stream `in`, starting at the offset `in_ofs`
-  // (in units of values), to bf16 in `out`. `in_capacity`, `in_ofs` and `num`
-  // must all be multiples of `kGroupSize`.
+  // Decompresses to two bf16 vectors. `packed_ofs` must be a multiple of two
+  // vectors so that we only have to load one group's table.
   template <class DBF, HWY_IF_BF16_D(DBF)>
-  static HWY_INLINE void Dec(DBF dbf, const size_t in_capacity,
-                             const NuqStream* const in, const size_t in_ofs,
-                             hwy::bfloat16_t* const out, const size_t num) {
+  static HWY_INLINE void Dec2(DBF dbf,
+                              const PackedSpan<const NuqStream>& packed,
+                              const size_t packed_ofs, hn::Vec<DBF>& raw0,
+                              hn::Vec<DBF>& raw1) {
     const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const D8HFromD16<DBF> d8h;
     using V16 = hn::Vec<decltype(d16)>;
+    using V8H = hn::Vec<decltype(d8h)>;
 
-    const size_t N16 = hn::Lanes(d16);
-    HWY_DASSERT(kGroupSize >= 4 * N16);
+    const size_t within_group = packed_ofs % kGroupSize;
+    HWY_DASSERT(within_group % (2 * hn::Lanes(d16)) == 0);
+    const size_t ofs_in_groups = packed_ofs / kGroupSize;
+    const uint8_t* table = &packed.ptr->byte + ofs_in_groups * kClusters;
+    const uint8_t* indices =
+        &packed.ptr->byte + NuqStream::PackedStart(packed.num) +
+        hwy::DivCeil(ofs_in_groups * kGroupSize + within_group, 2);
 
-    HWY_DASSERT(in_ofs + num <= in_capacity);
-    HWY_DASSERT(in_capacity % kGroupSize == 0);
-    HWY_DASSERT(in_ofs % kGroupSize == 0);
-    HWY_DASSERT(num % kGroupSize == 0);
-    const size_t num_groups = num / kGroupSize;
-    const size_t ofs_groups = in_ofs / kGroupSize;
-    const uint8_t* tables = &in->byte + ofs_groups * kClusters;
-    const uint8_t* packed_start = &in->byte +
-                                  NuqStream::PackedStart(in_capacity) +
-                                  ofs_groups * kGroupSize / 2;
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
 
-    HWY_UNROLL(1)
-    for (size_t g = 0; g < num_groups; ++g) {
-      const uint8_t* g_centers = tables + g * kClusters;
-      const uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
-      hwy::bfloat16_t* HWY_RESTRICT g_out = out + g * kGroupSize;
+    const V8H nibbles = hn::LoadU(d8h, indices);
 
-      V16 tbl1 = Zero(d16);
-      const V16 tbl0 = LoadTable(d16, g_centers, &tbl1);
-
-      HWY_UNROLL(1)
-      for (size_t i = 0; i < kGroupSize; i += 2 * N16) {
-        V16 c0, c1;
-        TableLookups(d16, tbl0, tbl1, g_packed + i / 2, c0, c1);
-        hn::StoreU(BitCast(dbf, c0), dbf, g_out + i + N16 * 0);
-        hn::StoreU(BitCast(dbf, c1), dbf, g_out + i + N16 * 1);
-      }
-    }
+    V16 c0, c1;
+    TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+    raw0 = BitCast(dbf, c0);
+    raw1 = BitCast(dbf, c1);
   }
 
-  // Decodes `num` values from the stream `in`, starting at the offset
-  // `in_ofs` (in units of values), to f32 in `out`. `in_capacity`,
-  // `in_ofs` and `num` must all be multiples of `kGroupSize`.
+  // Decompresses to two f32 vectors. `packed_ofs` must be a multiple of two
+  // vectors so that we only have to load one group's table.
   template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dec(DF df, const size_t in_capacity,
-                             const NuqStream* const in, const size_t in_ofs,
-                             float* const out, const size_t num) {
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
+  static HWY_INLINE void Dec2(DF df, const PackedSpan<const NuqStream>& packed,
+                              const size_t packed_ofs, hn::Vec<DF>& raw0,
+                              hn::Vec<DF>& raw1) {
+    const hn::Repartition<BF16, decltype(df)> dbf;
     const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const hn::Half<D8HFromD16<decltype(d16)>> d8q;
+    using V8Q = hn::Vec<decltype(d8q)>;
     using V16 = hn::Vec<decltype(d16)>;
-    using VF = hn::Vec<DF>;
-
-    const size_t NF = hn::Lanes(df);
-    HWY_DASSERT(kGroupSize >= 4 * NF);
-
-    HWY_DASSERT(in_ofs + num <= in_capacity);
-    HWY_DASSERT(in_capacity % kGroupSize == 0);
-    HWY_DASSERT(in_ofs % kGroupSize == 0);
-    HWY_DASSERT(num % kGroupSize == 0);
-    const size_t ofs_groups = in_ofs / kGroupSize;
-    const size_t num_groups = num / kGroupSize;
-    const uint8_t* tables = &in->byte + ofs_groups * kClusters;
-    const uint8_t* packed_start = &in->byte +
-                                  NuqStream::PackedStart(in_capacity) +
-                                  ofs_groups * kGroupSize / 2;
-
-    HWY_UNROLL(1)
-    for (size_t g = 0; g < num_groups; ++g) {
-      const uint8_t* g_centers = tables + g * kClusters;
-      const uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
-      float* HWY_RESTRICT g_out = out + g * kGroupSize;
-
-      V16 tbl1 = Zero(d16);
-      const V16 tbl0 = LoadTable(d16, g_centers, &tbl1);
-
-      HWY_UNROLL(1)
-      for (size_t i = 0; i < kGroupSize; i += 4 * NF) {
-        V16 c0, c1;
-        TableLookups(d16, tbl0, tbl1, g_packed + i / 2, c0, c1);
-        const VF f0 = hn::PromoteLowerTo(df, BitCast(dbf, c0));
-        const VF f1 = hn::PromoteUpperTo(df, BitCast(dbf, c0));
-        const VF f2 = hn::PromoteLowerTo(df, BitCast(dbf, c1));
-        const VF f3 = hn::PromoteUpperTo(df, BitCast(dbf, c1));
-        hn::StoreU(f0, df, g_out + i + NF * 0);
-        hn::StoreU(f1, df, g_out + i + NF * 1);
-        hn::StoreU(f2, df, g_out + i + NF * 2);
-        hn::StoreU(f3, df, g_out + i + NF * 3);
-      }
-    }
-  }
-
-  // Accumulates into `sum0..3` dot products of decoded values with `num` bf16
-  // from `vec_aligned`. DF is f32 because sum0..3 are also f32. `in_capacity`,
-  // `in_ofs` and `num` must all be multiples of `kGroupSize`.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dot(DF df, const size_t in_capacity,
-                             const NuqStream* const in, const size_t in_ofs,
-                             const hwy::bfloat16_t* const vec_aligned,
-                             const size_t num, hn::Vec<DF>& sum0,
-                             hn::Vec<DF>& sum1, hn::Vec<DF>& sum2,
-                             hn::Vec<DF>& sum3) {
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
-    const hn::RebindToUnsigned<decltype(dbf)> d16;
-    using VBF = hn::Vec<decltype(dbf)>;
-    using V16 = hn::Vec<decltype(d16)>;
-    const size_t N16 = hn::Lanes(d16);
-    HWY_DASSERT(kGroupSize >= 4 * N16);
-
-    HWY_DASSERT(in_ofs + num <= in_capacity);
-    HWY_DASSERT(in_capacity % kGroupSize == 0);
-    HWY_DASSERT(in_ofs % kGroupSize == 0);
-    HWY_DASSERT(num % kGroupSize == 0);
-    const size_t ofs_groups = in_ofs / kGroupSize;
-    const size_t num_groups = num / kGroupSize;
-    const uint8_t* tables = &in->byte + ofs_groups * kClusters;
-    const uint8_t* packed_start = &in->byte +
-                                  NuqStream::PackedStart(in_capacity) +
-                                  ofs_groups * kGroupSize / 2;
-
-    HWY_UNROLL(1)
-    for (size_t g = 0; g < num_groups; ++g) {
-      const uint8_t* g_centers = tables + g * kClusters;
-      const uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
-      const hwy::bfloat16_t* HWY_RESTRICT g_in = vec_aligned + g * kGroupSize;
-
-      V16 tbl1 = Zero(d16);
-      const V16 tbl0 = LoadTable(d16, g_centers, &tbl1);
-
-      HWY_UNROLL(1)
-      for (size_t i = 0; i < kGroupSize; i += 2 * N16) {
-        V16 c0, c1;
-        TableLookups(d16, tbl0, tbl1, g_packed + i / 2, c0, c1);
-        const VBF in0 = hn::Load(dbf, g_in + i + N16 * 0);
-        const VBF in1 = hn::Load(dbf, g_in + i + N16 * 1);
-        sum0 = hn::ReorderWidenMulAccumulate(df, in0, BitCast(dbf, c0), sum0,
-                                             sum1);
-        sum2 = hn::ReorderWidenMulAccumulate(df, in1, BitCast(dbf, c1), sum2,
-                                             sum3);
-      }
-    }
-  }
-
-  // Accumulates into `sum0..3` dot products of decoded values with `num` f32
-  // from `vec_aligned`. `in_capacity`, `in_ofs` and `num` must all be
-  // multiples of `kGroupSize`.
-  template <class DF, HWY_IF_F32_D(DF)>
-  static HWY_INLINE void Dot(DF df, const size_t in_capacity,
-                             const NuqStream* const in, const size_t in_ofs,
-                             const float* const vec_aligned, const size_t num,
-                             hn::Vec<DF>& sum0, hn::Vec<DF>& sum1,
-                             hn::Vec<DF>& sum2, hn::Vec<DF>& sum3) {
-    const hn::Repartition<hwy::bfloat16_t, DF> dbf;
-    const hn::RebindToUnsigned<decltype(dbf)> d16;
     using VF = hn::Vec<decltype(df)>;
-    using V16 = hn::Vec<decltype(d16)>;
-    const size_t NF = hn::Lanes(df);
-    HWY_DASSERT(kGroupSize >= 4 * NF);
 
-    HWY_DASSERT(in_ofs + num <= in_capacity);
-    HWY_DASSERT(in_capacity % kGroupSize == 0);
-    HWY_DASSERT(in_ofs % kGroupSize == 0);
-    HWY_DASSERT(num % kGroupSize == 0);
-    const size_t ofs_groups = in_ofs / kGroupSize;
-    const size_t num_groups = num / kGroupSize;
-    const uint8_t* tables = &in->byte + ofs_groups * kClusters;
-    const uint8_t* packed_start = &in->byte +
-                                  NuqStream::PackedStart(in_capacity) +
-                                  ofs_groups * kGroupSize / 2;
+    const size_t within_group = packed_ofs % kGroupSize;
+    HWY_DASSERT(within_group % (2 * hn::Lanes(df)) == 0);
+    const size_t ofs_groups = packed_ofs / kGroupSize;
+    const uint8_t* table = &packed.ptr->byte + ofs_groups * kClusters;
+    const uint8_t* indices =
+        &packed.ptr->byte + NuqStream::PackedStart(packed.num) +
+        hwy::DivCeil(ofs_groups * kGroupSize + within_group, 2);
+
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
+
+    // The single-vector TableLookups overload only calls OrderedUnpackU16<0>,
+    // which expects a quarter vector of bytes.
+    const V8Q nibbles = hn::LoadU(d8q, indices);
+
+    const V16 c0 = TableLookups(d16, tbl0, tbl1, nibbles);
+    raw0 = hn::PromoteLowerTo(df, BitCast(dbf, c0));
+    raw1 = hn::PromoteUpperTo(df, BitCast(dbf, c0));
+  }
+
+  // Decompresses from `packed`, starting at (any) `packed_ofs`, to (any) `num`
+  // elements in `raw`, then appends `[0, hn::Lanes(d))` zeroes as required to
+  // round `num` up to one vector, if it is not already.
+  template <class D, typename Raw = hn::TFromD<D>>
+  static HWY_INLINE void DecompressAndZeroPad(
+      D d, const PackedSpan<const NuqStream>& packed, size_t packed_ofs,
+      Raw* HWY_RESTRICT raw, size_t num) {
+    // If unaligned, load elements from the first group and update the args,
+    // from which we compute new tables/indices below.
+    if (size_t within_group = packed_ofs % kGroupSize; within_group != 0) {
+      const size_t ofs_in_groups = packed_ofs / kGroupSize;
+      const uint8_t* tables = &packed.ptr->byte + ofs_in_groups * kClusters;
+      const uint8_t* indices =
+          &packed.ptr->byte + NuqStream::PackedStart(packed.num) +
+          hwy::DivCeil(ofs_in_groups * kGroupSize + within_group, 2);
+      const size_t remaining = HWY_MIN(num, kGroupSize - within_group);
+      DecPartialGroup(d, tables, indices, raw, remaining);
+      packed_ofs += remaining;
+      raw += remaining;
+      num -= remaining;
+      if (num == 0) return;
+    }
+
+    HWY_DASSERT(packed_ofs % kGroupSize == 0);
+    const size_t ofs_in_groups = packed_ofs / kGroupSize;
+    const uint8_t* tables = &packed.ptr->byte + ofs_in_groups * kClusters;
+    const uint8_t* indices = &packed.ptr->byte +
+                             NuqStream::PackedStart(packed.num) +
+                             hwy::DivCeil(ofs_in_groups * kGroupSize, 2);
+
+    const size_t num_groups = hwy::DivCeil(num, kGroupSize);
+    HWY_UNROLL(1)
+    for (size_t g = 0; g < num_groups - 1; ++g) {
+      DecWholeGroup(d, tables + g * kClusters, indices + g * kGroupSize / 2,
+                    raw + g * kGroupSize);
+    }
+
+    const size_t g = num_groups - 1;
+    DecPartialGroup(d, tables + g * kClusters, indices + g * kGroupSize / 2,
+                    raw + g * kGroupSize, num - g * kGroupSize);
+  }
+
+ private:
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void DecWholeGroup(DBF dbf,
+                                       const uint8_t* HWY_RESTRICT table,
+                                       const uint8_t* HWY_RESTRICT indices,
+                                       BF16* HWY_RESTRICT raw_bf) {
+    const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const D8HFromD16<DBF> d8h;
+    using V16 = hn::Vec<decltype(d16)>;
+    using V8H = hn::Vec<decltype(d8h)>;
+    const size_t N16 = hn::Lanes(d16);
+
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
 
     HWY_UNROLL(1)
-    for (size_t g = 0; g < num_groups; ++g) {
-      const uint8_t* g_centers = tables + g * kClusters;
-      const uint8_t* HWY_RESTRICT g_packed = packed_start + g * kGroupSize / 2;
-      const float* HWY_RESTRICT g_in = vec_aligned + g * kGroupSize;
+    for (size_t i = 0; i < kGroupSize; i += 2 * N16) {
+      const V8H nibbles = hn::LoadU(d8h, indices + i / 2);
+      V16 c0, c1;
+      TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+      hn::StoreU(BitCast(dbf, c0), dbf, raw_bf + i + 0 * N16);
+      hn::StoreU(BitCast(dbf, c1), dbf, raw_bf + i + 1 * N16);
+    }
+  }
 
-      V16 tbl1 = Zero(d16);
-      const V16 tbl0 = LoadTable(d16, g_centers, &tbl1);
+  // Called for first and last group.
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void DecPartialGroup(DBF dbf,
+                                         const uint8_t* HWY_RESTRICT table,
+                                         const uint8_t* HWY_RESTRICT indices,
+                                         BF16* HWY_RESTRICT raw_bf,
+                                         size_t num) {
+    HWY_DASSERT(num <= kGroupSize);
 
+    const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const D8HFromD16<DBF> d8h;
+    using V16 = hn::Vec<decltype(d16)>;
+    using V8H = hn::Vec<decltype(d8h)>;
+    const size_t N16 = hn::Lanes(d16);
+
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
+
+    size_t i = 0;
+
+    if (num >= 2 * N16) {
       HWY_UNROLL(1)
-      for (size_t i = 0; i < kGroupSize; i += 4 * NF) {
+      for (; i <= num - 2 * N16; i += 2 * N16) {
+        const V8H nibbles = hn::LoadU(d8h, indices + i / 2);
         V16 c0, c1;
-        TableLookups(d16, tbl0, tbl1, g_packed + i / 2, c0, c1);
-        const VF in0 = hn::LoadU(df, g_in + i + NF * 0);
-        const VF in1 = hn::LoadU(df, g_in + i + NF * 1);
-        const VF in2 = hn::LoadU(df, g_in + i + NF * 2);
-        const VF in3 = hn::LoadU(df, g_in + i + NF * 3);
+        TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+        hn::StoreU(BitCast(dbf, c0), dbf, raw_bf + i + 0 * N16);
+        hn::StoreU(BitCast(dbf, c1), dbf, raw_bf + i + 1 * N16);
+      }
+    }
+
+    const size_t remaining = num - i;
+    HWY_DASSERT(remaining < 2 * N16);
+    if (HWY_UNLIKELY(remaining != 0)) {
+      // i is even, but remaining might not be.
+      const V8H nibbles =
+          hn::LoadN(d8h, indices + i / 2, hwy::DivCeil(remaining, 2));
+
+      V16 c0, c1;
+      TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+      // Out of bounds `nibbles` are 0, but this does not yet guarantee
+      // c0/c1 are, because centers[0] might not be 0.
+      c0 = hn::IfThenElseZero(hn::FirstN(d16, remaining), c0);
+      hn::StoreU(BitCast(dbf, c0), dbf, raw_bf + i);
+      // Callers only pad to one vector, so check before storing the second.
+      if (remaining > N16) {
+        c1 = hn::IfThenElseZero(hn::FirstN(d16, remaining - N16), c1);
+        hn::StoreU(BitCast(dbf, c1), dbf, raw_bf + i + N16);
+      }
+    }
+  }
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void DecWholeGroup(DF df, const uint8_t* HWY_RESTRICT table,
+                                       const uint8_t* HWY_RESTRICT indices,
+                                       float* HWY_RESTRICT raw_f) {
+    const hn::Repartition<BF16, decltype(df)> dbf;
+    const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const D8HFromD16<decltype(d16)> d8h;
+    using V16 = hn::Vec<decltype(d16)>;
+    using V8H = hn::Vec<decltype(d8h)>;
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
+
+    HWY_UNROLL(1)
+    for (size_t i = 0; i < kGroupSize; i += 4 * NF) {
+      const V8H nibbles = hn::LoadU(d8h, indices + i / 2);
+      V16 c0, c1;
+      TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+      const VF f0 = hn::PromoteLowerTo(df, BitCast(dbf, c0));
+      const VF f1 = hn::PromoteUpperTo(df, BitCast(dbf, c0));
+      const VF f2 = hn::PromoteLowerTo(df, BitCast(dbf, c1));
+      const VF f3 = hn::PromoteUpperTo(df, BitCast(dbf, c1));
+      hn::StoreU(f0, df, raw_f + i + 0 * NF);
+      hn::StoreU(f1, df, raw_f + i + 1 * NF);
+      hn::StoreU(f2, df, raw_f + i + 2 * NF);
+      hn::StoreU(f3, df, raw_f + i + 3 * NF);
+    }
+  }
+
+  // Called for first and last group.
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void DecPartialGroup(DF df,
+                                         const uint8_t* HWY_RESTRICT table,
+                                         const uint8_t* HWY_RESTRICT indices,
+                                         float* HWY_RESTRICT raw_f,
+                                         const size_t num) {
+    HWY_DASSERT(num <= kGroupSize);
+
+    const hn::Repartition<BF16, decltype(df)> dbf;
+    const hn::RebindToUnsigned<decltype(dbf)> d16;
+    const D8HFromD16<decltype(d16)> d8h;
+    using V16 = hn::Vec<decltype(d16)>;
+    using V8H = hn::Vec<decltype(d8h)>;
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+
+    V16 tbl1 = Zero(d16);
+    const V16 tbl0 = LoadTable(d16, table, &tbl1);
+
+    size_t i = 0;
+
+    if (num >= 4 * NF) {
+      HWY_UNROLL(1)
+      for (; i <= num - 4 * NF; i += 4 * NF) {
+        const V8H nibbles = hn::LoadU(d8h, indices + i / 2);
+        V16 c0, c1;
+        TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
         const VF f0 = hn::PromoteLowerTo(df, BitCast(dbf, c0));
         const VF f1 = hn::PromoteUpperTo(df, BitCast(dbf, c0));
         const VF f2 = hn::PromoteLowerTo(df, BitCast(dbf, c1));
         const VF f3 = hn::PromoteUpperTo(df, BitCast(dbf, c1));
-        sum0 = hn::MulAdd(in0, f0, sum0);
-        sum1 = hn::MulAdd(in1, f1, sum1);
-        sum2 = hn::MulAdd(in2, f2, sum2);
-        sum3 = hn::MulAdd(in3, f3, sum3);
+        hn::StoreU(f0, df, raw_f + i + 0 * NF);
+        hn::StoreU(f1, df, raw_f + i + 1 * NF);
+        hn::StoreU(f2, df, raw_f + i + 2 * NF);
+        hn::StoreU(f3, df, raw_f + i + 3 * NF);
+      }
+    }
+
+    const size_t remaining = num - i;
+    HWY_DASSERT(remaining < 4 * NF);
+    if (HWY_UNLIKELY(remaining != 0)) {
+      // i is even, but remaining might not be.
+      const V8H nibbles =
+          hn::LoadN(d8h, indices + i / 2, hwy::DivCeil(remaining, 2));
+
+      V16 c0, c1;
+      TableLookups(d16, tbl0, tbl1, nibbles, c0, c1);
+      const VF f0 = hn::PromoteLowerTo(df, BitCast(dbf, c0));
+      const VF f1 = hn::PromoteUpperTo(df, BitCast(dbf, c0));
+      const VF f2 = hn::PromoteLowerTo(df, BitCast(dbf, c1));
+      const VF f3 = hn::PromoteUpperTo(df, BitCast(dbf, c1));
+      // `raw_f` is only guaranteed to padded to NF, hence we cannot store all
+      // four vectors. We could conditionally store vectors either to `raw_f`
+      // or a buffer. However, we still have to mask because only `nibbles`
+      // are guaranteed to be 0, not c0/c1. Copying also involves branches,
+      // so we fully unroll the copy loop to avoid a buffer. We could also
+      // change the contract to pad to four vectors, but it would anyway be
+      // better to decompress to bf16.
+      if (remaining <= 1 * NF) {
+        const hn::Mask<DF> mask = hn::FirstN(df, remaining);
+        hn::StoreU(hn::IfThenElseZero(mask, f0), df, raw_f + i + 0 * NF);
+        return;
+      }
+      hn::StoreU(f0, df, raw_f + i + 0 * NF);
+      if (remaining <= 2 * NF) {
+        const hn::Mask<DF> mask = hn::FirstN(df, remaining - NF);
+        hn::StoreU(hn::IfThenElseZero(mask, f1), df, raw_f + i + 1 * NF);
+        return;
+      }
+      hn::StoreU(f1, df, raw_f + i + 1 * NF);
+      if (remaining <= 3 * NF) {
+        const hn::Mask<DF> mask = hn::FirstN(df, remaining - 2 * NF);
+        hn::StoreU(hn::IfThenElseZero(mask, f2), df, raw_f + i + 2 * NF);
+        return;
+      }
+      hn::StoreU(f2, df, raw_f + i + 2 * NF);
+      {
+        const hn::Mask<DF> mask = hn::FirstN(df, remaining - 3 * NF);
+        hn::StoreU(hn::IfThenElseZero(mask, f3), df, raw_f + i + 3 * NF);
       }
     }
   }

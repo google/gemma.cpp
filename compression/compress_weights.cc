@@ -54,21 +54,6 @@ namespace gcpp {
 constexpr bool kDryRunFread = false;
 
 namespace {
-float ScaleWeights(float* data, size_t len) {
-  float maxabs = 0.0;
-  for (size_t i = 0; i < len; ++i) {
-    maxabs = std::max(maxabs, std::abs(data[i]));
-  }
-  if (maxabs <= kMaxSFP) {
-    return 1.0f;
-  }
-  const float scale = maxabs / kMaxSFP;
-  const float inv_scale = 1.0f / scale;
-  for (size_t i = 0; i < len; ++i) {
-    data[i] *= inv_scale;
-  }
-  return scale;
-}
 
 #define READ_WEIGHTS(name)                                                 \
   do {                                                                     \

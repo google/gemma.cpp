@@ -20,8 +20,12 @@
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
-#include "hwy/base.h"  // hwy::bfloat16_t
+#include <cstdio>
+
+#include "hwy/aligned_allocator.h"
+#include "hwy/base.h"  // HWY_INLINE
 
 namespace gcpp {
 
@@ -35,25 +39,172 @@ using BF16 = hwy::bfloat16_t;
 // - 24-bit dynamic range, with max exponent 2^0.
 // - 3 bit mantissa for values >= 2^-7, otherwise 2.
 //
-// A pointer to this is the *start* of an SFP stream. Values are stored
-// in-order to enable vector-length agnostic seeking, because streams may be
-// written to disk for loading on other CPUs.
+// A pointer to this is the *start* of an SFP stream. Aligning the allocation
+// (see aligned_allocator.h) may speed up decoding but is not required.
+//
+// Layout: Values are stored in-order to enable vector-length agnostic seeking,
+// because streams may be written to disk for loading on other CPUs.
 //
 // This is faster to decode than a straightforward implementation of eXmY, in
 // part because SFP does not require subnormals. Unlike OCP MX, it also does not
 // require side information (shared exponents).
 //
 // Although the representation could probably be shrunk to 6-7 bits, more
-// savings can be had by non-uniform clustering - see nuq.h.
+// savings can be had by non-uniform clustering - see NuqStream.
 #pragma pack(push, 1)
 struct SfpStream {
+  // Largest possible input magnitude: 1.111 * 2^0. This could be increased by
+  // shifting the value range (exponent bias).
+  static constexpr float kMax = 1.875f;
+
   uint8_t byte;
 };
 #pragma pack(pop)
 
-// Largest possible input magnitude: 1.111 * 2^0. This could be increased by
-// shifting the value range (exponent bias).
-constexpr float kMaxSFP = 1.875f;
+// Returns 1.0f if all magnitudes are <= SfpStream::kMax, otherwise scales them
+// such that the largest magnitude is SfpStream::kMax, and returns the
+// multiplier with which to restore the original values. This is only necessary
+// before compressing to SfpStream.
+// TODO: vectorize
+static inline float ScaleWeights(float* HWY_RESTRICT raw, size_t num) {
+  float maxabs = 0.0;
+  for (size_t i = 0; i < num; ++i) {
+    maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
+  }
+  if (maxabs <= SfpStream::kMax) {
+    return 1.0f;
+  }
+  const float scale = maxabs / SfpStream::kMax;
+  const float inv_scale = static_cast<float>(1.0 / static_cast<double>(scale));
+  for (size_t i = 0; i < num; ++i) {
+    // Clamp because kMax may still be exceeded.
+    const float magn =
+        HWY_MIN(SfpStream::kMax, hwy::ScalarAbs(raw[i] * inv_scale));
+    raw[i] = hwy::ScalarCopySign(magn, raw[i]);
+  }
+  return scale;
+}
+
+// Non-uniform quantization: a compressed representation of f32 inputs that
+// supports seeking at a granularity of 1 (for `DecompressAndZeroPad`) or
+// two vectors (for `Decompress2`), and decoding to bf16/f32.
+//
+// A pointer to this is the *start* of a NUQ stream. Aligning the allocation
+// (see aligned_allocator.h) may be speed up decoding but is not required.
+//
+// Layout: first one table of kClusters entries per group, in ascending order
+// of group index, then two packed indices per byte. Indices are stored
+// in-order to enable vector-length agnostic decode, because streams may be
+// persisted to disk and used by other CPUs.
+//
+// To enable parallel encoding and decoding, Enc/Dec have `offset` parameters
+// which refer to the stream, NOT the raw from/to pointers, which point directly
+// to the source/destination. Offsets are in units of values, NOT compressed
+// bytes within the stream.
+#pragma pack(push, 1)
+struct NuqStream {
+  // 4-bit indices are a sweet spot in terms of quality per size.
+  static constexpr size_t kClusters = 16;
+
+  // Number of weights that share a table. Larger = slower encode, higher error,
+  // smaller size (table amortized over more weights).
+  static constexpr size_t kGroupSize = 256;
+
+  // Storage for dynamic programming. There are two matrices; we use separate
+  // allocations to avoid type punning.
+  template <class T>
+  class AlignedMatrix {
+   public:
+    AlignedMatrix() : mem_(hwy::AllocateAligned<T>(kClusters * kGroupSize)) {}
+
+    HWY_INLINE const T& operator()(size_t row, size_t col) const {
+      return mem_[row * kGroupSize + col];
+    }
+
+    HWY_INLINE T& operator()(size_t row, size_t col) {
+      return mem_[row * kGroupSize + col];
+    }
+
+   private:
+    hwy::AlignedFreeUniquePtr<T[]> mem_;
+  };
+
+  // Reuse memory across calls to Enc to avoid per-call allocations.
+  struct ClusterBuf {
+    // Move-only (stored inside vector in CompressWorkingSet).
+    ClusterBuf() = default;
+    ClusterBuf(const ClusterBuf&) = delete;
+    ClusterBuf& operator=(const ClusterBuf&) = delete;
+    ClusterBuf(ClusterBuf&&) = default;
+    ClusterBuf& operator=(ClusterBuf&&) = default;
+
+    void Resize(size_t new_num_groups) {
+      if (new_num_groups < num_groups) return;
+
+      num_groups = new_num_groups;
+      centers = hwy::AllocateAligned<float>(num_groups * kClusters);
+      idx = hwy::AllocateAligned<uint16_t>(num_groups * kGroupSize);
+    }
+
+    // Independent of num_groups.
+    AlignedMatrix<float> costs;
+    AlignedMatrix<int32_t> argmin;
+
+    size_t num_groups = 0;
+    hwy::AlignedFreeUniquePtr<float[]> centers;
+    hwy::AlignedFreeUniquePtr<uint16_t[]> idx;
+  };
+
+  // Returns offset of packed indices from the start of the stream. This matches
+  // the (padded) total table size because table entries are bytes.
+  static constexpr size_t PackedStart(size_t capacity) {
+    // Round up to avoid cache-line splits when loading indices. No effect on
+    // size as long as capacity / kGroupSize is a multiple of 4.
+    return hwy::RoundUpTo(hwy::DivCeil(capacity, kGroupSize) * kClusters, 64);
+  }
+
+  // Returns number of NuqStream to allocate for the stream, which matches its
+  // size in bytes.
+  static constexpr size_t PackedEnd(size_t capacity) {
+    return PackedStart(capacity) + hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
+  }
+
+  uint8_t byte;
+};
+#pragma pack(pop)
+
+template <typename PackedT>
+const char* TypeName() {
+  using Packed = hwy::RemoveCvRef<PackedT>;
+  if constexpr (hwy::IsSame<Packed, float>()) {
+    return "f32";
+  } else if constexpr (hwy::IsSame<Packed, BF16>()) {
+    return "b16";
+  } else if constexpr (hwy::IsSame<Packed, SfpStream>()) {
+    return "sfp";
+  } else if constexpr (hwy::IsSame<Packed, NuqStream>()) {
+    return "nuq";
+  } else {
+    HWY_DASSERT(false);
+    return "unknown";
+  }
+}
+
+template <typename Packed>
+constexpr bool IsCompressed() {
+  return hwy::IsSameEither<hwy::RemoveCvRef<Packed>, SfpStream, NuqStream>();
+}
+
+// Returns the number of `MatT` elements required to store `capacity` values,
+// which must not be zero.
+template <typename Packed>
+constexpr size_t CompressedArrayElements(size_t capacity) {
+  if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
+    return NuqStream::PackedEnd(capacity);
+  } else {
+    return capacity;
+  }
+}
 
 // Non-owning view of packed elements. Shortens argument lists.
 //
@@ -63,13 +214,19 @@ constexpr float kMaxSFP = 1.875f;
 // reusing `hwy::Span`.
 template <typename Packed>
 struct PackedSpan {
-  void BoundsCheck(size_t packed_ofs, size_t num) const {
-    HWY_DASSERT(packed_ofs + num <= size);
-    (void)size;
+  // Ensures callers can read or write `num_accessible` elements starting at
+  // `packed_ofs`.
+  void BoundsCheck(size_t packed_ofs, size_t num_accessible) const {
+    // For NUQ, there can be fewer Packed than the number of elements, hence
+    // check the compressed count and ensure we have that many.
+    const size_t required =
+        CompressedArrayElements<Packed>(packed_ofs + num_accessible);
+    HWY_DASSERT(num >= required);
+    (void)required;
   }
 
   Packed* HWY_RESTRICT ptr;
-  size_t size;  // for BoundsCheck and nuq-inl.h HWY_ASSERT.
+  size_t num;  // for BoundsCheck and nuq-inl.h HWY_ASSERT.
 };
 
 // Avoids spelling out the template parameter in every call.
@@ -87,7 +244,7 @@ HWY_INLINE PackedSpan<const Packed> MakeConstSpan(Packed* ptr, size_t size) {
 // `RMSNormInplace` and compression tests.
 template <typename Packed>
 HWY_INLINE PackedSpan<const Packed> MakeConst(PackedSpan<Packed> packed) {
-  return {packed.ptr, packed.size};
+  return {packed.ptr, packed.num};
 }
 
 }  // namespace gcpp
