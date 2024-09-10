@@ -49,7 +49,7 @@ namespace {
 void EnqueueChunkRequests(uint64_t offset, uint64_t size, uint8_t* data,
                           std::vector<BlobIO>& requests) {
   // Split into chunks for load-balancing even if blob sizes vary.
-  constexpr size_t kChunkSize = 4 * 1024 * 1024;
+  constexpr size_t kChunkSize = 4 * 1024 * 1024;  // bytes
 
   // Split into whole chunks and possibly one remainder.
   uint64_t pos = 0;

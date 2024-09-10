@@ -48,12 +48,13 @@ using BlobError = int;
 // 128), which can help performance.
 static constexpr size_t kBlobAlign = 256;
 
+// One I/O request, serviced by threads in a pool.
 struct BlobIO {
   BlobIO(uint64_t offset, size_t size, void* data, uint64_t padding)
       : offset(offset), size(size), data(data), padding(padding) {}
 
   uint64_t offset;
-  size_t size;
+  size_t size;  // bytes
   void* data;
   uint64_t padding;
 };
@@ -66,7 +67,8 @@ class BlobReader {
   // Opens `filename` and reads its header.
   BlobError Open(const Path& filename);
 
-  // Enqueues read requests if `key` is found and its size matches `size`.
+  // Enqueues read requests if `key` is found and its size matches `size`, which
+  // is in units of bytes.
   BlobError Enqueue(hwy::uint128_t key, void* data, size_t size);
 
   // Reads all enqueued requests.
@@ -80,6 +82,7 @@ class BlobReader {
 
 class BlobWriter {
  public:
+  // `size` is in bytes.
   void Add(hwy::uint128_t key, const void* data, size_t size) {
     keys_.push_back(key);
     blobs_.emplace_back(static_cast<const uint8_t*>(data), size);

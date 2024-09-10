@@ -43,20 +43,20 @@ namespace gcpp {
 // Compressed representation of floating-point elements. The array length may
 // differ from the number of elements. Associated operations such as Dot are
 // implemented in SIMD code and are thus non-member functions.
-template <typename MatT, size_t kCapacity>
+template <typename Packed, size_t kCapacity>
 class CompressedArray {
  public:
-  using value_type = MatT;
+  using value_type = Packed;
 
   // Note that whenever you access data(), you have to consider a scale() that
   // may be different from 1.0f.
-  MatT* data() { return data_.data(); }
-  const MatT* data() const { return data_.data(); }
+  Packed* data() { return data_.data(); }
+  const Packed* data() const { return data_.data(); }
   // The const accessor data_scale1() asserts (!) that the scale is 1.0f, so
   // calling it means "I am sure the scale is 1 and therefore ignore the scale".
   // A scale of 0 indicates that the scale has likely never been set, so is
   // "implicitly 1".
-  const MatT* data_scale1() const {
+  const Packed* data_scale1() const {
     HWY_ASSERT(scale() == 1.f || scale() == 0.f);
     return data_.data();
   }
@@ -67,14 +67,17 @@ class CompressedArray {
   float scale() const { return scale_[0]; }
   void set_scale(float scale) { scale_[0] = scale; }
 
-  constexpr size_t size() const { return kCapacity; }
+  constexpr size_t NumElements() const { return kCapacity; }
 
-  constexpr size_t CompressedSize() const {
-    return data_.size() * sizeof(MatT);
+  // Returns total number of packed elements for `BlobReader::Enqueue` and
+  // `Compress`. This differs from `NumElements` for `Packed=NuqStream`.
+  PackedSpan<Packed> GetSpan() { return MakeSpan(data(), data_.size()); }
+  PackedSpan<const Packed> GetSpan() const {
+    return MakeSpan(data(), data_.size());
   }
 
  private:
-  std::array<MatT, CompressedArrayElements<MatT>(kCapacity)> data_;
+  std::array<Packed, CompressedArrayElements<Packed>(kCapacity)> data_;
   // Blobs are at least kBlobAlign bytes anyway.
   float scale_[kBlobAlign / sizeof(float)];
 };
@@ -146,14 +149,14 @@ struct CompressWorkingSet {
 // Returns key for the given tensor name. Also encodes the type, so that
 // changing the representation automatically invalidates prior cached files
 // (the new blob name will not be found).
-template <typename MatT>
+template <typename Packed>
 hwy::uint128_t CacheKey(const char* name) {
   // Already used/retired: s, S, n, 1
-  const char prefix = hwy::IsSame<MatT, float>()       ? 'F'
-                      : hwy::IsSame<MatT, BF16>()      ? 'B'
-                      : hwy::IsSame<MatT, SfpStream>() ? '$'
-                      : hwy::IsSame<MatT, NuqStream>() ? '2'
-                                                       : '?';
+  const char prefix = hwy::IsSame<Packed, float>()       ? 'F'
+                      : hwy::IsSame<Packed, BF16>()      ? 'B'
+                      : hwy::IsSame<Packed, SfpStream>() ? '$'
+                      : hwy::IsSame<Packed, NuqStream>() ? '2'
+                                                         : '?';
 
   return MakeKey((std::string(1, prefix) + name).c_str());
 }
@@ -173,17 +176,18 @@ class CacheLoader {
   }
 
   // Called for each tensor, enqueues read requests.
-  template <typename MatT, size_t kCapacity>
+  template <typename Packed, size_t kCapacity>
   void operator()(const char* name, const float* null,
-                  CompressedArray<MatT, kCapacity>& compressed) {
+                  CompressedArray<Packed, kCapacity>& compressed) {
     HWY_DASSERT(null == nullptr);
 
     // Skip if reader_ is invalid or any load failed: we will regenerate
     // everything because it's rare to update only a few tensors.
     if (err_ != 0) return;
 
-    err_ = reader_.Enqueue(CacheKey<MatT>(name), compressed.data(),
-                           compressed.CompressedSize());
+    const PackedSpan<Packed> span = compressed.GetSpan();
+    const size_t num_bytes = span.num * sizeof(Packed);
+    err_ = reader_.Enqueue(CacheKey<Packed>(name), span.ptr, num_bytes);
     compressed.set_scale(1.0f);
     if (err_ != 0) {
       fprintf(stderr, "Failed to read cache %s (error %d)\n", name, err_);

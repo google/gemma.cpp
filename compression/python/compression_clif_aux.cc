@@ -4,6 +4,8 @@
 #include <vector>
 
 #include "compression/compress.h"
+#include "compression/shared.h"
+#include "hwy/aligned_allocator.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
@@ -18,6 +20,7 @@
 #ifndef GEMMA_ONCE
 #define GEMMA_ONCE
 
+#include "third_party/absl/types/span.h"
 #include "compression/io.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -47,33 +50,31 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 class SbsWriterImpl : public WriterInterface {
+  template <typename Packed>
+  hwy::AlignedFreeUniquePtr<Packed[]> AllocateAndCompress(
+      const std::string& name, absl::Span<const float> weights) {
+    const size_t num_packed = CompressedArrayElements<Packed>(weights.size());
+    auto packed = hwy::AllocateAligned<Packed>(num_packed);
+    PackedSpan<Packed> span = MakeSpan(packed.get(), num_packed);
+    compressor_.Insert(name.c_str(), weights.data(), weights.size(),
+                       working_set_, span, /*packed_ofs=*/0, pool_);
+    return packed;
+  }
+
  public:
   SbsWriterImpl() : pool_(0), compressor_(pool_) {}
 
   void Insert(std::string name, absl::Span<const float> weights) override {
-    const size_t out_size = CompressedArrayElements<SfpStream>(weights.size());
-    sfp_streams_.push_back(std::vector<SfpStream>(out_size));
-    compressor_.Insert<SfpStream>(name.data(), weights.data(), weights.size(),
-                                  working_set_, out_size,
-                                  sfp_streams_.back().data(), 0, pool_);
+    sfp_streams_.push_back(AllocateAndCompress<SfpStream>(name, weights));
   }
 
   void InsertNUQ(std::string name, absl::Span<const float> weights) override {
-    const size_t out_size = CompressedArrayElements<NuqStream>(weights.size());
-    nuq_streams_.push_back(std::vector<NuqStream>(out_size));
-    compressor_.Insert<NuqStream>(name.data(), weights.data(), weights.size(),
-                                  working_set_, out_size,
-                                  nuq_streams_.back().data(), 0, pool_);
+    nuq_streams_.push_back(AllocateAndCompress<NuqStream>(name, weights));
   }
 
   void InsertBfloat16(std::string name,
                       absl::Span<const float> weights) override {
-    const size_t out_size =
-        CompressedArrayElements<hwy::bfloat16_t>(weights.size());
-    bf16_streams_.push_back(std::vector<hwy::bfloat16_t>(out_size));
-    compressor_.Insert<hwy::bfloat16_t>(name.data(), weights.data(),
-                                        weights.size(), working_set_, out_size,
-                                        bf16_streams_.back().data(), 0, pool_);
+    bf16_streams_.push_back(AllocateAndCompress<BF16>(name, weights));
   }
 
   void AddScales(const std::vector<float>& scales) override {
@@ -89,9 +90,9 @@ class SbsWriterImpl : public WriterInterface {
   hwy::ThreadPool pool_;
   Compressor compressor_;
   CompressWorkingSet working_set_;
-  std::vector<std::vector<SfpStream>> sfp_streams_;
-  std::vector<std::vector<NuqStream>> nuq_streams_;
-  std::vector<std::vector<hwy::bfloat16_t>> bf16_streams_;
+  std::vector<hwy::AlignedFreeUniquePtr<SfpStream[]>> sfp_streams_;
+  std::vector<hwy::AlignedFreeUniquePtr<NuqStream[]>> nuq_streams_;
+  std::vector<hwy::AlignedFreeUniquePtr<BF16[]>> bf16_streams_;
   std::vector<float> scales_;
 };
 

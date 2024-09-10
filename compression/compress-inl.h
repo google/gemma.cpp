@@ -624,21 +624,22 @@ class Compressor {
   explicit Compressor(hwy::ThreadPool& pool) : pool_(pool) {}
 
   template <typename Packed, size_t kCapacity>
-  void operator()(const char* name, const float* weights,
+  void operator()(const char* name, const float* HWY_RESTRICT weights,
                   CompressedArray<Packed, kCapacity>& compressed) {
-    Insert(name, weights, kCapacity, work_, compressed.CompressedSize(),
-           compressed.data(), 0, pool_);
+    Insert(name, weights, kCapacity, work_, compressed.GetSpan(),
+           /*packed_ofs=*/0, pool_);
   }
 
   template <typename Packed>
-  void Insert(const char* name, const float* weights, size_t weights_count,
-              CompressWorkingSet& work, size_t out_capacity, Packed* packed,
-              size_t packed_ofs, hwy::ThreadPool& pool) {
-    fprintf(stderr, "Regenerating %s (%zuM), please wait\n", name,
-            weights_count / (1000 * 1000));
-    Compress(weights, weights_count, work_,
-             PackedSpan<Packed>{packed, weights_count}, 0, pool_);
-    writer_.Add(CacheKey<Packed>(name), packed, out_capacity);
+  void Insert(const char* name, const float* HWY_RESTRICT weights,
+              size_t num_weights, CompressWorkingSet& work,
+              const PackedSpan<Packed>& packed, size_t packed_ofs,
+              hwy::ThreadPool& pool) {
+    fprintf(stderr, "Compressing %s (%zuM), please wait\n", name,
+            num_weights / (1000 * 1000));
+    Compress(weights, num_weights, work_, packed, packed_ofs, pool_);
+    const size_t num_bytes = packed.num * sizeof(Packed);
+    writer_.Add(CacheKey<Packed>(name), packed.ptr, num_bytes);
   }
 
   void AddScales(const float* scales, size_t len) {
