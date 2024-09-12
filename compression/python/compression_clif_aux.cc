@@ -35,6 +35,8 @@ class WriterInterface {
   virtual void InsertNUQ(std::string name, absl::Span<const float> weights) = 0;
   virtual void InsertBfloat16(std::string name,
                               absl::Span<const float> weights) = 0;
+  virtual void InsertFloat(std::string name,
+                           absl::Span<const float> weights) = 0;
   virtual void AddScales(const std::vector<float>& scales) = 0;
 
   virtual void Write(std::string path) = 0;
@@ -77,6 +79,10 @@ class SbsWriterImpl : public WriterInterface {
     bf16_streams_.push_back(AllocateAndCompress<BF16>(name, weights));
   }
 
+  void InsertFloat(std::string name, absl::Span<const float> weights) override {
+    f32_streams_.push_back(AllocateAndCompress<float>(name, weights));
+  }
+
   void AddScales(const std::vector<float>& scales) override {
     HWY_ASSERT(scales_.empty());
     scales_ = scales;
@@ -93,6 +99,7 @@ class SbsWriterImpl : public WriterInterface {
   std::vector<hwy::AlignedFreeUniquePtr<SfpStream[]>> sfp_streams_;
   std::vector<hwy::AlignedFreeUniquePtr<NuqStream[]>> nuq_streams_;
   std::vector<hwy::AlignedFreeUniquePtr<BF16[]>> bf16_streams_;
+  std::vector<hwy::AlignedFreeUniquePtr<float[]>> f32_streams_;
   std::vector<float> scales_;
 };
 
@@ -119,6 +126,9 @@ void SbsWriter::InsertNUQ(std::string name, absl::Span<const float> weights) {
 void SbsWriter::InsertBfloat16(std::string name,
                                absl::Span<const float> weights) {
   impl_->InsertBfloat16(name, weights);
+}
+void SbsWriter::InsertFloat(std::string name, absl::Span<const float> weights) {
+  impl_->InsertFloat(name, weights);
 }
 
 void SbsWriter::AddScales(const std::vector<float>& scales) {

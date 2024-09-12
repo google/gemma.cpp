@@ -24,6 +24,9 @@ class CompressionTest(unittest.TestCase):
     writer.insert_bf16(
         "qux", np.array([0.000375] * 128 + [0.00007] * 128, dtype=np.float32)
     )
+    writer.insert_float(
+        "quux", np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32)
+    )
     writer.write(temp_file.full_path)
 
 

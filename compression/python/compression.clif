@@ -7,6 +7,7 @@ from "third_party/gemma_cpp/compression/python/compression_clif_aux.h":
       def `Insert` as insert(self, name: str, weights: NumpyArray<float>)
       def `InsertNUQ` as insert_nuq(self, name: str, weights: NumpyArray<float>)
       def `InsertBfloat16` as insert_bf16(self, name: str, weights: NumpyArray<float>)
+      def `InsertFloat` as insert_float(self, name: str, weights: NumpyArray<float>)
 
       def `AddScales` as add_scales(self, scales: list<float>)
 

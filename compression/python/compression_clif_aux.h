@@ -19,6 +19,7 @@ class SbsWriter {
   void Insert(std::string name, absl::Span<const float> weights);
   void InsertNUQ(std::string name, absl::Span<const float> weights);
   void InsertBfloat16(std::string name, absl::Span<const float> weights);
+  void InsertFloat(std::string name, absl::Span<const float> weights);
   void AddScales(const std::vector<float>& scales);
 
   void Write(std::string path);
