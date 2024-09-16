@@ -214,6 +214,57 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
   }
 }
 
+// Computes mean mu and mean of squares mu2 of a vector. Used in LayerNorm.
+template <typename T>
+HWY_NOINLINE void ScalarMus(const T* HWY_RESTRICT a, size_t size, T& mu,
+                            T& mu2) {
+  HWY_ASSERT(size > 0);
+  double sum = 0.0;
+  double sum2 = 0.0;
+  for (size_t i = 0; i < size; ++i) {
+    const float f = hwy::ConvertScalarTo<float>(a[i]);
+    sum += f;
+    sum2 += f * f;
+  }
+  mu = sum / size;
+  mu2 = sum2 / size;
+}
+
+// Compare py/flax/linen/normalization.py.
+// out = (x - mean) * scale * rsqrt(var + epsilon) + bias
+template <typename VecT, typename WeightT, typename OutT>
+HWY_NOINLINE void ScalarLayerNorm(const VecT* x,
+                                  const WeightT* HWY_RESTRICT scale,
+                                  const WeightT* HWY_RESTRICT bias,
+                                  OutT* out,
+                                  size_t size) {
+  constexpr float kEps = 1e-6f;
+  VecT mu, mu2;
+  ScalarMus(x, size, mu, mu2);
+  VecT var = mu2 - mu * mu;
+  VecT zero = 0.0f;
+  var = HWY_MAX(var, zero);
+  var = 1.0f / sqrtf(var + kEps);
+  for (size_t j = 0; j < size; j++) {
+    const float v = hwy::ConvertScalarTo<float>(x[j]);
+    const float s = hwy::ConvertScalarTo<float>(scale[j]);
+    const float b = hwy::ConvertScalarTo<float>(bias[j]);
+    out[j] = hwy::ConvertScalarTo<OutT>((v - mu) * s * var + b);
+  }
+}
+
+template <typename VecT, typename WeightT, typename OutT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void LayerNorm(const VecT* x,
+                                             const WeightT* HWY_RESTRICT weight,
+                                             const WeightT* HWY_RESTRICT bias,
+                                             OutT* out,
+                                             const size_t size) {
+  PROFILER_FUNC;
+  // For now we only delegate to the scalar version.
+  // TODO: implement vectorized version.
+  ScalarLayerNorm(x, weight, bias, out, size);
+}
+
 static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
     float* HWY_RESTRICT x, size_t dim_model, size_t pos) {
   PROFILER_ZONE("ops.AddAbsolutePositionalEmbeddings");
@@ -374,6 +425,16 @@ void RMSNormInplaceBatched(size_t num_tokens, const WeightT* weights,
                            InOutT* inout, const size_t model_dim) {
   for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
     RMSNormInplace(weights, inout + token_idx * model_dim, model_dim);
+  }
+}
+
+template <typename VecT, typename WeightT, typename OutT>
+void LayerNormBatched(size_t num_tokens, const VecT* x,
+                      const WeightT* HWY_RESTRICT weight,
+                      const WeightT* HWY_RESTRICT bias, OutT* out,
+                      const size_t size) {
+  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+    LayerNorm(x + token_idx * size, weight, bias, out + token_idx * size, size);
   }
 }
 

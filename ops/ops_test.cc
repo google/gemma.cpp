@@ -498,6 +498,67 @@ void TestAllRMSNorm() {
   TestRMSNorm<BF16, BF16, BF16>(rng);
 }
 
+void TestLayerNormSimple() {
+  const size_t kSize = 52;
+  std::vector<float> values(kSize);
+  // Alternating 1.0/-1.0, so mean=0.0, var=1.0, rsqrt(var+epsilon)=0.9999995
+  for (int i = 0; i < kSize; ++i) {
+    values[i] = (i % 2 == 0) ? 1.0f : -1.0f;
+  }
+  std::vector<float> scale(kSize, 1.2f);
+  std::vector<float> bias(kSize, 0.1f);
+  std::vector<float> result(kSize);
+  LayerNorm(values.data(), scale.data(), bias.data(), result.data(), kSize);
+
+  for (size_t i = 0; i < kSize; i++) {
+    const float max_error = 1e-6f;
+    float value = values[i];
+    float res = result[i];
+    // out = (x - 0.0) * 1.2 * 0.9999995 + 0.1 = 1.2999994 / -1.0999994;
+    float expected = (i % 2 == 0) ? 1.2999994f : -1.0999994f;
+    EXPECT_NEAR(res, expected, max_error) << "Input: " << value;
+  }
+}
+
+// Note: there is no vectorized implementation of LayerNorm yet. So this test
+// currently only checks that the scalar version can be called for the below
+// combinations of float/BF16 inputs and outputs.
+template <typename VecT, typename WeightT, typename OutT>
+void TestLayerNorm(hwy::RandomState& rng) {
+  constexpr size_t kSize = 128;
+  VecT vec[kSize];
+  WeightT weight[kSize];
+  WeightT bias[kSize];
+  OutT expected[kSize];
+  OutT actual[kSize];
+
+  for (size_t i = 0; i < kSize; ++i) {
+    vec[i] = hwy::ConvertScalarTo<VecT>(RandomGaussian(rng));
+    weight[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
+    bias[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
+  }
+
+  ScalarLayerNorm(vec, weight, bias, expected, kSize);
+  LayerNorm(vec, weight, bias, actual, kSize);
+
+  for (size_t i = 0; i < kSize; i++) {
+    const float e = hwy::ConvertScalarTo<float>(expected[i]);
+    const float a = hwy::ConvertScalarTo<float>(actual[i]);
+    if (!IsNear(e, a, 1e-5f)) {
+      HWY_ABORT("LayerNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<VecT>(),
+                TypeName<WeightT>(), TypeName<OutT>(), i, e, a);
+    }
+  }
+}
+
+void TestAllLayerNorm() {
+  hwy::RandomState rng;
+  TestLayerNorm<float, float, float>(rng);
+  TestLayerNorm<float, float, BF16>(rng);
+  TestLayerNorm<float, BF16, float>(rng);
+  TestLayerNorm<float, BF16, BF16>(rng);
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -516,6 +577,8 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp
