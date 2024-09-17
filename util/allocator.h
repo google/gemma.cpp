@@ -58,6 +58,10 @@ class RowVectorBatch {
     HWY_DASSERT(batch_idx < batch_size_);
     return mem_.get() + batch_idx * len_;
   }
+  const T* Batch(size_t batch_idx) const {
+    HWY_DASSERT(batch_idx < batch_size_);
+    return mem_.get() + batch_idx * len_;
+  }
 
   // For MatMul or other operations that process the entire batch at once.
   T* All() { return mem_.get(); }
