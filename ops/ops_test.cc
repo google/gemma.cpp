@@ -24,6 +24,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -559,6 +561,43 @@ void TestAllLayerNorm() {
   TestLayerNorm<float, BF16, BF16>(rng);
 }
 
+void TestSampleTopK() {
+  const size_t kSize = 52;
+  std::vector<float> logits(kSize);
+  // SampleTopK is typically used on logits, which can be negative.
+  // Create a vector going from -100 to -100+51=49.
+  std::iota(logits.begin(), logits.end(), -100.0f);
+  std::mt19937 gen;
+  gen.seed(0x12345678);
+  float temperature = 1.0f;
+  // SampleTopK<1> should return the argmax.
+  std::function<bool(int, float)> accept_token;
+  int sample = SampleTopK<1>(logits.data(), kSize, gen, temperature,
+                             accept_token);
+  EXPECT_EQ(sample, 51);  // Last is largest.
+  // Only accept even tokens, expect the last (largest) even index.
+  accept_token = [](int i, float) { return i % 2 == 0; };
+  sample = SampleTopK<1>(logits.data(), kSize, gen, temperature,
+                         accept_token);
+  EXPECT_EQ(sample, 50);  // Last even index.
+  // Reset the logits to a positive, increasing sequence.
+  std::iota(logits.begin(), logits.end(), 1.0f);
+  // Sample from the top 3, expect one of the top 3 even indices.
+  for (int i = 0; i < 100; ++i) {
+    sample = SampleTopK<3>(logits.data(), kSize, gen, temperature,
+                          accept_token);
+    EXPECT_TRUE(sample == 50 || sample == 48 || sample == 46);
+  }
+  // Now set the temperature to 0.0f, which should always return the argmax,
+  // even for k=3.
+  temperature = 0.0f;
+  for (int i = 0; i < 100; ++i) {
+    sample = SampleTopK<3>(logits.data(), kSize, gen, temperature,
+                          accept_token);
+    EXPECT_EQ(sample, 50);
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -579,6 +618,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

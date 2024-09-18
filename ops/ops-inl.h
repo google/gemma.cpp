@@ -23,6 +23,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <type_traits>  // std::enable_if_t
 
@@ -593,6 +594,12 @@ SampleArgmax(const float* probabilities, size_t vocab_size) {
 template <size_t k>
 HWY_NOINLINE HWY_MAYBE_UNUSED std::discrete_distribution<int>
 create_distribution(std::array<float, k>& top_k, float temperature) {
+  HWY_ASSERT(temperature >= 0.0f);
+  if (temperature == 0.0f) {
+    // Temperature == 0 is a special case which always returns the argmax (0).
+    // We also want to avoid dividing by zero in the code below.
+    return std::discrete_distribution<int>();
+  }
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
 
@@ -609,32 +616,35 @@ create_distribution(std::array<float, k>& top_k, float temperature) {
 
 template <size_t k, typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
-    const float* HWY_RESTRICT probabilities, size_t vocab_size,
+    const float* HWY_RESTRICT logits, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
   static_assert(k != 0, "");
+  HWY_ASSERT(k <= vocab_size);
   // TODO: Optimize, potentially using new VQSort PartialSort.
   std::array<float, k> top_k{};  // sorted from highest [0], to lowest [k-1]
+  top_k.fill(-std::numeric_limits<float>::infinity());
   std::array<int, k> indices{};
+  size_t num_accepted = 0;
   for (size_t i = 0; i < vocab_size; ++i) {
-    if (probabilities[i] < top_k[k - 1] &&
-        (!accept_token || accept_token(StaticCast<int>(i), probabilities[i]))) {
-      continue;
-    }
+    if (logits[i] < top_k[k - 1]) continue;
+    bool accepted =
+        !accept_token || accept_token(StaticCast<int>(i), logits[i]);
+    if (!accepted) continue;
+    num_accepted++;
     for (size_t j = 0; j < k; ++j) {
-      if (probabilities[i] > top_k[j] &&
-          (!accept_token ||
-           accept_token(StaticCast<int>(i), probabilities[i]))) {
+      if (logits[i] > top_k[j]) {
         // shift elements by 1, insert the new value, move on to next value
         for (size_t idx = k - 1; idx > j; --idx) {
           top_k[idx] = top_k[idx - 1];
           indices[idx] = indices[idx - 1];
         }
-        top_k[j] = probabilities[i];
+        top_k[j] = logits[i];
         indices[j] = StaticCast<int>(i);
         break;
       }
     }
   }
+  HWY_ASSERT(k <= num_accepted);
   return indices[create_distribution<k>(top_k, temperature)(gen)];
 }
 
