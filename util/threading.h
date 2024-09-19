@@ -143,8 +143,8 @@ class PerClusterPools {
   PerClusterPools() = delete;
   PerClusterPools(const PerClusterPools&) = delete;
   PerClusterPools& operator=(const PerClusterPools&) = delete;
-  PerClusterPools(PerClusterPools&&) = default;
-  PerClusterPools& operator=(PerClusterPools&&) = default;
+  PerClusterPools(PerClusterPools&&) = delete;
+  PerClusterPools& operator=(PerClusterPools&&) = delete;
 
   // PerClusterPools supports spin waits (see StartSpinning below). To prevent
   // drastic slowdowns caused by excessive user-specified thread counts, which
