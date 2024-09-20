@@ -52,6 +52,65 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+enum {  // alphabetical order for consistency and to avoid implying a preference
+  kAddTwoProd,
+  kAddTwoSum,
+  kComp2,
+  kCompensated,
+  kKahan,
+  kNaive,
+  kOnlyTwoProd,
+  kPairwise,
+
+  kVariants
+};
+
+const char* VariantName(size_t variant) {
+  switch (variant) {
+    case kAddTwoProd:
+      return "add2prod";
+    case kAddTwoSum:
+      return "add2sum";
+    case kComp2:
+      return "comp2";
+    case kCompensated:
+      return "comp";
+    case kKahan:
+      return "kahan";
+    case kNaive:
+      return "naive";
+    case kOnlyTwoProd:
+      return "only2prod";
+    case kPairwise:
+      return "pairwise";
+    default:
+      HWY_ABORT("Unknown variant %zu", variant);
+      return "?";
+  }
+}
+
+// Wrapper functions allow disabling HWY_ASSERT so that we see all failures in
+// one run and can update all thresholds at once.
+template <typename T>
+void AssertInside(size_t variant, T min, T actual, T max, int line) {
+  if (!gcpp::IsInside(min, max, actual)) {
+    fprintf(stderr, "!!line %03d, %s actual %E not in [%E, %E]\n", line,
+            VariantName(variant), actual, min, max);
+    HWY_ASSERT(false);
+  }
+}
+
+template <typename T>
+void AssertLess(size_t variant, T actual, T max, int line) {
+  AssertInside(variant, hwy::LowestValue<T>(), actual, max, line);
+}
+
+#define ASSERT_LESS(variant, actual, max) \
+  AssertLess(variant, actual, max, __LINE__)
+
+#define ASSERT_INSIDE(variant, min, actual, max) \
+  AssertInside(variant, min, actual, max, __LINE__)
+
 //------------------------------------------------------------------------------
 // Dot product variants
 
@@ -87,6 +146,7 @@ struct DotKernelNaive {
     return hn::ReduceSum(df, sum0);
   }
 };
+
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotNaive(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
                           const VecT* HWY_RESTRICT vec_aligned, size_t num) {
@@ -133,6 +193,7 @@ struct DotKernelKahan {
     return ReduceCascadedSums(df, sum0, sum_err);
   }
 };
+
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotKahan(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
                           const VecT* HWY_RESTRICT vec_aligned, size_t num) {
@@ -195,6 +256,7 @@ struct DotKernelTwoProdFast {
     return ReduceCascadedSums(df, sum0, comp0);
   }
 };
+
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotTwoProdFast(D d, const PackedSpan<const WeightT>& w,
                                 size_t w_ofs,
@@ -250,6 +312,7 @@ struct DotKernelMulTwoSum {
     return ReduceCascadedSums(df, sum0, comp0);
   }
 };
+
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotMulTwoSum(D d, const PackedSpan<const WeightT>& w,
                               size_t w_ofs,
@@ -304,6 +367,7 @@ struct DotKernelTwoProdAdd {
     return ReduceCascadedSums(df, sum0, comp0);
   }
 };
+
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WeightT>& w,
                                size_t w_ofs,
@@ -313,35 +377,162 @@ HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WeightT>& w,
                            DotKernelTwoProdAdd());
 }
 
-enum {  // alphabetical order
-  kAddTwoProd,
-  kAddTwoSum,
-  kCompensated,
-  kKahan,
-  kNaive,
-  kOnlyTwoProd,
+// From "SIMDizing Pairwise Sums". Slower and generally higher error than
+// Kahan, but uses fewer regs.
+struct DotKernelPairwise {
+  template <class DF, class VF = hn::Vec<DF>>
+  HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
+                          const VF w3, const VF v0, const VF v1, const VF v2,
+                          const VF v3, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                          VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
+    const size_t N = hn::Lanes(df);
+    const VF prod0 = hn::Mul(w0, v0);
+    const VF prod2 = hn::Mul(w2, v2);
+    const VF prod1 = hn::MulAdd(w1, v1, prod0);
+    const VF prod3 = hn::MulAdd(w3, v3, prod2);
+    VF sum = hn::Add(prod1, prod3);
+    for (size_t bit = 4 * N; bit & num_; bit += bit, top_ -= N) {
+      HWY_DASSERT(top_ >= N);
+      HWY_DASSERT(top_ <= 32 * N);
+      sum = hn::Add(sum, hn::LoadU(df, stack_ + top_ - N));
+    }
+    hn::StoreU(sum, df, stack_ + top_);
+    top_ += N;
+    HWY_DASSERT(top_ <= 32 * N);
+    num_ += 4 * N;
+  }
 
-  kVariants
+  template <class DF, class VF = hn::Vec<DF>>
+  HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
+                          VF& comp0) const {
+    const size_t N = hn::Lanes(df);
+    VF sum = hn::Mul(w0, v0);
+    for (size_t bit = N; bit & num_; bit += bit, top_ -= N) {
+      HWY_DASSERT(top_ >= N);
+      HWY_DASSERT(top_ <= 32 * N);
+      sum = hn::Add(sum, hn::LoadU(df, stack_ + top_ - N));
+    }
+    hn::StoreU(sum, df, stack_ + top_);
+    top_ += N;
+    HWY_DASSERT(top_ <= 32 * N);
+    num_ += N;
+  }
+
+  template <class DF, class VF = hn::Vec<DF>>
+  HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                          VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
+    const size_t N = hn::Lanes(df);
+    sum0 = hn::Zero(df);
+    for (; top_ != 0; top_ -= N) {
+      sum0 = hn::Add(sum0, hn::LoadU(df, stack_ + top_ - N));
+    }
+    return hn::ReduceSum(df, sum0);
+  }
+
+ private:
+  HWY_ALIGN mutable float stack_[32 * hn::MaxLanes(hn::ScalableTag<float>())];
+  mutable size_t top_ = 0;
+  mutable size_t num_ = 0;
 };
 
-const char* VariantName(size_t variant) {
-  switch (variant) {
-    case kAddTwoProd:
-      return "add2prod";
-    case kAddTwoSum:
-      return "add2sum";
-    case kCompensated:
-      return "comp";
-    case kKahan:
-      return "kahan";
-    case kNaive:
-      return "naive";
-    case kOnlyTwoProd:
-      return "only2prod";
-    default:
-      HWY_ABORT("Unknown variant %zu", variant);
-      return "?";
+template <class D, typename WeightT, typename VecT>
+HWY_INLINE float DotPairwise(D d, const PackedSpan<const WeightT>& w,
+                             size_t w_ofs, const VecT* HWY_RESTRICT vec_aligned,
+                             size_t num) {
+  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelPairwise());
+}
+
+// Hybrid of Pairwise and Compensated. 1.14x time vs. Kahan, but geomean mul
+// is 1.02 vs 1.06, mean L1 is 1.21x better, and uses two fewer regs.
+struct DotKernelComp2 {
+  template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
+  HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
+                          const VF w3, const VF v0, const VF v1, const VF v2,
+                          const VF v3, VF& sum0, VF& /*sum1*/, VF& sum2,
+                          VF& /*sum3*/, VF& comp0, VF& comp1, VF& comp2,
+                          VF& comp3) const {
+    VF perr0, perr1, perr2, perr3;
+    VF prod0 = TwoProducts(df, w0, v0, perr0);
+    VF prod1 = TwoProducts(df, w1, v1, perr1);
+    VF prod2 = TwoProducts(df, w2, v2, perr2);
+    VF prod3 = TwoProducts(df, w3, v3, perr3);
+
+    // Pairwise sums of prod* and perr*.
+    prod0 = hn::Add(prod0, prod1);
+    prod2 = hn::Add(prod2, prod3);
+    perr0 = hn::Add(perr0, perr1);
+    perr2 = hn::Add(perr2, perr3);
+
+    VF serr0, serr2;
+    sum0 = TwoSums(df, prod0, sum0, serr0);
+    sum2 = TwoSums(df, prod2, sum2, serr2);
+
+    comp0 = hn::Add(comp0, perr0);
+    comp1 = hn::Add(comp1, perr2);
+    comp2 = hn::Add(comp2, serr0);
+    comp3 = hn::Add(comp3, serr2);
   }
+
+  template <class DBF, class VBF = hn::Vec<DBF>, HWY_IF_BF16_D(DBF),
+            class DF = hn::Repartition<float, DBF>, class VF = hn::Vec<DF>>
+  HWY_INLINE void Update4(DBF /*dbf*/, const VBF w0, const VBF w1, const VBF w2,
+                          const VBF w3, const VBF v0, const VBF v1,
+                          const VBF v2, const VBF v3, VF& sum0, VF& sum1,
+                          VF& sum2, VF& sum3, VF& comp0, VF& comp1, VF& comp2,
+                          VF& comp3) const {
+    const DF df;
+    VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
+    VF prod1 = WidenMulPairwiseAdd(df, w1, v1);
+    VF prod2 = WidenMulPairwiseAdd(df, w2, v2);
+    VF prod3 = WidenMulPairwiseAdd(df, w3, v3);
+
+    // Pairwise sums
+    prod0 = hn::Add(prod0, prod1);
+    prod2 = hn::Add(prod2, prod3);
+    prod0 = hn::Add(prod0, prod2);
+
+    VF serr0;
+    sum0 = TwoSums(df, prod0, sum0, serr0);
+    comp0 = hn::Add(comp0, serr0);
+  }
+
+  template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
+  HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
+                          VF& comp0) const {
+    VF perr0;
+    const VF prod0 = TwoProducts(df, w0, v0, perr0);
+
+    VF serr0;
+    sum0 = TwoSums(df, prod0, sum0, serr0);
+
+    comp0 = hn::Add(comp0, hn::Add(perr0, serr0));
+  }
+
+  template <class DBF, class VBF = hn::Vec<DBF>, HWY_IF_BF16_D(DBF),
+            class DF = hn::Repartition<float, DBF>, class VF = hn::Vec<DF>>
+  HWY_INLINE void Update1(DBF /*dbf*/, const VBF w0, const VBF v0, VF& sum0,
+                          VF& comp0) const {
+    const DF df;
+    const VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
+
+    VF serr0;
+    sum0 = TwoSums(df, prod0, sum0, serr0);
+    comp0 = hn::Add(comp0, serr0);
+  }
+
+  template <class DF, class VF = hn::Vec<DF>>
+  HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                          VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
+    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    comp1 = hn::Add(comp1, comp3);
+    return ReduceCascadedSums(df, sum0, hn::Add(comp0, comp1));
+  }
+};
+
+template <class D, typename WeightT, typename VecT>
+HWY_INLINE float DotComp2(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
+                          const VecT* HWY_RESTRICT vec_aligned, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelComp2());
 }
 
 template <class D, typename WeightT, typename VecT>
@@ -352,6 +543,8 @@ float CallDot(D d, size_t variant, const PackedSpan<const WeightT>& w,
       return DotTwoProdFast(d, w, 0, v, num);
     case kAddTwoSum:
       return DotMulTwoSum(d, w, 0, v, num);
+    case kComp2:
+      return DotComp2(d, w, 0, v, num);
     case kCompensated:
       return DotCompensated(d, w, 0, v, num);
     case kKahan:
@@ -360,6 +553,8 @@ float CallDot(D d, size_t variant, const PackedSpan<const WeightT>& w,
       return DotNaive(d, w, 0, v, num);
     case kOnlyTwoProd:
       return DotTwoProdAdd(d, w, 0, v, num);
+    case kPairwise:
+      return DotPairwise(d, w, 0, v, num);
     default:
       HWY_ABORT("Unknown variant %zu", variant);
       return 0.0f;
@@ -496,60 +691,74 @@ class DotStats {
  private:
   // Factor by which the approximate result is off; larger is worse.
   void CheckMuls() const {
+    // Comp2 is between Compensated and Kahan.
+    ASSERT_INSIDE(kComp2, 1.001, s_muls[kComp2].Mean(), 1.3);
+    ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 2.4f);
+    ASSERT_INSIDE(kComp2, 1.0, s_muls[kComp2].GeometricMean(), 1.2);
+
     // Compensated is very accurate.
-    HWY_ASSERT(s_muls[kCompensated].Min() <= 1.0f + 2E-6f);
-    HWY_ASSERT(s_muls[kCompensated].Max() <= 1.0f + 2E-5f);
+    ASSERT_LESS(kCompensated, s_muls[kCompensated].Min(), 1.0f + 2E-6f);
+    ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 2E-5f);
 
     // Naive and OnlyTwoProd are considerably worse. >10x is for narrower
     // vectors, compared to AVX-512. GeometricMean overflows, must use Mean.
-    HWY_ASSERT(gcpp::IsInside(1.01, 16.0, s_muls[kNaive].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.01, 13.0, s_muls[kOnlyTwoProd].Mean()));
+    ASSERT_INSIDE(kNaive, 1.01, s_muls[kNaive].Mean(), 16.0);
+    ASSERT_INSIDE(kOnlyTwoProd, 1.01, s_muls[kOnlyTwoProd].Mean(), 13.0);
 
     // Kahan (FastTwoSum) is decent:
-    HWY_ASSERT(gcpp::IsInside(1.001, 4.1, s_muls[kKahan].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.001f, 14.1f, s_muls[kKahan].Max()));
-    HWY_ASSERT(gcpp::IsInside(1.0, 1.6, s_muls[kKahan].GeometricMean()));
+    ASSERT_INSIDE(kKahan, 1.001, s_muls[kKahan].Mean(), 4.1);
+    ASSERT_INSIDE(kKahan, 1.001f, s_muls[kKahan].Max(), 14.1f);
+    ASSERT_INSIDE(kKahan, 1.0, s_muls[kKahan].GeometricMean(), 1.6);
 
     // But can be considerably improved via TwoProducts:
-    HWY_ASSERT(gcpp::IsInside(1.0005, 1.5, s_muls[kAddTwoProd].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.001f, 2.3f, s_muls[kAddTwoProd].Max()));
-    HWY_ASSERT(gcpp::IsInside(1.0, 1.2, s_muls[kAddTwoProd].GeometricMean()));
+    ASSERT_INSIDE(kAddTwoProd, 1.0005, s_muls[kAddTwoProd].Mean(), 1.5);
+    ASSERT_INSIDE(kAddTwoProd, 1.001f, s_muls[kAddTwoProd].Max(), 2.3f);
+    ASSERT_INSIDE(kAddTwoProd, 1.0, s_muls[kAddTwoProd].GeometricMean(), 1.2);
     // Updating Kahan's FastTwoSums to TwoSums is not quite as helpful.
-    HWY_ASSERT(gcpp::IsInside(1.0005, 2.2, s_muls[kAddTwoSum].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.0, 1.3, s_muls[kAddTwoProd].GeometricMean()));
+    ASSERT_INSIDE(kAddTwoSum, 1.0005, s_muls[kAddTwoSum].Mean(), 2.2);
+    ASSERT_INSIDE(kAddTwoSum, 1.0, s_muls[kAddTwoSum].GeometricMean(), 1.3);
+
+    ASSERT_INSIDE(kPairwise, 1.0, s_muls[kPairwise].GeometricMean(), 1.5);
   }
 
   // Absolute error; larger is worse.
   void CheckL1() const {
+    // Comp2 is between Compensated and Kahan.
+    ASSERT_INSIDE(kComp2, 1E-5, s_l1s[kComp2].Mean(), 9E-4);
+    ASSERT_INSIDE(kComp2, 1E-5f, s_l1s[kComp2].Max(), 2.6E-3f);
+
     // Compensated is very accurate.
     HWY_ASSERT(s_l1s[kCompensated].Min() == 0.0f);
-    HWY_ASSERT(s_l1s[kCompensated].Max() <= 3E-7f);
+    ASSERT_LESS(kCompensated, s_l1s[kCompensated].Max(), 3E-7f);
 
     // Naive and OnlyTwoProd are considerably higher, but not huge.
-    HWY_ASSERT(gcpp::IsInside(1E-3, 2E-2, s_l1s[kNaive].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1E-3, 2E-2, s_l1s[kOnlyTwoProd].Mean()));
+    ASSERT_INSIDE(kNaive, 1E-3, s_l1s[kNaive].Mean(), 2E-2);
+    ASSERT_INSIDE(kOnlyTwoProd, 1E-3, s_l1s[kOnlyTwoProd].Mean(), 2E-2);
 
     // Kahan (FastTwoSum) is decent:
-    HWY_ASSERT(gcpp::IsInside(4.5E-4, 1E-3, s_l1s[kKahan].Mean()));
-    HWY_ASSERT(gcpp::IsInside(1.1E-3f, 3.2E-3f, s_l1s[kKahan].Max()));
+    ASSERT_INSIDE(kKahan, 3.9E-4, s_l1s[kKahan].Mean(), 1E-3);
+    ASSERT_INSIDE(kKahan, 1.1E-3f, s_l1s[kKahan].Max(), 3.2E-3f);
 
     // But can be nearly halved via TwoProducts:
-    HWY_ASSERT(gcpp::IsInside(2.5E-4, 8E-4, s_l1s[kAddTwoProd].Mean()));
-    HWY_ASSERT(gcpp::IsInside(4E-4f, 2.0E-3f, s_l1s[kAddTwoProd].Max()));
+    ASSERT_INSIDE(kAddTwoProd, 2.2E-4, s_l1s[kAddTwoProd].Mean(), 8E-4);
+    ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_l1s[kAddTwoProd].Max(), 2.0E-3f);
     // Updating Kahan's FastTwoSums to TwoSums does help a bit.
-    HWY_ASSERT(gcpp::IsInside(1.5E-4, 5.2E-4, s_l1s[kAddTwoSum].Mean()));
+    ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 5.2E-4);
+
+    ASSERT_INSIDE(kPairwise, 4.5E-4, s_l1s[kPairwise].Mean(), 4E-3);
+    ASSERT_INSIDE(kPairwise, 1.1E-3f, s_l1s[kPairwise].Max(), 1E-2f);
   }
 
   // Units in the last place; larger is worse.
   void CheckUlps() const {
-    HWY_ASSERT(s_ulps[kCompensated].Max() <= 250.0f);
-
-    HWY_ASSERT(s_ulps[kNaive].Max() <= 4E9f);
-    HWY_ASSERT(s_ulps[kOnlyTwoProd].Max() <= 3E9f);
-
-    HWY_ASSERT(s_ulps[kKahan].Max() <= 4E7f);
-    HWY_ASSERT(s_ulps[kAddTwoProd].Max() <= 1E7f);
-    HWY_ASSERT(s_ulps[kAddTwoSum].Max() <= 2.5E7f);
+    ASSERT_LESS(kComp2, s_ulps[kCompensated].Max(), 3.6E6f);
+    ASSERT_LESS(kCompensated, s_ulps[kCompensated].Max(), 250.0f);
+    ASSERT_LESS(kNaive, s_ulps[kNaive].Max(), 4E9f);
+    ASSERT_LESS(kOnlyTwoProd, s_ulps[kOnlyTwoProd].Max(), 3E9f);
+    ASSERT_LESS(kKahan, s_ulps[kKahan].Max(), 4E7f);
+    ASSERT_LESS(kAddTwoProd, s_ulps[kAddTwoProd].Max(), 1E7f);
+    ASSERT_LESS(kAddTwoSum, s_ulps[kAddTwoSum].Max(), 2.5E7f);
+    ASSERT_LESS(kPairwise, s_ulps[kPairwise].Max(), 3.3E9f);
   }
 
   hwy::Stats s_cond;
@@ -715,32 +924,35 @@ struct TestShortDotsT {
       }
     }
 
+    constexpr bool kCompressed = IsCompressed<Packed>();
     // Verify the dot products are plausible. This is only to verify
     // correctness, not to differentiate between the variants.
     double expected_l1[kVariants];
     // Tolerances are much lower for compressed inputs: the more limited set of
     // values seems to reduce roundoff.
-    constexpr bool kCompressed = IsCompressed<Packed>();
-    expected_l1[kAddTwoProd] = kCompressed ? 1.5E-6 : 5E-5;
-    expected_l1[kAddTwoSum] = kCompressed ? 1.5E-6 : 6E-5;
-    expected_l1[kCompensated] = kCompressed ? 1.5E-6 : 4E-5;
-    expected_l1[kKahan] = kCompressed ? 1.5E-6 : 7E-5;
-    expected_l1[kNaive] = kCompressed ? 4E-6 : 1.5E-4;
-    expected_l1[kOnlyTwoProd] = kCompressed ? 1.5E-6 : 6E-5;
+    for (size_t variant = 0; variant < kVariants; ++variant) {
+      expected_l1[variant] = kCompressed ? 1.5E-6 : 7E-5;
+    }
+    expected_l1[kNaive] = kCompressed ? 4E-6 : 2E-4;
+    expected_l1[kPairwise] = kCompressed ? 4E-6 : 2E-4;
 
     for (size_t variant = 0; variant < kVariants; ++variant) {
       HWY_ASSERT(s_l1[variant].Min() >= 0.0f);
-      HWY_ASSERT(s_l1[variant].Max() <= 1.5E-3f);
-      if (s_l1[variant].Mean() > expected_l1[variant]) {
-        HWY_ABORT("%s -> %s: %s mean l1 %.5E > %.5E\n", TypeName<Packed>(),
-                  TypeName<T>(), VariantName(variant), s_l1[variant].Mean(),
-                  expected_l1[variant]);
-      }
+      ASSERT_LESS(variant, s_l1[variant].Max(), 1.5E-3f);
+      ASSERT_LESS(variant, s_l1[variant].Mean(), expected_l1[variant]);
     }
   }
 };
 
-void TestAllShortDots() { ForeachPackedAndRawType<TestShortDotsT>(); }
+void TestAllShortDots() {
+  // Skip EMU128 and old x86, include SSE4 because it tests the non-FMA path.
+  if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSSE3 ||
+      HWY_TARGET == HWY_SSE2) {
+    return;
+  }
+
+  ForeachPackedAndRawType<TestShortDotsT>();
+}
 
 // Excludes outliers; we might not have enough samples for a reliable mode.
 double TrimmedMean(double* seconds, size_t num) {
