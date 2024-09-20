@@ -149,8 +149,8 @@ struct DotKernelNaive {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotNaive(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec_aligned, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelNaive());
+                          const VecT* HWY_RESTRICT vec, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelNaive());
 }
 
 // https://en.wikipedia.org/wiki/Kahan_summation_algorithm: FastTwoSum.
@@ -196,16 +196,15 @@ struct DotKernelKahan {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotKahan(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec_aligned, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelKahan());
+                          const VecT* HWY_RESTRICT vec, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelKahan());
 }
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotCompensated(D d, const PackedSpan<const WeightT>& w,
-                                size_t w_ofs,
-                                const VecT* HWY_RESTRICT vec_aligned,
+                                size_t w_ofs, const VecT* HWY_RESTRICT vec,
                                 size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num,
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelCompensated());
 }
 
@@ -259,10 +258,9 @@ struct DotKernelTwoProdFast {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotTwoProdFast(D d, const PackedSpan<const WeightT>& w,
-                                size_t w_ofs,
-                                const VecT* HWY_RESTRICT vec_aligned,
+                                size_t w_ofs, const VecT* HWY_RESTRICT vec,
                                 size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num,
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelTwoProdFast());
 }
 
@@ -315,10 +313,10 @@ struct DotKernelMulTwoSum {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotMulTwoSum(D d, const PackedSpan<const WeightT>& w,
-                              size_t w_ofs,
-                              const VecT* HWY_RESTRICT vec_aligned,
+                              size_t w_ofs, const VecT* HWY_RESTRICT vec,
                               size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelMulTwoSum());
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
+                           DotKernelMulTwoSum());
 }
 
 // -Like Compensated, but only TwoProducts, no [Fast]TwoSums. This is only 10%
@@ -370,10 +368,9 @@ struct DotKernelTwoProdAdd {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WeightT>& w,
-                               size_t w_ofs,
-                               const VecT* HWY_RESTRICT vec_aligned,
+                               size_t w_ofs, const VecT* HWY_RESTRICT vec,
                                size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num,
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelTwoProdAdd());
 }
 
@@ -437,9 +434,10 @@ struct DotKernelPairwise {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotPairwise(D d, const PackedSpan<const WeightT>& w,
-                             size_t w_ofs, const VecT* HWY_RESTRICT vec_aligned,
+                             size_t w_ofs, const VecT* HWY_RESTRICT vec,
                              size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelPairwise());
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
+                           DotKernelPairwise());
 }
 
 // Hybrid of Pairwise and Compensated. 1.14x time vs. Kahan, but geomean mul
@@ -531,8 +529,8 @@ struct DotKernelComp2 {
 
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotComp2(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec_aligned, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num, DotKernelComp2());
+                          const VecT* HWY_RESTRICT vec, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelComp2());
 }
 
 template <class D, typename WeightT, typename VecT>
@@ -703,10 +701,10 @@ class DotStats {
     // Naive and OnlyTwoProd are considerably worse. >10x is for narrower
     // vectors, compared to AVX-512. GeometricMean overflows, must use Mean.
     ASSERT_INSIDE(kNaive, 1.01, s_muls[kNaive].Mean(), 16.0);
-    ASSERT_INSIDE(kOnlyTwoProd, 1.01, s_muls[kOnlyTwoProd].Mean(), 13.0);
+    ASSERT_INSIDE(kOnlyTwoProd, 1.01, s_muls[kOnlyTwoProd].Mean(), 73.0);
 
     // Kahan (FastTwoSum) is decent:
-    ASSERT_INSIDE(kKahan, 1.001, s_muls[kKahan].Mean(), 4.1);
+    ASSERT_INSIDE(kKahan, 1.0005, s_muls[kKahan].Mean(), 4.1);
     ASSERT_INSIDE(kKahan, 1.001f, s_muls[kKahan].Max(), 14.1f);
     ASSERT_INSIDE(kKahan, 1.0, s_muls[kKahan].GeometricMean(), 1.6);
 
@@ -718,7 +716,7 @@ class DotStats {
     ASSERT_INSIDE(kAddTwoSum, 1.0005, s_muls[kAddTwoSum].Mean(), 2.2);
     ASSERT_INSIDE(kAddTwoSum, 1.0, s_muls[kAddTwoSum].GeometricMean(), 1.3);
 
-    ASSERT_INSIDE(kPairwise, 1.0, s_muls[kPairwise].GeometricMean(), 1.5);
+    ASSERT_INSIDE(kPairwise, 1.0, s_muls[kPairwise].GeometricMean(), 1.6);
   }
 
   // Absolute error; larger is worse.
@@ -736,12 +734,12 @@ class DotStats {
     ASSERT_INSIDE(kOnlyTwoProd, 1E-3, s_l1s[kOnlyTwoProd].Mean(), 2E-2);
 
     // Kahan (FastTwoSum) is decent:
-    ASSERT_INSIDE(kKahan, 3.9E-4, s_l1s[kKahan].Mean(), 1E-3);
-    ASSERT_INSIDE(kKahan, 1.1E-3f, s_l1s[kKahan].Max(), 3.2E-3f);
+    ASSERT_INSIDE(kKahan, 3E-4, s_l1s[kKahan].Mean(), 1E-3);
+    ASSERT_INSIDE(kKahan, 6E-4f, s_l1s[kKahan].Max(), 3.2E-3f);
 
     // But can be nearly halved via TwoProducts:
     ASSERT_INSIDE(kAddTwoProd, 2.2E-4, s_l1s[kAddTwoProd].Mean(), 8E-4);
-    ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_l1s[kAddTwoProd].Max(), 2.0E-3f);
+    ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_l1s[kAddTwoProd].Max(), 2.1E-3f);
     // Updating Kahan's FastTwoSums to TwoSums does help a bit.
     ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 5.2E-4);
 

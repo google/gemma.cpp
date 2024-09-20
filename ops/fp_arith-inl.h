@@ -118,15 +118,15 @@ template <class DF, HWY_IF_FLOAT3264_D(DF), class VF = hn::Vec<DF>>
 void UpdateCascadedSums(DF df, VF v, VF& sum, VF& sum_err) {
   VF err;
   sum = TwoSums(df, sum, v, err);
-  sum_err += err;
+  sum_err = hn::Add(sum_err, err);
 }
 
 // Combines two cascaded sum vectors, typically from unrolling/parallelization.
 template <class DF, HWY_IF_FLOAT3264_D(DF), class VF = hn::Vec<DF>>
 void AssimilateCascadedSums(DF df, const VF& other_sum, const VF& other_sum_err,
                             VF& sum, VF& sum_err) {
+  sum_err = hn::Add(sum_err, other_sum_err);
   UpdateCascadedSums(df, other_sum, sum, sum_err);
-  sum_err += other_sum_err;
 }
 
 // Reduces cascaded sums, to a single value. Slow, call outside of loops.
@@ -134,14 +134,31 @@ template <class DF, HWY_IF_FLOAT3264_D(DF), class VF = hn::Vec<DF>>
 hn::TFromD<DF> ReduceCascadedSums(DF df, const VF sum, VF sum_err) {
   const size_t N = hn::Lanes(df);
   using TF = hn::TFromD<DF>;
+  // For non-scalable wide vectors, reduce loop iterations below by recursing
+  // once or twice for halves of 256-bit or 512-bit vectors.
+  if constexpr (!HWY_HAVE_SCALABLE) {
+    if constexpr (hn::Lanes(df) > 16 / sizeof(TF)) {
+      const hn::Half<DF> dfh;
+      using VFH = hn::Vec<decltype(dfh)>;
+
+      VFH sum0 = hn::LowerHalf(dfh, sum);
+      VFH sum_err0 = hn::LowerHalf(dfh, sum_err);
+      const VFH sum1 = hn::UpperHalf(dfh, sum);
+      const VFH sum_err1 = hn::UpperHalf(dfh, sum_err);
+      AssimilateCascadedSums(dfh, sum1, sum_err1, sum0, sum_err0);
+      return ReduceCascadedSums(dfh, sum0, sum_err0);
+    }
+  }
+
   TF total = TF{0.0};
   TF total_err = TF{0.0};
   for (size_t i = 0; i < N; ++i) {
     TF err;
+    total_err += hn::ExtractLane(sum_err, i);
     total = TwoSum(total, hn::ExtractLane(sum, i), err);
     total_err += err;
   }
-  return total + total_err + hn::ReduceSum(df, sum_err);
+  return total + total_err;
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

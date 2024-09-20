@@ -45,7 +45,6 @@
 // After highway.h
 #include "compression/nuq-inl.h"
 #include "compression/sfp-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -507,13 +506,8 @@ HWY_NOINLINE void DecompressAndZeroPad(DRaw d, const PackedSpan<Packed>& packed,
 template <class D, typename WeightT, typename VecT, class Kernel>
 HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const WeightT>& w,
                                    const size_t w_ofs,
-                                   const VecT* HWY_RESTRICT vec_aligned,
-                                   const size_t num, const Kernel& kernel) {
-  PROFILER_FUNC;
-
-  HWY_DASSERT(hn::IsAligned(hn::Repartition<VecT, D>(), vec_aligned));
-  const auto v_span = MakeSpan(vec_aligned, num);
-
+                                   const PackedSpan<const VecT> vec,
+                                   const Kernel& kernel) {
   // Decompressed inputs
   using V = hn::Vec<decltype(d)>;
   V w0, w1, w2, w3, v0, v1, v2, v3;
@@ -532,26 +526,26 @@ HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const WeightT>& w,
 
   const size_t N = hn::Lanes(d);
   size_t i = 0;
-  if (num >= 4 * N) {
-    for (; i <= num - 4 * N; i += 4 * N) {
+  if (vec.num >= 4 * N) {
+    for (; i <= vec.num - 4 * N; i += 4 * N) {
       Decompress2(d, w, w_ofs + i + 0 * N, w0, w1);
       Decompress2(d, w, w_ofs + i + 2 * N, w2, w3);
-      Decompress2(d, v_span, i + 0 * N, v0, v1);
-      Decompress2(d, v_span, i + 2 * N, v2, v3);
+      Decompress2(d, vec, i + 0 * N, v0, v1);
+      Decompress2(d, vec, i + 2 * N, v2, v3);
 
       kernel.Update4(d, w0, w1, w2, w3, v0, v1, v2, v3, sum0, sum1, sum2, sum3,
                      comp0, comp1, comp2, comp3);
     }
   }
 
-  size_t remaining = num - i;
+  size_t remaining = vec.num - i;
   HWY_DASSERT(remaining < 4 * N);
   if (HWY_UNLIKELY(remaining != 0)) {
     using T = hn::TFromD<D>;
     HWY_ALIGN T padded_w[4 * hn::MaxLanes(d)];
     HWY_ALIGN T padded_v[4 * hn::MaxLanes(d)];
     DecompressAndZeroPad(d, w, w_ofs + i, padded_w, remaining);
-    DecompressAndZeroPad(d, v_span, i, padded_v, remaining);
+    DecompressAndZeroPad(d, vec, i, padded_v, remaining);
 
     // 1..4 whole vectors, possibly zero-padded.
     for (size_t padded_pos = 0; padded_pos < remaining; padded_pos += N) {
@@ -566,13 +560,8 @@ HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const WeightT>& w,
 
 // Same as above, but single input array. Used by RMSNorm.
 template <class D, typename VecT, class Kernel>
-HWY_INLINE float DecompressAndCall(D d, const VecT* HWY_RESTRICT vec_aligned,
-                                   const size_t num, const Kernel& kernel) {
-  PROFILER_FUNC;
-
-  HWY_DASSERT(hn::IsAligned(hn::Repartition<VecT, D>(), vec_aligned));
-  const auto v_span = MakeSpan(vec_aligned, num);
-
+HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const VecT> vec,
+                                   const Kernel& kernel) {
   // Decompressed inputs
   using V = hn::Vec<decltype(d)>;
   V v0, v1, v2, v3;
@@ -591,21 +580,21 @@ HWY_INLINE float DecompressAndCall(D d, const VecT* HWY_RESTRICT vec_aligned,
 
   const size_t N = hn::Lanes(d);
   size_t i = 0;
-  if (num >= 4 * N) {
-    for (; i <= num - 4 * N; i += 4 * N) {
-      Decompress2(d, v_span, i + 0 * N, v0, v1);
-      Decompress2(d, v_span, i + 2 * N, v2, v3);
+  if (vec.num >= 4 * N) {
+    for (; i <= vec.num - 4 * N; i += 4 * N) {
+      Decompress2(d, vec, i + 0 * N, v0, v1);
+      Decompress2(d, vec, i + 2 * N, v2, v3);
 
       kernel.Update4(d, v0, v1, v2, v3, v0, v1, v2, v3, sum0, sum1, sum2, sum3,
                      comp0, comp1, comp2, comp3);
     }
   }
 
-  size_t remaining = num - i;
+  size_t remaining = vec.num - i;
   HWY_DASSERT(remaining < 4 * N);
   if (HWY_UNLIKELY(remaining != 0)) {
     HWY_ALIGN float padded_v[4 * hn::MaxLanes(d)];
-    DecompressAndZeroPad(d, v_span, i, padded_v, remaining);
+    DecompressAndZeroPad(d, vec, i, padded_v, remaining);
 
     // 1..4 whole vectors, possibly zero-padded.
     for (size_t padded_pos = 0; padded_pos < remaining; padded_pos += N) {

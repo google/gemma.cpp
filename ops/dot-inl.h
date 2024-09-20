@@ -244,34 +244,34 @@ struct DotKernelCompensated {
 // Default kernel
 template <class D, typename WeightT, typename VecT>
 HWY_INLINE float Dot(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                     const VecT* HWY_RESTRICT vec_aligned, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, vec_aligned, num,
+                     const VecT* HWY_RESTRICT vec, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelCompensated());
 }
 
 // Adapter for a single pointer, no bounds checking.
 template <typename WeightT, typename VecT>
-HWY_INLINE float Dot(const WeightT* HWY_RESTRICT w, const VecT* vec_aligned,
+HWY_INLINE float Dot(const WeightT* HWY_RESTRICT w, const VecT* vec,
                      size_t num) {
   const hn::ScalableTag<VecT> d;
-  return Dot(d, MakeConstSpan(w, num), /*w_ofs=*/0, vec_aligned, num);
+  return Dot(d, MakeConstSpan(w, num), /*w_ofs=*/0, vec, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
 template <size_t kCapacity, typename VecT>
 HWY_INLINE float Dot(const std::array<float, kCapacity>& w, size_t w_ofs,
-                     const VecT* vec_aligned, size_t num) {
+                     const VecT* vec, size_t num) {
   const hn::ScalableTag<VecT> d;
-  return Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec_aligned, num);
+  return Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
 template <typename MatT, size_t kCapacity, typename VecT>
 HWY_INLINE float Dot(const CompressedArray<MatT, kCapacity>& w, size_t w_ofs,
-                     const VecT* vec_aligned, size_t num) {
+                     const VecT* vec, size_t num) {
   const hn::ScalableTag<VecT> d;
   return w.scale() *
-         Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec_aligned, num);
+         Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

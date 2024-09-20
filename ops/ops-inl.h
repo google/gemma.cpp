@@ -145,7 +145,8 @@ namespace detail {
 template <typename VecT>
 float RMSNormMul(const VecT* HWY_RESTRICT x, size_t size) {
   const hn::ScalableTag<float> df;
-  const float l2 = DecompressAndCall(df, x, size, DotKernelCompensated());
+  const float l2 =
+      DecompressAndCall(df, MakeSpan(x, size), DotKernelCompensated());
   constexpr float kEps = 1e-6f;  // avoid divide by zero
   return 1.0f / sqrtf(l2 / StaticCast<float>(size) + kEps);
 }
@@ -503,8 +504,54 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
+// ORO Cascaded Summation, algorithm 6.11 from Handbook of Floating-Point
+// Arithmetic. Note that Algorithm 6.7 (KBN) appears erroneous. We use TwoSums
+// instead of FastTwoSums because the magnitude of the initial sum is not
+// always greater than the next input, and this does actually change the e2e
+// generation results. Note that Kahan summation differs in that it first adds
+// comp* to w*, so each operation is serially dependent. By contrast, the sum*
+// and comp* here have shorter dependency chains.
+struct KernelCascadedSum {
+  template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
+  HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
+                          const VF w3, VF, VF, VF, VF, VF& sum0, VF& sum1,
+                          VF& sum2, VF& sum3, VF& comp0, VF& comp1, VF& comp2,
+                          VF& comp3) const {
+    VF serr0, serr1, serr2, serr3;
+    sum0 = TwoSums(df, sum0, w0, serr0);
+    sum1 = TwoSums(df, sum1, w1, serr1);
+    sum2 = TwoSums(df, sum2, w2, serr2);
+    sum3 = TwoSums(df, sum3, w3, serr3);
+
+    comp0 = hn::Add(comp0, serr0);
+    comp1 = hn::Add(comp1, serr1);
+    comp2 = hn::Add(comp2, serr2);
+    comp3 = hn::Add(comp3, serr3);
+  }
+
+  template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
+  HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
+                          VF& comp0) const {
+    VF serr0;
+    sum0 = TwoSums(df, sum0, w0, serr0);
+
+    comp0 = hn::Add(comp0, serr0);
+  }
+
+  template <class DF, class VF = hn::Vec<DF>>
+  HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                          VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
+    // Reduction tree: sum of all accumulators by pairs, then across lanes.
+    AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
+    AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
+    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    return ReduceCascadedSums(df, sum0, comp0);
+  }
+};
+
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
                                  const size_t mask_pos) {
+  PROFILER_FUNC;
   HWY_DASSERT(size != 0);
   HWY_DASSERT(mask_pos <= size);
 
@@ -523,23 +570,22 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
   hn::Transform(d, x, mask_pos, [pmax](const auto d, const V value) HWY_ATTR {
-#if HWY_TARGET & HWY_ALL_SVE
-    // Temporary workaround for buggy SVE codegen: avoid inlined
-    // Exp().
-    return hn::CallExp(d, hn::Sub(value, *pmax));
-#else
-                  return hn::Exp(d, hn::Sub(value, *pmax));
-#endif
+    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
+      return hn::CallExp(d, hn::Sub(value, *pmax));
+    } else {
+      return hn::Exp(d, hn::Sub(value, *pmax));
+    }
   });
 
-  V sum = hn::Zero(d);
-  V* psum = &sum;
-  hn::Foreach(d, x, mask_pos, sum,
-              [psum](const auto d, const V value)
-                  HWY_ATTR { *psum = hn::Add(*psum, value); });
-
-  // Normalize to probability distribution
-  const float mul = 1.0f / hn::ReduceSum(d, sum);
+  // Normalize to probability distribution. The exact sum seems like it should
+  // not make a huge difference. It halves the standard deviation of the sum of
+  // the normalized probabilities from 1E-7 to 5E-8, but actually also changes
+  // the generated text after a few hundred tokens.
+  const float sum_exp =
+      DecompressAndCall(d, MakeConstSpan(x, mask_pos), KernelCascadedSum());
+  // Double-precision reciprocal does not appear to affect the results.
+  const float mul = 1.0f / sum_exp;
   MulByConst(mul, x, size, mask_pos);
 }
 
