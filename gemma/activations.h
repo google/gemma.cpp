@@ -97,7 +97,9 @@ struct Activations {
 
     x = RowVectorBatch<float>(batch_size, kModelDim);
     q = RowVectorBatch<float>(batch_size, kHeads * QStride<TConfig>());
-    logits = RowVectorBatch<float>(batch_size, kVocabSize);
+    if constexpr (kVocabSize > 0) {
+     logits = RowVectorBatch<float>(batch_size, kVocabSize);
+    }
 
     pre_att_rms_out = RowVectorBatch<float>(batch_size, kModelDim);
     att = RowVectorBatch<float>(batch_size, kHeads * kSeqLen);
@@ -109,7 +111,7 @@ struct Activations {
     C2 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
     ffw_out = RowVectorBatch<float>(batch_size, kModelDim);
 
-    if (kGriffinLayers > 0) {
+    if constexpr (kGriffinLayers > 0) {
       griffin_x = RowVectorBatch<float>(batch_size, kModelDim);
       griffin_y = RowVectorBatch<float>(batch_size, kModelDim);
       griffin_gate_x = RowVectorBatch<float>(batch_size, kModelDim);

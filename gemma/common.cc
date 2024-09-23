@@ -36,6 +36,7 @@ constexpr const char* kModelFlags[] = {
     "gemma2-2b-pt", "gemma2-2b-it",  // Gemma2 2B
     "9b-pt", "9b-it",                // Gemma2 9B
     "27b-pt", "27b-it",              // Gemma2 27B
+    "paligemma-224",                 // PaliGemma 224
 };
 constexpr Model kModelTypes[] = {
     Model::GEMMA_2B, Model::GEMMA_2B,      // Gemma 2B
@@ -43,8 +44,9 @@ constexpr Model kModelTypes[] = {
     Model::GRIFFIN_2B, Model::GRIFFIN_2B,  // RecurrentGemma
     Model::GEMMA_TINY,                     // Gemma Tiny
     Model::GEMMA2_2B, Model::GEMMA2_2B,    // Gemma2 2B
-    Model::GEMMA2_9B, Model::GEMMA2_9B,      // Gemma2 9B
-    Model::GEMMA2_27B, Model::GEMMA2_27B,    // Gemma2 27B
+    Model::GEMMA2_9B, Model::GEMMA2_9B,    // Gemma2 9B
+    Model::GEMMA2_27B, Model::GEMMA2_27B,  // Gemma2 27B
+    Model::PALIGEMMA_224,                  // PaliGemma 224
 };
 constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 2B
@@ -54,6 +56,7 @@ constexpr ModelTraining kModelTraining[] = {
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 2B
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 9B
     ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 27B
+    ModelTraining::PALIGEMMA,                          // PaliGemma 224
 };
 
 constexpr size_t kNumModelFlags =

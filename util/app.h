@@ -187,6 +187,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   float temperature;
   bool deterministic;
   bool multiturn;
+  Path image_file;
 
   // Returns error string or nullptr if OK.
   const char* Validate() const {
@@ -221,6 +222,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "interaction\n    1 = continue KV cache after every interaction\n  "
             "  Default : 0 (conversation "
             "resets every turn)");
+    visitor(image_file, "image_file", Path(), "Image file to load.");
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {

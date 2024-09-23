@@ -44,6 +44,7 @@ using EmbedderInputT = hwy::bfloat16_t;
 enum class LayerAttentionType {
   kGemma,
   kGriffinRecurrentBlock,
+  kVit,
 };
 
 // Post attention and ffw normalization type.
@@ -131,7 +132,22 @@ struct CachePosSize {
   }
 };
 
-struct ConfigNoSSM {
+struct ConfigNoVit {
+  struct VitConfig {
+    static constexpr int kLayers = 0;
+    static constexpr std::array<LayerAttentionType, 0> kLayerConfig =
+        FixedLayerConfig<0>(LayerAttentionType::kVit);
+    static constexpr int kModelDim = 0;
+    static constexpr int kFFHiddenDim = 0;
+    static constexpr int kHeads = 0;
+    static constexpr int kKVHeads = 0;
+    static constexpr int kQKVDim = 0;
+    static constexpr int kSeqLen = 0;
+    static constexpr ResidualType kResidual = ResidualType::Add;
+  };
+};
+
+struct ConfigNoSSM : ConfigNoVit {
   static constexpr int kGriffinLayers = 0;
 
   static constexpr int kConv1dWidth = 0;
@@ -248,6 +264,37 @@ struct ConfigGemma2B : public ConfigBaseGemmaV1 {
 };
 
 template <typename TWeight>
+struct ConfigPaliGemma_224 : public ConfigGemma2B<TWeight> {
+  // On the LM side, the vocab size is one difference to Gemma1-2B in the
+  // architecture. PaliGemma adds 1024 <locNNNN> and 128 <segNNN> tokens.
+  static constexpr int kVocabSize = 256000 + 1024 + 128;  // = 257152
+
+  // Sub-config for the Vision-Transformer part.
+  struct VitConfig : public ConfigNoSSM {
+    using Weight = TWeight;
+    // The ViT parts. https://arxiv.org/abs/2305.13035
+    // "SoViT-400m/14 [...] has a width of 1152, depth 27, and MLP dim 4304."
+    static constexpr std::array<LayerAttentionType, 27> kLayerConfig =
+        FixedLayerConfig<27>(LayerAttentionType::kVit);
+    static constexpr int kLayers = kLayerConfig.size();
+    static constexpr int kModelDim = 1152;
+    static constexpr int kFFHiddenDim = 4304;
+    static constexpr int kHeads = 16;
+    static constexpr int kKVHeads = 16;  // standard MHA
+    static constexpr int kQKVDim = 72;
+    static constexpr int kSeqLen = 16 * 16;  // 256
+    static constexpr bool kFFBiases = true;
+    // The Vit part does not have a vocabulary, the image patches are embedded.
+    static constexpr int kVocabSize = 0;
+    // Dimensions related to image processing.
+    static constexpr int kPatchWidth = 14;
+    static constexpr int kImageSize = 224;
+    // Necessary constant for the layer configuration.
+    static constexpr PostNormType kPostNorm = PostNormType::None;
+  };
+};
+
+template <typename TWeight>
 struct ConfigGemma2_2B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
@@ -297,7 +344,7 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
 };
 
 template <typename TWeight>
-struct ConfigGriffin2B {
+struct ConfigGriffin2B : ConfigNoVit {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   // Griffin uses local attention, so kSeqLen is actually the local attention

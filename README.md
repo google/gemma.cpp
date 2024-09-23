@@ -23,7 +23,7 @@ deployment-oriented C++ inference runtimes, which are not designed for
 experimentation, and Python-centric ML research frameworks, which abstract away
 low-level computation through compilation.
 
-gemma.cpp provides a minimalist implementation of Gemma 2B and 7B models,
+gemma.cpp provides a minimalist implementation of Gemma-1 and Gemma-2 models,
 focusing on simplicity and directness rather than full generality. This is
 inspired by vertically-integrated model implementations such as
 [ggml](https://github.com/ggerganov/ggml),
@@ -78,17 +78,20 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "-
 ### Step 1: Obtain model weights and tokenizer from Kaggle or Hugging Face Hub
 
 Visit the
-[Kaggle page for Gemma](https://www.kaggle.com/models/google/gemma/frameworks/gemmaCpp),
-or [Gemma-2](https://www.kaggle.com/models/google/gemma-2/gemmaCpp), and select
-`Model Variations |> Gemma C++`.
+[Kaggle page for Gemma-2](https://www.kaggle.com/models/google/gemma-2/gemmaCpp)
+[or Gemma-1](https://www.kaggle.com/models/google/gemma/frameworks/gemmaCpp),
+and select `Model Variations |> Gemma C++`.
 
 On this tab, the `Variation` dropdown includes the options below. Note bfloat16
 weights are higher fidelity, while 8-bit switched floating point weights enable
 faster inference. In general, we recommend starting with the `-sfp` checkpoints.
 
+If you are unsure which model to start with, we recommend starting with the
+smallest Gemma-2 model, i.e. `2.0-2b-it-sfp`.
+
 Alternatively, visit the
 [gemma.cpp](https://huggingface.co/models?other=gemma.cpp) models on the Hugging
-Face Hub. First go the the model repository of the model of interest (see
+Face Hub. First go the model repository of the model of interest (see
 recommendations below). Then, click the `Files and versions` tab and download
 the model and tokenizer files. For programmatic downloading, if you have
 `huggingface_hub` installed, you can also download by running:
@@ -98,7 +101,7 @@ huggingface-cli login # Just the first time
 huggingface-cli download google/gemma-2b-sfp-cpp --local-dir build/
 ```
 
-2B instruction-tuned (`it`) and pre-trained (`pt`) models:
+Gemma-1 2B instruction-tuned (`it`) and pre-trained (`pt`) models:
 
 | Model name  | Description |
 | ----------- | ----------- |
@@ -107,7 +110,7 @@ huggingface-cli download google/gemma-2b-sfp-cpp --local-dir build/
 | `2b-pt`     | 2 billion parameter pre-trained model, bfloat16 |
 | `2b-pt-sfp` | 2 billion parameter pre-trained model, 8-bit switched floating point |
 
-7B instruction-tuned (`it`) and pre-trained (`pt`) models:
+Gemma-1 7B instruction-tuned (`it`) and pre-trained (`pt`) models:
 
 | Model name  | Description |
 | ----------- | ----------- |
@@ -256,6 +259,53 @@ Step 1, and run the binary as follows:
 
 `./gemma --tokenizer tokenizer.spm --model gr2b-it --weights 2b-it-sfp.sbs`
 
+### PaliGemma Vision-Language Model
+
+This repository includes a version of the PaliGemma VLM
+([paper](https://arxiv.org/abs/2407.07726),
+[code](https://github.com/google-research/big_vision/tree/main/big_vision/configs/proj/paligemma)).
+We  provide a C++ implementation of this model here.
+
+To use the version of PaliGemma included in this repository, build the gemma
+binary as noted above in Step 3. Download the compressed weights and tokenizer
+from //TODO(keysers) - update location// and run the binary as follows:
+
+```./gemma \
+--tokenizer paligemma_tokenizer.model \
+--model paligemma-224 \
+--weights paligemma-3b-mix-224-sfp.sbs \
+--image_file paligemma/testdata/image.ppm
+```
+
+Note that the image reading code is very basic to avoid depending on an image
+processing library for now. We currently only support reading binary PPMs (P6).
+So use a tool like `convert` to first convert your images into that format, e.g.
+
+`convert image.jpeg -resize 224x224^ image.ppm`
+
+(As the image will be resized for processing anyway, we can already resize at
+this stage for slightly faster loading.)
+
+The interaction with the image (using the mix-224 checkpoint) may then look
+something like this:
+
+```
+> Describe the image briefly
+A large building with two towers in the middle of a city.
+> What type of building is it?
+church
+> What color is the church?
+gray
+> caption image
+A large building with two towers stands tall on the water's edge. The building
+has a brown roof and a window on the side. A tree stands in front of the
+building, and a flag waves proudly from its top. The water is calm and blue,
+reflecting the sky above. A bridge crosses the water, and a red and white boat
+rests on its surface. The building has a window on the side, and a flag on top.
+A tall tree stands in front of the building, and a window on the building is
+visible from the water. The water is green, and the sky is blue.
+```
+
 ### Troubleshooting and FAQs
 
 **Running `./gemma` fails with "Failed to read cache gating_ein_0 (error 294) ..."**
@@ -283,8 +333,8 @@ and not a pre-trained model (any model with a `-pt` suffix).
 **How do I convert my fine-tune to a `.sbs` compressed model file?**
 
 We're working on a python script to convert a standard model format to `.sbs`,
-and hope have it available in the next week or so. Follow [this
-issue](https://github.com/google/gemma.cpp/issues/11) for updates.
+and hope have it available soon. Follow
+[this issue](https://github.com/google/gemma.cpp/issues/11) for updates.
 
 **What are some easy ways to make the model run faster?**
 
@@ -371,7 +421,7 @@ For using the `gemma` executable as a command line tool, it may be useful to
 create an alias for gemma.cpp with arguments fully specified:
 
 ```sh
-alias gemma2b="~/gemma.cpp/build/gemma -- --tokenizer ~/gemma.cpp/build/tokenizer.spm --weights ~/gemma.cpp/build/2b-it-sfp.sbs --model 2b-it --verbosity 0"
+alias gemma2b="~/gemma.cpp/build/gemma -- --tokenizer ~/gemma.cpp/build/tokenizer.spm --weights ~/gemma.cpp/build/gemma2-2b-it-sfp.sbs --model gemma2-2b-it --verbosity 0"
 ```
 
 Replace the above paths with your own paths to the model and tokenizer paths
@@ -381,7 +431,7 @@ Here is an example of prompting `gemma` with a truncated input
 file (using a `gemma2b` alias like defined above):
 
 ```sh
-cat configs.h | tail -35 | tr '\n' ' ' | xargs -0 echo "What does this C++ code do: " | gemma2b
+cat configs.h | tail -n 35 | tr '\n' ' ' | xargs -0 echo "What does this C++ code do: " | gemma2b
 ```
 
 > [!NOTE]
@@ -391,27 +441,11 @@ cat configs.h | tail -35 | tr '\n' ' ' | xargs -0 echo "What does this C++ code 
 The output of the above command should look like:
 
 ```console
-$ cat configs.h | tail -35 | tr '\n' ' ' | xargs -0 echo "What does this C++ code do: " | gemma2b
-[ Reading prompt ] ......................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
-The code defines two C++ structs, `ConfigGemma7B` and `ConfigGemma2B`, which are used for configuring a deep learning model.
+[ Reading prompt ] [...]
+This C++ code snippet defines a set of **constants** used in a large language model (LLM) implementation, likely related to the **attention mechanism**.
 
-**ConfigGemma7B**:
-
-* `kSeqLen`: Stores the length of the sequence to be processed. It's set to 7168.
-* `kVocabSize`: Stores the size of the vocabulary, which is 256128.
-* `kLayers`: Number of layers in the deep learning model. It's set to 28.
-* `kModelDim`: Dimension of the model's internal representation. It's set to 3072.
-* `kFFHiddenDim`: Dimension of the feedforward and recurrent layers' hidden representations. It's set to 16 * 3072 / 2.
-
-**ConfigGemma2B**:
-
-* `kSeqLen`: Stores the length of the sequence to be processed. It's also set to 7168.
-* `kVocabSize`: Size of the vocabulary, which is 256128.
-* `kLayers`: Number of layers in the deep learning model. It's set to 18.
-* `kModelDim`: Dimension of the model's internal representation. It's set to 2048.
-* `kFFHiddenDim`: Dimension of the feedforward and recurrent layers' hidden representations. It's set to 16 * 2048 / 2.
-
-These structs are used to configure a deep learning model with specific parameters for either Gemma7B or Gemma2B architecture.
+Let's break down the code:
+[...]
 ```
 
 ### Incorporating gemma.cpp as a Library in your Project
@@ -495,5 +529,14 @@ Griffin support was implemented in April 2024 thanks to contributions by Andrey
 Mikhaylov, Eugene Kliuchnikov, Jan Wassenberg, Jyrki Alakuijala, Lode
 Vandevenne, Luca Versari, Martin Bruse, Phil Culliton, Sami Boukortt, Thomas
 Fischbacher and Zoltan Szabadka.
+
+Gemma-2 support was implemented in June/July 2024 with the help of several
+people.
+
+PaliGemma support was implemented in September 2024 with contributions from
+Daniel Keysers.
+
+[Jan Wassenberg](mailto:janwas@google.com) has continued to contribute many
+improvements, including major gains in efficiency, since the initial release.
 
 This is not an officially supported Google product.

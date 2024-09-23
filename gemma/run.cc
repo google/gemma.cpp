@@ -25,6 +25,7 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
+#include "paligemma/image.h"
 #include "util/app.h"
 #include "util/args.h"  // HasHelp
 #include "util/threading.h"
@@ -87,6 +88,17 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
   std::mt19937 gen;
   InitGenerator(args, gen);
 
+  const bool have_image = !args.image_file.path.empty();
+  Image image;
+  ImageTokens image_tokens(256, 2048);
+  if (have_image) {
+    HWY_ASSERT(model.Info().model == Model::PALIGEMMA_224);
+    HWY_ASSERT(image.ReadPPM(args.image_file.path));
+    image.Resize();
+    RuntimeConfig runtime_config = {.verbosity = verbosity, .gen = &gen};
+    model.GenerateImageTokens(runtime_config, image, image_tokens);
+  }
+
   // callback function invoked for each generated token.
   auto stream_token = [&](int token, float) {
     ++abs_pos;
@@ -132,7 +144,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
       }
     }
 
-    const std::vector<int> prompt = WrapAndTokenize(
+    if (have_image && abs_pos != 0) {
+      // This occurs when we have hit max_generated.
+      abs_pos = 0;
+    }
+
+    std::vector<int> prompt = WrapAndTokenize(
         model.Tokenizer(), model.Info(), abs_pos, prompt_string);
     prompt_size = prompt.size();
     std::cerr << "\n"
@@ -151,7 +168,19 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
         .accept_token = accept_token,
     };
     args.CopyTo(runtime_config);
-    model.Generate(runtime_config, prompt, abs_pos, kv_cache, timing_info);
+    size_t prefix_end = 0;
+    if (have_image) {
+      runtime_config.image_tokens = &image_tokens;
+      prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
+      prompt_size = prompt.size();
+      // The end of the prefix for prefix-LM style attention in Paligemma.
+      // See Figure 2 of https://arxiv.org/abs/2407.07726.
+      prefix_end = prompt_size;
+      // We need to look at all the tokens for the prefix.
+      runtime_config.prefill_tbatch_size = prompt_size;
+    }
+    model.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache,
+                   timing_info);
     std::cout << "\n\n";
   }
   std::cout

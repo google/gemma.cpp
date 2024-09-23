@@ -27,6 +27,7 @@
 #include "gemma/common.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
+#include "paligemma/image.h"
 #include "util/allocator.h"
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -75,6 +76,10 @@ using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
 using ActivationsObserverFunc =
     std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
 
+// ImageTokens are represented as a RowVectorBatch, where each "batch" index
+// corresponds to a token for an image patch as computed by the image encoder.
+using ImageTokens = RowVectorBatch<float>;
+
 // RuntimeConfig holds configuration for a single generation run.
 struct RuntimeConfig {
   // If not empty, batch_stream_token is called for each token in the batch,
@@ -109,6 +114,10 @@ struct RuntimeConfig {
   // Observer callbacks for intermediate data.
   LayersOutputFunc layers_output;  // if not empty, called after each layer.
   ActivationsObserverFunc activations_observer;  // if set, called per-layer.
+
+  // If not empty, these point to the image tokens and are used in the
+  // PaliGemma prefix-LM style attention.
+  const ImageTokens *image_tokens = nullptr;
 
   // Whether to use thread spinning to reduce barrier synchronization latency.
   bool use_spinning = true;
@@ -198,14 +207,34 @@ class Gemma {
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
-                size_t pos, KVCache& kv_cache, TimingInfo& timing_info);
+                size_t pos, KVCache& kv_cache, TimingInfo& timing_info) {
+    Generate(runtime_config, prompt, pos, /*prefix_end=*/0, kv_cache,
+             timing_info);
+  }
+  // For prefix-LM style attention, we can pass the end of the prefix.
+  void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
+                size_t pos, size_t prefix_end, KVCache& kv_cache,
+                TimingInfo& timing_info);
 
   // `queries_pos` are the positions in the KV cache. Users are responsible for
   // incrementing them in `BatchStreamFunc`, or setting to zero for single-turn.
   void GenerateBatch(const RuntimeConfig& runtime_config,
                      const QueriesPromptTokens& queries_prompt,
                      const QueriesPos& queries_pos, const KVCaches& kv_caches,
-                     TimingInfo& timing_info);
+                     TimingInfo& timing_info) {
+    GenerateBatch(runtime_config, queries_prompt, queries_pos,
+                  /*queries_prefix_end=*/{}, kv_caches, timing_info);
+  }
+  // For prefix-LM style attention, we can pass the ends of the prefixes.
+  void GenerateBatch(const RuntimeConfig& runtime_config,
+                     const QueriesPromptTokens& queries_prompt,
+                     const QueriesPos& queries_pos,
+                     const QueriesPos& queries_prefix_end,
+                     const KVCaches& kv_caches, TimingInfo& timing_info);
+
+  // Generates the image tokens by running the image encoder ViT.
+  void GenerateImageTokens(const RuntimeConfig& runtime_config,
+                           const Image& image, ImageTokens& image_tokens);
 
  private:
   PerClusterPools& pools_;

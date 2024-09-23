@@ -37,10 +37,11 @@ enum class Model {
   GRIFFIN_2B,
   GEMMA_TINY,
   GEMMA2_2B,
+  PALIGEMMA_224,
 };
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
-enum class ModelTraining { GEMMA_IT, GEMMA_PT };
+enum class ModelTraining { GEMMA_IT, GEMMA_PT, PALIGEMMA };
 
 // Tensor types for loading weights. When adding a new one, also
 // update GEMMA_FOREACH* and Call* below, and add instantiations/*.cc.
@@ -93,7 +94,9 @@ decltype(auto) CallForModel(Model model, TArgs&&... args) {
       return FuncT<ConfigGriffin2B<TWeight>>()(std::forward<TArgs>(args)...);
     case Model::GEMMA2_2B:
       return FuncT<ConfigGemma2_2B<TWeight>>()(std::forward<TArgs>(args)...);
-
+    case Model::PALIGEMMA_224:
+      return FuncT<ConfigPaliGemma_224<TWeight>>()(
+          std::forward<TArgs>(args)...);
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -136,8 +139,9 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma7B)                \
   GEMMA_FOREACH_WEIGHT(X, ConfigGriffin2B)              \
   GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_2B)              \
-  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_9B)                \
-  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_27B)               \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_9B)              \
+  GEMMA_FOREACH_WEIGHT(X, ConfigGemma2_27B)             \
+  GEMMA_FOREACH_WEIGHT(X, ConfigPaliGemma_224)          \
   static_assert(true, "Allow trailing ;")
 
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
@@ -176,6 +180,11 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
     }                                                                      \
     case Model::GEMMA2_27B: {                                              \
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_27B<TWEIGHT>>)   \
+      ARGS;                                                                \
+      break;                                                               \
+    }                                                                      \
+    case Model::PALIGEMMA_224: {                                           \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigPaliGemma_224<TWEIGHT>>)\
       ARGS;                                                                \
       break;                                                               \
     }                                                                      \

@@ -107,6 +107,14 @@ std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
   if (pos == 0) {
     tokens.insert(tokens.begin(), BOS_ID);
   }
+
+  // PaliGemma separator. The SEP token "\n" is always tokenized separately.
+  if (info.model == Model::PALIGEMMA_224) {
+    std::vector<int> sep_tokens;
+    HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
+    tokens.insert(tokens.end(), sep_tokens.begin(), sep_tokens.end());
+  }
+
   return tokens;
 }
 

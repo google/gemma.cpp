@@ -322,6 +322,9 @@ namespace gcpp {
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
   const Model model_type = args.ModelType();
+  if (model_type == Model::PALIGEMMA_224) {
+    HWY_ABORT("PaliGemma is not supported in compress_weights.");
+  }
   const Type weight_type = args.WeightType();
   GEMMA_EXPORT_AND_DISPATCH(
       model_type, weight_type, CompressWeights,

@@ -24,10 +24,12 @@
 #include <string.h>
 
 #include <utility>  // std::move
+#include <vector>
 
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
 #include "gemma/weights.h"
+#include "paligemma/image.h"
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -62,13 +64,18 @@ Gemma::~Gemma() {
   extern void GenerateSingle(CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8, \
                              const RuntimeConfig& runtime_config,              \
                              const PromptTokens& prompt, size_t pos,           \
-                             KVCache& kv_cache, PerClusterPools& pools,        \
-                             TimingInfo& timing_info);                         \
+                             size_t prefix_end, KVCache& kv_cache,             \
+                             PerClusterPools& pools, TimingInfo& timing_info); \
   extern void GenerateBatch(                                                   \
       CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,                        \
       const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
-      const QueriesPos& queries_pos, const KVCaches& kv_caches,                \
-      PerClusterPools& pools, TimingInfo& timing_info);
+      const QueriesPos& queries_pos,                                           \
+      const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,   \
+      PerClusterPools& pools, TimingInfo& timing_info);                        \
+  extern void GenerateImageTokens(                                             \
+      CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,                        \
+      const RuntimeConfig& runtime_config, const Image& image,                 \
+      ImageTokens& image_tokens, PerClusterPools& pools);
 GEMMA_FOREACH_CONFIG_AND_WEIGHT(GEMMA_DECLARE);
 
 // Adapters to select from the above overloads via CallForModelAndWeight.
@@ -76,10 +83,11 @@ template <class TConfig>
 struct GenerateSingleT {
   void operator()(const ByteStorageT& weights_u8,
                   const RuntimeConfig& runtime_config,
-                  const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
-                  PerClusterPools& pools, TimingInfo& timing_info) const {
-    GenerateSingle(TConfig(), weights_u8, runtime_config, prompt, pos, kv_cache,
-                   pools, timing_info);
+                  const PromptTokens& prompt, size_t pos, size_t prefix_end,
+                  KVCache& kv_cache, PerClusterPools& pools,
+                  TimingInfo& timing_info) const {
+    GenerateSingle(TConfig(), weights_u8, runtime_config, prompt, pos,
+                   prefix_end, kv_cache, pools, timing_info);
   }
 };
 
@@ -88,21 +96,34 @@ struct GenerateBatchT {
   void operator()(const ByteStorageT& weights_u8,
                   const RuntimeConfig& runtime_config,
                   const QueriesPromptTokens& queries_prompt,
-                  const QueriesPos& queries_pos, const KVCaches& kv_caches,
-                  PerClusterPools& pools, TimingInfo& timing_info) const {
+                  const QueriesPos& queries_pos,
+                  const QueriesPos& queries_prefix_end,
+                  const KVCaches& kv_caches, PerClusterPools& pools,
+                  TimingInfo& timing_info) const {
     GenerateBatch(TConfig(), weights_u8, runtime_config, queries_prompt,
-                  queries_pos, kv_caches, pools, timing_info);
+                  queries_pos, queries_prefix_end, kv_caches, pools,
+                  timing_info);
+  }
+};
+
+template <class TConfig>
+struct GenerateImageTokensT {
+  void operator()(const ByteStorageT& weights_u8,
+                  const RuntimeConfig& runtime_config, const Image& image,
+                  ImageTokens& image_tokens, PerClusterPools& pools) const {
+    GenerateImageTokens(TConfig(), weights_u8, runtime_config, image,
+                        image_tokens, pools);
   }
 };
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
-                     const PromptTokens& prompt, size_t pos, KVCache& kv_cache,
-                     TimingInfo& timing_info) {
+                     const PromptTokens& prompt, size_t pos, size_t prefix_end,
+                     KVCache& kv_cache, TimingInfo& timing_info) {
   if (runtime_config.use_spinning) pools_.StartSpinning();
 
-  CallForModelAndWeight<GenerateSingleT>(info_.model, info_.weight, weights_u8_,
-                                         runtime_config, prompt, pos, kv_cache,
-                                         pools_, timing_info);
+  CallForModelAndWeight<GenerateSingleT>(
+      info_.model, info_.weight, weights_u8_, runtime_config, prompt, pos,
+      prefix_end, kv_cache, pools_, timing_info);
 
   if (runtime_config.use_spinning) pools_.StopSpinning();
 }
@@ -110,12 +131,33 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
                           const QueriesPromptTokens& queries_prompt,
                           const QueriesPos& queries_pos,
+                          const QueriesPos& queries_prefix_end,
                           const KVCaches& kv_caches, TimingInfo& timing_info) {
+  // If we did not get passed prefix ends (size 0), assume 0 and pass that on.
+  QueriesPos mutable_queries_prefix_end = queries_prefix_end;
+  std::vector<size_t> prefix_end_vec;
+  if (queries_prefix_end.size() == 0) {
+    prefix_end_vec.resize(queries_prompt.size(), 0);
+    mutable_queries_prefix_end =
+        QueriesPos(prefix_end_vec.data(), prefix_end_vec.size());
+  }
+
   if (runtime_config.use_spinning) pools_.StartSpinning();
 
   CallForModelAndWeight<GenerateBatchT>(
       info_.model, info_.weight, weights_u8_, runtime_config, queries_prompt,
-      queries_pos, kv_caches, pools_, timing_info);
+      queries_pos, mutable_queries_prefix_end, kv_caches, pools_, timing_info);
+
+  if (runtime_config.use_spinning) pools_.StopSpinning();
+}
+
+void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
+                                const Image& image, ImageTokens& image_tokens) {
+  if (runtime_config.use_spinning) pools_.StartSpinning();
+
+  CallForModelAndWeight<GenerateImageTokensT>(info_.model, info_.weight,
+                                              weights_u8_, runtime_config,
+                                              image, image_tokens, pools_);
 
   if (runtime_config.use_spinning) pools_.StopSpinning();
 }

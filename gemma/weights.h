@@ -48,6 +48,7 @@ struct CompressedLayer {
   static constexpr size_t kAttVecEinsumWSize = kHeads * kQKVDim * kModelDim;
   static constexpr size_t kQKVEinsumWSize =
       (kHeads + 2 * kKVHeads) * kQKVDim * kModelDim;
+  static constexpr size_t kQKVEinsumBSize = (kHeads + 2 * kKVHeads) * kQKVDim;
   // 2x for (gelu gating vector, gated vector)
   static constexpr size_t kGatingEinsumWSize = 2 * kFFHiddenDim * kModelDim;
   static constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
@@ -81,6 +82,24 @@ struct CompressedLayer {
       ArrayT<float, kGriffinDim * 2> gate_biases;
       ArrayT<float, kGriffinDim> a;
     } griffin;
+
+    struct {
+      // MultiHeadDotProductAttention.
+      ArrayT<WeightF32OrBF16, kAttVecEinsumWSize> attn_out_w;
+      ArrayT<float, kModelDim> attn_out_b;
+      ArrayT<WeightF32OrBF16, kQKVEinsumWSize> qkv_einsum_w;
+      ArrayT<float, kQKVEinsumBSize> qkv_einsum_b;
+      // MlpBlock.
+      ArrayT<WeightF32OrBF16, kModelDim * kFFHiddenDim> linear_0_w;
+      ArrayT<float, kFFHiddenDim> linear_0_b;
+      ArrayT<WeightF32OrBF16, kFFHiddenDim * kModelDim> linear_1_w;
+      ArrayT<float, kModelDim> linear_1_b;
+      // LayerNorm.
+      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_0_bias;
+      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_0_scale;
+      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_1_bias;
+      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_1_scale;
+    } vit;
   };
 
   ArrayT<Weight, kGatingEinsumWSize> gating_einsum_w;
@@ -121,6 +140,7 @@ struct CompressedLayer {
             out_row + h * kQKVDim, kQKVDim * sizeof(Weight));
       }
     }
+    att_weights.set_scale(attn_vec_einsum_w.scale());
   }
 };
 
@@ -133,10 +153,21 @@ struct CompressedLayerPointers {
     pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
       this->c_layers[task] = hwy::AllocateAligned<CompressedLayer<TConfig>>(1);
     });
+    if constexpr (TConfig::VitConfig::kLayers > 0) {
+      pool.Run(0, TConfig::VitConfig::kLayers,
+               [this](uint64_t task, size_t /*thread*/) {
+                 this->c_vit_layers[task] = hwy::AllocateAligned<
+                     CompressedLayer<typename TConfig::VitConfig>>(1);
+               });
+    }
   }
 
   using CLayer = CompressedLayer<TConfig>;
   std::array<hwy::AlignedFreeUniquePtr<CLayer[]>, TConfig::kLayers> c_layers;
+  using CVitLayer = CompressedLayer<typename TConfig::VitConfig>;
+  std::array<hwy::AlignedFreeUniquePtr<CVitLayer[]>,
+             TConfig::VitConfig::kLayers>
+      c_vit_layers;
 };
 
 template <class TConfig, typename = void>
@@ -159,6 +190,23 @@ struct CompressedWeights {
       hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
   CompressedArray<WeightF32OrBF16, TConfig::kModelDim> final_norm_scale;
 
+  // Vit parts.
+  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim>
+      vit_encoder_norm_bias;
+  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim>
+      vit_encoder_norm_scale;
+  CompressedArray<float, TConfig::VitConfig::kModelDim> vit_img_embedding_bias;
+  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim * 14 * 14 * 3>
+      vit_img_embedding_kernel;
+  CompressedArray<float, 256 * TConfig::VitConfig::kModelDim>
+      vit_img_pos_embedding;
+  // The head maps from VitConfig::kModelDim (Vit final layer) to
+  // kModelDim (LLM input).
+  CompressedArray<float, TConfig::kModelDim> vit_img_head_bias;
+  CompressedArray<WeightF32OrBF16,
+                  TConfig::VitConfig::kModelDim * TConfig::kModelDim>
+      vit_img_head_kernel;
+
   // Must be last so that the other arrays remain aligned.
   CompressedLayerPointers<TConfig> c_layer_ptrs;
 
@@ -174,8 +222,20 @@ struct CompressedWeights {
   void ZeroInit() {
     hwy::ZeroBytes(&embedder_input_embedding, sizeof(embedder_input_embedding));
     hwy::ZeroBytes(&final_norm_scale, sizeof(final_norm_scale));
+    hwy::ZeroBytes(&vit_encoder_norm_bias, sizeof(vit_encoder_norm_bias));
+    hwy::ZeroBytes(&vit_encoder_norm_scale, sizeof(vit_encoder_norm_scale));
+    hwy::ZeroBytes(&vit_img_embedding_bias, sizeof(vit_img_embedding_bias));
+    hwy::ZeroBytes(&vit_img_embedding_kernel, sizeof(vit_img_embedding_kernel));
+    hwy::ZeroBytes(&vit_img_head_bias, sizeof(vit_img_head_bias));
+    hwy::ZeroBytes(&vit_img_head_kernel, sizeof(vit_img_head_kernel));
+    hwy::ZeroBytes(&vit_img_pos_embedding, sizeof(vit_img_pos_embedding));
     for (int i = 0; i < TConfig::kLayers; ++i) {
       hwy::ZeroBytes(GetLayer(i), sizeof(*GetLayer(i)));
+    }
+    if constexpr (TConfig::VitConfig::kLayers > 0) {
+      for (int i = 0; i < TConfig::VitConfig::kLayers; ++i) {
+        hwy::ZeroBytes(GetVitLayer(i), sizeof(*GetVitLayer(i)));
+      }
     }
   }
 
@@ -184,6 +244,13 @@ struct CompressedWeights {
   }
   CompressedLayer<TConfig>* GetLayer(size_t layer) {
     return c_layer_ptrs.c_layers[layer].get();
+  }
+  const CompressedLayer<typename TConfig::VitConfig>* GetVitLayer(
+      size_t layer) const {
+    return c_layer_ptrs.c_vit_layers[layer].get();
+  }
+  CompressedLayer<typename TConfig::VitConfig>* GetVitLayer(size_t layer) {
+    return c_layer_ptrs.c_vit_layers[layer].get();
   }
 };
 
@@ -288,6 +355,16 @@ void ForEachTensor(RawWeightsPtr raw_weights,
   GEMMA_CALL_TOP_FUNC("c_embedding", embedder_input_embedding);
   GEMMA_CALL_TOP_FUNC("c_final_norm", final_norm_scale);
 
+  if constexpr (TConfig::VitConfig::kLayers > 0 && !kHaveRaw) {
+    GEMMA_CALL_TOP_FUNC("enc_norm_bias", vit_encoder_norm_bias);
+    GEMMA_CALL_TOP_FUNC("enc_norm_scale", vit_encoder_norm_scale);
+    GEMMA_CALL_TOP_FUNC("img_emb_bias", vit_img_embedding_bias);
+    GEMMA_CALL_TOP_FUNC("img_emb_kernel", vit_img_embedding_kernel);
+    GEMMA_CALL_TOP_FUNC("img_head_bias", vit_img_head_bias);
+    GEMMA_CALL_TOP_FUNC("img_head_kernel", vit_img_head_kernel);
+    GEMMA_CALL_TOP_FUNC("img_pos_emb", vit_img_pos_embedding);
+  }
+
   char name_buf[16];
   for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
     auto type = TConfig::kLayerConfig[layer_idx];
@@ -332,6 +409,35 @@ void ForEachTensor(RawWeightsPtr raw_weights,
     if (TConfig::kSoftmaxAttnOutputBiases &&
         type == LayerAttentionType::kGemma) {
       GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
+    }
+  }
+
+  // Vit layers. Not supported for compress_weights.
+  if constexpr (TConfig::VitConfig::kLayers > 0 && !kHaveRaw) {
+    for (int layer_idx = 0; layer_idx < TConfig::VitConfig::kLayers;
+         ++layer_idx) {
+      auto type = TConfig::VitConfig::kLayerConfig[layer_idx];
+      HWY_ASSERT(type == LayerAttentionType::kVit);
+      const size_t idx = static_cast<size_t>(layer_idx);
+      const RawLayer* raw_layer = nullptr;
+      CompressedLayer<typename TConfig::VitConfig>* c_layer =
+          c_weights.GetVitLayer(idx);
+
+      // MHA.
+      GEMMA_CALL_FUNC("attn_out_w", vit.attn_out_w);
+      GEMMA_CALL_FUNC("attn_out_b", vit.attn_out_b);
+      GEMMA_CALL_FUNC("qkv_ein_w", vit.qkv_einsum_w);
+      GEMMA_CALL_FUNC("qkv_ein_b", vit.qkv_einsum_b);
+      // MlpBlock.
+      GEMMA_CALL_FUNC("linear_0_w", vit.linear_0_w);
+      GEMMA_CALL_FUNC("linear_0_b", vit.linear_0_b);
+      GEMMA_CALL_FUNC("linear_1_w", vit.linear_1_w);
+      GEMMA_CALL_FUNC("linear_1_b", vit.linear_1_b);
+      // LayerNorm.
+      GEMMA_CALL_FUNC("ln_0_bias", vit.layer_norm_0_bias);
+      GEMMA_CALL_FUNC("ln_0_scale", vit.layer_norm_0_scale);
+      GEMMA_CALL_FUNC("ln_1_bias", vit.layer_norm_1_bias);
+      GEMMA_CALL_FUNC("ln_1_scale", vit.layer_norm_1_scale);
     }
   }
 #undef GEMMA_CALL_FUNC

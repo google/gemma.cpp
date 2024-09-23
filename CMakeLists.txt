@@ -93,6 +93,9 @@ set(SOURCES
   gemma/instantiations/gemma2_2b_bf16.cc
   gemma/instantiations/gemma2_2b_f32.cc
   gemma/instantiations/gemma2_2b_sfp.cc
+  gemma/instantiations/paligemma_224_bf16.cc
+  gemma/instantiations/paligemma_224_f32.cc
+  gemma/instantiations/paligemma_224_sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/tokenizer.cc
@@ -103,6 +106,8 @@ set(SOURCES
   ops/matmul-inl.h
   ops/matvec-inl.h
   ops/ops-inl.h
+  paligemma/image.cc
+  paligemma/image.h
   util/allocator.h
   util/app.h
   util/args.h
@@ -164,6 +169,8 @@ set(GEMMA_TEST_FILES
   ops/matmul_test.cc
   ops/gemma_matvec_test.cc
   evals/gemma_test.cc
+  paligemma/image_test.cc
+  paligemma/paligemma_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
