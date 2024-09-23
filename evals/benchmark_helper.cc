@@ -39,6 +39,7 @@
 #include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/highway.h"
 #include "hwy/per_target.h"
 #include "hwy/timer.h"
@@ -231,6 +232,10 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
     char cpu100[100] = "unknown";
     (void)hwy::platform::GetCpuString(cpu100);
 
+    const std::vector<hwy::LogicalProcessorSet>& clusters =
+        pools.CoresPerCluster();
+    const size_t per_cluster =
+        clusters.empty() ? 0 : pools.CoresPerCluster().front().Count();
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n
             "CPU                           : %s\n"
@@ -239,9 +244,8 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
             "Compiled config               : %s\n"
             "Weight Type                   : %s\n"
             "EmbedderInput Type            : %s\n",
-            dt, cpu100, pools.CoresPerCluster().size(),
-            pools.CoresPerCluster()[0].Count(), pools.Outer().NumWorkers(),
-            pools.Inner(0).NumWorkers(),
+            dt, cpu100, pools.CoresPerCluster().size(), per_cluster,
+            pools.Outer().NumWorkers(), pools.Inner(0).NumWorkers(),
             hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
             CompiledConfig(), StringFromType(loader.Info().weight),
             TypeName<EmbedderInputT>());

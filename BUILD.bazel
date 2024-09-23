@@ -326,6 +326,7 @@ cc_library(
         "@hwy//:hwy",
         "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
+        "@hwy//:topology",
     ],
 )
 
