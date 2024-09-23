@@ -245,7 +245,7 @@ struct CompressTraits<BF16> {
 
     size_t i = 0;
     if (num >= N16) {
-      for (i = 0; i <= num - N16; i += N16) {
+      for (; i <= num - N16; i += N16) {
         const VBF packed0 = hn::LoadU(dbf, packed.ptr + packed_ofs + i);
         hn::StoreU(packed0, dbf, raw + i);
       }
@@ -271,7 +271,7 @@ struct CompressTraits<BF16> {
 
     size_t i = 0;
     if (num >= 2 * NF) {
-      for (i = 0; i <= num - 2 * NF; i += 2 * NF) {
+      for (; i <= num - 2 * NF; i += 2 * NF) {
         VF raw0, raw1;
         Load2(df, packed, packed_ofs + i, raw0, raw1);
         hn::StoreU(raw0, df, raw + i);
@@ -289,7 +289,7 @@ struct CompressTraits<BF16> {
       // If at most one vector, the first store adds zero padding. Check before
       // storing the second, because callers only pad to one vector.
       hn::StoreU(raw0, df, raw + i);
-      if (remaining >= NF) hn::StoreU(raw1, df, raw + i + NF);
+      if (remaining > NF) hn::StoreU(raw1, df, raw + i + NF);
     }
   }
 };
