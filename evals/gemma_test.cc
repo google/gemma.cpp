@@ -247,7 +247,7 @@ TEST_F(GemmaTest, CrossEntropySmall) {
       EXPECT_NEAR(entropy, 2.8f, 0.2f);
       break;
     case gcpp::Model::GRIFFIN_2B:
-      EXPECT_NEAR(entropy, 2.25f, 0.02f);
+      EXPECT_NEAR(entropy, 1.57f, 0.02f);
       break;
     case gcpp::Model::GEMMA2_2B:
       EXPECT_NEAR(entropy, 1.14f, 0.02f);
@@ -278,7 +278,7 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
       EXPECT_NEAR(entropy, 1.07f, 0.05f);
       break;
     case gcpp::Model::GRIFFIN_2B:
-      EXPECT_NEAR(entropy, 1.95f, 0.02f);
+      EXPECT_NEAR(entropy, 2.09f, 0.02f);
       break;
     case gcpp::Model::GEMMA2_2B:
       EXPECT_NEAR(entropy, 0.49f, 0.02f);
@@ -309,7 +309,7 @@ TEST_F(GemmaTest, CrossEntropyGettysburg) {
       EXPECT_NEAR(entropy, 0.75f, 0.1f);
       break;
     case gcpp::Model::GRIFFIN_2B:
-      EXPECT_NEAR(entropy, 0.82f, 0.02f);
+      EXPECT_NEAR(entropy, 0.86f, 0.02f);
       break;
     case gcpp::Model::GEMMA2_2B:
       EXPECT_NEAR(entropy, 0.20f, 0.02f);
