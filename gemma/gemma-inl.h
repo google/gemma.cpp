@@ -916,7 +916,8 @@ HWY_NOINLINE void Prefill(
     }
     // In prefix-LM mode, we need to look at all the tokens for the prefix in
     // one iteration through the layers, so we need a large enough batch size.
-    HWY_ASSERT(max_tbatch_size >= prefill_this_query);
+    HWY_ASSERT(prefix_end_this_query == 0 ||
+               max_tbatch_size >= prefill_this_query);
 
     // For each batch of tokens in the query:
     for (size_t tbatch_start = 0; tbatch_start < prefill_this_query;
