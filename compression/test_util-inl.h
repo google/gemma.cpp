@@ -50,6 +50,8 @@ void ForeachRawType() {
   // The argument selects the type to decode to: BF16 or float.
   test(BF16());
   test(float());
+  // Do not include double because it is not supported as an input type - we
+  // would also have to implement double -> Packed Compress().
 }
 
 template <template <class> class TestT>

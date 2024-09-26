@@ -57,6 +57,7 @@ enum {  // alphabetical order for consistency and to avoid implying a preference
   kAddTwoSum,
   kComp2,
   kCompensated,
+  kDouble,
   kKahan,
   kNaive,
   kOnlyTwoProd,
@@ -75,6 +76,8 @@ const char* VariantName(size_t variant) {
       return "comp2";
     case kCompensated:
       return "comp";
+    case kDouble:
+      return "double";
     case kKahan:
       return "kahan";
     case kNaive:
@@ -151,6 +154,43 @@ template <class D, typename WeightT, typename VecT>
 HWY_INLINE float DotNaive(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
                           const VecT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelNaive());
+}
+
+struct DotKernelDouble {
+  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
+  HWY_INLINE void Update4(DD dd, const VD w0, const VD w1, const VD w2,
+                          const VD w3, const VD v0, const VD v1, const VD v2,
+                          const VD v3, VD& sum0, VD& sum1, VD& sum2, VD& sum3,
+                          VD&, VD&, VD&, VD&) const {
+    sum0 = hn::MulAdd(w0, v0, sum0);
+    sum1 = hn::MulAdd(w1, v1, sum1);
+    sum2 = hn::MulAdd(w2, v2, sum2);
+    sum3 = hn::MulAdd(w3, v3, sum3);
+  }
+
+  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
+  HWY_INLINE void Update1(DD dd, const VD w0, const VD v0, VD& sum0,
+                          VD&) const {
+    sum0 = hn::MulAdd(w0, v0, sum0);
+  }
+
+  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
+  HWY_INLINE float Reduce(DD dd, VD& sum0, VD& sum1, VD& sum2, VD& sum3, VD&,
+                          VD&, VD&, VD&) const {
+    // Reduction tree: sum of all accumulators by pairs, then across lanes.
+    sum0 = hn::Add(sum0, sum1);
+    sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, sum2);
+    return static_cast<float>(hn::ReduceSum(dd, sum0));
+  }
+};
+
+template <class D, typename WeightT, typename VecT>
+HWY_INLINE float DotDouble(D d, const PackedSpan<const WeightT>& w,
+                           size_t w_ofs, const VecT* HWY_RESTRICT vec,
+                           size_t num) {
+  const hn::Repartition<double, D> dd;
+  return DecompressAndCall(dd, w, w_ofs, MakeSpan(vec, num), DotKernelDouble());
 }
 
 // https://en.wikipedia.org/wiki/Kahan_summation_algorithm: FastTwoSum.
@@ -533,9 +573,14 @@ HWY_INLINE float DotComp2(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelComp2());
 }
 
-template <class D, typename WeightT, typename VecT>
+template <class D, typename WeightT, typename VecT, HWY_IF_F32_D(D)>
 float CallDot(D d, size_t variant, const PackedSpan<const WeightT>& w,
               size_t w_ofs, const VecT* HWY_RESTRICT v, size_t num) {
+  // float inputs also support kDouble.
+  if constexpr (hwy::IsSame<WeightT, float>() && hwy::IsSame<VecT, float>()) {
+    if (variant == kDouble) return DotDouble(d, w, 0, v, num);
+  }
+
   switch (variant) {
     case kAddTwoProd:
       return DotTwoProdFast(d, w, 0, v, num);
@@ -720,9 +765,11 @@ class DotStats {
     ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 2.4f);
     ASSERT_INSIDE(kComp2, 1.0, s_muls[kComp2].GeometricMean(), 1.2);
 
-    // Compensated is very accurate.
+    // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_muls[kCompensated].Min(), 1.0f + 2E-6f);
     ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 2E-5f);
+    ASSERT_LESS(kDouble, s_muls[kDouble].Min(), 1.0f + 2E-6f);
+    ASSERT_LESS(kDouble, s_muls[kDouble].Max(), 1.0f + 2E-5f);
 
     // Naive and OnlyTwoProd are considerably worse. >10x is for narrower
     // vectors, compared to AVX-512. GeometricMean overflows, must use Mean.
@@ -751,9 +798,11 @@ class DotStats {
     ASSERT_INSIDE(kComp2, 1E-5, s_l1s[kComp2].Mean(), 9E-4);
     ASSERT_INSIDE(kComp2, 1E-5f, s_l1s[kComp2].Max(), 2.6E-3f);
 
-    // Compensated is very accurate.
+    // Compensated and Double are very accurate.
     HWY_ASSERT(s_l1s[kCompensated].Min() == 0.0f);
     ASSERT_LESS(kCompensated, s_l1s[kCompensated].Max(), 3E-7f);
+    HWY_ASSERT(s_l1s[kDouble].Min() == 0.0f);
+    ASSERT_LESS(kDouble, s_l1s[kDouble].Max(), 3E-7f);
 
     // Naive and OnlyTwoProd are considerably higher, but not huge.
     ASSERT_INSIDE(kNaive, 1E-3, s_l1s[kNaive].Mean(), 2E-2);
@@ -778,9 +827,11 @@ class DotStats {
     ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 3.7E-3);
     ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 0.4f);
 
-    // Compensated is very accurate.
+    // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Min(), 1E-8f);
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 8E-6f);
+    ASSERT_LESS(kDouble, s_rels[kDouble].Min(), 1E-8f);
+    ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher, but not huge.
     ASSERT_INSIDE(kNaive, 1E-3, s_rels[kNaive].GeometricMean(), 8E-2);
@@ -807,8 +858,9 @@ class DotStats {
   void CheckBwd() const {
     ASSERT_INSIDE(kComp2, 7E-10f, s_rels[kComp2].Max(), 0.4f);
 
-    // Compensated is very accurate.
+    // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 8E-6f);
+    ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher than others
     ASSERT_INSIDE(kNaive, 1.5E-8f, s_rels[kNaive].Max(), 3080.f);
@@ -828,6 +880,7 @@ class DotStats {
   void CheckUlps() const {
     ASSERT_LESS(kComp2, s_ulps[kCompensated].Max(), 3.6E6f);
     ASSERT_LESS(kCompensated, s_ulps[kCompensated].Max(), 250.0f);
+    ASSERT_LESS(kDouble, s_ulps[kDouble].Max(), 250.0f);
     ASSERT_LESS(kNaive, s_ulps[kNaive].Max(), 4E9f);
     ASSERT_LESS(kOnlyTwoProd, s_ulps[kOnlyTwoProd].Max(), 3E9f);
     ASSERT_LESS(kKahan, s_ulps[kKahan].Max(), 4E7f);
@@ -987,7 +1040,9 @@ struct TestShortDotsT {
         const float dot_exact = ExactDot(raw_w.All(), raw_v.All(), num, buf);
         float dots[kVariants];
         for (size_t variant = 0; variant < kVariants; ++variant) {
-          dots[variant] = CallDot(df, variant, MakeConst(w), 0, v.ptr, num);
+          // Here Packed is not always float, so we must not call kDouble.
+          const size_t actual = (variant == kDouble) ? kCompensated : variant;
+          dots[variant] = CallDot(df, actual, MakeConst(w), 0, v.ptr, num);
 
           const float l1 = hwy::ScalarAbs(dots[variant] - dot_exact);
           s_l1[variant].Notify(l1);
