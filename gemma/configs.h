@@ -134,16 +134,24 @@ struct CachePosSize {
 
 struct ConfigNoVit {
   struct VitConfig {
+    // Some of these are needed to make the compiler happy when trying to
+    // generate code that will actually never be used.
+    using Weight = float;
     static constexpr int kLayers = 0;
     static constexpr std::array<LayerAttentionType, 0> kLayerConfig =
         FixedLayerConfig<0>(LayerAttentionType::kVit);
     static constexpr int kModelDim = 0;
     static constexpr int kFFHiddenDim = 0;
-    static constexpr int kHeads = 0;
+    static constexpr int kHeads = 1;  // Avoid division by 0 in griffin gate_w.
     static constexpr int kKVHeads = 0;
     static constexpr int kQKVDim = 0;
     static constexpr int kSeqLen = 0;
     static constexpr ResidualType kResidual = ResidualType::Add;
+    static constexpr int kGriffinLayers = 0;
+    static constexpr int kConv1dWidth = 0;
+    static constexpr bool kFFBiases = false;
+    static constexpr bool kSoftmaxAttnOutputBiases = false;
+    static constexpr PostNormType kPostNorm = PostNormType::None;
   };
 };
 
