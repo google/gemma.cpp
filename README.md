@@ -268,7 +268,9 @@ We  provide a C++ implementation of this model here.
 
 To use the version of PaliGemma included in this repository, build the gemma
 binary as noted above in Step 3. Download the compressed weights and tokenizer
-from //TODO(keysers) - update location// and run the binary as follows:
+from
+[Kaggle](https://www.kaggle.com/models/google/paligemma/gemmaCpp/paligemma-3b-mix-224)
+and run the binary as follows:
 
 ```./gemma \
 --tokenizer paligemma_tokenizer.model \
