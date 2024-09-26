@@ -272,7 +272,8 @@ from
 [Kaggle](https://www.kaggle.com/models/google/paligemma/gemmaCpp/paligemma-3b-mix-224)
 and run the binary as follows:
 
-```./gemma \
+```sh
+./gemma \
 --tokenizer paligemma_tokenizer.model \
 --model paligemma-224 \
 --weights paligemma-3b-mix-224-sfp.sbs \
