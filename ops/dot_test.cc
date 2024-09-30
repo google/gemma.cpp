@@ -120,6 +120,10 @@ void AssertLess(size_t variant, T actual, T max, int line) {
 // All combinations of {*, TwoProducts} x {+, FastTwoSums, TwoSums}.
 
 struct DotKernelNaive {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -150,51 +154,18 @@ struct DotKernelNaive {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotNaive(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec, size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotNaive(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                          const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelNaive());
-}
-
-struct DotKernelDouble {
-  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
-  HWY_INLINE void Update4(DD dd, const VD w0, const VD w1, const VD w2,
-                          const VD w3, const VD v0, const VD v1, const VD v2,
-                          const VD v3, VD& sum0, VD& sum1, VD& sum2, VD& sum3,
-                          VD&, VD&, VD&, VD&) const {
-    sum0 = hn::MulAdd(w0, v0, sum0);
-    sum1 = hn::MulAdd(w1, v1, sum1);
-    sum2 = hn::MulAdd(w2, v2, sum2);
-    sum3 = hn::MulAdd(w3, v3, sum3);
-  }
-
-  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
-  HWY_INLINE void Update1(DD dd, const VD w0, const VD v0, VD& sum0,
-                          VD&) const {
-    sum0 = hn::MulAdd(w0, v0, sum0);
-  }
-
-  template <class DD, class VD = hn::Vec<DD>, HWY_IF_F64_D(DD)>
-  HWY_INLINE float Reduce(DD dd, VD& sum0, VD& sum1, VD& sum2, VD& sum3, VD&,
-                          VD&, VD&, VD&) const {
-    // Reduction tree: sum of all accumulators by pairs, then across lanes.
-    sum0 = hn::Add(sum0, sum1);
-    sum2 = hn::Add(sum2, sum3);
-    sum0 = hn::Add(sum0, sum2);
-    return static_cast<float>(hn::ReduceSum(dd, sum0));
-  }
-};
-
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotDouble(D d, const PackedSpan<const WeightT>& w,
-                           size_t w_ofs, const VecT* HWY_RESTRICT vec,
-                           size_t num) {
-  const hn::Repartition<double, D> dd;
-  return DecompressAndCall(dd, w, w_ofs, MakeSpan(vec, num), DotKernelDouble());
 }
 
 // https://en.wikipedia.org/wiki/Kahan_summation_algorithm: FastTwoSum.
 struct DotKernelKahan {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -234,15 +205,15 @@ struct DotKernelKahan {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotKahan(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec, size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotKahan(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                          const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelKahan());
 }
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotCompensated(D d, const PackedSpan<const WeightT>& w,
-                                size_t w_ofs, const VecT* HWY_RESTRICT vec,
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotCompensated(D d, const PackedSpan<const WT>& w,
+                                size_t w_ofs, const VT* HWY_RESTRICT vec,
                                 size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelCompensated());
@@ -250,6 +221,10 @@ HWY_INLINE float DotCompensated(D d, const PackedSpan<const WeightT>& w,
 
 // Like Compensated, but FastTwoSum instead of TwoSum.
 struct DotKernelTwoProdFast {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -296,9 +271,9 @@ struct DotKernelTwoProdFast {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotTwoProdFast(D d, const PackedSpan<const WeightT>& w,
-                                size_t w_ofs, const VecT* HWY_RESTRICT vec,
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotTwoProdFast(D d, const PackedSpan<const WT>& w,
+                                size_t w_ofs, const VT* HWY_RESTRICT vec,
                                 size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelTwoProdFast());
@@ -307,6 +282,10 @@ HWY_INLINE float DotTwoProdFast(D d, const PackedSpan<const WeightT>& w,
 // Like Compensated, but without TwoProducts. Vs Kahan, upgrades FastTwoSums
 // to TwoSums.
 struct DotKernelMulTwoSum {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -351,10 +330,9 @@ struct DotKernelMulTwoSum {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotMulTwoSum(D d, const PackedSpan<const WeightT>& w,
-                              size_t w_ofs, const VecT* HWY_RESTRICT vec,
-                              size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotMulTwoSum(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                              const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelMulTwoSum());
 }
@@ -362,6 +340,10 @@ HWY_INLINE float DotMulTwoSum(D d, const PackedSpan<const WeightT>& w,
 // -Like Compensated, but only TwoProducts, no [Fast]TwoSums. This is only 10%
 // better (mul) than naive.
 struct DotKernelTwoProdAdd {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -406,10 +388,9 @@ struct DotKernelTwoProdAdd {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WeightT>& w,
-                               size_t w_ofs, const VecT* HWY_RESTRICT vec,
-                               size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                               const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelTwoProdAdd());
 }
@@ -417,6 +398,10 @@ HWY_INLINE float DotTwoProdAdd(D d, const PackedSpan<const WeightT>& w,
 // From "SIMDizing Pairwise Sums". Slower and generally higher error than
 // Kahan, but uses fewer regs.
 struct DotKernelPairwise {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -472,10 +457,9 @@ struct DotKernelPairwise {
   mutable size_t num_ = 0;
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotPairwise(D d, const PackedSpan<const WeightT>& w,
-                             size_t w_ofs, const VecT* HWY_RESTRICT vec,
-                             size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotPairwise(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                             const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
                            DotKernelPairwise());
 }
@@ -483,6 +467,10 @@ HWY_INLINE float DotPairwise(D d, const PackedSpan<const WeightT>& w,
 // Hybrid of Pairwise and Compensated. 1.14x time vs. Kahan, but geomean mul
 // is 1.02 vs 1.06, mean L1 is 1.21x better, and uses two fewer regs.
 struct DotKernelComp2 {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
@@ -567,17 +555,17 @@ struct DotKernelComp2 {
   }
 };
 
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float DotComp2(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                          const VecT* HWY_RESTRICT vec, size_t num) {
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotComp2(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                          const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelComp2());
 }
 
-template <class D, typename WeightT, typename VecT, HWY_IF_F32_D(D)>
-float CallDot(D d, size_t variant, const PackedSpan<const WeightT>& w,
-              size_t w_ofs, const VecT* HWY_RESTRICT v, size_t num) {
+template <class D, typename WT, typename VT, HWY_IF_F32_D(D)>
+float CallDot(D d, size_t variant, const PackedSpan<const WT>& w, size_t w_ofs,
+              const VT* HWY_RESTRICT v, size_t num) {
   // float inputs also support kDouble.
-  if constexpr (hwy::IsSame<WeightT, float>() && hwy::IsSame<VecT, float>()) {
+  if constexpr (CanDecompressToDouble<WT, VT>()) {
     if (variant == kDouble) return DotDouble(d, w, 0, v, num);
   }
 
@@ -608,9 +596,9 @@ float CallDot(D d, size_t variant, const PackedSpan<const WeightT>& w,
 // and round to nearest. See "Accurate and efficient floating point summation".
 // Much too slow to be useful. Kept separate from the above kernels because it
 // is used to compute their error.
-template <typename WeightT, typename VecT>
-float ExactDot(const WeightT* HWY_RESTRICT w, const VecT* HWY_RESTRICT v,
-               size_t num, double* HWY_RESTRICT buf) {
+template <typename WT, typename VT>
+float ExactDot(const WT* HWY_RESTRICT w, const VT* HWY_RESTRICT v, size_t num,
+               double* HWY_RESTRICT buf) {
   PROFILER_FUNC;
   for (size_t i = 0; i < num; ++i) {
     buf[i] =
@@ -944,18 +932,17 @@ void GenerateWellConditionedInputs(const size_t num, float* HWY_RESTRICT raw,
 
 // Returns the actual condition number. Based on Algorithm 6.1 from "Accurate
 // Sum and Dot Product". `num` is the (arbitrary) size of w, v, and buf.
-template <typename WeightT, typename VecT>
-double GenerateIllConditionedInputs(const size_t num, WeightT* w,
-                                    VecT* HWY_RESTRICT v, std::mt19937& rng) {
+template <typename WT, typename VT>
+double GenerateIllConditionedInputs(const size_t num, WT* w, VT* HWY_RESTRICT v,
+                                    std::mt19937& rng) {
   PROFILER_FUNC;
   const size_t half = HWY_MAX(1, num / 2);  // generate at least one random
   HWY_DASSERT(half != 0);
 
   const hn::ScalableTag<float> df;
+  const PackedSpan<WT> w_span(w, num);
 
-  const PackedSpan<WeightT> w_span(w, num);
-
-  // Regardless of WeightT and VecT, we will accumulate into float. Multiplying
+  // Regardless of WT and VT, we will accumulate into float. Multiplying
   // two maximal inputs and accumulating `num` times is enough for some loss of
   // precision and condition numbers between 1E6-1E9, which is what we see for
   // Attention Dot and `RMSNormMul`.
@@ -966,8 +953,8 @@ double GenerateIllConditionedInputs(const size_t num, WeightT* w,
   for (size_t i = 0; i < half; ++i) {
     // Ensure the min and max exponents are used.
     const int e = i == 0 ? 0 : i == 1 ? max_exp : e_dist(rng);
-    w[i] = hwy::ConvertScalarTo<WeightT>(RandomFloat(rng) * (1 << e));
-    v[i] = hwy::ConvertScalarTo<VecT>(RandomFloat(rng) * (1 << e));
+    w[i] = hwy::ConvertScalarTo<WT>(RandomFloat(rng) * (1 << e));
+    v[i] = hwy::ConvertScalarTo<VT>(RandomFloat(rng) * (1 << e));
   }
 
   const float a_exp_step =
@@ -976,16 +963,16 @@ double GenerateIllConditionedInputs(const size_t num, WeightT* w,
   for (size_t i = half; i < num; ++i, a_exp -= a_exp_step) {
     const int e = static_cast<int>(a_exp);
     HWY_DASSERT(e >= 0);
-    w[i] = hwy::ConvertScalarTo<WeightT>(RandomFloat(rng) * (1 << e));
+    w[i] = hwy::ConvertScalarTo<WT>(RandomFloat(rng) * (1 << e));
     const float r = RandomFloat(rng) * (1 << e);
     if (hwy::ConvertScalarTo<float>(w[i]) == 0.0f) {
-      v[i] = hwy::ConvertScalarTo<VecT>(0.0f);
+      v[i] = hwy::ConvertScalarTo<VT>(0.0f);
     } else {
       // This is called >100K times. DotCompensated is much faster than ExactDot
       // and just about as accurate.
       const float exact =
           DotCompensated(df, MakeConst(w_span), /*w_ofs=*/0, v, i);
-      v[i] = hwy::ConvertScalarTo<VecT>(
+      v[i] = hwy::ConvertScalarTo<VT>(
           r - exact / hwy::ConvertScalarTo<float>(w[i]));
     }
   }

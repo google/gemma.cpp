@@ -120,7 +120,6 @@ struct CompressTraits<float> {
       BF16* HWY_RESTRICT raw, size_t num) {
     const hn::Repartition<float, decltype(dbf)> df;
     using VF = hn::Vec<decltype(df)>;
-    using VBF = hn::Vec<decltype(dbf)>;
     const size_t NF = hn::Lanes(df);
 
     size_t i = 0;
@@ -169,7 +168,6 @@ struct CompressTraits<float> {
       double* HWY_RESTRICT raw, size_t num) {
     const hn::Rebind<float, DD> df;
     using VF = hn::Vec<decltype(df)>;
-    using VD = hn::Vec<decltype(dd)>;
     const size_t ND = hn::Lanes(dd);
 
     size_t i = 0;
@@ -413,8 +411,6 @@ struct CompressTraits<NuqStream> {
   static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, hn::Vec<D>& raw0,
                                hn::Vec<D>& raw1) {
-    const hn::Twice<hn::Rebind<uint8_t, D>> d8;
-    using V8 = hn::Vec<decltype(d8)>;
     NuqCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
   }
 
@@ -497,23 +493,39 @@ void Compress2(DF df, VF raw0, VF raw1, const PackedSpan<Packed>& packed,
   Traits::Store2(df, raw0, raw1, packed, packed_ofs);
 }
 
+template <typename Packed>
+constexpr bool IsF32() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
+}
+
+// TODO: `DotKernelDouble` requires both inputs to be `float` because currently
+// only `CompressTraits<float>` can `Decompress2` to `double`. It is not yet
+// clear whether we want to implement this for other Packed types.
+template <typename WT, typename VT>
+constexpr bool CanDecompressToDouble() {
+  return HWY_HAVE_FLOAT64 && IsF32<WT>() && IsF32<VT>();
+}
+
+namespace detail {
+
 // Compile-time-only check that `DRaw` and `Packed` are compatible. This makes
 // for better error messages than "no matching function found".
 template <class DRaw, typename Packed>
-HWY_INLINE void VerifyRawAndPacked() {
+HWY_INLINE void VerifyRawAndPackedForDecompress() {
   using TRaw = hn::TFromD<DRaw>;
-  constexpr bool kPackedF32 = hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
   // We can decompress any Packed to f32 or BF16, or f32 to f64.
   static_assert(hwy::IsSameEither<TRaw, float, BF16>() ||
-                (kPackedF32 && hwy::IsSame<TRaw, double>()));
+                (IsF32<Packed>() && hwy::IsSame<TRaw, double>()));
 }
+
+}  // namespace detail
 
 // Decompresses from any type of `packed`, to two vectors of `float/BF16`, or
 // `double`, if `Packed` is `float`.
 template <class DRaw, typename Packed, class VRaw = hn::Vec<DRaw>>
 HWY_INLINE void Decompress2(DRaw d, const PackedSpan<Packed>& packed,
                             const size_t packed_ofs, VRaw& raw0, VRaw& raw1) {
-  VerifyRawAndPacked<DRaw, Packed>();
+  detail::VerifyRawAndPackedForDecompress<DRaw, Packed>();
   packed.BoundsCheck(packed_ofs, 2 * hn::Lanes(d));
   using Traits = CompressTraits<hwy::RemoveCvRef<Packed>>;
   Traits::Load2(d, MakeConst(packed), packed_ofs, raw0, raw1);
@@ -529,135 +541,139 @@ template <class DRaw, typename Packed, typename TRaw = hn::TFromD<DRaw>>
 HWY_NOINLINE void DecompressAndZeroPad(DRaw d, const PackedSpan<Packed>& packed,
                                        const size_t packed_ofs, TRaw* raw,
                                        size_t num) {
-  VerifyRawAndPacked<DRaw, Packed>();
+  detail::VerifyRawAndPackedForDecompress<DRaw, Packed>();
   packed.BoundsCheck(packed_ofs, num);
   using Traits = CompressTraits<hwy::RemoveCvRef<Packed>>;
   Traits::DecompressAndZeroPad(d, MakeConst(packed), packed_ofs, raw, num);
 }
 
-// Decompresses to the type specified by `D` from each of two arrays in groups
-// of four vectors, passes them to `kernel.Update4`, zero-pads to a vector
-// multiple, then calls `kernel.Update1` for the remaining vectors. Returns
-// `kernel.Reduce`.
+// Invokes `kernel` for the `v.num` elements of `w` and `v`. Decompresses from
+// both into groups of four vectors with lane type `Kernel::Raw`, passes them to
+// `kernel.Update4`; loads the final vector(s) with zero-padding, then passes
+// them to `kernel.Update1`, then returns `kernel.Reduce`. `v.num` is not
+// required to be a multiple of the vector length.
 //
-// This is useful for implementing dot products, and similar to
-// `hwy/contrib/unroller`, but also supports compressed types with simpler
-// remainder handling thanks to `DecompressAndZeroPad`.
-//
-// `D` can be BF16/float, or also double if `WeightT` and `VecT` are both float.
-// `w` can be any packed type, including NUQ, which requires a separate `w_ofs`
-// rather than pointer arithmetic. `vec` can also be any type, but typically
-// float or BF16. We omit a `v_ofs` because it is 0 in our use cases.
-// `num`, the number of elements to process, need not be a vector multiple.
+// Both `w` and `v` can be any packed type. To support random access in `w`
+// even if it is `NuqStream`, we ignore `w.num` and provide a `w_ofs`, but no
+// `v_ofs` because it is always 0 in our use cases. `D` only serves to specify
+// the vector size/fraction.
 //
 // `kernel` is const& so we can pass an rvalue argument, but can contain
-// mutable state, though not vectors (see highway.h). We pass in the four
-// loaded vectors plus eight state vectors. The state vectors' lane type is
-// either `double` (required for DotKernelDouble) or `float`.
-template <class D, typename WeightT, typename VecT, class Kernel>
-HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const WeightT>& w,
+// mutable state, though not vectors (see highway.h). In addition to the groups
+// of four input vectors, we pass eight state vectors with lane type specified
+// by `Kernel::State`, which is typically `float` but may differ if `Raw` is
+// `double`, or `WT` and `VT` are `BF16`.
+//
+// Decoupling decompression and remainder handling from the actual usage of the
+// vectors makes it easier to implement various dot product and sum algorithms.
+// This is similar to `hwy/contrib/unroller`, but less general and relies on
+// `DecompressAndZeroPad`.
+template <class D, typename WT, typename VT, class Kernel>
+HWY_INLINE float DecompressAndCall(D, const PackedSpan<const WT>& w,
                                    const size_t w_ofs,
-                                   const PackedSpan<const VecT> vec,
+                                   const PackedSpan<const VT> v,
                                    const Kernel& kernel) {
   // Decompressed inputs
-  using T = hn::TFromD<D>;
-  using V = hn::Vec<decltype(d)>;
-  V w0, w1, w2, w3, v0, v1, v2, v3;
+  using Raw = typename Kernel::template Raw<WT, VT>;
+  const hn::Repartition<Raw, D> d_raw;
+  using VRaw = hn::Vec<decltype(d_raw)>;
+  VRaw w0, w1, w2, w3, v0, v1, v2, v3;
 
   // State for Kernel
-  using StateT = hwy::If<hwy::IsSame<T, double>(), double, float>;
-  const hn::Repartition<StateT, D> ds;
-  using VS = hn::Vec<decltype(ds)>;
-  VS sum0 = hn::Zero(ds);
-  VS sum1 = hn::Zero(ds);
-  VS sum2 = hn::Zero(ds);
-  VS sum3 = hn::Zero(ds);
-  VS comp0 = hn::Zero(ds);
-  VS comp1 = hn::Zero(ds);
-  VS comp2 = hn::Zero(ds);
-  VS comp3 = hn::Zero(ds);
+  const hn::Repartition<typename Kernel::State, D> d_state;
+  using VState = hn::Vec<decltype(d_state)>;
+  VState sum0 = hn::Zero(d_state);
+  VState sum1 = hn::Zero(d_state);
+  VState sum2 = hn::Zero(d_state);
+  VState sum3 = hn::Zero(d_state);
+  VState comp0 = hn::Zero(d_state);
+  VState comp1 = hn::Zero(d_state);
+  VState comp2 = hn::Zero(d_state);
+  VState comp3 = hn::Zero(d_state);
 
-  const size_t N = hn::Lanes(d);
+  const size_t N = hn::Lanes(d_raw);
   size_t i = 0;
-  if (vec.num >= 4 * N) {
-    for (; i <= vec.num - 4 * N; i += 4 * N) {
-      Decompress2(d, w, w_ofs + i + 0 * N, w0, w1);
-      Decompress2(d, w, w_ofs + i + 2 * N, w2, w3);
-      Decompress2(d, vec, i + 0 * N, v0, v1);
-      Decompress2(d, vec, i + 2 * N, v2, v3);
+  if (v.num >= 4 * N) {
+    for (; i <= v.num - 4 * N; i += 4 * N) {
+      Decompress2(d_raw, w, w_ofs + i + 0 * N, w0, w1);
+      Decompress2(d_raw, w, w_ofs + i + 2 * N, w2, w3);
+      Decompress2(d_raw, v, i + 0 * N, v0, v1);
+      Decompress2(d_raw, v, i + 2 * N, v2, v3);
 
-      kernel.Update4(d, w0, w1, w2, w3, v0, v1, v2, v3, sum0, sum1, sum2, sum3,
-                     comp0, comp1, comp2, comp3);
+      kernel.Update4(d_raw, w0, w1, w2, w3, v0, v1, v2, v3, sum0, sum1, sum2,
+                     sum3, comp0, comp1, comp2, comp3);
     }
   }
 
-  size_t remaining = vec.num - i;
+  size_t remaining = v.num - i;
   HWY_DASSERT(remaining < 4 * N);
   if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN T padded_w[4 * hn::MaxLanes(d)];
-    HWY_ALIGN T padded_v[4 * hn::MaxLanes(d)];
-    DecompressAndZeroPad(d, w, w_ofs + i, padded_w, remaining);
-    DecompressAndZeroPad(d, vec, i, padded_v, remaining);
+    HWY_ALIGN Raw padded_w[4 * hn::MaxLanes(d_raw)];
+    HWY_ALIGN Raw padded_v[4 * hn::MaxLanes(d_raw)];
+    DecompressAndZeroPad(d_raw, w, w_ofs + i, padded_w, remaining);
+    DecompressAndZeroPad(d_raw, v, i, padded_v, remaining);
 
     // 1..4 whole vectors, possibly zero-padded.
     for (size_t padded_pos = 0; padded_pos < remaining; padded_pos += N) {
-      const V w0 = hn::Load(d, padded_w + padded_pos);
-      const V v0 = hn::Load(d, padded_v + padded_pos);
-      kernel.Update1(d, w0, v0, sum0, comp0);
+      const VRaw w0 = hn::Load(d_raw, padded_w + padded_pos);
+      const VRaw v0 = hn::Load(d_raw, padded_v + padded_pos);
+      kernel.Update1(d_raw, w0, v0, sum0, comp0);
     }
   }
 
-  return kernel.Reduce(ds, sum0, sum1, sum2, sum3, comp0, comp1, comp2, comp3);
+  return kernel.Reduce(d_state, sum0, sum1, sum2, sum3, comp0, comp1, comp2,
+                       comp3);
 }
 
 // Same as above, but single input array. Used by RMSNorm.
-template <class D, typename VecT, class Kernel>
-HWY_INLINE float DecompressAndCall(D d, const PackedSpan<const VecT> vec,
+template <class D, typename VT, class Kernel>
+HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
                                    const Kernel& kernel) {
   // Decompressed inputs
-  using T = hn::TFromD<D>;
-  using V = hn::Vec<decltype(d)>;
-  V v0, v1, v2, v3;
+  using Raw = typename Kernel::template Raw<VT, VT>;
+  const hn::Repartition<Raw, D> d_raw;
+  using VRaw = hn::Vec<decltype(d_raw)>;
+  VRaw v0, v1, v2, v3;
 
   // State for Kernel
-  using StateT = hwy::If<hwy::IsSame<T, double>(), double, float>;
-  const hn::Repartition<StateT, D> ds;
-  using VS = hn::Vec<decltype(ds)>;
-  VS sum0 = hn::Zero(ds);
-  VS sum1 = hn::Zero(ds);
-  VS sum2 = hn::Zero(ds);
-  VS sum3 = hn::Zero(ds);
-  VS comp0 = hn::Zero(ds);
-  VS comp1 = hn::Zero(ds);
-  VS comp2 = hn::Zero(ds);
-  VS comp3 = hn::Zero(ds);
+  const hn::Repartition<typename Kernel::State, D> d_state;
+  using VState = hn::Vec<decltype(d_state)>;
+  VState sum0 = hn::Zero(d_state);
+  VState sum1 = hn::Zero(d_state);
+  VState sum2 = hn::Zero(d_state);
+  VState sum3 = hn::Zero(d_state);
+  VState comp0 = hn::Zero(d_state);
+  VState comp1 = hn::Zero(d_state);
+  VState comp2 = hn::Zero(d_state);
+  VState comp3 = hn::Zero(d_state);
 
-  const size_t N = hn::Lanes(d);
+  const size_t N = hn::Lanes(d_raw);
   size_t i = 0;
-  if (vec.num >= 4 * N) {
-    for (; i <= vec.num - 4 * N; i += 4 * N) {
-      Decompress2(d, vec, i + 0 * N, v0, v1);
-      Decompress2(d, vec, i + 2 * N, v2, v3);
+  if (v.num >= 4 * N) {
+    for (; i <= v.num - 4 * N; i += 4 * N) {
+      Decompress2(d_raw, v, i + 0 * N, v0, v1);
+      Decompress2(d_raw, v, i + 2 * N, v2, v3);
 
-      kernel.Update4(d, v0, v1, v2, v3, v0, v1, v2, v3, sum0, sum1, sum2, sum3,
-                     comp0, comp1, comp2, comp3);
+      kernel.Update4(d_raw, v0, v1, v2, v3, v0, v1, v2, v3, sum0, sum1, sum2,
+                     sum3, comp0, comp1, comp2, comp3);
     }
   }
 
-  size_t remaining = vec.num - i;
+  size_t remaining = v.num - i;
   HWY_DASSERT(remaining < 4 * N);
   if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN T padded_v[4 * hn::MaxLanes(d)];
-    DecompressAndZeroPad(d, vec, i, padded_v, remaining);
+    HWY_ALIGN Raw padded_v[4 * hn::MaxLanes(d_raw)];
+    DecompressAndZeroPad(d_raw, v, i, padded_v, remaining);
 
     // 1..4 whole vectors, possibly zero-padded.
     for (size_t padded_pos = 0; padded_pos < remaining; padded_pos += N) {
-      const V v0 = hn::Load(d, padded_v + padded_pos);
-      kernel.Update1(d, v0, v0, sum0, comp0);
+      const VRaw v0 = hn::Load(d_raw, padded_v + padded_pos);
+      kernel.Update1(d_raw, v0, v0, sum0, comp0);
     }
   }
 
-  return kernel.Reduce(ds, sum0, sum1, sum2, sum3, comp0, comp1, comp2, comp3);
+  return kernel.Reduce(d_state, sum0, sum1, sum2, sum3, comp0, comp1, comp2,
+                       comp3);
 }
 
 // Functor called for each tensor, which compresses and stores them along with

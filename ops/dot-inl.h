@@ -40,15 +40,20 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+// Our naming convention for dot product arguments is `w` and `v`, in that
+// order. This originated in `MatVec`, which computed dot products of a
+// compressed "weight" type, and `BF16/float` "vectors". This implementation no
+// longer restricts the types of the arguments, but we keep the names for
+// consistency, also because there is still a `w_ofs` but not a `v_ofs`.
+
 //------------------------------------------------------------------------------
 
-// Returns 2 * sum(|w.*v|) / |sum(w.*v)|. This is large when there are many
-// similar-magnitude and opposite-sign elements. See
-// https://en.wikipedia.org/wiki/Condition_number.
-template <typename WeightT, typename VecT>
-HWY_MAYBE_UNUSED double ConditionNumber(const WeightT* HWY_RESTRICT w,
-                                        const VecT* HWY_RESTRICT v,
-                                        size_t num) {
+// Returns 2 * sum(|w.*v|) / |sum(w.*v)|. The log2 of this value
+// approximates the number of mantissa bits required for accurate computations.
+// See https://en.wikipedia.org/wiki/Condition_number.
+template <typename WT, typename VT>
+HWY_MAYBE_UNUSED double ConditionNumber(const WT* HWY_RESTRICT w,
+                                        const VT* HWY_RESTRICT v, size_t num) {
   PROFILER_FUNC;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
@@ -104,9 +109,8 @@ HWY_MAYBE_UNUSED double ConditionNumber(const WeightT* HWY_RESTRICT w,
 }
 
 // Same, but for a single vector - just skips the product.
-template <typename VecT>
-HWY_MAYBE_UNUSED double ConditionNumber(const VecT* HWY_RESTRICT v,
-                                        size_t num) {
+template <typename VT>
+HWY_MAYBE_UNUSED double ConditionNumber(const VT* HWY_RESTRICT v, size_t num) {
   PROFILER_FUNC;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
@@ -153,12 +157,60 @@ HWY_MAYBE_UNUSED double ConditionNumber(const VecT* HWY_RESTRICT v,
   return cond;
 }
 
-// Algorithm 6.15 from Handbook of Floating-Point Arithmetic. 10 ops is too slow
-// for compute-limited Matmul but might be OK for attention.
-// Also supports bf16 inputs, used by matvec-inl.h.
+// f64 FMA, called for f32 inputs promoted to f64. Runs at about half the speed
+// of f32 FMA. Only usable if `CanDecompressToDouble<WT, VT>()`.
+struct DotKernelDouble {
+  template <typename VT, typename WT>
+  using Raw = double;
+  using State = double;
+
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
+  HWY_INLINE void Update4(DRaw dd, const VR w0, const VR w1, const VR w2,
+                          const VR w3, const VR v0, const VR v1, const VR v2,
+                          const VR v3, VR& sum0, VR& sum1, VR& sum2, VR& sum3,
+                          VR&, VR&, VR&, VR&) const {
+    sum0 = hn::MulAdd(w0, v0, sum0);
+    sum1 = hn::MulAdd(w1, v1, sum1);
+    sum2 = hn::MulAdd(w2, v2, sum2);
+    sum3 = hn::MulAdd(w3, v3, sum3);
+  }
+
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
+  HWY_INLINE void Update1(DRaw dd, const VR w0, const VR v0, VR& sum0,
+                          VR&) const {
+    sum0 = hn::MulAdd(w0, v0, sum0);
+  }
+
+  template <class DState, class VS = hn::Vec<DState>, HWY_IF_F64_D(DState)>
+  HWY_INLINE float Reduce(DState dd, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS&, VS&, VS&, VS&) const {
+    // Reduction tree: sum of all accumulators by pairs, then across lanes.
+    sum0 = hn::Add(sum0, sum1);
+    sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, sum2);
+    return static_cast<float>(hn::ReduceSum(dd, sum0));
+  }
+};
+
+template <class D, typename WT, typename VT>
+HWY_INLINE float DotDouble(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                           const VT* HWY_RESTRICT vec, size_t num) {
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelDouble());
+}
+
+// Algorithm 6.15 from Handbook of Floating-Point Arithmetic. This is slower
+// than DotKernelDouble and about equally accurate.
 struct DotKernelCompensated {
-  template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
-  HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
+  // Unlike other kernels, this also supports bf16 inputs, used by matvec-inl.h.
+  // Even when `!HWY_NATIVE_DOT_BF16`, the BF16 overload is still faster than
+  // promoting to `float` because it does not call `TwoProducts`.
+  template <typename VT, typename WT>
+  using Raw = hwy::If<IsF32<VT>() || IsF32<WT>(), float, BF16>;
+  using State = float;
+
+  // Raw = float
+  template <class DRaw, class VF = hn::Vec<DRaw>, HWY_IF_F32_D(DRaw)>
+  HWY_INLINE void Update4(DRaw df, const VF w0, const VF w1, const VF w2,
                           const VF w3, const VF v0, const VF v1, const VF v2,
                           const VF v3, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
@@ -180,20 +232,20 @@ struct DotKernelCompensated {
     comp3 = hn::Add(comp3, hn::Add(perr3, serr3));
   }
 
-  template <class DBF, class VBF = hn::Vec<DBF>, HWY_IF_BF16_D(DBF),
-            class DF = hn::Repartition<float, DBF>, class VF = hn::Vec<DF>>
-  HWY_INLINE void Update4(DBF /*dbf*/, const VBF w0, const VBF w1, const VBF w2,
-                          const VBF w3, const VBF v0, const VBF v1,
-                          const VBF v2, const VBF v3, VF& sum0, VF& sum1,
-                          VF& sum2, VF& sum3, VF& comp0, VF& comp1, VF& comp2,
-                          VF& comp3) const {
-    const DF df;
-    const VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
-    const VF prod1 = WidenMulPairwiseAdd(df, w1, v1);
-    const VF prod2 = WidenMulPairwiseAdd(df, w2, v2);
-    const VF prod3 = WidenMulPairwiseAdd(df, w3, v3);
+  // Raw = BF16, State = float
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_BF16_D(DRaw),
+            class DS = hn::Repartition<float, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update4(DRaw, const VR w0, const VR w1, const VR w2,
+                          const VR w3, const VR v0, const VR v1, const VR v2,
+                          const VR v3, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS& comp0, VS& comp1, VS& comp2, VS& comp3) const {
+    const DS df;
+    const VS prod0 = WidenMulPairwiseAdd(df, w0, v0);
+    const VS prod1 = WidenMulPairwiseAdd(df, w1, v1);
+    const VS prod2 = WidenMulPairwiseAdd(df, w2, v2);
+    const VS prod3 = WidenMulPairwiseAdd(df, w3, v3);
 
-    VF serr0, serr1, serr2, serr3;
+    VS serr0, serr1, serr2, serr3;
     sum0 = TwoSums(df, prod0, sum0, serr0);
     sum1 = TwoSums(df, prod1, sum1, serr1);
     sum2 = TwoSums(df, prod2, sum2, serr2);
@@ -205,6 +257,7 @@ struct DotKernelCompensated {
     comp3 = hn::Add(comp3, serr3);
   }
 
+  // Raw = float
   template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
   HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
                           VF& comp0) const {
@@ -217,22 +270,23 @@ struct DotKernelCompensated {
     comp0 = hn::Add(comp0, hn::Add(perr0, serr0));
   }
 
-  template <class DBF, class VBF = hn::Vec<DBF>, HWY_IF_BF16_D(DBF),
-            class DF = hn::Repartition<float, DBF>, class VF = hn::Vec<DF>>
-  HWY_INLINE void Update1(DBF /*dbf*/, const VBF w0, const VBF v0, VF& sum0,
-                          VF& comp0) const {
-    const DF df;
-    const VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
+  // Raw = BF16, State = float
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_BF16_D(DRaw),
+            class DS = hn::Repartition<float, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update1(DRaw, const VR w0, const VR v0, VS& sum0,
+                          VS& comp0) const {
+    const DS df;
+    const VS prod0 = WidenMulPairwiseAdd(df, w0, v0);
 
-    VF serr0;
+    VS serr0;
     sum0 = TwoSums(df, prod0, sum0, serr0);
 
     comp0 = hn::Add(comp0, serr0);
   }
 
-  template <class DF, class VF = hn::Vec<DF>>
-  HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
-                          VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
+  template <class DS, class VS = hn::Vec<DS>>
+  HWY_INLINE float Reduce(DS df, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS& comp0, VS& comp1, VS& comp2, VS& comp3) const {
     // Reduction tree: sum of all accumulators by pairs, then across lanes.
     AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
     AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
@@ -241,35 +295,38 @@ struct DotKernelCompensated {
   }
 };
 
-// Default kernel
-template <class D, typename WeightT, typename VecT>
-HWY_INLINE float Dot(D d, const PackedSpan<const WeightT>& w, size_t w_ofs,
-                     const VecT* HWY_RESTRICT vec, size_t num) {
+template <typename WT, typename VT>
+using DotKernelDefault = hwy::If<CanDecompressToDouble<WT, VT>(),
+                                 DotKernelDouble, DotKernelCompensated>;
+
+// `D` only serves to specify the vector size; its lane type is ignored.
+template <class D, typename WT, typename VT>
+HWY_INLINE float Dot(D d, const PackedSpan<const WT>& w, size_t w_ofs,
+                     const VT* HWY_RESTRICT vec, size_t num) {
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
-                           DotKernelCompensated());
+                           DotKernelDefault<WT, VT>());
 }
 
-// Adapter for a single pointer, no bounds checking.
-template <typename WeightT, typename VecT>
-HWY_INLINE float Dot(const WeightT* HWY_RESTRICT w, const VecT* vec,
-                     size_t num) {
-  const hn::ScalableTag<VecT> d;
+// Adapter for two pointers, no bounds checking.
+template <typename WT, typename VT>
+HWY_INLINE float Dot(const WT* HWY_RESTRICT w, const VT* vec, size_t num) {
+  const hn::ScalableTag<VT> d;
   return Dot(d, MakeConstSpan(w, num), /*w_ofs=*/0, vec, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <size_t kCapacity, typename VecT>
+template <size_t kCapacity, typename VT>
 HWY_INLINE float Dot(const std::array<float, kCapacity>& w, size_t w_ofs,
-                     const VecT* vec, size_t num) {
-  const hn::ScalableTag<VecT> d;
+                     const VT* vec, size_t num) {
+  const hn::ScalableTag<VT> d;
   return Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <typename MatT, size_t kCapacity, typename VecT>
+template <typename MatT, size_t kCapacity, typename VT>
 HWY_INLINE float Dot(const CompressedArray<MatT, kCapacity>& w, size_t w_ofs,
-                     const VecT* vec, size_t num) {
-  const hn::ScalableTag<VecT> d;
+                     const VT* vec, size_t num) {
+  const hn::ScalableTag<VT> d;
   return w.scale() *
          Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
 }

@@ -142,11 +142,11 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(float* HWY_RESTRICT x,
 namespace detail {
 
 // Shared by RMSNorm and RMSNormInplace.
-template <typename VecT>
-float RMSNormMul(const VecT* HWY_RESTRICT x, size_t size) {
-  const hn::ScalableTag<float> df;
+template <typename VT>
+float RMSNormMul(const VT* HWY_RESTRICT x, size_t size) {
+  const hn::ScalableTag<float> d;
   const float l2 =
-      DecompressAndCall(df, MakeSpan(x, size), DotKernelCompensated());
+      DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault<VT, VT>());
   constexpr float kEps = 1e-6f;  // avoid divide by zero
   return 1.0f / sqrtf(l2 / StaticCast<float>(size) + kEps);
 }
@@ -504,6 +504,40 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
   MulByConstAndAdd(c, x, out, size, size);
 }
 
+// f64 Add, called for f32 inputs promoted to f64. Runs at about half the speed
+// of f32 sums. Only usable if `CanDecompressToDouble<VT, VT>()`.
+struct SumKernelDouble {
+  template <typename VT, typename WT>
+  using Raw = double;
+  using State = double;
+
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
+  HWY_INLINE void Update4(DRaw /*dd*/, const VR w0, const VR w1, const VR w2,
+                          const VR w3, VR, VR, VR, VR, VR& sum0, VR& sum1,
+                          VR& sum2, VR& sum3, VR&, VR&, VR&, VR&) const {
+    sum0 = hn::Add(sum0, w0);
+    sum1 = hn::Add(sum1, w1);
+    sum2 = hn::Add(sum2, w2);
+    sum3 = hn::Add(sum3, w3);
+  }
+
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
+  HWY_INLINE void Update1(DRaw /*dd*/, const VR w0, const VR v0, VR& sum0,
+                          VR& comp0) const {
+    sum0 = hn::Add(sum0, w0);
+  }
+
+  template <class DState, class VS = hn::Vec<DState>>
+  HWY_INLINE float Reduce(DState dd, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS&, VS&, VS&, VS&) const {
+    // Reduction tree: sum of all accumulators by pairs, then across lanes.
+    sum0 = hn::Add(sum0, sum1);
+    sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, sum2);
+    return static_cast<float>(hn::ReduceSum(dd, sum0));
+  }
+};
+
 // ORO Cascaded Summation, algorithm 6.11 from Handbook of Floating-Point
 // Arithmetic. Note that Algorithm 6.7 (KBN) appears erroneous. We use TwoSums
 // instead of FastTwoSums because the magnitude of the initial sum is not
@@ -511,7 +545,13 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
 // generation results. Note that Kahan summation differs in that it first adds
 // comp* to w*, so each operation is serially dependent. By contrast, the sum*
 // and comp* here have shorter dependency chains.
-struct KernelCascadedSum {
+//
+// This is slower than SumKernelDouble and about equally accurate.
+struct SumKernelCascaded {
+  template <typename VT, typename WT>
+  using Raw = float;
+  using State = float;
+
   template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
   HWY_INLINE void Update4(DF df, const VF w0, const VF w1, const VF w2,
                           const VF w3, VF, VF, VF, VF, VF& sum0, VF& sum1,
@@ -549,6 +589,17 @@ struct KernelCascadedSum {
   }
 };
 
+template <typename VT>
+using SumKernelDefault = hwy::If<CanDecompressToDouble<VT, VT>(),
+                                 SumKernelDouble, SumKernelCascaded>;
+
+template <class D, typename VT>
+HWY_INLINE float Sum(D d, const VT* HWY_RESTRICT vec, size_t num) {
+  using Raw = hwy::If<HWY_HAVE_FLOAT64, double, float>;
+  const hn::Repartition<Raw, D> d_raw;
+  return DecompressAndCall(d_raw, MakeSpan(vec, num), SumKernelDefault<VT>());
+}
+
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
                                  const size_t mask_pos) {
   PROFILER_FUNC;
@@ -582,8 +633,7 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   // not make a huge difference. It halves the standard deviation of the sum of
   // the normalized probabilities from 1E-7 to 5E-8, but actually also changes
   // the generated text after a few hundred tokens.
-  const float sum_exp =
-      DecompressAndCall(d, MakeConstSpan(x, mask_pos), KernelCascadedSum());
+  const float sum_exp = Sum(d, x, mask_pos);
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
   MulByConst(mul, x, size, mask_pos);
