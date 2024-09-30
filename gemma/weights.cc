@@ -15,13 +15,15 @@
 
 #include "gemma/weights.h"
 
-#include <cstdio>
+#include <stdio.h>
+
 #include <cstdlib>
 
 #include "compression/compress.h"
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
 #include "gemma/configs.h"
+#include "util/allocator.h"
 #include "hwy/base.h"  // HWY_ABORT
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -72,7 +74,10 @@ struct LoadCompressedWeightsT {
       }
       HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
     }
-    c_weights->Reshape();
+    {
+      PROFILER_ZONE("Startup.Reshape");
+      c_weights->Reshape();
+    }
     return c_weights_u8;
   }
 };

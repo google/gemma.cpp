@@ -23,7 +23,6 @@
 
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/profiler.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_MATVEC_INL_H_
 
@@ -39,6 +38,7 @@
 #include "ops/dot-inl.h"
 #include "hwy/contrib/math/math-inl.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
+#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

@@ -24,8 +24,10 @@
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
+// clang-format off
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE "backprop/backward.cc"  // NOLINT
+// clang-format on
 #include "hwy/foreach_target.h"        // IWYU pragma: keep
 
 #include "hwy/highway.h"

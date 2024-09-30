@@ -25,7 +25,6 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -122,8 +121,6 @@ struct CompressedLayer {
   // after loading weights via ForEachTensor.
   // TODO: update compression/convert_weights to bake this in.
   void Reshape() {
-    PROFILER_ZONE("Startup.Reshape");
-
     constexpr size_t kModelDim = TConfig::kModelDim;
     constexpr size_t kHeads = TConfig::kHeads;
     constexpr size_t kQKVDim = TConfig::kQKVDim;
