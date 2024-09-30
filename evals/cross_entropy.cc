@@ -13,18 +13,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "evals/cross_entropy.h"
+// Compiles this file for multiple architectures via "foreach_target.h", to
+// which we pass the filename via macro 'argument'.
+// clang-format off
+#undef HWY_TARGET_INCLUDE
+#define HWY_TARGET_INCLUDE "evals/cross_entropy.cc"  // NOLINT
+// clang-format on
+#include "hwy/foreach_target.h"  // IWYU pragma: keep
+#include "hwy/highway.h"
+// After highway.h
+#include "ops/ops-inl.h"  // Softmax
+
+#ifndef GEMMA_CROSS_ENTROPY_ONCE
+#define GEMMA_CROSS_ENTROPY_ONCE
 
 #include <stddef.h>
 #include <stdio.h>
 
-#include <algorithm>
+#include <algorithm>  // std::sort
 #include <cmath>
 #include <regex>  // NOLINT
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "evals/cross_entropy.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "hwy/base.h"
@@ -63,10 +76,30 @@ void LogTopK(const GemmaTokenizer& tokenizer, const float* dist, size_t len,
   }
 }
 }  // namespace
+}  // namespace gcpp
+#endif  // GEMMA_CROSS_ENTROPY_ONCE
+
+// SIMD code, compiled once per target.
+HWY_BEFORE_NAMESPACE();
+namespace gcpp {
+namespace HWY_NAMESPACE {
+
+void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size) {
+  Softmax(logits, vocab_size);
+}
+
+}  // namespace HWY_NAMESPACE
+}  // namespace gcpp
+HWY_AFTER_NAMESPACE();
+
+#if HWY_ONCE
+namespace gcpp {
+
+HWY_EXPORT(CallSoftmax);
 
 float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
-                          const std::vector<int>& prompt,
-                          KVCache& kv_cache, int verbosity) {
+                          const std::vector<int>& prompt, KVCache& kv_cache,
+                          int verbosity) {
   const StreamFunc stream_token = [](int /*token*/, float) { return true; };
 
   // TWeight is unused, but we have to pass it to Config*.
@@ -74,8 +107,11 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
       CallForModel</*TWeight=*/float, GetVocabSize>(gemma.Info().model);
   float cross_entropy = std::log(vocab_size);  // first token
   size_t pos = 1;
-  const SampleFunc sample_token = [&](const float* probs,
-                                      size_t vocab_size) -> int {
+
+  const SampleFunc sample_token = [&](float* probs,
+                                      size_t vocab_size) -> TokenAndProb {
+    // input is logits, not yet probabilities
+    HWY_DYNAMIC_DISPATCH(CallSoftmax)(probs, vocab_size);
     // We are called for each token, but pos starts at 1. Clamping max_tokens
     // to prompt.size() should prevent overrun.
     HWY_ASSERT(pos < prompt.size());
@@ -96,8 +132,9 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
              cross_entropy / std::log(2.0) / (pos + 1));
     }
     ++pos;
-    return token;
+    return TokenAndProb{.token = token, .prob = prob};
   };
+
   std::vector<int> prompt0 = { prompt[0] };
   max_tokens = HWY_MIN(max_tokens, prompt.size());
   RuntimeConfig runtime = {
@@ -118,3 +155,4 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
 }
 
 }  // namespace gcpp
+#endif  // HWY_ONCE

@@ -57,9 +57,10 @@ using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int, float)>;
-// If not empty, SampleFunc is called with the probability distribution for the
-// next token, and its return value is used as the next generated token.
-using SampleFunc = std::function<int(const float*, size_t)>;
+// If not empty, SampleFunc is called with the logits for the next token, which
+// it may modify/overwrite, and its return value is the next generated token
+// together with its probability.
+using SampleFunc = std::function<TokenAndProb(float*, size_t)>;
 // If not empty, LayersOutputFunc is called for layer outputs, specified with:
 // - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence

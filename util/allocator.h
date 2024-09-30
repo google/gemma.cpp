@@ -24,6 +24,12 @@
 
 namespace gcpp {
 
+// Shared between gemma.h and ops-inl.h.
+struct TokenAndProb {
+  int token;
+  float prob;
+};
+
 using ByteStorageT = hwy::AlignedFreeUniquePtr<uint8_t[]>;
 
 template <typename T>

@@ -28,10 +28,10 @@
 #include <type_traits>  // std::enable_if_t
 
 #include "compression/compress.h"
+#include "util/allocator.h"  // TokenAndProb
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
-#include "hwy/profiler.h"
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_INL_H_
 
 // Include guard for (potentially) SIMD code.
@@ -46,6 +46,7 @@
 #include "ops/dot-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/math/math-inl.h"
+#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -602,7 +603,6 @@ HWY_INLINE float Sum(D d, const VT* HWY_RESTRICT vec, size_t num) {
 
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
                                  const size_t mask_pos) {
-  PROFILER_FUNC;
   HWY_DASSERT(size != 0);
   HWY_DASSERT(mask_pos <= size);
 
@@ -642,6 +642,71 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 static HWY_INLINE HWY_MAYBE_UNUSED void Softmax(float* HWY_RESTRICT x,
                                                 const size_t size) {
   Softmax(x, size, size);
+}
+
+// Returns argmax of softmax and its probability. This overwrites `x`, but not
+// with normalized probabilities. Only equivalent to `Softmax` + `sample_func`
+// if `kTopK` == 1. This is worthwhile because `num` is
+// typically `kVocabSize` == 256K, and this avoids writing that many, and then
+// scanning them again for the max.
+static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
+                                                   const size_t num) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  using V = hn::Vec<D>;
+  using M = hn::Mask<D>;
+  const D d;
+  const hn::RebindToSigned<D> di;
+  using TI = hn::TFromD<decltype(di)>;
+  using VI = hn::Vec<decltype(di)>;
+  const size_t N = hn::Lanes(d);
+  HWY_ASSERT(num % (2 * N) == 0);
+
+  V max0 = hn::Set(d, hwy::LowestValue<float>());
+  V max1 = max0;
+  VI argmax0 = hn::Zero(di);
+  VI argmax1 = argmax0;
+
+  for (size_t i = 0; i < num; i += 2 * N) {
+    const V v0 = hn::LoadU(d, x + i);
+    const V v1 = hn::LoadU(d, x + i + N);
+    const VI vi0 = hn::Iota(di, static_cast<TI>(i));
+    const VI vi1 = hn::Iota(di, static_cast<TI>(i + N));
+    const M gt0 = hn::Gt(v0, max0);
+    const M gt1 = hn::Gt(v1, max1);
+    max0 = hn::IfThenElse(gt0, v0, max0);
+    max1 = hn::IfThenElse(gt1, v1, max1);
+    argmax0 = hn::IfThenElse(hn::RebindMask(di, gt0), vi0, argmax0);
+    argmax1 = hn::IfThenElse(hn::RebindMask(di, gt1), vi1, argmax1);
+  }
+  // Combine the two vectors
+  const M gt0 = hn::Gt(max0, max1);
+  max0 = hn::IfThenElse(gt0, max0, max1);
+  argmax0 = hn::IfThenElse(hn::RebindMask(di, gt0), argmax0, argmax1);
+  // Reduce to the global max
+  const V max = hn::MaxOfLanes(d, max0);  // broadcasts
+  const V* pmax = &max;
+  // Argmax = lowest-indexed lane equal to the global max
+  const size_t lane = hn::FindKnownFirstTrue(d, hn::Eq(max, max0));
+  const TI argmax = hn::ExtractLane(argmax0, lane);
+
+  // Subtract max (avoid precision loss for large exponents) and exponentiate.
+  hn::Transform(d, x, num, [pmax](const auto d, const V value) HWY_ATTR {
+    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
+      return hn::CallExp(d, hn::Sub(value, *pmax));
+    } else {
+      return hn::Exp(d, hn::Sub(value, *pmax));
+    }
+  });
+
+  // Normalize to a single probability. The exact sum seems like it should not
+  // make a huge difference. It halves the standard deviation of the sum of the
+  // normalized probabilities from 1E-7 to 5E-8, but actually also changes the
+  // generated text after a few hundred tokens.
+  const float sum_exp = Sum(d, x, num);
+  const float prob = x[argmax] / sum_exp;
+  return TokenAndProb{.token = argmax, .prob = prob};
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,

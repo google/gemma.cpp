@@ -15,20 +15,10 @@
 
 // SIMD functions for Gemma/Griffin transformers.
 
-// Include guard (still compiled once per target)
-#if defined(THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_) == \
-    defined(HWY_TARGET_TOGGLE)
-#ifdef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
-#undef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
-#else
-#define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
-#endif
-
 #include <stddef.h>
 #include <stdio.h>
 
 #include <algorithm>  // std::min
-#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -38,9 +28,6 @@
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 // Placeholder for internal test4, do not remove
-#include "ops/matmul-inl.h"
-#include "ops/matvec-inl.h"
-#include "ops/ops-inl.h"
 #include "paligemma/image.h"
 #include "util/allocator.h"
 #include "util/threading.h"
@@ -48,9 +35,23 @@
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/highway.h"
-#include "hwy/profiler.h"
 #include "hwy/timer.h"
+
+// Include guard (still compiled once per target)
+#if defined(THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_) == \
+    defined(HWY_TARGET_TOGGLE)
+#ifdef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
+#undef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
+#else
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_INL_H_
+#endif
+
+#include "hwy/highway.h"
+// After highway.h
+#include "ops/matmul-inl.h"
+#include "ops/matvec-inl.h"
+#include "ops/ops-inl.h"
+#include "hwy/profiler.h"  // also uses SIMD
 
 #ifndef GEMMA_CONFIG
 #if HWY_IDE
@@ -1165,6 +1166,32 @@ class TokenStreamer {
   hwy::BitSet4096<> is_eos_;
 };
 
+template <class TConfig>
+SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
+  constexpr size_t kTopK = TConfig::kTopK;
+
+  // If user provided a sample_func, use it.
+  if (runtime_config.sample_func) return runtime_config.sample_func;
+
+  // Fast path for top-1 with no accept_token.
+  if (kTopK == 1 && !runtime_config.accept_token) {
+    PROFILER_ZONE("Gen.Sample Top1");
+    return [](float* logits, size_t vocab_size) -> TokenAndProb {
+      return Top1OfSoftmax(logits, vocab_size);
+    };
+  }
+
+  // General case: Softmax with top-k sampling.
+  return [&runtime_config](float* logits, size_t vocab_size) -> TokenAndProb {
+    PROFILER_ZONE("Gen.Sample general");
+    Softmax(logits, vocab_size);
+    const int token = SampleTopK<kTopK>(logits, vocab_size, *runtime_config.gen,
+                                        runtime_config.temperature,
+                                        runtime_config.accept_token);
+    return TokenAndProb{.token = token, .prob = logits[token]};
+  };
+}
+
 // Generates one continuation for each query in `queries_prompt`, which is one
 // qbatch whose size is at most the `batch_size` passed to
 // `activations.Allocate`.
@@ -1214,18 +1241,10 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
     }
   }
 
-  // If no sample_func is provided, we use top-k sampling.
-  const SampleFunc sample_token =
-      runtime_config.sample_func
-          ? runtime_config.sample_func
-          : [&](const float* logits, size_t vocab_size) -> int {
-    return SampleTopK<TConfig::kTopK>(logits, vocab_size, *runtime_config.gen,
-                                      runtime_config.temperature,
-                                      runtime_config.accept_token);
-  };
+  const SampleFunc sample_token = ChooseSampleFunc<TConfig>(runtime_config);
 
-  // Prefill stops before min_prompt_size - 1 because the last prompt token is
-  // the first input token for generation.
+  // Prefill stops before min_prompt_size - 1 because the last prompt
+  // token is the first input token for generation.
   const double prefill_start = hwy::platform::Now();
   // If tbatch is larger than the qbatch we already have in `activations`, then
   // allocate prefill_activations, otherwise reuse.
@@ -1283,15 +1302,14 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
       float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
       MaybeLogitsSoftCap(TConfig::kFinalCap, logits, kVocabSize);
-      Softmax(logits, kVocabSize);
-      const int token = sample_token(logits, kVocabSize);
+      const TokenAndProb tp = sample_token(logits, kVocabSize);
       timing_info.NotifyGenerated(prefill_start, gen_start);
 
       const bool is_eos =
           token_streamer(query_idx_start + query_idx,
-                         queries_mutable_pos[query_idx], token, logits[token]);
+                         queries_mutable_pos[query_idx], tp.token, tp.prob);
       all_queries_eos &= is_eos;
-      gen_tokens[query_idx] = is_eos ? runtime_config.eos_id : token;
+      gen_tokens[query_idx] = is_eos ? runtime_config.eos_id : tp.token;
     }
     if (all_queries_eos) break;
   }  // foreach token to generate

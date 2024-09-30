@@ -285,6 +285,7 @@ cc_library(
     deps = [
         ":common",
         ":gemma_lib",
+        ":ops",
         "@hwy//:hwy",
     ],
 )
