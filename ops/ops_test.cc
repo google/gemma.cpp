@@ -564,9 +564,9 @@ void TestAllLayerNorm() {
 void TestSampleTopK() {
   const size_t kSize = 52;
   std::vector<float> logits(kSize);
-  // SampleTopK is typically used on logits, which can be negative.
-  // Create a vector going from -100 to -100+51=49.
+  // Create a vector going from -100 to -100+51=49 and take Softmax.
   std::iota(logits.begin(), logits.end(), -100.0f);
+  Softmax(logits.data(), kSize);
   std::mt19937 gen;
   gen.seed(0x12345678);
   float temperature = 1.0f;
@@ -580,8 +580,9 @@ void TestSampleTopK() {
   sample = SampleTopK<1>(logits.data(), kSize, gen, temperature,
                          accept_token);
   EXPECT_EQ(sample, 50);  // Last even index.
-  // Reset the logits to a positive, increasing sequence.
+  // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
+  Softmax(logits.data(), kSize);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
     sample = SampleTopK<3>(logits.data(), kSize, gen, temperature,

@@ -777,7 +777,7 @@ create_distribution(std::array<float, k>& top_k, float temperature) {
 
 template <size_t k, typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
-    const float* HWY_RESTRICT logits, size_t vocab_size,
+    const float* HWY_RESTRICT probabilities, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
   static_assert(k != 0, "");
   HWY_ASSERT(k <= vocab_size);
@@ -787,19 +787,19 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
   std::array<int, k> indices{};
   size_t num_accepted = 0;
   for (size_t i = 0; i < vocab_size; ++i) {
-    if (logits[i] < top_k[k - 1]) continue;
+    if (probabilities[i] < top_k[k - 1]) continue;
     bool accepted =
-        !accept_token || accept_token(StaticCast<int>(i), logits[i]);
+        !accept_token || accept_token(StaticCast<int>(i), probabilities[i]);
     if (!accepted) continue;
     num_accepted++;
     for (size_t j = 0; j < k; ++j) {
-      if (logits[i] > top_k[j]) {
+      if (probabilities[i] > top_k[j]) {
         // shift elements by 1, insert the new value, move on to next value
         for (size_t idx = k - 1; idx > j; --idx) {
           top_k[idx] = top_k[idx - 1];
           indices[idx] = indices[idx - 1];
         }
-        top_k[j] = logits[i];
+        top_k[j] = probabilities[i];
         indices[j] = StaticCast<int>(i);
         break;
       }
