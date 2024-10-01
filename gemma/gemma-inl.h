@@ -1292,13 +1292,16 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
     // queries_pos are incremented by Transformer.
 
     bool all_queries_eos = true;
-    PROFILER_ZONE("Gen.Embedding");
-    // Compute logits from last layer activations.
-    MatMul</*kAdd=*/false>(
-        num_queries, ConstMat(activations.x.All(), kModelDim),
-        ConstMat(weights.embedder_input_embedding.data(), kModelDim),
-        weights.embedder_input_embedding.scale(), /*add=*/nullptr,
-        activations.env, MutableMat(activations.logits.All(), kVocabSize));
+    {
+      PROFILER_ZONE("Gen.EmbeddingMatmul");
+      // Compute logits from last layer activations.
+      MatMul</*kAdd=*/false>(
+          num_queries, ConstMat(activations.x.All(), kModelDim),
+          ConstMat(weights.embedder_input_embedding.data(), kModelDim),
+          weights.embedder_input_embedding.scale(), /*add=*/nullptr,
+          activations.env, MutableMat(activations.logits.All(), kVocabSize));
+    }
+    PROFILER_ZONE("Gen.Softcap+Sample+Stream");
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
       float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
       MaybeLogitsSoftCap(TConfig::kFinalCap, logits, kVocabSize);

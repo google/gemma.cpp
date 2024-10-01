@@ -210,10 +210,10 @@ struct CompressedWeights {
   explicit CompressedWeights(hwy::ThreadPool& pool) : c_layer_ptrs(pool) {}
 
   // Called by weights.cc after ForEachTensor.
-  void Reshape() {
-    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+  void Reshape(hwy::ThreadPool& pool) {
+    pool.Run(0, TConfig::kLayers, [this](uint64_t layer, size_t /*thread*/) {
       GetLayer(layer)->Reshape();
-    }
+    });
   }
 
   void ZeroInit() {
@@ -279,7 +279,7 @@ struct ReshapeCompressedWeights {
   void operator()(ByteStorageT& weights_u8, hwy::ThreadPool& pool) const {
     CompressedWeights<TConfig>& weights =
         *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
-    weights.Reshape();
+    weights.Reshape(pool);
   }
 };
 

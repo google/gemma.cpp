@@ -76,7 +76,7 @@ struct LoadCompressedWeightsT {
     }
     {
       PROFILER_ZONE("Startup.Reshape");
-      c_weights->Reshape();
+      c_weights->Reshape(pool);
     }
     return c_weights_u8;
   }
@@ -90,7 +90,8 @@ ByteStorageT LoadCompressedWeights(const Path& weights, Model model_type,
 }
 
 namespace {
-void LogVec(const char* name, const float* data, size_t len) {
+// For reasons unknown, this is shown as potentially unused in the IDE.
+void HWY_MAYBE_UNUSED LogVec(const char* name, const float* data, size_t len) {
   hwy::Stats stats;
   for (size_t i = 0; i < len; ++i) {
     stats.Notify(data[i]);
