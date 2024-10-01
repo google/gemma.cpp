@@ -15,6 +15,8 @@
 
 #include "paligemma/image.h"
 
+#include <stdint.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -97,8 +99,8 @@ bool Image::ReadPPM(const std::string& filename) {
   height_ = height;
   int data_size = width * height * 3;
   data_.resize(data_size);
-  std::vector<char> data_bytes(data_size);
-  file.read(data_bytes.data(), data_size);
+  std::vector<uint8_t> data_bytes(data_size);
+  file.read(reinterpret_cast<char*>(data_bytes.data()), data_size);
   if (file.gcount() != data_size) {
     std::cerr << "Failed to read " << data_size << " bytes\n";
     return false;
