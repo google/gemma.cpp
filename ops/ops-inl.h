@@ -701,6 +701,7 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
 // with normalized probabilities. Only equivalent to `Softmax` + `sample_func`
 // if `kTopK` == 1. This is worthwhile because `num` is typically `kVocabSize`
 // == 256K, and this avoids writing and then scanning again for the max.
+// However, this is not enough to make parallelization worthwhile.
 static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
                                                    const size_t num) {
   namespace hn = hwy::HWY_NAMESPACE;

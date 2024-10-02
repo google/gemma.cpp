@@ -1175,8 +1175,8 @@ SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
 
   // Fast path for top-1 with no accept_token.
   if (kTopK == 1 && !runtime_config.accept_token) {
-    PROFILER_ZONE("Gen.Sample Top1");
     return [](float* logits, size_t vocab_size) -> TokenAndProb {
+      PROFILER_ZONE("Gen.Sample Top1");
       return Top1OfSoftmax(logits, vocab_size);
     };
   }
