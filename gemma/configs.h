@@ -38,6 +38,7 @@ namespace gcpp {
 
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
+static constexpr size_t kVocabSize = 256000;
 
 using EmbedderInputT = hwy::bfloat16_t;
 
@@ -187,7 +188,7 @@ struct ConfigGemma2_27B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 8192;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 46> kLayerConfig =
       FixedLayerConfig<46>(LayerAttentionType::kGemma);
   static constexpr std::array<size_t, 46> kAttentionWindowSizes =
@@ -211,7 +212,7 @@ struct ConfigGemma2_9B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 8192;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 42> kLayerConfig =
       FixedLayerConfig<42>(LayerAttentionType::kGemma);
   static constexpr std::array<size_t, 42> kAttentionWindowSizes =
@@ -234,7 +235,7 @@ struct ConfigGemma7B : public ConfigBaseGemmaV1 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 28> kLayerConfig =
       FixedLayerConfig<28>(LayerAttentionType::kGemma);
   static constexpr std::array<size_t, 28> kAttentionWindowSizes =
@@ -256,7 +257,7 @@ struct ConfigGemma2B : public ConfigBaseGemmaV1 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = gcpp::kSeqLen;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 18> kLayerConfig =
       FixedLayerConfig<18>(LayerAttentionType::kGemma);
   static constexpr std::array<size_t, 18> kAttentionWindowSizes =
@@ -310,7 +311,7 @@ struct ConfigGemma2_2B : public ConfigBaseGemmaV2 {
   using Weight = TWeight;  // make accessible where we only have a TConfig
 
   static constexpr int kSeqLen = 8192;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 26> kLayerConfig =
       FixedLayerConfig<26>(LayerAttentionType::kGemma);
   static constexpr std::array<size_t, 26> kAttentionWindowSizes =
@@ -363,7 +364,7 @@ struct ConfigGriffin2B : ConfigNoVit {
   // Griffin uses local attention, so kSeqLen is actually the local attention
   // window.
   static constexpr int kSeqLen = 2048;
-  static constexpr int kVocabSize = 256000;
+  static constexpr int kVocabSize = gcpp::kVocabSize;
   static constexpr std::array<LayerAttentionType, 26> kLayerConfig = {
       LayerAttentionType::kGriffinRecurrentBlock,
       LayerAttentionType::kGriffinRecurrentBlock,
