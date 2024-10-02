@@ -164,8 +164,6 @@ struct ConfigNoSSM : ConfigNoVit {
   static constexpr bool kUseHalfRope = false;
   static constexpr bool kUseLocalAttention = false;
   static constexpr bool kInterleaveQKV = true;
-  static constexpr int kNumTensorScales = 0;
-
   static constexpr PostQKType kPostQK = PostQKType::Rope;
   static constexpr ActivationType kActivation = ActivationType::Gelu;
   static constexpr ResidualType kResidual = ResidualType::Add;
@@ -195,6 +193,7 @@ struct ConfigGemma2_27B : public ConfigBaseGemmaV2 {
   static constexpr std::array<size_t, 46> kAttentionWindowSizes =
       RepeatedAttentionWindowSizes<46, 2>({4096, kSeqLen});
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 4608;
   static constexpr int kFFHiddenDim = 16 * 4608 / 2;  // = 36864
@@ -218,6 +217,7 @@ struct ConfigGemma2_9B : public ConfigBaseGemmaV2 {
   static constexpr std::array<size_t, 42> kAttentionWindowSizes =
       RepeatedAttentionWindowSizes<42, 2>({4096, kSeqLen});
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 3584;
   static constexpr int kFFHiddenDim = 8 * 3584 / 2;  // = 14336
@@ -240,6 +240,7 @@ struct ConfigGemma7B : public ConfigBaseGemmaV1 {
   static constexpr std::array<size_t, 28> kAttentionWindowSizes =
       FixedAttentionWindowSizes<28>(kSeqLen);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 3072;
   static constexpr int kFFHiddenDim = 16 * 3072 / 2;  // = 24576
@@ -261,6 +262,7 @@ struct ConfigGemma2B : public ConfigBaseGemmaV1 {
   static constexpr std::array<size_t, 18> kAttentionWindowSizes =
       FixedAttentionWindowSizes<18>(kSeqLen);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 2048;
   static constexpr int kFFHiddenDim = 16 * 2048 / 2;  // = 16384
@@ -285,6 +287,7 @@ struct ConfigPaliGemma_224 : public ConfigGemma2B<TWeight> {
     static constexpr std::array<LayerAttentionType, 27> kLayerConfig =
         FixedLayerConfig<27>(LayerAttentionType::kVit);
     static constexpr int kLayers = kLayerConfig.size();
+    static constexpr int kNumTensorScales = 4 * kLayers;
     static constexpr int kModelDim = 1152;
     static constexpr int kFFHiddenDim = 4304;
     static constexpr int kHeads = 16;
@@ -313,6 +316,7 @@ struct ConfigGemma2_2B : public ConfigBaseGemmaV2 {
   static constexpr std::array<size_t, 26> kAttentionWindowSizes =
       RepeatedAttentionWindowSizes<26, 2>({4096, kSeqLen});
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 2304;
   static constexpr int kFFHiddenDim = 8 * 2304 / 2;  // = 9216
@@ -335,6 +339,7 @@ struct ConfigGemmaTiny : public ConfigNoSSM {
   static constexpr std::array<size_t, 3> kAttentionWindowSizes =
       FixedAttentionWindowSizes<3>(kSeqLen);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr int kGemmaLayers = kLayers;
   static constexpr int kModelDim = 128;
   static constexpr int kFFHiddenDim = 256;

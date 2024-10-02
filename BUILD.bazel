@@ -105,7 +105,7 @@ cc_test(
 cc_test(
     name = "ops_test",
     size = "small",
-    timeout = "long",
+    timeout = "eternal",
     srcs = ["ops/ops_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.

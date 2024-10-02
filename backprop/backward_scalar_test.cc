@@ -387,6 +387,7 @@ struct TestConfig : ConfigBaseGemmaV2 {
   static constexpr std::array<LayerAttentionType, 2> kLayerConfig =
       FixedLayerConfig<2>(LayerAttentionType::kGemma);
   static constexpr int kLayers = kLayerConfig.size();
+  static constexpr int kNumTensorScales = 4 * kLayers;
   static constexpr bool kAbsolutePE = false;
   static constexpr PostNormType kPostNorm = PostNormType::None;
 
