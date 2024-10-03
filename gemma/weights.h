@@ -167,7 +167,7 @@ struct CompressedLayerPointers {
       c_vit_layers;
 };
 
-template <class TConfig, typename = void>
+template <class TConfig>
 struct CompressedWeights {
   // Must be allocated via AllocateAligned and initialized with placement new.
   void* operator new(size_t, void* addr) { return addr; }
@@ -207,7 +207,9 @@ struct CompressedWeights {
   // Must be last so that the other arrays remain aligned.
   CompressedLayerPointers<TConfig> c_layer_ptrs;
 
-  explicit CompressedWeights(hwy::ThreadPool& pool) : c_layer_ptrs(pool) {}
+  explicit CompressedWeights(hwy::ThreadPool& pool)
+      : c_layer_ptrs(pool)
+  {}
 
   // Called by weights.cc after ForEachTensor.
   void Reshape(hwy::ThreadPool& pool) {
