@@ -157,13 +157,17 @@ HWY_MAYBE_UNUSED double ConditionNumber(const VT* HWY_RESTRICT v, size_t num) {
   return cond;
 }
 
-// f64 FMA, called for f32 inputs promoted to f64. Runs at about half the speed
-// of f32 FMA. Only usable if `CanDecompressToDouble<WT, VT>()`.
+// f64 FMA. Inputs are both f32 promoted to f64, or any types that are either
+// promoted or even DEMOTED to bf16. Runs at about half the speed of f32 FMA.
 struct DotKernelDouble {
+  // Only `CompressTraits<float>` can `Decompress2` to `double`, so both have
+  // to be `float` in order to have `Raw = double`. Note that if either type is
+  // smaller than `float`, we may demote the other type from `float` to `BF16`.
   template <typename VT, typename WT>
-  using Raw = double;
+  using Raw = hwy::If<IsF32<VT>() && IsF32<WT>(), double, BF16>;
   using State = double;
 
+  // Raw = double
   template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
   HWY_INLINE void Update4(DRaw dd, const VR w0, const VR w1, const VR w2,
                           const VR w3, const VR v0, const VR v1, const VR v2,
@@ -175,18 +179,77 @@ struct DotKernelDouble {
     sum3 = hn::MulAdd(w3, v3, sum3);
   }
 
+  // Raw = BF16
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_BF16_D(DRaw),
+            class DS = hn::Repartition<double, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update4(DRaw, const VR w0, const VR w1, const VR w2,
+                          const VR w3, const VR v0, const VR v1, const VR v2,
+                          const VR v3, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS&, VS&, VS&, VS&) const {
+    const hn::Repartition<float, DRaw> df;
+    using VF = hn::Vec<decltype(df)>;
+    const VF prod0 = hn::WidenMulPairwiseAdd(df, w0, v0);
+    const VF prod1 = hn::WidenMulPairwiseAdd(df, w1, v1);
+    // Reduce to two f32 sums so we can promote them to four f64 vectors.
+    VF sum02, sum13;
+    if constexpr (HWY_NATIVE_DOT_BF16) {
+      // Fuse WidenMulPairwiseAdd plus Add into ReorderWidenMulAccumulate.
+      VF unused0 = hn::Zero(df);
+      VF unused1 = hn::Zero(df);
+      sum02 = hn::ReorderWidenMulAccumulate(df, w2, v2, prod0, unused0);
+      sum13 = hn::ReorderWidenMulAccumulate(df, w3, v3, prod1, unused1);
+    } else {
+      // ReorderWidenMulAccumulate does not help because we still end up with
+      // four accumulators.
+      const VF prod2 = hn::WidenMulPairwiseAdd(df, w2, v2);
+      const VF prod3 = hn::WidenMulPairwiseAdd(df, w3, v3);
+      sum02 = hn::Add(prod0, prod2);
+      sum13 = hn::Add(prod1, prod3);
+    }
+
+    const DS ds;
+    const VS d0 = hn::PromoteLowerTo(ds, sum02);
+    const VS d1 = hn::PromoteUpperTo(ds, sum02);
+    const VS d2 = hn::PromoteLowerTo(ds, sum13);
+    const VS d3 = hn::PromoteUpperTo(ds, sum13);
+
+    sum0 = hn::Add(sum0, d0);
+    sum1 = hn::Add(sum1, d1);
+    sum2 = hn::Add(sum2, d2);
+    sum3 = hn::Add(sum3, d3);
+  }
+
+  // Raw = double
   template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
   HWY_INLINE void Update1(DRaw dd, const VR w0, const VR v0, VR& sum0,
                           VR&) const {
     sum0 = hn::MulAdd(w0, v0, sum0);
   }
 
+  // Raw = BF16
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_BF16_D(DRaw),
+            class DS = hn::Repartition<double, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update1(DRaw, const VR w0, const VR v0, VS& sum0,
+                          VS& extra0) const {
+    const hn::Repartition<float, DRaw> df;
+    using VF = hn::Vec<decltype(df)>;
+    const VF prod0 = hn::WidenMulPairwiseAdd(df, w0, v0);
+
+    const DS ds;
+    const VS d0 = hn::PromoteLowerTo(ds, prod0);
+    const VS d1 = hn::PromoteUpperTo(ds, prod0);
+
+    sum0 = hn::Add(sum0, d0);
+    extra0 = hn::Add(extra0, d1);
+  }
+
   template <class DState, class VS = hn::Vec<DState>, HWY_IF_F64_D(DState)>
   HWY_INLINE float Reduce(DState dd, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
-                          VS&, VS&, VS&, VS&) const {
+                          VS& extra0, VS&, VS&, VS&) const {
     // Reduction tree: sum of all accumulators by pairs, then across lanes.
     sum0 = hn::Add(sum0, sum1);
     sum2 = hn::Add(sum2, sum3);
+    sum0 = hn::Add(sum0, extra0);  // from Update1
     sum0 = hn::Add(sum0, sum2);
     return static_cast<float>(hn::ReduceSum(dd, sum0));
   }
@@ -198,12 +261,13 @@ HWY_INLINE float DotDouble(D d, const PackedSpan<const WT>& w, size_t w_ofs,
   return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelDouble());
 }
 
-// Algorithm 6.15 from Handbook of Floating-Point Arithmetic. This is slower
-// than DotKernelDouble and about equally accurate.
+// Algorithm 6.15 from Handbook of Floating-Point Arithmetic. This about as
+// accurate as DotKernelDouble but slower, hence we only use this if f64 is
+// not supported on this target.
 struct DotKernelCompensated {
-  // Unlike other kernels, this also supports bf16 inputs, used by matvec-inl.h.
-  // Even when `!HWY_NATIVE_DOT_BF16`, the BF16 overload is still faster than
-  // promoting to `float` because it does not call `TwoProducts`.
+  // The `BF16` overload uses `ReorderWidenMulAccumulate`, which requires both
+  // `VT` and `WT` to be `BF16`, or smaller types decompressed to `BF16`.
+  // Otherwise, we decompress both inputs to `float`.
   template <typename VT, typename WT>
   using Raw = hwy::If<IsF32<VT>() || IsF32<WT>(), float, BF16>;
   using State = float;
@@ -240,10 +304,10 @@ struct DotKernelCompensated {
                           const VR v3, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
                           VS& comp0, VS& comp1, VS& comp2, VS& comp3) const {
     const DS df;
-    const VS prod0 = WidenMulPairwiseAdd(df, w0, v0);
-    const VS prod1 = WidenMulPairwiseAdd(df, w1, v1);
-    const VS prod2 = WidenMulPairwiseAdd(df, w2, v2);
-    const VS prod3 = WidenMulPairwiseAdd(df, w3, v3);
+    const VS prod1 = hn::WidenMulPairwiseAdd(df, w1, v1);
+    const VS prod2 = hn::WidenMulPairwiseAdd(df, w2, v2);
+    const VS prod3 = hn::WidenMulPairwiseAdd(df, w3, v3);
+    const VS prod0 = hn::WidenMulPairwiseAdd(df, w0, v0);
 
     VS serr0, serr1, serr2, serr3;
     sum0 = TwoSums(df, prod0, sum0, serr0);
@@ -295,16 +359,14 @@ struct DotKernelCompensated {
   }
 };
 
-template <typename WT, typename VT>
-using DotKernelDefault = hwy::If<CanDecompressToDouble<WT, VT>(),
-                                 DotKernelDouble, DotKernelCompensated>;
+using DotKernelDefault =
+    hwy::If<HWY_HAVE_FLOAT64, DotKernelDouble, DotKernelCompensated>;
 
 // `D` only serves to specify the vector size; its lane type is ignored.
 template <class D, typename WT, typename VT>
 HWY_INLINE float Dot(D d, const PackedSpan<const WT>& w, size_t w_ofs,
                      const VT* HWY_RESTRICT vec, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num),
-                           DotKernelDefault<WT, VT>());
+  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelDefault());
 }
 
 // Adapter for two pointers, no bounds checking.

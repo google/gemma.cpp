@@ -498,14 +498,6 @@ constexpr bool IsF32() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
 }
 
-// TODO: `DotKernelDouble` requires both inputs to be `float` because currently
-// only `CompressTraits<float>` can `Decompress2` to `double`. It is not yet
-// clear whether we want to implement this for other Packed types.
-template <typename WT, typename VT>
-constexpr bool CanDecompressToDouble() {
-  return HWY_HAVE_FLOAT64 && IsF32<WT>() && IsF32<VT>();
-}
-
 namespace detail {
 
 // Compile-time-only check that `DRaw` and `Packed` are compatible. This makes

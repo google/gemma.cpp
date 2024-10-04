@@ -142,7 +142,9 @@ void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
 
   const double norm = MaxColAbsSum(a.get(), rows_ac, cols_ab) *
                       MaxColAbsSum(b_trans.get(), cols_c_rows_b, cols_ab);
-  const double epsilon = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
+  // Dot(float,BF16) rounds both to BF16.
+  using RefType = hwy::If<IsF32<MatTA>() && IsF32<MatTB>(), float, BF16>;
+  const double epsilon = hwy::ConvertScalarTo<double>(hwy::Epsilon<RefType>());
   const double tolerance = 200.0 * norm * epsilon;
 
   for (size_t idx = 0; idx < num_c; idx++) {

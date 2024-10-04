@@ -507,10 +507,10 @@ struct DotKernelComp2 {
                           VF& sum2, VF& sum3, VF& comp0, VF& comp1, VF& comp2,
                           VF& comp3) const {
     const DF df;
-    VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
-    VF prod1 = WidenMulPairwiseAdd(df, w1, v1);
-    VF prod2 = WidenMulPairwiseAdd(df, w2, v2);
-    VF prod3 = WidenMulPairwiseAdd(df, w3, v3);
+    VF prod0 = hn::WidenMulPairwiseAdd(df, w0, v0);
+    VF prod1 = hn::WidenMulPairwiseAdd(df, w1, v1);
+    VF prod2 = hn::WidenMulPairwiseAdd(df, w2, v2);
+    VF prod3 = hn::WidenMulPairwiseAdd(df, w3, v3);
 
     // Pairwise sums
     prod0 = hn::Add(prod0, prod1);
@@ -564,11 +564,6 @@ HWY_INLINE float DotComp2(D d, const PackedSpan<const WT>& w, size_t w_ofs,
 template <class D, typename WT, typename VT, HWY_IF_F32_D(D)>
 float CallDot(D d, size_t variant, const PackedSpan<const WT>& w, size_t w_ofs,
               const VT* HWY_RESTRICT v, size_t num) {
-  // float inputs also support kDouble.
-  if constexpr (CanDecompressToDouble<WT, VT>()) {
-    if (variant == kDouble) return DotDouble(d, w, 0, v, num);
-  }
-
   switch (variant) {
     case kAddTwoProd:
       return DotTwoProdFast(d, w, 0, v, num);
@@ -578,6 +573,12 @@ float CallDot(D d, size_t variant, const PackedSpan<const WT>& w, size_t w_ofs,
       return DotComp2(d, w, 0, v, num);
     case kCompensated:
       return DotCompensated(d, w, 0, v, num);
+    case kDouble:
+      if constexpr (HWY_HAVE_FLOAT64) {
+        return DotDouble(d, w, 0, v, num);
+      } else {
+        return DotCompensated(d, w, 0, v, num);
+      }
     case kKahan:
       return DotKahan(d, w, 0, v, num);
     case kNaive:
