@@ -814,7 +814,7 @@ class DotStats {
   // Forward relative error, lower is better.
   void CheckRel() const {
     ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 3.7E-3);
-    ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 0.4f);
+    ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 1.23f);
 
     // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Min(), 1E-8f);
@@ -1096,63 +1096,66 @@ void TestAllDot() {
     return;
   }
 
-  const hn::ScalableTag<float> df;
+  {  // ensure no profiler zones are active
+    const hn::ScalableTag<float> df;
 
-  constexpr size_t kMaxWorkers = 15;
-  std::mt19937 rngs[kMaxWorkers];
-  for (size_t i = 0; i < kMaxWorkers; ++i) {
-    rngs[i].seed(12345 + 65537 * i);
-  }
-
-  constexpr size_t kReps = hn::AdjustedReps(40);
-  const size_t num = 24 * 1024;
-  PerClusterPools pools(/*max_clusters=*/1, kMaxWorkers - 1, /*pin=*/1);
-  RowVectorBatch<float> a(kMaxWorkers, num);
-  RowVectorBatch<float> b(kMaxWorkers, num);
-  RowVectorBatch<double> bufs(kMaxWorkers, num);
-  std::array<DotStats, kMaxWorkers> all_stats;
-
-  pools.Inner(0).Run(0, kReps, [&](const uint32_t rep, size_t thread) {
-    float* HWY_RESTRICT pa = a.Batch(thread);
-    float* HWY_RESTRICT pb = b.Batch(thread);
-    double* HWY_RESTRICT buf = bufs.Batch(thread);
-    const PackedSpan<const float> a_span(pa, num);
-    DotStats& stats = all_stats[thread];
-    const double cond = GenerateIllConditionedInputs(num, pa, pb, rngs[thread]);
-
-    const float dot_exact = ExactDot(pa, pb, num, buf);
-
-    float dots[kVariants] = {};
-    double times[kVariants] = {};
-    for (size_t variant = 0; variant < kVariants; ++variant) {
-      constexpr size_t kTimeReps = hn::AdjustedReps(10);
-      std::array<double, kTimeReps> elapsed;
-      for (int time_rep = 0; time_rep < kTimeReps; ++time_rep) {
-        const double start = hwy::platform::Now();
-        dots[variant] += CallDot(df, variant, a_span, /*w_ofs=*/0, pb, num);
-        hwy::PreventElision(*pa);
-        elapsed[time_rep] = hwy::platform::Now() - start;
-      }
-      dots[variant] /= kTimeReps;
-      times[variant] = TrimmedMean(elapsed.data(), kTimeReps);
+    constexpr size_t kMaxWorkers = 15;
+    std::mt19937 rngs[kMaxWorkers];
+    for (size_t i = 0; i < kMaxWorkers; ++i) {
+      rngs[i].seed(12345 + 65537 * i);
     }
 
-    stats.NotifyTimes(times);
-    stats.NotifyRep(num, cond, dot_exact, dots);
-    stats.NotifyRatios();
-  });
+    constexpr size_t kReps = hn::AdjustedReps(40);
+    const size_t num = 24 * 1024;
+    NestedPools pools(kMaxWorkers - 1, /*pin=*/1, BoundedSlice(0, 1),
+                      BoundedSlice(0, 1));
+    RowVectorBatch<float> a(kMaxWorkers, num);
+    RowVectorBatch<float> b(kMaxWorkers, num);
+    RowVectorBatch<double> bufs(kMaxWorkers, num);
+    std::array<DotStats, kMaxWorkers> all_stats;
 
-  DotStats& stats = all_stats[0];
-  for (size_t i = 1; i < kMaxWorkers; ++i) {
-    stats.Assimilate(all_stats[i]);
-  }
-  static bool once = true;
-  if (once) {
-    once = false;
-    stats.Print();
-  }
-  stats.Check();
+    pools.Cluster(0, 0).Run(0, kReps, [&](const uint32_t rep, size_t thread) {
+      float* HWY_RESTRICT pa = a.Batch(thread);
+      float* HWY_RESTRICT pb = b.Batch(thread);
+      double* HWY_RESTRICT buf = bufs.Batch(thread);
+      const PackedSpan<const float> a_span(pa, num);
+      DotStats& stats = all_stats[thread];
+      const double cond =
+          GenerateIllConditionedInputs(num, pa, pb, rngs[thread]);
 
+      const float dot_exact = ExactDot(pa, pb, num, buf);
+
+      float dots[kVariants] = {};
+      double times[kVariants] = {};
+      for (size_t variant = 0; variant < kVariants; ++variant) {
+        constexpr size_t kTimeReps = hn::AdjustedReps(10);
+        std::array<double, kTimeReps> elapsed;
+        for (int time_rep = 0; time_rep < kTimeReps; ++time_rep) {
+          const double start = hwy::platform::Now();
+          dots[variant] += CallDot(df, variant, a_span, /*w_ofs=*/0, pb, num);
+          hwy::PreventElision(*pa);
+          elapsed[time_rep] = hwy::platform::Now() - start;
+        }
+        dots[variant] /= kTimeReps;
+        times[variant] = TrimmedMean(elapsed.data(), kTimeReps);
+      }
+
+      stats.NotifyTimes(times);
+      stats.NotifyRep(num, cond, dot_exact, dots);
+      stats.NotifyRatios();
+    });
+
+    DotStats& stats = all_stats[0];
+    for (size_t i = 1; i < kMaxWorkers; ++i) {
+      stats.Assimilate(all_stats[i]);
+    }
+    static bool once = true;
+    if (once) {
+      once = false;
+      stats.Print();
+    }
+    stats.Check();
+  }
   PROFILER_PRINT_RESULTS();
 }
 

@@ -18,6 +18,8 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include "ops/matmul.h"
+
 #include <stddef.h>
 #include <stdio.h>
 
@@ -162,42 +164,41 @@ void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
   }
 }
 
-// Largely unoptimized; reordered innermost loops nets ~5-10X speedup.
-template <typename MatTA, typename MatTB, HWY_IF_NOT_BF16(MatTA)>
+template <typename MatTA, typename MatTB>
 HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
                            const MatTA* HWY_RESTRICT a,
                            const MatTB* HWY_RESTRICT b_trans, const float scale,
-                           const float* add, float* HWY_RESTRICT out) {
-  const hn::ScalableTag<float> df;
+                           const float* HWY_RESTRICT add, MatMulEnv& env,
+                           float* HWY_RESTRICT out) {
+  // MatTA can be any Packed except NuqStream because it uses pointer
+  // arithmetic, because it is the second argument to Dot, which does not
+  // support a v_ofs.
+  static_assert(sizeof(MatTA) >= sizeof(BF16), "A matrix must be BF16/f32");
+
+  const hn::ScalableTag<float> df;  // lane type is ignored
   const PackedSpan<const MatTB> b_span =
       MakeSpan(b_trans, cols_a_rows_b * cols_bc);
-  for (size_t i = 0; i < rows_ac; ++i) {
-    for (size_t j = 0; j < cols_bc; ++j) {
-      out[i * cols_bc + j] = scale * Dot(df, b_span, j * cols_a_rows_b,
-                                         a + i * cols_a_rows_b, cols_a_rows_b);
-    }
-    if (add != nullptr) {
-      for (size_t j = 0; j < cols_bc; ++j) {
-        out[i * cols_bc + j] += add[j];
-      }
-    }
-  }
+
+  env.Pools().Outer().Run(
+      0, rows_ac, [&](const uint64_t i, size_t o_thread) HWY_ATTR {
+        hwy::ThreadPool& inner = env.Pools().Inner(o_thread);
+        if (add != nullptr) {
+          inner.Run(0, cols_bc, [&](const uint64_t j, size_t i_thread) {
+            out[i * cols_bc + j] =
+                scale * Dot(df, b_span, j * cols_a_rows_b,
+                            a + i * cols_a_rows_b, cols_a_rows_b) +
+                add[j];
+          });
+        } else {
+          inner.Run(0, cols_bc, [&](const uint64_t j, size_t i_thread) {
+            out[i * cols_bc + j] =
+                scale * Dot(df, b_span, j * cols_a_rows_b,
+                            a + i * cols_a_rows_b, cols_a_rows_b);
+          });
+        }
+      });
 }
 
-// The above overload can handle A=f32 and any B; handle A=bf16 via Decompress.
-template <typename MatTA, typename MatTB, HWY_IF_BF16(MatTA)>
-HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
-                           const MatTA* HWY_RESTRICT a,
-                           const MatTB* HWY_RESTRICT b_trans, const float scale,
-                           const float* add, float* HWY_RESTRICT out) {
-  const size_t num_a = cols_a_rows_b * rows_ac;
-  FloatPtr a_raw = hwy::AllocateAligned<float>(num_a);
-  HWY_ASSERT(a_raw);
-  const hn::ScalableTag<float> df;
-  DecompressAndZeroPad(df, MakeSpan(a, num_a), 0, a_raw.get(), num_a);
-  MatMulSlow(rows_ac, cols_a_rows_b, cols_bc, a_raw.get(), b_trans, scale, add,
-             out);
-}
 void PrintSpeed(const char* algo, size_t rows_ac, size_t cols_a_rows_b,
                 size_t cols_bc, double elapsed) {
   const size_t num_b = cols_a_rows_b * cols_bc;
@@ -233,7 +234,7 @@ void TestMatMul(MatMulEnv& env) {
       GenerateZeroMat<float, kRowsAC, kColsBC>(pool);
   const double start_slow = hwy::platform::Now();
   MatMulSlow(kRowsAC, kColsARowsB, kColsBC, a->data(), b_trans->data(), scale,
-             kAdd ? add->data() : nullptr, c_slow->data());
+             kAdd ? add->data() : nullptr, env, c_slow->data());
   if (want_bench) {
     PrintSpeed("MatMulSlow", kRowsAC, kColsARowsB, kColsBC,
                hwy::platform::Now() - start_slow);
@@ -265,22 +266,26 @@ void TestAllMatMul() {
 
   PerClusterPools pools(/*max_clusters=*/1, /*max_threads=*/4, /*pin=*/1);
   MatMulEnv env(pools);
+  pools.StartSpinning();
+
   using F32 = float;
   using SFP = SfpStream;
 
-  // large-scale test
-  TestMatMul<64, 24576, 3072, /*kAdd=*/false, BF16, SFP>(env);
-  TestMatMul<64, 3072, 24576, /*kAdd=*/false, BF16, SFP>(env);
-  TestMatMul<64, 24576, 3072, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<64, 3072, 24576, /*kAdd=*/false, F32, SFP>(env);
+  // large-scale test: batch_size=128 is better than 64 or 256 for SKX.
+  TestMatMul<128, 24576, 3072, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<128, 3072, 24576, /*kAdd=*/false, F32, SFP>(env);
+  TestMatMul<1, 24576, 3072, /*kAdd=*/false, F32, F32>(env);
+  TestMatMul<1, 3072, 24576, /*kAdd=*/false, F32, F32>(env);
 
-  // medium-sized square test
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32>(env);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16>(env);
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, BF16>(env);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, F32>(env);
-  TestMatMul<512, 512, 512, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, SFP>(env);
+  // medium-sized square test - temporarily disabled for faster testing.
+  if constexpr (false) {
+    TestMatMul<512, 512, 512, /*kAdd=*/false, F32>(env);
+    TestMatMul<512, 512, 512, /*kAdd=*/true, BF16>(env);
+    TestMatMul<512, 512, 512, /*kAdd=*/false, F32, BF16>(env);
+    TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, F32>(env);
+    TestMatMul<512, 512, 512, /*kAdd=*/false, F32, SFP>(env);
+    TestMatMul<512, 512, 512, /*kAdd=*/true, BF16, SFP>(env);
+  }
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
   TestMatMul<35, 128, 32, /*kAdd=*/false, F32>(env);

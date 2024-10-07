@@ -28,6 +28,7 @@
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // For CreateGemma
 #include "util/args.h"
+#include "util/threading.h"
 #include "hwy/base.h"  // HWY_IS_ASAN
 
 namespace gcpp {
@@ -57,9 +58,15 @@ class AppArgs : public ArgsBase<AppArgs> {
 
   int verbosity;
 
-  size_t num_threads;  // divided among the detected clusters
-  size_t max_clusters;
+  size_t max_threads;  // divided among the detected clusters
   int pin;  // -1 = auto, 0 = no, 1 = yes
+  // For BoundedSlice:
+  size_t skip_packages;
+  size_t max_packages;
+  size_t skip_clusters;
+  size_t max_clusters;
+  size_t skip_lps;
+  size_t max_lps;
 
   std::string eot_line;
 
@@ -71,11 +78,23 @@ class AppArgs : public ArgsBase<AppArgs> {
             "developer/debug info).\n    Default = 1.",
             2);
 
-    visitor(num_threads, "num_threads", size_t{0},
+    // The exact meaning is more subtle: see the comment at NestedPools ctor.
+    visitor(max_threads, "num_threads", size_t{0},
             "Maximum number of threads to use; default 0 = unlimited.", 2);
-    visitor(max_clusters, "max_clusters", size_t{0},
-            "Maximum number of sockets/CCXs to use; default 0 = unlimited.", 2);
     visitor(pin, "pin", -1, "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
+    visitor(skip_packages, "skip_packages", size_t{0},
+            "Index of the first socket to use; default 0 = unlimited.", 2);
+    visitor(max_packages, "max_packages", size_t{0},
+            "Maximum number of sockets to use; default 0 = unlimited.", 2);
+    visitor(skip_clusters, "skip_clusters", size_t{0},
+            "Index of the first CCX to use; default 0 = unlimited.", 2);
+    visitor(max_clusters, "max_clusters", size_t{0},
+            "Maximum number of CCXs to use; default 0 = unlimited.", 2);
+    // These are only used when CPU topology is unknown.
+    visitor(skip_lps, "skip_lps", size_t{0},
+            "Index of the first LP to use; default 0 = unlimited.", 2);
+    visitor(max_lps, "max_lps", size_t{0},
+            "Maximum number of LPs to use; default 0 = unlimited.", 2);
 
     visitor(
         eot_line, "eot_line", std::string(""),
@@ -86,6 +105,13 @@ class AppArgs : public ArgsBase<AppArgs> {
         2);
   }
 };
+
+static inline NestedPools CreatePools(const AppArgs& app) {
+  return NestedPools(app.max_threads, app.pin,
+                     BoundedSlice(app.skip_packages, app.max_packages),
+                     BoundedSlice(app.skip_clusters, app.max_clusters),
+                     BoundedSlice(app.skip_lps, app.max_lps));
+}
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }

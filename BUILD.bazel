@@ -48,6 +48,17 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "threading_test",
+    srcs = ["util/threading_test.cc"],
+    deps = [
+        ":threading",
+        "@googletest//:gtest_main",
+        "@hwy//:hwy",
+        "@hwy//:hwy_test_util",
+    ],
+)
+
 cc_library(
     name = "ops",
     hdrs = [
@@ -306,6 +317,7 @@ cc_library(
         ":args",
         ":common",
         ":gemma_lib",
+        ":threading",
         "//compression:io",
         "@hwy//:hwy",
         "@hwy//:thread_pool",

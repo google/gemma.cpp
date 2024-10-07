@@ -59,7 +59,7 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
                    const AppArgs& app)
-    : pools_(app.max_clusters, app.num_threads, app.pin) {
+    : pools_(app.max_clusters, app.max_threads, app.pin) {
   InferenceArgs mutable_inference = inference;
   AbortIfInvalidArgs(mutable_inference);
   LoaderArgs mutable_loader = loader;
@@ -232,6 +232,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
     char cpu100[100] = "unknown";
     (void)hwy::platform::GetCpuString(cpu100);
 
+    // TODO: call TopologyString() once we have NestedPools.
     const std::vector<hwy::LogicalProcessorSet>& clusters =
         pools.CoresPerCluster();
     const size_t per_cluster =

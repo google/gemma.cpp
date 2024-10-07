@@ -157,20 +157,21 @@ enable_testing()
 include(GoogleTest)
 
 set(GEMMA_TEST_FILES
-  backprop/backward_test.cc
   backprop/backward_scalar_test.cc
+  backprop/backward_test.cc
   backprop/optimize_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
-  compression/sfp_test.cc
   compression/nuq_test.cc
-  ops/dot_test.cc
-  ops/ops_test.cc
-  ops/matmul_test.cc
-  ops/gemma_matvec_test.cc
+  compression/sfp_test.cc
   evals/gemma_test.cc
+  ops/dot_test.cc
+  ops/gemma_matvec_test.cc
+  ops/matmul_test.cc
+  ops/ops_test.cc
   paligemma/image_test.cc
   paligemma/paligemma_test.cc
+  util/threading_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
