@@ -89,6 +89,7 @@ cc_library(
     textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
+        "//:allocator",
         "@hwy//:hwy",
         "@hwy//hwy/contrib/sort:vqsort",
     ],

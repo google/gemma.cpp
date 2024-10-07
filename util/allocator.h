@@ -22,7 +22,20 @@
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
+#if HWY_IS_MSAN
+#include <sanitizer/msan_interface.h>
+#endif
+
 namespace gcpp {
+
+static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
+#if HWY_IS_MSAN
+  __msan_check_mem_is_initialized(ptr, size);
+#else
+  (void)ptr;
+  (void)size;
+#endif
+}
 
 // Shared between gemma.h and ops-inl.h.
 struct TokenAndProb {

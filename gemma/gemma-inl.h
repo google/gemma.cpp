@@ -909,7 +909,8 @@ HWY_NOINLINE void Prefill(
     // the last token, too. However, we need to rewind this for the generation
     // of the first token. So we need to keep track of this.
     // TODO: consider implementing masking instead of this logic?
-    bool attend_to_last_token = (prefill_this_query < prefix_end_this_query);
+    const bool attend_to_last_token =
+        (prefill_this_query < prefix_end_this_query);
     if (attend_to_last_token) {
       // The difference can be at most 1.
       prefill_this_query += 1;
@@ -1219,8 +1220,21 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   // Copy so we can increment without requiring users to pass in a mutable span.
   std::vector<size_t> queries_pos_copy(queries_pos_in.cbegin(),
                                        queries_pos_in.cend());
-  const QueriesMutablePos queries_mutable_pos(queries_pos_copy.data(),
-                                              queries_pos_copy.size());
+  QueriesMutablePos queries_mutable_pos(queries_pos_copy.data(),
+                                        queries_pos_copy.size());
+  // For the first turn, qpos remains 0. Otherwise, rewind the previous EOS.
+  // Background: for multiturn, Gemma 2 expects only <end_of_turn>, not EOS. The
+  // previous `Generate` called `StreamToken` for the last token (EOS), hence
+  // our caller's qpos is 1 too high. This must be corrected because we didn't
+  // write to the KV cache at that position, so MSAN would complain.
+  for (size_t& qpos : queries_mutable_pos) {
+    qpos = qpos == 0 ? 0 : qpos - 1;
+  }
+  // Sanity check: prompts should not be empty, nor start with EOS.
+  for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
+    const PromptTokens& prompt = queries_prompt[query_idx];
+    HWY_ASSERT(prompt.size() != 0 && prompt[0] != runtime_config.eos_id);
+  }
 
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(num_queries <= 4096);  // TokenStreamer uses BitSet4096.

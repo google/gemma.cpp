@@ -22,11 +22,8 @@
 #include <stdio.h>
 
 #include "compression/shared.h"
+#include "util/allocator.h"
 #include "hwy/base.h"
-
-#if HWY_IS_MSAN
-#include <sanitizer/msan_interface.h>
-#endif
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_NUQ_INL_H_
 
@@ -48,15 +45,6 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
-
-static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
-#if HWY_IS_MSAN
-  __msan_check_mem_is_initialized(ptr, size);
-#else
-  (void)ptr;
-  (void)size;
-#endif
-}
 
 // For internal use by NuqCodec.
 class NuqClustering {
@@ -756,7 +744,6 @@ class NuqCodec {
     const hn::Half<D8HFromD16<decltype(d16)>> d8q;
     using V8Q = hn::Vec<decltype(d8q)>;
     using V16 = hn::Vec<decltype(d16)>;
-    using VF = hn::Vec<decltype(df)>;
 
     const size_t within_group = packed_ofs % kGroupSize;
     HWY_DASSERT(within_group % (2 * hn::Lanes(df)) == 0);
