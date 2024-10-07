@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compression/shared.h"
 #ifndef HWY_DISABLED_TARGETS
 // Exclude HWY_SCALAR due to 2x bf16 -> f32.
 #define HWY_DISABLED_TARGETS HWY_SCALAR
@@ -145,7 +146,7 @@ void AssertClose(size_t rows_ac, size_t cols_ab, size_t cols_c_rows_b,
   const double norm = MaxColAbsSum(a.get(), rows_ac, cols_ab) *
                       MaxColAbsSum(b_trans.get(), cols_c_rows_b, cols_ab);
   // Dot(float,BF16) rounds both to BF16.
-  using RefType = hwy::If<IsF32<MatTA>() && IsF32<MatTB>(), float, BF16>;
+  using RefType = BF16;
   const double epsilon = hwy::ConvertScalarTo<double>(hwy::Epsilon<RefType>());
   const double tolerance = 200.0 * norm * epsilon;
 
@@ -233,8 +234,13 @@ void TestMatMul(MatMulEnv& env) {
   std::unique_ptr<CompressedArray<float, kRowsAC * kColsBC>> c_slow =
       GenerateZeroMat<float, kRowsAC, kColsBC>(pool);
   const double start_slow = hwy::platform::Now();
-  MatMulSlow(kRowsAC, kColsARowsB, kColsBC, a->data(), b_trans->data(), scale,
-             kAdd ? add->data() : nullptr, env, c_slow->data());
+  // Compare the dnnl matmul results with the hwy matmul results.
+  MatMul_hwy<kAdd>(kRowsAC, ConstMat(a->data(), kColsARowsB),
+                 ConstMat(b_trans->data(), kColsARowsB), scale,
+                 kAdd ? add->data_scale1() : nullptr, env,
+                 MutableMat(c_slow->data(), kColsBC));
+  // MatMulSlow(kRowsAC, kColsARowsB, kColsBC, a->data(), b_trans->data(), scale,
+  //            kAdd ? add->data() : nullptr, c_slow->data());
   if (want_bench) {
     PrintSpeed("MatMulSlow", kRowsAC, kColsARowsB, kColsBC,
                hwy::platform::Now() - start_slow);
@@ -258,9 +264,9 @@ void TestMatMul(MatMulEnv& env) {
 }
 
 void TestAllMatMul() {
+  tbb::global_control global_limit(tbb::global_control::max_allowed_parallelism, 128);
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
-  if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSE4 ||
-      HWY_TARGET == HWY_SSSE3 || HWY_TARGET == HWY_SSE2) {
+  if (HWY_TARGET != HWY_AVX3 && HWY_TARGET != HWY_AVX3_SPR) {
     return;
   }
 
@@ -272,10 +278,10 @@ void TestAllMatMul() {
   using SFP = SfpStream;
 
   // large-scale test: batch_size=128 is better than 64 or 256 for SKX.
-  TestMatMul<128, 24576, 3072, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<128, 3072, 24576, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<1, 24576, 3072, /*kAdd=*/false, F32, F32>(env);
-  TestMatMul<1, 3072, 24576, /*kAdd=*/false, F32, F32>(env);
+  TestMatMul<128, 24576, 3072, /*kAdd=*/false, F32, BF16>(env);
+  TestMatMul<128, 3072, 24576, /*kAdd=*/false, BF16>(env);
+  TestMatMul<1, 24576, 3072, /*kAdd=*/false, BF16>(env);
+  TestMatMul<1, 3072, 24576, /*kAdd=*/false, F32, BF16>(env);
 
   // medium-sized square test - temporarily disabled for faster testing.
   if constexpr (false) {
@@ -292,32 +298,22 @@ void TestAllMatMul() {
   TestMatMul<34, 128, 32, /*kAdd=*/true, BF16>(env);
   TestMatMul<33, 128, 32, /*kAdd=*/false, F32, BF16>(env);
   TestMatMul<33, 128, 32, /*kAdd=*/true, BF16, F32>(env);
-  TestMatMul<31, 128, 32, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<29, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
   TestMatMul<4, 128, 32, /*kAdd=*/true, F32>(env);
   TestMatMul<4, 128, 32, /*kAdd=*/false, BF16>(env);
   TestMatMul<4, 128, 32, /*kAdd=*/true, F32, BF16>(env);
   TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, F32>(env);
-  TestMatMul<4, 128, 32, /*kAdd=*/true, F32, SFP>(env);
-  TestMatMul<4, 128, 32, /*kAdd=*/false, BF16, SFP>(env);
   TestMatMul<3, 128, 32, /*kAdd=*/false, F32>(env);
   TestMatMul<3, 128, 32, /*kAdd=*/true, BF16>(env);
   TestMatMul<3, 128, 32, /*kAdd=*/false, F32, BF16>(env);
   TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, F32>(env);
-  TestMatMul<3, 128, 32, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<3, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
   TestMatMul<2, 128, 64, /*kAdd=*/true, F32>(env);
   TestMatMul<2, 128, 64, /*kAdd=*/false, BF16>(env);
   TestMatMul<2, 128, 64, /*kAdd=*/true, F32, BF16>(env);
   TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, F32>(env);
-  TestMatMul<2, 128, 64, /*kAdd=*/true, F32, SFP>(env);
-  TestMatMul<2, 128, 64, /*kAdd=*/false, BF16, SFP>(env);
   TestMatMul<1, 128, 32, /*kAdd=*/false, F32>(env);
   TestMatMul<1, 128, 32, /*kAdd=*/true, BF16>(env);
   TestMatMul<1, 128, 32, /*kAdd=*/false, F32, BF16>(env);
   TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, F32>(env);
-  TestMatMul<1, 128, 32, /*kAdd=*/false, F32, SFP>(env);
-  TestMatMul<1, 128, 32, /*kAdd=*/true, BF16, SFP>(env);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

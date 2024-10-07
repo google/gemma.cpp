@@ -18,11 +18,16 @@
 
 #include <stddef.h>
 
+#include "tbb/global_control.h"
 #include "util/allocator.h"  // RowVectorBatch
 #include "util/threading.h"  // PerClusterPools
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/per_target.h"
+#include "third_party/intel_dnnl/include/oneapi/dnnl/dnnl.hpp"
+
+using namespace dnnl;
+using namespace tbb;
 
 namespace gcpp {
 
@@ -81,8 +86,18 @@ class MatMulEnv {
     const size_t num_lp = pools.NumLP();
     const size_t NF = hwy::VectorBytes() / sizeof(float);
     buf_ = RowVectorBatch<float>(num_lp, 16 * NF);
+    setenv("ONEDNN_MAX_CPU_ISA", "AVX512_CORE_AMX", 1);
+    // Enable verbose logging for dnnl when we need to debug.
+    // setenv("DNNL_VERBOSE", "2", 2);
+    tbb::global_control global_limit(
+        tbb::global_control::max_allowed_parallelism, 128);
+    // Create execution dnnl::engine.
+    engine = dnnl::engine(dnnl::engine::kind::cpu, 0);
+    // Create dnnl::stream.
+    engine_stream = dnnl::stream(engine);
   }
-
+  dnnl::stream engine_stream;
+  dnnl::engine engine;
   float* HWY_RESTRICT Buf(size_t lp) { return buf_.Batch(lp); }
   PerClusterPools& Pools() const { return *pools_; }
   hwy::ThreadPool& Pool() const { return pools_->Inner(0); }
