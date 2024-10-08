@@ -83,6 +83,8 @@ cc_library(
         "@hwy//:matvec",
         "@hwy//:profiler",
         "@hwy//:thread_pool",
+        "//third_party/intel_dnnl:dnnl",
+        "//third_party/tbb",
     ],
 )
 

@@ -121,7 +121,7 @@ struct RuntimeConfig {
   const ImageTokens *image_tokens = nullptr;
 
   // Whether to use thread spinning to reduce barrier synchronization latency.
-  bool use_spinning = true;
+  bool use_spinning = false;
 
   // End-of-sequence token.
   int eos_id = EOS_ID;
