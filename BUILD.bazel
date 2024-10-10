@@ -412,10 +412,14 @@ cc_binary(
 
 cc_binary(
     name = "benchmarks",
-    srcs = ["evals/benchmarks.cc"],
+    srcs = [
+        "evals/benchmarks.cc",
+        "evals/prompts.h",
+    ],
     deps = [
         ":benchmark_helper",
         "@google_benchmark//:benchmark",
+        "@highway//:hwy",  # base.h
     ],
 )
 

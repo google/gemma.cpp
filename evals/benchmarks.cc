@@ -20,6 +20,7 @@
 
 #include "benchmark/benchmark.h"
 #include "evals/benchmark_helper.h"
+#include "evals/prompts.h"
 
 namespace gcpp {
 
@@ -61,6 +62,20 @@ static void BM_coding_prompt(benchmark::State& state) {
   gcpp::RunPrompt("Write a python program to generate a fibonacci sequence.",
                   state);
 }
+
+static void BM_diff_length_prompt(benchmark::State& state) {
+  gcpp::RunPrompt(GetPrompt(state.range(0)), state);
+}
+
+BENCHMARK(BM_diff_length_prompt)
+    ->Iterations(3)
+    ->Arg(32)
+    ->Arg(64)
+    ->Arg(128)
+    ->Arg(256)
+    ->Arg(512)
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_short_prompt)
     ->Iterations(3)
