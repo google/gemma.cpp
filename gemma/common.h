@@ -118,8 +118,8 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
       return CallForModel<float, FuncT, TArgs...>(  //
           model, std::forward<TArgs>(args)...);
     case Type::kBF16:
-      return CallForModel<hwy::bfloat16_t, FuncT, TArgs...>(
-          model, std::forward<TArgs>(args)...);
+      return CallForModel<BF16, FuncT, TArgs...>(model,
+                                                 std::forward<TArgs>(args)...);
     case Type::kSFP:
       return CallForModel<SfpStream, FuncT, TArgs...>(
           model, std::forward<TArgs>(args)...);
@@ -130,7 +130,7 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
 
 #define GEMMA_FOREACH_WEIGHT(X, CONFIGT) \
   X(CONFIGT, float)                      \
-  X(CONFIGT, hwy::bfloat16_t)            \
+  X(CONFIGT, BF16)                       \
   X(CONFIGT, SfpStream)
 
 #define GEMMA_FOREACH_CONFIG_AND_WEIGHT(X)              \
@@ -205,7 +205,7 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
       GEMMA_DISPATCH_MODEL(MODEL, float, FUNC, ARGS);                 \
       break;                                                          \
     case Type::kBF16:                                                 \
-      GEMMA_DISPATCH_MODEL(MODEL, hwy::bfloat16_t, FUNC, ARGS);       \
+      GEMMA_DISPATCH_MODEL(MODEL, BF16, FUNC, ARGS);                  \
       break;                                                          \
     case Type::kSFP:                                                  \
       GEMMA_DISPATCH_MODEL(MODEL, SfpStream, FUNC, ARGS);             \
@@ -239,15 +239,15 @@ static GEMMA_CONSTEXPR_SQRT HWY_INLINE float Sqrt(float x) { return sqrtf(x); }
 template <typename TConfig>
 GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling() {
   // Round to bf16 to match Gemma's Embedder, which casts before mul.
-  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
-      Sqrt(static_cast<float>(TConfig::kModelDim))));
+  return hwy::ConvertScalarTo<float>(
+      hwy::ConvertScalarTo<BF16>(Sqrt(static_cast<float>(TConfig::kModelDim))));
 }
 
 static HWY_INLINE GEMMA_CONSTEXPR_EMBSCALING float EmbeddingScaling(
     size_t model_dim) {
   // Round to bf16 to match Gemma's Embedder, which casts before mul.
-  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
-      Sqrt(static_cast<float>(model_dim))));
+  return hwy::ConvertScalarTo<float>(
+      hwy::ConvertScalarTo<BF16>(Sqrt(static_cast<float>(model_dim))));
 }
 
 template <class TConfig>

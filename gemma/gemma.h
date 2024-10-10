@@ -28,13 +28,13 @@
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
 #include "paligemma/image.h"
-#include "util/allocator.h"
+#include "util/allocator.h"  // RowVectorBatch
+#include "util/basics.h"     // TokenAndProb
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"  // Span
-#include "hwy/base.h"               // hwy::bfloat16_t
 
 namespace gcpp {
 using PromptTokens = hwy::Span<const int>;

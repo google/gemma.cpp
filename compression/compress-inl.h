@@ -24,7 +24,7 @@
 #include <cmath>  // lroundf, only if COMPRESS_STATS
 
 #include "compression/blob_store.h"
-#include "compression/compress.h"
+#include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -494,11 +494,6 @@ void Compress2(DF df, VF raw0, VF raw1, const PackedSpan<Packed>& packed,
   Traits::Store2(df, raw0, raw1, packed, packed_ofs);
 }
 
-template <typename Packed>
-constexpr bool IsF32() {
-  return hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
-}
-
 namespace detail {
 
 // Compile-time-only check that `DRaw` and `Packed` are compatible. This makes
@@ -678,8 +673,8 @@ class Compressor {
   template <typename Packed>
   void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
                   const float* HWY_RESTRICT weights) {
-    int num_weights = compressed->NumElements();
-    int num_compressed = compressed->NumElements();
+    size_t num_weights = compressed->NumElements();
+    size_t num_compressed = compressed->NumElements();
     PackedSpan<Packed> packed = MakeSpan(compressed->data(), num_compressed);
     fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
             num_weights / (1000 * 1000));

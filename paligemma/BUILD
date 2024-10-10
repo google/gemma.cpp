@@ -11,7 +11,7 @@ cc_library(
     name = "image",
     srcs = ["image.cc"],
     hdrs = ["image.h"],
-    deps = ["@hwy//:hwy"],
+    deps = ["@highway//:hwy"],
 )
 
 cc_test(
@@ -39,7 +39,7 @@ cc_test(
         "//:common",
         "//:gemma_lib",
         "//:tokenizer",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )

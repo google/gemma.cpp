@@ -108,10 +108,10 @@ struct CompressedLayer {
   // do not yet support smaller compressed types, or require at least bf16. When
   // weights are f32, we also want such tensors to be f32.
   // If weights are complex, this is also complex.
-  using WeightF32OrBF16 = hwy::If<
-      hwy::IsSame<Weight, std::complex<double>>(), std::complex<double>,
-      hwy::If<hwy::IsSame<Weight, double>(), double,
-              hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>>>;
+  using WeightF32OrBF16 =
+      hwy::If<hwy::IsSame<Weight, std::complex<double>>(), std::complex<double>,
+              hwy::If<hwy::IsSame<Weight, double>(), double,
+                      hwy::If<IsF32<Weight>(), float, BF16>>>;
 
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
@@ -363,9 +363,8 @@ struct CompressedWeights {
 
   using Weight = typename TConfig::Weight;
   using WeightF32OrBF16 = typename CompressedLayer<TConfig>::WeightF32OrBF16;
-  using WeightF32OrInputT =
-      hwy::If<hwy::IsSame<WeightF32OrBF16, hwy::bfloat16_t>(), EmbedderInputT,
-              WeightF32OrBF16>;
+  using WeightF32OrInputT = hwy::If<hwy::IsSame<WeightF32OrBF16, BF16>(),
+                                    EmbedderInputT, WeightF32OrBF16>;
 
   MatPtrT<WeightF32OrInputT> embedder_input_embedding;
   MatPtrT<WeightF32OrBF16> final_norm_scale;

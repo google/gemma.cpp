@@ -19,9 +19,10 @@
 #include <stddef.h>
 
 #include "util/allocator.h"  // RowVectorBatch
-#include "util/threading.h"  // PerClusterPools
+#include "util/threading.h"
+#include "hwy/aligned_allocator.h"  // IWYU pragma: export
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"  // IWYU pragma: export
 #include "hwy/per_target.h"
 
 namespace gcpp {

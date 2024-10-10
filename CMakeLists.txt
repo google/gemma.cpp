@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG bb6c3f36b0c8dde8a8ef98b0f0884f4de820a7ca EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 0ca297227a373710e76dd45e0ad4d68adb6928fe EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
@@ -106,11 +106,13 @@ set(SOURCES
   ops/matmul-inl.h
   ops/matvec-inl.h
   ops/ops-inl.h
+  ops/sum-inl.h
   paligemma/image.cc
   paligemma/image.h
   util/allocator.h
   util/app.h
   util/args.h
+  util/basics.h
   util/test_util.h
   util/threading.h
   )

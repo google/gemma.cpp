@@ -20,8 +20,9 @@
 
 #include <cmath>
 
-#include "ops/matmul.h"      // MatMulEnv
-#include "util/allocator.h"  // RowVectorBatch
+#include "compression/shared.h"  // BF16
+#include "ops/matmul.h"          // MatMulEnv
+#include "util/allocator.h"      // RowVectorBatch
 #include "util/threading.h"
 #include "hwy/base.h"  // HWY_DASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -41,7 +42,7 @@ struct Activations {
   RowVectorBatch<float> att_sums;
 
   // Gated FFW
-  RowVectorBatch<hwy::bfloat16_t> bf_pre_ffw_rms_out;
+  RowVectorBatch<BF16> bf_pre_ffw_rms_out;
   RowVectorBatch<float> C1;
   RowVectorBatch<float> C2;
   RowVectorBatch<float> ffw_out;
@@ -106,7 +107,7 @@ struct Activations {
     att_out = RowVectorBatch<float>(batch_size, kHeads * kQKVDim);
     att_sums = RowVectorBatch<float>(batch_size, kModelDim);
 
-    bf_pre_ffw_rms_out = RowVectorBatch<hwy::bfloat16_t>(batch_size, kModelDim);
+    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(batch_size, kModelDim);
     C1 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
     C2 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
     ffw_out = RowVectorBatch<float>(batch_size, kModelDim);

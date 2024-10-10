@@ -82,6 +82,9 @@ class AppArgs : public ArgsBase<AppArgs> {
     visitor(max_threads, "num_threads", size_t{0},
             "Maximum number of threads to use; default 0 = unlimited.", 2);
     visitor(pin, "pin", -1, "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
+    // These can be used to partition CPU sockets/packages and their
+    // clusters/CCXs across several program instances. The default is to use
+    // all available resources.
     visitor(skip_packages, "skip_packages", size_t{0},
             "Index of the first socket to use; default 0 = unlimited.", 2);
     visitor(max_packages, "max_packages", size_t{0},

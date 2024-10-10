@@ -763,7 +763,7 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
       EmbeddingScaling<TConfig>();
 
   HWY_DASSERT(token >= 0);
-  HWY_DASSERT(token < kVocabSize);
+  HWY_DASSERT(token < static_cast<int>(kVocabSize));
 
   const hn::ScalableTag<float> df;
   DecompressAndZeroPad(
@@ -1193,14 +1193,15 @@ SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
 
   // Fast path for top-1 with no accept_token.
   if (kTopK == 1 && !runtime_config.accept_token) {
-    return [](float* logits, size_t vocab_size) -> TokenAndProb {
+    return [](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
       PROFILER_ZONE("Gen.Sample Top1");
       return Top1OfSoftmax(logits, vocab_size);
     };
   }
 
   // General case: Softmax with top-k sampling.
-  return [&runtime_config](float* logits, size_t vocab_size) -> TokenAndProb {
+  return [&runtime_config](float* logits,
+                           size_t vocab_size) HWY_ATTR -> TokenAndProb {
     PROFILER_ZONE("Gen.Sample general");
     Softmax(logits, vocab_size);
     const int token = SampleTopK<kTopK>(logits, vocab_size, *runtime_config.gen,

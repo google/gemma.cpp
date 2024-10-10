@@ -33,7 +33,7 @@ cc_library(
     ],
     hdrs = ["io.h"],
     deps = [
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ] + FILE_DEPS,
 )
 
@@ -43,8 +43,8 @@ cc_library(
     hdrs = ["blob_store.h"],
     deps = [
         ":io",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -55,9 +55,9 @@ cc_library(
         "shared.h",
     ],
     deps = [
-        "@hwy//:hwy",
-        "@hwy//:stats",
-        "@hwy//hwy/contrib/sort:vqsort",
+        "@highway//:hwy",
+        "@highway//:stats",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -69,8 +69,8 @@ cc_test(
         ":distortion",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",  # Unpredictable1
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",  # Unpredictable1
     ],
 )
 
@@ -79,7 +79,7 @@ cc_library(
     hdrs = ["shared.h"],
     textual_hdrs = ["sfp-inl.h"],
     deps = [
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -89,9 +89,9 @@ cc_library(
     textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
-        "//:allocator",
-        "@hwy//:hwy",
-        "@hwy//hwy/contrib/sort:vqsort",
+        "//:basics",
+        "@highway//:hwy",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -103,8 +103,8 @@ cc_library(
     deps = [
         ":compress",
         ":distortion",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )
 
@@ -122,9 +122,9 @@ cc_test(
         ":sfp",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
     ],
 )
 
@@ -144,9 +144,9 @@ cc_test(
         ":sfp",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
     ],
 )
 
@@ -164,11 +164,11 @@ cc_library(
         ":io",
         ":nuq",
         ":sfp",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
-        "@hwy//:profiler",
-        "@hwy//:stats",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",
+        "@highway//:profiler",
+        "@highway//:stats",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -188,9 +188,9 @@ cc_test(
         ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -201,10 +201,10 @@ cc_library(
     deps = [
         ":nuq",
         ":sfp",
-        "@hwy//:hwy",
-        "@hwy//:stats",
-        "@hwy//:thread_pool",
-        "@hwy//hwy/contrib/sort:vqsort",
+        "@highway//:hwy",
+        "@highway//:stats",
+        "@highway//:thread_pool",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -218,7 +218,7 @@ cc_binary(
         "//:args",
         "//:common",
         "//:weights",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )

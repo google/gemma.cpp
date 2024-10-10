@@ -21,10 +21,18 @@ licenses(["notice"])
 exports_files(["LICENSE"])
 
 cc_library(
+    name = "basics",
+    hdrs = ["util/basics.h"],
+    deps = [
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
     name = "allocator",
     hdrs = ["util/allocator.h"],
     deps = [
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -32,9 +40,9 @@ cc_library(
     name = "test_util",
     hdrs = ["util/test_util.h"],
     deps = [
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:stats",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:stats",
     ],
 )
 
@@ -42,9 +50,9 @@ cc_library(
     name = "threading",
     hdrs = ["util/threading.h"],
     deps = [
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
-        "@hwy//:topology",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+        "@highway//:topology",
     ],
 )
 
@@ -54,8 +62,8 @@ cc_test(
     deps = [
         ":threading",
         "@googletest//:gtest_main",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )
 
@@ -66,6 +74,7 @@ cc_library(
     ],
     textual_hdrs = [
         "ops/dot-inl.h",
+        "ops/sum-inl.h",
         "ops/fp_arith-inl.h",
         "ops/matmul-inl.h",
         "ops/matvec-inl.h",
@@ -73,14 +82,15 @@ cc_library(
     ],
     deps = [
         ":allocator",
+        ":basics",
         ":threading",
         "//compression:compress",
-        "@hwy//:algo",
-        "@hwy//:hwy",
-        "@hwy//:math",
-        "@hwy//:matvec",
-        "@hwy//:profiler",
-        "@hwy//:thread_pool",
+        "@highway//:algo",
+        "@highway//:hwy",
+        "@highway//:math",
+        "@highway//:matvec",
+        "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -102,12 +112,12 @@ cc_test(
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "//compression:test_util",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",  #buildcleaner: keep
-        "@hwy//:profiler",
-        "@hwy//:stats",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",  #buildcleaner: keep
+        "@highway//:profiler",
+        "@highway//:stats",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -127,9 +137,9 @@ cc_test(
         ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",  #buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",  #buildcleaner: keep
     ],
 )
 
@@ -145,9 +155,9 @@ cc_test(
         ":ops",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -164,10 +174,10 @@ cc_test(
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -180,8 +190,8 @@ cc_library(
     ],
     deps = [
         "//compression:compress",
-        "@hwy//:hwy",  # base.h
-        "@hwy//:thread_pool",
+        "@highway//:hwy",  # base.h
+        "@highway//:thread_pool",
     ],
 )
 
@@ -194,10 +204,10 @@ cc_library(
         ":common",
         "//compression:compress",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:profiler",
-        "@hwy//:stats",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:stats",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -208,9 +218,9 @@ cc_library(
     deps = [
         ":common",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",  # timer
-        "@hwy//:profiler",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",  # timer
+        "@highway//:profiler",
         "@com_google_sentencepiece//:sentencepiece_processor",
     ],
 )
@@ -221,7 +231,7 @@ cc_library(
     hdrs = ["gemma/kv_cache.h"],
     deps = [
         ":common",
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -268,6 +278,7 @@ cc_library(
     ],
     deps = [
         ":allocator",
+        ":basics",
         ":common",
         ":ops",
         ":tokenizer",
@@ -275,12 +286,13 @@ cc_library(
         ":weights",
         ":threading",
         "//compression:io",
+        "//compression:sfp",
         "//paligemma:image",
-        "@hwy//:hwy",
-        "@hwy//:bit_set",
-        "@hwy//:nanobenchmark",  # timer
-        "@hwy//:profiler",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:bit_set",
+        "@highway//:nanobenchmark",  # timer
+        "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -292,7 +304,7 @@ cc_library(
         ":common",
         ":gemma_lib",
         ":ops",
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -301,7 +313,7 @@ cc_library(
     hdrs = ["util/args.h"],
     deps = [
         "//compression:io",
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -314,9 +326,9 @@ cc_library(
         ":gemma_lib",
         ":threading",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
-        "@hwy//:topology",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+        "@highway//:topology",
     ],
 )
 
@@ -333,12 +345,12 @@ cc_library(
         ":kv_cache",
         ":threading",
         # Placeholder for internal dep, do not remove.,
-        "@benchmark//:benchmark",
+        "@google_benchmark//:benchmark",
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
-        "@hwy//:thread_pool",
-        "@hwy//:topology",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",
+        "@highway//:thread_pool",
+        "@highway//:topology",
     ],
 )
 
@@ -357,8 +369,8 @@ cc_test(
         ":gemma_lib",
         ":tokenizer",
         "@googletest//:gtest_main",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )
 
@@ -374,9 +386,9 @@ cc_binary(
         ":threading",
         # Placeholder for internal dep, do not remove.,
         "//paligemma:image",
-        "@hwy//:hwy",
-        "@hwy//:profiler",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -391,9 +403,9 @@ cc_binary(
         ":cross_entropy",
         ":gemma_lib",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:nanobenchmark",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",
+        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -403,7 +415,7 @@ cc_binary(
     srcs = ["evals/benchmarks.cc"],
     deps = [
         ":benchmark_helper",
-        "@benchmark//:benchmark",
+        "@google_benchmark//:benchmark",
     ],
 )
 
@@ -418,8 +430,8 @@ cc_binary(
         ":benchmark_helper",
         ":gemma_lib",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -433,9 +445,9 @@ cc_binary(
         ":benchmark_helper",
         ":gemma_lib",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:profiler",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -477,9 +489,9 @@ cc_library(
         ":prompt",
         ":weights",
         "//compression:compress",
-        "@hwy//:dot",
-        "@hwy//:hwy",  # base.h
-        "@hwy//:thread_pool",
+        "@highway//:dot",
+        "@highway//:hwy",  # base.h
+        "@highway//:thread_pool",
     ],
 )
 
@@ -497,7 +509,7 @@ cc_library(
         ":prompt",
         ":weights",
         "//compression:compress",
-        "@hwy//:hwy",
+        "@highway//:hwy",
     ],
 )
 
@@ -517,7 +529,7 @@ cc_test(
         ":weights",
         "@googletest//:gtest_main",
         "//compression:compress",
-        "@hwy//:thread_pool",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -544,9 +556,9 @@ cc_test(
         ":weights",
         "@googletest//:gtest_main",
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:hwy_test_util",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -559,8 +571,8 @@ cc_library(
         ":common",
         ":weights",
         "//compression:compress",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -583,6 +595,6 @@ cc_test(
         ":threading",
         ":weights",
         "@googletest//:gtest_main",
-        "@hwy//:thread_pool",
+        "@highway//:thread_pool",
     ],
 )

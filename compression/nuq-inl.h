@@ -22,7 +22,7 @@
 #include <stdio.h>
 
 #include "compression/shared.h"
-#include "util/allocator.h"
+#include "util/basics.h"
 #include "hwy/base.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_NUQ_INL_H_

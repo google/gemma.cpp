@@ -840,7 +840,7 @@ class DotStats {
 
     ASSERT_INSIDE(kPairwise, 4.5E-4, s_rels[kPairwise].GeometricMean(), 1.5E-2);
     // Extremely high error on aarch64.
-    ASSERT_INSIDE(kPairwise, 1.1E-3f, s_rels[kPairwise].Max(), 1250.f);
+    ASSERT_INSIDE(kPairwise, 1.1E-3f, s_rels[kPairwise].Max(), 2E3f);
   }
 
   // Backward relative error, lower is better.

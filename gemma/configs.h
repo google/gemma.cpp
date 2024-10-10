@@ -22,7 +22,7 @@
 
 #include <array>
 
-#include "hwy/base.h"                // hwy::bfloat16_t
+#include "compression/shared.h"  // BF16
 
 namespace gcpp {
 
@@ -40,7 +40,7 @@ static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
 static constexpr size_t kVocabSize = 256000;
 
-using EmbedderInputT = hwy::bfloat16_t;
+using EmbedderInputT = BF16;
 
 enum class LayerAttentionType {
   kGemma,

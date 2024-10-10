@@ -381,7 +381,7 @@ class BoundedTopology {
     LPS enabled_lps;  // LPs not disabled via OS, taskset, or numactl.
     bool missing_cluster = false;
 
-    if (HWY_LIKELY(have_threading_support)) {
+    if (HWY_LIKELY(have_threading_support && !topology_.packages.empty())) {
       (void)GetThreadAffinity(enabled_lps);  // failure = all disabled
 
       // No effect if topology is unknown or `enabled_lps` is empty.

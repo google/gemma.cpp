@@ -42,7 +42,7 @@ cc_library(
         "src/common.h",
     ],
     deps = [
-        "@com_google_absl//absl/base",
+        "@abseil-cpp//absl/base",
     ],
 )
 
@@ -86,12 +86,12 @@ cc_library(
             ":common",
             ":sentencepiece_cc_proto",
             ":sentencepiece_model_cc_proto",
-            "@com_google_absl//absl/container:flat_hash_map",
-            "@com_google_absl//absl/container:flat_hash_set",
-            "@com_google_absl//absl/memory",
-            "@com_google_absl//absl/status",
-            "@com_google_absl//absl/strings",
-            "@com_google_absl//absl/strings:str_format",
+            "@abseil-cpp//absl/container:flat_hash_map",
+            "@abseil-cpp//absl/container:flat_hash_set",
+            "@abseil-cpp//absl/memory",
+            "@abseil-cpp//absl/status",
+            "@abseil-cpp//absl/strings",
+            "@abseil-cpp//absl/strings:str_format",
             "@darts_clone",
         ],
 )

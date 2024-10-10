@@ -16,8 +16,8 @@ cc_library(
         "//third_party/absl/types:span",
         "//compression:compress",
         "//compression:io",
-        "@hwy//:hwy",
-        "@hwy//:thread_pool",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )
 
