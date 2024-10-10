@@ -15,15 +15,15 @@
 
 #include "gemma/weights.h"
 
-#include <stdio.h>
-
+#include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 #include "compression/compress.h"
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
-#include "gemma/configs.h"
 #include "util/allocator.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // HWY_ABORT
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -47,32 +47,23 @@ struct LoadCompressedWeightsT {
     CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
     new (c_weights) CWeights(pool);
 
-    std::array<float, TConfig::kNumTensorScales> scales;
     CacheLoader loader(weights);
-    ForEachTensor<TConfig>(nullptr, *c_weights, loader);
-    loader.LoadScales(scales.data(), scales.size());
-    if (!loader.ReadAll(pool)) {
+    ForEachType fet =
+        loader.HaveToc() ? ForEachType::kLoadWithToc : ForEachType::kLoadNoToc;
+    CWeights::ForEachTensor(
+        {c_weights}, fet,
+        [&loader](const char* name, hwy::Span<MatPtr*> tensors) {
+          loader(name, tensors);
+        });
+    std::vector<float> scales(TConfig::kNumTensorScales);
+    if (TConfig::kNumTensorScales > 0) {
+      loader.LoadScales(scales.data(), scales.size());
+    }
+    if (!loader.ReadAll(pool, c_weights->model_storage)) {
       HWY_ABORT("Failed to load model weights.");
     }
     if (TConfig::kNumTensorScales > 0) {
-      size_t scale_pos = 0;
-      for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-        auto type = TConfig::kLayerConfig[layer_idx];
-        const size_t idx = static_cast<size_t>(layer_idx);
-        CompressedLayer<TConfig>* layer_weights = c_weights->GetLayer(idx);
-        if (type == LayerAttentionType::kGemma) {
-          layer_weights->attn_vec_einsum_w.set_scale(scales[scale_pos++]);
-          layer_weights->qkv_einsum_w.set_scale(scales[scale_pos++]);
-        } else {
-          layer_weights->griffin.linear_x_w.set_scale(scales[scale_pos++]);
-          layer_weights->griffin.linear_y_w.set_scale(scales[scale_pos++]);
-          layer_weights->griffin.linear_out_w.set_scale(scales[scale_pos++]);
-          layer_weights->griffin.gate_w.set_scale(scales[scale_pos++]);
-        }
-        layer_weights->gating_einsum_w.set_scale(scales[scale_pos++]);
-        layer_weights->linear_w.set_scale(scales[scale_pos++]);
-      }
-      HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
+      c_weights->GetOrApplyScales(scales);
     }
     {
       PROFILER_ZONE("Startup.Reshape");
@@ -102,13 +93,13 @@ void HWY_MAYBE_UNUSED LogVec(const char* name, const float* data, size_t len) {
 
 class WeightLogger {
  public:
-  template <size_t N>
-  void operator()(const char* name, const CompressedArray<float, N>& tensor) {
+  void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
+    const MatPtr& tensor = *tensors[0];
     if (tensor.scale() != 1.0f) {
       printf("[scale=%f] ", tensor.scale());
     }
-    LogVec(name, tensor.data(), N);
-    total_weights += N;
+    LogVec(name, tensor.data<float>(), tensor.NumElements());
+    total_weights += tensor.NumElements();
   }
   size_t total_weights = 0;
 };
@@ -116,10 +107,11 @@ class WeightLogger {
 template <typename TConfig>
 struct LogWeightStatsT {
   void operator()(const ByteStorageT& weights_u8) const {
-    const auto& weights =
+    auto& weights =
         *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
     WeightLogger logger;
-    ForEachTensor1<TConfig>(logger, weights);
+    CompressedWeights<TConfig>::ForEachTensor(
+        {&weights}, ForEachType::kIgnoreNulls, logger);
     printf("%-20s  %12zu\n", "Total", logger.total_weights);
   }
 };

@@ -36,154 +36,22 @@
 #include <iostream>
 #include <string>
 #include <thread>  // NOLINT
+#include <vector>
 
+#include "compression/compress.h"
 #include "compression/io.h"  // Path
-#include "compression/shared.h"
-#include "compression/weights_raw.h"
-#include "gemma/common.h"  // Model
+#include "gemma/common.h"    // Model
 #include "gemma/weights.h"
 #include "util/allocator.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/profiler.h"
 
 namespace gcpp {
 
-// Setting this to true disables fread() calls that read the model file.
-constexpr bool kDryRunFread = false;
-
 namespace {
 
-#define READ_WEIGHTS(name)                                                 \
-  do {                                                                     \
-    do_fread(&(layer_view->name), layer, #name, sizeof(layer_view->name)); \
-  } while (0)
-
-#define SCALE_WEIGHTS(name)                                               \
-  do {                                                                    \
-    if (ok && !kDryRunFread && scale_for_compression) {                   \
-      weights->scales[scale_pos++] =                                      \
-          ScaleWeights(layer_view->name.data(), layer_view->name.size()); \
-    }                                                                     \
-  } while (0)
-
-template <typename TConfig>
-struct LoadRawWeightsT {
-  ByteStorageT operator()(const Path& checkpoint, hwy::ThreadPool& pool,
-                          bool scale_for_compression) const {
-    PROFILER_ZONE("Startup.LoadWeights");
-    if (!checkpoint.Exists()) {
-      HWY_ABORT("The model weights file '%s' does not exist.",
-                checkpoint.path.c_str());
-    }
-
-    ByteStorageT weights_u8 = AllocateWeightsF<TConfig>()(pool);
-    auto* weights = reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
-
-    size_t scale_pos = 0;
-    FILE* fptr;
-    if constexpr (kDryRunFread) {
-      fprintf(stderr, "Dry-Run, not reading model-file.\n");
-    } else {
-      fptr = fopen(checkpoint.path.c_str(), "rb");
-      if (fptr == nullptr) {
-        HWY_ABORT("Failed to open model file %s - does it exist?",
-                  checkpoint.path.c_str());
-      }
-    }
-    bool ok = true;
-    uint64_t total_size = 0;
-    auto do_fread = [&](void* var, int layer, const char* name, size_t size) {
-      if (layer == -1) {
-        fprintf(stderr, "Loading Parameters (size %zu): %s\n", size, name);
-      } else {
-        fprintf(stderr, "Loading Parameters (layer=%d, size %zu): %s\n", layer,
-                size, name);
-      }
-      if constexpr (!kDryRunFread) {
-        ok &= 1 == fread(var, size, 1, fptr);
-        total_size += size;
-      }
-    };
-    do_fread(&(weights->embedder_input_embedding), -1,
-             "embedder_input_embedding",
-             sizeof(weights->embedder_input_embedding));
-    do_fread(&(weights->final_norm_scale), -1, "final_norm_scale",
-             sizeof(weights->final_norm_scale));
-    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
-      auto type = TConfig::kLayerConfig[layer];
-      LayerF<TConfig>* layer_view = weights->GetLayer(layer);
-
-      // Make sure we don't have uninitialized memory.
-      hwy::ZeroBytes(layer_view, sizeof(*layer_view));
-      if (type == LayerAttentionType::kGemma) {
-        READ_WEIGHTS(attn_vec_einsum_w);
-        READ_WEIGHTS(qkv_einsum_w);
-        SCALE_WEIGHTS(attn_vec_einsum_w);
-        SCALE_WEIGHTS(qkv_einsum_w);
-      } else {
-        READ_WEIGHTS(griffin.linear_x_w);
-        READ_WEIGHTS(griffin.linear_x_biases);
-        READ_WEIGHTS(griffin.linear_y_w);
-        READ_WEIGHTS(griffin.linear_y_biases);
-        READ_WEIGHTS(griffin.linear_out_w);
-        READ_WEIGHTS(griffin.linear_out_biases);
-        READ_WEIGHTS(griffin.conv_w);
-        READ_WEIGHTS(griffin.conv_biases);
-        READ_WEIGHTS(griffin.gate_w);
-        READ_WEIGHTS(griffin.gate_biases);
-        READ_WEIGHTS(griffin.a);
-        SCALE_WEIGHTS(griffin.linear_x_w);
-        SCALE_WEIGHTS(griffin.linear_y_w);
-        SCALE_WEIGHTS(griffin.linear_out_w);
-        SCALE_WEIGHTS(griffin.gate_w);
-      }
-      READ_WEIGHTS(gating_einsum_w);
-      READ_WEIGHTS(linear_w);
-      SCALE_WEIGHTS(gating_einsum_w);
-      SCALE_WEIGHTS(linear_w);
-      READ_WEIGHTS(pre_attention_norm_scale);
-      READ_WEIGHTS(pre_ffw_norm_scale);
-      if (TConfig::kPostNorm == PostNormType::Scale) {
-        READ_WEIGHTS(post_attention_norm_scale);
-        READ_WEIGHTS(post_ffw_norm_scale);
-      }
-      if (TConfig::kFFBiases) {
-        READ_WEIGHTS(ffw_gating_biases);
-        READ_WEIGHTS(ffw_output_biases);
-      }
-      if (TConfig::kSoftmaxAttnOutputBiases &&
-          type == LayerAttentionType::kGemma) {
-        READ_WEIGHTS(attention_output_biases);
-      }
-    }
-    if (!ok) {
-      HWY_ABORT(
-          "Failed to read from %s - might be a directory, or too small? "
-          "expected size: %d kB",
-          checkpoint.path.c_str(), static_cast<uint32_t>(total_size >> 10));
-    }
-    if (!kDryRunFread) {
-      HWY_ASSERT(0 == fclose(fptr));
-      if (scale_for_compression) {
-        HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
-      }
-    }
-    return weights_u8;
-  }
-};
-
-#undef READ_WEIGHTS
-#undef SCALE_WEIGHTS
 }  // namespace
-
-ByteStorageT LoadRawWeights(const Path& weights, Model model_type,
-                            Type weight_type, hwy::ThreadPool& pool,
-                            bool scale_for_compression) {
-  return CallForModelAndWeight<LoadRawWeightsT>(
-      model_type, weight_type, weights, pool, scale_for_compression);
-}
 
 struct Args : public ArgsBase<Args> {
   static constexpr size_t kDefaultNumThreads = ~size_t{0};
@@ -282,7 +150,7 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <class TConfig>
+template <class Configs>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path, Model model_type,
                      Type weight_type, hwy::ThreadPool& pool) {
@@ -290,26 +158,53 @@ void CompressWeights(const Path& weights_path,
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights_path.path.c_str());
   }
+  printf("Compressing weights from %s to %s\n", weights_path.path.c_str(),
+         compressed_weights_path.path.c_str());
 
+  using CConfig = Configs::c;
+  using UCConfig = Configs::uc;
   // Allocate compressed weights.
-  using CWeights = CompressedWeights<TConfig>;
-  ByteStorageT c_weights_u8 = AllocateSizeof<CWeights>();
+  using CWeights = CompressedWeights<CConfig>;
+  ByteStorageT c_weights_u8 = AllocateCompressedWeights<CConfig>()(pool);
   CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-  new (&c_weights->c_layer_ptrs) CompressedLayerPointers<TConfig>(pool);
 
-  // Get weights, compress, and store.
-  const bool scale_for_compression = TConfig::kNumTensorScales > 0;
-  const ByteStorageT weights_u8 = gcpp::LoadRawWeights(
-      weights_path, model_type, weight_type, pool, scale_for_compression);
-  WeightsF<TConfig>* weights =
-      reinterpret_cast<WeightsF<TConfig>*>(weights_u8.get());
+  // Allocate uncompressed weights.
+  using UCWeights = CompressedWeights<UCConfig>;
+  ByteStorageT uc_weights_u8 = AllocateCompressedWeights<UCConfig>()(pool);
+  UCWeights* uc_weights = reinterpret_cast<UCWeights*>(uc_weights_u8.get());
+
+  // Get uncompressed weights, compress, and store.
+  FILE* fptr = fopen(weights_path.path.c_str(), "rb");
+  if (fptr == nullptr) {
+    HWY_ABORT("Failed to open model file %s - does it exist?",
+              weights_path.path.c_str());
+  }
+  bool ok = true;
+  uint64_t total_size = 0;
+  CompressedWeights<UCConfig>::ForEachTensor(
+      {uc_weights}, ForEachType::kLoadNoToc,
+      [&](const char* name, hwy::Span<MatPtr*> tensors) {
+        fprintf(stderr, "Loading Parameters (size %zu): %s\n",
+                tensors[0]->SizeBytes(), name);
+        ok &= 1 == fread(tensors[0]->Ptr(), tensors[0]->SizeBytes(), 1, fptr);
+        total_size += tensors[0]->SizeBytes();
+      });
+  const bool scale_for_compression = UCConfig::kNumTensorScales > 0;
+  std::vector<float> scales;
+  if (scale_for_compression) {
+    uc_weights->GetOrApplyScales(scales);
+  }
   Compressor compressor(pool);
-  ForEachTensor<TConfig, LayerF<TConfig>>(weights, *c_weights, compressor);
-  compressor.AddScales(weights->scales.data(), weights->scales.size());
+  CompressedWeights<CConfig>::ForEachTensor(
+      {reinterpret_cast<CompressedWeights<CConfig>*>(uc_weights), c_weights},
+      ForEachType::kLoadNoToc,
+      [&compressor](const char* name, hwy::Span<MatPtr*> tensors) {
+        tensors[1]->CallUpcasted(
+            compressor, name,
+            reinterpret_cast<const float*>(tensors[0]->Ptr()));
+      });
+  compressor.AddScales(scales.data(), scales.size() * sizeof(scales[0]));
   compressor.WriteAll(pool, compressed_weights_path);
-
-  weights->layer_ptrs.~LayerPointers<float, TConfig>();
-  c_weights->c_layer_ptrs.~CompressedLayerPointers<TConfig>();
 }
 
 }  // namespace HWY_NAMESPACE

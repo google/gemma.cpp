@@ -18,27 +18,57 @@
 
 #include <stddef.h>
 
-#include <array>
 #include <cmath>
 #include <complex>
+#include <random>
 
 #include "gtest/gtest.h"
-#include "compression/weights_raw.h"
+#include "compression/compress.h"
+#include "gemma/weights.h"
+#include "util/allocator.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-template<typename T, typename U, size_t kLen>
-void Complexify(const std::array<T, kLen>& x,
-                std::array<std::complex<U>, kLen>& c_x) {
-  for (size_t i = 0; i < kLen; ++i) {
-    c_x[i] = std::complex<U>(x[i], 0.0);
+template <typename T>
+void RandInit(MatPtrT<T>& x, T stddev, std::mt19937& gen) {
+  std::normal_distribution<T> dist(0.0, stddev);
+  for (size_t i = 0; i < x.NumElements(); ++i) {
+    x.At(i) = dist(gen);
   }
 }
 
+// TODO: make a member of Layer<T>.
+template <typename T, typename TConfig>
+void RandInit(CompressedLayer<TConfig>& w, T stddev, std::mt19937& gen) {
+  RandInit(w.pre_attention_norm_scale, stddev, gen);
+  RandInit(w.attn_vec_einsum_w, stddev, gen);
+  RandInit(w.qkv_einsum_w, stddev, gen);
+  RandInit(w.pre_ffw_norm_scale, stddev, gen);
+  RandInit(w.gating_einsum_w, stddev, gen);
+  RandInit(w.linear_w, stddev, gen);
+}
 
-template<typename T, typename U, typename TConfig>
-void Complexify(const Layer<T, TConfig>& w,
-                Layer<std::complex<U>, TConfig>& c_w) {
+template <typename T, typename TConfig>
+void RandInit(CompressedWeights<TConfig>& w, T stddev, std::mt19937& gen) {
+  static constexpr size_t kLayers = TConfig::kLayers;
+  RandInit(w.embedder_input_embedding, stddev, gen);
+  RandInit(w.final_norm_scale, stddev, gen);
+  for (size_t i = 0; i < kLayers; ++i) {
+    RandInit(*w.GetLayer(i), stddev, gen);
+  }
+}
+
+template <typename T, typename U>
+void Complexify(const MatPtrT<T>& x, MatPtrT<std::complex<U>>& c_x) {
+  for (size_t i = 0; i < x.NumElements(); ++i) {
+    c_x.At(i) = std::complex<U>(x.At(i), 0.0);
+  }
+}
+
+template <typename TConfig, typename UConfig>
+void Complexify(const CompressedLayer<TConfig>& w,
+                CompressedLayer<UConfig>& c_w) {
   Complexify(w.pre_attention_norm_scale, c_w.pre_attention_norm_scale);
   Complexify(w.attn_vec_einsum_w, c_w.attn_vec_einsum_w);
   Complexify(w.qkv_einsum_w, c_w.qkv_einsum_w);
@@ -47,9 +77,9 @@ void Complexify(const Layer<T, TConfig>& w,
   Complexify(w.linear_w, c_w.linear_w);
 }
 
-template<typename T, typename U, typename TConfig>
-void Complexify(const Weights<T, TConfig>& w,
-                Weights<std::complex<U>, TConfig>& c_w) {
+template <typename TConfig, typename UConfig>
+void Complexify(const CompressedWeights<TConfig>& w,
+                CompressedWeights<UConfig>& c_w) {
   static constexpr size_t kLayers = TConfig::kLayers;
   Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
   Complexify(w.final_norm_scale, c_w.final_norm_scale);
@@ -58,19 +88,41 @@ void Complexify(const Weights<T, TConfig>& w,
   }
 }
 
-template<typename T, typename U, size_t N>
-void TestNear(const std::array<T, N>& actual, const std::array<U, N>& expected,
+// Owns weights and provides access to TConfig.
+template <typename TConfig>
+class WeightsWrapper {
+ public:
+  WeightsWrapper()
+      : pool_(0),
+        data_(AllocateCompressedWeights<TConfig>()(pool_)),
+        weights_(reinterpret_cast<CompressedWeights<TConfig>*>(data_.get())) {}
+
+  const CompressedWeights<TConfig>& get() const { return *weights_; }
+  CompressedWeights<TConfig>& get() { return *weights_; }
+  void ZeroInit() { weights_->ZeroInit(); }
+  void CopyFrom(const WeightsWrapper<TConfig>& other) {
+    get().CopyFrom(other.get());
+  }
+
+ private:
+  hwy::ThreadPool pool_;
+  ByteStorageT data_;
+  CompressedWeights<TConfig>* weights_;
+};
+
+template <typename T, typename U>
+void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
               double max_abs_err, double max_rel_err, int line) {
   double sum0 = 0;
   double sum1 = 0;
   double sum01 = 0;
-  for (size_t i = 0; i < N; ++i) {
-    sum0 += actual[i] * actual[i];
-    sum1 += expected[i] * expected[i];
-    sum01 += actual[i] * expected[i];
-    ASSERT_NEAR(actual[i], expected[i],
-                std::max(max_abs_err, std::abs(expected[i]) * max_rel_err))
-        << "line: " << line << " dim=" << N << " i=" << i;
+  for (size_t i = 0; i < actual.NumElements(); ++i) {
+    sum0 += actual.At(i) * actual.At(i);
+    sum1 += expected.At(i) * expected.At(i);
+    sum01 += actual.At(i) * expected.At(i);
+    ASSERT_NEAR(actual.At(i), expected.At(i),
+                std::max(max_abs_err, std::abs(expected.At(i)) * max_rel_err))
+        << "line: " << line << " dim=" << expected.NumElements() << " i=" << i;
   }
   if (sum0 > 1e-40) {
     double norm_dot = sum01 / std::sqrt(sum0) / std::sqrt(sum1);
@@ -93,48 +145,37 @@ void TestNear(const std::array<T, N>& actual, const std::array<U, N>& expected,
 // This method is more numerically stable than the real-valued finite difference
 // method since we don't need to subtract floating point numbers that are near
 // to each other.
-template<typename T, typename U, size_t N, typename FUNC>
-void TestGradient(const std::array<T, N>& grad,
-                  std::array<std::complex<U>, N>& x, FUNC func,
-                  U step, T max_abs_err, T max_rel_err, int line) {
-  std::array<T, N> exp_grad;
+template <typename FUNC, typename T, typename U>
+void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<U>>& x,
+                  FUNC func, U step, T max_abs_err, T max_rel_err, int line) {
+  MatStorageT<T> exp_grad("exp_grad", x.Rows(), x.Cols());
   const U inv_step = 1.0 / step;
-  for (size_t i = 0; i < N; ++i) {
-    const U x0 = std::real(x[i]);
+  for (size_t i = 0; i < x.NumElements(); ++i) {
+    const U x0 = std::real(x.At(i));
     const std::complex<U> x1 = std::complex<U>(x0, step);
-    x[i] = x1;
+    x.At(i) = x1;
     const std::complex<U> f1 = func();
-    exp_grad [i] = std::imag(f1) * inv_step;
-    x[i] = x0;
+    exp_grad.At(i) = std::imag(f1) * inv_step;
+    x.At(i) = x0;
   }
   TestNear(grad, exp_grad, max_abs_err, max_rel_err, line);
 }
 
-template<size_t N, typename FUNC>
-void TestGradient(const std::array<float, N>& grad,
-                  std::array<std::complex<float>, N>& x, FUNC func,
-                  float max_abs_err, float max_rel_error, int line) {
+template <typename FUNC>
+void TestGradient(const MatPtrT<float>& grad, MatPtrT<std::complex<float>>& x,
+                  FUNC func, float max_abs_err, float max_rel_error, int line) {
   TestGradient(grad, x, func, 1e-30f, max_abs_err, max_rel_error, line);
 }
 
-template<size_t N, typename FUNC>
-void TestGradient(const std::array<float, N>& grad,
-                  std::array<std::complex<double>, N>& x, FUNC func,
-                  float max_abs_err, float max_rel_error, int line) {
+template <typename FUNC, typename T>
+void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<double>>& x,
+                  FUNC func, T max_abs_err, T max_rel_error, int line) {
   TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
 }
 
-template<size_t N, typename FUNC>
-void TestGradient(const std::array<double, N>& grad,
-                  std::array<std::complex<double>, N>& x, FUNC func,
-                  double max_abs_err, double max_rel_error, int line) {
-  TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
-}
-
-template<typename T, typename U, typename TConfig, typename FUNC>
-void TestGradient(const Layer<T, TConfig>& grad,
-                  Layer<std::complex<U>, TConfig>& c_weights,
-                  FUNC func, T max_err) {
+template <typename T, typename TConfig, typename UConfig, typename FUNC>
+void TestGradient(const CompressedLayer<TConfig>& grad,
+                  CompressedLayer<UConfig>& c_weights, FUNC func, T max_err) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
                func, max_err, max_err, __LINE__);
@@ -150,10 +191,9 @@ void TestGradient(const Layer<T, TConfig>& grad,
                func, max_err, max_err, __LINE__);
 }
 
-template<typename T, typename U, typename TConfig, typename FUNC>
-void TestGradient(const Weights<T, TConfig>& grad,
-                  Weights<std::complex<U>, TConfig>& c_weights,
-                  FUNC func, T max_err) {
+template <typename T, typename TConfig, typename UConfig, typename FUNC>
+void TestGradient(const CompressedWeights<TConfig>& grad,
+                  CompressedWeights<UConfig>& c_weights, FUNC func, T max_err) {
   TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
                  func,  2 * max_err, max_err, __LINE__);

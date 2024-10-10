@@ -214,9 +214,9 @@ HWY_INLINE void MatVec(const ArrayT& mat, const size_t mat_ofs,
 }
 
 // Two matrices, same vector
-template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT,
-          typename VecT, typename AddT>
-HWY_NOINLINE void TwoMatVecT(const ArrayT& mat0, const ArrayT& mat1,
+template <bool kAdd, size_t kOuter, size_t kInner, typename ArrayT1,
+          typename ArrayT2, typename VecT, typename AddT>
+HWY_NOINLINE void TwoMatVecT(const ArrayT1& mat0, const ArrayT2& mat1,
                              const size_t mat_ofs,
                              const VecT* HWY_RESTRICT vec_aligned,
                              const AddT* HWY_RESTRICT add0,
@@ -254,10 +254,10 @@ HWY_NOINLINE void TwoMatVecT(const ArrayT& mat0, const ArrayT& mat1,
 }
 
 // With addition
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT,
-          typename AddT>
+template <size_t kOuter, size_t kInner, typename ArrayT1, typename ArrayT2,
+          typename VecT, typename AddT>
 HWY_NOINLINE void TwoMatVecAdd(
-    const ArrayT& mat0, const ArrayT& mat1, const size_t mat_ofs,
+    const ArrayT1& mat0, const ArrayT2& mat1, const size_t mat_ofs,
     const VecT* HWY_RESTRICT vec_aligned, const AddT* HWY_RESTRICT add0,
     const AddT* HWY_RESTRICT add1, float* HWY_RESTRICT out0,
     float* HWY_RESTRICT out1, hwy::ThreadPool& pool) {
@@ -266,13 +266,14 @@ HWY_NOINLINE void TwoMatVecAdd(
 }
 
 // Without addition
-template <size_t kOuter, size_t kInner, typename ArrayT, typename VecT>
-HWY_NOINLINE void TwoMatVec(const ArrayT& mat0, const ArrayT& mat1,
+template <size_t kOuter, size_t kInner, typename ArrayT1, typename ArrayT2,
+          typename VecT>
+HWY_NOINLINE void TwoMatVec(const ArrayT1& mat0, const ArrayT2& mat1,
                             const size_t mat_ofs,
                             const VecT* HWY_RESTRICT vec_aligned,
                             float* HWY_RESTRICT out0, float* HWY_RESTRICT out1,
                             hwy::ThreadPool& pool) {
-  TwoMatVecT</*kAdd=*/false, kOuter, kInner, ArrayT, VecT, VecT>(
+  TwoMatVecT</*kAdd=*/false, kOuter, kInner, ArrayT1, ArrayT2, VecT, VecT>(
       mat0, mat1, mat_ofs, vec_aligned, /*add0=*/nullptr, /*add1=*/nullptr,
       out0, out1, pool);
 }

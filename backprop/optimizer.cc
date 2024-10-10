@@ -21,6 +21,8 @@
 #include "compression/compress.h"
 #include "gemma/common.h"
 #include "gemma/weights.h"
+#include "util/allocator.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -32,14 +34,14 @@ class WeightInitializer {
  public:
   WeightInitializer(std::mt19937& gen) : dist_(0.0f, 1.0f), gen_(gen) {}
 
-  template <size_t N>
-  void operator()(const char* name, CompressedArray<float, N>& tensor) {
-    float* data = tensor.data();
-    for (size_t i = 0; i < N; ++i) {
+  void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
+    float* data = tensors[0]->data<float>();
+    for (size_t i = 0; i < tensors[0]->NumElements(); ++i) {
       data[i] = dist_(gen_);
     }
-    tensor.set_scale(1.0f);
+    tensors[0]->set_scale(1.0f);
   }
+
  private:
   std::normal_distribution<float> dist_;
   std::mt19937& gen_;
@@ -54,7 +56,8 @@ struct RandInitWeightsT {
     // TODO(szabadka) Use the same weight initialization method as in the python
     // version.
     WeightInitializer init(gen);
-    ForEachTensor1<TConfig>(init, weights);
+    CompressedWeights<TConfig>::ForEachTensor({&weights},
+                                              ForEachType::kLoadNoToc, init);
   }
 };
 
@@ -66,17 +69,13 @@ class AdamUpdater {
         cbeta2_(1.0f - beta2), norm1_(1.0 / (1.0 - std::pow(beta1, t))),
         norm2_(1.0 / (1.0 - std::pow(beta2, t))), epsilon_(epsilon) {}
 
-  template <size_t kCapacity>
-  void operator()(const char* name,
-                  const CompressedArray<float, kCapacity>& grad,
-                  CompressedArray<float, kCapacity>& weights,
-                  CompressedArray<float, kCapacity>& grad_m,
-                  CompressedArray<float, kCapacity>& grad_v) {
-    const float* HWY_RESTRICT g = grad.data();
-    float* HWY_RESTRICT w = weights.data();
-    float* HWY_RESTRICT m = grad_m.data();
-    float* HWY_RESTRICT v = grad_v.data();
-    for (size_t i = 0; i < kCapacity; ++i) {
+  void operator()(const char* name, const MatPtr& grad, MatPtr& weights,
+                  MatPtr& grad_m, MatPtr& grad_v) {
+    const float* HWY_RESTRICT g = grad.data<float>();
+    float* HWY_RESTRICT w = weights.data<float>();
+    float* HWY_RESTRICT m = grad_m.data<float>();
+    float* HWY_RESTRICT v = grad_v.data<float>();
+    for (size_t i = 0; i < grad.NumElements(); ++i) {
       m[i] *= beta1_;
       m[i] += cbeta1_ * g[i];
       v[i] *= beta2_;
@@ -105,12 +104,16 @@ struct AdamUpdateT {
                   const ByteStorageT& weights_u8, const ByteStorageT& grad_m_u8,
                   const ByteStorageT& grad_v_u8, hwy::ThreadPool& pool) const {
     using TWeights = CompressedWeights<TConfig>;
-    const auto& grad = *reinterpret_cast<const TWeights*>(grad_u8.get());
+    auto& grad = *reinterpret_cast<TWeights*>(grad_u8.get());
     auto& weights = *reinterpret_cast<TWeights*>(weights_u8.get());
     auto& grad_m = *reinterpret_cast<TWeights*>(grad_m_u8.get());
     auto& grad_v = *reinterpret_cast<TWeights*>(grad_v_u8.get());
     AdamUpdater updater(alpha, beta1, beta2, epsilon, t);
-    ForEachTensor4<TConfig>(updater, grad, weights, grad_m, grad_v);
+    TWeights::ForEachTensor(
+        {&grad, &weights, &grad_m, &grad_v}, ForEachType::kLoadNoToc,
+        [&updater](const char* name, hwy::Span<MatPtr*> tensors) {
+          updater(name, *tensors[0], *tensors[1], *tensors[2], *tensors[3]);
+        });
   }
 };
 

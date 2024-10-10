@@ -377,20 +377,23 @@ HWY_INLINE float Dot(const WT* HWY_RESTRICT w, const VT* vec, size_t num) {
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <size_t kCapacity, typename VT>
-HWY_INLINE float Dot(const std::array<float, kCapacity>& w, size_t w_ofs,
-                     const VT* vec, size_t num) {
+template <typename MatT, size_t kCapacity, typename VT>
+HWY_INLINE float Dot(const CompressedArray<MatT, kCapacity>& w, size_t w_ofs,
+                     const VT* vec_aligned, size_t num) {
   const hn::ScalableTag<VT> d;
-  return Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
+  return w.scale() *
+         Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec_aligned, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <typename MatT, size_t kCapacity, typename VT>
-HWY_INLINE float Dot(const CompressedArray<MatT, kCapacity>& w, size_t w_ofs,
-                     const VT* vec, size_t num) {
+template <typename MatT, typename VT>
+HWY_INLINE float Dot(const MatPtrT<MatT>& w, size_t w_ofs,
+                     const VT* vec_aligned, size_t num) {
   const hn::ScalableTag<VT> d;
-  return w.scale() *
-         Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec, num);
+  return w.scale() * Dot(d,
+                         MakeConstSpan(reinterpret_cast<const MatT*>(w.Ptr()),
+                                       w.NumElements()),
+                         w_ofs, vec_aligned, num);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

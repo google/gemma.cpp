@@ -28,6 +28,8 @@ namespace gcpp {
 
 // Bundles ptr/size/stride arguments to simplify MatMul call sites. T can be
 // const or non-const. Create via ConstMat/MutableMat.
+// TODO(rays): Replace with MatPtr and get rid of stride, which is only != cols
+// in one place.
 template <typename T>
 struct Mat {
   bool NotEmpty() const {

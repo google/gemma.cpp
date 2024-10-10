@@ -32,9 +32,9 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "compression/weights_raw.h"
 #include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "gemma/weights.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -48,6 +48,7 @@
 // After highway.h
 #include "backprop/backward-inl.h"
 #include "backprop/forward-inl.h"
+#include "compression/compress.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -60,17 +61,17 @@ void TestMatMulVJP() {
   static const size_t kTokens = 5;
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
-  HWY_ALIGN std::array<float, kRows * kCols> weights;
-  HWY_ALIGN std::array<float, kTokens * kCols> x;
-  HWY_ALIGN std::array<float, kTokens * kRows> dy;
-  HWY_ALIGN std::array<float, kRows * kCols> grad;
-  HWY_ALIGN std::array<float, kTokens * kCols> dx;
-  HWY_ALIGN std::array<float, kRows * kCols> grad_scalar;
-  HWY_ALIGN std::array<float, kTokens * kCols> dx_scalar;
+  MatStorageT<float> weights("weights", kRows, kCols);
+  MatStorageT<float> x("x", kTokens, kCols);
+  MatStorageT<float> dy("dy", kTokens, kRows);
+  MatStorageT<float> grad("grad", kRows, kCols);
+  MatStorageT<float> dx("dx", kTokens, kCols);
+  MatStorageT<float> grad_scalar("grad_scalar", kRows, kCols);
+  MatStorageT<float> dx_scalar("dx_scalar", kTokens, kCols);
   using TC = std::complex<double>;
-  std::array<TC, kRows * kCols> c_weights;
-  std::array<TC, kTokens * kCols> c_x;
-  std::array<TC, kTokens * kRows> c_y;
+  MatStorageT<TC> c_weights("c_weights", kRows, kCols);
+  MatStorageT<TC> c_x("c_x", kTokens, kCols);
+  MatStorageT<TC> c_y("c_y", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -83,13 +84,13 @@ void TestMatMulVJP() {
       return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
 
-    hwy::ZeroBytes(&grad, sizeof(grad));
+    grad.ZeroInit();
     MatMulVJP<kCols, kRows>(weights.data(), x.data(), dy.data(), kTokens,
                             grad.data(), dx.data(), pool);
-    TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
+    grad_scalar.ZeroInit();
     MatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                dx_scalar.data(), kRows, kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__);
@@ -104,17 +105,17 @@ void TestMultiHeadMatMulVJP() {
   static const size_t kTokens = 3;
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
-  HWY_ALIGN std::array<float, kRows * kCols * kHeads> weights;
-  HWY_ALIGN std::array<float, kTokens * kCols * kHeads> x;
-  HWY_ALIGN std::array<float, kRows * kCols * kHeads> grad;
-  HWY_ALIGN std::array<float, kTokens * kCols * kHeads> dx;
-  HWY_ALIGN std::array<float, kTokens * kRows> dy;
-  HWY_ALIGN std::array<float, kRows * kCols * kHeads> grad_scalar;
-  HWY_ALIGN std::array<float, kTokens * kCols * kHeads> dx_scalar;
+  MatStorageT<float> weights("weights", kRows, kCols * kHeads);
+  MatStorageT<float> x("x", kTokens, kCols * kHeads);
+  MatStorageT<float> grad("grad", kRows, kCols * kHeads);
+  MatStorageT<float> dx("dx", kTokens, kCols * kHeads);
+  MatStorageT<float> dy("dy", kTokens, kRows);
+  MatStorageT<float> grad_scalar("grad_scalar", kRows, kCols * kHeads);
+  MatStorageT<float> dx_scalar("dx_scalar", kTokens, kCols * kHeads);
   using TC = std::complex<double>;
-  std::array<TC, kRows * kCols * kHeads> c_weights;
-  std::array<TC, kTokens * kCols * kHeads> c_x;
-  std::array<TC, kTokens * kRows> c_y;
+  MatStorageT<TC> c_weights("c_weights", kRows, kCols * kHeads);
+  MatStorageT<TC> c_x("c_x", kTokens, kCols * kHeads);
+  MatStorageT<TC> c_y("c_y", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -128,14 +129,14 @@ void TestMultiHeadMatMulVJP() {
       return DotT(dy.data(), c_y.data(), kTokens * kRows);
     };
 
-    hwy::ZeroBytes(&grad, sizeof(grad));
+    grad.ZeroInit();
     MultiHeadMatMulVJP<kHeads, kCols, kRows>(
         weights.data(), x.data(), dy.data(), kTokens, grad.data(), dx.data(),
         pool);
-    TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
+    grad_scalar.ZeroInit();
     MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                         dx_scalar.data(), kHeads, kRows, kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
@@ -148,17 +149,17 @@ void TestRMSNormVJP() {
   static const size_t N = 64;
   hwy::ThreadPool pool(8);
   std::mt19937 gen(42);
-  HWY_ALIGN std::array<float, N> weights;
-  HWY_ALIGN std::array<float, K * N> x;
-  HWY_ALIGN std::array<float, N> grad;
-  HWY_ALIGN std::array<float, K * N> dx;
-  HWY_ALIGN std::array<float, K * N> dy;
-  HWY_ALIGN std::array<float, N> grad_scalar;
-  HWY_ALIGN std::array<float, K * N> dx_scalar;
+  MatStorageT<float> weights("weights", N, 1);
+  MatStorageT<float> x("x", K, N);
+  MatStorageT<float> grad("grad", N, 1);
+  MatStorageT<float> dx("dx", K, N);
+  MatStorageT<float> dy("dy", K, N);
+  MatStorageT<float> grad_scalar("grad_scalar", N, 1);
+  MatStorageT<float> dx_scalar("dx_scalar", K, N);
   using TC = std::complex<double>;
-  std::array<TC, N> c_weights;
-  std::array<TC, K * N> c_x;
-  std::array<TC, K * N> c_y;
+  MatStorageT<TC> c_weights("c_weights", N, 1);
+  MatStorageT<TC> c_x("c_x", K, N);
+  MatStorageT<TC> c_y("c_y", K, N);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -171,13 +172,13 @@ void TestRMSNormVJP() {
       return DotT(dy.data(), c_y.data(), K * N);
     };
 
-    hwy::ZeroBytes(&grad, sizeof(grad));
+    grad.ZeroInit();
     RMSNormVJP(weights.data(), x.data(), dy.data(), N, K, grad.data(),
                dx.data(), pool);
-    TestGradient(dx, c_x, func, 5e-5, 5e-5, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5, 5e-5, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    hwy::ZeroBytes(&grad_scalar, sizeof(grad_scalar));
+    grad_scalar.ZeroInit();
     RMSNormVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
                 dx_scalar.data(), N, K);
     TestNear(dx, dx_scalar, 0, 2e-5, __LINE__);
@@ -185,7 +186,9 @@ void TestRMSNormVJP() {
   }
 }
 
-struct TestConfig : public ConfigBaseGemmaV2 {
+template <typename T>
+struct TestConfig : ConfigBaseGemmaV2 {
+  using Weight = T;
   static constexpr int kSeqLen = 24;
   static constexpr int kVocabSize = 16;
   static constexpr int kModelDim = 32;
@@ -206,20 +209,22 @@ struct TestConfig : public ConfigBaseGemmaV2 {
 void TestEndToEnd() {
   std::mt19937 gen(42);
   hwy::ThreadPool pool(0);
-  WeightsWrapper<float, TestConfig> weights;
-  WeightsWrapper<float, TestConfig> grad;
-  ActivationsWrapper<float, TestConfig> forward0;
-  ActivationsWrapper<float, TestConfig> forward1;
-  ActivationsWrapper<float, TestConfig> backward;
+  using WeightsF = CompressedWeights<TestConfig<float>>;
+  using LayerF = CompressedLayer<TestConfig<float>>;
+  WeightsWrapper<TestConfig<float>> weights;
+  WeightsWrapper<TestConfig<float>> grad;
+  ActivationsWrapper<float, TestConfig<float>> forward0;
+  ActivationsWrapper<float, TestConfig<float>> forward1;
+  ActivationsWrapper<float, TestConfig<float>> backward;
   using TC = std::complex<double>;
-  WeightsWrapper<TC, TestConfig> c_weights;
-  ForwardPass<TC, TestConfig> c_forward;
+  WeightsWrapper<TestConfig<TC>> c_weights;
+  ForwardPass<TC, TestConfig<TC>> c_forward;
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
   RowVectorBatch<float> inv_timescale =
-      Activations::CreateInvTimescale<TestConfig>();
+      Activations::CreateInvTimescale<TestConfig<float>>();
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
     RandInit(weights.get(), 1.0f, gen);
@@ -227,14 +232,15 @@ void TestEndToEnd() {
     float loss0 = CrossEntropyLossForwardPass(
         prompt, weights.get(), forward0.get());
 
-    float loss1 = CrossEntropyLossForwardPass<TestConfig, WeightsF, LayerF>(
-        prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
-        inv_timescale, pool);
+    float loss1 =
+        CrossEntropyLossForwardPass<TestConfig<float>, WeightsF, LayerF>(
+            prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
+            inv_timescale, pool);
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
-    grad.clear();
-    CrossEntropyLossBackwardPass<TestConfig, WeightsF, LayerF>(
+    grad.ZeroInit();
+    CrossEntropyLossBackwardPass<TestConfig<float>, WeightsF, LayerF>(
         prompt, weights.get(), forward1.get(), grad.get(), backward.get(),
         inv_timescale, pool);
 

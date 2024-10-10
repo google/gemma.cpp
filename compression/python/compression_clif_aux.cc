@@ -53,34 +53,35 @@ namespace HWY_NAMESPACE {
 
 class SbsWriterImpl : public WriterInterface {
   template <typename Packed>
-  hwy::AlignedFreeUniquePtr<Packed[]> AllocateAndCompress(
-      const std::string& name, absl::Span<const float> weights) {
+  void AllocateAndCompress(const std::string& name,
+                           absl::Span<const float> weights) {
     const size_t num_packed = CompressedArrayElements<Packed>(weights.size());
-    auto packed = hwy::AllocateAligned<Packed>(num_packed);
-    PackedSpan<Packed> span = MakeSpan(packed.get(), num_packed);
-    compressor_.Insert(name.c_str(), weights.data(), weights.size(),
-                       working_set_, span, /*packed_ofs=*/0, pool_);
-    return packed;
+    MatPtrT<Packed> storage(name, 1, num_packed);
+    model_memory_.push_back(storage);
+    model_memory_.back().Allocate();
+    storage.SetPtr(model_memory_.back());
+    std::string decorated_name = storage.CacheName();
+    compressor_(&storage, decorated_name.c_str(), weights.data());
   }
 
  public:
   SbsWriterImpl() : pool_(0), compressor_(pool_) {}
 
   void Insert(std::string name, absl::Span<const float> weights) override {
-    sfp_streams_.push_back(AllocateAndCompress<SfpStream>(name, weights));
+    AllocateAndCompress<SfpStream>(name, weights);
   }
 
   void InsertNUQ(std::string name, absl::Span<const float> weights) override {
-    nuq_streams_.push_back(AllocateAndCompress<NuqStream>(name, weights));
+    AllocateAndCompress<NuqStream>(name, weights);
   }
 
   void InsertBfloat16(std::string name,
                       absl::Span<const float> weights) override {
-    bf16_streams_.push_back(AllocateAndCompress<BF16>(name, weights));
+    AllocateAndCompress<BF16>(name, weights);
   }
 
   void InsertFloat(std::string name, absl::Span<const float> weights) override {
-    f32_streams_.push_back(AllocateAndCompress<float>(name, weights));
+    AllocateAndCompress<float>(name, weights);
   }
 
   void AddScales(const std::vector<float>& scales) override {
@@ -96,10 +97,7 @@ class SbsWriterImpl : public WriterInterface {
   hwy::ThreadPool pool_;
   Compressor compressor_;
   CompressWorkingSet working_set_;
-  std::vector<hwy::AlignedFreeUniquePtr<SfpStream[]>> sfp_streams_;
-  std::vector<hwy::AlignedFreeUniquePtr<NuqStream[]>> nuq_streams_;
-  std::vector<hwy::AlignedFreeUniquePtr<BF16[]>> bf16_streams_;
-  std::vector<hwy::AlignedFreeUniquePtr<float[]>> f32_streams_;
+  std::vector<MatStorage> model_memory_;
   std::vector<float> scales_;
 };
 

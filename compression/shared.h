@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <complex>
 #include <cstdio>
 
 #include "hwy/aligned_allocator.h"
@@ -184,6 +185,12 @@ const char* TypeName() {
     return "sfp";
   } else if constexpr (hwy::IsSame<Packed, NuqStream>()) {
     return "nuq";
+  } else if constexpr (hwy::IsSame<Packed, double>()) {
+    return "f64";
+  } else if constexpr (hwy::IsSame<Packed, std::complex<double>>()) {
+    return "c64";
+  } else if constexpr (hwy::IsSame<Packed, hwy::uint128_t>()) {
+    return "u128";
   } else {
     HWY_DASSERT(false);
     return "unknown";

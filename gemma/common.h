@@ -146,50 +146,52 @@ decltype(auto) CallForModelAndWeight(Model model, Type weight,
 
 // Used by GEMMA_EXPORT_AND_DISPATCH. For a given TWEIGHT (e.g. float),
 // calls FUNC<ConfigT<TWEIGHT>> where ConfigT is chosen via MODEL enum.
-#define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                   \
-  switch (MODEL) {                                                         \
-    case Model::GEMMA_TINY: {                                              \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemmaTiny<TWEIGHT>>)    \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA_2B: {                                                \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2B<TWEIGHT>>)      \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA_7B: {                                                \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma7B<TWEIGHT>>)      \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GRIFFIN_2B: {                                              \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGriffin2B<TWEIGHT>>)    \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA2_2B: {                                               \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_2B<TWEIGHT>>)    \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA2_9B: {                                               \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_9B<TWEIGHT>>)    \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::GEMMA2_27B: {                                              \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigGemma2_27B<TWEIGHT>>)   \
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    case Model::PALIGEMMA_224: {                                           \
-      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<ConfigPaliGemma_224<TWEIGHT>>)\
-      ARGS;                                                                \
-      break;                                                               \
-    }                                                                      \
-    default:                                                               \
-      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL));        \
+#define GEMMA_DISPATCH_MODEL(MODEL, TWEIGHT, FUNC, ARGS)                       \
+  switch (MODEL) {                                                             \
+    case Model::GEMMA_TINY: {                                                  \
+      using CP = ConfigPair<ConfigGemmaTiny<TWEIGHT>, ConfigGemmaTiny<float>>; \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GEMMA_2B: {                                                    \
+      using CP = ConfigPair<ConfigGemma2B<TWEIGHT>, ConfigGemma2B<float>>;     \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GEMMA_7B: {                                                    \
+      using CP = ConfigPair<ConfigGemma7B<TWEIGHT>, ConfigGemma7B<float>>;     \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GRIFFIN_2B: {                                                  \
+      using CP = ConfigPair<ConfigGriffin2B<TWEIGHT>, ConfigGriffin2B<float>>; \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GEMMA2_2B: {                                                   \
+      using CP = ConfigPair<ConfigGemma2_2B<TWEIGHT>, ConfigGemma2_2B<float>>; \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GEMMA2_9B: {                                                   \
+      using CP = ConfigPair<ConfigGemma2_9B<TWEIGHT>, ConfigGemma2_9B<float>>; \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::GEMMA2_27B: {                                                  \
+      using CP =                                                               \
+          ConfigPair<ConfigGemma2_27B<TWEIGHT>, ConfigGemma2_27B<float>>;      \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    case Model::PALIGEMMA_224: {                                               \
+      using CP = ConfigPair<ConfigPaliGemma_224<TWEIGHT>,                      \
+                            ConfigPaliGemma_224<float>>;                       \
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(FUNC<CP>) ARGS;                        \
+      break;                                                                   \
+    }                                                                          \
+    default:                                                                   \
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(MODEL));            \
   }
 
 // Like CallForModelAndWeight, but for SIMD function templates. This is a macro

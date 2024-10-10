@@ -26,8 +26,9 @@
 #include "backprop/activations.h"
 #include "backprop/common_scalar.h"
 #include "backprop/prompt.h"
-#include "compression/weights_raw.h"
 #include "gemma/common.h"  // EmbeddingScaling
+#include "gemma/weights.h"
+#include "hwy/base.h"
 
 namespace gcpp {
 
@@ -116,6 +117,8 @@ void GatedGelu(const T* in, T* out, size_t N, size_t K) {
 template<typename T>
 void InputEmbedding(const T* w, const std::vector<int>& tokens, T scaling,
                     T* y, size_t N) {
+  HWY_ASSERT(w != nullptr);
+  HWY_ASSERT(y != nullptr);
   const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
   for (size_t i = 0; i < num_tokens; ++i) {
     int token = tokens[i];
@@ -166,10 +169,10 @@ void MixByAttention(const T* qkv, const T* attention, T* output,
     }
   }
 }
-template<typename T, typename TConfig>
-void ApplyLayer(const Layer<T, TConfig>& weights,
-                ForwardLayer<T, TConfig>& activations,
-                size_t num_tokens, T* output) {
+template <typename T, typename TConfig>
+void ApplyLayer(const CompressedLayer<TConfig>& weights,
+                ForwardLayer<T, TConfig>& activations, size_t num_tokens,
+                T* output) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -244,9 +247,9 @@ T CrossEntropyLoss(const T* x, const Prompt& prompt, size_t V) {
   return loss * scaling;
 }
 
-template<typename T, typename TConfig>
+template <typename T, typename TConfig>
 T CrossEntropyLossForwardPass(const Prompt& prompt,
-                              const Weights<T, TConfig>& weights,
+                              const CompressedWeights<TConfig>& weights,
                               ForwardPass<T, TConfig>& forward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;
@@ -282,7 +285,7 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
   }
 
   memcpy(forward.probs.data(), forward.logits.data(),
-         num_tokens * kVocabSize * sizeof(forward.logits[0]));
+         num_tokens * kVocabSize * sizeof(forward.logits.At(0)));
   Softmax(forward.probs.data(), kVocabSize, num_tokens);
 
   return CrossEntropyLoss(forward.probs.data(), prompt, kVocabSize);

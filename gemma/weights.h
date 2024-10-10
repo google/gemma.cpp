@@ -18,7 +18,15 @@
 
 #include <stddef.h>
 
+#include <array>
+#include <complex>
+#include <cstdio>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
 #include "compression/compress.h"
+#include "compression/shared.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "util/allocator.h"
@@ -28,16 +36,82 @@
 
 namespace gcpp {
 
+// Different tensors need to appear in a ForEachTensor, according to what is
+// happening.
+enum class ForEachType {
+  // Under normal circumstances, when not initializing or loading, we can
+  // include all tensors and ignore the null ones.
+  kIgnoreNulls,
+  // If there is a table of contents, we can include all tensors.
+  kLoadWithToc,
+  // There is no table of contents, so we have to be careful to only include
+  // tensors that are actually present.
+  kLoadNoToc,
+  // We need to initialize all tensors needed when there is no table of
+  // contents. This differs from kLoadNoToc in that we need to include any
+  // tensor that is allocated but not loaded directly from file.
+  kInitNoToc,
+};
+
 template <class TConfig>
 struct CompressedLayer {
-  // No ctor/dtor, allocated via AllocateAligned.
+  // Large data is constructed separately.
+  CompressedLayer()
+      : attn_vec_einsum_w("att_ein", kModelDim, kHeads * kQKVDim),
+        qkv_einsum_w("qkv_ein", (kHeads + 2 * kKVHeads) * kQKVDim, kModelDim),
+        qkv_einsum_w1("qkv1_w", kHeads * kQKVDim, kModelDim),
+        qkv_einsum_w2("qkv2_w", 2 * kKVHeads * kQKVDim, kModelDim),
+        attention_output_biases("attn_ob", 1, kAOBiasDim),
+        griffin({.linear_x_w = {"gr_lin_x_w", kGriffinDim, kGriffinDim},
+                 .linear_x_biases = {"gr_lin_x_b", 1, kGriffinDim},
+                 .linear_y_w = {"gr_lin_y_w", kGriffinDim, kGriffinDim},
+                 .linear_y_biases = {"gr_lin_y_b", 1, kGriffinDim},
+                 .linear_out_w = {"gr_lin_out_w", kGriffinDim, kGriffinDim},
+                 .linear_out_biases = {"gr_lin_out_b", 1, kGriffinDim},
+                 .conv_w = {"gr_conv_w", kConv1dWidth, kGriffinDim},
+                 .conv_biases = {"gr_conv_b", 1, kGriffinDim},
+                 .gate_w = {"gr_gate_w", 2 * kGriffinDim, kGriffinDim / kHeads},
+                 .gate_biases = {"gr_gate_b", 1, kGriffinDim * 2},
+                 .a = {"gr_a", 1, kGriffinDim}}),
+        // MultiHeadDotProductAttention.
+        vit({.attn_out_w = {"attn_out_w", kHeads * kQKVDim, kModelDim},
+             .attn_out_b = {"attn_out_b", 1, kModelDim},
+             .qkv_einsum_w = {"qkv_ein_w", (kHeads + 2 * kKVHeads) * kQKVDim,
+                              kModelDim},
+             .qkv_einsum_b = {"qkv_ein_b", (kHeads + 2 * kKVHeads), kQKVDim},
+             .linear_0_w = {"linear_0_w", kModelDim, kFFHiddenDim},
+             .linear_0_b = {"linear_0_b", 1, kFFHiddenDim},
+             .linear_1_w = {"linear_1_w", kFFHiddenDim, kModelDim},
+             .linear_1_b = {"linear_1_b", 1, kModelDim},
+             .layer_norm_0_bias = {"ln_0_bias", 1, kModelDim},
+             .layer_norm_0_scale = {"ln_0_scale", 1, kModelDim},
+             .layer_norm_1_bias = {"ln_1_bias", 1, kModelDim},
+             .layer_norm_1_scale = {"ln_1_scale", 1, kModelDim}}),
+        gating_einsum_w("gating_ein", 2 * kFFHiddenDim, kModelDim),
+        gating_einsum_w1("gating1_w", kFFHiddenDim, kModelDim),
+        gating_einsum_w2("gating2_w", kFFHiddenDim, kModelDim),
+        linear_w("linear_w", kModelDim, kFFHiddenDim),
+        pre_attention_norm_scale("pre_att_ns", 1, kModelDim),
+        pre_ffw_norm_scale("pre_ff_ns", 1, kModelDim),
+        post_attention_norm_scale(
+            "post_att_ns", 1, kPostNorm == PostNormType::Scale ? kModelDim : 0),
+        post_ffw_norm_scale("post_ff_ns", 1,
+                            kPostNorm == PostNormType::Scale ? kModelDim : 0),
+        ffw_gating_biases("ffw_gat_b", 1, kFFBiases ? 2 * kFFHiddenDim : 0),
+        ffw_output_biases("ffw_out_b", 1, kFFBiases ? kModelDim : 0),
+        att_weights("att_w", kModelDim, kHeads * kQKVDim)
+  {}
+  ~CompressedLayer() = default;
 
   using Weight = typename TConfig::Weight;
   // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
   // do not yet support smaller compressed types, or require at least bf16. When
   // weights are f32, we also want such tensors to be f32.
-  using WeightF32OrBF16 =
-      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
+  // If weights are complex, this is also complex.
+  using WeightF32OrBF16 = hwy::If<
+      hwy::IsSame<Weight, std::complex<double>>(), std::complex<double>,
+      hwy::If<hwy::IsSame<Weight, double>(), double,
+              hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>>>;
 
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kKVHeads = TConfig::kKVHeads;
@@ -58,69 +132,75 @@ struct CompressedLayer {
   static constexpr size_t kGriffinDim =
       TConfig::kGriffinLayers > 0 ? kModelDim : 0;
 
-  template <class T, size_t N>
-  using ArrayT = CompressedArray<T, N>;
+  template <class T>
+  using ArrayT = MatPtrT<T>;
 
-  union {
-    struct {
-      ArrayT<Weight, kAttVecEinsumWSize> attn_vec_einsum_w;
-      ArrayT<Weight, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kAOBiasDim> attention_output_biases;
-    };
+  ArrayT<Weight> attn_vec_einsum_w;
+  // qkv_einsum_w holds 2 different matrices, which may be separated out.
+  // On loading, which is used depends on what is in the file.
+  // At inference, the one with a non-null ptr is used.
+  ArrayT<Weight> qkv_einsum_w;
+  ArrayT<Weight> qkv_einsum_w1;
+  ArrayT<Weight> qkv_einsum_w2;
+  ArrayT<float> attention_output_biases;
 
-    struct {
-      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_x_w;
-      ArrayT<float, kGriffinDim> linear_x_biases;
-      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_y_w;
-      ArrayT<float, kGriffinDim> linear_y_biases;
-      ArrayT<Weight, kGriffinDim * kGriffinDim> linear_out_w;
-      ArrayT<float, kGriffinDim> linear_out_biases;
-      ArrayT<float, kConv1dWidth * kGriffinDim> conv_w;
-      ArrayT<float, kGriffinDim> conv_biases;
-      ArrayT<Weight, kGriffinDim * kGriffinDim / kHeads * 2> gate_w;
-      ArrayT<float, kGriffinDim * 2> gate_biases;
-      ArrayT<float, kGriffinDim> a;
-    } griffin;
+  struct {
+    ArrayT<Weight> linear_x_w;
+    ArrayT<float> linear_x_biases;
+    ArrayT<Weight> linear_y_w;
+    ArrayT<float> linear_y_biases;
+    ArrayT<Weight> linear_out_w;
+    ArrayT<float> linear_out_biases;
+    ArrayT<float> conv_w;
+    ArrayT<float> conv_biases;
+    ArrayT<Weight> gate_w;
+    ArrayT<float> gate_biases;
+    ArrayT<float> a;
+  } griffin;
 
-    struct {
-      // MultiHeadDotProductAttention.
-      ArrayT<WeightF32OrBF16, kAttVecEinsumWSize> attn_out_w;
-      ArrayT<float, kModelDim> attn_out_b;
-      ArrayT<WeightF32OrBF16, kQKVEinsumWSize> qkv_einsum_w;
-      ArrayT<float, kQKVEinsumBSize> qkv_einsum_b;
-      // MlpBlock.
-      ArrayT<WeightF32OrBF16, kModelDim * kFFHiddenDim> linear_0_w;
-      ArrayT<float, kFFHiddenDim> linear_0_b;
-      ArrayT<WeightF32OrBF16, kFFHiddenDim * kModelDim> linear_1_w;
-      ArrayT<float, kModelDim> linear_1_b;
-      // LayerNorm.
-      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_0_bias;
-      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_0_scale;
-      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_1_bias;
-      ArrayT<WeightF32OrBF16, kModelDim> layer_norm_1_scale;
-    } vit;
-  };
+  struct {
+    // MultiHeadDotProductAttention.
+    ArrayT<WeightF32OrBF16> attn_out_w;
+    ArrayT<float> attn_out_b;
+    ArrayT<WeightF32OrBF16> qkv_einsum_w;
+    ArrayT<float> qkv_einsum_b;
+    // MlpBlock.
+    ArrayT<WeightF32OrBF16> linear_0_w;
+    ArrayT<float> linear_0_b;
+    ArrayT<WeightF32OrBF16> linear_1_w;
+    ArrayT<float> linear_1_b;
+    // LayerNorm.
+    ArrayT<WeightF32OrBF16> layer_norm_0_bias;
+    ArrayT<WeightF32OrBF16> layer_norm_0_scale;
+    ArrayT<WeightF32OrBF16> layer_norm_1_bias;
+    ArrayT<WeightF32OrBF16> layer_norm_1_scale;
+  } vit;
 
-  ArrayT<Weight, kGatingEinsumWSize> gating_einsum_w;
-  ArrayT<Weight, kModelDim * kFFHiddenDim> linear_w;
+  // gating_einsum_w holds 2 different matrices, which may be separated out.
+  // On loading, which is used depends on what is in the file.
+  // At inference, the one with a non-null ptr is used.
+  ArrayT<Weight> gating_einsum_w;
+  ArrayT<Weight> gating_einsum_w1;
+  ArrayT<Weight> gating_einsum_w2;
+  ArrayT<Weight> linear_w;
   // We don't yet have an RMSNorm that accepts all Weight.
-  ArrayT<WeightF32OrBF16, kModelDim> pre_attention_norm_scale;
-  ArrayT<WeightF32OrBF16, kModelDim> pre_ffw_norm_scale;
-  ArrayT<WeightF32OrBF16, kPostNorm == PostNormType::Scale ? kModelDim : 0>
-      post_attention_norm_scale;
-  ArrayT<WeightF32OrBF16, kPostNorm == PostNormType::Scale ? kModelDim : 0>
-      post_ffw_norm_scale;
+  ArrayT<WeightF32OrBF16> pre_attention_norm_scale;
+  ArrayT<WeightF32OrBF16> pre_ffw_norm_scale;
+  ArrayT<WeightF32OrBF16> post_attention_norm_scale;
+  ArrayT<WeightF32OrBF16> post_ffw_norm_scale;
 
-  ArrayT<float, kFFBiases ? 2 * kFFHiddenDim : 0> ffw_gating_biases;
-  ArrayT<float, kFFBiases ? kModelDim : 0> ffw_output_biases;
+  ArrayT<float> ffw_gating_biases;
+  ArrayT<float> ffw_output_biases;
 
   // Reshaped attention; not loaded from disk via ForEachTensor.
-  ArrayT<Weight, kModelDim * kHeads * kQKVDim> att_weights;
+  ArrayT<Weight> att_weights;
 
   // Initializes att_weights from attn_vec_einsum_w, hence this must be called
   // after loading weights via ForEachTensor.
   // TODO: update compression/convert_weights to bake this in.
-  void Reshape() {
+  void Reshape(MatStorage& storage) {
+    if (attn_vec_einsum_w.data() == nullptr) return;
+
     constexpr size_t kModelDim = TConfig::kModelDim;
     constexpr size_t kHeads = TConfig::kHeads;
     constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -129,6 +209,8 @@ struct CompressedLayer {
     static_assert(!hwy::IsSame<Weight, NuqStream>());
 
     // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
+    storage.Allocate();
+    att_weights.SetPtr(storage);
     for (size_t m = 0; m < kModelDim; ++m) {
       Weight* HWY_RESTRICT out_row = att_weights.data() + m * kHeads * kQKVDim;
       for (size_t h = 0; h < kHeads; ++h) {
@@ -139,118 +221,291 @@ struct CompressedLayer {
     }
     att_weights.set_scale(attn_vec_einsum_w.scale());
   }
-};
 
-// Array instead of single large allocation for parallel mem init. Split out
-// of CompressedWeights so that only these pointers are initialized, not the
-// CompressedArray.
-template <class TConfig>
-struct CompressedLayerPointers {
-  explicit CompressedLayerPointers(hwy::ThreadPool& pool) {
-    pool.Run(0, TConfig::kLayers, [this](uint64_t task, size_t /*thread*/) {
-      this->c_layers[task] = hwy::AllocateAligned<CompressedLayer<TConfig>>(1);
-    });
-    if constexpr (TConfig::VitConfig::kLayers > 0) {
-      pool.Run(0, TConfig::VitConfig::kLayers,
-               [this](uint64_t task, size_t /*thread*/) {
-                 this->c_vit_layers[task] = hwy::AllocateAligned<
-                     CompressedLayer<typename TConfig::VitConfig>>(1);
-               });
+// Used by ForEachTensor for per-layer tensors.
+#define GEMMA_CALL_FUNC(member)                                             \
+  {                                                                         \
+    for (int i = 0; i < ptrs.size(); ++i) {                                 \
+      tensors[i] = &ptrs[i]->member;                                        \
+    }                                                                       \
+    if (tensors[0]->Ptr() != nullptr || fet != ForEachType::kIgnoreNulls) { \
+      func(ptrs[0]->member.CacheName(layer_idx, sep, sep_index).c_str(),    \
+           hwy::Span<MatPtr*>(tensors, ptrs.size()));                       \
+    }                                                                       \
+  }
+
+  template <class Func>
+  static void ForEachTensor(const std::vector<CompressedLayer<TConfig>*>& ptrs,
+                            int layer_idx, ForEachType fet, Func func,
+                            char sep = ' ', int sep_index = -1) {
+    MatPtr* tensors[ptrs.size()];
+    auto type = TConfig::kLayerConfig[layer_idx];
+    if (type == LayerAttentionType::kVit) {
+      // MHA.
+      GEMMA_CALL_FUNC(vit.attn_out_w);
+      GEMMA_CALL_FUNC(vit.attn_out_b);
+      GEMMA_CALL_FUNC(vit.qkv_einsum_w);
+      GEMMA_CALL_FUNC(vit.qkv_einsum_b);
+      // MlpBlock.
+      GEMMA_CALL_FUNC(vit.linear_0_w);
+      GEMMA_CALL_FUNC(vit.linear_0_b);
+      GEMMA_CALL_FUNC(vit.linear_1_w);
+      GEMMA_CALL_FUNC(vit.linear_1_b);
+      // LayerNorm.
+      GEMMA_CALL_FUNC(vit.layer_norm_0_bias);
+      GEMMA_CALL_FUNC(vit.layer_norm_0_scale);
+      GEMMA_CALL_FUNC(vit.layer_norm_1_bias);
+      GEMMA_CALL_FUNC(vit.layer_norm_1_scale);
+      return;
+    }
+    if (type == LayerAttentionType::kGemma) {
+      if (fet != ForEachType::kLoadNoToc) {
+        GEMMA_CALL_FUNC(att_weights);
+      }
+      if (fet == ForEachType::kInitNoToc || fet == ForEachType::kLoadNoToc ||
+          fet == ForEachType::kIgnoreNulls) {
+        GEMMA_CALL_FUNC(attn_vec_einsum_w);
+      }
+      GEMMA_CALL_FUNC(qkv_einsum_w);
+      if (fet == ForEachType::kIgnoreNulls ||
+          fet == ForEachType::kLoadWithToc) {
+        // The unwanted ones will be null or not in the toc.
+        GEMMA_CALL_FUNC(qkv_einsum_w1);
+        GEMMA_CALL_FUNC(qkv_einsum_w2);
+      }
+    } else {
+      GEMMA_CALL_FUNC(griffin.linear_x_w);
+      GEMMA_CALL_FUNC(griffin.linear_x_biases);
+      GEMMA_CALL_FUNC(griffin.linear_y_w);
+      GEMMA_CALL_FUNC(griffin.linear_y_biases);
+      GEMMA_CALL_FUNC(griffin.linear_out_w);
+      GEMMA_CALL_FUNC(griffin.linear_out_biases);
+      GEMMA_CALL_FUNC(griffin.conv_w);
+      GEMMA_CALL_FUNC(griffin.conv_biases);
+      GEMMA_CALL_FUNC(griffin.gate_w);
+      GEMMA_CALL_FUNC(griffin.gate_biases);
+      GEMMA_CALL_FUNC(griffin.a);
+    }
+    GEMMA_CALL_FUNC(gating_einsum_w);
+    if (fet == ForEachType::kIgnoreNulls || fet == ForEachType::kLoadWithToc) {
+      // The unwanted ones will be null or not in the toc.
+      GEMMA_CALL_FUNC(gating_einsum_w1);
+      GEMMA_CALL_FUNC(gating_einsum_w2);
+    }
+    GEMMA_CALL_FUNC(linear_w);
+    GEMMA_CALL_FUNC(pre_attention_norm_scale);
+    GEMMA_CALL_FUNC(pre_ffw_norm_scale);
+
+    if (TConfig::kPostNorm == PostNormType::Scale) {
+      GEMMA_CALL_FUNC(post_attention_norm_scale);
+      GEMMA_CALL_FUNC(post_ffw_norm_scale);
+    }
+
+    if (TConfig::kFFBiases) {
+      GEMMA_CALL_FUNC(ffw_gating_biases);
+      GEMMA_CALL_FUNC(ffw_output_biases);
+    }
+
+    if (TConfig::kSoftmaxAttnOutputBiases &&
+        type == LayerAttentionType::kGemma) {
+      GEMMA_CALL_FUNC(attention_output_biases);
     }
   }
 
-  using CLayer = CompressedLayer<TConfig>;
-  std::array<hwy::AlignedFreeUniquePtr<CLayer[]>, TConfig::kLayers> c_layers;
-  using CVitLayer = CompressedLayer<typename TConfig::VitConfig>;
-  std::array<hwy::AlignedFreeUniquePtr<CVitLayer[]>,
-             TConfig::VitConfig::kLayers>
-      c_vit_layers;
+  // Sets all the tensors in the layer to zero. Memory must have been allocated.
+  void ZeroInit(int layer_idx) {
+    ForEachTensor({this}, layer_idx, ForEachType::kIgnoreNulls,
+                  [](const char*, hwy::Span<MatPtr*> tensors) {
+                    tensors[0]->ZeroInit();
+                  });
+  }
+
+  // Allocates memory for all the tensors in the layer.
+  // Note that this is slow and only used for a stand-alone layer.
+  void Allocate() {
+    layer_storage.clear();
+    ForEachTensor({this}, /*layer_idx=*/0, ForEachType::kInitNoToc,
+                  [this](const char* name, hwy::Span<MatPtr*> tensors) {
+                    this->layer_storage.emplace_back(*tensors[0]);
+                    layer_storage.back().Allocate();
+                    tensors[0]->SetPtr(layer_storage.back());
+                  });
+  }
+
+  // Storage for all the matrices and vectors. Only used for a stand-alone
+  // layer. For a model, the CompressedWeights::model_storage is used instead.
+  std::vector<MatStorage> layer_storage;
 };
 
 template <class TConfig>
 struct CompressedWeights {
-  // Must be allocated via AllocateAligned and initialized with placement new.
-  void* operator new(size_t, void* addr) { return addr; }
-  void* operator new(size_t) = delete;
-  void* operator new[](size_t) = delete;
-  void operator delete(void*) = delete;
-  void operator delete[](void*) = delete;
+  explicit CompressedWeights(hwy::ThreadPool& pool)
+      : embedder_input_embedding("c_embedding", TConfig::kVocabSize,
+                                 TConfig::kModelDim),
+        final_norm_scale("c_final_norm", 1, TConfig::kModelDim),
+        vit_encoder_norm_bias("c_vit_encoder_norm_bias", 1,
+                              TConfig::VitConfig::kModelDim),
+        vit_encoder_norm_scale("c_vit_encoder_norm_scale", 1,
+                               TConfig::VitConfig::kModelDim),
+        vit_img_embedding_bias("c_vit_img_embedding_bias", 1,
+                               TConfig::VitConfig::kModelDim),
+        vit_img_embedding_kernel("c_vit_img_embedding_kernel", 14 * 14 * 3,
+                                 TConfig::VitConfig::kModelDim),
+        vit_img_pos_embedding("c_vit_img_pos_embedding", 256,
+                              TConfig::VitConfig::kModelDim),
+        vit_img_head_bias("c_vit_img_head_bias", 1, TConfig::kModelDim),
+        vit_img_head_kernel("c_vit_img_head_kernel",
+                            TConfig::VitConfig::kModelDim, TConfig::kModelDim),
+        scale_names({"att_ein", "qkv_ein", "gr_lin_x_w", "gr_lin_y_w",
+                     "gr_lin_out_w", "gr_gate_w", "gating_ein", "linear_w"}) {}
+
+  ~CompressedWeights() = default;
 
   using Weight = typename TConfig::Weight;
-
+  using WeightF32OrBF16 = typename CompressedLayer<TConfig>::WeightF32OrBF16;
   using WeightF32OrInputT =
-      hwy::If<hwy::IsSame<Weight, float>(), float, EmbedderInputT>;
-  CompressedArray<WeightF32OrInputT, TConfig::kVocabSize * TConfig::kModelDim>
-      embedder_input_embedding;
+      hwy::If<hwy::IsSame<WeightF32OrBF16, hwy::bfloat16_t>(), EmbedderInputT,
+              WeightF32OrBF16>;
 
-  using WeightF32OrBF16 =
-      hwy::If<hwy::IsSame<Weight, float>(), float, hwy::bfloat16_t>;
-  CompressedArray<WeightF32OrBF16, TConfig::kModelDim> final_norm_scale;
+  MatPtrT<WeightF32OrInputT> embedder_input_embedding;
+  MatPtrT<WeightF32OrBF16> final_norm_scale;
 
   // Vit parts.
-  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim>
-      vit_encoder_norm_bias;
-  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim>
-      vit_encoder_norm_scale;
-  CompressedArray<float, TConfig::VitConfig::kModelDim> vit_img_embedding_bias;
-  CompressedArray<WeightF32OrBF16, TConfig::VitConfig::kModelDim * 14 * 14 * 3>
-      vit_img_embedding_kernel;
-  CompressedArray<float, 256 * TConfig::VitConfig::kModelDim>
-      vit_img_pos_embedding;
+  MatPtrT<WeightF32OrBF16> vit_encoder_norm_bias;
+  MatPtrT<WeightF32OrBF16> vit_encoder_norm_scale;
+  MatPtrT<float> vit_img_embedding_bias;
+  MatPtrT<WeightF32OrBF16> vit_img_embedding_kernel;
+  MatPtrT<float> vit_img_pos_embedding;
   // The head maps from VitConfig::kModelDim (Vit final layer) to
   // kModelDim (LLM input).
-  CompressedArray<float, TConfig::kModelDim> vit_img_head_bias;
-  CompressedArray<WeightF32OrBF16,
-                  TConfig::VitConfig::kModelDim * TConfig::kModelDim>
-      vit_img_head_kernel;
+  MatPtrT<float> vit_img_head_bias;
+  MatPtrT<WeightF32OrBF16> vit_img_head_kernel;
 
-  // Must be last so that the other arrays remain aligned.
-  CompressedLayerPointers<TConfig> c_layer_ptrs;
+  // Storage for all the matrices and vectors.
+  std::vector<MatStorage> model_storage;
+  std::unordered_set<std::string> scale_names;
 
-  explicit CompressedWeights(hwy::ThreadPool& pool)
-      : c_layer_ptrs(pool)
-  {}
+  CompressedLayer<TConfig> c_layers[TConfig::kLayers];
+  CompressedLayer<typename TConfig::VitConfig>
+      vit_layers[TConfig::VitConfig::kLayers];
 
   // Called by weights.cc after ForEachTensor.
   void Reshape(hwy::ThreadPool& pool) {
-    pool.Run(0, TConfig::kLayers, [this](uint64_t layer, size_t /*thread*/) {
-      GetLayer(layer)->Reshape();
-    });
+    size_t storage_index = model_storage.size();
+    for (size_t layer = 0; layer < TConfig::kLayers; ++layer) {
+      model_storage.emplace_back(GetLayer(layer)->att_weights);
+    }
+    pool.Run(0, TConfig::kLayers,
+             [this, storage_index](uint64_t layer, size_t /*thread*/) {
+               GetLayer(layer)->Reshape(model_storage[storage_index + layer]);
+             });
   }
 
   void ZeroInit() {
-    hwy::ZeroBytes(&embedder_input_embedding, sizeof(embedder_input_embedding));
-    hwy::ZeroBytes(&final_norm_scale, sizeof(final_norm_scale));
-    hwy::ZeroBytes(&vit_encoder_norm_bias, sizeof(vit_encoder_norm_bias));
-    hwy::ZeroBytes(&vit_encoder_norm_scale, sizeof(vit_encoder_norm_scale));
-    hwy::ZeroBytes(&vit_img_embedding_bias, sizeof(vit_img_embedding_bias));
-    hwy::ZeroBytes(&vit_img_embedding_kernel, sizeof(vit_img_embedding_kernel));
-    hwy::ZeroBytes(&vit_img_head_bias, sizeof(vit_img_head_bias));
-    hwy::ZeroBytes(&vit_img_head_kernel, sizeof(vit_img_head_kernel));
-    hwy::ZeroBytes(&vit_img_pos_embedding, sizeof(vit_img_pos_embedding));
+    embedder_input_embedding.ZeroInit();
+    final_norm_scale.ZeroInit();
     for (int i = 0; i < TConfig::kLayers; ++i) {
-      hwy::ZeroBytes(GetLayer(i), sizeof(*GetLayer(i)));
-    }
-    if constexpr (TConfig::VitConfig::kLayers > 0) {
-      for (int i = 0; i < TConfig::VitConfig::kLayers; ++i) {
-        hwy::ZeroBytes(GetVitLayer(i), sizeof(*GetVitLayer(i)));
-      }
+      c_layers[i].ZeroInit(i);
     }
   }
 
   const CompressedLayer<TConfig>* GetLayer(size_t layer) const {
-    return c_layer_ptrs.c_layers[layer].get();
+    return &c_layers[layer];
   }
-  CompressedLayer<TConfig>* GetLayer(size_t layer) {
-    return c_layer_ptrs.c_layers[layer].get();
-  }
+  CompressedLayer<TConfig>* GetLayer(size_t layer) { return &c_layers[layer]; }
   const CompressedLayer<typename TConfig::VitConfig>* GetVitLayer(
       size_t layer) const {
-    return c_layer_ptrs.c_vit_layers[layer].get();
+    return &vit_layers[layer];
   }
   CompressedLayer<typename TConfig::VitConfig>* GetVitLayer(size_t layer) {
-    return c_layer_ptrs.c_vit_layers[layer].get();
+    return &vit_layers[layer];
   }
+
+  // Copies the data from other to *this.
+  void CopyFrom(const CompressedWeights<TConfig>& other) {
+    ForEachTensor({this, const_cast<CompressedWeights<TConfig>*>(&other)},
+                  ForEachType::kIgnoreNulls,
+                  [](const char*, hwy::Span<MatPtr*> tensors) {
+                    hwy::CopyBytes(tensors[1]->Ptr(), tensors[0]->Ptr(),
+                                   tensors[1]->SizeBytes());
+                  });
+  }
+
+  // If scales is empty, computes and returns the scale factors for the tensors,
+  // otherwise applies the scale factors to the tensors.
+  void GetOrApplyScales(std::vector<float>& scales) {
+    int scale_pos = 0;
+    ForEachTensor(
+        {this}, ForEachType::kIgnoreNulls,
+        [&scales, &scale_pos, this](const char*, hwy::Span<MatPtr*> tensors) {
+          if (this->scale_names.count(tensors[0]->Name())) {
+            if (scale_pos < scales.size()) {
+              tensors[0]->set_scale(scales[scale_pos]);
+            } else {
+              float scale = ScaleWeights(tensors[0]->data<float>(),
+                                         tensors[0]->NumElements());
+              scales.push_back(scale);
+            }
+            ++scale_pos;
+          }
+        });
+    HWY_ASSERT(scale_pos == TConfig::kNumTensorScales);
+  }
+
+  template <class Func>
+  static void ForEachTensor(
+      const std::vector<CompressedWeights<TConfig>*>& ptrs, ForEachType fet,
+      Func func) {
+    std::vector<CompressedLayer<TConfig>*> layers(ptrs.size());
+    std::vector<CompressedLayer<typename TConfig::VitConfig>*> vit_layers(
+        ptrs.size());
+    MatPtr* tensors[ptrs.size()];
+    // Variables used by GEMMA_CALL_FUNC.
+    int layer_idx = -1;
+    char sep = ' ';
+    int sep_index = -1;
+    GEMMA_CALL_FUNC(embedder_input_embedding);
+    GEMMA_CALL_FUNC(final_norm_scale);
+    if constexpr (TConfig::VitConfig::kLayers > 0) {
+      // Vit parts.
+      GEMMA_CALL_FUNC(vit_encoder_norm_bias);
+      GEMMA_CALL_FUNC(vit_encoder_norm_scale);
+      GEMMA_CALL_FUNC(vit_img_embedding_bias);
+      GEMMA_CALL_FUNC(vit_img_embedding_kernel);
+      GEMMA_CALL_FUNC(vit_img_pos_embedding);
+      GEMMA_CALL_FUNC(vit_img_head_bias);
+      GEMMA_CALL_FUNC(vit_img_head_kernel);
+    }
+
+    for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
+      for (int i = 0; i < ptrs.size(); ++i) {
+        layers[i] = ptrs[i]->GetLayer(layer_idx);
+      }
+      CompressedLayer<TConfig>::ForEachTensor(layers, layer_idx, fet, func);
+    }
+
+    // Vit layers. Not supported for compress_weights.
+    if constexpr (TConfig::VitConfig::kLayers > 0) {
+      for (int layer_idx = 0; layer_idx < TConfig::VitConfig::kLayers;
+           ++layer_idx) {
+        auto type = TConfig::VitConfig::kLayerConfig[layer_idx];
+        HWY_ASSERT(type == LayerAttentionType::kVit);
+        for (int i = 0; i < ptrs.size(); ++i) {
+          vit_layers[i] = ptrs[i]->GetVitLayer(layer_idx);
+        }
+        CompressedLayer<typename TConfig::VitConfig>::ForEachTensor(
+            vit_layers, layer_idx, fet, func);
+      }
+    }
+  }
+};
+#undef GEMMA_CALL_FUNC
+
+// Pair of configs for the compressed and uncompressed weights.
+template <class CConfig, class UCConfig>
+struct ConfigPair {
+  using uc = UCConfig;
+  using c = CConfig;
 };
 
 // ----------------------------------------------------------------------------
@@ -263,6 +518,20 @@ struct AllocateCompressedWeights {
     ByteStorageT weights_u8 = AllocateSizeof<TWeights>();
     TWeights* weights = reinterpret_cast<TWeights*>(weights_u8.get());
     new (weights) TWeights(pool);
+    std::vector<MatPtr*> model_toc;
+    auto& model_storage = weights->model_storage;
+    TWeights::ForEachTensor(
+        {weights}, ForEachType::kInitNoToc,
+        [&model_toc, &model_storage](const char*, hwy::Span<MatPtr*> tensors) {
+          model_toc.push_back(tensors[0]);
+          model_storage.emplace_back(*tensors[0]);
+        });
+    // Allocate in parallel using the pool.
+    pool.Run(0, model_storage.size(),
+             [&model_toc, &model_storage](uint64_t task, size_t /*thread*/) {
+               model_storage[task].Allocate();
+               model_toc[task]->SetPtr(model_storage[task]);
+             });
     return weights_u8;
   }
 };
@@ -287,290 +556,10 @@ struct ReshapeCompressedWeights {
 
 // TODO: also add RandInitCompressedWeights
 
-template <class TConfig>
-struct DeleteCompressedWeights {
-  void operator()(ByteStorageT& weights_u8) const {
-    CompressedWeights<TConfig>& weights =
-        *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
-    weights.~CompressedWeights<TConfig>();
-  }
-};
-
 ByteStorageT LoadCompressedWeights(const Path& weights, Model model_type,
                                    Type weight_type, hwy::ThreadPool& pool);
 
 void LogWeightStats(Model model, Type weight_type, const ByteStorageT& weights);
-
-// ----------------------------------------------------------------------------
-// Iterators
-
-// We rely on `if constexpr` to ensure raw_weights->member is only compiled
-// when valid, i.e., kHaveRaw == true, but the IDE analysis does not understand
-// this, hence hide the member access from it.
-#if HWY_IDE
-#define GEMMA_MEMBER(aggregate, member) nullptr
-#else
-#define GEMMA_MEMBER(aggregate, member) aggregate->member
-#endif
-
-// Used by ForEachTensor for tensors that are not in a layer.
-#define GEMMA_CALL_TOP_FUNC(name, member)                    \
-  {                                                          \
-    const float* raw_tensor = nullptr;                       \
-    if constexpr (kHaveRaw) {                                \
-      raw_tensor = GEMMA_MEMBER(raw_weights, member.data()); \
-    }                                                        \
-    func(name, raw_tensor, c_weights.member);                \
-  }
-
-// Used by ForEachTensor for per-layer tensors. Writes into name_buf.
-#define GEMMA_CALL_FUNC(name, member)                          \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx); \
-  {                                                            \
-    const float* raw_tensor = nullptr;                         \
-    if constexpr (kHaveRaw) {                                  \
-      raw_tensor = GEMMA_MEMBER(raw_layer, member.data());     \
-    }                                                          \
-    func(name_buf, raw_tensor, c_layer->member);               \
-  }
-
-// Calls func(name, float*, CompressedArray&) for each tensor. float* is
-// null if raw_weights is nullptr, e.g., when loading weights from BlobStore.
-// Otherwise, RawLayer must be specified and we pass a float* pointing to the
-// raw float weights for that tensor for use by compress_weights.cc.
-//
-// This avoids repeating the list of tensors between loading and compressing,
-// while also avoiding dependency on raw_weights.h.
-//
-// This only calls Func for tensors that TConfig requests/specifies, which means
-// scale() is uninitialized for the other tensors, so their data_scale1() must
-// not be called. (In other words, if the config doesn't specify a tensor, it
-// shouldn't be used.)
-template <class TConfig, class RawLayer = void, class RawWeightsPtr, class Func>
-void ForEachTensor(RawWeightsPtr raw_weights,
-                   CompressedWeights<TConfig>& c_weights, Func& func) {
-  constexpr bool kHaveRaw = !hwy::IsSame<RawWeightsPtr, std::nullptr_t>();
-
-  GEMMA_CALL_TOP_FUNC("c_embedding", embedder_input_embedding);
-  GEMMA_CALL_TOP_FUNC("c_final_norm", final_norm_scale);
-
-  if constexpr (TConfig::VitConfig::kLayers > 0 && !kHaveRaw) {
-    GEMMA_CALL_TOP_FUNC("enc_norm_bias", vit_encoder_norm_bias);
-    GEMMA_CALL_TOP_FUNC("enc_norm_scale", vit_encoder_norm_scale);
-    GEMMA_CALL_TOP_FUNC("img_emb_bias", vit_img_embedding_bias);
-    GEMMA_CALL_TOP_FUNC("img_emb_kernel", vit_img_embedding_kernel);
-    GEMMA_CALL_TOP_FUNC("img_head_bias", vit_img_head_bias);
-    GEMMA_CALL_TOP_FUNC("img_head_kernel", vit_img_head_kernel);
-    GEMMA_CALL_TOP_FUNC("img_pos_emb", vit_img_pos_embedding);
-  }
-
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    const RawLayer* raw_layer = nullptr;
-    if constexpr (kHaveRaw) {
-      raw_layer = raw_weights->GetLayer(idx);
-    }
-    CompressedLayer<TConfig>* c_layer = c_weights.GetLayer(idx);
-
-    GEMMA_CALL_FUNC("pre_ff_ns", pre_ffw_norm_scale);
-    GEMMA_CALL_FUNC("gating_ein", gating_einsum_w);
-    GEMMA_CALL_FUNC("linear_w", linear_w);
-    if (type == LayerAttentionType::kGemma) {
-      GEMMA_CALL_FUNC("qkv_ein", qkv_einsum_w);
-      GEMMA_CALL_FUNC("att_ein", attn_vec_einsum_w);
-    } else {
-      GEMMA_CALL_FUNC("gr_lin_x_w", griffin.linear_x_w);
-      GEMMA_CALL_FUNC("gr_lin_x_b", griffin.linear_x_biases);
-      GEMMA_CALL_FUNC("gr_lin_y_w", griffin.linear_y_w);
-      GEMMA_CALL_FUNC("gr_lin_y_b", griffin.linear_y_biases);
-      GEMMA_CALL_FUNC("gr_lin_out_w", griffin.linear_out_w);
-      GEMMA_CALL_FUNC("gr_lin_out_b", griffin.linear_out_biases);
-      GEMMA_CALL_FUNC("gr_conv_w", griffin.conv_w);
-      GEMMA_CALL_FUNC("gr_conv_b", griffin.conv_biases);
-      GEMMA_CALL_FUNC("gr_gate_w", griffin.gate_w);
-      GEMMA_CALL_FUNC("gr_gate_b", griffin.gate_biases);
-      GEMMA_CALL_FUNC("gr_a", griffin.a);
-    }
-    GEMMA_CALL_FUNC("pre_att_ns", pre_attention_norm_scale);
-
-    if (TConfig::kPostNorm == PostNormType::Scale) {
-      GEMMA_CALL_FUNC("post_att_ns", post_attention_norm_scale);
-      GEMMA_CALL_FUNC("post_ff_ns", post_ffw_norm_scale);
-    }
-
-    if (TConfig::kFFBiases) {
-      GEMMA_CALL_FUNC("ffw_gat_b", ffw_gating_biases);
-      GEMMA_CALL_FUNC("ffw_out_b", ffw_output_biases);
-    }
-
-    if (TConfig::kSoftmaxAttnOutputBiases &&
-        type == LayerAttentionType::kGemma) {
-      GEMMA_CALL_FUNC("attn_ob", attention_output_biases);
-    }
-  }
-
-  // Vit layers. Not supported for compress_weights.
-  if constexpr (TConfig::VitConfig::kLayers > 0 && !kHaveRaw) {
-    for (int layer_idx = 0; layer_idx < TConfig::VitConfig::kLayers;
-         ++layer_idx) {
-      auto type = TConfig::VitConfig::kLayerConfig[layer_idx];
-      HWY_ASSERT(type == LayerAttentionType::kVit);
-      const size_t idx = static_cast<size_t>(layer_idx);
-      const RawLayer* raw_layer = nullptr;
-      CompressedLayer<typename TConfig::VitConfig>* c_layer =
-          c_weights.GetVitLayer(idx);
-
-      // MHA.
-      GEMMA_CALL_FUNC("attn_out_w", vit.attn_out_w);
-      GEMMA_CALL_FUNC("attn_out_b", vit.attn_out_b);
-      GEMMA_CALL_FUNC("qkv_ein_w", vit.qkv_einsum_w);
-      GEMMA_CALL_FUNC("qkv_ein_b", vit.qkv_einsum_b);
-      // MlpBlock.
-      GEMMA_CALL_FUNC("linear_0_w", vit.linear_0_w);
-      GEMMA_CALL_FUNC("linear_0_b", vit.linear_0_b);
-      GEMMA_CALL_FUNC("linear_1_w", vit.linear_1_w);
-      GEMMA_CALL_FUNC("linear_1_b", vit.linear_1_b);
-      // LayerNorm.
-      GEMMA_CALL_FUNC("ln_0_bias", vit.layer_norm_0_bias);
-      GEMMA_CALL_FUNC("ln_0_scale", vit.layer_norm_0_scale);
-      GEMMA_CALL_FUNC("ln_1_bias", vit.layer_norm_1_bias);
-      GEMMA_CALL_FUNC("ln_1_scale", vit.layer_norm_1_scale);
-    }
-  }
-#undef GEMMA_CALL_FUNC
-#undef GEMMA_CALL_TOP_FUNC
-}  // ForEachTensor
-
-#define GEMMA_CALL_TOP_FUNC1(name, member) func(name, weights1.member)
-#define GEMMA_CALL_TOP_FUNC2(name, member)      \
-  func(name, weights1.member, weights2.member)
-#define GEMMA_CALL_TOP_FUNC3(name, member)      \
-  func(name, weights1.member, weights2.member, weights3.member)
-#define GEMMA_CALL_TOP_FUNC4(name, member)       \
-  func(name, weights1.member, weights2.member,   \
-       weights3.member, weights4.member)
-
-#define GEMMA_CALL_LAYER_FUNC1(name, member)                          \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member)
-
-#define GEMMA_CALL_LAYER_FUNC2(name, member)                          \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member, layer2.member)
-
-#define GEMMA_CALL_LAYER_FUNC3(name, member)                          \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member, layer2.member, layer3.member)
-
-#define GEMMA_CALL_LAYER_FUNC4(name, member)                          \
-  snprintf(name_buf, sizeof(name_buf), name "_%d", layer_idx);        \
-  func(name_buf, layer1.member, layer2.member, layer3.member, layer4.member)
-
-#define GEMMA_CALL_ALL_LAYER_FUNC(N)                                          \
-  if (type == LayerAttentionType::kGemma) {                                   \
-    GEMMA_CALL_LAYER_FUNC ## N("att_ein", attn_vec_einsum_w);                 \
-    GEMMA_CALL_LAYER_FUNC ## N("qkv_ein", qkv_einsum_w);                      \
-  } else {                                                                    \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_x_w", griffin.linear_x_w);             \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_x_b", griffin.linear_x_biases);        \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_y_w", griffin.linear_y_w);             \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_y_b", griffin.linear_y_biases);        \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_out_w", griffin.linear_out_w);         \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_lin_out_b", griffin.linear_out_biases);    \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_conv_w", griffin.conv_w);                  \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_conv_b", griffin.conv_biases);             \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_gate_w", griffin.gate_w);                  \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_gate_b", griffin.gate_biases);             \
-    GEMMA_CALL_LAYER_FUNC ## N("gr_a", griffin.a);                            \
-  }                                                                           \
-  GEMMA_CALL_LAYER_FUNC ## N("gating_ein", gating_einsum_w);                  \
-  GEMMA_CALL_LAYER_FUNC ## N("linear_w", linear_w);                           \
-  GEMMA_CALL_LAYER_FUNC ## N("pre_att_ns", pre_attention_norm_scale);         \
-  if (TConfig::kPostNorm == PostNormType::Scale) {                            \
-    GEMMA_CALL_LAYER_FUNC ## N("post_att_ns", post_attention_norm_scale);     \
-    GEMMA_CALL_LAYER_FUNC ## N("post_ff_ns", post_ffw_norm_scale);            \
-  }                                                                           \
-  GEMMA_CALL_LAYER_FUNC ## N("pre_ff_ns", pre_ffw_norm_scale);                \
-  if (TConfig::kFFBiases) {                                                   \
-    GEMMA_CALL_LAYER_FUNC ## N("ffw_gat_b", ffw_gating_biases);               \
-    GEMMA_CALL_LAYER_FUNC ## N("ffw_out_b", ffw_output_biases);               \
-  }                                                                           \
-  if (TConfig::kSoftmaxAttnOutputBiases &&                                    \
-    type == LayerAttentionType::kGemma) {                                     \
-    GEMMA_CALL_LAYER_FUNC ## N("attn_ob", attention_output_biases);           \
-  }
-
-template <typename TConfig, class Func>
-void ForEachTensor1(Func& func, const CompressedWeights<TConfig>& weights1) {
-  GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
-  GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
-    GEMMA_CALL_ALL_LAYER_FUNC(1)
-  }
-}
-
-template <typename TConfig, class Func>
-void ForEachTensor1(Func& func, CompressedWeights<TConfig>& weights1) {
-  GEMMA_CALL_TOP_FUNC1("embedding", embedder_input_embedding);
-  GEMMA_CALL_TOP_FUNC1("final_norm", final_norm_scale);
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
-    GEMMA_CALL_ALL_LAYER_FUNC(1)
-  }
-}
-
-template <typename TConfig, class Func>
-void ForEachTensor2(Func& func, const CompressedWeights<TConfig>& weights1,
-                    CompressedWeights<TConfig>& weights2) {
-  GEMMA_CALL_TOP_FUNC2("embedding", embedder_input_embedding);
-  GEMMA_CALL_TOP_FUNC2("final_norm", final_norm_scale);
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
-    CompressedLayer<TConfig>& layer2 = *weights2.GetLayer(idx);
-    GEMMA_CALL_ALL_LAYER_FUNC(2)
-  }
-}
-
-template <typename TConfig, class Func>
-void ForEachTensor4(Func& func, const CompressedWeights<TConfig>& weights1,
-                    CompressedWeights<TConfig>& weights2,
-                    CompressedWeights<TConfig>& weights3,
-                    CompressedWeights<TConfig>& weights4) {
-  GEMMA_CALL_TOP_FUNC4("embedding", embedder_input_embedding);
-  GEMMA_CALL_TOP_FUNC4("final_norm", final_norm_scale);
-  char name_buf[16];
-  for (int layer_idx = 0; layer_idx < TConfig::kLayers; ++layer_idx) {
-    auto type = TConfig::kLayerConfig[layer_idx];
-    const size_t idx = static_cast<size_t>(layer_idx);
-    const CompressedLayer<TConfig>& layer1 = *weights1.GetLayer(idx);
-    CompressedLayer<TConfig>& layer2 = *weights2.GetLayer(idx);
-    CompressedLayer<TConfig>& layer3 = *weights3.GetLayer(idx);
-    CompressedLayer<TConfig>& layer4 = *weights4.GetLayer(idx);
-    GEMMA_CALL_ALL_LAYER_FUNC(4)
-  }
-}
-
-#undef GEMMA_CALL_TOP_FUNC1
-#undef GEMMA_CALL_TOP_FUNC2
-#undef GEMMA_CALL_TOP_FUNC3
-#undef GEMMA_CALL_TOP_FUNC4
-#undef GEMMA_CALL_LAYER_FUNC1
-#undef GEMMA_CALL_LAYER_FUNC2
-#undef GEMMA_CALL_LAYER_FUNC3
-#undef GEMMA_CALL_LAYER_FUNC4
-#undef GEMMA_CALL_ALL_LAYER_FUNC
 
 }  // namespace gcpp
 

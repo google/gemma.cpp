@@ -20,32 +20,51 @@
 
 #include <array>
 
+#include "compression/compress.h"  // MatStorageT
 #include "util/allocator.h"  // ByteStorageT
 
 namespace gcpp {
 
 template <typename T, typename TConfig>
 struct ForwardLayer {
+  ForwardLayer()
+      : input("input", kSeqLen, kModelDim),
+        pre_att_rms_out("pre_att_rms_out", kSeqLen, kModelDim),
+        qkv("qkv", kSeqLen * (kHeads + 2), kQKVDim),
+        att("att", kSeqLen * kHeads, kSeqLen),
+        att_out("att_out", kSeqLen * kHeads, kQKVDim),
+        att_post1("att_post1", kSeqLen, kModelDim),
+        attention_out("attention_out", kSeqLen, kModelDim),
+        bf_pre_ffw_rms_out("bf_pre_ffw_rms_out", kSeqLen, kModelDim),
+        ffw_hidden("ffw_hidden", kSeqLen, kFFHiddenDim * 2),
+        ffw_hidden_gated("ffw_hidden_gated", kSeqLen, kFFHiddenDim) {}
+
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
   static constexpr size_t kHeads = TConfig::kHeads;
   static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  std::array<T, kSeqLen * kModelDim> input;
-  std::array<T, kSeqLen * kModelDim> pre_att_rms_out;
-  std::array<T, kSeqLen * (kHeads + 2) * kQKVDim> qkv;
-  std::array<T, kSeqLen * kHeads * kSeqLen> att;
-  std::array<T, kSeqLen * kHeads * kQKVDim> att_out;
-  std::array<T, kSeqLen * kModelDim> att_post1;
-  std::array<T, kSeqLen * kModelDim> attention_out;
-  std::array<T, kSeqLen * kModelDim> bf_pre_ffw_rms_out;
-  std::array<T, kSeqLen * kFFHiddenDim * 2> ffw_hidden;
-  std::array<T, kSeqLen * kFFHiddenDim> ffw_hidden_gated;
+
+  MatStorageT<T> input;
+  MatStorageT<T> pre_att_rms_out;
+  MatStorageT<T> qkv;
+  MatStorageT<T> att;
+  MatStorageT<T> att_out;
+  MatStorageT<T> att_post1;
+  MatStorageT<T> attention_out;
+  MatStorageT<T> bf_pre_ffw_rms_out;
+  MatStorageT<T> ffw_hidden;
+  MatStorageT<T> ffw_hidden_gated;
 };
 
 template <typename T, typename TConfig>
 struct ForwardPass {
-  ForwardPass() {}  // prevents placement-new calling memset
+  ForwardPass()
+      : final_layer_output("final_layer_output", kSeqLen, kModelDim),
+        final_norm_output("final_norm_output", kSeqLen, kModelDim),
+        logits("logits", kSeqLen, kVocabSize),
+        probs("probs", kSeqLen, kVocabSize) {
+  }  // prevents placement-new calling memset
 
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -53,16 +72,20 @@ struct ForwardPass {
   static constexpr size_t kLayers = TConfig::kLayers;
 
   std::array<ForwardLayer<T, TConfig>, kLayers> layers;
-  std::array<T, kSeqLen * kModelDim> final_layer_output;
-  std::array<T, kSeqLen * kModelDim> final_norm_output;
-  std::array<T, kSeqLen * kVocabSize> logits;
-  std::array<T, kSeqLen * kVocabSize> probs;
+  MatStorageT<T> final_layer_output;
+  MatStorageT<T> final_norm_output;
+  MatStorageT<T> logits;
+  MatStorageT<T> probs;
 };
 
 template <typename TConfig>
 struct AllocateForwardPass {
   ByteStorageT operator()() const {
-    return AllocateSizeof<ForwardPass<float, TConfig>>();
+    ByteStorageT c_weights_u8 = AllocateSizeof<ForwardPass<float, TConfig>>();
+    auto* c_weights =
+        reinterpret_cast<ForwardPass<float, TConfig>*>(c_weights_u8.get());
+    new (c_weights) ForwardPass<float, TConfig>();
+    return c_weights_u8;
   }
 };
 
@@ -74,7 +97,7 @@ class ActivationsWrapper {
  public:
   ActivationsWrapper()
       : data_(AllocateSizeof<WrappedT>()),
-        activations_(*reinterpret_cast<WrappedT*>(data_.get())) {}
+        activations_(*(new(data_.get()) WrappedT())) {}
 
   const WrappedT& get() const { return activations_; }
   WrappedT& get() { return activations_; }

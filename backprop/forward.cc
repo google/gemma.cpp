@@ -46,8 +46,8 @@ float CrossEntropyLossForwardPass(const Prompt& prompt,
       *reinterpret_cast<CompressedWeights<TConfig>*>(weights_u8.get());
   auto& forward =
       *reinterpret_cast<ForwardPass<float, TConfig>*>(forward_u8.get());
-  return CrossEntropyLossForwardPass<TConfig, CompressedWeights,
-                                     CompressedLayer>(
+  return CrossEntropyLossForwardPass<TConfig, CompressedWeights<TConfig>,
+                                     CompressedLayer<TConfig>>(
       prompt.tokens, prompt.context_size, weights, forward, inv_timescale,
       pool);
 }

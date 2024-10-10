@@ -75,9 +75,7 @@ cc_library(
         ":allocator",
         ":threading",
         "//compression:compress",
-        "//compression:sfp",
         "@hwy//:algo",
-        "@hwy//:dot",
         "@hwy//:hwy",
         "@hwy//:math",
         "@hwy//:matvec",
@@ -149,7 +147,6 @@ cc_test(
         "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
-        "@hwy//:nanobenchmark",
         "@hwy//:thread_pool",
     ],
 )
@@ -281,11 +278,9 @@ cc_library(
         "//paligemma:image",
         "@hwy//:hwy",
         "@hwy//:bit_set",
-        "@hwy//:matvec",
         "@hwy//:nanobenchmark",  # timer
         "@hwy//:profiler",
         "@hwy//:thread_pool",
-        "@hwy//:topology",
     ],
 )
 
@@ -481,6 +476,7 @@ cc_library(
         ":ops",
         ":prompt",
         ":weights",
+        "//compression:compress",
         "@hwy//:dot",
         "@hwy//:hwy",  # base.h
         "@hwy//:thread_pool",
@@ -498,9 +494,10 @@ cc_library(
     deps = [
         ":allocator",
         ":common",
-        ":gemma_lib",
         ":prompt",
-        "//compression:weights_raw",
+        ":weights",
+        "//compression:compress",
+        "@hwy//:hwy",
     ],
 )
 
@@ -512,13 +509,15 @@ cc_test(
         "backprop/test_util.h",
     ],
     deps = [
+        ":allocator",
         ":backprop_scalar",
         ":common",
-        ":gemma_lib",
         ":prompt",
         ":sampler",
+        ":weights",
         "@googletest//:gtest_main",
-        "//compression:weights_raw",
+        "//compression:compress",
+        "@hwy//:thread_pool",
     ],
 )
 
@@ -534,6 +533,7 @@ cc_test(
         "mem": "28g",
     },
     deps = [
+        ":allocator",
         ":backprop",
         ":backprop_scalar",
         ":common",
@@ -541,8 +541,9 @@ cc_test(
         ":ops",
         ":prompt",
         ":sampler",
+        ":weights",
         "@googletest//:gtest_main",
-        "//compression:weights_raw",
+        "//compression:compress",
         "@hwy//:hwy",
         "@hwy//:hwy_test_util",
         "@hwy//:thread_pool",

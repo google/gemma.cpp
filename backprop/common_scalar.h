@@ -18,8 +18,9 @@
 
 #include <stddef.h>
 
-#include <array>
 #include <complex>
+
+#include "compression/compress.h"  // MatStorageT
 
 namespace gcpp {
 
@@ -57,9 +58,9 @@ void MulByConstAndAddT(T c, const T* x, T* out, size_t N) {
   }
 }
 
-template<typename T, size_t N>
-void MulByConstAndAddT(T c, const std::array<T, N>& x, std::array<T, N>& out) {
-  MulByConstAndAddT(c, x.data(), out.data(), N);
+template <typename T>
+void MulByConstAndAddT(T c, const MatPtrT<T>& x, MatPtrT<T>& out) {
+  MulByConstAndAddT(c, x.data(), out.data(), x.NumElements());
 }
 
 template<typename T>

@@ -93,8 +93,8 @@ static HWY_NOINLINE float CrossEntropyLoss(const float* HWY_RESTRICT probs,
   return loss * scaling;
 }
 
-template <typename TConfig, template <typename> typename LayerT>
-void ApplyForwardLayer(const LayerT<TConfig>& weights,
+template <typename TConfig, typename LayerT>
+void ApplyForwardLayer(const LayerT& weights,
                        ForwardLayer<float, TConfig>& activations,
                        size_t num_tokens, float* HWY_RESTRICT output,
                        const RowVectorBatch<float>& inv_timescale,
@@ -171,8 +171,7 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
     }
   });
 
-  hwy::ZeroBytes(activations.attention_out.data(),
-                 num_tokens * kModelDim * sizeof(activations.attention_out[0]));
+  activations.attention_out.ZeroInit();
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     for (size_t head = 0; head < kHeads; ++head) {
       MatVec<kModelDim, kQKVDim>(
@@ -227,11 +226,9 @@ void ApplyForwardLayer(const LayerT<TConfig>& weights,
   }
 }
 
-template <typename TConfig, template <typename...> typename WeightsT,
-          template <typename> typename LayerT>
+template <typename TConfig, typename WeightsT, typename LayerT>
 float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
-                                  size_t context_size,
-                                  const WeightsT<TConfig>& weights,
+                                  size_t context_size, const WeightsT& weights,
                                   ForwardPass<float, TConfig>& forward,
                                   const RowVectorBatch<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
@@ -281,7 +278,7 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
   }
 
   hwy::CopyBytes(forward.logits.data(), forward.probs.data(),
-                 num_tokens * kVocabSize * sizeof(forward.logits[0]));
+                 num_tokens * kVocabSize * sizeof(forward.logits.At(0)));
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     Softmax(forward.probs.data() + pos * kVocabSize, kVocabSize);

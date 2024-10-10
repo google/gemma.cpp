@@ -168,11 +168,11 @@ static HWY_NOINLINE void InputEmbeddingVJP(
   }
 }
 
-template <typename TConfig, template <typename> typename LayerT>
-void LayerVJP(const LayerT<TConfig>& weights,
+template <typename TConfig, typename LayerT>
+void LayerVJP(const LayerT& weights,
               const ForwardLayer<float, TConfig>& forward,
               const float* HWY_RESTRICT next_layer_grad, size_t num_tokens,
-              LayerT<TConfig>& grad, ForwardLayer<float, TConfig>& backward,
+              LayerT& grad, ForwardLayer<float, TConfig>& backward,
               const RowVectorBatch<float>& inv_timescale,
               hwy::ThreadPool& pool) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
@@ -226,8 +226,7 @@ void LayerVJP(const LayerT<TConfig>& weights,
             backward.attention_out.data() + pos * kModelDim, kModelDim);
   }
 
-  hwy::ZeroBytes(backward.qkv.data(),
-                 num_tokens * (kHeads + 2) * kQKVDim * sizeof(backward.qkv[0]));
+  backward.qkv.ZeroInit();
 
   MultiHeadMatMulVJP<kHeads, kQKVDim, kModelDim>(
       weights.attn_vec_einsum_w.data(), forward.att_out.data(),
@@ -343,12 +342,10 @@ static HWY_NOINLINE void CrossEntropyLossGrad(
   }
 }
 
-template <typename TConfig, template <typename...> typename WeightsT,
-          template <typename> typename LayerT>
-void CrossEntropyLossBackwardPass(const Prompt& prompt,
-                                  const WeightsT<TConfig>& weights,
+template <typename TConfig, typename WeightsT, typename LayerT>
+void CrossEntropyLossBackwardPass(const Prompt& prompt, const WeightsT& weights,
                                   const ForwardPass<float, TConfig>& forward,
-                                  WeightsT<TConfig>& grad,
+                                  WeightsT& grad,
                                   ForwardPass<float, TConfig>& backward,
                                   RowVectorBatch<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {

@@ -52,7 +52,8 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
   using TAct = ForwardPass<float, TConfig>;
   const auto& forward = *reinterpret_cast<const TAct*>(forward_u8.get());
   auto& backward = *reinterpret_cast<TAct*>(backward_u8.get());
-  CrossEntropyLossBackwardPass<TConfig, CompressedWeights, CompressedLayer>(
+  CrossEntropyLossBackwardPass<TConfig, CompressedWeights<TConfig>,
+                               CompressedLayer<TConfig>>(
       prompt, weights, forward, grad, backward, inv_timescale, pool);
 }
 

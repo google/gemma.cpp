@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "compression/io.h"
@@ -31,6 +32,9 @@ namespace gcpp {
 
 // Convenient way to construct a key from a string (<= 16 chars).
 hwy::uint128_t MakeKey(const char* string);
+
+// Returns a string from a key.
+std::string StringFromKey(hwy::uint128_t key);
 
 // Ordered list of opaque blobs (~hundreds), identified by unique opaque
 // 128-bit keys.
@@ -67,12 +71,18 @@ class BlobReader {
   // Opens `filename` and reads its header.
   BlobError Open(const Path& filename);
 
+  // Returns the size of the blob identified by `key`, or 0 if not found.
+  size_t BlobSize(hwy::uint128_t key) const;
+
   // Enqueues read requests if `key` is found and its size matches `size`, which
   // is in units of bytes.
   BlobError Enqueue(hwy::uint128_t key, void* data, size_t size);
 
   // Reads all enqueued requests.
   BlobError ReadAll(hwy::ThreadPool& pool);
+
+  // Reads one blob directly.
+  BlobError ReadOne(hwy::uint128_t key, void* data, size_t size) const;
 
  private:
   BlobStorePtr blob_store_;  // holds header, not the entire file

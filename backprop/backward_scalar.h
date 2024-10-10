@@ -25,8 +25,8 @@
 #include "backprop/activations.h"
 #include "backprop/common_scalar.h"
 #include "backprop/prompt.h"
-#include "compression/weights_raw.h"
 #include "gemma/common.h"  // EmbeddingScaling
+#include "gemma/weights.h"
 
 namespace gcpp {
 template<typename T>
@@ -199,13 +199,11 @@ void InputEmbeddingVJPT(const T* w, const std::vector<int>& tokens, T scaling,
   }
 }
 
-template<typename T, typename TConfig>
-void LayerVJP(const Layer<T, TConfig>& weights,
-              const ForwardLayer<T, TConfig>& forward,
-              const T* dy,
-              Layer<T, TConfig>& grad,
-              ForwardLayer<T, TConfig>& backward,
-              size_t num_tokens) {
+template <typename T, typename TConfig>
+void LayerVJP(const CompressedLayer<TConfig>& weights,
+              const ForwardLayer<T, TConfig>& forward, const T* dy,
+              CompressedLayer<TConfig>& grad,
+              ForwardLayer<T, TConfig>& backward, size_t num_tokens) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kSeqLen = TConfig::kSeqLen;
   static constexpr size_t kQKVDim = TConfig::kQKVDim;
@@ -298,11 +296,11 @@ void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
   }
 }
 
-template<typename T, typename TConfig>
+template <typename T, typename TConfig>
 void CrossEntropyLossBackwardPass(const Prompt& prompt,
-                                  const Weights<T, TConfig>& weights,
+                                  const CompressedWeights<TConfig>& weights,
                                   const ForwardPass<T, TConfig>& forward,
-                                  Weights<T, TConfig>& grad,
+                                  CompressedWeights<TConfig>& grad,
                                   ForwardPass<T, TConfig>& backward) {
   static constexpr size_t kModelDim = TConfig::kModelDim;
   static constexpr size_t kVocabSize = TConfig::kVocabSize;

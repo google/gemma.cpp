@@ -244,11 +244,19 @@ class GemmaAttention {
 
     const auto pre_att_rms_out =
         ConstMat(activations_.pre_att_rms_out.All(), kModelDim);
-    MatMul</*kAdd=*/false>(
-        num_interleaved, pre_att_rms_out,
-        ConstMat(layer_weights_.qkv_einsum_w.data(), kModelDim),
-        layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr, activations_.env,
-        MutableMat(activations_.q.All(), kHeads * kQStride));
+    const auto w_q1 =
+        layer_weights_.qkv_einsum_w.data() == nullptr
+            ? ConstMat(layer_weights_.qkv_einsum_w1.data(), kModelDim)
+            : ConstMat(layer_weights_.qkv_einsum_w.data(), kModelDim);
+    const auto w_q2 =
+        layer_weights_.qkv_einsum_w.data() == nullptr
+            ? ConstMat(layer_weights_.qkv_einsum_w2.data(), kModelDim)
+            : ConstMat(layer_weights_.qkv_einsum_w.data(), kModelDim, kModelDim,
+                       kHeads * kQKVDim * kModelDim);
+    MatMul</*kAdd=*/false>(num_interleaved, pre_att_rms_out, w_q1,
+                           layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr,
+                           activations_.env,
+                           MutableMat(activations_.q.All(), kHeads * kQStride));
 
     if constexpr (kIsMHA) {
       static_assert(TConfig::kInterleaveQKV, "MHA implies interleaved");
@@ -263,9 +271,7 @@ class GemmaAttention {
         // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
         float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
         MatMul</*kAdd=*/false>(
-            num_tokens_, pre_att_rms_out,
-            ConstMat(layer_weights_.qkv_einsum_w.data(), kModelDim, kModelDim,
-                     kHeads * kQKVDim * kModelDim),
+            num_tokens_, pre_att_rms_out, w_q2,
             layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr,
             activations_.env,
             MutableMat(kv, kKVHeads * 2 * kQKVDim, kCachePosSize));
@@ -283,9 +289,14 @@ class GemmaAttention {
               cache_pos * kCachePosSize + layer_ * kCacheLayerSize;
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
           // KV structure is [k, v, k, v, ....] = kKVHeads pairs of (k, v).
-          MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
-              layer_weights_.qkv_einsum_w, kHeads * kQKVDim * kModelDim, x, kv,
-              pool_);
+          if (layer_weights_.qkv_einsum_w.data() == nullptr) {
+            MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
+                layer_weights_.qkv_einsum_w2, 0, x, kv, pool_);
+          } else {
+            MatVec<kKVHeads * 2 * kQKVDim, kModelDim>(
+                layer_weights_.qkv_einsum_w, kHeads * kQKVDim * kModelDim, x,
+                kv, pool_);
+          }
         }
       }
     }
@@ -692,10 +703,16 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
     output_bias = layer_weights->ffw_output_biases.data_scale1();
   }
   if constexpr (!kIsVit) {
-    w1 = ConstMat(layer_weights->gating_einsum_w.data(), kModelDim);
-    w2 = ConstMat(layer_weights->gating_einsum_w.data(), kModelDim, kModelDim,
-                  kModelDim * kFFHiddenDim);
-    scale = layer_weights->gating_einsum_w.scale();
+    w1 = layer_weights->gating_einsum_w.data() == nullptr
+             ? ConstMat(layer_weights->gating_einsum_w1.data(), kModelDim)
+             : ConstMat(layer_weights->gating_einsum_w.data(), kModelDim);
+    w2 = layer_weights->gating_einsum_w.data() == nullptr
+             ? ConstMat(layer_weights->gating_einsum_w2.data(), kModelDim)
+             : ConstMat(layer_weights->gating_einsum_w.data(), kModelDim,
+                        kModelDim, kModelDim * kFFHiddenDim);
+    scale = layer_weights->gating_einsum_w.data() == nullptr
+                ? layer_weights->gating_einsum_w1.scale()
+                : layer_weights->gating_einsum_w.scale();
     w_output = ConstMat(layer_weights->linear_w.data(), kFFHiddenDim);
     output_scale = layer_weights->linear_w.scale();
   } else {
@@ -712,7 +729,7 @@ HWY_NOINLINE void FFW(Activations& activations, size_t num_interleaved,
                    hidden_activations);
   if constexpr (!kIsVit) {
     MatMul<kAddBias>(num_interleaved, x, w2, scale, bias2, activations.env,
-                    multiplier);
+                     multiplier);
   }
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.

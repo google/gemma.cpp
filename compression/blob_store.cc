@@ -19,7 +19,10 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <cstdio>
 #include <memory>
+#include <new>
+#include <string>
 #include <vector>
 
 #include "compression/io.h"
@@ -43,6 +46,13 @@ hwy::uint128_t MakeKey(const char* string) {
   hwy::ZeroBytes<sizeof(ret)>(&ret);
   hwy::CopyBytes(string, &ret, length);
   return ret;
+}
+
+std::string StringFromKey(hwy::uint128_t key) {
+  std::string name(sizeof(key) + 1, '\0');
+  hwy::CopyBytes(&key, name.data(), sizeof(key));
+  name.resize(name.find('\0'));
+  return name;
 }
 
 namespace {
@@ -226,15 +236,23 @@ BlobError BlobReader::Open(const Path& filename) {
   return blob_store_->CheckValidity(file_->FileSize());
 }
 
+size_t BlobReader::BlobSize(hwy::uint128_t key) const {
+  uint64_t offset;
+  size_t size;
+  if (!blob_store_->FindKey(key, offset, size)) return 0;
+  return size;
+}
+
 BlobError BlobReader::Enqueue(hwy::uint128_t key, void* data, size_t size) {
   uint64_t offset;
   size_t actual_size;
   if (!blob_store_->FindKey(key, offset, actual_size)) return __LINE__;
   if (actual_size != size) {
     fprintf(stderr,
-            "Mismatch between expected %d and actual %d KiB size. Please see "
-            "README.md on how to update the weights.\n",
-            static_cast<int>(size >> 10), static_cast<int>(actual_size >> 10));
+            "Mismatch between expected %d and actual %d KiB size of blob %s. "
+            "Please see README.md on how to update the weights.\n",
+            static_cast<int>(size >> 10), static_cast<int>(actual_size >> 10),
+            StringFromKey(key).c_str());
     return __LINE__;
   }
 
@@ -262,6 +280,17 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
              }
            });
   if (err.test_and_set()) return __LINE__;
+  return 0;
+}
+
+BlobError BlobReader::ReadOne(hwy::uint128_t key, void* data,
+                              size_t size) const {
+  uint64_t offset;
+  size_t actual_size;
+  if (!blob_store_->FindKey(key, offset, actual_size)) return __LINE__;
+  if (!file_->Read(offset, actual_size, data)) {
+    return __LINE__;
+  }
   return 0;
 }
 

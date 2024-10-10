@@ -471,14 +471,15 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   }
 }
 
-// Adapter that compresses into `CompressedArray`. `raw` must already be scaled
+// Adapter that compresses into `MatStorageT`. `raw` must already be scaled
 // to fit the value range, if `Packed` is `SfpStream`.
-template <typename Packed, size_t kCapacity>
+template <typename Packed>
 HWY_INLINE void CompressScaled(const float* HWY_RESTRICT raw, size_t num,
                                CompressWorkingSet& work,
-                               CompressedArray<Packed, kCapacity>& compressed,
+                               MatStorageT<Packed>& compressed,
                                hwy::ThreadPool& pool) {
-  Compress(raw, num, work, MakeSpan(compressed.data(), kCapacity),
+  Compress(raw, num, work,
+           MakeSpan(compressed.data(), compressed.NumElements()),
            /*packed_ofs=*/0, pool);
 }
 
@@ -674,28 +675,24 @@ class Compressor {
  public:
   explicit Compressor(hwy::ThreadPool& pool) : pool_(pool) {}
 
-  template <typename Packed, size_t kCapacity>
-  void operator()(const char* name, const float* HWY_RESTRICT weights,
-                  CompressedArray<Packed, kCapacity>& compressed) {
-    Insert(name, weights, kCapacity, work_, compressed.GetSpan(),
-           /*packed_ofs=*/0, pool_);
-  }
-
   template <typename Packed>
-  void Insert(const char* name, const float* HWY_RESTRICT weights,
-              size_t num_weights, CompressWorkingSet& work,
-              const PackedSpan<Packed>& packed, size_t packed_ofs,
-              hwy::ThreadPool& pool) {
-    fprintf(stderr, "Compressing %s (%zuM), please wait\n", name,
+  void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
+                  const float* HWY_RESTRICT weights) {
+    int num_weights = compressed->NumElements();
+    int num_compressed = compressed->NumElements();
+    PackedSpan<Packed> packed = MakeSpan(compressed->data(), num_compressed);
+    fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
             num_weights / (1000 * 1000));
-    Compress(weights, num_weights, work_, packed, packed_ofs, pool_);
+    Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0, pool_);
     const size_t num_bytes = packed.num * sizeof(Packed);
-    writer_.Add(CacheKey<Packed>(name), packed.ptr, num_bytes);
+    writer_.Add(MakeKey(decorated_name), packed.ptr, num_bytes);
   }
 
   void AddScales(const float* scales, size_t len) {
     if (len) {
-      writer_.Add(CacheKey<float>("scales"), scales, len * sizeof(scales[0]));
+      MatPtrT<float> scales_ptr("scales", 0, 1);
+      writer_.Add(MakeKey(scales_ptr.CacheName().c_str()), scales,
+                  len * sizeof(scales[0]));
     }
   }
 

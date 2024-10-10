@@ -52,8 +52,6 @@ Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
 }
 
 Gemma::~Gemma() {
-  CallForModelAndWeight<DeleteCompressedWeights>(info_.model, info_.weight,
-                                                 weights_u8_);
 }
 
 // There are >100 instantiations of the inference code. To reduce compile time,

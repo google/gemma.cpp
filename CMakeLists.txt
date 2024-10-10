@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 457c891775a7397bdb0376bb1031e6e027af1c48 EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG bb6c3f36b0c8dde8a8ef98b0f0884f4de820a7ca EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
@@ -39,6 +39,7 @@ FetchContent_MakeAvailable(benchmark)
 set(SOURCES
   compression/blob_store.cc
   compression/blob_store.h
+  compression/compress.cc
   compression/compress.h
   compression/compress-inl.h
   compression/io_win.cc
@@ -48,7 +49,6 @@ set(SOURCES
   compression/sfp-inl.h
   compression/shared.h
   compression/test_util-inl.h
-  compression/weights_raw.h
   backprop/activations.h
   backprop/backward.cc
   backprop/backward.h
