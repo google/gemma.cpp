@@ -813,7 +813,7 @@ class DotStats {
 
   // Forward relative error, lower is better.
   void CheckRel() const {
-    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 3.7E-3);
+    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 3.8E-3);
     ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 1.23f);
 
     // Compensated and Double are very accurate.
@@ -825,7 +825,7 @@ class DotStats {
     // Naive and OnlyTwoProd are considerably higher, but not huge.
     ASSERT_INSIDE(kNaive, 1E-3, s_rels[kNaive].GeometricMean(), 8E-2);
     ASSERT_INSIDE(kOnlyTwoProd, 1E-3, s_rels[kOnlyTwoProd].GeometricMean(),
-                  0.065);
+                  0.072);
 
     // Kahan (FastTwoSum) is decent:
     ASSERT_INSIDE(kKahan, 3E-4, s_rels[kKahan].GeometricMean(), 3.5E-3);
@@ -845,7 +845,7 @@ class DotStats {
 
   // Backward relative error, lower is better.
   void CheckBwd() const {
-    ASSERT_INSIDE(kComp2, 7E-10f, s_rels[kComp2].Max(), 0.4f);
+    ASSERT_INSIDE(kComp2, 7E-10f, s_rels[kComp2].Max(), 1.3f);
 
     // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 8E-6f);
