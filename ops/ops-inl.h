@@ -488,24 +488,16 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConst(const float c,
   MulByConst(c, x, size, size);
 }
 
-static HWY_NOINLINE void MulByConstAndAdd(const float c,
-                                          const float* HWY_RESTRICT x,
-                                          float* HWY_RESTRICT out,
-                                          const size_t size,
-                                          const size_t max_pos) {
+static HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
+    float c, const float* HWY_RESTRICT x, float* HWY_RESTRICT out,
+    size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   using V = hn::Vec<D>;
-  hn::Transform1(D(), out, max_pos, x,
+  hn::Transform1(D(), out, size, x,
                  [c](const auto d, const V v_out, const V v_x) HWY_ATTR {
                    return hn::MulAdd(v_x, hn::Set(d, c), v_out);
                  });
-}
-
-static HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
-    float c, const float* HWY_RESTRICT x, float* HWY_RESTRICT out,
-    size_t size) {
-  MulByConstAndAdd(c, x, out, size, size);
 }
 
 // See below for a specialized version for top-1 sampling.

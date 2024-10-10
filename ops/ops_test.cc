@@ -106,9 +106,8 @@ HWY_NOINLINE void SourceMulByConst(float c, float* HWY_RESTRICT x, size_t size,
 }
 
 HWY_NOINLINE void SourceMulByConstAndAdd(float c, const float* HWY_RESTRICT x,
-                                         float* HWY_RESTRICT out, size_t size,
-                                         size_t max_pos) {
-  for (size_t i = 0; i < max_pos; ++i) {
+                                         float* HWY_RESTRICT out, size_t size) {
+  for (size_t i = 0; i < size; ++i) {
     out[i] += x[i] * c;
   }
 }
@@ -234,8 +233,8 @@ struct TestMulByConstAndAdd {
     }
     T constant = Random<T>(rng);
 
-    SourceMulByConstAndAdd(constant, o, e, count, count);
-    MulByConstAndAdd(constant, o, x, count, count);
+    SourceMulByConstAndAdd(constant, o, e, count);
+    MulByConstAndAdd(constant, o, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
