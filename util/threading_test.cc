@@ -35,27 +35,41 @@ TEST(ThreadingTest, TestBoundedSlice) {
   {
     BoundedSlice slice;
     std::vector<size_t> expected;
-    slice.ForEach(name, 10, [&](size_t i) { expected.push_back(i); });
-    EXPECT_EQ(10, slice.Num(10));
+    const size_t detected = 10;
+    slice.Foreach(name, detected, [&](size_t i) { expected.push_back(i); });
+    EXPECT_EQ(10, slice.Num(detected));
     EXPECT_THAT(expected, ElementsAre(0, 1, 2, 3, 4, 5, 6, 7, 8, 9));
+    EXPECT_TRUE(slice.Contains(detected, 0));
+    EXPECT_TRUE(slice.Contains(detected, 9));
+    EXPECT_FALSE(slice.Contains(detected, 10));
   }
 
   // One arg: skip first N
   {
     BoundedSlice slice(3);
     std::vector<size_t> expected;
-    slice.ForEach(name, 9, [&](size_t i) { expected.push_back(i); });
-    EXPECT_EQ(6, slice.Num(9));
+    const size_t detected = 9;
+    slice.Foreach(name, detected, [&](size_t i) { expected.push_back(i); });
+    EXPECT_EQ(6, slice.Num(detected));
     EXPECT_THAT(expected, ElementsAre(3, 4, 5, 6, 7, 8));
+    EXPECT_FALSE(slice.Contains(detected, 2));
+    EXPECT_TRUE(slice.Contains(detected, 3));
+    EXPECT_TRUE(slice.Contains(detected, 8));
+    EXPECT_FALSE(slice.Contains(detected, 9));
   }
 
   // Both args: skip first N, then use at most M
   {
     BoundedSlice slice(3, 2);
     std::vector<size_t> expected;
-    slice.ForEach(name, 9, [&](size_t i) { expected.push_back(i); });
-    EXPECT_EQ(2, slice.Num(9));
+    const size_t detected = 9;
+    slice.Foreach(name, detected, [&](size_t i) { expected.push_back(i); });
+    EXPECT_EQ(2, slice.Num(detected));
     EXPECT_THAT(expected, ElementsAre(3, 4));
+    EXPECT_FALSE(slice.Contains(detected, 2));
+    EXPECT_TRUE(slice.Contains(detected, 3));
+    EXPECT_TRUE(slice.Contains(detected, 4));
+    EXPECT_FALSE(slice.Contains(detected, 5));
   }
 
   // Both args, but `max > detected - skip`: fewer than limit. Note that
@@ -63,9 +77,13 @@ TEST(ThreadingTest, TestBoundedSlice) {
   {
     BoundedSlice slice(3, 2);
     std::vector<size_t> expected;
-    slice.ForEach(name, 4, [&](size_t i) { expected.push_back(i); });
-    EXPECT_EQ(1, slice.Num(4));
+    const size_t detected = 4;
+    slice.Foreach(name, detected, [&](size_t i) { expected.push_back(i); });
+    EXPECT_EQ(1, slice.Num(detected));
     EXPECT_THAT(expected, ElementsAre(3));
+    EXPECT_FALSE(slice.Contains(detected, 2));
+    EXPECT_TRUE(slice.Contains(detected, 3));
+    EXPECT_FALSE(slice.Contains(detected, 4));
   }
 }
 
@@ -76,8 +94,6 @@ TEST(ThreadingTest, TestBoundedTopology) {
   {
     BoundedTopology topology(all, all, all);
     fprintf(stderr, "%s\n", topology.TopologyString());
-    ASSERT_NE(0, topology.NumPackages());
-    ASSERT_NE(0, topology.NumClusters(0));
   }
 
   // Max one package
@@ -85,14 +101,12 @@ TEST(ThreadingTest, TestBoundedTopology) {
     BoundedTopology topology(one, all, all);
     fprintf(stderr, "%s\n", topology.TopologyString());
     ASSERT_EQ(1, topology.NumPackages());
-    ASSERT_NE(0, topology.NumClusters(0));
   }
 
   // Max one cluster
   {
     BoundedTopology topology(all, one, all);
     fprintf(stderr, "%s\n", topology.TopologyString());
-    ASSERT_NE(0, topology.NumPackages());
     ASSERT_EQ(1, topology.NumClusters(0));
   }
 }

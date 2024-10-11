@@ -191,11 +191,10 @@ struct ModelConfigInfo {
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
-        PerClusterPools& pools);
+        NestedPools& pools);
 
   // Allocates weights, caller is responsible for filling them.
-  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
-        PerClusterPools& pools);
+  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, NestedPools& pools);
   ~Gemma();
 
   ModelConfigInfo ModelConfig() const;
@@ -237,7 +236,7 @@ class Gemma {
                            const Image& image, ImageTokens& image_tokens);
 
  private:
-  PerClusterPools& pools_;
+  NestedPools& pools_;
 
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.

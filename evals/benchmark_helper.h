@@ -106,7 +106,7 @@ class GemmaEnv {
 
  private:
   // Thread pool for running inference.
-  PerClusterPools pools_;
+  NestedPools pools_;
   // Random number generator.
   std::mt19937 gen_;
   // The model to run inference on.
@@ -121,7 +121,7 @@ class GemmaEnv {
 void LogSpeedStats(double time_start, size_t total_tokens);
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
-                PerClusterPools& pools);
+                NestedPools& pools);
 void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
 
 }  // namespace gcpp

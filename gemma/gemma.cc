@@ -37,18 +37,18 @@
 namespace gcpp {
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
-             const ModelInfo& info, PerClusterPools& pools)
+             const ModelInfo& info, NestedPools& pools)
     : pools_(pools), tokenizer_(tokenizer_path), info_(info) {
   weights_u8_ =
-      LoadCompressedWeights(weights, info.model, info.weight, pools_.Inner(0));
+      LoadCompressedWeights(weights, info.model, info.weight, pools_.Pool());
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
-             PerClusterPools& pools)
+             NestedPools& pools)
     : pools_(pools), tokenizer_(std::move(tokenizer)), info_(info) {
   HWY_ASSERT(info.weight == Type::kF32);
-  weights_u8_ = CallForModel<float, AllocateCompressedWeights>(info.model,
-                                                               pools_.Inner(0));
+  weights_u8_ =
+      CallForModel<float, AllocateCompressedWeights>(info.model, pools_.Pool());
 }
 
 Gemma::~Gemma() {
@@ -63,17 +63,16 @@ Gemma::~Gemma() {
                              const RuntimeConfig& runtime_config,              \
                              const PromptTokens& prompt, size_t pos,           \
                              size_t prefix_end, KVCache& kv_cache,             \
-                             PerClusterPools& pools, TimingInfo& timing_info); \
+                             NestedPools& pools, TimingInfo& timing_info);     \
   extern void GenerateBatch(                                                   \
       CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,                        \
       const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
-      const QueriesPos& queries_pos,                                           \
-      const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,   \
-      PerClusterPools& pools, TimingInfo& timing_info);                        \
+      const QueriesPos& queries_pos, const QueriesPos& queries_prefix_end,     \
+      const KVCaches& kv_caches, NestedPools& pools, TimingInfo& timing_info); \
   extern void GenerateImageTokens(                                             \
       CONFIGT<TWEIGHT>, const ByteStorageT& weights_u8,                        \
       const RuntimeConfig& runtime_config, const Image& image,                 \
-      ImageTokens& image_tokens, PerClusterPools& pools);
+      ImageTokens& image_tokens, NestedPools& pools);
 GEMMA_FOREACH_CONFIG_AND_WEIGHT(GEMMA_DECLARE);
 
 // Adapters to select from the above overloads via CallForModelAndWeight.
@@ -82,7 +81,7 @@ struct GenerateSingleT {
   void operator()(const ByteStorageT& weights_u8,
                   const RuntimeConfig& runtime_config,
                   const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                  KVCache& kv_cache, PerClusterPools& pools,
+                  KVCache& kv_cache, NestedPools& pools,
                   TimingInfo& timing_info) const {
     GenerateSingle(TConfig(), weights_u8, runtime_config, prompt, pos,
                    prefix_end, kv_cache, pools, timing_info);
@@ -96,7 +95,7 @@ struct GenerateBatchT {
                   const QueriesPromptTokens& queries_prompt,
                   const QueriesPos& queries_pos,
                   const QueriesPos& queries_prefix_end,
-                  const KVCaches& kv_caches, PerClusterPools& pools,
+                  const KVCaches& kv_caches, NestedPools& pools,
                   TimingInfo& timing_info) const {
     GenerateBatch(TConfig(), weights_u8, runtime_config, queries_prompt,
                   queries_pos, queries_prefix_end, kv_caches, pools,
@@ -108,7 +107,7 @@ template <class TConfig>
 struct GenerateImageTokensT {
   void operator()(const ByteStorageT& weights_u8,
                   const RuntimeConfig& runtime_config, const Image& image,
-                  ImageTokens& image_tokens, PerClusterPools& pools) const {
+                  ImageTokens& image_tokens, NestedPools& pools) const {
     GenerateImageTokens(TConfig(), weights_u8, runtime_config, image,
                         image_tokens, pools);
   }

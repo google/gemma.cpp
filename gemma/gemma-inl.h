@@ -1026,7 +1026,7 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
     MatVecAdd<kModelDim, kPatchSize>(
         weights.vit_img_embedding_kernel, 0, image_patches[i].get(),
         weights.vit_img_embedding_bias.data_scale1(), activations.x.Batch(i),
-        activations.env.Pools().Outer());
+        activations.env.Pool());
   }
   // Add position embeddings.
   AddFrom(weights.vit_img_pos_embedding.data_scale1(), activations.x.All(),
@@ -1328,7 +1328,7 @@ template <class TConfig>
 void GenerateSingleT(const ByteStorageT& weights_u8,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                     KVCache& kv_cache, PerClusterPools& pools,
+                     KVCache& kv_cache, NestedPools& pools,
                      TimingInfo& timing_info) {
   constexpr size_t kNumQueries = 1;
   const size_t qbatch_start = 0;
@@ -1353,7 +1353,7 @@ void GenerateBatchT(const ByteStorageT& weights_u8,
                     const QueriesPromptTokens& queries_prompt,
                     const QueriesPos& queries_pos,
                     const QueriesPos& queries_prefix_end,
-                    const KVCaches& kv_caches, PerClusterPools& pools,
+                    const KVCaches& kv_caches, NestedPools& pools,
                     TimingInfo& timing_info) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(queries_pos.size() == num_queries);
@@ -1386,7 +1386,7 @@ template <class TConfig>
 void GenerateImageTokensT(const ByteStorageT& weights_u8,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
-                          PerClusterPools& pools) {
+                          NestedPools& pools) {
   if constexpr (TConfig::VitConfig::kLayers == 0) {
     return;
   } else {
@@ -1412,7 +1412,7 @@ void GenerateImageTokensT(const ByteStorageT& weights_u8,
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
     GEMMA_CONFIG, const ByteStorageT& weights_u8,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
-    size_t prefix_end, KVCache& kv_cache, PerClusterPools& pools,
+    size_t prefix_end, KVCache& kv_cache, NestedPools& pools,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_CONFIG>)
   (weights_u8, runtime_config, prompt, pos, prefix_end, kv_cache, pools,
@@ -1424,7 +1424,7 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
     const RuntimeConfig& runtime_config,
     const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
-    PerClusterPools& pools, TimingInfo& timing_info) {
+    NestedPools& pools, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_CONFIG>)
   (weights_u8, runtime_config, queries_prompt, queries_pos, queries_prefix_end,
    kv_caches, pools, timing_info);
@@ -1433,7 +1433,7 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
 void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
     GEMMA_CONFIG, const ByteStorageT& weights_u8,
     const RuntimeConfig& runtime_config, const Image& image,
-    ImageTokens& image_tokens, PerClusterPools& pools) {
+    ImageTokens& image_tokens, NestedPools& pools) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_CONFIG>)
   (weights_u8, runtime_config, image, image_tokens, pools);
 }
