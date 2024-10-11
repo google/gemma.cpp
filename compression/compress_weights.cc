@@ -161,8 +161,8 @@ void CompressWeights(const Path& weights_path,
   printf("Compressing weights from %s to %s\n", weights_path.path.c_str(),
          compressed_weights_path.path.c_str());
 
-  using CConfig = Configs::c;
-  using UCConfig = Configs::uc;
+  using CConfig = typename Configs::c;
+  using UCConfig = typename Configs::uc;
   // Allocate compressed weights.
   using CWeights = CompressedWeights<CConfig>;
   ByteStorageT c_weights_u8 = AllocateCompressedWeights<CConfig>()(pool);
