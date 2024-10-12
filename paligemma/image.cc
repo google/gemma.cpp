@@ -55,14 +55,14 @@ float StretchToSigned(float value) {
 
 bool IsLineBreak(int c) { return c == '\r' || c == '\n'; }
 
-void SkipWhitespaceAndComments(std::ifstream& file) {
-  int value = file.get();
-  while (std::isspace(value)) value = file.get();
+void SkipWhitespaceAndComments(std::istream& in) {
+  int value = in.get();
+  while (std::isspace(value)) value = in.get();
   while (value == '#') {  // Skip comment lines.
-    while (!IsLineBreak(value)) value = file.get();
-    while (std::isspace(value)) value = file.get();
+    while (!IsLineBreak(value)) value = in.get();
+    while (std::isspace(value)) value = in.get();
   }
-  file.unget();  // Rewind last byte.
+  in.unget();  // Rewind last byte.
 }
 }  // namespace
 
@@ -72,25 +72,37 @@ bool Image::ReadPPM(const std::string& filename) {
     std::cerr << "Failed to open " << filename << "\n";
     return false;
   }
+  if (!ReadPPM(file)) {
+    return false;
+  }
+  if (file.get() != EOF) {
+    std::cerr << "Extra data in file\n";
+    return false;
+  }
+  file.close();
+  return true;
+}
+
+bool Image::ReadPPM(std::istream& in) {
   std::string format;
-  file >> format;
+  in >> format;
   if (format != "P6") {
     std::cerr << "We only support binary PPM (P6) but got: " << format << "\n";
     return false;
   }
   int width, height, max_value;
-  SkipWhitespaceAndComments(file);
-  file >> width;
-  SkipWhitespaceAndComments(file);
-  file >> height;
-  SkipWhitespaceAndComments(file);
-  file >> max_value;
+  SkipWhitespaceAndComments(in);
+  in >> width;
+  SkipWhitespaceAndComments(in);
+  in >> height;
+  SkipWhitespaceAndComments(in);
+  in >> max_value;
   if (max_value <= 0 || max_value > 255) {
     std::cerr << "Unsupported max value " << max_value << "\n";
     return false;
   }
   // P6 requires exactly one whitespace character after the header.
-  int value = file.get();
+  int value = in.get();
   if (!std::isspace(value)) {
     std::cerr << "Missing whitespace after header\n";
     return false;
@@ -100,19 +112,14 @@ bool Image::ReadPPM(const std::string& filename) {
   int data_size = width * height * 3;
   data_.resize(data_size);
   std::vector<uint8_t> data_bytes(data_size);
-  file.read(reinterpret_cast<char*>(data_bytes.data()), data_size);
-  if (file.gcount() != data_size) {
+  in.read(reinterpret_cast<char*>(data_bytes.data()), data_size);
+  if (in.gcount() != data_size) {
     std::cerr << "Failed to read " << data_size << " bytes\n";
     return false;
   }
   for (int i = 0; i < data_size; ++i) {
     data_[i] = StretchToSigned(static_cast<float>(data_bytes[i]) / max_value);
   }
-  if (file.get() != EOF) {
-    std::cerr << "Extra data in file\n";
-    return false;
-  }
-  file.close();
   return true;
 }
 
