@@ -69,7 +69,6 @@ TEST(OptimizeTest, GradientDescent) {
       return token != ReverseSequenceSampler::kEndToken;
     };
     RuntimeConfig runtime = {
-        .max_tokens = 32,
         .max_generated_tokens = 16,
         .temperature = 1.0f,
         .verbosity = 0,

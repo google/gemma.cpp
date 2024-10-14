@@ -1117,34 +1117,15 @@ HWY_NOINLINE void Transformer(
 }
 
 template <class TConfig>
-void RangeChecks(size_t& max_tokens, size_t& max_generated_tokens,
-                 size_t& prompt_size) {
+void RangeChecks(size_t& max_generated_tokens, const size_t prompt_size) {
   if (!TConfig::kUseLocalAttention) {
-    if (max_tokens > TConfig::kSeqLen) {
-      fprintf(stderr, "WARNING: max_tokens %zu > kSeqLen %d, truncating.\n",
-              max_tokens, TConfig::kSeqLen);
-      max_tokens = static_cast<size_t>(TConfig::kSeqLen);
-    }
-  }
-
-  if (max_generated_tokens > max_tokens) {
-    fprintf(stderr,
-            "WARNING: max_generated_tokens %zu > max_tokens %zu, truncating.\n",
-            max_generated_tokens, max_tokens);
-    max_generated_tokens = max_tokens - 1;
-  }
-
-  if (!TConfig::kUseLocalAttention) {
-    if (prompt_size + max_generated_tokens > max_tokens) {
+    if (max_generated_tokens > TConfig::kSeqLen) {
       fprintf(stderr,
-              "WARNING: prompt_size %zu + max_generated_tokens %zu > "
-              "max_tokens %zu, truncating to ",
-              prompt_size, max_generated_tokens, max_tokens);
-      prompt_size = std::min(prompt_size, max_tokens - max_generated_tokens);
-      fprintf(stderr, "%zu\n", prompt_size);
+              "WARNING: max_generated_tokens %zu > kSeqLen %d, truncating.\n",
+              max_generated_tokens, TConfig::kSeqLen);
+      max_generated_tokens = static_cast<size_t>(TConfig::kSeqLen);
     }
   }
-
   HWY_ASSERT(prompt_size > 0);
 }
 
@@ -1262,17 +1243,8 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
 
   size_t max_prompt_size = MaxQueryLength(queries_prompt);
-  size_t max_tokens = runtime_config.max_tokens;
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
-  RangeChecks<TConfig>(max_tokens, max_generated_tokens, max_prompt_size);
-  for (size_t pos : queries_pos_copy) {
-    if (pos >= max_tokens) {
-      fprintf(stderr, "Warning: pos %zu >= max_tokens %zu, aborting.\n", pos,
-              max_tokens);
-      return;
-    }
-  }
-
+  RangeChecks<TConfig>(max_generated_tokens, max_prompt_size);
   const SampleFunc sample_token = ChooseSampleFunc<TConfig>(runtime_config);
 
   // Prefill stops before min_prompt_size - 1 because the last prompt
@@ -1315,7 +1287,7 @@ void GenerateT(const ByteStorageT& weights_u8, Activations& activations,
   }
 
   const double gen_start = hwy::platform::Now();
-  for (size_t gen = 0; gen < HWY_MIN(max_tokens, max_generated_tokens); ++gen) {
+  for (size_t gen = 0; gen < max_generated_tokens; ++gen) {
     // Decode generates one token per query and increments queries_mutable_pos.
     Transformer<TConfig>(
         QueriesToken(gen_tokens.data(), num_queries), queries_mutable_pos,

@@ -103,9 +103,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         "What is start of the line with the correct answer? "
         "Do not include any justifications or explanations. Reply only with a "
         "letter.";
-    const std::vector<int> prompt =
-        WrapAndTokenize(env.GetModel()->Tokenizer(), env.GetModel()->Info(),
-                        /*pos=*/0, prompt_string);
+    const std::vector<int> prompt = env.WrapAndTokenize(prompt_string);
     const size_t prompt_size = prompt.size();
 
     std::vector<int> predicted_token_ids;
@@ -127,7 +125,6 @@ void Run(GemmaEnv& env, JsonArgs& json) {
     // confused with the word "A".
     gcpp::TimingInfo timing_info;
     gcpp::RuntimeConfig runtime_config = {
-        .max_tokens = env.MaxTokens(),
         .max_generated_tokens = 30,
         .temperature = 0.0f,
         .verbosity = env.Verbosity(),

@@ -92,8 +92,7 @@ struct RuntimeConfig {
     return stream_token(token, prob);
   }
 
-  // Limits on the number of tokens generated.
-  size_t max_tokens;
+  // Limit on the number of tokens generated.
   size_t max_generated_tokens;
 
   // These defaults are overridden by InferenceArgs::CopyTo(*this):

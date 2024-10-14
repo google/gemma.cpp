@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemma/gemma.h"
-
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -22,6 +20,7 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
+#include "gemma/gemma.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -63,15 +62,13 @@ void PaliGemmaTest::InitVit(const std::string& path) {
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
   Gemma& model = *(s_env->GetModel());
   s_env->MutableGen().seed(0x12345678);
-  RuntimeConfig runtime_config = {.max_tokens = 1024,
-                                  .max_generated_tokens = 512,
+  RuntimeConfig runtime_config = {.max_generated_tokens = 512,
                                   .verbosity = 0,
                                   .gen = &s_env->MutableGen()};
   runtime_config.image_tokens = image_tokens_.get();
   size_t abs_pos = 0;
   std::string mutable_prompt = prompt_text;
-  std::vector<int> tokens =
-      WrapAndTokenize(model.Tokenizer(), model.Info(), abs_pos, mutable_prompt);
+  std::vector<int> tokens = s_env->WrapAndTokenize(mutable_prompt);
   std::string response;
   auto stream_token = [&](int token, float) {
     std::string token_text;

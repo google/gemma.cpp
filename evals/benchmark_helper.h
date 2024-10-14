@@ -21,7 +21,6 @@
 #include <memory>
 #include <random>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "gemma/gemma.h"
@@ -33,6 +32,14 @@ namespace gcpp {
 
 void InitGenerator(const InferenceArgs& inference, std::mt19937& gen);
 
+// Return type for query model calls.
+struct QueryResult {
+  std::string response;
+  size_t tokens_generated = 0;
+  // The position in the response at which the generated tokens start.
+  size_t response_start_pos = 0;
+};
+
 // Convenience class to load a model and run inference.
 class GemmaEnv {
  public:
@@ -41,8 +48,9 @@ class GemmaEnv {
   GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
            const AppArgs& app);
 
-  size_t MaxTokens() const { return runtime_config_.max_tokens; }
-  // Sets the maximum number of output tokens to generate.
+  size_t MaxGeneratedTokens() const {
+    return runtime_config_.max_generated_tokens;
+  }
   void SetMaxGeneratedTokens(size_t max_generated_tokens) {
     runtime_config_.max_generated_tokens = max_generated_tokens;
   }
@@ -59,6 +67,10 @@ class GemmaEnv {
     return tokens;
   }
 
+  std::vector<int> WrapAndTokenize(std::string& input) const {
+    return gcpp::WrapAndTokenize(model_->Tokenizer(), model_->Info(), 0, input);
+  }
+
   std::string StringFromTokens(const std::vector<int>& tokens) const {
     std::string string;
     HWY_ASSERT(model_->Tokenizer().Decode(tokens, &string));
@@ -67,12 +79,12 @@ class GemmaEnv {
 
   // Runs inference on the given input and returns the top-1 result string and
   // the number of tokens that were generated.
-  std::pair<std::string, size_t> QueryModel(const std::vector<int>& tokens);
-  std::vector<std::pair<std::string, size_t>> BatchQueryModel(
+  QueryResult QueryModel(const std::vector<int>& tokens);
+  std::vector<QueryResult> BatchQueryModel(
       const QueriesPromptTokens& queries_prompt);
   // Adds turn structure to input, tokenizes and calls the above overload.
-  std::pair<std::string, size_t> QueryModel(std::string& input);
-  std::vector<std::pair<std::string, size_t>> BatchQueryModel(
+  QueryResult QueryModel(std::string& input);
+  std::vector<QueryResult> BatchQueryModel(
       const std::vector<std::string>& inputs);
 
   // Runs inference on the given input and calls the callback for each token.

@@ -24,7 +24,7 @@
 
 namespace gcpp {
 
-float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
+float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           int verbosity);
 

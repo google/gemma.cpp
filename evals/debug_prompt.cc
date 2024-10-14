@@ -68,8 +68,9 @@ int Run(int argc, char** argv) {
               json_base[std::to_string(pos)][debug_key] = v;
             };
 
-  const auto [answer, token_count] = env.QueryModel(prompt_args.prompt);
-  std::cout << answer.substr(prompt_args.prompt.size()) << "\n" << std::flush;
+  QueryResult result = env.QueryModel(prompt_args.prompt);
+  std::cout << result.response.substr(result.response_start_pos) << "\n"
+            << std::flush;
 
   if (env.MutableConfig().layers_output) {
     std::ofstream output_f(prompt_args.layers_output.path, std::ofstream::out);

@@ -33,11 +33,11 @@ void RunPrompt(const std::string& original_prompt, benchmark::State& state) {
   size_t total_tokens = 0;
   for (auto s : state) {
     std::string prompt = original_prompt;  // reset from original
-    auto [response, n] = s_env->QueryModel(prompt);
+    QueryResult result = s_env->QueryModel(prompt);
     if (s_env->Verbosity() != 0) {
-      fprintf(stdout, "|%s|\n", response.c_str());
+      fprintf(stdout, "|%s|\n", result.response.c_str());
     }
-    total_tokens += n;
+    total_tokens += result.tokens_generated;
   }
 
   state.SetItemsProcessed(total_tokens);

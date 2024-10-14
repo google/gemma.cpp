@@ -52,13 +52,13 @@ class GemmaTest : public ::testing::Test {
     if (s_env->GetModel()->Info().model == Model::GEMMA2_27B ||
         s_env->GetModel()->Info().model == Model::GRIFFIN_2B) {
       std::string mutable_prompt = prompt;
-      auto [response, n] = s_env->QueryModel(mutable_prompt);  // Uses turns.
-      return response;
+      QueryResult result = s_env->QueryModel(mutable_prompt);  // Uses turns.
+      return result.response;
     }
     // Otherwise, do not use turn structure.
     const std::vector<int> tokens = s_env->TokenizeAndPrependBOS(prompt);
-    auto [response, n] = s_env->QueryModel(tokens);
-    return response;
+    QueryResult result = s_env->QueryModel(tokens);
+    return result.response;
   }
 
   std::vector<std::string> BatchGemmaReply(
@@ -72,8 +72,8 @@ class GemmaTest : public ::testing::Test {
     // It would be good to make these tests more consistent.
     if (s_env->GetModel()->Info().model == Model::GEMMA2_27B ||
         s_env->GetModel()->Info().model == Model::GRIFFIN_2B) {
-      for (auto [response, n] : s_env->BatchQueryModel(inputs)) {
-        replies.push_back(response);
+      for (QueryResult result : s_env->BatchQueryModel(inputs)) {
+        replies.push_back(result.response);
       }
       return replies;
     }
@@ -88,8 +88,8 @@ class GemmaTest : public ::testing::Test {
       prompt_spans.push_back(PromptTokens(prompt.data(), prompt.size()));
     }
     QueriesPromptTokens prompts(prompt_spans.data(), prompt_spans.size());
-    for (auto [response, n] : s_env->BatchQueryModel(prompts)) {
-      replies.push_back(response);
+    for (const QueryResult& result : s_env->BatchQueryModel(prompts)) {
+      replies.push_back(result.response);
     }
     return replies;
   }
@@ -167,7 +167,6 @@ TEST_F(GemmaTest, Multiturn) {
     return true;
   };
   RuntimeConfig runtime_config{
-      .max_tokens = 128,
       .max_generated_tokens = 64,
       .temperature = 0.0f,
       .verbosity = 2,

@@ -131,7 +131,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
     return true;
   };
 
-  while (abs_pos < args.max_tokens) {
+  while (true) {  // Loop until user quits.
     tokens_generated_this_turn = 0;
     std::string prompt_string = GetPrompt(std::cin, verbosity, eot_line);
     if (!std::cin) return;
@@ -183,10 +183,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
                    timing_info);
     std::cout << "\n\n";
   }
-  std::cout
-      << "max_tokens (" << args.max_tokens
-      << ") exceeded. Use a larger value if desired using the --max_tokens "
-      << "command line flag.\n";
 }
 
 void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {

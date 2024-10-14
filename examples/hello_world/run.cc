@@ -87,7 +87,6 @@ int main(int argc, char** argv) {
 
   gcpp::TimingInfo timing_info;
   gcpp::RuntimeConfig runtime_config = {
-      .max_tokens = 1536,
       .max_generated_tokens = 1024,
       .temperature = 1.0,
       .verbosity = 0,

@@ -18,14 +18,12 @@
 #include <stdio.h>
 #include <time.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <iostream>
 #include <memory>
 #include <ostream>
 #include <random>
 #include <string>
-#include <utility>  // std::pair
 #include <vector>
 
 // Placeholder for internal header, do not modify.
@@ -76,7 +74,6 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
   }
   InitGenerator(inference, gen_);
   runtime_config_ = {
-      .max_tokens = inference.max_tokens,
       .max_generated_tokens = inference.max_generated_tokens,
       .temperature = inference.temperature,
       .verbosity = app.verbosity,
@@ -99,21 +96,21 @@ GemmaEnv::GemmaEnv(int argc, char** argv)
     : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
                MakeAppArgs(argc, argv)) {}
 
-std::pair<std::string, size_t> GemmaEnv::QueryModel(
-    const std::vector<int>& tokens) {
-  std::string res;
-  size_t total_tokens = 0;
+QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
+  QueryResult result;
 
-  const BatchStreamFunc batch_stream_token = [&res, &total_tokens, this](
-                                                 size_t query_index, size_t pos,
-                                                 int token, float) {
-    ++total_tokens;
-    res += StringFromTokens(std::vector<int>{token});
-    return true;
-  };
+  const BatchStreamFunc batch_stream_token =
+      [&result, &tokens, this](size_t /*query_index*/, size_t /*pos*/,
+                               int token, float /*score*/) {
+        ++result.tokens_generated;
+        result.response += StringFromTokens(std::vector<int>{token});
+        if (result.tokens_generated == tokens.size()) {
+          result.response_start_pos = result.response.size();
+        }
+        return true;
+      };
   if (runtime_config_.verbosity >= 2) {
-    std::cout << "Max tokens: " << runtime_config_.max_tokens
-              << "\tmax generated tokens: "
+    std::cout << "max generated tokens: "
               << runtime_config_.max_generated_tokens
               << "\ttemperature: " << runtime_config_.temperature << "\n";
   }
@@ -121,7 +118,7 @@ std::pair<std::string, size_t> GemmaEnv::QueryModel(
   runtime_config_.batch_stream_token = batch_stream_token;
   model_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
                    timing_info);
-  return {res, total_tokens};
+  return result;
 }
 
 void GemmaEnv::QueryModel(
@@ -134,27 +131,29 @@ void GemmaEnv::QueryModel(
   runtime_config_.stream_token = previous_stream_token;
 }
 
-std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
+std::vector<QueryResult> GemmaEnv::BatchQueryModel(
     const QueriesPromptTokens& queries_prompt) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(num_queries != 0);
-  std::vector<std::pair<std::string, size_t>> res(num_queries);
-  std::fill(res.begin(), res.end(), std::make_pair("", 0));
-  const BatchStreamFunc batch_stream_token = [&res, this](size_t query_index,
-                                                          size_t pos, int token,
-                                                          float) {
+  std::vector<QueryResult> res(num_queries);
+  const BatchStreamFunc batch_stream_token = [&res, &queries_prompt, this](
+                                                 size_t query_index, size_t pos,
+                                                 int token, float) {
     std::string token_text;
     HWY_ASSERT(
         model_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    res[query_index].first.append(token_text);
-    res[query_index].second += 1;
+    res[query_index].response.append(token_text);
+    res[query_index].tokens_generated += 1;
+    if (res[query_index].tokens_generated ==
+        queries_prompt[query_index].size()) {
+      res[query_index].response_start_pos = res[query_index].response.size();
+    }
     return true;
   };
   if (runtime_config_.verbosity >= 2) {
-    fprintf(stderr,
-            "Max tok: %zu max gen: %zu temp: %f tbatch: %zu qbatch: %zu\n",
-            runtime_config_.max_tokens, runtime_config_.max_generated_tokens,
-            runtime_config_.temperature, runtime_config_.prefill_tbatch_size,
+    fprintf(stderr, "Max gen: %zu temp: %f tbatch: %zu qbatch: %zu\n",
+            runtime_config_.max_generated_tokens, runtime_config_.temperature,
+            runtime_config_.prefill_tbatch_size,
             runtime_config_.decode_qbatch_size);
   }
 
@@ -178,21 +177,18 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
   return res;
 }
 
-std::pair<std::string, size_t> GemmaEnv::QueryModel(std::string& input) {
-  const std::vector<int> prompt =
-      WrapAndTokenize(model_->Tokenizer(), model_->Info(),
-                      /*pos=*/0, input);
+QueryResult GemmaEnv::QueryModel(std::string& input) {
+  const std::vector<int> prompt = WrapAndTokenize(input);
   return QueryModel(prompt);
 }
 
-std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
+std::vector<QueryResult> GemmaEnv::BatchQueryModel(
     const std::vector<std::string>& inputs) {
   std::vector<std::vector<int>> prompts;
   prompts.reserve(inputs.size());
   for (auto& input : inputs) {
     std::string mutable_prompt = input;
-    prompts.push_back(WrapAndTokenize(model_->Tokenizer(), model_->Info(),
-                                      /*pos=*/0, mutable_prompt));
+    prompts.push_back(WrapAndTokenize(mutable_prompt));
   }
   std::vector<PromptTokens> prompt_vector;
   prompt_vector.reserve(prompts.size());
@@ -206,7 +202,7 @@ std::vector<std::pair<std::string, size_t>> GemmaEnv::BatchQueryModel(
 float GemmaEnv::CrossEntropy(const std::string& input) {
   std::vector<int> prompt = Tokenize(input);
   prompt.insert(prompt.begin(), BOS_ID);
-  return ComputeCrossEntropy(*GetModel(), /*max_tokens=*/3072, prompt,
+  return ComputeCrossEntropy(*GetModel(), /*max_generated_tokens=*/3072, prompt,
                              MutableKVCache(),
                              /*verbosity=*/0) /
          static_cast<int>(input.size());

@@ -207,7 +207,6 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
   InferenceArgs() { Init(); };
 
-  size_t max_tokens;
   size_t max_generated_tokens;
 
   size_t prefill_tbatch_size;
@@ -220,21 +219,15 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() const {
-    if (max_tokens > gcpp::kSeqLen) {
-      return "max_tokens is larger than the maximum sequence length (see "
-             "configs.h).";
-    }
-    if (max_generated_tokens > max_tokens) {
-      return "Maximum number of generated tokens is larger than the maximum "
-             "total tokens.";
+    if (max_generated_tokens > gcpp::kSeqLen) {
+      return "max_generated_tokens is larger than the maximum sequence length "
+             "(see configs.h).";
     }
     return nullptr;
   }
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
-    visitor(max_tokens, "max_tokens", size_t{3072},
-            "Maximum number of tokens in prompt + generation.");
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
 
@@ -255,12 +248,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
-    runtime_config.max_tokens = max_tokens;
     runtime_config.max_generated_tokens = max_generated_tokens;
-
     runtime_config.prefill_tbatch_size = prefill_tbatch_size;
     runtime_config.decode_qbatch_size = decode_qbatch_size;
-
     runtime_config.temperature = temperature;
   }
 };

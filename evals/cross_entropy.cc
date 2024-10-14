@@ -97,7 +97,7 @@ namespace gcpp {
 
 HWY_EXPORT(CallSoftmax);
 
-float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
+float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           int verbosity) {
   const StreamFunc stream_token = [](int /*token*/, float) { return true; };
@@ -112,8 +112,8 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
                                       size_t vocab_size) -> TokenAndProb {
     // input is logits, not yet probabilities
     HWY_DYNAMIC_DISPATCH(CallSoftmax)(probs, vocab_size);
-    // We are called for each token, but pos starts at 1. Clamping max_tokens
-    // to prompt.size() should prevent overrun.
+    // We are called for each token, but pos starts at 1. Clamping
+    // max_generated_tokens to prompt.size() should prevent overrun.
     HWY_ASSERT(pos < prompt.size());
     const int token = prompt[pos];
     const float prob = probs[token];
@@ -136,10 +136,9 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_tokens,
   };
 
   std::vector<int> prompt0 = { prompt[0] };
-  max_tokens = HWY_MIN(max_tokens, prompt.size());
+  max_generated_tokens = HWY_MIN(max_generated_tokens, prompt.size());
   RuntimeConfig runtime = {
-      .max_tokens = max_tokens,
-      .max_generated_tokens = max_tokens - 1,
+      .max_generated_tokens = max_generated_tokens - 1,
       .temperature = 0.0f,
       .verbosity = verbosity,
       .gen = nullptr,

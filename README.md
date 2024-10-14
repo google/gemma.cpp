@@ -385,7 +385,6 @@ tokenizer                     : tokenizer.spm
 compressed_weights            : 2b-it-sfp.sbs
 model                         : 2b-it
 weights                       : [no path specified]
-max_tokens                    : 3072
 max_generated_tokens          : 2048
 
 *Usage*

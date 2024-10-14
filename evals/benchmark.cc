@@ -81,15 +81,15 @@ int BenchmarkGoldens(GemmaEnv& env, const std::string& golden_path) {
   size_t total_tokens = 0;
   const double time_start = hwy::platform::Now();
   for (auto& [question, expected_answer] : queries_answers) {
-    const auto [answer, token_count] = env.QueryModel(question);
-    total_tokens += token_count;
-    if (answer.find(expected_answer) != std::string::npos) {
+    QueryResult result = env.QueryModel(question);
+    total_tokens += result.tokens_generated;
+    if (result.response.find(expected_answer) != std::string::npos) {
       correct_answers++;
     } else {
       std::cout << "Wrong!\n";
       std::cout << "Input: " << question << "\n";
       std::cout << "Expected: " << expected_answer << "\n";
-      std::cout << "Output: " << answer << "\n\n" << std::flush;
+      std::cout << "Output: " << result.response << "\n\n" << std::flush;
     }
   }
   LogSpeedStats(time_start, total_tokens);
@@ -108,9 +108,10 @@ int BenchmarkSummary(GemmaEnv& env, const Path& text) {
   prompt.append(ReadFileToString(text));
   prompt.append("\nSummarize this text.\n");
   const double time_start = hwy::platform::Now();
-  const auto [answer, token_count] = env.QueryModel(prompt);
-  std::cout << answer.substr(prompt.size()) << "\n" << std::flush;
-  LogSpeedStats(time_start, token_count);
+  QueryResult result = env.QueryModel(prompt);
+  std::cout << result.response.substr(result.response_start_pos) << "\n"
+            << std::flush;
+  LogSpeedStats(time_start, result.tokens_generated);
   return EXIT_SUCCESS;
 }
 
@@ -118,7 +119,6 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
                           size_t batch_tokens) {
   std::string input = ReadFileToString(text);
   std::vector<int> prompt = env.Tokenize(input);
-  prompt.resize(std::min<size_t>(env.MaxTokens(), prompt.size()));
   std::cout << "Number of input tokens: " << prompt.size() << "\n";
   const double time_start = hwy::platform::Now();
   float total_entropy = 0.0f;
@@ -156,11 +156,11 @@ int BenchmarkTriviaQA(GemmaEnv& env, const Path& json_file,
   while (std::getline(trivia_file, line)) {
     json data = json::parse(line);
     std::string q(data["question"]);
-    const auto [answer, token_count] = env.QueryModel(q);
-    std::cout << answer << "\n";
+    QueryResult result = env.QueryModel(q);
+    std::cout << result.response << "\n";
     bool correct = false;
     for (const std::string expected : data["answer"]["aliases"]) {
-      if (answer.find(expected) != std::string::npos) {
+      if (result.response.find(expected) != std::string::npos) {
         correct = true;
         break;
       }
