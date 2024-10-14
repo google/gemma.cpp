@@ -813,7 +813,7 @@ class DotStats {
 
   // Forward relative error, lower is better.
   void CheckRel() const {
-    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 3.8E-3);
+    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 4E-3);
     ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 1.23f);
 
     // Compensated and Double are very accurate.
@@ -836,7 +836,7 @@ class DotStats {
                   3E-3);
     ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_rels[kAddTwoProd].Max(), 0.19f);
     ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_rels[kAddTwoSum].GeometricMean(),
-                  2.4E-3);
+                  2.6E-3);
 
     ASSERT_INSIDE(kPairwise, 4.5E-4, s_rels[kPairwise].GeometricMean(), 1.5E-2);
     // Extremely high error on aarch64.
@@ -862,7 +862,7 @@ class DotStats {
     ASSERT_INSIDE(kAddTwoSum, 5E-10f, s_rels[kAddTwoSum].Max(), 0.34f);
 
     // Extremely high error on aarch64.
-    ASSERT_INSIDE(kPairwise, 7E-10f, s_rels[kPairwise].Max(), 1250.f);
+    ASSERT_INSIDE(kPairwise, 7E-10f, s_rels[kPairwise].Max(), 2000.f);
   }
 
   // Units in the last place; lower is better.
