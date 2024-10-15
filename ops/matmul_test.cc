@@ -14,8 +14,13 @@
 // limitations under the License.
 
 #ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32.
+// Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
+// double-precision support.
+#if HWY_ARCH_ARM_V7
+#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
+#else
 #define HWY_DISABLED_TARGETS HWY_SCALAR
+#endif
 #endif
 
 #include "ops/matmul.h"
@@ -26,8 +31,8 @@
 #include <memory>
 
 #include "compression/compress.h"
+#include "util/allocator.h"
 #include "util/threading.h"
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
@@ -165,7 +170,7 @@ template <typename MatTA, typename MatTB>
 HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
                            const MatTA* HWY_RESTRICT a,
                            const MatTB* HWY_RESTRICT b_trans, const float scale,
-                           const float* HWY_RESTRICT add, MatMulEnv& env,
+                           const float* HWY_RESTRICT add_row, MatMulEnv& env,
                            float* HWY_RESTRICT out) {
   // MatTA can be any Packed except NuqStream because it uses pointer
   // arithmetic, because it is the second argument to Dot, which does not
@@ -176,23 +181,21 @@ HWY_INLINE void MatMulSlow(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc,
   const PackedSpan<const MatTB> b_span =
       MakeSpan(b_trans, cols_a_rows_b * cols_bc);
 
-  env.Pools().Outer().Run(
-      0, rows_ac, [&](const uint64_t i, size_t o_thread) HWY_ATTR {
-        hwy::ThreadPool& inner = env.Pools().Inner(o_thread);
-        if (add != nullptr) {
-          inner.Run(0, cols_bc, [&](const uint64_t j, size_t i_thread) {
-            out[i * cols_bc + j] =
-                scale * Dot(df, b_span, j * cols_a_rows_b,
-                            a + i * cols_a_rows_b, cols_a_rows_b) +
-                add[j];
-          });
-        } else {
-          inner.Run(0, cols_bc, [&](const uint64_t j, size_t i_thread) {
-            out[i * cols_bc + j] =
-                scale * Dot(df, b_span, j * cols_a_rows_b,
-                            a + i * cols_a_rows_b, cols_a_rows_b);
-          });
-        }
+  StaticPartitionRowsAndCols(
+      env.Pools(), rows_ac, cols_bc, sizeof(MatTB),
+      [&](size_t /*node*/, hwy::ThreadPool& pool,
+          const size_t /*worker_offset*/, const size_t row_begin,
+          const size_t row_end, const size_t col_begin, const size_t col_end) {
+        pool.Run(row_begin, row_end,
+                 [&](const uint64_t row, size_t /*thread*/) {
+                   for (size_t col = col_begin; col < col_end; ++col) {
+                     const float add = add_row ? add_row[col] : 0.0f;
+                     out[row * cols_bc + col] =
+                         scale * Dot(df, b_span, col * cols_a_rows_b,
+                                     a + row * cols_a_rows_b, cols_a_rows_b) +
+                         add;
+                   }
+                 });
       });
 }
 
@@ -261,9 +264,10 @@ void TestAllMatMul() {
     return;
   }
 
-  PerClusterPools pools(/*max_clusters=*/1, /*max_threads=*/4, /*pin=*/1);
-  MatMulEnv env(pools);
+  NestedPools pools(4, /*pin=*/1);
   pools.StartSpinning();
+  Allocator::Init(pools.Topology());
+  MatMulEnv env(pools);
 
   using F32 = float;
   using SFP = SfpStream;

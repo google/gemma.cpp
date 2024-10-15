@@ -20,10 +20,9 @@
 #define COMPRESS_STATS 0
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
-#include <array>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -35,70 +34,23 @@
 #include "compression/io.h"
 #include "compression/shared.h"
 // IWYU pragma: end_exports
-#include "compression/distortion.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"  // BF16
-#include "hwy/contrib/thread_pool/thread_pool.h"
+#include "util/allocator.h"
 #if COMPRESS_STATS
+#include "compression/distortion.h"
 #include "hwy/stats.h"
 #endif
 
 namespace gcpp {
 
-// Compressed representation of floating-point elements. The array length may
-// differ from the number of elements. Associated operations such as Dot are
-// implemented in SIMD code and are thus non-member functions.
-template <typename Packed, size_t kCapacity>
-class CompressedArray {
- public:
-  using value_type = Packed;
-
-  // Note that whenever you access data(), you have to consider a scale() that
-  // may be different from 1.0f.
-  Packed* data() { return data_.data(); }
-  const Packed* data() const { return data_.data(); }
-  // The const accessor data_scale1() asserts (!) that the scale is 1.0f, so
-  // calling it means "I am sure the scale is 1 and therefore ignore the scale".
-  // A scale of 0 indicates that the scale has likely never been set, so is
-  // "implicitly 1".
-  const Packed* data_scale1() const {
-    HWY_ASSERT(scale() == 1.f || scale() == 0.f);
-    return data_.data();
-  }
-
-  // Decoded elements should be multiplied by this to restore their original
-  // range. This is required because SfpStream can only encode a limited range
-  // of magnitudes.
-  float scale() const { return scale_[0]; }
-  void set_scale(float scale) { scale_[0] = scale; }
-
-  constexpr size_t NumElements() const { return kCapacity; }
-
-  // Returns total number of packed elements for `BlobReader::Enqueue` and
-  // `Compress`. This differs from `NumElements` for `Packed=NuqStream`.
-  PackedSpan<Packed> GetSpan() { return MakeSpan(data(), data_.size()); }
-  PackedSpan<const Packed> GetSpan() const {
-    return MakeSpan(data(), data_.size());
-  }
-
- private:
-  std::array<Packed, CompressedArrayElements<Packed>(kCapacity)> data_;
-  // Blobs are at least kBlobAlign bytes anyway.
-  float scale_[kBlobAlign / sizeof(float)];
-};
-
-// Yet another array class. This one is intended to be compatible with
-// CompressedArray, but have both run-time sizing and compile-time constant
-// size.
-// It also provides easy conversion from/to a table of contents for a BlobStore
-// file, and a templated (compile-time) accessor for a 2-d array of fixed inner
-// dimension and type.
-// The base class is intended for accessing the metadata, without needing to
-// know any of the template arguments.
-// It holds only a borrowed pointer to the data, but all metadata.
+// Base class for rank-1 or 2 tensors (vector or matrix).
+// Supports both dynamic and compile-time sizing.
+// Holds metadata and a non-owning pointer to the data, owned by the derived
+// MatStorageT class.
+// This class also provides easy conversion from/to a table of contents for a
+// BlobStore file, and a templated (compile-time) accessor for a 2-d array of
+// fixed inner dimension and type.
 // It is designed to be put in a vector, and has default copy and operator=, so
 // it is easy to read/write a blob_store file.
-// The derived class or an external class owns the data.
 class MatPtr {
  public:
   // Full constructor for dynamic sizing.
@@ -111,12 +63,12 @@ class MatPtr {
         rows_(rows),
         cols_(cols),
         ptr_(nullptr) {}
-  // Default constructor doesn't set anything.
+  // Default is to leave all fields default-initialized.
   MatPtr() = default;
   virtual ~MatPtr();
 
   // Number of hwy::uint128_t in a TOC entry.
-  // Note that the old-style BlobStore files Only have a list of keys and size.
+  // Note that the old-style BlobStore files only have a list of keys and size.
   // The new-style BlobStore files have an entry called "toc" that contains a
   // vector of 4-tuples of
   // (name, type, (num_elements, element_size), (rows, cols)).
@@ -144,6 +96,7 @@ class MatPtr {
   }
 
   // Compatibility interface for CompressedArray.
+  // TODO: remove.
   template <typename T>
   T* data() {
     return HWY_RCAST_ALIGNED(T*, ptr_);
@@ -177,7 +130,6 @@ class MatPtr {
 
   // Returns the number of bytes in the array.
   size_t SizeBytes() const { return num_elements_ * element_size_; }
-  size_t CompressedSize() const { return SizeBytes(); }
 
   // Returns the number of rows in the 2-d array (outer dimension).
   size_t Rows() const { return rows_; }
@@ -211,8 +163,8 @@ class MatPtr {
   }
 
   // Calls func on the upcasted type. Since MatPtr by design is not templated,
-  // here we provide a way to get to the derived type, provided that the type
-  // matches one of a known short-list.
+  // here we provide a way to get to the derived type, provided that `Type()`
+  // is one of the strings returned by `TypeName()`.
   template <class FuncT, typename... TArgs>
   decltype(auto) CallUpcasted(FuncT& func, TArgs&&... args);
 
@@ -243,8 +195,6 @@ class MatPtr {
 template <typename MatT>
 class MatPtrT : public MatPtr {
  public:
-  using value_type = MatT;
-
   // Full constructor for dynamic sizing.
   MatPtrT(const std::string& name, size_t rows, size_t cols)
       : MatPtr(name, TypeName<MatT>(), sizeof(MatT), rows, cols) {}
@@ -276,18 +226,11 @@ class MatPtrT : public MatPtr {
     }
     return name;
   }
+
   // Sets the number of elements in the array. For use when the number of
   // elements is != rows * cols ONLY.
   void SetNumElements(size_t num_elements) {
     num_elements_ = CompressedArrayElements<MatT>(num_elements);
-  }
-
-  // Fast 2-d accessor for a 2-d array of fixed inner dimension and type.
-  template <typename T = MatT, size_t kInner>
-  const T& AtT(size_t row, size_t col) const {
-    size_t index = row * kInner + col;
-    HWY_DASSERT(index < num_elements_);
-    return HWY_RCAST_ALIGNED(const T*, ptr_)[index];
   }
 
   // 2-d Accessor for a specific type but with a dynamic inner dimension.
@@ -299,17 +242,15 @@ class MatPtrT : public MatPtr {
   }
 
   // 1-d Accessor for a specific type.
-  template <typename T = MatT>
-  const T& At(size_t index) const {
+  // TODO: replace this with a Foreach(), or at least a ForEachRow().
+  const MatT& At(size_t index) const {
     HWY_DASSERT(index < num_elements_);
-    return HWY_RCAST_ALIGNED(const T*, ptr_)[index];
+    return HWY_RCAST_ALIGNED(const MatT*, ptr_)[index];
   }
-  template <typename T = MatT>
-  T& At(size_t index) {
-    return HWY_RCAST_ALIGNED(T*, ptr_)[index];
-  }
+  MatT& At(size_t index) { return HWY_RCAST_ALIGNED(MatT*, ptr_)[index]; }
 
   // Compatibility interface for CompressedArray.
+  // TODO: remove
   template <typename T = MatT>
   T* data() {
     return HWY_RCAST_ALIGNED(T*, ptr_);
@@ -350,15 +291,14 @@ class MatStorageT : public MatPtrT<MatT> {
  public:
   // Full constructor for dynamic sizing.
   MatStorageT(const std::string& name, size_t rows, size_t cols)
-      : MatPtrT<MatT>(name, rows, cols),
-        data_(hwy::AllocateAligned<MatT>(
-            hwy::DivCeil(this->SizeBytes(), sizeof(MatT)))) {
-    this->ptr_ = data_.get();
+      : MatPtrT<MatT>(name, rows, cols) {
+    Allocate();
   }
   // Can copy the metadata, from a MatPtr, and allocate later.
   MatStorageT(const MatPtr& other) : MatPtrT<MatT>(other) {}
+  ~MatStorageT() = default;
 
-  // No copying of MatStorageT as it contains big data.
+  // Move-only because this contains a unique_ptr.
   MatStorageT(const MatStorageT& other) = delete;
   MatStorageT& operator=(const MatStorageT& other) = delete;
   MatStorageT(MatStorageT&& other) = default;
@@ -374,7 +314,7 @@ class MatStorageT : public MatPtrT<MatT> {
     } else {
       this->num_elements_ = num_elements;
     }
-    data_ = hwy::AllocateAligned<MatT>(num_elements);
+    data_ = Allocator::Alloc<MatT>(num_elements);
     this->ptr_ = data_.get();
   }
 
@@ -385,8 +325,6 @@ class MatStorageT : public MatPtrT<MatT> {
   }
 
  private:
-  // Aligned data array.
-  // std::unique_ptr<MatT[]> data_;
   hwy::AlignedFreeUniquePtr<MatT[]> data_;
 };
 
@@ -504,7 +442,7 @@ class CompressStats {
 };
 #else
 struct CompressStats {
-  void Notify(const DistortionStats&) {}
+  void Notify(...) {}
   void NotifyIn(int) {}
   void Assimilate(const CompressStats&) {}
   void PrintAll() {}
@@ -523,18 +461,17 @@ struct CompressWorkingSet {
 
 // Functor called for each tensor, which loads them and their scaling factors
 // from BlobStore.
-class CacheLoader {
+class ReadFromBlobStore {
  public:
-  explicit CacheLoader(const Path& blob_filename) {
+  explicit ReadFromBlobStore(const Path& blob_filename) {
     err_ = reader_.Open(blob_filename);
-    if (err_ != 0) {
-      fprintf(stderr,
-              "Cached compressed weights does not exist yet (code %d), "
-              "loading from file: %s.\n",
-              err_, blob_filename.path.c_str());
+    if (HWY_UNLIKELY(err_ != 0)) {
+      fprintf(stderr, "Error %d opening BlobStore %s.\n", err_,
+              blob_filename.path.c_str());
+      return;  // avoid overwriting err_ to ensure ReadAll will fail.
     }
     err_ = file_toc_.LoadToc(reader_);
-    if (err_ != 0) {
+    if (HWY_UNLIKELY(err_ != 0)) {
       fprintf(stderr, "Found a TOC, but failed to load it (code %d)\n", err_);
     }
   }
@@ -562,40 +499,39 @@ class CacheLoader {
     return reader_.Enqueue(key, scales, len * sizeof(scales[0]));
   }
 
-  // Returns whether all tensors are successfully loaded from cache.
-  bool ReadAll(hwy::ThreadPool& pool, std::vector<MatStorage>& model_memory) {
+  // Returns whether all tensors are successfully loaded from BlobStore.
+  BlobError ReadAll(hwy::ThreadPool& pool, std::vector<MatStorage>& owners) {
     // reader_ invalid or any Enqueue failed
-    if (err_ != 0) return false;
-    // Setup the model_memory.
-    for (int b = 0; b < model_toc_.size(); ++b) {
-      const std::string& file_key = file_keys_[b];
-      MatPtr* blob = model_toc_[b];
+    if (err_ != 0) return err_;
+    // Setup the owners.
+    for (size_t i = 0; i < model_toc_.size(); ++i) {
+      const std::string& file_key = file_keys_[i];
+      MatPtr* blob = model_toc_[i];
       if (!file_toc_.Empty()) {
         const MatPtr* toc_blob = file_toc_.Get(file_key);
         if (toc_blob == nullptr) {
           fprintf(stderr, "Blob %s not found in TOC\n", file_key.c_str());
-          return false;
+          return __LINE__;
         }
         if (toc_blob->Rows() != blob->Rows() ||
             toc_blob->Cols() != blob->Cols()) {
           fprintf(stderr, "Blob %s has size mismatch TOC\n", file_key.c_str());
-          return false;
+          return __LINE__;
         }
-        MatStorage toc_blob_array(*toc_blob);
-        model_memory.push_back(std::move(toc_blob_array));
+        owners.push_back(MatStorage(*toc_blob));
       } else {
-        model_memory.emplace_back(*blob);
-        model_memory.back().SetName(file_key);
+        owners.push_back(MatStorage(*blob));
+        owners.back().SetName(file_key);
       }
     }
     // Allocate in parallel using the pool.
-    pool.Run(0, model_memory.size(),
-             [this, &model_memory](uint64_t task, size_t /*thread*/) {
-               model_memory[task].Allocate();
-               model_toc_[task]->SetPtr(model_memory[task]);
+    pool.Run(0, owners.size(),
+             [this, &owners](uint64_t task, size_t /*thread*/) {
+               owners[task].Allocate();
+               model_toc_[task]->SetPtr(owners[task]);
              });
     // Enqueue the read requests.
-    for (auto& blob : model_memory) {
+    for (auto& blob : owners) {
       err_ = reader_.Enqueue(MakeKey(blob.Name().c_str()), blob.data(),
                              blob.SizeBytes());
       if (err_ != 0) {
@@ -603,17 +539,17 @@ class CacheLoader {
                 "Failed to read blob %s (error %d) of size %zu x %zu x %zu\n",
                 blob.Name().c_str(), err_, blob.Rows(), blob.Cols(),
                 blob.ElementSize());
-        return false;
+        return err_;
       }
     }
 
     err_ = reader_.ReadAll(pool);
     if (err_ != 0) {
       fprintf(stderr, "Failed to read all tensors (error %d)\n", err_);
-      return false;
+      return err_;
     }
 
-    return true;
+    return 0;
   }
 
  private:

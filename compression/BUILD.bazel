@@ -164,6 +164,7 @@ cc_library(
         ":io",
         ":nuq",
         ":sfp",
+        "//:allocator",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",

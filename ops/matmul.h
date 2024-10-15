@@ -18,12 +18,15 @@
 
 #include <stddef.h>
 
-#include "util/allocator.h"  // RowVectorBatch
+// IWYU pragma: begin_exports
 #include "util/threading.h"
-#include "hwy/aligned_allocator.h"  // IWYU pragma: export
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"  // IWYU pragma: export
-#include "hwy/per_target.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
+// IWYU pragma: end_exports
+
+#include "util/allocator.h"  // RowVectorBatch
+#include "hwy/per_target.h"    // VectorBytes
 
 namespace gcpp {
 
@@ -80,19 +83,18 @@ Mat<const T> ConstMat(const T* HWY_RESTRICT ptr, size_t cols) {
 class MatMulEnv {
  public:
   MatMulEnv() : pools_(nullptr) {}
-  explicit MatMulEnv(PerClusterPools& pools) : pools_(&pools) {
-    const size_t num_lp = pools.NumLP();
-    const size_t NF = hwy::VectorBytes() / sizeof(float);
-    buf_ = RowVectorBatch<float>(num_lp, 16 * NF);
+  explicit MatMulEnv(NestedPools& pools) : pools_(&pools) {
+    const size_t N = hwy::VectorBytes() / sizeof(float);
+    buf_ = RowVectorBatch<float>(pools.MaxWorkers(), 16 * N);
   }
 
-  float* HWY_RESTRICT Buf(size_t lp) { return buf_.Batch(lp); }
-  PerClusterPools& Pools() const { return *pools_; }
-  hwy::ThreadPool& Pool() const { return pools_->Inner(0); }
+  RowVectorBatch<float>& Buf() { return buf_; }
+  NestedPools& Pools() const { return *pools_; }
+  hwy::ThreadPool& Pool() const { return pools_->Pool(); }
 
  private:
   RowVectorBatch<float> buf_;
-  PerClusterPools* pools_;
+  NestedPools* pools_;
 };
 
 }  // namespace gcpp

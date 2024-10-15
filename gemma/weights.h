@@ -18,7 +18,6 @@
 
 #include <stddef.h>
 
-#include <array>
 #include <complex>
 #include <cstdio>
 #include <string>

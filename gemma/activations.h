@@ -87,7 +87,7 @@ struct Activations {
   }
 
   template <class TConfig>
-  void Allocate(size_t batch_size, PerClusterPools& pools) {
+  void Allocate(size_t batch_size, NestedPools& pools) {
     constexpr size_t kModelDim = TConfig::kModelDim;
     constexpr size_t kQKVDim = TConfig::kQKVDim;
     constexpr size_t kHeads = TConfig::kHeads;

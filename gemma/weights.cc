@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <vector>
 
+#include "compression/blob_store.h"
 #include "compression/compress.h"
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
@@ -47,7 +48,7 @@ struct LoadCompressedWeightsT {
     CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
     new (c_weights) CWeights(pool);
 
-    CacheLoader loader(weights);
+    ReadFromBlobStore loader(weights);
     ForEachType fet =
         loader.HaveToc() ? ForEachType::kLoadWithToc : ForEachType::kLoadNoToc;
     CWeights::ForEachTensor(
@@ -59,8 +60,8 @@ struct LoadCompressedWeightsT {
     if (TConfig::kNumTensorScales > 0) {
       loader.LoadScales(scales.data(), scales.size());
     }
-    if (!loader.ReadAll(pool, c_weights->model_storage)) {
-      HWY_ABORT("Failed to load model weights.");
+    if (BlobError err = loader.ReadAll(pool, c_weights->model_storage)) {
+      HWY_ABORT("Failed to load model weights, error %d.", err);
     }
     if (TConfig::kNumTensorScales > 0) {
       c_weights->GetOrApplyScales(scales);

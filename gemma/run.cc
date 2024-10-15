@@ -188,9 +188,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
 void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   PROFILER_ZONE("Run.misc");
 
+  // TODO: remove once MatMul is updated.
+  app.max_packages = 1;
   // Note that num_threads is an upper bound; we also limit to the number of
   // detected and enabled cores.
-  PerClusterPools pools(app.max_clusters, app.max_threads, app.pin);
+  NestedPools pools = CreatePools(app);
+  Allocator::Init(pools.Topology());
 
   Gemma model = CreateGemma(loader, pools);
   KVCache kv_cache =
