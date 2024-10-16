@@ -64,6 +64,69 @@ void SkipWhitespaceAndComments(std::istream& in) {
   }
   in.unget();  // Rewind last byte.
 }
+
+template <class CharT, class Traits = std::char_traits<CharT>>
+class basic_spanbuf : public std::basic_streambuf<CharT, Traits> {
+ public:
+  using base_type = std::basic_streambuf<CharT, Traits>;
+  using char_type = typename base_type::char_type;
+  using traits_type = typename base_type::traits_type;
+  using int_type = typename traits_type::int_type;
+  using pos_type = typename traits_type::pos_type;
+  using off_type = typename traits_type::off_type;
+
+  basic_spanbuf(const hwy::Span<char_type>& buf) {
+    this->setg(buf.data(), buf.data(), buf.data() + buf.size());
+  }
+
+  std::streamsize showmanyc() override {
+    return this->egptr() - this->gptr();
+  }
+
+  std::streamsize xsgetn(char_type* s, std::streamsize n) override {
+    if (n == 0) {
+      return 0;
+    }
+    if (this->gptr() + n > this->egptr()) {
+      n = this->egptr() - this->gptr();
+      if (n == 0) {
+        if (this->uflow() == traits_type::eof()) {
+          return -1;
+        }
+        return 0;
+      }
+    }
+    std::memmove(s, this->gptr(), n);
+    this->gbump(n);
+    return n;
+  }
+
+  int_type pbackfail(int_type c) override {
+    *(this->gptr() - 1) = traits_type::to_char_type(c);
+    this->pbump(-1);
+    return 1;
+  }
+};
+
+template <class CharT, class Traits = std::char_traits<CharT>>
+class basic_ispanstream : public std::basic_istream<CharT, Traits> {
+ public:
+  using base_type = std::basic_istream<CharT, Traits>;
+  using char_type = typename base_type::char_type;
+  using traits_type = typename base_type::traits_type;
+  using int_type = typename traits_type::int_type;
+  using pos_type = typename traits_type::pos_type;
+  using off_type = typename traits_type::off_type;
+
+  basic_ispanstream(const hwy::Span<char_type>& buf)
+      : base_type(nullptr)
+      , sb_(buf) {
+    this->init(&sb_);
+  }
+
+ private:
+  basic_spanbuf<CharT, Traits> sb_;
+};
 }  // namespace
 
 bool Image::ReadPPM(const std::string& filename) {
@@ -121,6 +184,11 @@ bool Image::ReadPPM(std::istream& in) {
     data_[i] = StretchToSigned(static_cast<float>(data_bytes[i]) / max_value);
   }
   return true;
+}
+
+bool Image::ReadPPM(const hwy::Span<char>& buf) {
+  basic_ispanstream<char> in(buf);
+  return ReadPPM(in);
 }
 
 void Image::Resize() {

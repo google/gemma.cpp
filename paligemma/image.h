@@ -21,6 +21,8 @@
 #include <istream>
 #include <vector>
 
+#include "hwy/aligned_allocator.h"  // Span
+
 namespace gcpp {
 
 // Very basic image loading and processing for PaliGemma-224. Does not try to be
@@ -34,6 +36,9 @@ class Image {
   // Reads PPM format (P6, binary) data from a stream, normalizes to [-1, 1].
   // Returns true on success.
   bool ReadPPM(std::istream& in);
+  // Reads PPM format (P6, binary) data from a hwy::Span, normalizes to [-1, 1].
+  // Returns true on success.
+  bool ReadPPM(const hwy::Span<char>& buf);
   // Resizes to 224x224 (nearest-neighbor for now, bilinear or antialias would
   // be better).
   void Resize();
