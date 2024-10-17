@@ -103,8 +103,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
   const StreamFunc stream_token = [](int /*token*/, float) { return true; };
 
   // TWeight is unused, but we have to pass it to Config*.
-  const int vocab_size =
-      CallForModel</*TWeight=*/float, GetVocabSize>(gemma.Info().model);
+  const int vocab_size = gemma.GetModelConfig().vocab_size;
   float cross_entropy = std::log(vocab_size);  // first token
   size_t pos = 1;
 

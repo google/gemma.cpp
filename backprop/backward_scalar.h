@@ -125,65 +125,64 @@ void GatedGeluVJP(const T* in, const T* d_out, T* d_in, size_t N, size_t K) {
   }
 }
 
-
-template<typename T>
+template <typename T>
 void MaskedAttentionVJP(const T* qkv, const T* doutput, T* dqkv,
-                        size_t num_tokens, size_t kHeads, size_t kQKVDim,
-                        size_t kSeqLen) {
+                        size_t num_tokens, size_t kHeads, size_t qkv_dim,
+                        size_t seq_len) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t offset = pos * (kHeads + 2) * kQKVDim;
-    memset(dqkv + offset, 0, (kHeads + 1) * kQKVDim * sizeof(qkv[0]));
+    const size_t offset = pos * (kHeads + 2) * qkv_dim;
+    memset(dqkv + offset, 0, (kHeads + 1) * qkv_dim * sizeof(qkv[0]));
   }
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      const size_t qoffs = (pos * (kHeads + 2) + head) * kQKVDim;
-      const size_t aoffs = head * kSeqLen + pos * kHeads * kSeqLen;
+      const size_t qoffs = (pos * (kHeads + 2) + head) * qkv_dim;
+      const size_t aoffs = head * seq_len + pos * kHeads * seq_len;
       const T* q = qkv + qoffs;
       const T* dout = doutput + aoffs;
       T* dq = dqkv + qoffs;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        const size_t koffs = (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+        const size_t koffs = (pos2 * (kHeads + 2) + kHeads) * qkv_dim;
         const T* k = qkv + koffs;
         T* dk = dqkv + koffs;
-        MulByConstAndAddT(dout[pos2], k, dq, kQKVDim);
-        MulByConstAndAddT(dout[pos2], q, dk, kQKVDim);
+        MulByConstAndAddT(dout[pos2], k, dq, qkv_dim);
+        MulByConstAndAddT(dout[pos2], q, dk, qkv_dim);
       }
     }
   }
 }
 
-template<typename T>
-void MaskedSoftmaxVJPT(const T* y, T* dy, size_t num_tokens,
-                       size_t kHeads, size_t kSeqLen) {
+template <typename T>
+void MaskedSoftmaxVJPT(const T* y, T* dy, size_t num_tokens, size_t kHeads,
+                       size_t seq_len) {
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
+      size_t offset = pos * kHeads * seq_len + head * seq_len;
       SoftmaxVJPT(y + offset, dy + offset, pos + 1);
-      memset(dy + offset + pos + 1, 0, (kSeqLen - pos - 1) * sizeof(T));
+      memset(dy + offset + pos + 1, 0, (seq_len - pos - 1) * sizeof(T));
     }
   }
 }
 
-template<typename T>
+template <typename T>
 void MixByAttentionVJP(const T* qkv, const T* attention, const T* doutput,
-                       T* dqkv, T* dattention, size_t num_tokens,
-                       size_t kHeads, size_t kQKVDim, size_t kSeqLen) {
+                       T* dqkv, T* dattention, size_t num_tokens, size_t kHeads,
+                       size_t qkv_dim, size_t seq_len) {
   auto v_offset = [&](size_t pos) {
-    return (pos * (kHeads + 2) + kHeads + 1) * kQKVDim;
+    return (pos * (kHeads + 2) + kHeads + 1) * qkv_dim;
   };
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    memset(&dqkv[v_offset(pos)], 0, kQKVDim * sizeof(qkv[0]));
+    memset(&dqkv[v_offset(pos)], 0, qkv_dim * sizeof(qkv[0]));
   }
   for (size_t head = 0; head < kHeads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      const size_t offset = head * kQKVDim + pos * kHeads * kQKVDim;
-      const size_t aoffset = head * kSeqLen + pos * kHeads * kSeqLen;
+      const size_t offset = head * qkv_dim + pos * kHeads * qkv_dim;
+      const size_t aoffset = head * seq_len + pos * kHeads * seq_len;
       const T* att = &attention[aoffset];
       const T* dout = &doutput[offset];
       T* datt = &dattention[aoffset];
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        datt[pos2] = DotT(dout, &qkv[v_offset(pos2)], kQKVDim);
-        MulByConstAndAddT(att[pos2], dout, &dqkv[v_offset(pos2)], kQKVDim);
+        datt[pos2] = DotT(dout, &qkv[v_offset(pos2)], qkv_dim);
+        MulByConstAndAddT(att[pos2], dout, &dqkv[v_offset(pos2)], qkv_dim);
       }
     }
   }
@@ -199,77 +198,76 @@ void InputEmbeddingVJPT(const T* w, const std::vector<int>& tokens, T scaling,
   }
 }
 
-template <typename T, typename TConfig>
-void LayerVJP(const CompressedLayer<TConfig>& weights,
-              const ForwardLayer<T, TConfig>& forward, const T* dy,
-              CompressedLayer<TConfig>& grad,
-              ForwardLayer<T, TConfig>& backward, size_t num_tokens) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  static const T kQueryScale = 1.0 / std::sqrt(T(kQKVDim));
+template <typename T>
+void LayerVJP(const LayerWeightsPtrs<T>& weights,
+              const ForwardLayer<T>& forward, const T* dy,
+              LayerWeightsPtrs<T>& grad, ForwardLayer<T>& backward,
+              size_t num_tokens) {
+  const LayerConfig& layer_config = weights.layer_config;
+  const size_t model_dim = layer_config.model_dim;
+  const size_t seq_len = forward.input.Rows();
+  const size_t qkv_dim = layer_config.qkv_dim;
+  const size_t kHeads = layer_config.heads;
+  const size_t kFFHiddenDim = layer_config.ff_hidden_dim;
+  const T kQueryScale = 1.0 / std::sqrt(T(qkv_dim));
 
-  MatMulVJPT(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
-             dy, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
-             kModelDim, kFFHiddenDim, num_tokens);
+  MatMulVJPT(weights.linear_w.data(), forward.ffw_hidden_gated.data(), dy,
+             grad.linear_w.data(), backward.ffw_hidden_gated.data(), model_dim,
+             kFFHiddenDim, num_tokens);
 
   GatedGeluVJP(forward.ffw_hidden.data(), backward.ffw_hidden_gated.data(),
                backward.ffw_hidden.data(), kFFHiddenDim, num_tokens);
 
   MatMulVJPT(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
              backward.ffw_hidden.data(), grad.gating_einsum_w.data(),
-             backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, kModelDim,
+             backward.bf_pre_ffw_rms_out.data(), kFFHiddenDim * 2, model_dim,
              num_tokens);
 
   RMSNormVJPT(weights.pre_ffw_norm_scale.data(), forward.attention_out.data(),
               backward.bf_pre_ffw_rms_out.data(),
               grad.pre_ffw_norm_scale.data(), backward.attention_out.data(),
-              kModelDim, num_tokens);
+              model_dim, num_tokens);
 
-  AddFromT(dy, backward.attention_out.data(), num_tokens * kModelDim);
+  AddFromT(dy, backward.attention_out.data(), num_tokens * model_dim);
 
   MultiHeadMatMulVJPT(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
                       backward.attention_out.data(),
-                      grad.attn_vec_einsum_w.data(),
-                      backward.att_out.data(),
-                      kHeads, kModelDim, kQKVDim, num_tokens);
+                      grad.attn_vec_einsum_w.data(), backward.att_out.data(),
+                      kHeads, model_dim, qkv_dim, num_tokens);
 
   MixByAttentionVJP(forward.qkv.data(), forward.att.data(),
                     backward.att_out.data(), backward.qkv.data(),
-                    backward.att.data(), num_tokens, kHeads, kQKVDim,
-                    kSeqLen);
+                    backward.att.data(), num_tokens, kHeads, qkv_dim, seq_len);
 
-  MaskedSoftmaxVJPT(forward.att.data(), backward.att.data(),
-                    num_tokens, kHeads, kSeqLen);
+  MaskedSoftmaxVJPT(forward.att.data(), backward.att.data(), num_tokens, kHeads,
+                    seq_len);
 
   MaskedAttentionVJP(forward.qkv.data(), backward.att.data(),
-                     backward.qkv.data(), num_tokens, kHeads, kQKVDim, kSeqLen);
+                     backward.qkv.data(), num_tokens, kHeads, qkv_dim, seq_len);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * kQKVDim;
-    MulByConstT(kQueryScale, qkv, kHeads * kQKVDim);
+    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * qkv_dim;
+    MulByConstT(kQueryScale, qkv, kHeads * qkv_dim);
   }
 
   for (int pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * kQKVDim;
+    T* qkv = backward.qkv.data() + pos * (kHeads + 2) * qkv_dim;
     for (size_t h = 0; h <= kHeads; ++h) {
-      Rope(qkv + h * kQKVDim, kQKVDim, -pos);
+      Rope(qkv + h * qkv_dim, qkv_dim, -pos);
     }
   }
 
   MatMulVJPT(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
              backward.qkv.data(), grad.qkv_einsum_w.data(),
-            backward.pre_att_rms_out.data(),
-            (kHeads + 2) * kQKVDim, kModelDim, num_tokens);
+             backward.pre_att_rms_out.data(), (kHeads + 2) * qkv_dim, model_dim,
+             num_tokens);
   RMSNormVJPT(weights.pre_attention_norm_scale.data(), forward.input.data(),
               backward.pre_att_rms_out.data(),
-              grad.pre_attention_norm_scale.data(),
-              backward.input.data(), kModelDim, num_tokens);
+              grad.pre_attention_norm_scale.data(), backward.input.data(),
+              model_dim, num_tokens);
 
   AddFromT(backward.attention_out.data(), backward.input.data(),
-           num_tokens * kModelDim);
+           num_tokens * model_dim);
 }
 
 template <typename T>
@@ -296,56 +294,54 @@ void CrossEntropyLossGrad(const T* x, T* dx, const Prompt& prompt, size_t V) {
   }
 }
 
-template <typename T, typename TConfig>
+template <typename T>
 void CrossEntropyLossBackwardPass(const Prompt& prompt,
-                                  const CompressedWeights<TConfig>& weights,
-                                  const ForwardPass<T, TConfig>& forward,
-                                  CompressedWeights<TConfig>& grad,
-                                  ForwardPass<T, TConfig>& backward) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
+                                  const ModelWeightsPtrs<T>& weights,
+                                  const ForwardPass<T>& forward,
+                                  ModelWeightsPtrs<T>& grad,
+                                  ForwardPass<T>& backward) {
+  const ModelConfig& config = weights.weights_config;
+  const size_t model_dim = config.model_dim;
+  const size_t vocab_size = config.vocab_size;
+  const size_t layers = config.layer_configs.size();
   const std::vector<int> tokens = prompt.tokens;
   const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
 
   CrossEntropyLossGrad(forward.probs.data(), backward.logits.data(), prompt,
-                       kVocabSize);
+                       vocab_size);
 
-  SoftmaxVJPT(forward.probs.data(), backward.logits.data(),
-              kVocabSize, num_tokens);
+  SoftmaxVJPT(forward.probs.data(), backward.logits.data(), vocab_size,
+              num_tokens);
 
-  if constexpr (TConfig::kFinalCap > 0.0f) {
+  if (config.final_cap > 0.0f) {
     for (size_t i = 0; i < num_tokens; ++i) {
-      SoftcapVJPT(TConfig::kFinalCap, forward.logits.data() + i * kVocabSize,
-                  backward.logits.data() + i * kVocabSize, kVocabSize);
+      SoftcapVJPT(config.final_cap, forward.logits.data() + i * vocab_size,
+                  backward.logits.data() + i * vocab_size, vocab_size);
     }
   }
 
-  MatMulVJPT(weights.embedder_input_embedding.data(),
-             forward.final_norm_output.data(),
-             backward.logits.data(),
-             grad.embedder_input_embedding.data(),
-             backward.final_norm_output.data(),
-             kVocabSize, kModelDim, num_tokens);
+  MatMulVJPT(
+      weights.embedder_input_embedding.data(), forward.final_norm_output.data(),
+      backward.logits.data(), grad.embedder_input_embedding.data(),
+      backward.final_norm_output.data(), vocab_size, model_dim, num_tokens);
 
   RMSNormVJPT(weights.final_norm_scale.data(),
               forward.final_layer_output.data(),
-              backward.final_norm_output.data(),
-              grad.final_norm_scale.data(),
-              backward.final_layer_output.data(), kModelDim, num_tokens);
+              backward.final_norm_output.data(), grad.final_norm_scale.data(),
+              backward.final_layer_output.data(), model_dim, num_tokens);
 
-  for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
-    T* next_layer_grad = layer + 1 < kLayers
-                         ? backward.layers[layer + 1].input.data()
-                         : backward.final_layer_output.data();
+  for (int layer = static_cast<int>(layers) - 1; layer >= 0; --layer) {
+    T* next_layer_grad = layer + 1 < layers
+                             ? backward.layers[layer + 1].input.data()
+                             : backward.final_layer_output.data();
     LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
              *grad.GetLayer(layer), backward.layers[layer], num_tokens);
   }
 
-  const T kEmbScaling = EmbeddingScaling(kModelDim);
-  InputEmbeddingVJPT(weights.embedder_input_embedding.data(),
-                     tokens, kEmbScaling, backward.layers[0].input.data(),
-                     grad.embedder_input_embedding.data(), kModelDim);
+  const T kEmbScaling = EmbeddingScaling(model_dim);
+  InputEmbeddingVJPT(weights.embedder_input_embedding.data(), tokens,
+                     kEmbScaling, backward.layers[0].input.data(),
+                     grad.embedder_input_embedding.data(), model_dim);
 }
 
 }  // namespace gcpp

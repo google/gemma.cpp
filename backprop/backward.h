@@ -16,17 +16,19 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_BACKWARD_H_
 
+#include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/activations.h"
-#include "gemma/common.h"
+#include "gemma/weights.h"
+#include "util/allocator.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-void CrossEntropyLossBackwardPass(const Model& model, const Prompt& prompt,
-                                  const ByteStorageT& weights,
-                                  const ByteStorageT& forward,
-                                  ByteStorageT& grad, ByteStorageT& backward,
+void CrossEntropyLossBackwardPass(const Prompt& prompt,
+                                  const ModelWeightsPtrs<float>& weights,
+                                  const ForwardPass<float>& forward,
+                                  ModelWeightsPtrs<float>& grad,
+                                  ForwardPass<float>& backward,
                                   RowVectorBatch<float>& inv_timescale,
                                   hwy::ThreadPool& pool);
 

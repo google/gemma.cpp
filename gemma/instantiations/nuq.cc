@@ -14,8 +14,7 @@
 // limitations under the License.
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE \
-  "gemma/instantiations/9b_bf16.cc"
+#define HWY_TARGET_INCLUDE "gemma/instantiations/nuq.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-#define GEMMA_CONFIG ConfigGemma2_9B<hwy::bfloat16_t>
+#define GEMMA_TYPE NuqStream
 #include "gemma/gemma-inl.h"

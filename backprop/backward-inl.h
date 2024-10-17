@@ -28,6 +28,7 @@
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
 #include "gemma/common.h"
+#include "gemma/weights.h"
 #include "util/allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -53,45 +54,41 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-template <size_t kCols, size_t kRows>
-void MatMulVJP(const float* HWY_RESTRICT weights,  // kRows * kCols,
-               const float* HWY_RESTRICT x,       // num_tokens * kCols
-               const float* HWY_RESTRICT v,       // num_tokens * kRows
-               size_t num_tokens,
-               float* HWY_RESTRICT grad_w,         // kRows * kCols,
-               float* HWY_RESTRICT grad_x,        // num_tokens * kCols
-               hwy::ThreadPool& pool) {
-  hwy::ZeroBytes(grad_x, num_tokens * kCols * sizeof(grad_x[0]));
+HWY_INLINE void MatMulVJP(const float* HWY_RESTRICT weights,  // kRows * kCols,
+                          const float* HWY_RESTRICT x,  // num_tokens * kCols
+                          const float* HWY_RESTRICT v,  // num_tokens * kRows
+                          size_t cols, size_t rows, size_t num_tokens,
+                          float* HWY_RESTRICT grad_w,  // kRows * kCols,
+                          float* HWY_RESTRICT grad_x,  // num_tokens * kCols
+                          hwy::ThreadPool& pool) {
+  hwy::ZeroBytes(grad_x, num_tokens * cols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t voffs = pos * kRows;
-    const size_t xoffs = pos * kCols;
-    for (size_t j = 0; j < kRows; ++j) {
-      MulByConstAndAdd(v[voffs + j], &x[xoffs], &grad_w[j * kCols], kCols);
-      MulByConstAndAdd(v[voffs + j], &weights[j * kCols], &grad_x[xoffs],
-                       kCols);
+    const size_t voffs = pos * rows;
+    const size_t xoffs = pos * cols;
+    for (size_t j = 0; j < rows; ++j) {
+      MulByConstAndAdd(v[voffs + j], &x[xoffs], &grad_w[j * cols], cols);
+      MulByConstAndAdd(v[voffs + j], &weights[j * cols], &grad_x[xoffs], cols);
     }
   }
 }
 
-template <size_t kHeads, size_t kCols, size_t kRows>
-void MultiHeadMatMulVJP(
-    const float* HWY_RESTRICT weights,  // kHeads * kRows * kCols
-    const float* HWY_RESTRICT x,        // num_tokens * kHeads * kCols
+HWY_INLINE void MultiHeadMatMulVJP(
+    const float* HWY_RESTRICT weights,  // heads * kRows * kCols
+    const float* HWY_RESTRICT x,        // num_tokens * heads * kCols
     const float* HWY_RESTRICT v,        // num_tokens * kRows
-    size_t num_tokens,
-    float* HWY_RESTRICT grad_w,         // kHeads * kRows * kCols
-    float* HWY_RESTRICT grad_x,         // num_tokens * kHeads * kCols
+    size_t heads, size_t cols, size_t rows, size_t num_tokens,
+    float* HWY_RESTRICT grad_w,  // heads * kRows * kCols
+    float* HWY_RESTRICT grad_x,  // num_tokens * heads * kCols
     hwy::ThreadPool& pool) {
-  hwy::ZeroBytes(grad_x, num_tokens * kHeads * kCols * sizeof(grad_x[0]));
+  hwy::ZeroBytes(grad_x, num_tokens * heads * cols * sizeof(grad_x[0]));
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    for (size_t j = 0; j < kRows; ++j) {
-      for (size_t h = 0; h < kHeads; ++h) {
-        MulByConstAndAdd(v[pos * kRows + j],
-                         &x[pos * kHeads * kCols + h * kCols],
-                         &grad_w[h * kRows * kCols + j * kCols], kCols);
-        MulByConstAndAdd(v[pos * kRows + j],
-                         &weights[h * kRows * kCols + j * kCols],
-                         &grad_x[pos * kHeads * kCols + h * kCols], kCols);
+    for (size_t j = 0; j < rows; ++j) {
+      for (size_t h = 0; h < heads; ++h) {
+        MulByConstAndAdd(v[pos * rows + j], &x[pos * heads * cols + h * cols],
+                         &grad_w[h * rows * cols + j * cols], cols);
+        MulByConstAndAdd(v[pos * rows + j],
+                         &weights[h * rows * cols + j * cols],
+                         &grad_x[pos * heads * cols + h * cols], cols);
       }
     }
   }
@@ -168,39 +165,39 @@ static HWY_NOINLINE void InputEmbeddingVJP(
   }
 }
 
-template <typename TConfig, typename LayerT>
-void LayerVJP(const LayerT& weights,
-              const ForwardLayer<float, TConfig>& forward,
+template <typename T>
+void LayerVJP(const LayerWeightsPtrs<T>& weights,
+              const ForwardLayer<float>& forward,
               const float* HWY_RESTRICT next_layer_grad, size_t num_tokens,
-              LayerT& grad, ForwardLayer<float, TConfig>& backward,
+              LayerWeightsPtrs<T>& grad, ForwardLayer<float>& backward,
               const RowVectorBatch<float>& inv_timescale,
               hwy::ThreadPool& pool) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  static const float kQueryScale =
-      static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
-  HWY_ASSERT(num_tokens <= kSeqLen);
+  const LayerConfig& config = weights.layer_config;
+  const size_t model_dim = config.model_dim;
+  const size_t qkv_dim = config.qkv_dim;
+  const size_t heads = config.heads;
+  const size_t seq_len = forward.input.Rows();
+  const size_t ff_hidden_dim = config.ff_hidden_dim;
+  const float query_scale =
+      static_cast<float>(1.0 / sqrt(static_cast<double>(qkv_dim)));
+  HWY_ASSERT(num_tokens <= seq_len);
 
-  MatMulVJP<kFFHiddenDim, kModelDim>(
-      weights.linear_w.data(), forward.ffw_hidden_gated.data(), next_layer_grad,
-      num_tokens, grad.linear_w.data(), backward.ffw_hidden_gated.data(),
-      pool);
+  MatMulVJP(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
+            next_layer_grad, ff_hidden_dim, model_dim, num_tokens,
+            grad.linear_w.data(), backward.ffw_hidden_gated.data(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    const size_t hidden_offset = pos * kFFHiddenDim * 2;
+    const size_t hidden_offset = pos * ff_hidden_dim * 2;
     const float* HWY_RESTRICT f_out = forward.ffw_hidden.data() + hidden_offset;
-    const float* HWY_RESTRICT f_out_mul = f_out + kFFHiddenDim;
+    const float* HWY_RESTRICT f_out_mul = f_out + ff_hidden_dim;
     const float* HWY_RESTRICT b_out_gated =
-        backward.ffw_hidden_gated.data() + pos * kFFHiddenDim;
+        backward.ffw_hidden_gated.data() + pos * ff_hidden_dim;
     float* HWY_RESTRICT b_out = backward.ffw_hidden.data() + hidden_offset;
-    float* HWY_RESTRICT b_out_mul = b_out + kFFHiddenDim;
+    float* HWY_RESTRICT b_out_mul = b_out + ff_hidden_dim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     DF df;
-    for (size_t i = 0; i < kFFHiddenDim; i += Lanes(df)) {
+    for (size_t i = 0; i < ff_hidden_dim; i += Lanes(df)) {
       const auto y = Load(df, f_out + i);
       const auto x = Load(df, f_out_mul + i);
       const auto v = Load(df, b_out_gated + i);
@@ -209,101 +206,94 @@ void LayerVJP(const LayerT& weights,
     }
   }
 
-  MatMulVJP<kModelDim, kFFHiddenDim * 2>(
-      weights.gating_einsum_w.data(),
-      forward.bf_pre_ffw_rms_out.data(), backward.ffw_hidden.data(),
-      num_tokens, grad.gating_einsum_w.data(),
-      backward.bf_pre_ffw_rms_out.data(), pool);
-  RMSNormVJP(weights.pre_ffw_norm_scale.data(),
-             forward.attention_out.data(),
-             backward.bf_pre_ffw_rms_out.data(),
-             kModelDim, num_tokens,
-             grad.pre_ffw_norm_scale.data(),
-             backward.attention_out.data(), pool);
+  MatMulVJP(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
+            backward.ffw_hidden.data(), model_dim, ff_hidden_dim * 2,
+            num_tokens, grad.gating_einsum_w.data(),
+            backward.bf_pre_ffw_rms_out.data(), pool);
+  RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.attention_out.data(),
+             backward.bf_pre_ffw_rms_out.data(), model_dim, num_tokens,
+             grad.pre_ffw_norm_scale.data(), backward.attention_out.data(),
+             pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    AddFrom(next_layer_grad + pos * kModelDim,
-            backward.attention_out.data() + pos * kModelDim, kModelDim);
+    AddFrom(next_layer_grad + pos * model_dim,
+            backward.attention_out.data() + pos * model_dim, model_dim);
   }
 
   backward.qkv.ZeroInit();
 
-  MultiHeadMatMulVJP<kHeads, kQKVDim, kModelDim>(
-      weights.attn_vec_einsum_w.data(), forward.att_out.data(),
-      backward.attention_out.data(), num_tokens,
-      grad.attn_vec_einsum_w.data(), backward.att_out.data(), pool);
+  MultiHeadMatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
+                     backward.attention_out.data(), heads, qkv_dim, model_dim,
+                     num_tokens, grad.attn_vec_einsum_w.data(),
+                     backward.att_out.data(), pool);
 
-  for (size_t head = 0; head < kHeads; ++head) {
+  for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      const size_t aoffset = head * kSeqLen + pos * kHeads * kSeqLen;
+      const size_t aoffset = head * seq_len + pos * heads * seq_len;
       const float* HWY_RESTRICT f_head_att = forward.att.data() + aoffset;
       const float* HWY_RESTRICT b_att_out =
-          backward.att_out.data() + (pos * kHeads + head) * kQKVDim;
+          backward.att_out.data() + (pos * heads + head) * qkv_dim;
       float* HWY_RESTRICT b_head_att = backward.att.data() + aoffset;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        const size_t v2offs = (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
+        const size_t v2offs = (pos2 * (heads + 2) + heads + 1) * qkv_dim;
         const float* HWY_RESTRICT f_v2 = forward.qkv.data() + v2offs;
         float* HWY_RESTRICT b_v2 = backward.qkv.data() + v2offs;
-        b_head_att[pos2] = Dot(b_att_out, f_v2, kQKVDim);
-        MulByConstAndAdd(f_head_att[pos2], b_att_out, b_v2, kQKVDim);
+        b_head_att[pos2] = Dot(b_att_out, f_v2, qkv_dim);
+        MulByConstAndAdd(f_head_att[pos2], b_att_out, b_v2, qkv_dim);
       }
     }
   }
 
-  for (size_t head = 0; head < kHeads; ++head) {
+  for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      const size_t aoffset = head * kSeqLen + pos * kHeads * kSeqLen;
+      const size_t aoffset = head * seq_len + pos * heads * seq_len;
       const float* HWY_RESTRICT f_head_att = forward.att.data() + aoffset;
       float* HWY_RESTRICT b_head_att = backward.att.data() + aoffset;
       SoftmaxVJP(f_head_att, b_head_att, pos + 1);
     }
   }
 
-  for (size_t head = 0; head < kHeads; ++head) {
+  for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      const size_t qoffs = (pos * (kHeads + 2) + head) * kQKVDim;
-      const size_t aoffs = head * kSeqLen + pos * kHeads * kSeqLen;
+      const size_t qoffs = (pos * (heads + 2) + head) * qkv_dim;
+      const size_t aoffs = head * seq_len + pos * heads * seq_len;
       const float* HWY_RESTRICT f_q = forward.qkv.data() + qoffs;
       const float* HWY_RESTRICT b_head_att = backward.att.data() + aoffs;
       float* HWY_RESTRICT b_q = backward.qkv.data() + qoffs;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        const size_t k2offs = (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+        const size_t k2offs = (pos2 * (heads + 2) + heads) * qkv_dim;
         const float* HWY_RESTRICT f_k2 = forward.qkv.data() + k2offs;
         float* HWY_RESTRICT b_k2 = backward.qkv.data() + k2offs;
-        MulByConstAndAdd(b_head_att[pos2], f_k2, b_q, kQKVDim);
-        MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, kQKVDim);
+        MulByConstAndAdd(b_head_att[pos2], f_k2, b_q, qkv_dim);
+        MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, qkv_dim);
       }
     }
   }
 
   for (int pos = 0; pos < static_cast<int>(num_tokens); ++pos) {
     float* HWY_RESTRICT b_kv =
-        backward.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
-    Rope(b_kv, kQKVDim, inv_timescale.Const(), -pos);
+        backward.qkv.data() + (pos * (heads + 2) + heads) * qkv_dim;
+    Rope(b_kv, qkv_dim, inv_timescale.Const(), -pos);
   }
 
-  for (size_t head = 0; head < kHeads; ++head) {
+  for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       float* HWY_RESTRICT b_q =
-          backward.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
-      MulByConst(kQueryScale, b_q, kQKVDim);
-      Rope(b_q, kQKVDim, inv_timescale.Const(), -pos);
+          backward.qkv.data() + (pos * (heads + 2) + head) * qkv_dim;
+      MulByConst(query_scale, b_q, qkv_dim);
+      Rope(b_q, qkv_dim, inv_timescale.Const(), -pos);
     }
   }
 
-  MatMulVJP<kModelDim, (kHeads + 2) * kQKVDim>(
-      weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
-      backward.qkv.data(), num_tokens,
-      grad.qkv_einsum_w.data(), backward.pre_att_rms_out.data(), pool);
-  RMSNormVJP(weights.pre_attention_norm_scale.data(),
-             forward.input.data(),
-             backward.pre_att_rms_out.data(),
-             kModelDim, num_tokens,
-             grad.pre_attention_norm_scale.data(),
-             backward.input.data(), pool);
+  MatMulVJP(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
+            backward.qkv.data(), model_dim, (heads + 2) * qkv_dim, num_tokens,
+            grad.qkv_einsum_w.data(), backward.pre_att_rms_out.data(), pool);
+  RMSNormVJP(weights.pre_attention_norm_scale.data(), forward.input.data(),
+             backward.pre_att_rms_out.data(), model_dim, num_tokens,
+             grad.pre_attention_norm_scale.data(), backward.input.data(), pool);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    AddFrom(backward.attention_out.data() + pos * kModelDim,
-            backward.input.data() + pos * kModelDim, kModelDim);
+    AddFrom(backward.attention_out.data() + pos * model_dim,
+            backward.input.data() + pos * model_dim, model_dim);
   }
 }
 
@@ -342,20 +332,22 @@ static HWY_NOINLINE void CrossEntropyLossGrad(
   }
 }
 
-template <typename TConfig, typename WeightsT, typename LayerT>
-void CrossEntropyLossBackwardPass(const Prompt& prompt, const WeightsT& weights,
-                                  const ForwardPass<float, TConfig>& forward,
-                                  WeightsT& grad,
-                                  ForwardPass<float, TConfig>& backward,
-                                  RowVectorBatch<float>& inv_timescale,
-                                  hwy::ThreadPool& pool) {
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kLayers = TConfig::kLayers;
-  const float kEmbScaling = EmbeddingScaling<TConfig>();
-  static_assert(!TConfig::kAbsolutePE);
-  static_assert(TConfig::kPostNorm == PostNormType::None);
-  static_assert(TConfig::kKVHeads == 1);
+template <typename T>
+void CrossEntropyLossBackwardPassInl(const Prompt& prompt,
+                                     const ModelWeightsPtrs<T>& weights,
+                                     const ForwardPass<float>& forward,
+                                     ModelWeightsPtrs<T>& grad,
+                                     ForwardPass<float>& backward,
+                                     RowVectorBatch<float>& inv_timescale,
+                                     hwy::ThreadPool& pool) {
+  const ModelConfig& config = weights.weights_config;
+  const size_t kVocabSize = config.vocab_size;
+  const size_t model_dim = config.model_dim;
+  const size_t kLayers = config.layer_configs.size();
+  const float kEmbScaling = EmbeddingScaling(model_dim);
+  HWY_ASSERT(!config.absolute_pe);
+  HWY_ASSERT(config.layer_configs[0].post_norm == PostNormType::None);
+  HWY_ASSERT(config.layer_configs[0].kv_heads == 1);
 
   HWY_DASSERT(prompt.context_size > 0);
   HWY_DASSERT(prompt.context_size < prompt.tokens.size());
@@ -370,42 +362,38 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt, const WeightsT& weights,
                kVocabSize);
   }
 
-  if constexpr (TConfig::kFinalCap > 0.0f) {
+  if (config.final_cap > 0.0f) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      SoftcapVJP(TConfig::kFinalCap, forward.logits.data() + pos * kVocabSize,
+      SoftcapVJP(config.final_cap, forward.logits.data() + pos * kVocabSize,
                  backward.logits.data() + pos * kVocabSize, kVocabSize);
     }
   }
 
-  MatMulVJP<kModelDim, kVocabSize>(
-      weights.embedder_input_embedding.data(), forward.final_norm_output.data(),
-      backward.logits.data(), num_tokens,
-      grad.embedder_input_embedding.data(), backward.final_norm_output.data(),
-      pool);
+  MatMulVJP(weights.embedder_input_embedding.data(),
+            forward.final_norm_output.data(), backward.logits.data(), model_dim,
+            kVocabSize, num_tokens, grad.embedder_input_embedding.data(),
+            backward.final_norm_output.data(), pool);
 
-  RMSNormVJP(weights.final_norm_scale.data(),
-             forward.final_layer_output.data(),
-             backward.final_norm_output.data(),
-             kModelDim, num_tokens,
-             grad.final_norm_scale.data(),
-             backward.final_layer_output.data(), pool);
+  RMSNormVJP(weights.final_norm_scale.data(), forward.final_layer_output.data(),
+             backward.final_norm_output.data(), model_dim, num_tokens,
+             grad.final_norm_scale.data(), backward.final_layer_output.data(),
+             pool);
 
   for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
-    auto type = TConfig::kLayerConfig[layer];
+    auto layer_config = config.layer_configs[layer];
     // TODO(szabadka) Implement Griffin layer vjp.
-    HWY_ASSERT(type == LayerAttentionType::kGemma);
+    HWY_ASSERT(layer_config.type == LayerAttentionType::kGemma);
     float* next_layer_grad = layer + 1 < kLayers
                              ? backward.layers[layer + 1].input.data()
                              : backward.final_layer_output.data();
-    LayerVJP<TConfig, LayerT>(*weights.GetLayer(layer), forward.layers[layer],
-                              next_layer_grad, num_tokens,
-                              *grad.GetLayer(layer), backward.layers[layer],
-                              inv_timescale, pool);
+    LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
+             num_tokens, *grad.GetLayer(layer), backward.layers[layer],
+             inv_timescale, pool);
   }
 
   InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt.tokens,
                     kEmbScaling, backward.layers[0].input.data(),
-                    grad.embedder_input_embedding.data(), kModelDim);
+                    grad.embedder_input_embedding.data(), model_dim);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

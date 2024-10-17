@@ -32,11 +32,6 @@ namespace gcpp {
 
 using BF16 = hwy::bfloat16_t;
 
-template <typename Packed>
-constexpr bool IsF32() {
-  return hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
-}
-
 // Switching Floating Point: a hybrid 8-bit float representation of bf16/f32
 // inputs that combines the advantages of e4m3 and e5m2 into a single format.
 // It supports seeking at a granularity of 1 and decoding to bf16/f32.
@@ -179,27 +174,65 @@ struct NuqStream {
 };
 #pragma pack(pop)
 
+template <typename Packed>
+constexpr bool IsF32() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, float>();
+}
+
+template <typename Packed>
+constexpr bool IsBF16() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, BF16>();
+}
+
+template <typename Packed>
+constexpr bool IsSfpStream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, SfpStream>();
+}
+
+template <typename Packed>
+constexpr bool IsNuqStream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>();
+}
+
+// Instruction-tuned models require extra 'turn structure' tokens in prompts.
+enum class ModelTraining { GEMMA_IT, GEMMA_PT, PALIGEMMA };
+
+// Tensor types for loading weights. Note that not all types are supported as
+// weights for a model, but can be used for other purposes, such as types for
+// ModelWeightsPtrs. When adding a new type that is supported, also
+// update gemma.cc, weights.*, and add instantiations/new_one.cc.
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64, kU128 };
+constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
+                                        "nuq",     "f64", "c64",  "u128"};
+
+// Returns a Type enum for the type of the template parameter.
 template <typename PackedT>
-const char* TypeName() {
+Type TypeEnum() {
   using Packed = hwy::RemoveCvRef<PackedT>;
   if constexpr (hwy::IsSame<Packed, float>()) {
-    return "f32";
+    return Type::kF32;
   } else if constexpr (hwy::IsSame<Packed, BF16>()) {
-    return "b16";
+    return Type::kBF16;
   } else if constexpr (hwy::IsSame<Packed, SfpStream>()) {
-    return "sfp";
+    return Type::kSFP;
   } else if constexpr (hwy::IsSame<Packed, NuqStream>()) {
-    return "nuq";
+    return Type::kNUQ;
   } else if constexpr (hwy::IsSame<Packed, double>()) {
-    return "f64";
+    return Type::kF64;
   } else if constexpr (hwy::IsSame<Packed, std::complex<double>>()) {
-    return "c64";
+    return Type::kC64;
   } else if constexpr (hwy::IsSame<Packed, hwy::uint128_t>()) {
-    return "u128";
+    return Type::kU128;
   } else {
     HWY_DASSERT(false);
-    return "unknown";
+    return Type::kUnknown;
   }
+}
+
+// Returns a string name for the type of the template parameter.
+template <typename PackedT>
+const char* TypeName() {
+  return kTypeStrings[static_cast<int>(TypeEnum<PackedT>())];
 }
 
 template <typename Packed>

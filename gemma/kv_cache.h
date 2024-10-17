@@ -35,7 +35,8 @@ struct KVCache {
   // kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]> rglru_cache;
 
-  static KVCache Create(Model type, size_t prefill_tbatch_size);
+  static KVCache Create(const ModelConfig& weights_config,
+                        size_t prefill_tbatch_size);
 };
 
 }  // namespace gcpp

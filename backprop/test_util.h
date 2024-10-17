@@ -21,11 +21,12 @@
 #include <cmath>
 #include <complex>
 #include <random>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "compression/compress.h"
+#include "gemma/configs.h"
 #include "gemma/weights.h"
-#include "util/allocator.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
@@ -39,8 +40,8 @@ void RandInit(MatPtrT<T>& x, T stddev, std::mt19937& gen) {
 }
 
 // TODO: make a member of Layer<T>.
-template <typename T, typename TConfig>
-void RandInit(CompressedLayer<TConfig>& w, T stddev, std::mt19937& gen) {
+template <typename T>
+void RandInit(LayerWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
   RandInit(w.pre_attention_norm_scale, stddev, gen);
   RandInit(w.attn_vec_einsum_w, stddev, gen);
   RandInit(w.qkv_einsum_w, stddev, gen);
@@ -49,9 +50,9 @@ void RandInit(CompressedLayer<TConfig>& w, T stddev, std::mt19937& gen) {
   RandInit(w.linear_w, stddev, gen);
 }
 
-template <typename T, typename TConfig>
-void RandInit(CompressedWeights<TConfig>& w, T stddev, std::mt19937& gen) {
-  static constexpr size_t kLayers = TConfig::kLayers;
+template <typename T>
+void RandInit(ModelWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
+  const size_t kLayers = w.c_layers.size();
   RandInit(w.embedder_input_embedding, stddev, gen);
   RandInit(w.final_norm_scale, stddev, gen);
   for (size_t i = 0; i < kLayers; ++i) {
@@ -66,9 +67,8 @@ void Complexify(const MatPtrT<T>& x, MatPtrT<std::complex<U>>& c_x) {
   }
 }
 
-template <typename TConfig, typename UConfig>
-void Complexify(const CompressedLayer<TConfig>& w,
-                CompressedLayer<UConfig>& c_w) {
+template <typename T, typename U>
+void Complexify(const LayerWeightsPtrs<T>& w, LayerWeightsPtrs<U>& c_w) {
   Complexify(w.pre_attention_norm_scale, c_w.pre_attention_norm_scale);
   Complexify(w.attn_vec_einsum_w, c_w.attn_vec_einsum_w);
   Complexify(w.qkv_einsum_w, c_w.qkv_einsum_w);
@@ -77,10 +77,9 @@ void Complexify(const CompressedLayer<TConfig>& w,
   Complexify(w.linear_w, c_w.linear_w);
 }
 
-template <typename TConfig, typename UConfig>
-void Complexify(const CompressedWeights<TConfig>& w,
-                CompressedWeights<UConfig>& c_w) {
-  static constexpr size_t kLayers = TConfig::kLayers;
+template <typename T, typename U>
+void Complexify(const ModelWeightsPtrs<T>& w, ModelWeightsPtrs<U>& c_w) {
+  const size_t kLayers = w.c_layers.size();
   Complexify(w.embedder_input_embedding, c_w.embedder_input_embedding);
   Complexify(w.final_norm_scale, c_w.final_norm_scale);
   for (size_t i = 0; i < kLayers; ++i) {
@@ -88,26 +87,27 @@ void Complexify(const CompressedWeights<TConfig>& w,
   }
 }
 
-// Owns weights and provides access to TConfig.
-template <typename TConfig>
+// Somewhat duplicates ModelWeightsStorage, but that has neither double nor
+// complex types allowed and it would cause code bloat to add them there.
+template <typename T>
 class WeightsWrapper {
  public:
-  WeightsWrapper()
-      : pool_(0),
-        data_(AllocateCompressedWeights<TConfig>()(pool_)),
-        weights_(reinterpret_cast<CompressedWeights<TConfig>*>(data_.get())) {}
+  explicit WeightsWrapper(const ModelConfig& config)
+      : pool_(0), weights_(config, pool_) {
+    weights_.Allocate(data_, pool_);
+  }
 
-  const CompressedWeights<TConfig>& get() const { return *weights_; }
-  CompressedWeights<TConfig>& get() { return *weights_; }
-  void ZeroInit() { weights_->ZeroInit(); }
-  void CopyFrom(const WeightsWrapper<TConfig>& other) {
-    get().CopyFrom(other.get());
+  const ModelWeightsPtrs<T>& get() const { return weights_; }
+  ModelWeightsPtrs<T>& get() { return weights_; }
+  void ZeroInit() { weights_.ZeroInit(); }
+  void CopyFrom(const WeightsWrapper<T>& other) {
+    weights_.CopyFrom(other.weights_);
   }
 
  private:
   hwy::ThreadPool pool_;
-  ByteStorageT data_;
-  CompressedWeights<TConfig>* weights_;
+  std::vector<MatStorage> data_;
+  ModelWeightsPtrs<T> weights_;
 };
 
 template <typename T, typename U>
@@ -173,9 +173,9 @@ void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<double>>& x,
   TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
 }
 
-template <typename T, typename TConfig, typename UConfig, typename FUNC>
-void TestGradient(const CompressedLayer<TConfig>& grad,
-                  CompressedLayer<UConfig>& c_weights, FUNC func, T max_err) {
+template <typename T, typename U, typename FUNC>
+void TestGradient(const LayerWeightsPtrs<T>& grad,
+                  LayerWeightsPtrs<U>& c_weights, FUNC func, T max_err) {
   TestGradient(grad.pre_attention_norm_scale,
                c_weights.pre_attention_norm_scale,
                func, max_err, max_err, __LINE__);
@@ -191,15 +191,15 @@ void TestGradient(const CompressedLayer<TConfig>& grad,
                func, max_err, max_err, __LINE__);
 }
 
-template <typename T, typename TConfig, typename UConfig, typename FUNC>
-void TestGradient(const CompressedWeights<TConfig>& grad,
-                  CompressedWeights<UConfig>& c_weights, FUNC func, T max_err) {
+template <typename T, typename U, typename FUNC>
+void TestGradient(const ModelWeightsPtrs<T>& grad,
+                  ModelWeightsPtrs<U>& c_weights, FUNC func, T max_err) {
   TestGradient(grad.embedder_input_embedding,
                  c_weights.embedder_input_embedding,
                  func,  2 * max_err, max_err, __LINE__);
   TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
                func, max_err, max_err, __LINE__);
-  for (int i = 0; i < TConfig::kLayers; ++i) {
+  for (size_t i = 0; i < grad.c_layers.size(); ++i) {
     TestGradient(*grad.GetLayer(i), *c_weights.GetLayer(i), func, max_err);
   }
 }

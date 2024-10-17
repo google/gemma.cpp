@@ -21,6 +21,7 @@
 #include <cmath>
 
 #include "compression/shared.h"  // BF16
+#include "gemma/configs.h"
 #include "ops/matmul.h"          // MatMulEnv
 #include "util/allocator.h"      // RowVectorBatch
 #include "util/threading.h"
@@ -30,6 +31,12 @@
 namespace gcpp {
 
 struct Activations {
+  explicit Activations(const ModelConfig& config)
+      : weights_config(config),
+        layer_config(config.layer_configs[0]),
+        seq_len(config.seq_len),
+        cache_pos_size(config.CachePosSize()) {}
+
   RowVectorBatch<float> x;  // input
   RowVectorBatch<float> q;  // query, also KV if MHA.
   RowVectorBatch<float> logits;
@@ -58,23 +65,24 @@ struct Activations {
 
   MatMulEnv env;
 
+  PostQKType post_qk = PostQKType::Rope;
+  // And the config.
+  const ModelConfig& weights_config;
+  const LayerConfig& layer_config;
+  size_t seq_len;
+  size_t cache_pos_size = 0;
+
   // Multi-Head Attention?
-  template <class TConfig>
-  static constexpr bool IsMHA() {
-    return TConfig::kHeads == TConfig::kKVHeads;
-  }
+  bool IsMHA() const { return layer_config.heads == layer_config.kv_heads; }
 
   // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
   // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
-  template <class TConfig>
-  static constexpr size_t QStride() {
-    return TConfig::kQKVDim * (IsMHA<TConfig>() ? 3 : 1);
-  }
+  size_t QStride() const { return layer_config.qkv_dim * (IsMHA() ? 3 : 1); }
 
-  template <class TConfig>
-  static RowVectorBatch<float> CreateInvTimescale() {
-    constexpr size_t kQKVDim = TConfig::kQKVDim;
-    const size_t rope_dim = TConfig::kUseHalfRope ? kQKVDim / 2 : kQKVDim;
+  static RowVectorBatch<float> CreateInvTimescale(size_t qkv_dim,
+                                                  PostQKType post_qk) {
+    const size_t rope_dim =
+        post_qk == PostQKType::HalfRope ? qkv_dim / 2 : qkv_dim;
     RowVectorBatch<float> inv_timescale(1, rope_dim / 2);
     for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
       const float freq_exponents =
@@ -86,40 +94,38 @@ struct Activations {
     return inv_timescale;
   }
 
-  template <class TConfig>
   void Allocate(size_t batch_size, PerClusterPools& pools) {
-    constexpr size_t kModelDim = TConfig::kModelDim;
-    constexpr size_t kQKVDim = TConfig::kQKVDim;
-    constexpr size_t kHeads = TConfig::kHeads;
-    constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-    constexpr size_t kVocabSize = TConfig::kVocabSize;
-    constexpr size_t kSeqLen = TConfig::kSeqLen;
-    constexpr size_t kGriffinLayers = TConfig::kGriffinLayers;
+    post_qk = layer_config.post_qk;
+    const size_t model_dim = weights_config.model_dim;
+    const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+    const size_t vocab_size = weights_config.vocab_size;
 
-    x = RowVectorBatch<float>(batch_size, kModelDim);
-    q = RowVectorBatch<float>(batch_size, kHeads * QStride<TConfig>());
-    if constexpr (kVocabSize > 0) {
-     logits = RowVectorBatch<float>(batch_size, kVocabSize);
+    x = RowVectorBatch<float>(batch_size, model_dim);
+    q = RowVectorBatch<float>(batch_size, layer_config.heads * QStride());
+    if (vocab_size > 0) {
+      logits = RowVectorBatch<float>(batch_size, vocab_size);
     }
 
-    pre_att_rms_out = RowVectorBatch<float>(batch_size, kModelDim);
-    att = RowVectorBatch<float>(batch_size, kHeads * kSeqLen);
-    att_out = RowVectorBatch<float>(batch_size, kHeads * kQKVDim);
-    att_sums = RowVectorBatch<float>(batch_size, kModelDim);
+    pre_att_rms_out = RowVectorBatch<float>(batch_size, model_dim);
+    att = RowVectorBatch<float>(batch_size,
+                                layer_config.heads * weights_config.seq_len);
+    att_out = RowVectorBatch<float>(batch_size,
+                                    layer_config.heads * layer_config.qkv_dim);
+    att_sums = RowVectorBatch<float>(batch_size, model_dim);
 
-    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(batch_size, kModelDim);
-    C1 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
-    C2 = RowVectorBatch<float>(batch_size, kFFHiddenDim);
-    ffw_out = RowVectorBatch<float>(batch_size, kModelDim);
+    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(batch_size, model_dim);
+    C1 = RowVectorBatch<float>(batch_size, ff_hidden_dim);
+    C2 = RowVectorBatch<float>(batch_size, ff_hidden_dim);
+    ffw_out = RowVectorBatch<float>(batch_size, model_dim);
 
-    if constexpr (kGriffinLayers > 0) {
-      griffin_x = RowVectorBatch<float>(batch_size, kModelDim);
-      griffin_y = RowVectorBatch<float>(batch_size, kModelDim);
-      griffin_gate_x = RowVectorBatch<float>(batch_size, kModelDim);
-      griffin_multiplier = RowVectorBatch<float>(batch_size, kModelDim);
+    if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
+      griffin_x = RowVectorBatch<float>(batch_size, model_dim);
+      griffin_y = RowVectorBatch<float>(batch_size, model_dim);
+      griffin_gate_x = RowVectorBatch<float>(batch_size, model_dim);
+      griffin_multiplier = RowVectorBatch<float>(batch_size, model_dim);
     }
 
-    inv_timescale = CreateInvTimescale<TConfig>();
+    inv_timescale = CreateInvTimescale(layer_config.qkv_dim, post_qk);
 
     env = MatMulEnv(pools);
   }

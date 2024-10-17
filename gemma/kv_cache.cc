@@ -15,59 +15,56 @@
 
 #include "gemma/kv_cache.h"
 
+#include <algorithm>
+
 #include "gemma/common.h"  // CallForModel
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // ZeroBytes
 
 namespace gcpp {
-namespace {
-template <class TConfig>
-struct CreateKVCache {
-  KVCache operator()(size_t prefill_tbatch_size) const {
-    KVCache kv_cache = {};
-
-    const size_t size_cache_pos = CachePosSize<TConfig>()();
-    if (size_cache_pos != 0) {
-      // Allocate more so that prefill can always access one batch, even if
-      // near the end of the sequence.
-      kv_cache.seq_len = TConfig::kSeqLen + prefill_tbatch_size;
-      kv_cache.kv_cache =
-          hwy::AllocateAligned<float>(kv_cache.seq_len * size_cache_pos);
-    }
-
-    // TODO(patrickms): Add query batching support for Griffin.
-    if (TConfig::kGriffinLayers) {
-      constexpr size_t kConv1dWidth = TConfig::kConv1dWidth;
-      const size_t conv1d_cache_size =
-          TConfig::kGriffinLayers * (kConv1dWidth == 0 ? 0 : kConv1dWidth - 1) *
-          TConfig::kModelDim;
-      if (conv1d_cache_size != 0) {
-        kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
-        hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
-                       conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
-      }
-
-      const size_t rglru_cache_size =
-          TConfig::kGriffinLayers * TConfig::kModelDim;
-      if (rglru_cache_size != 0) {
-        kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
-        hwy::ZeroBytes(kv_cache.rglru_cache.get(),
-                       rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
-      }
-    }  // kGriffinLayers
-
-    return kv_cache;
-  }
-};
-}  // namespace
 
 // prefill_tbatch_size is the maximum number of tokens from one query to
 // prefill at a time.
-KVCache KVCache::Create(Model model_type, size_t prefill_tbatch_size) {
-  // TWeight=float is a placeholder and unused because CreateKVCache does not
-  // use TConfig::Weight.
-  return CallForModel</*TWeight=*/float, CreateKVCache>(model_type,
-                                                        prefill_tbatch_size);
+KVCache KVCache::Create(const ModelConfig& weights_config,
+                        size_t prefill_tbatch_size) {
+  KVCache kv_cache = {};
+
+  const size_t size_cache_pos = weights_config.CachePosSize();
+  if (size_cache_pos != 0) {
+    // Allocate more so that prefill can always access one batch, even if
+    // near the end of the sequence.
+    kv_cache.seq_len = weights_config.seq_len + prefill_tbatch_size;
+    kv_cache.kv_cache =
+        hwy::AllocateAligned<float>(kv_cache.seq_len * size_cache_pos);
+  }
+  size_t num_griffin_layers = weights_config.NumLayersOfType(
+      LayerAttentionType::kGriffinRecurrentBlock);
+
+  // TODO(patrickms): Add query batching support for Griffin.
+  if (num_griffin_layers > 0) {
+    size_t conv1d_width = 0;
+    for (const auto& layer_config : weights_config.layer_configs) {
+      conv1d_width = std::max(conv1d_width, layer_config.conv1d_width);
+    }
+    const size_t conv1d_cache_size =
+        num_griffin_layers * (conv1d_width == 0 ? 0 : conv1d_width - 1) *
+        weights_config.model_dim;
+    if (conv1d_cache_size != 0) {
+      kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
+      hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
+                     conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
+    }
+
+    const size_t rglru_cache_size =
+        num_griffin_layers * weights_config.model_dim;
+    if (rglru_cache_size != 0) {
+      kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
+      hwy::ZeroBytes(kv_cache.rglru_cache.get(),
+                     rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
+    }
+  }  // kGriffinLayers
+
+  return kv_cache;
 }
 
 }  // namespace gcpp

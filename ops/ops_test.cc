@@ -387,8 +387,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  using Config = ConfigGemma2_9B<float>;
-  int dim_qkv = Config::kQKVDim;
+  ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
+  int dim_qkv = config.layer_configs[0].qkv_dim;
   RowVectorBatch<float> x(1, dim_qkv);
 
   std::mt19937 gen;
@@ -400,15 +400,15 @@ void TestRopeAndMulBy() {
     x.All()[i] = random_float();
   }
 
-  const float qmul = ChooseQueryScale<Config>();
+  const float qmul = ChooseQueryScale(config);
   const float kmul = 1.0;
 
   std::vector<float> qexpected(dim_qkv);
   std::vector<float> qactual(dim_qkv);
   std::vector<float> kexpected(dim_qkv);
   std::vector<float> kactual(dim_qkv);
-  RowVectorBatch<float> inv_timescale =
-      gcpp::Activations::CreateInvTimescale<Config>();
+  RowVectorBatch<float> inv_timescale = gcpp::Activations::CreateInvTimescale(
+      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings
@@ -571,29 +571,29 @@ void TestSampleTopK() {
   float temperature = 1.0f;
   // SampleTopK<1> should return the argmax.
   std::function<bool(int, float)> accept_token;
-  int sample = SampleTopK<1>(logits.data(), kSize, gen, temperature,
-                             accept_token);
+  int sample =
+      SampleTopK(logits.data(), /*k=*/1, kSize, gen, temperature, accept_token);
   EXPECT_EQ(sample, 51);  // Last is largest.
   // Only accept even tokens, expect the last (largest) even index.
   accept_token = [](int i, float) { return i % 2 == 0; };
-  sample = SampleTopK<1>(logits.data(), kSize, gen, temperature,
-                         accept_token);
+  sample =
+      SampleTopK(logits.data(), /*k=*/1, kSize, gen, temperature, accept_token);
   EXPECT_EQ(sample, 50);  // Last even index.
   // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
   Softmax(logits.data(), kSize);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
-    sample = SampleTopK<3>(logits.data(), kSize, gen, temperature,
-                          accept_token);
+    sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,
+                        accept_token);
     EXPECT_TRUE(sample == 50 || sample == 48 || sample == 46);
   }
   // Now set the temperature to 0.0f, which should always return the argmax,
   // even for k=3.
   temperature = 0.0f;
   for (int i = 0; i < 100; ++i) {
-    sample = SampleTopK<3>(logits.data(), kSize, gen, temperature,
-                          accept_token);
+    sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,
+                        accept_token);
     EXPECT_EQ(sample, 50);
   }
 }

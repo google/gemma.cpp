@@ -68,34 +68,15 @@ set(SOURCES
   gemma/activations.h
   gemma/common.cc
   gemma/common.h
+  gemma/configs.cc
   gemma/configs.h
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
-  gemma/instantiations/27b_bf16.cc
-  gemma/instantiations/27b_f32.cc
-  gemma/instantiations/27b_sfp.cc
-  gemma/instantiations/2b_bf16.cc
-  gemma/instantiations/2b_f32.cc
-  gemma/instantiations/2b_sfp.cc
-  gemma/instantiations/7b_bf16.cc
-  gemma/instantiations/7b_f32.cc
-  gemma/instantiations/7b_sfp.cc
-  gemma/instantiations/9b_bf16.cc
-  gemma/instantiations/9b_f32.cc
-  gemma/instantiations/9b_sfp.cc
-  gemma/instantiations/gr2b_bf16.cc
-  gemma/instantiations/gr2b_f32.cc
-  gemma/instantiations/gr2b_sfp.cc
-  gemma/instantiations/tiny_bf16.cc
-  gemma/instantiations/tiny_f32.cc
-  gemma/instantiations/tiny_sfp.cc
-  gemma/instantiations/gemma2_2b_bf16.cc
-  gemma/instantiations/gemma2_2b_f32.cc
-  gemma/instantiations/gemma2_2b_sfp.cc
-  gemma/instantiations/paligemma_224_bf16.cc
-  gemma/instantiations/paligemma_224_f32.cc
-  gemma/instantiations/paligemma_224_sfp.cc
+  gemma/instantiations/bf16.cc
+  gemma/instantiations/f32.cc
+  gemma/instantiations/nuq.cc
+  gemma/instantiations/sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/tokenizer.cc

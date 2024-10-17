@@ -14,8 +14,7 @@
 // limitations under the License.
 
 #undef HWY_TARGET_INCLUDE
-#define HWY_TARGET_INCLUDE \
-  "gemma/instantiations/gemma2_2b_sfp.cc"
+#define HWY_TARGET_INCLUDE "gemma/instantiations/sfp.cc"
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
-#define GEMMA_CONFIG ConfigGemma2_2B<SfpStream>
+#define GEMMA_TYPE SfpStream
 #include "gemma/gemma-inl.h"

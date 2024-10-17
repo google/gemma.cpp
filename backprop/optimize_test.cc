@@ -16,6 +16,7 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <random>
 #include <vector>
 
@@ -26,8 +27,10 @@
 #include "backprop/optimizer.h"
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
+#include "compression/shared.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"
+#include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 #include "util/threading.h"
@@ -45,20 +48,18 @@ TEST(OptimizeTest, GradientDescent) {
       .training = ModelTraining::GEMMA_IT,
       .weight = Type::kF32,
   };
-  ByteStorageT grad = CallForModelAndWeight<AllocateCompressedWeights>(
-      info.model, info.weight, pool);
-  ByteStorageT grad_m = CallForModelAndWeight<AllocateCompressedWeights>(
-      info.model, info.weight, pool);
-  ByteStorageT grad_v = CallForModelAndWeight<AllocateCompressedWeights>(
-      info.model, info.weight, pool);
-  ByteStorageT forward =
-      CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
-  ByteStorageT backward =
-      CallForModelAndWeight<AllocateForwardPass>(info.model, info.weight);
-  KVCache kv_cache = KVCache::Create(info.model, /*prefill_tbatch_size=*/16);
+  ModelConfig config = ConfigFromModel(info.model);
+  ModelWeightsStorage grad, grad_m, grad_v;
+  grad.Allocate(info.model, info.weight, pool);
+  grad_m.Allocate(info.model, info.weight, pool);
+  grad_v.Allocate(info.model, info.weight, pool);
+  grad_m.ZeroInit();
+  grad_v.ZeroInit();
+  ForwardPass<float> forward(config), backward(config);
+  KVCache kv_cache = KVCache::Create(config, /*prefill_tbatch_size=*/16);
 
-  RowVectorBatch<float> inv_timescale =
-      Activations::CreateInvTimescale<ConfigGemmaTiny<float>>();
+  RowVectorBatch<float> inv_timescale = Activations::CreateInvTimescale(
+      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
 
   Gemma gemma(GemmaTokenizer(), info, pools);
 
@@ -92,14 +93,11 @@ TEST(OptimizeTest, GradientDescent) {
                       reply.begin() + context.size());
   };
 
-  RandInitWeights(info.model, info.weight, gemma.Weights(), pool, gen);
-  CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
-                                                   grad_m, pool);
-  CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
-                                                   grad_v, pool);
+  gemma.MutableWeights().RandInit(gen);
+  gemma.MutableWeights().AllocAndCopyWithTranspose(pool);
 
   printf("Initial weights:\n");
-  LogWeightStats(info.model, info.weight, gemma.Weights());
+  gemma.MutableWeights().LogWeightStats();
 
   constexpr size_t kBatchSize = 8;
   const float alpha = 0.001f;
@@ -113,29 +111,29 @@ TEST(OptimizeTest, GradientDescent) {
   size_t num_ok;
   for (; steps < 1000000; ++steps) {
     std::mt19937 sgen(42);
-    CallForModelAndWeight<ZeroInitCompressedWeights>(info.model, info.weight,
-                                                     grad, pool);
+    grad.ZeroInit();
     float total_loss = 0.0f;
     num_ok = 0;
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
       total_loss += CrossEntropyLossForwardPass(
-          info.model, prompt, gemma.Weights(), forward, inv_timescale, pool);
-      CrossEntropyLossBackwardPass(info.model, prompt, gemma.Weights(), forward,
-                                   grad, backward, inv_timescale, pool);
-      CallForModelAndWeight<ReshapeCompressedWeights>(
-          info.model, info.weight, gemma.MutableWeights(), pool);
+          prompt, *gemma.Weights().GetWeightsOfType<float>(), forward,
+          inv_timescale, pool);
+      CrossEntropyLossBackwardPass(
+          prompt, *gemma.Weights().GetWeightsOfType<float>(), forward,
+          *grad.GetWeightsOfType<float>(), backward, inv_timescale, pool);
+      gemma.MutableWeights().CopyWithTranspose(pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;
 
-    AdamUpdate(info.model, info.weight, grad, alpha, beta1, beta2, epsilon,
-               steps + 1, gemma.Weights(), grad_m, grad_v, pool);
+    AdamUpdate(info.weight, grad, alpha, beta1, beta2, epsilon, steps + 1,
+               gemma.Weights(), grad_m, grad_v, pool);
     printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
            steps, total_loss, num_ok, kBatchSize);
     if (steps % 100 == 0) {
       printf("Batch gradient:\n");
-      LogWeightStats(info.model, info.weight, grad);
+      grad.LogWeightStats();
     }
     if (total_loss < 0.5f) {
       break;
@@ -143,7 +141,7 @@ TEST(OptimizeTest, GradientDescent) {
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
-  LogWeightStats(info.model, info.weight, gemma.Weights());
+  gemma.MutableWeights().LogWeightStats();
   EXPECT_LT(steps, 300);
   EXPECT_EQ(num_ok, kBatchSize);
 }

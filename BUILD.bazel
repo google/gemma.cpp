@@ -104,8 +104,6 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":allocator",
-        ":common",
-        ":gemma_lib",
         ":ops",
         ":test_util",
         ":threading",
@@ -183,7 +181,10 @@ cc_test(
 
 cc_library(
     name = "common",
-    srcs = ["gemma/common.cc"],
+    srcs = [
+        "gemma/common.cc",
+        "gemma/configs.cc",
+    ],
     hdrs = [
         "gemma/common.h",
         "gemma/configs.h",
@@ -195,12 +196,20 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "configs_test",
+    srcs = ["gemma/configs_test.cc"],
+    deps = [
+        ":common",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "weights",
     srcs = ["gemma/weights.cc"],
     hdrs = ["gemma/weights.h"],
     deps = [
-        ":allocator",
         ":common",
         "//compression:compress",
         "//compression:io",
@@ -219,7 +228,6 @@ cc_library(
         ":common",
         "//compression:io",
         "@highway//:hwy",
-        "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@com_google_sentencepiece//:sentencepiece_processor",
     ],
@@ -239,30 +247,10 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
-        "gemma/instantiations/27b_bf16.cc",
-        "gemma/instantiations/27b_f32.cc",
-        "gemma/instantiations/27b_sfp.cc",
-        "gemma/instantiations/2b_bf16.cc",
-        "gemma/instantiations/2b_f32.cc",
-        "gemma/instantiations/2b_sfp.cc",
-        "gemma/instantiations/7b_bf16.cc",
-        "gemma/instantiations/7b_f32.cc",
-        "gemma/instantiations/7b_sfp.cc",
-        "gemma/instantiations/9b_bf16.cc",
-        "gemma/instantiations/9b_f32.cc",
-        "gemma/instantiations/9b_sfp.cc",
-        "gemma/instantiations/tiny_bf16.cc",
-        "gemma/instantiations/tiny_f32.cc",
-        "gemma/instantiations/tiny_sfp.cc",
-        "gemma/instantiations/gr2b_bf16.cc",
-        "gemma/instantiations/gr2b_f32.cc",
-        "gemma/instantiations/gr2b_sfp.cc",
-        "gemma/instantiations/gemma2_2b_bf16.cc",
-        "gemma/instantiations/gemma2_2b_f32.cc",
-        "gemma/instantiations/gemma2_2b_sfp.cc",
-        "gemma/instantiations/paligemma_224_bf16.cc",
-        "gemma/instantiations/paligemma_224_f32.cc",
-        "gemma/instantiations/paligemma_224_sfp.cc",
+        "gemma/instantiations/bf16.cc",
+        "gemma/instantiations/f32.cc",
+        "gemma/instantiations/nuq.cc",
+        "gemma/instantiations/sfp.cc",
     ],
     hdrs = [
         "gemma/activations.h",
@@ -327,8 +315,6 @@ cc_library(
         ":threading",
         "//compression:io",
         "@highway//:hwy",
-        "@highway//:thread_pool",
-        "@highway//:topology",
     ],
 )
 
@@ -367,7 +353,6 @@ cc_test(
         ":benchmark_helper",
         ":common",
         ":gemma_lib",
-        ":tokenizer",
         "@googletest//:gtest_main",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
@@ -396,7 +381,6 @@ cc_binary(
     name = "single_benchmark",
     srcs = ["evals/benchmark.cc"],
     deps = [
-        ":app",
         ":args",
         ":benchmark_helper",
         ":common",
@@ -405,7 +389,6 @@ cc_binary(
         "//compression:io",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
-        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -429,13 +412,11 @@ cc_binary(
         "evals/debug_prompt.cc",
     ],
     deps = [
-        ":app",
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
         "//compression:io",
         "@highway//:hwy",
-        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -444,7 +425,6 @@ cc_binary(
     name = "gemma_mmlu",
     srcs = ["evals/run_mmlu.cc"],
     deps = [
-        ":app",
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
@@ -488,7 +468,6 @@ cc_library(
     deps = [
         ":allocator",
         ":common",
-        ":gemma_lib",
         ":ops",
         ":prompt",
         ":weights",
@@ -508,7 +487,6 @@ cc_library(
         "backprop/forward_scalar.h",
     ],
     deps = [
-        ":allocator",
         ":common",
         ":prompt",
         ":weights",
@@ -525,7 +503,6 @@ cc_test(
         "backprop/test_util.h",
     ],
     deps = [
-        ":allocator",
         ":backprop_scalar",
         ":common",
         ":prompt",
@@ -599,6 +576,7 @@ cc_test(
         ":threading",
         ":weights",
         "@googletest//:gtest_main",
+        "//compression:sfp",
         "@highway//:thread_pool",
     ],
 )

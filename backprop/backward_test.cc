@@ -19,7 +19,6 @@
 
 #include <stddef.h>
 
-#include <array>
 #include <complex>
 #include <cstdlib>  // std::abs
 #include <random>
@@ -34,7 +33,6 @@
 #include "backprop/test_util.h"
 #include "gemma/activations.h"
 #include "gemma/configs.h"
-#include "gemma/weights.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -50,6 +48,7 @@
 #include "backprop/forward-inl.h"
 #include "compression/compress.h"
 #include "ops/ops-inl.h"
+#include "util/allocator.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -85,8 +84,8 @@ void TestMatMulVJP() {
     };
 
     grad.ZeroInit();
-    MatMulVJP<kCols, kRows>(weights.data(), x.data(), dy.data(), kTokens,
-                            grad.data(), dx.data(), pool);
+    MatMulVJP(weights.data(), x.data(), dy.data(), kCols, kRows, kTokens,
+              grad.data(), dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
@@ -130,9 +129,8 @@ void TestMultiHeadMatMulVJP() {
     };
 
     grad.ZeroInit();
-    MultiHeadMatMulVJP<kHeads, kCols, kRows>(
-        weights.data(), x.data(), dy.data(), kTokens, grad.data(), dx.data(),
-        pool);
+    MultiHeadMatMulVJP(weights.data(), x.data(), dy.data(), kHeads, kCols,
+                       kRows, kTokens, grad.data(), dx.data(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
@@ -186,63 +184,63 @@ void TestRMSNormVJP() {
   }
 }
 
-template <typename T>
-struct TestConfig : ConfigBaseGemmaV2 {
-  using Weight = T;
-  static constexpr int kSeqLen = 24;
-  static constexpr int kVocabSize = 16;
-  static constexpr int kModelDim = 32;
-  static constexpr int kHeads = 3;
-  static constexpr int kQKVDim = 16;
-  static constexpr int kFFHiddenDim = 64;
-  static constexpr std::array<LayerAttentionType, 2> kLayerConfig =
-      FixedLayerConfig<2>(LayerAttentionType::kGemma);
-  static constexpr int kLayers = kLayerConfig.size();
-  static constexpr int kNumTensorScales = 4 * kLayers;
-  static constexpr bool kAbsolutePE = false;
-  static constexpr PostNormType kPostNorm = PostNormType::None;
-
-  static constexpr int kKVHeads = 1;
-  static constexpr int kGemmaLayers = kLayers;
-};
+static ModelConfig TestConfig() {
+  ModelConfig config;
+  config.scale_names = {"att_ein",      "qkv_ein",   "gr_lin_x_w", "gr_lin_y_w",
+                        "gr_lin_out_w", "gr_gate_w", "gating_ein", "linear_w"};
+  config.model_dim = 32;
+  config.vocab_size = 16;
+  config.seq_len = 24;
+  LayerConfig layer_config = {
+      .model_dim = config.model_dim,
+      .ff_hidden_dim = 64,
+      .heads = 3,
+      .kv_heads = 1,
+      .qkv_dim = 16,
+  };
+  config.layer_configs = {2, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
+  // This is required for optimize_test to pass.
+  config.att_cap = 50.0f;
+  config.final_cap = 30.0f;
+  return config;
+}
 
 void TestEndToEnd() {
   std::mt19937 gen(42);
   hwy::ThreadPool pool(0);
-  using WeightsF = CompressedWeights<TestConfig<float>>;
-  using LayerF = CompressedLayer<TestConfig<float>>;
-  WeightsWrapper<TestConfig<float>> weights;
-  WeightsWrapper<TestConfig<float>> grad;
-  ActivationsWrapper<float, TestConfig<float>> forward0;
-  ActivationsWrapper<float, TestConfig<float>> forward1;
-  ActivationsWrapper<float, TestConfig<float>> backward;
+  ModelConfig config = TestConfig();
+  WeightsWrapper<float> weights(config);
+  WeightsWrapper<float> grad(config);
+  ForwardPass<float> forward0(config);
+  ForwardPass<float> forward1(config);
+  ForwardPass<float> backward(config);
   using TC = std::complex<double>;
-  WeightsWrapper<TestConfig<TC>> c_weights;
-  ForwardPass<TC, TestConfig<TC>> c_forward;
+  WeightsWrapper<TC> c_weights(config);
+  ForwardPass<TC> c_forward(config);
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
-  RowVectorBatch<float> inv_timescale =
-      Activations::CreateInvTimescale<TestConfig<float>>();
+  RowVectorBatch<float> inv_timescale = Activations::CreateInvTimescale(
+      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
     RandInit(weights.get(), 1.0f, gen);
 
-    float loss0 = CrossEntropyLossForwardPass(
-        prompt, weights.get(), forward0.get());
+    float loss0 = CrossEntropyLossForwardPass(prompt, weights.get(), forward0);
 
-    float loss1 =
-        CrossEntropyLossForwardPass<TestConfig<float>, WeightsF, LayerF>(
-            prompt.tokens, prompt.context_size, weights.get(), forward1.get(),
-            inv_timescale, pool);
+    float loss1 = CrossEntropyLossForwardPass(
+        prompt.tokens, prompt.context_size, weights.get(), forward1,
+        inv_timescale, pool);
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.ZeroInit();
-    CrossEntropyLossBackwardPass<TestConfig<float>, WeightsF, LayerF>(
-        prompt, weights.get(), forward1.get(), grad.get(), backward.get(),
-        inv_timescale, pool);
+    CrossEntropyLossBackwardPassInl(prompt, weights.get(), forward1, grad.get(),
+                                    backward, inv_timescale, pool);
 
     Complexify(weights.get(), c_weights.get());
     auto func = [&]() {

@@ -18,32 +18,27 @@
 
 #include <stddef.h>
 
-#include <array>
+#include <vector>
 
 #include "compression/compress.h"  // MatStorageT
-#include "util/allocator.h"  // ByteStorageT
+#include "gemma/configs.h"         // ModelConfig
 
 namespace gcpp {
 
-template <typename T, typename TConfig>
+template <typename T>
 struct ForwardLayer {
-  ForwardLayer()
-      : input("input", kSeqLen, kModelDim),
-        pre_att_rms_out("pre_att_rms_out", kSeqLen, kModelDim),
-        qkv("qkv", kSeqLen * (kHeads + 2), kQKVDim),
-        att("att", kSeqLen * kHeads, kSeqLen),
-        att_out("att_out", kSeqLen * kHeads, kQKVDim),
-        att_post1("att_post1", kSeqLen, kModelDim),
-        attention_out("attention_out", kSeqLen, kModelDim),
-        bf_pre_ffw_rms_out("bf_pre_ffw_rms_out", kSeqLen, kModelDim),
-        ffw_hidden("ffw_hidden", kSeqLen, kFFHiddenDim * 2),
-        ffw_hidden_gated("ffw_hidden_gated", kSeqLen, kFFHiddenDim) {}
-
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
+  ForwardLayer(const LayerConfig& config, size_t seq_len)
+      : input("input", seq_len, config.model_dim),
+        pre_att_rms_out("pre_att_rms_out", seq_len, config.model_dim),
+        qkv("qkv", seq_len * (config.heads + 2), config.qkv_dim),
+        att("att", seq_len * config.heads, seq_len),
+        att_out("att_out", seq_len * config.heads, config.qkv_dim),
+        att_post1("att_post1", seq_len, config.model_dim),
+        attention_out("attention_out", seq_len, config.model_dim),
+        bf_pre_ffw_rms_out("bf_pre_ffw_rms_out", seq_len, config.model_dim),
+        ffw_hidden("ffw_hidden", seq_len, config.ff_hidden_dim * 2),
+        ffw_hidden_gated("ffw_hidden_gated", seq_len, config.ff_hidden_dim),
+        layer_config(config) {}
 
   MatStorageT<T> input;
   MatStorageT<T> pre_att_rms_out;
@@ -55,56 +50,30 @@ struct ForwardLayer {
   MatStorageT<T> bf_pre_ffw_rms_out;
   MatStorageT<T> ffw_hidden;
   MatStorageT<T> ffw_hidden_gated;
+  const LayerConfig& layer_config;
 };
 
-template <typename T, typename TConfig>
+template <typename T>
 struct ForwardPass {
-  ForwardPass()
-      : final_layer_output("final_layer_output", kSeqLen, kModelDim),
-        final_norm_output("final_norm_output", kSeqLen, kModelDim),
-        logits("logits", kSeqLen, kVocabSize),
-        probs("probs", kSeqLen, kVocabSize) {
-  }  // prevents placement-new calling memset
+  ForwardPass(const ModelConfig& config)
+      : final_layer_output("final_layer_output", config.seq_len,
+                           config.model_dim),
+        final_norm_output("final_norm_output", config.seq_len,
+                          config.model_dim),
+        logits("logits", config.seq_len, config.vocab_size),
+        probs("probs", config.seq_len, config.vocab_size),
+        weights_config(config) {
+    for (const auto& layer_config : config.layer_configs) {
+      layers.emplace_back(layer_config, config.seq_len);
+    }
+  }
 
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
-
-  std::array<ForwardLayer<T, TConfig>, kLayers> layers;
+  std::vector<ForwardLayer<T>> layers;
   MatStorageT<T> final_layer_output;
   MatStorageT<T> final_norm_output;
   MatStorageT<T> logits;
   MatStorageT<T> probs;
-};
-
-template <typename TConfig>
-struct AllocateForwardPass {
-  ByteStorageT operator()() const {
-    ByteStorageT c_weights_u8 = AllocateSizeof<ForwardPass<float, TConfig>>();
-    auto* c_weights =
-        reinterpret_cast<ForwardPass<float, TConfig>*>(c_weights_u8.get());
-    new (c_weights) ForwardPass<float, TConfig>();
-    return c_weights_u8;
-  }
-};
-
-// Owns activations and undoes the type erasure of AllocateAligned.
-template<typename T, typename TConfig>
-class ActivationsWrapper {
-  using WrappedT = ForwardPass<T, TConfig>;
-
- public:
-  ActivationsWrapper()
-      : data_(AllocateSizeof<WrappedT>()),
-        activations_(*(new(data_.get()) WrappedT())) {}
-
-  const WrappedT& get() const { return activations_; }
-  WrappedT& get() { return activations_; }
-
- private:
-  ByteStorageT data_;
-  WrappedT& activations_;
+  const ModelConfig& weights_config;
 };
 
 }  // namespace gcpp

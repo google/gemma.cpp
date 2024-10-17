@@ -24,6 +24,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "gemma/configs.h"
 
 #ifndef GEMMA_COMPRESS_WEIGHTS_ONCE
 #define GEMMA_COMPRESS_WEIGHTS_ONCE
@@ -150,29 +151,22 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <class Configs>
+template <typename T>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path, Model model_type,
-                     Type weight_type, hwy::ThreadPool& pool) {
+                     hwy::ThreadPool& pool) {
   if (!weights_path.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights_path.path.c_str());
   }
   printf("Compressing weights from %s to %s\n", weights_path.path.c_str(),
          compressed_weights_path.path.c_str());
-
-  using CConfig = typename Configs::c;
-  using UCConfig = typename Configs::uc;
-  // Allocate compressed weights.
-  using CWeights = CompressedWeights<CConfig>;
-  ByteStorageT c_weights_u8 = AllocateCompressedWeights<CConfig>()(pool);
-  CWeights* c_weights = reinterpret_cast<CWeights*>(c_weights_u8.get());
-
-  // Allocate uncompressed weights.
-  using UCWeights = CompressedWeights<UCConfig>;
-  ByteStorageT uc_weights_u8 = AllocateCompressedWeights<UCConfig>()(pool);
-  UCWeights* uc_weights = reinterpret_cast<UCWeights*>(uc_weights_u8.get());
-
+  ModelConfig config = ConfigFromModel(model_type);
+  std::vector<MatStorage> model_storage;
+  ModelWeightsPtrs<T> c_weights(config, pool);
+  c_weights.Allocate(model_storage, pool);
+  ModelWeightsPtrs<float> uc_weights(config, pool);
+  uc_weights.Allocate(model_storage, pool);
   // Get uncompressed weights, compress, and store.
   FILE* fptr = fopen(weights_path.path.c_str(), "rb");
   if (fptr == nullptr) {
@@ -181,22 +175,22 @@ void CompressWeights(const Path& weights_path,
   }
   bool ok = true;
   uint64_t total_size = 0;
-  CompressedWeights<UCConfig>::ForEachTensor(
-      {uc_weights}, ForEachType::kLoadNoToc,
+  ModelWeightsPtrs<float>::ForEachTensor(
+      {&uc_weights}, ForEachType::kLoadNoToc,
       [&](const char* name, hwy::Span<MatPtr*> tensors) {
         fprintf(stderr, "Loading Parameters (size %zu): %s\n",
                 tensors[0]->SizeBytes(), name);
         ok &= 1 == fread(tensors[0]->Ptr(), tensors[0]->SizeBytes(), 1, fptr);
         total_size += tensors[0]->SizeBytes();
       });
-  const bool scale_for_compression = UCConfig::kNumTensorScales > 0;
+  const bool scale_for_compression = config.num_tensor_scales > 0;
   std::vector<float> scales;
   if (scale_for_compression) {
-    uc_weights->GetOrApplyScales(scales);
+    uc_weights.GetOrApplyScales(scales);
   }
   Compressor compressor(pool);
-  CompressedWeights<CConfig>::ForEachTensor(
-      {reinterpret_cast<CompressedWeights<CConfig>*>(uc_weights), c_weights},
+  ModelWeightsPtrs<T>::ForEachTensor(
+      {reinterpret_cast<ModelWeightsPtrs<T>*>(&uc_weights), &c_weights},
       ForEachType::kLoadNoToc,
       [&compressor](const char* name, hwy::Span<MatPtr*> tensors) {
         tensors[1]->CallUpcasted(
@@ -221,9 +215,26 @@ void Run(Args& args) {
     HWY_ABORT("PaliGemma is not supported in compress_weights.");
   }
   const Type weight_type = args.WeightType();
-  GEMMA_EXPORT_AND_DISPATCH(
-      model_type, weight_type, CompressWeights,
-      (args.weights, args.compressed_weights, model_type, weight_type, pool));
+  switch (weight_type) {
+    case Type::kF32:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<float>)
+      (args.weights, args.compressed_weights, model_type, pool);
+      break;
+    case Type::kBF16:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<BF16>)
+      (args.weights, args.compressed_weights, model_type, pool);
+      break;
+    case Type::kSFP:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<SfpStream>)
+      (args.weights, args.compressed_weights, model_type, pool);
+      break;
+    case Type::kNUQ:
+      HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<NuqStream>)
+      (args.weights, args.compressed_weights, model_type, pool);
+      break;
+    default:
+      HWY_ABORT("Weight type %d unsupported.", static_cast<int>(weight_type));
+  }
 }
 
 }  // namespace gcpp

@@ -127,108 +127,107 @@ void InputEmbedding(const T* w, const std::vector<int>& tokens, T scaling,
   }
 }
 
-template<typename T>
-void MaskedAttention(const T* qkv, T* output, size_t num_tokens,
-                     size_t kHeads, size_t kQKVDim, size_t kSeqLen) {
+template <typename T>
+void MaskedAttention(const T* qkv, T* output, size_t num_tokens, size_t heads,
+                     size_t qkv_dim, size_t seq_len) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    for (size_t head = 0; head < kHeads; ++head) {
-      const size_t qoffset = pos * (kHeads + 2) * kQKVDim;
-      const size_t aoffset = pos * kHeads * kSeqLen + head * kSeqLen;
-      const T* q = qkv + qoffset + head * kQKVDim;
+    for (size_t head = 0; head < heads; ++head) {
+      const size_t qoffset = pos * (heads + 2) * qkv_dim;
+      const size_t aoffset = pos * heads * seq_len + head * seq_len;
+      const T* q = qkv + qoffset + head * qkv_dim;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        const T* k = qkv + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
-        output[aoffset + pos2] = DotT(q, k, kQKVDim);
+        const T* k = qkv + (pos2 * (heads + 2) + heads) * qkv_dim;
+        output[aoffset + pos2] = DotT(q, k, qkv_dim);
       }
     }
   }
 }
-template<typename T>
-void MaskedSoftmax(T* x, size_t num_tokens, size_t kHeads, size_t kSeqLen) {
+template <typename T>
+void MaskedSoftmax(T* x, size_t num_tokens, size_t heads, size_t seq_len) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    for (size_t head = 0; head < kHeads; ++head) {
-      size_t offset = pos * kHeads * kSeqLen + head * kSeqLen;
+    for (size_t head = 0; head < heads; ++head) {
+      size_t offset = pos * heads * seq_len + head * seq_len;
       Softmax(x + offset, pos + 1);
-      memset(x + offset + pos + 1, 0, (kSeqLen - pos - 1) * sizeof(T));
+      memset(x + offset + pos + 1, 0, (seq_len - pos - 1) * sizeof(T));
     }
   }
 }
-template<typename T>
+template <typename T>
 void MixByAttention(const T* qkv, const T* attention, T* output,
-                    size_t num_tokens, size_t kHeads, size_t kQKVDim,
-                    size_t kSeqLen) {
+                    size_t num_tokens, size_t heads, size_t qkv_dim,
+                    size_t seq_len) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    for (size_t head = 0; head < kHeads; ++head) {
-      const T* att = &attention[pos * kHeads * kSeqLen + head * kSeqLen];
-      T* out = &output[head * kQKVDim + pos * kHeads * kQKVDim];
-      memset(out, 0, kQKVDim * sizeof(out[0]));
+    for (size_t head = 0; head < heads; ++head) {
+      const T* att = &attention[pos * heads * seq_len + head * seq_len];
+      T* out = &output[head * qkv_dim + pos * heads * qkv_dim];
+      memset(out, 0, qkv_dim * sizeof(out[0]));
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-        size_t v_offset = (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
+        size_t v_offset = (pos2 * (heads + 2) + heads + 1) * qkv_dim;
         const T* v = &qkv[v_offset];
-        MulByConstAndAddT(att[pos2], v, out, kQKVDim);
+        MulByConstAndAddT(att[pos2], v, out, qkv_dim);
       }
     }
   }
 }
-template <typename T, typename TConfig>
-void ApplyLayer(const CompressedLayer<TConfig>& weights,
-                ForwardLayer<T, TConfig>& activations, size_t num_tokens,
-                T* output) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kSeqLen = TConfig::kSeqLen;
-  static constexpr size_t kQKVDim = TConfig::kQKVDim;
-  static constexpr size_t kHeads = TConfig::kHeads;
-  static constexpr size_t kFFHiddenDim = TConfig::kFFHiddenDim;
-  static const T kQueryScale = T(1.0) / std::sqrt(T(kQKVDim));
+template <typename T>
+void ApplyLayer(const LayerWeightsPtrs<T>& weights,
+                ForwardLayer<T>& activations, size_t num_tokens, T* output) {
+  const LayerConfig& layer_config = weights.layer_config;
+  const size_t model_dim = layer_config.model_dim;
+  const size_t seq_len = activations.input.Rows();
+  const size_t qkv_dim = layer_config.qkv_dim;
+  const size_t heads = layer_config.heads;
+  const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+  static const T query_scale = T(1.0) / std::sqrt(T(qkv_dim));
 
   RMSNormT(weights.pre_attention_norm_scale.data(), activations.input.data(),
-           activations.pre_att_rms_out.data(), kModelDim, num_tokens);
+           activations.pre_att_rms_out.data(), model_dim, num_tokens);
 
   MatMulT(weights.qkv_einsum_w.data(), activations.pre_att_rms_out.data(),
-          activations.qkv.data(), (kHeads + 2) * kQKVDim, kModelDim,
-          num_tokens);
+          activations.qkv.data(), (heads + 2) * qkv_dim, model_dim, num_tokens);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
-    for (size_t h = 0; h <= kHeads; ++h) {
-      Rope(qkv + h * kQKVDim, kQKVDim, pos);
+    T* qkv = activations.qkv.data() + pos * (heads + 2) * qkv_dim;
+    for (size_t h = 0; h <= heads; ++h) {
+      Rope(qkv + h * qkv_dim, qkv_dim, pos);
     }
   }
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = activations.qkv.data() + pos * (kHeads + 2) * kQKVDim;
-    MulByConstT(kQueryScale, qkv, kHeads * kQKVDim);
+    T* qkv = activations.qkv.data() + pos * (heads + 2) * qkv_dim;
+    MulByConstT(query_scale, qkv, heads * qkv_dim);
   }
 
-  MaskedAttention(activations.qkv.data(), activations.att.data(),
-                  num_tokens, kHeads, kQKVDim, kSeqLen);
+  MaskedAttention(activations.qkv.data(), activations.att.data(), num_tokens,
+                  heads, qkv_dim, seq_len);
 
-  MaskedSoftmax(activations.att.data(), num_tokens, kHeads, kSeqLen);
+  MaskedSoftmax(activations.att.data(), num_tokens, heads, seq_len);
 
   MixByAttention(activations.qkv.data(), activations.att.data(),
-                 activations.att_out.data(), num_tokens, kHeads, kQKVDim,
-                 kSeqLen);
+                 activations.att_out.data(), num_tokens, heads, qkv_dim,
+                 seq_len);
 
   MultiHeadMatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
-                  activations.attention_out.data(), kHeads, kModelDim, kQKVDim,
+                  activations.attention_out.data(), heads, model_dim, qkv_dim,
                   num_tokens);
 
   AddFromT(activations.input.data(), activations.attention_out.data(),
-           num_tokens * kModelDim);
+           num_tokens * model_dim);
 
   RMSNormT(weights.pre_ffw_norm_scale.data(), activations.attention_out.data(),
-           activations.bf_pre_ffw_rms_out.data(), kModelDim, num_tokens);
+           activations.bf_pre_ffw_rms_out.data(), model_dim, num_tokens);
 
   MatMulT(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
-          activations.ffw_hidden.data(), kFFHiddenDim * 2, kModelDim,
+          activations.ffw_hidden.data(), ff_hidden_dim * 2, model_dim,
           num_tokens);
 
   GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
-            kFFHiddenDim, num_tokens);
+            ff_hidden_dim, num_tokens);
 
-  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(),
-          output, kModelDim, kFFHiddenDim, num_tokens);
+  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(), output,
+          model_dim, ff_hidden_dim, num_tokens);
 
-  AddFromT(activations.attention_out.data(), output, num_tokens * kModelDim);
+  AddFromT(activations.attention_out.data(), output, num_tokens * model_dim);
 }
 
 template<typename T>
@@ -247,48 +246,47 @@ T CrossEntropyLoss(const T* x, const Prompt& prompt, size_t V) {
   return loss * scaling;
 }
 
-template <typename T, typename TConfig>
+template <typename T>
 T CrossEntropyLossForwardPass(const Prompt& prompt,
-                              const CompressedWeights<TConfig>& weights,
-                              ForwardPass<T, TConfig>& forward) {
-  static constexpr size_t kModelDim = TConfig::kModelDim;
-  static constexpr size_t kVocabSize = TConfig::kVocabSize;
-  static constexpr size_t kLayers = TConfig::kLayers;
+                              const ModelWeightsPtrs<T>& weights,
+                              ForwardPass<T>& forward) {
+  const ModelConfig& config = weights.weights_config;
+  const size_t model_dim = config.model_dim;
+  const size_t vocab_size = config.vocab_size;
+  const size_t layers = config.layer_configs.size();
   const std::vector<int> tokens = prompt.tokens;
   const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
 
-  const T kEmbScaling = EmbeddingScaling(kModelDim);
-  InputEmbedding(weights.embedder_input_embedding.data(), tokens,
-                 kEmbScaling, forward.layers[0].input.data(), kModelDim);
+  const T kEmbScaling = EmbeddingScaling(model_dim);
+  InputEmbedding(weights.embedder_input_embedding.data(), tokens, kEmbScaling,
+                 forward.layers[0].input.data(), model_dim);
 
-  for (size_t layer = 0; layer < kLayers; ++layer) {
-    T* output = layer + 1 < kLayers ?
-                forward.layers[layer + 1].input.data() :
-                forward.final_layer_output.data();
+  for (size_t layer = 0; layer < layers; ++layer) {
+    T* output = layer + 1 < layers ? forward.layers[layer + 1].input.data()
+                                   : forward.final_layer_output.data();
     ApplyLayer(*weights.GetLayer(layer), forward.layers[layer], num_tokens,
                output);
   }
 
-  RMSNormT(weights.final_norm_scale.data(),
-           forward.final_layer_output.data(),
-           forward.final_norm_output.data(), kModelDim, num_tokens);
+  RMSNormT(weights.final_norm_scale.data(), forward.final_layer_output.data(),
+           forward.final_norm_output.data(), model_dim, num_tokens);
 
   MatMulT(weights.embedder_input_embedding.data(),
-          forward.final_norm_output.data(),
-          forward.logits.data(), kVocabSize, kModelDim, num_tokens);
+          forward.final_norm_output.data(), forward.logits.data(), vocab_size,
+          model_dim, num_tokens);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    if constexpr (TConfig::kFinalCap > 0.0f) {
-      Softcap(TConfig::kFinalCap, forward.logits.data() + pos * kVocabSize,
-              kVocabSize);
+    if (config.final_cap > 0.0f) {
+      Softcap(config.final_cap, forward.logits.data() + pos * vocab_size,
+              vocab_size);
     }
   }
 
   memcpy(forward.probs.data(), forward.logits.data(),
-         num_tokens * kVocabSize * sizeof(forward.logits.At(0)));
-  Softmax(forward.probs.data(), kVocabSize, num_tokens);
+         num_tokens * vocab_size * sizeof(forward.logits.At(0)));
+  Softmax(forward.probs.data(), vocab_size, num_tokens);
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, kVocabSize);
+  return CrossEntropyLoss(forward.probs.data(), prompt, vocab_size);
 }
 
 }  // namespace gcpp

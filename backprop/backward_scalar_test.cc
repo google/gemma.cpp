@@ -19,7 +19,6 @@
 #include <stdio.h>
 #include <string.h>  // memcpy
 
-#include <array>
 #include <complex>
 #include <limits>
 #include <random>
@@ -384,44 +383,49 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   }
 }
 
-template <typename T>
-struct TestConfig : ConfigBaseGemmaV2 {
-  using Weight = T;
-  static constexpr int kSeqLen = 18;
-  static constexpr int kVocabSize = 12;
-  static constexpr int kModelDim = 32;
-  static constexpr int kHeads = 3;
-  static constexpr int kQKVDim = 12;
-  static constexpr int kFFHiddenDim = 48;
-  static constexpr std::array<LayerAttentionType, 2> kLayerConfig =
-      FixedLayerConfig<2>(LayerAttentionType::kGemma);
-  static constexpr int kLayers = kLayerConfig.size();
-  static constexpr int kNumTensorScales = 4 * kLayers;
-  static constexpr bool kAbsolutePE = false;
-  static constexpr PostNormType kPostNorm = PostNormType::None;
-
-  static constexpr int kKVHeads = 1;
-  static constexpr int kGemmaLayers = kLayers;
-};
+static ModelConfig TestConfig() {
+  ModelConfig config;
+  config.scale_names = {"att_ein",      "qkv_ein",   "gr_lin_x_w", "gr_lin_y_w",
+                        "gr_lin_out_w", "gr_gate_w", "gating_ein", "linear_w"};
+  config.model_dim = 32;
+  config.vocab_size = 12;
+  config.seq_len = 18;
+  LayerConfig layer_config = {
+      .model_dim = config.model_dim,
+      .ff_hidden_dim = 48,
+      .heads = 3,
+      .kv_heads = 1,
+      .qkv_dim = 12,
+  };
+  config.layer_configs = {2, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
+  // This is required for optimize_test to pass.
+  config.final_cap = 30.0f;
+  return config;
+}
 
 TEST(BackPropTest, LayerVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  const size_t kOutputSize = TestConfig<T>::kSeqLen * TestConfig<T>::kModelDim;
-  CompressedLayer<TestConfig<T>> weights;
-  CompressedLayer<TestConfig<T>> grad;
-  ForwardLayer<T, TestConfig<T>> forward;
-  ForwardLayer<T, TestConfig<T>> backward = {};
-  CompressedLayer<TestConfig<TC>> c_weights;
-  ForwardLayer<TC, TestConfig<TC>> c_forward;
-  std::array<T, kOutputSize> y;
+  ModelConfig config = TestConfig();
+  const size_t kOutputSize = config.seq_len * config.model_dim;
+  LayerWeightsPtrs<T> weights(config.layer_configs[0]);
+  LayerWeightsPtrs<T> grad(config.layer_configs[0]);
+  ForwardLayer<T> forward(config.layer_configs[0], config.seq_len);
+  ForwardLayer<T> backward(config.layer_configs[0], config.seq_len);
+  LayerWeightsPtrs<TC> c_weights(config.layer_configs[0]);
+  ForwardLayer<TC> c_forward(config.layer_configs[0], config.seq_len);
+  MatStorageT<T> y("y", kOutputSize, 1);
   MatStorageT<T> dy("dy", kOutputSize, 1);
-  std::array<TC, kOutputSize> c_y;
+  MatStorageT<TC> c_y("c_y", kOutputSize, 1);
   const size_t num_tokens = 3;
-  weights.Allocate();
-  grad.Allocate();
-  c_weights.Allocate();
+  std::vector<MatStorage> layer_storage;
+  weights.Allocate(layer_storage);
+  grad.Allocate(layer_storage);
+  c_weights.Allocate(layer_storage);
   backward.input.ZeroInit();
 
   for (size_t iter = 0; iter < 10; ++iter) {
@@ -432,7 +436,7 @@ TEST(BackPropTest, LayerVJP) {
     Complexify(forward.input, c_forward.input);
     auto func = [&]() {
       ApplyLayer(c_weights, c_forward, num_tokens, c_y.data());
-      return DotT(dy.data(), c_y.data(), num_tokens * TestConfig<T>::kModelDim);
+      return DotT(dy.data(), c_y.data(), num_tokens * config.model_dim);
     };
     grad.ZeroInit(/*layer_idx=*/0);
     ApplyLayer(weights, forward, num_tokens, y.data());
@@ -447,12 +451,13 @@ TEST(BackPropTest, EndToEnd) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  WeightsWrapper<TestConfig<T>> weights;
-  WeightsWrapper<TestConfig<T>> grad;
-  ForwardPass<T, TestConfig<T>> forward;
-  ForwardPass<T, TestConfig<T>> backward;
-  WeightsWrapper<TestConfig<TC>> c_weights;
-  ForwardPass<TC, TestConfig<TC>> c_forward;
+  ModelConfig config = TestConfig();
+  WeightsWrapper<T> weights(config);
+  WeightsWrapper<T> grad(config);
+  ForwardPass<T> forward(config);
+  ForwardPass<T> backward(config);
+  WeightsWrapper<TC> c_weights(config);
+  ForwardPass<TC> c_forward(config);
 
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
@@ -474,9 +479,9 @@ TEST(BackPropTest, EndToEnd) {
   }
 }
 
-template <typename T, typename TConfig>
-void MulByConstAndAddT(T c, const CompressedLayer<TConfig>& x,
-                       CompressedLayer<TConfig>& out) {
+template <typename T>
+void MulByConstAndAddT(T c, const LayerWeightsPtrs<T>& x,
+                       LayerWeightsPtrs<T>& out) {
   MulByConstAndAddT(c, x.pre_attention_norm_scale,
                     out.pre_attention_norm_scale);
   MulByConstAndAddT(c, x.attn_vec_einsum_w, out.attn_vec_einsum_w);
@@ -486,23 +491,23 @@ void MulByConstAndAddT(T c, const CompressedLayer<TConfig>& x,
   MulByConstAndAddT(c, x.linear_w, out.linear_w);
 }
 
-template <typename T, typename TConfig>
-void MulByConstAndAddT(T c, const CompressedWeights<TConfig>& x,
-                       CompressedWeights<TConfig>& out) {
-  static constexpr size_t kLayers = TConfig::kLayers;
+template <typename T>
+void MulByConstAndAddT(T c, const ModelWeightsPtrs<T>& x,
+                       ModelWeightsPtrs<T>& out) {
+  const size_t layers = x.c_layers.size();
   MulByConstAndAddT(c, x.embedder_input_embedding,
                     out.embedder_input_embedding);
   MulByConstAndAddT(c, x.final_norm_scale, out.final_norm_scale);
-  for (size_t i = 0; i < kLayers; ++i) {
+  for (size_t i = 0; i < layers; ++i) {
     MulByConstAndAddT(c, *x.GetLayer(i), *out.GetLayer(i));
   }
 }
 
 // Evaluates forward pass on a batch.
-template <typename T, typename TConfig>
+template <typename T>
 T CrossEntropyLossForwardPass(const std::vector<Prompt>& batch,
-                              const WeightsWrapper<TConfig>& weights,
-                              ForwardPass<T, TConfig>& forward) {
+                              const WeightsWrapper<T>& weights,
+                              ForwardPass<T>& forward) {
   T loss = 0.0;
   for (const Prompt& prompt : batch) {
     loss += CrossEntropyLossForwardPass(prompt, weights.get(), forward);
@@ -514,12 +519,11 @@ T CrossEntropyLossForwardPass(const std::vector<Prompt>& batch,
 // Evaluates forward pass on a batch by applying gradient with the given
 // learning rate. Does not update weights, but uses the given tmp weights
 // instead.
-template <typename T, typename TConfig>
+template <typename T>
 T CrossEntropyLossForwardPass(T learning_rate, const std::vector<Prompt>& batch,
-                              const WeightsWrapper<TConfig>& weights,
-                              const WeightsWrapper<TConfig>& grad,
-                              WeightsWrapper<TConfig>& tmp,
-                              ForwardPass<T, TConfig>& forward) {
+                              const WeightsWrapper<T>& weights,
+                              const WeightsWrapper<T>& grad,
+                              WeightsWrapper<T>& tmp, ForwardPass<T>& forward) {
   tmp.CopyFrom(weights);
   const T scale = -learning_rate / batch.size();
   MulByConstAndAddT(scale, grad.get(), tmp.get());
@@ -529,11 +533,9 @@ T CrossEntropyLossForwardPass(T learning_rate, const std::vector<Prompt>& batch,
 // Uses line search in the negative gradient direction to update weights. We do
 // this so that we can test that each step during the gradient descent can
 // decrease the objective function value.
-template <typename T, typename TConfig>
-T FindOptimalUpdate(const WeightsWrapper<TConfig>& grad,
-                    WeightsWrapper<TConfig>& weights,
-                    WeightsWrapper<TConfig>& tmp,
-                    ForwardPass<T, TConfig>& forward,
+template <typename T>
+T FindOptimalUpdate(const WeightsWrapper<T>& grad, WeightsWrapper<T>& weights,
+                    WeightsWrapper<T>& tmp, ForwardPass<T>& forward,
                     const std::vector<Prompt>& batch, T loss,
                     T initial_learning_rate) {
   T lr0 = initial_learning_rate;
@@ -568,13 +570,14 @@ TEST(BackProptest, Convergence) {
   std::mt19937 gen(42);
   using T = float;
   using TC = std::complex<double>;
-  WeightsWrapper<TestConfig<T>> weights;
-  WeightsWrapper<TestConfig<T>> grad;
-  WeightsWrapper<TestConfig<T>> tmp;
-  ForwardPass<T, TestConfig<T>> forward;
-  ForwardPass<T, TestConfig<T>> backward;
-  WeightsWrapper<TestConfig<TC>> c_weights;
-  ForwardPass<TC, TestConfig<TC>> c_forward;
+  ModelConfig config = TestConfig();
+  WeightsWrapper<T> weights(config);
+  WeightsWrapper<T> grad(config);
+  WeightsWrapper<T> tmp(config);
+  ForwardPass<T> forward(config);
+  ForwardPass<T> backward(config);
+  WeightsWrapper<TC> c_weights(config);
+  ForwardPass<TC> c_forward(config);
   constexpr size_t kBatchSize = 5;
   ReverseSequenceSampler training_task({0, 0, 0, 1, 1});
   T learning_rate = 0.01;

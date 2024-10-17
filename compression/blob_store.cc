@@ -21,7 +21,6 @@
 #include <atomic>
 #include <cstdio>
 #include <memory>
-#include <new>
 #include <string>
 #include <vector>
 
@@ -276,6 +275,7 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
            [pfile, &requests, &err](uint64_t i, size_t /*thread*/) {
              if (!pfile->Read(requests[i].offset, requests[i].size,
                               requests[i].data)) {
+               fprintf(stderr, "Failed to read blob %zu\n", i);
                err.test_and_set();
              }
            });

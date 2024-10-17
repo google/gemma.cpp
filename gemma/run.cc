@@ -194,7 +194,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   Gemma model = CreateGemma(loader, pools);
   KVCache kv_cache =
-      KVCache::Create(model.Info().model, inference.prefill_tbatch_size);
+      KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 
   if (app.verbosity >= 1) {
     std::string instructions =

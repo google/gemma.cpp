@@ -69,8 +69,8 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     model_ = AllocateGemma(mutable_loader, pools_);
     // Only allocate one for starters because GenerateBatch might not be called.
     kv_caches_.resize(1);
-    kv_caches_[0] =
-        KVCache::Create(model_->Info().model, inference.prefill_tbatch_size);
+    kv_caches_[0] = KVCache::Create(model_->GetModelConfig(),
+                                    inference.prefill_tbatch_size);
   }
   InitGenerator(inference, gen_);
   runtime_config_ = {
@@ -163,7 +163,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   }
   for (size_t i = 1; i < num_queries; ++i) {
     if (kv_caches_[i].seq_len == 0) {
-      kv_caches_[i] = KVCache::Create(model_->Info().model,
+      kv_caches_[i] = KVCache::Create(model_->GetModelConfig(),
                                       runtime_config_.prefill_tbatch_size);
     }
   }

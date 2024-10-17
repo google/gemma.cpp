@@ -24,7 +24,6 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "gemma/tokenizer.h"
 #include "util/app.h"  // LoaderArgs
@@ -58,7 +57,8 @@ int main(int argc, char** argv) {
   gcpp::PerClusterPools pools(app.max_clusters, app.max_threads, app.pin);
   gcpp::Gemma model = gcpp::CreateGemma(loader, pools);
   gcpp::KVCache kv_cache =
-      gcpp::KVCache::Create(loader.Info().model, inference.prefill_tbatch_size);
+      gcpp::KVCache::Create(model.GetModelConfig(),
+                            inference.prefill_tbatch_size);
   size_t generated = 0;
 
   // Initialize random number generator

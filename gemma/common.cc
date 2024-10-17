@@ -15,6 +15,7 @@
 
 #include "gemma/common.h"
 
+#include <math.h>  // sqrtf
 #include <stddef.h>
 #include <string.h>
 
@@ -23,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "compression/shared.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -101,8 +103,6 @@ const char* ModelString(Model model, ModelTraining training) {
             static_cast<int>(training));
 }
 
-constexpr const char* kTypeStrings[] = {"f32", "bf16", "sfp"};
-
 const char* StringFromType(Type type) {
   return kTypeStrings[static_cast<size_t>(type)];
 }
@@ -141,4 +141,19 @@ void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
     prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
   }
 }
+
+float EmbeddingScaling(size_t model_dim) {
+  // Round to bf16 to match Gemma's Embedder, which casts before mul.
+  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
+      sqrtf(static_cast<float>(model_dim))));
+}
+
+float ChooseQueryScale(const ModelConfig& config) {
+  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
+    return 1.0f / sqrtf(static_cast<float>(config.model_dim /
+                                           config.layer_configs[0].heads));
+  // QueryScaleType::SqrtKeySize
+  return 1.0f / sqrtf(static_cast<float>(config.layer_configs[0].qkv_dim));
+}
+
 }  // namespace gcpp

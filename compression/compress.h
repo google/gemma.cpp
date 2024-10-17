@@ -102,8 +102,8 @@ class CompressedArray {
 class MatPtr {
  public:
   // Full constructor for dynamic sizing.
-  MatPtr(const std::string& name, const std::string& type, size_t element_size,
-         size_t rows, size_t cols)
+  MatPtr(const std::string& name, Type type, size_t element_size, size_t rows,
+         size_t cols)
       : name_(name),
         type_(type),
         element_size_(element_size),
@@ -129,7 +129,7 @@ class MatPtr {
   MatPtr(const hwy::uint128_t& key0, const hwy::uint128_t& key1,
          const hwy::uint128_t& key2, const hwy::uint128_t& key3)
       : name_(StringFromKey(key0)),
-        type_(StringFromKey(key1)),
+        type_(static_cast<Type>(key1.lo)),
         element_size_(key2.hi),
         num_elements_(key2.lo),
         rows_(key3.lo),
@@ -138,7 +138,7 @@ class MatPtr {
   // Adds the contents entry to the table of contents.
   void AddToToc(std::vector<hwy::uint128_t>& toc) const {
     toc.push_back(MakeKey(name_.c_str()));
-    toc.push_back(MakeKey(type_.c_str()));
+    toc.push_back({static_cast<uint64_t>(type_), 0});
     toc.push_back({num_elements_, element_size_});
     toc.push_back({rows_, cols_});
   }
@@ -167,7 +167,7 @@ class MatPtr {
   void SetName(const std::string& name) { name_ = name; }
 
   // Returns the type of the blob.
-  const std::string& Type() const { return type_; }
+  Type GetType() const { return type_; }
 
   // Returns the size of each element in bytes.
   size_t ElementSize() const { return element_size_; }
@@ -219,8 +219,8 @@ class MatPtr {
  protected:
   // Arbitrary name for the array of preferably <= 16 characters.
   std::string name_;
-  // Should be the result of TypeName<T> for CallUpcasted() to work.
-  std::string type_;
+  // Should be the result of TypeEnum<T> for CallUpcasted() to work.
+  Type type_;
   // sizeof(T)
   size_t element_size_ = 0;
   // Number of elements in the array.
@@ -247,7 +247,7 @@ class MatPtrT : public MatPtr {
 
   // Full constructor for dynamic sizing.
   MatPtrT(const std::string& name, size_t rows, size_t cols)
-      : MatPtr(name, TypeName<MatT>(), sizeof(MatT), rows, cols) {}
+      : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), rows, cols) {}
 
   // Copying allowed as the metadata is small.
   MatPtrT(const MatPtr& other) : MatPtr(other) {}
@@ -330,17 +330,20 @@ class MatPtrT : public MatPtr {
 
 template <class FuncT, typename... TArgs>
 decltype(auto) MatPtr::CallUpcasted(FuncT& func, TArgs&&... args) {
-  if (type_ == TypeName<float>()) {
+  if (type_ == TypeEnum<float>()) {
     return func(dynamic_cast<MatPtrT<float>*>(this),
                 std::forward<TArgs>(args)...);
-  } else if (type_ == TypeName<BF16>()) {
+  } else if (type_ == TypeEnum<BF16>()) {
     return func(dynamic_cast<MatPtrT<BF16>*>(this),
                 std::forward<TArgs>(args)...);
-  } else if (type_ == TypeName<SfpStream>()) {
+  } else if (type_ == TypeEnum<SfpStream>()) {
     return func(dynamic_cast<MatPtrT<SfpStream>*>(this),
                 std::forward<TArgs>(args)...);
+  } else if (type_ == TypeEnum<NuqStream>()) {
+    return func(dynamic_cast<MatPtrT<NuqStream>*>(this),
+                std::forward<TArgs>(args)...);
   } else {
-    HWY_ABORT("Type %s unknown.", type_.c_str());
+    HWY_ABORT("Type %d unknown.", type_);
   }
 }
 
@@ -563,9 +566,10 @@ class CacheLoader {
   }
 
   // Returns whether all tensors are successfully loaded from cache.
-  bool ReadAll(hwy::ThreadPool& pool, std::vector<MatStorage>& model_memory) {
+  BlobError ReadAll(hwy::ThreadPool& pool,
+                    std::vector<MatStorage>& model_memory) {
     // reader_ invalid or any Enqueue failed
-    if (err_ != 0) return false;
+    if (err_ != 0) return err_;
     // Setup the model_memory.
     for (int b = 0; b < model_toc_.size(); ++b) {
       const std::string& file_key = file_keys_[b];
@@ -574,12 +578,12 @@ class CacheLoader {
         const MatPtr* toc_blob = file_toc_.Get(file_key);
         if (toc_blob == nullptr) {
           fprintf(stderr, "Blob %s not found in TOC\n", file_key.c_str());
-          return false;
+          return __LINE__;
         }
         if (toc_blob->Rows() != blob->Rows() ||
             toc_blob->Cols() != blob->Cols()) {
           fprintf(stderr, "Blob %s has size mismatch TOC\n", file_key.c_str());
-          return false;
+          return __LINE__;
         }
         MatStorage toc_blob_array(*toc_blob);
         model_memory.push_back(std::move(toc_blob_array));
@@ -603,17 +607,10 @@ class CacheLoader {
                 "Failed to read blob %s (error %d) of size %zu x %zu x %zu\n",
                 blob.Name().c_str(), err_, blob.Rows(), blob.Cols(),
                 blob.ElementSize());
-        return false;
+        return err_;
       }
     }
-
-    err_ = reader_.ReadAll(pool);
-    if (err_ != 0) {
-      fprintf(stderr, "Failed to read all tensors (error %d)\n", err_);
-      return false;
-    }
-
-    return true;
+    return reader_.ReadAll(pool);
   }
 
  private:

@@ -21,11 +21,11 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include <array>
 #include <cmath>
 #include <limits>
 #include <random>
 #include <type_traits>  // std::enable_if_t
+#include <vector>
 
 #include "compression/compress.h"
 #include "util/basics.h"  // TokenAndProb
@@ -673,9 +673,8 @@ SampleArgmax(const float* probabilities, size_t vocab_size) {
   return max_index;
 }
 
-template <size_t k>
-HWY_NOINLINE HWY_MAYBE_UNUSED std::discrete_distribution<int>
-create_distribution(std::array<float, k>& top_k, float temperature) {
+HWY_INLINE HWY_MAYBE_UNUSED std::discrete_distribution<int> create_distribution(
+    std::vector<float>& top_k, float temperature) {
   HWY_ASSERT(temperature >= 0.0f);
   if (temperature == 0.0f) {
     // Temperature == 0 is a special case which always returns the argmax (0).
@@ -696,16 +695,16 @@ create_distribution(std::array<float, k>& top_k, float temperature) {
   return std::discrete_distribution<int>(std::begin(top_k), std::end(top_k));
 }
 
-template <size_t k, typename TAcceptToken>
+template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
-    const float* HWY_RESTRICT probabilities, size_t vocab_size,
+    const float* HWY_RESTRICT probabilities, size_t k, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
-  static_assert(k != 0, "");
+  HWY_ASSERT(k != 0);
   HWY_ASSERT(k <= vocab_size);
   // TODO: Optimize, potentially using new VQSort PartialSort.
-  std::array<float, k> top_k{};  // sorted from highest [0], to lowest [k-1]
-  top_k.fill(-std::numeric_limits<float>::infinity());
-  std::array<int, k> indices{};
+  // Sorted from highest [0], to lowest [k-1]
+  std::vector<float> top_k(k, -std::numeric_limits<float>::infinity());
+  std::vector<int> indices(k);
   size_t num_accepted = 0;
   for (size_t i = 0; i < vocab_size; ++i) {
     if (probabilities[i] < top_k[k - 1]) continue;
@@ -727,7 +726,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
     }
   }
   HWY_ASSERT(k <= num_accepted);
-  return indices[create_distribution<k>(top_k, temperature)(gen)];
+  return indices[create_distribution(top_k, temperature)(gen)];
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

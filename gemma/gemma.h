@@ -27,6 +27,7 @@
 #include "gemma/common.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
+#include "gemma/weights.h"
 #include "paligemma/image.h"
 #include "util/allocator.h"  // RowVectorBatch
 #include "util/basics.h"     // TokenAndProb
@@ -179,15 +180,6 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
-// ModelConfigInfo holds model configuration details: number of layers, etc.
-struct ModelConfigInfo {
-  const int layers;
-  const int model_dim;
-  const int heads;
-  const int kv_heads;
-  const int qkv_dim;
-};
-
 class Gemma {
  public:
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
@@ -198,11 +190,11 @@ class Gemma {
         PerClusterPools& pools);
   ~Gemma();
 
-  ModelConfigInfo ModelConfig() const;
+  const ModelConfig& GetModelConfig() const { return model_.Config(); }
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
-  const ByteStorageT& Weights() const { return weights_u8_; }
-  ByteStorageT& MutableWeights() { return weights_u8_; }
+  const ModelWeightsStorage& Weights() const { return model_; }
+  ModelWeightsStorage& MutableWeights() { return model_; }
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
@@ -241,7 +233,7 @@ class Gemma {
 
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.
-  ByteStorageT weights_u8_;
+  ModelWeightsStorage model_;
   ModelInfo info_;
 };
 
@@ -251,6 +243,8 @@ class Gemma {
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const ModelInfo& info, size_t pos,
                                  std::string& prompt);
+void RangeChecks(const ModelConfig& weights_config,
+                 size_t& max_generated_tokens, size_t prompt_size);
 
 }  // namespace gcpp
 

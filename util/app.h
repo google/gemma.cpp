@@ -189,6 +189,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   const ModelInfo& Info() const { return info_; }
 
  private:
+  // TODO(rays): remove this. Eventually ModelConfig will be loaded from the
+  // weights file, so we can remove the need for this struct entirely.
   ModelInfo info_;
 };
 
