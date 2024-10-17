@@ -615,45 +615,41 @@ class VitAttention {
   }
 
   HWY_NOINLINE void DotSoftmaxWeightedSum() {
-    const float query_scale =
-        1.0f / sqrtf(static_cast<float>(layer_config_.qkv_dim));
+    const size_t qkv_dim = layer_config_.qkv_dim;
+    const size_t heads = layer_config_.heads;
+    HWY_ASSERT_M(heads == layer_config_.kv_heads, "Vit expects MHA");
+    const size_t seq_len = activations_.seq_len;
+    const float query_scale = 1.0f / sqrtf(static_cast<float>(qkv_dim));
     PROFILER_ZONE("Gen.VitAttention.DotSoftmax");
-    // A "head group" in the context of GQA refers to a collection of query
-    // heads that share the same key and value heads.
-    HWY_ASSERT_M(layer_config_.heads == layer_config_.kv_heads,
-                 "Vit expects MHA");
 
     // Compute Q.K, softmax, and weighted V.
-    pool_.Run(
-        0, layer_config_.heads * num_tokens_,
-        [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
-          const size_t head = task % layer_config_.heads;
-          const size_t token = task / layer_config_.heads;
-          // Compute Q.K scores, which are "logits" stored in head_att.
-          float* HWY_RESTRICT q =
-              activations_.q.Batch(token) + head * 3 * layer_config_.qkv_dim;
-          MulByConst(query_scale, q, layer_config_.qkv_dim);
-          float* HWY_RESTRICT head_att =
-              activations_.att.Batch(token) + head * activations_.seq_len;
-          for (size_t i = 0; i < activations_.seq_len; ++i) {
-            float* HWY_RESTRICT k = activations_.q.Batch(i) +
-                                    head * 3 * layer_config_.qkv_dim +
-                                    layer_config_.qkv_dim;
-            head_att[i] = Dot(q, k, layer_config_.qkv_dim);  // score = q.k
-          }
-          // SoftMax yields "probabilities" in head_att.
-          Softmax(head_att, activations_.seq_len);
-          // Compute weighted sum of v into att_out.
-          float* HWY_RESTRICT att_out =
-              activations_.att_out.Batch(token) + head * layer_config_.qkv_dim;
-          hwy::ZeroBytes(att_out, layer_config_.qkv_dim * sizeof(*att_out));
-          for (size_t i = 0; i < activations_.seq_len; ++i) {
-            float* HWY_RESTRICT v = activations_.q.Batch(i) +
-                                    head * 3 * layer_config_.qkv_dim +
-                                    2 * layer_config_.qkv_dim;
-            MulByConstAndAdd(head_att[i], v, att_out, layer_config_.qkv_dim);
-          }
-        });
+    pool_.Run(0, layer_config_.heads * num_tokens_,
+              [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+                const size_t head = task % layer_config_.heads;
+                const size_t token = task / layer_config_.heads;
+                // Compute Q.K scores, which are "logits" stored in head_att.
+                float* HWY_RESTRICT q =
+                    activations_.q.Batch(token) + head * 3 * qkv_dim;
+                MulByConst(query_scale, q, qkv_dim);
+                float* HWY_RESTRICT head_att =
+                    activations_.att.Batch(token) + head * activations_.seq_len;
+                for (size_t i = 0; i < seq_len; ++i) {
+                  float* HWY_RESTRICT k =
+                      activations_.q.Batch(i) + head * 3 * qkv_dim + qkv_dim;
+                  head_att[i] = Dot(q, k, qkv_dim);  // score = q.k
+                }
+                // SoftMax yields "probabilities" in head_att.
+                Softmax(head_att, seq_len);
+                // Compute weighted sum of v into att_out.
+                float* HWY_RESTRICT att_out =
+                    activations_.att_out.Batch(token) + head * qkv_dim;
+                hwy::ZeroBytes(att_out, qkv_dim * sizeof(*att_out));
+                for (size_t i = 0; i < seq_len; ++i) {
+                  float* HWY_RESTRICT v = activations_.q.Batch(i) +
+                                          head * 3 * qkv_dim + 2 * qkv_dim;
+                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim);
+                }
+              });
   }
 
   // Sums encoded (`att_out`) over num_heads (`layer_config_.heads`) and
@@ -965,6 +961,7 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
                    layer_weights->vit.layer_norm_0_scale.data_scale1(),
                    layer_weights->vit.layer_norm_0_bias.data_scale1(),
                    activations.pre_att_rms_out.All(), model_dim);
+
   // y = out["sa"] = nn.MultiHeadDotProductAttention(...)(y, y)
   // y ~ att_sums
   VitAttention<T>(num_tokens, layer, activations, layer_weights)();
@@ -1104,8 +1101,7 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
                                     const ModelWeightsPtrs<T>& weights,
                                     Activations& activations) {
   const size_t model_dim = weights.weights_config.vit_model_dim;
-  const size_t patch_width =
-      weights.weights_config.vit_layer_configs[0].patch_width;
+  const size_t patch_width = weights.weights_config.patch_width;
   const size_t seq_len = weights.weights_config.vit_seq_len;
   const size_t patch_size = patch_width * patch_width * 3;
   HWY_DASSERT(weights.vit_img_embedding_kernel.NumElements() ==
@@ -1483,17 +1479,16 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
                           const Image& image, ImageTokens& image_tokens,
                           PerClusterPools& pools) {
   if (model.Config().vit_layer_configs.empty()) {
-    return;
-  } else {
-    Activations prefill_activations(model.Config());
-    RuntimeConfig prefill_runtime_config = runtime_config;
-    prefill_runtime_config.prefill_tbatch_size = model.Config().vit_seq_len;
-    prefill_activations.Allocate(prefill_runtime_config.prefill_tbatch_size,
-                                 pools);
-    // Weights are for the full PaliGemma model, not just the ViT part.
-    PrefillVit(*model.GetWeightsOfType<T>(), prefill_runtime_config, image,
-               image_tokens, prefill_activations);
+    HWY_ABORT("Model does not support generating image tokens.");
   }
+  RuntimeConfig prefill_runtime_config = runtime_config;
+  ModelConfig vit_config = VitConfig(model.Config());
+  prefill_runtime_config.prefill_tbatch_size = vit_config.seq_len;
+  Activations prefill_activations(vit_config);
+  prefill_activations.Allocate(vit_config.seq_len, pools);
+  // Weights are for the full PaliGemma model, not just the ViT part.
+  PrefillVit(*model.GetWeightsOfType<T>(), prefill_runtime_config, image,
+             image_tokens, prefill_activations);
 }
 
 }  // namespace HWY_NAMESPACE

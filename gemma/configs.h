@@ -131,9 +131,6 @@ struct LayerConfig {
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
   PostQKType post_qk = PostQKType::Rope;
-  // Dimensions related to image processing.
-  int patch_width = 14;
-  int image_size = 224;
 };
 
 struct ModelConfig {
@@ -185,10 +182,16 @@ struct ModelConfig {
   std::unordered_set<std::string> scale_names;
   int norm_num_groups = 1;
   int model_family_version = 1;
+  // Dimensions related to image processing.
+  int patch_width = 14;
+  int image_size = 224;
 };
 
 // Returns the config for the given model.
 ModelConfig ConfigFromModel(Model model);
+
+// Returns the sub-config for the ViT model of the PaliGemma model.
+ModelConfig VitConfig(const ModelConfig& config);
 
 }  // namespace gcpp
 
