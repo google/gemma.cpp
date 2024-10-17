@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include "paligemma/image.h"
+#include "compression/io.h"
 
 #include <stdint.h>
 
@@ -55,140 +56,97 @@ float StretchToSigned(float value) {
 
 bool IsLineBreak(int c) { return c == '\r' || c == '\n'; }
 
-void SkipWhitespaceAndComments(std::istream& in) {
-  int value = in.get();
-  while (std::isspace(value)) value = in.get();
-  while (value == '#') {  // Skip comment lines.
-    while (!IsLineBreak(value)) value = in.get();
-    while (std::isspace(value)) value = in.get();
+const char* CheckP6Format(const char* pos, const char* end) {
+  constexpr const char format[] = "P6";
+  for (size_t i = 0; i < sizeof(format) - 1; ++i) {
+    if (pos == end || *pos != format[i]) {
+      return nullptr;
+    }
+    ++pos;
   }
-  in.unget();  // Rewind last byte.
+  return pos;
 }
 
-template <class CharT, class Traits = std::char_traits<CharT>>
-class basic_spanbuf : public std::basic_streambuf<CharT, Traits> {
- public:
-  using base_type = std::basic_streambuf<CharT, Traits>;
-  using char_type = typename base_type::char_type;
-  using traits_type = typename base_type::traits_type;
-  using int_type = typename traits_type::int_type;
-  using pos_type = typename traits_type::pos_type;
-  using off_type = typename traits_type::off_type;
-
-  basic_spanbuf(const hwy::Span<char_type>& buf) {
-    this->setg(buf.data(), buf.data(), buf.data() + buf.size());
+const char* SkipWhitespaceAndComments(const char* pos, const char* end) {
+  while (pos < end && std::isspace(*pos)) ++pos;
+  while (pos < end && *pos == '#') {  // Skip comment lines.
+    while (pos < end && !IsLineBreak(*pos)) ++pos;
+    while (pos < end && std::isspace(*pos)) ++pos;
   }
+  return pos;
+}
 
-  std::streamsize showmanyc() override {
-    return this->egptr() - this->gptr();
+const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
+  if (pos == end || !std::isdigit(*pos)) {
+    return nullptr;
   }
-
-  std::streamsize xsgetn(char_type* s, std::streamsize n) override {
-    if (n == 0) {
-      return 0;
-    }
-    if (this->gptr() + n > this->egptr()) {
-      n = this->egptr() - this->gptr();
-      if (n == 0) {
-        if (this->uflow() == traits_type::eof()) {
-          return -1;
-        }
-        return 0;
-      }
-    }
-    std::memmove(s, this->gptr(), n);
-    this->gbump(n);
-    return n;
+  num = 0;
+  for ( ; pos < end && std::isdigit(*pos); ++pos) {
+    num *= 10;
+    num += *pos - '0';
   }
-
-  int_type pbackfail(int_type c) override {
-    *(this->gptr() - 1) = traits_type::to_char_type(c);
-    this->pbump(-1);
-    return 1;
-  }
-};
-
-template <class CharT, class Traits = std::char_traits<CharT>>
-class basic_ispanstream : public std::basic_istream<CharT, Traits> {
- public:
-  using base_type = std::basic_istream<CharT, Traits>;
-  using char_type = typename base_type::char_type;
-  using traits_type = typename base_type::traits_type;
-  using int_type = typename traits_type::int_type;
-  using pos_type = typename traits_type::pos_type;
-  using off_type = typename traits_type::off_type;
-
-  basic_ispanstream(const hwy::Span<char_type>& buf)
-      : base_type(nullptr)
-      , sb_(buf) {
-    this->init(&sb_);
-  }
-
- private:
-  basic_spanbuf<CharT, Traits> sb_;
-};
+  return pos;
+}
 }  // namespace
 
 bool Image::ReadPPM(const std::string& filename) {
-  std::ifstream file(filename);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open " << filename << "\n";
+  Path path(filename);
+  if (!path.Exists()) {
+    std::cerr << filename << " does not exist\n";
     return false;
   }
-  if (!ReadPPM(file)) {
-    return false;
-  }
-  if (file.get() != EOF) {
-    std::cerr << "Extra data in file\n";
-    return false;
-  }
-  file.close();
-  return true;
+  auto content = ReadFileToString(path);
+  return ReadPPM(hwy::Span<const char>(content.data(), content.size()));
 }
 
-bool Image::ReadPPM(std::istream& in) {
-  std::string format;
-  in >> format;
-  if (format != "P6") {
-    std::cerr << "We only support binary PPM (P6) but got: " << format << "\n";
+bool Image::ReadPPM(const hwy::Span<const char>& buf) {
+  auto pos = CheckP6Format(buf.cbegin(), buf.cend());
+  if (!pos) {
+    std::cerr << "We only support binary PPM (P6)\n";
     return false;
   }
-  int width, height, max_value;
-  SkipWhitespaceAndComments(in);
-  in >> width;
-  SkipWhitespaceAndComments(in);
-  in >> height;
-  SkipWhitespaceAndComments(in);
-  in >> max_value;
+  size_t width, height, max_value;
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), width);
+  if (!pos) {
+    std::cerr << "Reached end before width\n";
+    return false;
+  }
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), height);
+  if (!pos) {
+    std::cerr << "Reached end before height\n";
+    return false;
+  }
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), max_value);
+  if (!pos) {
+    std::cerr << "Reached end before max_value\n";
+    return false;
+  }
   if (max_value <= 0 || max_value > 255) {
     std::cerr << "Unsupported max value " << max_value << "\n";
     return false;
   }
   // P6 requires exactly one whitespace character after the header.
-  int value = in.get();
-  if (!std::isspace(value)) {
+  if (!std::isspace(*pos)) {
     std::cerr << "Missing whitespace after header\n";
     return false;
   }
-  width_ = width;
-  height_ = height;
-  int data_size = width * height * 3;
-  data_.resize(data_size);
-  std::vector<uint8_t> data_bytes(data_size);
-  in.read(reinterpret_cast<char*>(data_bytes.data()), data_size);
-  if (in.gcount() != data_size) {
-    std::cerr << "Failed to read " << data_size << " bytes\n";
+  ++pos;
+  auto data_size = width * height * 3;
+  if (buf.cend() - pos < data_size) {
+    std::cerr << "Insufficient data remaining\n";
     return false;
   }
-  for (int i = 0; i < data_size; ++i) {
-    data_[i] = StretchToSigned(static_cast<float>(data_bytes[i]) / max_value);
+  data_.resize(data_size);
+  width_ = width;
+  height_ = height;
+  for (size_t i = 0; i < data_size; ++i) {
+    uint8_t value = pos[i];
+    data_[i] = StretchToSigned(static_cast<float>(value) / max_value);
   }
   return true;
-}
-
-bool Image::ReadPPM(const hwy::Span<char>& buf) {
-  basic_ispanstream<char> in(buf);
-  return ReadPPM(in);
 }
 
 void Image::Resize() {

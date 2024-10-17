@@ -18,7 +18,6 @@
 
 #include <cstddef>
 #include <string>
-#include <istream>
 #include <vector>
 
 #include "hwy/aligned_allocator.h"  // Span
@@ -33,12 +32,9 @@ class Image {
   // Reads a file in PPM format (P6, binary), normalizes to [-1, 1].
   // Returns true on success.
   bool ReadPPM(const std::string& filename);
-  // Reads PPM format (P6, binary) data from a stream, normalizes to [-1, 1].
-  // Returns true on success.
-  bool ReadPPM(std::istream& in);
   // Reads PPM format (P6, binary) data from a hwy::Span, normalizes to [-1, 1].
   // Returns true on success.
-  bool ReadPPM(const hwy::Span<char>& buf);
+  bool ReadPPM(const hwy::Span<const char>& buf);
   // Resizes to 224x224 (nearest-neighbor for now, bilinear or antialias would
   // be better).
   void Resize();
