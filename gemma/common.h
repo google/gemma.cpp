@@ -20,12 +20,13 @@
 
 #include <string>
 
+#include "compression/shared.h"  // ModelTraining
 #include "gemma/configs.h"  // IWYU pragma: export
 #include "hwy/base.h"  // ConvertScalarTo
 
 namespace gcpp {
 
-// TODO(janwas): merge with functions below.
+// Struct to bundle model information.
 struct ModelInfo {
   Model model;
   ModelTraining training;
@@ -42,13 +43,13 @@ const char* ParseType(const std::string& type_string, Type& type);
 const char* ModelString(Model model, ModelTraining training);
 const char* StringFromType(Type type);
 
+// Wraps the given prompt using the expected control tokens for IT models.
 void Wrap(const ModelInfo& info, size_t pos, std::string& prompt);
 
-// ----------------------------------------------------------------------------
-//
-
+// Returns the scale value to use for the embedding (basically sqrt model_dim).
 float EmbeddingScaling(size_t model_dim);
 
+// Returns the scale value to use for the query in the attention computation.
 float ChooseQueryScale(const ModelConfig& config);
 
 }  // namespace gcpp

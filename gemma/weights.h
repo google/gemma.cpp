@@ -349,8 +349,10 @@ struct ModelWeightsPtrs {
         vit_encoder_norm_bias("enc_norm_bias", 1, config.vit_model_dim),
         vit_encoder_norm_scale("enc_norm_scale", 1, config.vit_model_dim),
         vit_img_embedding_bias("img_emb_bias", 1, config.vit_model_dim),
-        vit_img_embedding_kernel("img_emb_kernel", 14 * 14 * 3,
-                                 config.vit_model_dim),
+        vit_img_embedding_kernel(
+            "img_emb_kernel",
+            config.patch_width * config.patch_width * 3,
+            config.vit_model_dim),
         vit_img_pos_embedding("img_pos_emb", 256, config.vit_model_dim),
         vit_img_head_bias("img_head_bias", 1, config.model_dim),
         vit_img_head_kernel("img_head_kernel", config.vit_model_dim,
