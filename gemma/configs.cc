@@ -40,7 +40,7 @@ static ModelConfig ConfigGemma2_27B() {
   config.model_name = "Gemma2_27B";
   config.model = Model::GEMMA2_27B;
   config.model_dim = 4608;
-  config.vocab_size = gcpp::kVocabSize;
+  config.vocab_size = kVocabSize;
   config.seq_len = 8192;
   LayerConfig layer_config = {.model_dim = config.model_dim,
                               .ff_hidden_dim = 16 * 4608 / 2,  // = 36864
@@ -61,7 +61,7 @@ static ModelConfig ConfigGemma2_9B() {
   config.model_name = "Gemma2_9B";
   config.model = Model::GEMMA2_9B;
   config.model_dim = 3584;
-  config.vocab_size = gcpp::kVocabSize;
+  config.vocab_size = kVocabSize;
   config.seq_len = 8192;
   LayerConfig layer_config = {.model_dim = config.model_dim,
                               .ff_hidden_dim = 8 * 3584 / 2,  // = 14336
@@ -82,7 +82,7 @@ static ModelConfig ConfigGemma2_2B() {
   config.model_name = "Gemma2_2B";
   config.model = Model::GEMMA2_2B;
   config.model_dim = 2304;
-  config.vocab_size = gcpp::kVocabSize;
+  config.vocab_size = kVocabSize;
   config.seq_len = 8192;
   LayerConfig layer_config = {.model_dim = config.model_dim,
                               .ff_hidden_dim = 8 * 2304 / 2,  // = 9216
@@ -103,8 +103,8 @@ static ModelConfig ConfigGemma7B() {
   config.model_name = "Gemma7B";
   config.model = Model::GEMMA_7B;
   config.model_dim = 3072;
-  config.vocab_size = gcpp::kVocabSize;
-  config.seq_len = gcpp::kSeqLen;
+  config.vocab_size = kVocabSize;
+  config.seq_len = kSeqLen;
   LayerConfig layer_config = {
       .model_dim = config.model_dim,
       .ff_hidden_dim = 16 * 3072 / 2,  // = 24576
@@ -115,7 +115,7 @@ static ModelConfig ConfigGemma7B() {
   config.layer_configs = {28, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();
   config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes = FixedAttentionWindowSizes<28>(gcpp::kSeqLen);
+  config.attention_window_sizes = FixedAttentionWindowSizes<28>(kSeqLen);
   return config;
 }
 
@@ -124,8 +124,8 @@ static ModelConfig ConfigGemma2B() {
   config.model_name = "Gemma2B";
   config.model = Model::GEMMA_2B;
   config.model_dim = 2048;
-  config.vocab_size = gcpp::kVocabSize;
-  config.seq_len = gcpp::kSeqLen;
+  config.vocab_size = kVocabSize;
+  config.seq_len = kSeqLen;
   LayerConfig layer_config = {
       .model_dim = config.model_dim,
       .ff_hidden_dim = 16 * 2048 / 2,  // = 16384
@@ -135,7 +135,7 @@ static ModelConfig ConfigGemma2B() {
   };
   config.layer_configs = {18, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();
-  config.attention_window_sizes = FixedAttentionWindowSizes<18>(gcpp::kSeqLen);
+  config.attention_window_sizes = FixedAttentionWindowSizes<18>(kSeqLen);
   return config;
 }
 
@@ -169,7 +169,7 @@ static ModelConfig ConfigGriffin2B() {
   // Griffin uses local attention, so kSeqLen is actually the local attention
   // window.
   config.model_dim = 2560;
-  config.vocab_size = gcpp::kVocabSize;
+  config.vocab_size = kVocabSize;
   config.seq_len = 2048;
   LayerConfig layer_config = {
       .model_dim = config.model_dim,
@@ -204,20 +204,32 @@ static ModelConfig ConfigPaliGemma_224() {
   config.model = Model::PALIGEMMA_224;
   config.vit_model_dim = 1152;
   config.vocab_size = 256000 + 1024 + 128;  // = 257152
-  config.vit_seq_len = 16 * 16;
+  config.image_size = 224;
+  config.patch_width = 14;
+  const size_t num_patches = config.image_size / config.patch_width;
+  config.vit_seq_len = num_patches * num_patches;
   LayerConfig layer_config = {
       .model_dim = config.vit_model_dim,
       .ff_hidden_dim = 4304,
       .heads = 16,
       .kv_heads = 16,
       .qkv_dim = 72,
+      .ff_biases = true,
       .type = LayerAttentionType::kVit,
-      .patch_width = 14,
-      .image_size = 224,
   };
   config.vit_layer_configs = {27, layer_config};
   config.num_vit_scales = 4 * config.vit_layer_configs.size();
   return config;
+}
+
+ModelConfig VitConfig(const ModelConfig& config) {
+  ModelConfig vit_config = ConfigNoSSM();
+  vit_config.model_dim = config.vit_model_dim;
+  vit_config.seq_len = config.vit_seq_len;
+  vit_config.layer_configs = config.vit_layer_configs;
+  // The Vit part does not have a vocabulary, the image patches are embedded.
+  vit_config.vocab_size = 0;
+  return vit_config;
 }
 
 ModelConfig ConfigFromModel(Model model) {
