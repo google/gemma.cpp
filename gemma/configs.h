@@ -151,6 +151,11 @@ struct ConfigNoSSM {
   static constexpr PostQKType kPostQK = PostQKType::Rope;
   static constexpr ActivationType kActivation = ActivationType::Gelu;
   static constexpr ResidualType kResidual = ResidualType::Add;
+
+  // Self-extend parameters with defaul values
+  static constexpr bool kSelfExtend = false;
+  static constexpr size_t kSelfExtendNgbSize = 0;
+  static constexpr size_t kSelfExtendGrpSize = 1;
 };
 
 struct ConfigBaseGemmaV1 : ConfigNoSSM {
@@ -372,6 +377,11 @@ struct ConfigGriffin2B {
   static constexpr ActivationType kActivation = ActivationType::Gelu;
   static constexpr QueryScaleType kQueryScale = QueryScaleType::SqrtKeySize;
   static constexpr ResidualType kResidual = ResidualType::Add;
+
+  // Self-extend parameters with defaul values
+  static constexpr bool kSelfExtend = false;
+  static constexpr size_t kSelfExtendNgbSize = 0;
+  static constexpr size_t kSelfExtendGrpSize = 1;
 };
 
 }  // namespace gcpp
