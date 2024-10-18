@@ -232,8 +232,8 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
   const size_t num_interleaved = num_tokens * num_queries;
 
   // Self extend
-  constexpr size_t ngb_size = TConfig::self_extend_ngb_size;
-  constexpr size_t grp_size = TConfig::self_extend_grp_size;
+  constexpr size_t ngb_size = TConfig::kSelfExtendNgbSize;
+  constexpr size_t grp_size = TConfig::kSelfExtendGrpSize;
 
   // For the computation of Q, K, and V, it is useful to remember that
   // qkv_einsum_w has shape [(kHeads + kKVHeads * 2), kKQVDim, kModelDim]
@@ -298,8 +298,10 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
         float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
 
         // When embedding position, we will use grouped key position
-        if (pos > ngb_size && TConfig::kSelfExtend) {
-          pos /= grp_size;
+        if constexpr (TConfig::kSelfExtend) {
+          if (pos > ngb_size) {
+            pos /= grp_size;
+          }
         }
         if constexpr (kIsMHA) {
           // For MHA, copy KV into the KV cache from scratch space (see above).
@@ -331,11 +333,13 @@ HWY_NOINLINE void GemmaAttention(size_t interleaved_start, size_t num_tokens,
 
         // Apply rope and scaling to Q.
         size_t pos = batch_start + batch_idx;
-        if (pos > ngb_size && TConfig::kSelfExtend) {
-          const grp_pos = pos / grp_size;
-          const shift = ngb_size - ngb_size / grp_size
-          const shifted_grouped_pos = grp_pos + shift
-          pos = shifted_grouped_pos;
+        if constexpr (TConfig::kSelfExtend) {
+            if (pos > ngb_size) {
+              const size_t grp_pos = pos / grp_size;
+              const size_t shift = ngb_size - ngb_size / grp_size;
+              const size_t shifted_grouped_pos = grp_pos + shift;
+              pos = shifted_grouped_pos;
+            }
         }
         PostQK<TConfig>(q, pos, layer);
         MulByConst(kQueryScale, q, kQKVDim);
