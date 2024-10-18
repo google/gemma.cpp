@@ -327,6 +327,13 @@ class GemmaAttention {
                 PositionalEncodingQK(is_mha_ ? mha_kv : kv, pos, layer_, 1.0f,
                                      kv);
 
+              // When embedding position, we will use grouped key position
+              if constexpr (TConfig::kSelfExtend) {
+                if (pos > ngb_size) {
+                  pos /= grp_size;
+                }
+              }
+
                 // If MHA, also copy V into KVCache.
                 if (is_mha_) {
                   hwy::CopyBytes(mha_kv + layer_config_.qkv_dim,
@@ -417,6 +424,14 @@ class GemmaAttention {
 
                 // Apply rope and scaling to Q.
                 const size_t pos = queries_pos_[query_idx] + batch_idx;
+                if constexpr (TConfig::kSelfExtend) {
+                    if (pos > ngb_size) {
+                      const size_t grp_pos = pos / grp_size;
+                      const size_t shift = ngb_size - ngb_size / grp_size;
+                      const size_t shifted_grouped_pos = grp_pos + shift;
+                      pos = shifted_grouped_pos;
+                    }
+                }
                 PositionalEncodingQK(q, pos, layer_, query_scale, q);
 
                 const size_t start_pos = StartPos(pos, layer_);
