@@ -15,8 +15,6 @@
 
 #include <stddef.h>
 
-#include <array>
-
 #include "compression/compress.h"
 #include "hwy/base.h"
 
@@ -374,15 +372,6 @@ template <typename WT, typename VT>
 HWY_INLINE float Dot(const WT* HWY_RESTRICT w, const VT* vec, size_t num) {
   const hn::ScalableTag<VT> d;
   return Dot(d, MakeConstSpan(w, num), /*w_ofs=*/0, vec, num);
-}
-
-// Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <typename MatT, size_t kCapacity, typename VT>
-HWY_INLINE float Dot(const CompressedArray<MatT, kCapacity>& w, size_t w_ofs,
-                     const VT* vec_aligned, size_t num) {
-  const hn::ScalableTag<VT> d;
-  return w.scale() *
-         Dot(d, MakeConstSpan(w.data(), kCapacity), w_ofs, vec_aligned, num);
 }
 
 // Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.

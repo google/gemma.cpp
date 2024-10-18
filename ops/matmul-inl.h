@@ -470,7 +470,7 @@ HWY_NOINLINE void MatMul(const size_t batch_size, const Mat<const MatTA>& A,
   env.Pool().Run(
       0, tilesX * tilesY, [&](const uint64_t idx_tile, size_t thread) HWY_ATTR {
         // TODO: when using PerClusterPool, compute lp from outer and inner.
-        float* HWY_RESTRICT buf = env.Buf(thread);
+        float* HWY_RESTRICT buf = env.Buf().Batch(thread);
         const size_t tx = idx_tile % tilesX;
         const size_t ty = idx_tile / tilesX;
         const size_t row_ac = ty * kRegRows;

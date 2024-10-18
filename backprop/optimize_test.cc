@@ -39,8 +39,8 @@
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  PerClusterPools pools(1, 1);
-  hwy::ThreadPool& pool = pools.Inner(0);
+  NestedPools pools(1);
+  hwy::ThreadPool& pool = pools.Pool();
   std::mt19937 gen(42);
 
   const ModelInfo info = {

@@ -194,13 +194,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   ModelInfo info_;
 };
 
-static inline Gemma CreateGemma(const LoaderArgs& loader,
-                                PerClusterPools& pools) {
+static inline Gemma CreateGemma(const LoaderArgs& loader, NestedPools& pools) {
   return Gemma(loader.tokenizer, loader.weights, loader.Info(), pools);
 }
 
 static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
-                                                   PerClusterPools& pools) {
+                                                   NestedPools& pools) {
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
                                  loader.Info(), pools);
 }

@@ -94,7 +94,7 @@ struct Activations {
     return inv_timescale;
   }
 
-  void Allocate(size_t batch_size, PerClusterPools& pools) {
+  void Allocate(size_t batch_size, NestedPools& pools) {
     post_qk = layer_config.post_qk;
     const size_t model_dim = weights_config.model_dim;
     const size_t ff_hidden_dim = layer_config.ff_hidden_dim;

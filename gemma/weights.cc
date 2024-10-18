@@ -21,6 +21,7 @@
 #include <random>
 #include <vector>
 
+#include "compression/blob_store.h"
 #include "compression/compress.h"
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
@@ -36,7 +37,7 @@ namespace gcpp {
 template <typename T>
 struct TensorLoader {
   void operator()(ModelWeightsPtrs<T>& weights, ForEachType fet,
-                  CacheLoader& loader) {
+                  ReadFromBlobStore& loader) {
     weights.ForEachTensor(
         {&weights}, fet,
         [&loader](const char* name, hwy::Span<MatPtr*> tensors) {
@@ -52,7 +53,7 @@ BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights.path.c_str());
   }
-  CacheLoader loader(weights);
+  ReadFromBlobStore loader(weights);
   ForEachType fet =
       loader.HaveToc() ? ForEachType::kLoadWithToc : ForEachType::kLoadNoToc;
   if (fet == ForEachType::kLoadWithToc) {

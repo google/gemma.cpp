@@ -197,7 +197,6 @@ struct CompressTraits<BF16> {
                                   size_t num, CompressPerThread& tls,
                                   const PackedSpan<Packed>& packed,
                                   const size_t packed_ofs) {
-    const hn::RebindToUnsigned<decltype(df)> du;
     const hn::Repartition<BF16, decltype(df)> dbf;
     const size_t NF = hn::Lanes(df);
 

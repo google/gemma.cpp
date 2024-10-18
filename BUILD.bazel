@@ -29,10 +29,24 @@ cc_library(
 )
 
 cc_library(
-    name = "allocator",
-    hdrs = ["util/allocator.h"],
+    name = "threading",
+    hdrs = ["util/threading.h"],
     deps = [
         "@highway//:hwy",
+        "@highway//:thread_pool",
+        "@highway//:topology",
+    ],
+)
+
+cc_library(
+    name = "allocator",
+    srcs = ["util/allocator.cc"],
+    hdrs = ["util/allocator.h"],
+    deps = [
+        ":basics",
+        ":threading",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -43,16 +57,6 @@ cc_library(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:stats",
-    ],
-)
-
-cc_library(
-    name = "threading",
-    hdrs = ["util/threading.h"],
-    deps = [
-        "@highway//:hwy",
-        "@highway//:thread_pool",
-        "@highway//:topology",
     ],
 )
 
@@ -168,6 +172,7 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":allocator",
         ":ops",
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -211,6 +216,7 @@ cc_library(
     hdrs = ["gemma/weights.h"],
     deps = [
         ":common",
+        "//compression:blob_store",
         "//compression:compress",
         "//compression:io",
         "@highway//:hwy",
@@ -393,6 +399,12 @@ cc_binary(
     ],
 )
 
+cc_library(
+    name = "benchmark_prompts",
+    hdrs = ["evals/prompts.h"],
+    deps = ["@highway//:hwy"],
+)
+
 cc_binary(
     name = "benchmarks",
     srcs = [
@@ -401,6 +413,7 @@ cc_binary(
     ],
     deps = [
         ":benchmark_helper",
+        ":benchmark_prompts",
         "@google_benchmark//:benchmark",
         "@highway//:hwy",  # base.h
     ],

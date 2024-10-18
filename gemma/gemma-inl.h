@@ -1131,7 +1131,7 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
     MatVecAdd(weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
               image_patches[i].get(),
               weights.vit_img_embedding_bias.data_scale1(),
-              activations.x.Batch(i), activations.env.Pools().Outer());
+              activations.x.Batch(i), activations.env.Pool());
   }
   // Add position embeddings.
   AddFrom(weights.vit_img_pos_embedding.data_scale1(), activations.x.All(),
@@ -1416,7 +1416,7 @@ template <typename T>
 void GenerateSingleT(const ModelWeightsStorage& model,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                     KVCache& kv_cache, PerClusterPools& pools,
+                     KVCache& kv_cache, NestedPools& pools,
                      TimingInfo& timing_info) {
   constexpr size_t kNumQueries = 1;
   const size_t qbatch_start = 0;
@@ -1440,7 +1440,7 @@ void GenerateBatchT(const ModelWeightsStorage& model,
                     const QueriesPromptTokens& queries_prompt,
                     const QueriesPos& queries_pos,
                     const QueriesPos& queries_prefix_end,
-                    const KVCaches& kv_caches, PerClusterPools& pools,
+                    const KVCaches& kv_caches, NestedPools& pools,
                     TimingInfo& timing_info) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(queries_pos.size() == num_queries);
@@ -1477,7 +1477,7 @@ template <typename T>
 void GenerateImageTokensT(const ModelWeightsStorage& model,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
-                          PerClusterPools& pools) {
+                          NestedPools& pools) {
   if (model.Config().vit_layer_configs.empty()) {
     HWY_ABORT("Model does not support generating image tokens.");
   }
@@ -1500,7 +1500,7 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
     GEMMA_TYPE, const ModelWeightsStorage& model,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
-    size_t prefix_end, KVCache& kv_cache, PerClusterPools& pools,
+    size_t prefix_end, KVCache& kv_cache, NestedPools& pools,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_TYPE>)
   (model, runtime_config, prompt, pos, prefix_end, kv_cache, pools,
@@ -1512,7 +1512,7 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
     const RuntimeConfig& runtime_config,
     const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
-    PerClusterPools& pools, TimingInfo& timing_info) {
+    NestedPools& pools, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_TYPE>)
   (model, runtime_config, queries_prompt, queries_pos, queries_prefix_end,
    kv_caches, pools, timing_info);
@@ -1521,7 +1521,7 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
 void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
     GEMMA_TYPE, const ModelWeightsStorage& model,
     const RuntimeConfig& runtime_config, const Image& image,
-    ImageTokens& image_tokens, PerClusterPools& pools) {
+    ImageTokens& image_tokens, NestedPools& pools) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_TYPE>)
   (model, runtime_config, image, image_tokens, pools);
 }

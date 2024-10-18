@@ -45,6 +45,15 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+// Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
+template <class ArrayT, typename VT>
+HWY_INLINE float Dot(const ArrayT& w, size_t w_ofs, const VT* vec_aligned,
+                     size_t num) {
+  const hn::ScalableTag<VT> d;
+  return w.scale() * Dot(d, MakeConstSpan(w.data(), w.NumElements()), w_ofs,
+                         vec_aligned, num);
+}
+
 // Simple version without tiling nor threading, but two offsets/outputs and
 // always with addition.
 template <typename ArrayT, typename VecT, typename AddT>

@@ -90,6 +90,7 @@ set(SOURCES
   ops/sum-inl.h
   paligemma/image.cc
   paligemma/image.h
+  util/allocator.cc
   util/allocator.h
   util/app.h
   util/args.h

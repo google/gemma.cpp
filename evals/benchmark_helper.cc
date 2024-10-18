@@ -36,10 +36,8 @@
 #include "util/args.h"
 #include "util/threading.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/highway.h"
-#include "hwy/per_target.h"
+#include "hwy/per_target.h"  // VectorBytes
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -57,7 +55,7 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
                    const AppArgs& app)
-    : pools_(app.max_clusters, app.max_threads, app.pin) {
+    : pools_(CreatePools(app)) {
   InferenceArgs mutable_inference = inference;
   AbortIfInvalidArgs(mutable_inference);
   LoaderArgs mutable_loader = loader;
@@ -217,7 +215,7 @@ void LogSpeedStats(double time_start, size_t total_tokens) {
 }
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
-                PerClusterPools& pools) {
+                NestedPools& pools) {
   loader.Print(app.verbosity);
   inference.Print(app.verbosity);
   app.Print(app.verbosity);
@@ -228,21 +226,15 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
     char cpu100[100] = "unknown";
     (void)hwy::platform::GetCpuString(cpu100);
 
-    // TODO: call TopologyString() once we have NestedPools.
-    const std::vector<hwy::LogicalProcessorSet>& clusters =
-        pools.CoresPerCluster();
-    const size_t per_cluster =
-        clusters.empty() ? 0 : pools.CoresPerCluster().front().Count();
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n
             "CPU                           : %s\n"
-            "CPU topology                  : %zux%zu, using %zux%zu\n"
+            "CPU topology                  : %s\n"
             "Instruction set               : %s (%zu bits)\n"
             "Compiled config               : %s\n"
             "Weight Type                   : %s\n"
             "EmbedderInput Type            : %s\n",
-            dt, cpu100, pools.CoresPerCluster().size(), per_cluster,
-            pools.Outer().NumWorkers(), pools.Inner(0).NumWorkers(),
+            dt, cpu100, pools.TopologyString(),
             hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
             CompiledConfig(), StringFromType(loader.Info().weight),
             TypeName<EmbedderInputT>());
