@@ -444,8 +444,10 @@ class CompressStats {
   char padding_[64];  // prevent false sharing
 };
 #else
+class DistortionStats;
+
 struct CompressStats {
-  void Notify(...) {}
+  void Notify(const DistortionStats&) {}
   void NotifyIn(int) {}
   void Assimilate(const CompressStats&) {}
   void PrintAll() {}
