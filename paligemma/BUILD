@@ -11,7 +11,10 @@ cc_library(
     name = "image",
     srcs = ["image.cc"],
     hdrs = ["image.h"],
-    deps = ["@highway//:hwy"],
+    deps = [
+        "@highway//:hwy",
+        "//compression:io",
+    ],
 )
 
 cc_test(
