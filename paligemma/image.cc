@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include "paligemma/image.h"
+#include "compression/io.h"
 
 #include <stdint.h>
 
@@ -55,64 +56,96 @@ float StretchToSigned(float value) {
 
 bool IsLineBreak(int c) { return c == '\r' || c == '\n'; }
 
-void SkipWhitespaceAndComments(std::ifstream& file) {
-  int value = file.get();
-  while (std::isspace(value)) value = file.get();
-  while (value == '#') {  // Skip comment lines.
-    while (!IsLineBreak(value)) value = file.get();
-    while (std::isspace(value)) value = file.get();
+const char* CheckP6Format(const char* pos, const char* end) {
+  constexpr const char format[] = "P6";
+  for (size_t i = 0; i < sizeof(format) - 1; ++i) {
+    if (pos == end || *pos != format[i]) {
+      return nullptr;
+    }
+    ++pos;
   }
-  file.unget();  // Rewind last byte.
+  return pos;
+}
+
+const char* SkipWhitespaceAndComments(const char* pos, const char* end) {
+  while (pos < end && std::isspace(*pos)) ++pos;
+  while (pos < end && *pos == '#') {  // Skip comment lines.
+    while (pos < end && !IsLineBreak(*pos)) ++pos;
+    while (pos < end && std::isspace(*pos)) ++pos;
+  }
+  return pos;
+}
+
+const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
+  if (pos == end || !std::isdigit(*pos)) {
+    return nullptr;
+  }
+  num = 0;
+  for ( ; pos < end && std::isdigit(*pos); ++pos) {
+    num *= 10;
+    num += *pos - '0';
+  }
+  return pos;
 }
 }  // namespace
 
 bool Image::ReadPPM(const std::string& filename) {
-  std::ifstream file(filename);
-  if (!file.is_open()) {
-    std::cerr << "Failed to open " << filename << "\n";
+  Path path(filename);
+  if (!path.Exists()) {
+    std::cerr << filename << " does not exist\n";
     return false;
   }
-  std::string format;
-  file >> format;
-  if (format != "P6") {
-    std::cerr << "We only support binary PPM (P6) but got: " << format << "\n";
+  auto content = ReadFileToString(path);
+  return ReadPPM(hwy::Span<const char>(content.data(), content.size()));
+}
+
+bool Image::ReadPPM(const hwy::Span<const char>& buf) {
+  auto pos = CheckP6Format(buf.cbegin(), buf.cend());
+  if (!pos) {
+    std::cerr << "We only support binary PPM (P6)\n";
     return false;
   }
-  int width, height, max_value;
-  SkipWhitespaceAndComments(file);
-  file >> width;
-  SkipWhitespaceAndComments(file);
-  file >> height;
-  SkipWhitespaceAndComments(file);
-  file >> max_value;
+  size_t width, height, max_value;
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), width);
+  if (!pos) {
+    std::cerr << "Reached end before width\n";
+    return false;
+  }
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), height);
+  if (!pos) {
+    std::cerr << "Reached end before height\n";
+    return false;
+  }
+  pos = SkipWhitespaceAndComments(pos, buf.cend());
+  pos = ParseUnsigned(pos, buf.cend(), max_value);
+  if (!pos) {
+    std::cerr << "Reached end before max_value\n";
+    return false;
+  }
   if (max_value <= 0 || max_value > 255) {
     std::cerr << "Unsupported max value " << max_value << "\n";
     return false;
   }
   // P6 requires exactly one whitespace character after the header.
-  int value = file.get();
-  if (!std::isspace(value)) {
+  if (!std::isspace(*pos)) {
     std::cerr << "Missing whitespace after header\n";
     return false;
   }
+  ++pos;
+  auto data_size = width * height * 3;
+  if (buf.cend() - pos < data_size) {
+    std::cerr << "Insufficient data remaining\n";
+    return false;
+  }
+  data_.resize(data_size);
   width_ = width;
   height_ = height;
-  int data_size = width * height * 3;
-  data_.resize(data_size);
-  std::vector<uint8_t> data_bytes(data_size);
-  file.read(reinterpret_cast<char*>(data_bytes.data()), data_size);
-  if (file.gcount() != data_size) {
-    std::cerr << "Failed to read " << data_size << " bytes\n";
-    return false;
+  for (size_t i = 0; i < data_size; ++i) {
+    uint8_t value = pos[i];
+    data_[i] = StretchToSigned(static_cast<float>(value) / max_value);
   }
-  for (int i = 0; i < data_size; ++i) {
-    data_[i] = StretchToSigned(static_cast<float>(data_bytes[i]) / max_value);
-  }
-  if (file.get() != EOF) {
-    std::cerr << "Extra data in file\n";
-    return false;
-  }
-  file.close();
   return true;
 }
 
