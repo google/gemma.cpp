@@ -127,6 +127,10 @@ struct LayerConfig {
   size_t conv1d_width = 0;
   bool ff_biases = false;
   bool softmax_attn_output_biases = false;
+  bool self_extend = false;
+  size_t ngb_size = 0;
+  size_t grp_size = 1;
+
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
