@@ -48,6 +48,19 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "blob_store_test",
+    srcs = ["blob_store_test.cc"],
+    deps = [
+        ":blob_store",
+        ":io",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
+    ],
+)
+
 cc_library(
     name = "distortion",
     hdrs = [

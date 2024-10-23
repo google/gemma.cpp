@@ -144,6 +144,7 @@ set(GEMMA_TEST_FILES
   backprop/backward_scalar_test.cc
   backprop/backward_test.cc
   backprop/optimize_test.cc
+  compression/blob_store_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
   compression/nuq_test.cc
