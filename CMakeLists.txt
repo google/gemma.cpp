@@ -45,6 +45,8 @@ set(SOURCES
   compression/compress.cc
   compression/compress.h
   compression/compress-inl.h
+  compression/fields.cc
+  compression/fields.h
   compression/io_win.cc
   compression/io.cc
   compression/io.h
@@ -150,6 +152,7 @@ set(GEMMA_TEST_FILES
   compression/blob_store_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
+  compression/fields_test.cc
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
