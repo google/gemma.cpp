@@ -28,6 +28,10 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/contrib/thread_pool/topology.h"
 
+#ifndef GEMMA_DISABLE_TOPOLOGY
+#define GEMMA_DISABLE_TOPOLOGY 0
+#endif  // !GEMMA_DISABLE_TOPOLOGY
+
 namespace gcpp {
 
 // A slice of a 1D integer range such as the indices of packages or clusters.
@@ -90,7 +94,7 @@ class BoundedTopology {
           stderr,
           "Warning, unknown OS affinity, considering all %zu LPs enabled\n.",
           num_lps);
-      for (size_t lp = 0; lp < hwy::TotalLogicalProcessors(); ++lp) {
+      for (size_t lp = 0; lp < num_lps; ++lp) {
         enabled_lps.Set(lp);
       }
     }
@@ -104,12 +108,14 @@ class BoundedTopology {
       enabled_lps.Set(lp);
     }
 
+#if !GEMMA_DISABLE_TOPOLOGY
     if (HWY_LIKELY(!topology_.packages.empty())) {
       InitFromTopology(enabled_lps, package_slice, cluster_slice);
     }
+#endif
 
-    // Topology unknown or no packages with enabled LPs: create a single
-    // package with one cluster, and one node.
+    // Topology unknown, disabled or no packages with enabled LPs: create a
+    // single package with one cluster, and one node.
     if (HWY_UNLIKELY(NumPackages() == 0)) {
       InitFromSlice(enabled_lps, lp_slice);
     }
@@ -269,6 +275,7 @@ class BoundedTopology {
     std::vector<Cluster> clusters;
   };  // Package
 
+#if !GEMMA_DISABLE_TOPOLOGY
   // Main part of ctor, called when topology is known.
   void InitFromTopology(const LPS& enabled_lps, BoundedSlice package_slice,
                         BoundedSlice cluster_slice) {
@@ -298,6 +305,7 @@ class BoundedTopology {
       nodes_.Set(static_cast<size_t>(topology_.lps[lp].node));
     });
   }
+#endif
 
   void InitFromSlice(const LPS& enabled_lps, BoundedSlice lp_slice) {
     packages_.push_back(Package(enabled_lps, lp_slice));
@@ -310,7 +318,9 @@ class BoundedTopology {
     HWY_ASSERT(NumNodes() == 1);
   }
 
+#if !GEMMA_DISABLE_TOPOLOGY
   hwy::Topology topology_;
+#endif
   std::vector<Package> packages_;
   char topology_string_[96];
   LPS nodes_;
