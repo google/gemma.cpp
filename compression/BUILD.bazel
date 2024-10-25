@@ -38,6 +38,26 @@ cc_library(
 )
 
 cc_library(
+    name = "fields",
+    srcs = ["fields.cc"],
+    hdrs = ["fields.h"],
+    deps = [
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
+    name = "fields_test",
+    srcs = ["fields_test.cc"],
+    deps = [
+        ":fields",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_library(
     name = "blob_store",
     srcs = ["blob_store.cc"],
     hdrs = ["blob_store.h"],
