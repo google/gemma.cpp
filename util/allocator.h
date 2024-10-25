@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstdlib>  // std::aligned_alloc
+#include <cstdlib>  // std::aligned_alloc / _aligned_malloc
 
 // IWYU pragma: begin_exports
 #include "util/threading.h"
@@ -140,15 +140,19 @@ class Allocator {
     }
 
     // AlignedFreeUniquePtr has a deleter that can call an arbitrary `free`, but
-    // with an extra opaque pointer, which we discard via this adapter.
+    // with an extra opaque pointer, which we discard via `call_free`.
+#if defined(__ANDROID_API__) && __ANDROID_API__ < 28
     const auto call_free = [](void* ptr, void*) { std::free(ptr); };
-#if !defined(__ANDROID_API__) || __ANDROID_API__ >= 28
-    T* p = static_cast<T*>(std::aligned_alloc(Alignment(), bytes));
-#else
     void* mem = nullptr;
     int err = posix_memalign(&mem, Alignment(), bytes);
     HWY_ASSERT(err == 0);
     T* p = static_cast<T*>(mem);
+#elif HWY_OS_WIN
+    const auto call_free = [](void* ptr, void*) { _aligned_free(ptr); };
+    T* p = static_cast<T*>(_aligned_malloc(bytes, Alignment()));
+#else
+    const auto call_free = [](void* ptr, void*) { std::free(ptr); };
+    T* p = static_cast<T*>(std::aligned_alloc(Alignment(), bytes));
 #endif
     return hwy::AlignedFreeUniquePtr<T[]>(
         p, hwy::AlignedFreer(call_free, nullptr));

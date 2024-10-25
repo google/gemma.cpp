@@ -275,7 +275,8 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
            [pfile, &requests, &err](uint64_t i, size_t /*thread*/) {
              if (!pfile->Read(requests[i].offset, requests[i].size,
                               requests[i].data)) {
-               fprintf(stderr, "Failed to read blob %zu\n", i);
+               fprintf(stderr, "Failed to read blob %zu\n",
+                       static_cast<size_t>(i));
                err.test_and_set();
              }
            });

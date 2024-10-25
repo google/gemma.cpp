@@ -14,6 +14,7 @@ cc_library(
     deps = [
         "//compression:io",
         "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )
 
