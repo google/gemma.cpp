@@ -233,6 +233,7 @@ cc_library(
     deps = [
         ":common",
         "//compression:io",
+        "//compression:sfp",
         "@highway//:hwy",
         "@highway//:profiler",
         "@com_google_sentencepiece//:sentencepiece_processor",
@@ -376,6 +377,7 @@ cc_binary(
         ":gemma_lib",
         ":threading",
         # Placeholder for internal dep, do not remove.,
+        "//compression:sfp",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:profiler",

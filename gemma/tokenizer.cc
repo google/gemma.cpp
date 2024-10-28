@@ -21,9 +21,10 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"  // Path
-#include "gemma/common.h"    // Wrap
-#include "hwy/base.h"          // HWY_ASSERT
+#include "compression/io.h"      // Path
+#include "compression/shared.h"  // ModelTraining
+#include "gemma/common.h"        // Wrap
+#include "hwy/base.h"              // HWY_ASSERT
 #include "hwy/profiler.h"
 // copybara:import_next_line:sentencepiece
 #include "src/sentencepiece_processor.h"
@@ -109,7 +110,7 @@ std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
   }
 
   // PaliGemma separator. The SEP token "\n" is always tokenized separately.
-  if (info.model == Model::PALIGEMMA_224) {
+  if (info.training == ModelTraining::PALIGEMMA) {
     std::vector<int> sep_tokens;
     HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
     tokens.insert(tokens.end(), sep_tokens.begin(), sep_tokens.end());

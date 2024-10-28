@@ -16,12 +16,14 @@
 // Command line text interface to gemma.
 
 #include <iostream>
+#include <memory>
 #include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
 // Placeholder for internal header, do not modify.
+#include "compression/shared.h"  // ModelTraining
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
@@ -90,13 +92,22 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
 
   const bool have_image = !args.image_file.path.empty();
   Image image;
-  ImageTokens image_tokens(256, 2048);
+  std::unique_ptr<ImageTokens> image_tokens;
   if (have_image) {
-    HWY_ASSERT(model.Info().model == Model::PALIGEMMA_224);
+    image_tokens = std::make_unique<ImageTokens>(
+        model.GetModelConfig().vit_seq_len, model.GetModelConfig().model_dim);
+    HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
     image.Resize();
     RuntimeConfig runtime_config = {.verbosity = verbosity, .gen = &gen};
-    model.GenerateImageTokens(runtime_config, image, image_tokens);
+    double image_tokens_start = hwy::platform::Now();
+    model.GenerateImageTokens(runtime_config, image, *image_tokens);
+    if (verbosity >= 1) {
+      double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
+      fprintf(stderr,
+              "\n\n[ Timing info ] Image token generation took: %d ms\n",
+              static_cast<int>(image_tokens_duration * 1000));
+    }
   }
 
   // callback function invoked for each generated token.
@@ -170,8 +181,8 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
     args.CopyTo(runtime_config);
     size_t prefix_end = 0;
     if (have_image) {
-      runtime_config.image_tokens = &image_tokens;
-      prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
+      runtime_config.image_tokens = image_tokens.get();
+      prompt.insert(prompt.begin(), image_tokens->BatchSize(), 0);
       prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.

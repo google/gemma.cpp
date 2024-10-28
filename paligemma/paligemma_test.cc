@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "compression/shared.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"
@@ -50,9 +51,10 @@ class PaliGemmaTest : public ::testing::Test {
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetModel(), nullptr);
   Gemma& model = *(s_env->GetModel());
-  image_tokens_ = std::make_unique<ImageTokens>(256, 2048);
+  image_tokens_ = std::make_unique<ImageTokens>(
+      model.GetModelConfig().vit_seq_len, model.GetModelConfig().model_dim);
   Image image;
-  HWY_ASSERT(model.Info().model == Model::PALIGEMMA_224);
+  HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
   image.Resize();
   RuntimeConfig runtime_config = {.verbosity = 0, .gen = &s_env->MutableGen()};

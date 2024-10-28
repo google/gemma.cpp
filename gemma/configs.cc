@@ -198,17 +198,15 @@ static ModelConfig ConfigGriffin2B() {
   return config;
 }
 
-static ModelConfig ConfigPaliGemma_224() {
-  ModelConfig config = ConfigGemma2B();
-  config.model_name = "PaliGemma_224";
-  config.model = Model::PALIGEMMA_224;
+// Adds a ViT config (SigLIP SoViT ViT, used in PaliGemma) to the model config.
+static void AddVitConfig(ModelConfig& config) {
   config.vit_model_dim = 1152;
   config.vocab_size = 256000 + 1024 + 128;  // = 257152
   config.image_size = 224;
   config.patch_width = 14;
   const size_t num_patches = config.image_size / config.patch_width;
   config.vit_seq_len = num_patches * num_patches;
-  LayerConfig layer_config = {
+  LayerConfig vit_layer_config = {
       .model_dim = config.vit_model_dim,
       .ff_hidden_dim = 4304,
       .heads = 16,
@@ -217,8 +215,15 @@ static ModelConfig ConfigPaliGemma_224() {
       .ff_biases = true,
       .type = LayerAttentionType::kVit,
   };
-  config.vit_layer_configs = {27, layer_config};
+  config.vit_layer_configs = {27, vit_layer_config};
   config.num_vit_scales = 4 * config.vit_layer_configs.size();
+}
+
+static ModelConfig ConfigPaliGemma_224() {
+  ModelConfig config = ConfigGemma2B();
+  config.model_name = "PaliGemma_224";
+  config.model = Model::PALIGEMMA_224;
+  AddVitConfig(config);
   return config;
 }
 

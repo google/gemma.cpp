@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -150,6 +151,27 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
     data_[i] = StretchToSigned(static_cast<float>(value) / max_value);
   }
   return true;
+}
+
+void Image::Set(int width, int height, const float* data) {
+  width_ = width;
+  height_ = height;
+  int num_elements = width * height * 3;
+  data_.resize(num_elements);
+  data_.assign(data, data + num_elements);
+  float min_value = std::numeric_limits<float>::infinity();
+  float max_value = -std::numeric_limits<float>::infinity();
+  for (int i = 0; i < num_elements; ++i) {
+    if (data_[i] < min_value) min_value = data_[i];
+    if (data_[i] > max_value) max_value = data_[i];
+  }
+  // -> out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
+  float in_range = max_value - min_value;
+  if (in_range == 0.0f) in_range = 1.0f;
+  float scale = 2.0f / in_range;
+  for (int i = 0; i < num_elements; ++i) {
+    data_[i] = (data_[i] - min_value) * scale - 1.0f;
+  }
 }
 
 void Image::Resize() {

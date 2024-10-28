@@ -35,6 +35,9 @@ class Image {
   // Reads PPM format (P6, binary) data from a hwy::Span, normalizes to [-1, 1].
   // Returns true on success.
   bool ReadPPM(const hwy::Span<const char>& buf);
+  // Sets the image content to the given data. The data is copied and normalized
+  // to [-1, 1]. The data is expected to be of size width * height * 3.
+  void Set(int width, int height, const float* data);
   // Resizes to 224x224 (nearest-neighbor for now, bilinear or antialias would
   // be better).
   void Resize();
