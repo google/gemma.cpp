@@ -39,7 +39,7 @@
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  NestedPools pools(1);
+  NestedPools pools(1, /*pin=*/0, BoundedSlice(0, 1), BoundedSlice(0, 1));
   hwy::ThreadPool& pool = pools.Pool();
   std::mt19937 gen(42);
 

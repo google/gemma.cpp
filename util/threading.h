@@ -361,7 +361,7 @@ class NestedPools {
   // only impose upper bounds on the number of detected packages and clusters
   // rather than defining the actual number of threads.
   //
-  // `pin` is 0 or 1 to force enable/disable, or -1 to choose automatically.
+  // `pin` is 0 or 1 to force disable/enable, or -1 to choose automatically.
   NestedPools(size_t max_threads, int pin = -1,
               BoundedSlice package_slice = BoundedSlice(),
               BoundedSlice cluster_slice = BoundedSlice(),
