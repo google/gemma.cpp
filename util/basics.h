@@ -20,7 +20,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "hwy/base.h"  // HWY_IS_MSAN
+#include "hwy/base.h"
 // IWYU pragma: end_exports
 
 #if HWY_IS_MSAN
@@ -28,6 +28,8 @@
 #endif
 
 namespace gcpp {
+
+using BF16 = hwy::bfloat16_t;
 
 static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
 #if HWY_IS_MSAN

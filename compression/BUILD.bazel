@@ -88,6 +88,7 @@ cc_library(
         "shared.h",
     ],
     deps = [
+        "//:basics",
         "@highway//:hwy",
         "@highway//:stats",
         "@highway//hwy/contrib/sort:vqsort",
@@ -112,6 +113,7 @@ cc_library(
     hdrs = ["shared.h"],
     textual_hdrs = ["sfp-inl.h"],
     deps = [
+        "//:basics",
         "@highway//:hwy",
     ],
 )
@@ -198,6 +200,7 @@ cc_library(
         ":nuq",
         ":sfp",
         "//:allocator",
+        "//:basics",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
