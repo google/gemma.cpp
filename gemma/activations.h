@@ -72,18 +72,11 @@ struct Activations {
   size_t seq_len;
   size_t cache_pos_size = 0;
 
-  // Multi-Head Attention?
-  bool IsMHA() const { return layer_config.heads == layer_config.kv_heads; }
-
-  // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
-  // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
-  size_t QStride() const { return layer_config.qkv_dim * (IsMHA() ? 3 : 1); }
-
   static RowVectorBatch<float> CreateInvTimescale(size_t qkv_dim,
                                                   PostQKType post_qk) {
     const size_t rope_dim =
         post_qk == PostQKType::HalfRope ? qkv_dim / 2 : qkv_dim;
-    RowVectorBatch<float> inv_timescale(1, rope_dim / 2);
+    RowVectorBatch<float> inv_timescale(Extents2D(1, rope_dim / 2));
     for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
       const float freq_exponents =
           static_cast<float>(2 * dim) / static_cast<float>(rope_dim);
@@ -100,29 +93,31 @@ struct Activations {
     const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
     const size_t vocab_size = weights_config.vocab_size;
 
-    x = RowVectorBatch<float>(batch_size, model_dim);
-    q = RowVectorBatch<float>(batch_size, layer_config.heads * QStride());
+    x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+    q = RowVectorBatch<float>(
+        Extents2D(batch_size, layer_config.heads * layer_config.QStride()));
     if (vocab_size > 0) {
-      logits = RowVectorBatch<float>(batch_size, vocab_size);
+      logits = RowVectorBatch<float>(Extents2D(batch_size, vocab_size));
     }
 
-    pre_att_rms_out = RowVectorBatch<float>(batch_size, model_dim);
-    att = RowVectorBatch<float>(batch_size,
-                                layer_config.heads * weights_config.seq_len);
-    att_out = RowVectorBatch<float>(batch_size,
-                                    layer_config.heads * layer_config.qkv_dim);
-    att_sums = RowVectorBatch<float>(batch_size, model_dim);
+    pre_att_rms_out = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+    att = RowVectorBatch<float>(
+        Extents2D(batch_size, layer_config.heads * weights_config.seq_len));
+    att_out = RowVectorBatch<float>(
+        Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim));
+    att_sums = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
 
-    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(batch_size, model_dim);
-    C1 = RowVectorBatch<float>(batch_size, ff_hidden_dim);
-    C2 = RowVectorBatch<float>(batch_size, ff_hidden_dim);
-    ffw_out = RowVectorBatch<float>(batch_size, model_dim);
+    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(Extents2D(batch_size, model_dim));
+    C1 = RowVectorBatch<float>(Extents2D(batch_size, ff_hidden_dim));
+    C2 = RowVectorBatch<float>(Extents2D(batch_size, ff_hidden_dim));
+    ffw_out = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
 
     if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
-      griffin_x = RowVectorBatch<float>(batch_size, model_dim);
-      griffin_y = RowVectorBatch<float>(batch_size, model_dim);
-      griffin_gate_x = RowVectorBatch<float>(batch_size, model_dim);
-      griffin_multiplier = RowVectorBatch<float>(batch_size, model_dim);
+      griffin_x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+      griffin_y = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+      griffin_gate_x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+      griffin_multiplier =
+          RowVectorBatch<float>(Extents2D(batch_size, model_dim));
     }
 
     inv_timescale = CreateInvTimescale(layer_config.qkv_dim, post_qk);

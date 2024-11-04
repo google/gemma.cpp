@@ -14,7 +14,6 @@
 // limitations under the License.
 
 #include <cstdio>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -45,20 +44,20 @@ class PaliGemmaTest : public ::testing::Test {
   std::string GemmaReply(const std::string& prompt_text) const;
   void TestQuestions(const char* kQA[][2], size_t num_questions);
 
-  std::unique_ptr<ImageTokens> image_tokens_;
+  ImageTokens image_tokens_;
 };
 
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetModel(), nullptr);
   Gemma& model = *(s_env->GetModel());
-  image_tokens_ = std::make_unique<ImageTokens>(
-      model.GetModelConfig().vit_seq_len, model.GetModelConfig().model_dim);
+  image_tokens_ = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
+                                        model.GetModelConfig().model_dim));
   Image image;
   HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
   image.Resize();
   RuntimeConfig runtime_config = {.verbosity = 0, .gen = &s_env->MutableGen()};
-  model.GenerateImageTokens(runtime_config, image, *image_tokens_);
+  model.GenerateImageTokens(runtime_config, image, image_tokens_);
 }
 
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
@@ -67,7 +66,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,
                                   .verbosity = 0,
                                   .gen = &s_env->MutableGen()};
-  runtime_config.image_tokens = image_tokens_.get();
+  runtime_config.image_tokens = &image_tokens_;
   size_t abs_pos = 0;
   std::string mutable_prompt = prompt_text;
   std::vector<int> tokens = s_env->WrapAndTokenize(mutable_prompt);
@@ -79,7 +78,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
     return true;
   };
   runtime_config.stream_token = stream_token,
-  tokens.insert(tokens.begin(), image_tokens_->BatchSize(), 0);
+  tokens.insert(tokens.begin(), image_tokens_.BatchSize(), 0);
   size_t num_tokens = tokens.size();
   size_t prefix_end = num_tokens;
   runtime_config.prefill_tbatch_size = num_tokens;

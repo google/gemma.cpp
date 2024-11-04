@@ -16,7 +16,6 @@
 // Command line text interface to gemma.
 
 #include <iostream>
-#include <memory>
 #include <random>
 #include <string>
 #include <string_view>
@@ -79,8 +78,8 @@ std::string GetPrompt(std::istream& input, int verbosity,
 }
 
 // The main Read-Eval-Print Loop.
-void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
-               int verbosity, const AcceptFunc& accept_token,
+void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
+               const InferenceArgs& args, const AcceptFunc& accept_token,
                std::string& eot_line) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;                     // across turns
@@ -92,17 +91,18 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
 
   const bool have_image = !args.image_file.path.empty();
   Image image;
-  std::unique_ptr<ImageTokens> image_tokens;
+  ImageTokens image_tokens;
   if (have_image) {
-    image_tokens = std::make_unique<ImageTokens>(
-        model.GetModelConfig().vit_seq_len, model.GetModelConfig().model_dim);
+    image_tokens = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
+                                         model.GetModelConfig().model_dim));
     HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
     image.Resize();
-    RuntimeConfig runtime_config = {.verbosity = verbosity, .gen = &gen};
+    RuntimeConfig runtime_config = {
+        .verbosity = app.verbosity, .gen = &gen, .use_spinning = app.spin};
     double image_tokens_start = hwy::platform::Now();
-    model.GenerateImageTokens(runtime_config, image, *image_tokens);
-    if (verbosity >= 1) {
+    model.GenerateImageTokens(runtime_config, image, image_tokens);
+    if (app.verbosity >= 1) {
       double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
       fprintf(stderr,
               "\n\n[ Timing info ] Image token generation took: %d ms\n",
@@ -122,7 +122,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
         abs_pos = 0;
         InitGenerator(args, gen);
       }
-      if (verbosity >= 2) {
+      if (app.verbosity >= 2) {
         std::cout << "\n[ End ]\n";
       }
     } else {
@@ -133,7 +133,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
       if (tokens_generated_this_turn == prompt_size + 1) {
         // first token of response
         token_text.erase(0, token_text.find_first_not_of(" \t\n"));
-        if (verbosity >= 1) {
+        if (app.verbosity >= 1) {
           std::cout << "\n\n";
         }
       }
@@ -144,7 +144,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
 
   while (true) {  // Loop until user quits.
     tokens_generated_this_turn = 0;
-    std::string prompt_string = GetPrompt(std::cin, verbosity, eot_line);
+    std::string prompt_string = GetPrompt(std::cin, app.verbosity, eot_line);
     if (!std::cin) return;
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
     if (prompt_string.size() >= 2 && prompt_string[0] == '%') {
@@ -171,18 +171,17 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const InferenceArgs& args,
       }
     }
 
-    TimingInfo timing_info = {.verbosity = verbosity};
-    RuntimeConfig runtime_config = {
-        .verbosity = verbosity,
-        .gen = &gen,
-        .stream_token = stream_token,
-        .accept_token = accept_token,
-    };
+    TimingInfo timing_info = {.verbosity = app.verbosity};
+    RuntimeConfig runtime_config = {.verbosity = app.verbosity,
+                                    .gen = &gen,
+                                    .stream_token = stream_token,
+                                    .accept_token = accept_token,
+                                    .use_spinning = app.spin};
     args.CopyTo(runtime_config);
     size_t prefix_end = 0;
     if (have_image) {
-      runtime_config.image_tokens = image_tokens.get();
-      prompt.insert(prompt.begin(), image_tokens->BatchSize(), 0);
+      runtime_config.image_tokens = &image_tokens;
+      prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
       prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.
@@ -237,8 +236,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(model, kv_cache, inference, app.verbosity, AcceptFunc(),
-            app.eot_line);
+  ReplGemma(model, kv_cache, app, inference, AcceptFunc(), app.eot_line);
 }
 
 }  // namespace gcpp

@@ -267,8 +267,12 @@ struct PackedSpan {
     // check the compressed count and ensure we have that many.
     const size_t required =
         CompressedArrayElements<Packed>(packed_ofs + num_accessible);
-    HWY_DASSERT(num >= required);
-    (void)required;
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (num < required) {
+        HWY_ABORT("PackedSpan: ofs %zu, want %zu, req %zu > %zu packed",
+                  packed_ofs, num_accessible, required, num);
+      }
+    }
   }
 
   Packed* HWY_RESTRICT ptr;

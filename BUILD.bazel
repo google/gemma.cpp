@@ -30,8 +30,11 @@ cc_library(
 
 cc_library(
     name = "threading",
+    srcs = ["util/threading.cc"],
     hdrs = ["util/threading.h"],
     deps = [
+        ":basics",
+        # Placeholder for container detection, do not remove
         "@highway//:hwy",
         "@highway//:thread_pool",
         "@highway//:topology",
@@ -173,7 +176,9 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":allocator",
+        ":basics",
         ":ops",
+        ":test_util",
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
@@ -280,6 +285,7 @@ cc_library(
         ":kv_cache",
         ":weights",
         ":threading",
+        "//compression:compress",
         "//compression:io",
         "//compression:sfp",
         "//paligemma:image",
@@ -307,6 +313,7 @@ cc_library(
     name = "args",
     hdrs = ["util/args.h"],
     deps = [
+        ":basics",
         "//compression:io",
         "@highway//:hwy",
     ],
@@ -317,6 +324,7 @@ cc_library(
     hdrs = ["util/app.h"],
     deps = [
         ":args",
+        ":basics",
         ":common",
         ":gemma_lib",
         ":threading",
@@ -342,8 +350,6 @@ cc_library(
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
-        "@highway//:thread_pool",
-        "@highway//:topology",
     ],
 )
 
@@ -583,6 +589,7 @@ cc_test(
     },
     deps = [
         ":backprop",
+        ":basics",
         ":common",
         ":gemma_lib",
         ":optimizer",

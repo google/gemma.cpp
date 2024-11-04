@@ -101,6 +101,7 @@ set(SOURCES
   util/args.h
   util/basics.h
   util/test_util.h
+  util/threading.cc
   util/threading.h
   )
 

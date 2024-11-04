@@ -24,6 +24,7 @@
 #include <string>
 
 #include "compression/io.h"
+#include "util/basics.h"  // Tristate
 #include "hwy/base.h"  // HWY_ABORT
 
 namespace gcpp {
@@ -62,6 +63,13 @@ class ArgsBase {
       }
     }
 
+    void operator()(const Tristate& t, const char* name,
+                    const Tristate& /*init*/, const char* /*help*/,
+                    int print_verbosity = 0) const {
+      if (verbosity_ >= print_verbosity) {
+        fprintf(stderr, "%-30s: %s\n", name, ToString(t));
+      }
+    }
     void operator()(const std::string& t, const char* name,
                     const std::string& /*init*/, const char* /*help*/,
                     int print_verbosity = 0) const {
@@ -127,13 +135,33 @@ class ArgsBase {
       return true;
     }
 
-    static bool SetValue(const char* string, bool& t) {
+    // Returns lower-cased string. Arg names are expected to be ASCII-only.
+    static std::string ToLower(const char* string) {
       std::string value(string);
-      // Lower-case. Arg names are expected to be ASCII-only.
       std::transform(value.begin(), value.end(), value.begin(), [](char c) {
         return 'A' <= c && c <= 'Z' ? c - ('Z' - 'z') : c;
       });
+      return value;
+    }
 
+    static bool SetValue(const char* string, Tristate& t) {
+      const std::string value = ToLower(string);
+      if (value == "true" || value == "on" || value == "1") {
+        t = Tristate::kTrue;
+        return true;
+      } else if (value == "false" || value == "off" || value == "0") {
+        t = Tristate::kFalse;
+        return true;
+      } else if (value == "default" || value == "auto" || value == "-1") {
+        t = Tristate::kDefault;
+        return true;
+      } else {
+        return false;
+      }
+    }
+
+    static bool SetValue(const char* string, bool& t) {
+      const std::string value = ToLower(string);
       if (value == "true" || value == "on" || value == "1") {
         t = true;
         return true;
