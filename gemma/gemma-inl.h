@@ -20,9 +20,9 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::min
-#include <type_traits>
 #include <vector>
 
+#include "compression/compress.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
@@ -31,6 +31,7 @@
 // Placeholder for internal test4, do not remove
 #include "paligemma/image.h"
 #include "util/allocator.h"
+#include "util/basics.h"
 #include "util/threading.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -232,49 +233,49 @@ class GemmaAttention {
   // KV directly to KVCache.
   HWY_NOINLINE void ComputeQKV(const size_t num_interleaved) {
     PROFILER_ZONE("Gen.Attention.QKV");
-    // For the computation of Q, K, and V, it is useful to remember that
-    // qkv_einsum_w has shape [(layer_config_.heads + layer_config_.kv_heads *
-    // 2), kKQVDim, layer_config_.model_dim] and q_stride_ =
-    // layer_config_.qkv_dim * (is_mha_ ? 3 : 1);
+    const size_t model_dim = layer_config_.model_dim;
+    const size_t qkv_dim = layer_config_.qkv_dim;
+    const size_t heads = layer_config_.heads;
+    const size_t kv_heads = layer_config_.kv_heads;
 
     const auto pre_att_rms_out =
-        ConstMat(activations_.pre_att_rms_out.All(), layer_config_.model_dim);
-    const auto w_q1 = layer_weights_.qkv_einsum_w.data() == nullptr
-                          ? ConstMat(layer_weights_.qkv_einsum_w1.data(),
-                                     layer_config_.model_dim)
-                          : ConstMat(layer_weights_.qkv_einsum_w.data(),
-                                     layer_config_.model_dim);
-    const auto w_q2 =
-        layer_weights_.qkv_einsum_w.data() == nullptr
-            ? ConstMat(layer_weights_.qkv_einsum_w2.data(),
-                       layer_config_.model_dim)
-            : ConstMat(layer_weights_.qkv_einsum_w.data(),
-                       layer_config_.model_dim, layer_config_.model_dim,
-                       layer_config_.heads * layer_config_.qkv_dim *
-                           layer_config_.model_dim);
-    MatMul</*kAdd=*/false>(
-        num_interleaved, pre_att_rms_out, w_q1,
-        layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr, activations_.env,
-        MutableMat(activations_.q.All(), layer_config_.heads * q_stride_));
+        ConstMatFromBatch(num_interleaved, activations_.pre_att_rms_out);
+    auto w_q1 = layer_weights_.qkv_einsum_w.data()
+                    ? ConstMatFromWeights(layer_weights_.qkv_einsum_w)
+                    : ConstMatFromWeights(layer_weights_.qkv_einsum_w1);
+    // The original qkv_einsum_w has shape [(heads + kv_heads * 2), kKQVDim,
+    // model_dim], which we reshaped to (heads + kv_heads * 2) * kKQVDim rows.
+    // We must shrink to the actual size because MatMul verifies
+    // `B.extents.rows == C.Cols()`. If MHA, `QStride() == 3 * qkv_dim` and all
+    // rows are used. Otherwise, `QStride() == qkv_dim` and KV will be
+    // computed in the second MatMul.
+    const size_t w1_rows = heads * layer_config_.QStride();
+    w_q1.ShrinkRows(w1_rows);
+    MatMul(pre_att_rms_out, w_q1,
+           /*add=*/nullptr, activations_.env, RowPtrFromBatch(activations_.q));
 
     if (is_mha_) {
       // Multi-Head Attention a.k.a. "use_qkv_einsum" computed QKV already.
     } else {
+      auto w_q2 = layer_weights_.qkv_einsum_w.data()
+                      ? ConstMatFromWeights(layer_weights_.qkv_einsum_w,
+                                            w1_rows * model_dim)
+                      : ConstMatFromWeights(layer_weights_.qkv_einsum_w2);
+      // KV structure is [k, v, k, v, ....] = kv_heads pairs of (k, v).
+      const size_t w_rows_kv_cols = kv_heads * 2 * qkv_dim;
+      w_q2.ShrinkRows(w_rows_kv_cols);
+
       // Single query and no wraparound means we can use a matmul and write
       // directly into the KV cache with a stride of cache_pos_size_.
       if (num_queries_ == 1 &&
           queries_pos_[0] + num_tokens_ <= div_seq_len_.GetDivisor()) {
         const size_t kv_ofs =
             queries_pos_[0] * cache_pos_size_ + layer_ * cache_layer_size_;
-        // KV structure is [k, v, k, v, ....] = layer_config_.kv_heads pairs of
-        // (k, v).
         float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
-        MatMul</*kAdd=*/false>(
-            num_tokens_, pre_att_rms_out, w_q2,
-            layer_weights_.qkv_einsum_w.scale(), /*add=*/nullptr,
-            activations_.env,
-            MutableMat(kv, layer_config_.kv_heads * 2 * layer_config_.qkv_dim,
-                       cache_pos_size_));
+        RowPtrF kv_rows(kv, w_rows_kv_cols);
+        kv_rows.SetStride(cache_pos_size_);
+        MatMul(pre_att_rms_out, w_q2,
+               /*add=*/nullptr, activations_.env, kv_rows);
       } else {
         // Proceed row by row because there will be wraparound.
         for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
@@ -288,38 +289,32 @@ class GemmaAttention {
           const size_t kv_offset =
               cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-          // KV structure is [k, v, k, v, ....] = layer_config_.kv_heads pairs
-          // of (k, v).
-          if (layer_weights_.qkv_einsum_w.data() == nullptr) {
-            MatVec(layer_weights_.qkv_einsum_w2, 0,
-                   layer_config_.kv_heads * 2 * layer_config_.qkv_dim,
-                   layer_config_.model_dim, x, kv, pool_);
+          if (layer_weights_.qkv_einsum_w.data()) {
+            MatVec(layer_weights_.qkv_einsum_w, heads * qkv_dim * model_dim,
+                   w_rows_kv_cols, model_dim, x, kv, pool_);
           } else {
-            MatVec(layer_weights_.qkv_einsum_w,
-                   layer_config_.heads * layer_config_.qkv_dim *
-                       layer_config_.model_dim,
-                   layer_config_.kv_heads * 2 * layer_config_.qkv_dim,
-                   layer_config_.model_dim, x, kv, pool_);
+            MatVec(layer_weights_.qkv_einsum_w2, 0,  //
+                   w_rows_kv_cols, model_dim, x, kv, pool_);
           }
         }
       }
-    }
+    }  // !is_mha_
 
     // Self-extension
     const hwy::Divisor div_grp_size(
         static_cast<uint32_t>(layer_config_.grp_size));
     // Apply positional encodings for K (and copy KV to cache if MHA).
-    pool_.Run(0, layer_config_.kv_heads * num_interleaved,
+    pool_.Run(0, kv_heads * num_interleaved,
               [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
-                const size_t head = task % layer_config_.kv_heads;
-                const size_t interleaved_idx = task / layer_config_.kv_heads;
+                const size_t head = task % kv_heads;
+                const size_t interleaved_idx = task / kv_heads;
                 const size_t query_idx = interleaved_idx % num_queries_;
                 const size_t batch_idx = interleaved_idx / num_queries_;
                 size_t pos = queries_pos_[query_idx] + batch_idx;
                 const size_t cache_pos = div_seq_len_.Remainder(pos);
                 const size_t kv_offset = cache_pos * cache_pos_size_ +
                                          layer_ * cache_layer_size_ +
-                                         head * layer_config_.qkv_dim * 2;
+                                         head * qkv_dim * 2;
                 KVCache& kv_cache = kv_caches_[query_idx];
 
                 const size_t ngb_size = layer_config_.ngb_size;
@@ -328,7 +323,7 @@ class GemmaAttention {
                 float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
                 const float* HWY_RESTRICT mha_kv =
                     activations_.q.Batch(interleaved_idx) + head * q_stride_ +
-                    layer_config_.qkv_dim;
+                    qkv_dim;
 
                 // In self-extend, when embedding position,
                 // we will use grouped key position
@@ -340,9 +335,8 @@ class GemmaAttention {
                                      kv);
                 // If MHA, also copy V into KVCache.
                 if (is_mha_) {
-                  hwy::CopyBytes(mha_kv + layer_config_.qkv_dim,
-                                 kv + layer_config_.qkv_dim,
-                                 layer_config_.qkv_dim * sizeof(*kv));
+                  hwy::CopyBytes(mha_kv + qkv_dim, kv + qkv_dim,
+                                 qkv_dim * sizeof(*kv));
                 }
               });
   }
@@ -484,27 +478,14 @@ class GemmaAttention {
     HWY_DASSERT(layer_weights_.att_weights.data() != nullptr);
     HWY_DASSERT(activations_.att_out.All() != nullptr);
     HWY_DASSERT(activations_.att_sums.All() != nullptr);
-    if (layer_weights_.layer_config.softmax_attn_output_biases) {
-      MatMul</*kAdd=*/true>(
-          num_interleaved,
-          ConstMat(activations_.att_out.All(),
-                   layer_config_.heads * layer_config_.qkv_dim),
-          ConstMat(layer_weights_.att_weights.data(),
-                   layer_config_.heads * layer_config_.qkv_dim),
-          layer_weights_.att_weights.scale(),
-          layer_weights_.attention_output_biases.data_scale1(),
-          activations_.env,
-          MutableMat(activations_.att_sums.All(), layer_config_.model_dim));
-    } else {
-      MatMul</*kAdd=*/false>(
-          num_interleaved,
-          ConstMat(activations_.att_out.All(),
-                   layer_config_.heads * layer_config_.qkv_dim),
-          ConstMat(layer_weights_.att_weights.data(),
-                   layer_config_.heads * layer_config_.qkv_dim),
-          layer_weights_.att_weights.scale(), nullptr, activations_.env,
-          MutableMat(activations_.att_sums.All(), layer_config_.model_dim));
-    }
+
+    const float* add =
+        layer_weights_.layer_config.softmax_attn_output_biases
+            ? layer_weights_.attention_output_biases.data_scale1()
+            : nullptr;
+    MatMul(ConstMatFromBatch(num_interleaved, activations_.att_out),
+           ConstMatFromWeights(layer_weights_.att_weights), add,
+           activations_.env, RowPtrFromBatch(activations_.att_sums));
   }
 
  public:
@@ -545,13 +526,13 @@ class GemmaAttention {
         num_queries_(queries_pos.size()),
         num_tokens_(num_tokens),
         layer_(layer),
-        q_stride_(activations.QStride()),
+        layer_config_(layer_weights->layer_config),
+        q_stride_(layer_config_.QStride()),
         cache_layer_size_(layer_weights->layer_config.CacheLayerSize()),
         cache_pos_size_(activations.cache_pos_size),
-        is_mha_(activations.IsMHA()),
+        is_mha_(layer_config_.IsMHA()),
         activations_(activations),
         layer_weights_(*layer_weights),
-        layer_config_(layer_weights->layer_config),
         div_seq_len_(div_seq_len),
         kv_caches_(kv_caches),
         pool_(activations.env.Pool()) {
@@ -573,6 +554,7 @@ class GemmaAttention {
   const size_t num_queries_;
   const size_t num_tokens_;
   const size_t layer_;
+  const LayerConfig& layer_config_;
   const size_t q_stride_ = 0;
   const size_t cache_layer_size_ = 0;
   const size_t cache_pos_size_ = 0;
@@ -580,7 +562,6 @@ class GemmaAttention {
 
   Activations& activations_;
   const LayerWeightsPtrs<T>& layer_weights_;
-  const LayerConfig& layer_config_;
   const hwy::Divisor& div_seq_len_;
   const KVCaches& kv_caches_;
   hwy::ThreadPool& pool_;
@@ -622,17 +603,13 @@ class VitAttention {
   // Computes Q, K, V for all heads, stored in activations_.q.
   HWY_NOINLINE void ComputeQKV() {
     PROFILER_ZONE("Gen.VitAttention.QKV");
-    const auto y =
-        ConstMat(activations_.pre_att_rms_out.All(), layer_config_.model_dim);
     auto& qkv = activations_.q;
     HWY_ASSERT(qkv.BatchSize() == num_tokens_);
-    HWY_ASSERT(qkv.Len() == layer_config_.heads * 3 * layer_config_.qkv_dim);
-    MatMul</*kAdd=*/true>(
-        num_tokens_, y,
-        ConstMat(layer_weights_.vit.qkv_einsum_w.data_scale1(),
-                 layer_config_.model_dim),
-        /*scale=*/1.0f, layer_weights_.vit.qkv_einsum_b.data_scale1(),
-        activations_.env, MutableMat(qkv.All(), qkv.Len()));
+    HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
+    MatMul(ConstMatFromBatch(num_tokens_, activations_.pre_att_rms_out),
+           ConstMatFromWeights(layer_weights_.vit.qkv_einsum_w),
+           layer_weights_.vit.qkv_einsum_b.data_scale1(), activations_.env,
+           RowPtrFromBatch(qkv));
   }
 
   HWY_NOINLINE void DotSoftmaxWeightedSum() {
@@ -679,17 +656,13 @@ class VitAttention {
   HWY_NOINLINE void SumHeads() {
     PROFILER_ZONE("Gen.VitAttention.SumHeads");
     auto* bias = layer_weights_.vit.attn_out_b.data_scale1();
-    auto att_out = ConstMat(activations_.att_out.All(),
-                            layer_config_.heads * layer_config_.qkv_dim);
-    auto att_weights = ConstMat(layer_weights_.vit.attn_out_w.data_scale1(),
-                                layer_config_.heads * layer_config_.qkv_dim);
-    auto att_sums =
-        MutableMat(activations_.att_sums.All(), layer_config_.model_dim);
     // att_weights and att_out are concatenated heads, each of length
     // layer_config_.qkv_dim. Thus the [num_tokens_, layer_config_.model_dim]
     // matmul output is the sum over heads.
-    MatMul</*kAdd=*/true>(num_tokens_, att_out, att_weights, /*scale=*/1.0f,
-                          bias, activations_.env, att_sums);
+    auto att_out = ConstMatFromBatch(num_tokens_, activations_.att_out);
+    auto att_weights = ConstMatFromWeights(layer_weights_.vit.attn_out_w);
+    auto att_sums = RowPtrFromBatch(activations_.att_sums);
+    MatMul(att_out, att_weights, bias, activations_.env, att_sums);
   }
 
  public:
@@ -741,125 +714,94 @@ HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
   PROFILER_ZONE("Gen.FFW");
   const size_t model_dim = layer_weights->layer_config.model_dim;
   const size_t ffh_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
-  const bool add_bias = layer_weights->layer_config.ff_biases;
   using WeightType = T;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
 
-  // Define slightly more readable names for the weights and activations.
-  const auto x = ConstMat(activations.bf_pre_ffw_rms_out.All(), model_dim);
-  Mat<const WeightType> w1;
-  const float* bias1 = nullptr;
-  Mat<const WeightType> w2;
-  const float* bias2 = nullptr;
-  float scale = 1.0f;
-  Mat<const WeightType> w_output;
-  const float* output_bias = nullptr;
-  float output_scale = 1.0f;
-  auto hidden_activations = MutableMat(activations.C1.All(), ffh_hidden_dim);
-  auto multiplier = MutableMat(activations.C2.All(), ffh_hidden_dim);
-  auto ffw_out = MutableMat(activations.ffw_out.All(), model_dim);
+  const bool add_bias = layer_weights->layer_config.ff_biases;
+  const float* bias1 =
+      add_bias ? layer_weights->ffw_gating_biases.data_scale1() : nullptr;
+  const float* bias2 = add_bias ? bias1 + ffh_hidden_dim : nullptr;
+  const float* output_bias =
+      add_bias ? layer_weights->ffw_output_biases.data_scale1() : nullptr;
 
-  // For some of the weights and activations, it depends on the config where to
-  // get them from or whether to use them at all.
-  bias1 = layer_weights->ffw_gating_biases.data_scale1();
-  bias2 = bias1 + ffh_hidden_dim;
-  output_bias = layer_weights->ffw_output_biases.data_scale1();
-  w1 = layer_weights->gating_einsum_w.data() == nullptr
-           ? ConstMat(layer_weights->gating_einsum_w1.data(), model_dim)
-           : ConstMat(layer_weights->gating_einsum_w.data(), model_dim);
-  w2 = layer_weights->gating_einsum_w.data() == nullptr
-           ? ConstMat(layer_weights->gating_einsum_w2.data(), model_dim)
-           : ConstMat(layer_weights->gating_einsum_w.data(), model_dim,
-                      model_dim, model_dim * ffh_hidden_dim);
-  scale = layer_weights->gating_einsum_w.data() == nullptr
-              ? layer_weights->gating_einsum_w1.scale()
-              : layer_weights->gating_einsum_w.scale();
-  w_output = ConstMat(layer_weights->linear_w.data(), ffh_hidden_dim);
-  output_scale = layer_weights->linear_w.scale();
+  // Define slightly more readable names for the weights and activations.
+  const auto x =
+      ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
+
+  auto hidden_activations = RowPtrFromBatch(activations.C1);
+  auto multiplier = RowPtrFromBatch(activations.C2);
+  auto ffw_out = RowPtrFromBatch(activations.ffw_out);
+
+  // gating_einsum_w holds two half-matrices. We plan to change the importer to
+  // avoid this confusion by splitting into gating_einsum_w1 and
+  // gating_einsum_w2.
+  const bool split = !!layer_weights->gating_einsum_w.data();
+  auto w1 = split ? ConstMatFromWeights(layer_weights->gating_einsum_w)
+                  : ConstMatFromWeights(layer_weights->gating_einsum_w1);
+  auto w2 = split ? ConstMatFromWeights(layer_weights->gating_einsum_w,
+                                        model_dim * ffh_hidden_dim)
+                  : ConstMatFromWeights(layer_weights->gating_einsum_w2);
+  if (split) {
+    // Ensure that B.Extents().row matches C.Cols() because MatMul checks that.
+    w1.ShrinkRows(ffh_hidden_dim);
+    w2.ShrinkRows(ffh_hidden_dim);
+  }
+  auto w_output = ConstMatFromWeights(layer_weights->linear_w);
 
   // Compute the hidden layer activations.
-  if (add_bias) {
-    MatMul</*kAddBias=*/true>(num_interleaved, x, w1, scale, bias1,
-                              activations.env, hidden_activations);
-    MatMul</*kAddBias=*/true>(num_interleaved, x, w2, scale, bias2,
-                              activations.env, multiplier);
-  } else {
-    MatMul</*kAddBias=*/false>(num_interleaved, x, w1, scale, bias1,
-                               activations.env, hidden_activations);
-    MatMul</*kAddBias=*/false>(num_interleaved, x, w2, scale, bias2,
-                               activations.env, multiplier);
-  }
+  MatMul(x, w1, bias1, activations.env, hidden_activations);
+  MatMul(x, w2, bias2, activations.env, multiplier);
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
-  Activation(layer_weights->layer_config.activation, hidden_activations.ptr,
-             multiplier.ptr, ffh_hidden_dim * num_interleaved);
+  Activation(layer_weights->layer_config.activation, hidden_activations.Row(0),
+             multiplier.Row(0), ffh_hidden_dim * num_interleaved);
 
   // Hidden layer -> output layer.
-  if (add_bias) {
-    MatMul</*kAddBias=*/true>(num_interleaved, ConstMat(hidden_activations),
-                              w_output, output_scale, output_bias,
-                              activations.env, ffw_out);
-  } else {
-    MatMul</*kAddBias=*/false>(num_interleaved, ConstMat(hidden_activations),
-                               w_output, output_scale, output_bias,
-                               activations.env, ffw_out);
-  }
+  auto activations_mat = MakeConstMat(
+      hidden_activations.Row(0), Extents2D(num_interleaved, ffh_hidden_dim));
+
+  MatMul(activations_mat, w_output, output_bias, activations.env, ffw_out);
 }
 
+// Same as FFWNoVit, but with different layer_weights members and no second
+// gating matrix.
 template <typename T>
 HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
                          const LayerWeightsPtrs<T>* layer_weights) {
   PROFILER_ZONE("Gen.FFW");
-  const size_t model_dim = layer_weights->layer_config.model_dim;
   const size_t ff_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
-  const bool add_bias = layer_weights->layer_config.ff_biases;
   using WeightType = typename LayerWeightsPtrs<T>::WeightF32OrBF16;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
 
-  // Define slightly more readable names for the weights and activations.
-  const auto x = ConstMat(activations.bf_pre_ffw_rms_out.All(), model_dim);
-  Mat<const WeightType> w1;
-  const float* bias1 = nullptr;
-  float scale = 1.0f;
-  Mat<const WeightType> w_output;
-  const float* output_bias = nullptr;
-  float output_scale = 1.0f;
-  auto hidden_activations = MutableMat(activations.C1.All(), ff_hidden_dim);
-  auto multiplier = MutableMat(activations.C2.All(), ff_hidden_dim);
-  auto ffw_out = MutableMat(activations.ffw_out.All(), model_dim);
+  const bool add_bias = layer_weights->layer_config.ff_biases;
+  const float* bias1 =
+      add_bias ? layer_weights->vit.linear_0_b.data_scale1() : nullptr;
+  const float* output_bias =
+      add_bias ? layer_weights->vit.linear_1_b.data_scale1() : nullptr;
 
-  // For some of the weights and activations, it depends on the config where to
-  // get them from or whether to use them at all.
-  w1 = ConstMat(layer_weights->vit.linear_0_w.data_scale1(), model_dim);
-  bias1 = layer_weights->vit.linear_0_b.data_scale1();
-  multiplier.ptr = nullptr;
-  w_output =
-      ConstMat(layer_weights->vit.linear_1_w.data_scale1(), ff_hidden_dim);
-  output_bias = layer_weights->vit.linear_1_b.data_scale1();
+  // Define slightly more readable names for the weights and activations.
+  const auto x =
+      ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
+
+  auto hidden_activations = RowPtrFromBatch(activations.C1);
+  auto ffw_out = RowPtrFromBatch(activations.ffw_out);
+
+  auto w1 = ConstMatFromWeights(layer_weights->vit.linear_0_w);
+  auto w_output = ConstMatFromWeights(layer_weights->vit.linear_1_w);
 
   // Compute the hidden layer activations.
-  if (add_bias) {
-    MatMul</*kAddBias=*/true>(num_interleaved, x, w1, scale, bias1,
-                              activations.env, hidden_activations);
-  } else {
-    MatMul</*kAddBias=*/false>(num_interleaved, x, w1, scale, bias1,
-                               activations.env, hidden_activations);
-  }
+  MatMul(x, w1, bias1, activations.env, hidden_activations);
 
-  // Activation (Gelu) and maybe multiply by gate. Store activations in act.
-  Activation(layer_weights->layer_config.activation, hidden_activations.ptr,
-             multiplier.ptr, ff_hidden_dim * num_interleaved);
+  // Activation (Gelu), store in act.
+  RowPtrF multiplier = RowPtrF(nullptr, 0);
+  Activation(layer_weights->layer_config.activation, hidden_activations.Row(0),
+             multiplier.Row(0), ff_hidden_dim * num_interleaved);
 
   // Hidden layer -> output layer.
-  if (add_bias) {
-    MatMul</*kAddBias=*/true>(num_interleaved, ConstMat(hidden_activations),
-                              w_output, output_scale, output_bias,
-                              activations.env, ffw_out);
-  } else {
-    MatMul</*kAddBias=*/false>(num_interleaved, ConstMat(hidden_activations),
-                               w_output, output_scale, output_bias,
-                               activations.env, ffw_out);
-  }
+  auto activations_mat = MakeConstMat(
+      hidden_activations.Row(0), Extents2D(num_interleaved, ff_hidden_dim));
+
+  MatMul(activations_mat, w_output, output_bias, activations.env, ffw_out);
 }
 
 // `batch_idx` indicates which row of `x` to write to.
@@ -874,7 +816,7 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
   // Image tokens just need to be copied.
   if (image_tokens != nullptr && pos_in_prompt < image_tokens->BatchSize()) {
     hwy::CopyBytes(image_tokens->Batch(pos_in_prompt), x.Batch(batch_idx),
-                   x.Len() * sizeof(x.Const()[0]));
+                   x.Cols() * sizeof(x.Const()[0]));
     return;
   }
 
@@ -963,7 +905,7 @@ HWY_NOINLINE void TransformerLayer(const QueriesPos& queries_pos,
 // the Big Vision codebase. See
 // github.com/google-research/big_vision/blob/main/big_vision/models/vit.py
 // TODO(keysers): consider adding a wrapper for both LayerNorm with RMSNorm and
-// try mergig this with TransformerLayer.
+// try merging this with TransformerLayer.
 template <typename T>
 HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
                                       const LayerWeightsPtrs<T>* layer_weights,
@@ -974,7 +916,7 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
 
   auto& x = activations.x;
   HWY_DASSERT(x.BatchSize() == num_tokens);
-  HWY_DASSERT(x.Len() == model_dim);
+  HWY_DASSERT(x.Cols() == model_dim);
 
   // y = nn.LayerNorm()(x)
   // y ~ pre_att_rms_out
@@ -1127,7 +1069,7 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   const size_t patch_size = patch_width * patch_width * 3;
   HWY_DASSERT(weights.vit_img_embedding_kernel.NumElements() ==
               patch_size * model_dim);
-  HWY_DASSERT(activations.x.Len() == model_dim);
+  HWY_DASSERT(activations.x.Cols() == model_dim);
   std::vector<hwy::AlignedFreeUniquePtr<float[]>> image_patches(seq_len);
   for (size_t i = 0; i < seq_len; ++i) {
     image_patches[i] = hwy::AllocateAligned<float>(patch_size);
@@ -1139,11 +1081,11 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // This could be done as one MatMul like:
   // RowVectorBatch<float> image_patches(kSeqLen, kPatchSize);
   // [Get patches]
-  // MatMul</*kAdd=*/true>(
-  //       kVitSeqLen, ConstMat(image_patches.All(), kPatchSize),
-  //       ConstMat(weights.vit_img_embedding_kernel.data_scale1(), kPatchSize),
-  //       /*scale=*/1.0f, weights.vit_img_embedding_bias.data_scale1(),
-  //       activations.env, MutableMat(activations.x.All(), kVitModelDim));
+  // MatMul(
+  //       MatFromBatch(kVitSeqLen, image_patches),
+  //       MatFromWeights(weights.vit_img_embedding_kernel),
+  //       weights.vit_img_embedding_bias.data_scale1(), activations.env,
+  //       RowPtrF(activations.x.All(), kVitModelDim));
   // However, MatMul currently requires that
   //   A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0
   // which is not the case here. We should relax that requirement on MatMul and
@@ -1184,11 +1126,10 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
                    activations.x.All(), vit_model_dim);
 
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
-  MatMul</*kAdd=*/true>(
-      num_tokens, ConstMat(activations.x.All(), vit_model_dim),
-      ConstMat(weights.vit_img_head_kernel.data_scale1(), vit_model_dim),
-      /*scale=*/1.0f, weights.vit_img_head_bias.data_scale1(), activations.env,
-      MutableMat(image_tokens.All(), weights.weights_config.model_dim));
+  MatMul(ConstMatFromBatch(num_tokens, activations.x),
+         ConstMatFromWeights(weights.vit_img_head_kernel),
+         weights.vit_img_head_bias.data_scale1(), activations.env,
+         RowPtrFromBatch(image_tokens));
 }
 
 // Generates one token for each query. `queries_token` is the previous token
@@ -1320,7 +1261,6 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
                const QueriesPos& queries_prefix_end,
                const size_t query_idx_start, const KVCaches& kv_caches,
                TimingInfo& timing_info) {
-  const size_t model_dim = model.Config().model_dim;
   const size_t vocab_size = model.Config().vocab_size;
   const ModelWeightsPtrs<T>& weights = *model.GetWeightsOfType<T>();
 
@@ -1408,11 +1348,10 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
     {
       PROFILER_ZONE("Gen.EmbeddingMatmul");
       // Compute logits from last layer activations.
-      MatMul</*kAdd=*/false>(
-          num_queries, ConstMat(activations.x.All(), model_dim),
-          ConstMat(weights.embedder_input_embedding.data(), model_dim),
-          weights.embedder_input_embedding.scale(), /*add=*/nullptr,
-          activations.env, MutableMat(activations.logits.All(), vocab_size));
+      MatMul(ConstMatFromBatch(num_queries, activations.x),
+             ConstMatFromWeights(weights.embedder_input_embedding),
+             /*add=*/nullptr, activations.env,
+             RowPtrFromBatch(activations.logits));
     }
     PROFILER_ZONE("Gen.Softcap+Sample+Stream");
     for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {

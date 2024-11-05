@@ -33,6 +33,9 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
 
+set(BENCHMARK_ENABLE_TESTING OFF)
+set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
+
 FetchContent_Declare(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.2 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(benchmark)
 
@@ -42,6 +45,8 @@ set(SOURCES
   compression/compress.cc
   compression/compress.h
   compression/compress-inl.h
+  compression/fields.cc
+  compression/fields.h
   compression/io_win.cc
   compression/io.cc
   compression/io.h
@@ -96,6 +101,7 @@ set(SOURCES
   util/args.h
   util/basics.h
   util/test_util.h
+  util/threading.cc
   util/threading.h
   )
 
@@ -144,8 +150,10 @@ set(GEMMA_TEST_FILES
   backprop/backward_scalar_test.cc
   backprop/backward_test.cc
   backprop/optimize_test.cc
+  compression/blob_store_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
+  compression/fields_test.cc
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc

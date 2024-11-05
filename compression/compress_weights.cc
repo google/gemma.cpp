@@ -40,8 +40,9 @@
 #include <vector>
 
 #include "compression/compress.h"
-#include "compression/io.h"  // Path
-#include "gemma/common.h"    // Model
+#include "compression/shared.h"  // ModelTraining
+#include "compression/io.h"      // Path
+#include "gemma/common.h"        // Model
 #include "gemma/weights.h"
 #include "util/allocator.h"
 #include "util/args.h"
@@ -73,9 +74,8 @@ struct Args : public ArgsBase<Args> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    ModelTraining model_training;
     if (const char* err = ParseModelTypeAndTraining(model_type_str, model_type_,
-                                                    model_training)) {
+                                                    model_training_)) {
       return err;
     }
     if (const char* err = ParseType(weight_type_str, weight_type_)) {
@@ -127,10 +127,12 @@ struct Args : public ArgsBase<Args> {
 
   // Uninitialized before Validate, must call after that.
   gcpp::Model ModelType() const { return model_type_; }
+  gcpp::ModelTraining ModelTrainingType() const { return model_training_; }
   gcpp::Type WeightType() const { return weight_type_; }
 
  private:
   Model model_type_;
+  ModelTraining model_training_;
   Type weight_type_;
 };
 
@@ -210,10 +212,10 @@ namespace gcpp {
 
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
-  const Model model_type = args.ModelType();
-  if (model_type == Model::PALIGEMMA_224) {
+  if (args.ModelTrainingType() == ModelTraining::PALIGEMMA) {
     HWY_ABORT("PaliGemma is not supported in compress_weights.");
   }
+  const Model model_type = args.ModelType();
   const Type weight_type = args.WeightType();
   switch (weight_type) {
     case Type::kF32:

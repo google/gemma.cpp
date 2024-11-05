@@ -162,20 +162,19 @@ static void BindMemory(void* ptr, size_t bytes, size_t node) {
 static void BindMemory(void*, size_t, size_t) {}
 #endif  // GEMMA_NUMA && HWY_OS_LINUX
 
-void BindTensor(NestedPools& nested, size_t rows, size_t cols,
+void BindTensor(NestedPools& nested, const Extents2D& extents,
                 size_t bytes_per_col, void* ptr) {
   if (!Allocator::UseNUMA()) return;
   uint8_t* p8 = static_cast<uint8_t*>(ptr);
-  const size_t bytes_per_row = cols * bytes_per_col;
+  const size_t bytes_per_row = extents.cols * bytes_per_col;
   StaticPartitionRowsAndCols(
-      nested, rows, cols, bytes_per_col,
-      [&](size_t node, hwy::ThreadPool&, const size_t /*worker_offset*/,
-          const size_t row_begin, const size_t row_end, const size_t col_begin,
-          const size_t col_end) {
-        for (size_t row = row_begin; row < row_end; ++row) {
-          uint8_t* slice = p8 + row * bytes_per_row + col_begin * bytes_per_col;
-          const size_t slice_size = (col_end - col_begin) * bytes_per_col;
-          BindMemory(slice, slice_size, node);
+      nested, extents, bytes_per_col,
+      [&](const Range2D& r, const TaskLocation& loc) {
+        for (size_t row : r.rows) {
+          uint8_t* slice =
+              p8 + row * bytes_per_row + r.cols.begin() * bytes_per_col;
+          const size_t slice_size = r.cols.Num() * bytes_per_col;
+          BindMemory(slice, slice_size, loc.node);
         }
       });
 }

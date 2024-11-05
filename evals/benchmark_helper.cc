@@ -229,12 +229,12 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n
             "CPU                           : %s\n"
-            "CPU topology                  : %s\n"
+            "CPU topology                  : %s, %s\n"
             "Instruction set               : %s (%zu bits)\n"
             "Compiled config               : %s\n"
             "Weight Type                   : %s\n"
             "EmbedderInput Type            : %s\n",
-            dt, cpu100, pools.TopologyString(),
+            dt, cpu100, pools.TopologyString(), pools.PinString(),
             hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
             CompiledConfig(), StringFromType(loader.Info().weight),
             TypeName<EmbedderInputT>());

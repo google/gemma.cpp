@@ -38,12 +38,45 @@ cc_library(
 )
 
 cc_library(
+    name = "fields",
+    srcs = ["fields.cc"],
+    hdrs = ["fields.h"],
+    deps = [
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
+    name = "fields_test",
+    srcs = ["fields_test.cc"],
+    deps = [
+        ":fields",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_library(
     name = "blob_store",
     srcs = ["blob_store.cc"],
     hdrs = ["blob_store.h"],
     deps = [
         ":io",
         "@highway//:hwy",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "blob_store_test",
+    srcs = ["blob_store_test.cc"],
+    deps = [
+        ":blob_store",
+        ":io",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
         "@highway//:thread_pool",
     ],
 )
@@ -55,6 +88,7 @@ cc_library(
         "shared.h",
     ],
     deps = [
+        "//:basics",
         "@highway//:hwy",
         "@highway//:stats",
         "@highway//hwy/contrib/sort:vqsort",
@@ -79,6 +113,7 @@ cc_library(
     hdrs = ["shared.h"],
     textual_hdrs = ["sfp-inl.h"],
     deps = [
+        "//:basics",
         "@highway//:hwy",
     ],
 )
@@ -165,6 +200,7 @@ cc_library(
         ":nuq",
         ":sfp",
         "//:allocator",
+        "//:basics",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",

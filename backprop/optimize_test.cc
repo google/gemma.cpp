@@ -33,13 +33,15 @@
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
+#include "util/basics.h"
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  NestedPools pools(1);
+  NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
+                    BoundedSlice(0, 1));
   hwy::ThreadPool& pool = pools.Pool();
   std::mt19937 gen(42);
 

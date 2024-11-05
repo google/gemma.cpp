@@ -121,7 +121,11 @@ struct RuntimeConfig {
   const ImageTokens *image_tokens = nullptr;
 
   // Whether to use thread spinning to reduce barrier synchronization latency.
-  bool use_spinning = true;
+  // Mutable so we can change kDefault to kTrue/kFalse during Generate, because
+  // RuntimeConfig is const there and is not passed to the Gemma ctor. This
+  // default decision is likely sufficient because it is based on whether
+  // threads are successfully pinned.
+  mutable Tristate use_spinning = Tristate::kDefault;
 
   // End-of-sequence token.
   int eos_id = EOS_ID;

@@ -20,6 +20,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <unordered_set>
@@ -117,6 +118,13 @@ enum class Model {
 
 struct LayerConfig {
   size_t CacheLayerSize() const { return kv_heads * qkv_dim * 2; }
+
+  // Multi-Head Attention?
+  bool IsMHA() const { return heads == kv_heads; }
+
+  // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
+  // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
+  size_t QStride() const { return qkv_dim * (IsMHA() ? 3 : 1); }
 
   size_t model_dim = 0;
   size_t griffin_dim = 0;

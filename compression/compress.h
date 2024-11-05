@@ -33,6 +33,7 @@
 #include "compression/blob_store.h"
 #include "compression/io.h"
 #include "compression/shared.h"
+#include "util/basics.h"
 // IWYU pragma: end_exports
 #include "util/allocator.h"
 #if COMPRESS_STATS
@@ -62,7 +63,9 @@ class MatPtr {
         num_elements_(rows * cols),
         rows_(rows),
         cols_(cols),
-        ptr_(nullptr) {}
+        ptr_(nullptr) {
+    stride_ = cols;
+  }
   // Default is to leave all fields default-initialized.
   MatPtr() = default;
   virtual ~MatPtr();
@@ -85,7 +88,9 @@ class MatPtr {
         element_size_(key2.hi),
         num_elements_(key2.lo),
         rows_(key3.lo),
-        cols_(key3.hi) {}
+        cols_(key3.hi) {
+    stride_ = cols_;
+  }
 
   // Adds the contents entry to the table of contents.
   void AddToToc(std::vector<hwy::uint128_t>& toc) const {
@@ -137,6 +142,12 @@ class MatPtr {
   // Returns the number of columns in the 2-d array (inner dimension).
   size_t Cols() const { return cols_; }
 
+  Extents2D Extents() const { return Extents2D(rows_, cols_); }
+
+  // Currently same as cols, but may differ in the future. This is the offset by
+  // which to advance pointers to the next row.
+  size_t Stride() const { return stride_; }
+
   // Decoded elements should be multiplied by this to restore their original
   // range. This is required because SfpStream can only encode a limited range
   // of magnitudes.
@@ -187,6 +198,8 @@ class MatPtr {
   // freed. The underlying memory is owned by a subclass or some external class
   // and must outlive this object.
   void* ptr_ = nullptr;
+
+  size_t stride_;
 };
 
 // MatPtrT adds a single template argument to MatPtr for an explicit type.
@@ -288,7 +301,15 @@ decltype(auto) MatPtr::CallUpcasted(FuncT& func, TArgs&&... args) {
   }
 }
 
+template <typename T>
+ConstMat<T> ConstMatFromWeights(const MatPtrT<T>& m, size_t ofs = 0) {
+  ConstMat<T> mat = MakeConstMat(const_cast<T*>(m.data()), m.Extents(), ofs);
+  mat.scale = m.scale();
+  return mat;
+}
+
 // MatStorageT adds the actual data storage to MatPtrT.
+// TODO: use Extents2D instead of rows and cols.
 template <typename MatT>
 class MatStorageT : public MatPtrT<MatT> {
  public:

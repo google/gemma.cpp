@@ -19,65 +19,14 @@
 #include <stddef.h>
 
 // IWYU pragma: begin_exports
+#include "util/basics.h"
 #include "util/threading.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 // IWYU pragma: end_exports
 
-#include "util/allocator.h"  // RowVectorBatch
 #include "hwy/per_target.h"    // VectorBytes
 
 namespace gcpp {
-
-// Bundles ptr/size/stride arguments to simplify MatMul call sites. T can be
-// const or non-const. Create via ConstMat/MutableMat.
-// TODO(rays): Replace with MatPtr and get rid of stride, which is only != cols
-// in one place.
-template <typename T>
-struct Mat {
-  bool NotEmpty() const {
-    return ptr != nullptr && cols != 0 && stride >= cols;
-  }
-  size_t Row(size_t r) const { return ofs + stride * r; }
-
-  T* HWY_RESTRICT ptr;
-  size_t cols;
-
-  // elements between rows, which is typically the same as `cols`.
-  size_t stride;
-
-  // Offset to add to `ptr`; separate because T=NuqStream does not support
-  // pointer arithmetic.
-  size_t ofs;
-};
-
-template <typename T>
-Mat<T> MutableMat(T* HWY_RESTRICT ptr, size_t cols, size_t stride,
-                  size_t ofs = 0) {
-  return Mat<T>{.ptr = ptr, .cols = cols, .stride = stride, .ofs = ofs};
-}
-
-template <typename T>
-Mat<const T> ConstMat(const T* HWY_RESTRICT ptr, size_t cols, size_t stride,
-                      size_t ofs = 0) {
-  return Mat<const T>{.ptr = ptr, .cols = cols, .stride = stride, .ofs = ofs};
-}
-
-template <typename T>
-Mat<const T> ConstMat(Mat<T> mat) {
-  return ConstMat(mat.ptr, mat.cols, mat.stride, mat.ofs);
-}
-
-template <typename T>
-Mat<T> MutableMat(T* HWY_RESTRICT ptr, size_t cols) {
-  return MutableMat(ptr, cols, cols);
-}
-
-template <typename T>
-Mat<const T> ConstMat(const T* HWY_RESTRICT ptr, size_t cols) {
-  return ConstMat(ptr, cols, cols);
-}
 
 // Allocations and threads, shared across MatMul calls.
 class MatMulEnv {
@@ -85,7 +34,7 @@ class MatMulEnv {
   MatMulEnv() : pools_(nullptr) {}
   explicit MatMulEnv(NestedPools& pools) : pools_(&pools) {
     const size_t N = hwy::VectorBytes() / sizeof(float);
-    buf_ = RowVectorBatch<float>(pools.MaxWorkers(), 16 * N);
+    buf_ = RowVectorBatch<float>(Extents2D(pools.MaxWorkers(), 16 * N));
   }
 
   RowVectorBatch<float>& Buf() { return buf_; }

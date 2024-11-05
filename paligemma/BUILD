@@ -14,6 +14,7 @@ cc_library(
     deps = [
         "//compression:io",
         "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )
 
@@ -37,11 +38,11 @@ cc_test(
         "no_tap",
     ],
     deps = [
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//:benchmark_helper",
         "//:common",
         "//:gemma_lib",
-        "//:tokenizer",
+        "//compression:sfp",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

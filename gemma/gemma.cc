@@ -35,7 +35,6 @@
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 namespace gcpp {
 
@@ -119,12 +118,12 @@ struct GenerateImageTokensT {
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      KVCache& kv_cache, TimingInfo& timing_info) {
-  if (runtime_config.use_spinning) pools_.StartSpinning();
+  pools_.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateSingleT>(
       runtime_config, prompt, pos, prefix_end, kv_cache, pools_, timing_info);
 
-  if (runtime_config.use_spinning) pools_.StopSpinning();
+  pools_.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
@@ -141,23 +140,23 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
         QueriesPos(prefix_end_vec.data(), prefix_end_vec.size());
   }
 
-  if (runtime_config.use_spinning) pools_.StartSpinning();
+  pools_.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateBatchT>(
       runtime_config, queries_prompt, queries_pos, mutable_queries_prefix_end,
       kv_caches, pools_, timing_info);
 
-  if (runtime_config.use_spinning) pools_.StopSpinning();
+  pools_.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 const Image& image, ImageTokens& image_tokens) {
-  if (runtime_config.use_spinning) pools_.StartSpinning();
+  pools_.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateImageTokensT>(runtime_config, image,
                                                   image_tokens, pools_);
 
-  if (runtime_config.use_spinning) pools_.StopSpinning();
+  pools_.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 // Non-template functions moved from gemma-inl.h to avoid ODR violations.

@@ -389,7 +389,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 void TestRopeAndMulBy() {
   ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
   int dim_qkv = config.layer_configs[0].qkv_dim;
-  RowVectorBatch<float> x(1, dim_qkv);
+  RowVectorBatch<float> x(Extents2D(1, dim_qkv));
 
   std::mt19937 gen;
   gen.seed(0x12345678);

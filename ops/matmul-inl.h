@@ -16,8 +16,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "compression/compress.h"  // IWYU pragma: keep, b/conditionally used
 #include "ops/matmul.h"  // IWYU pragma: export
+#include "util/allocator.h"
+#include "util/basics.h"
 
 // Include guard for (potentially) SIMD code.
 #if defined(THIRD_PARTY_GEMMA_CPP_MATMUL_TOGGLE) == defined(HWY_TARGET_TOGGLE)
@@ -30,7 +31,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
-#include "hwy/contrib/math/math-inl.h"
+#include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -53,38 +54,20 @@ constexpr size_t kRegCols = 4;
 // generally `kRegRows`, but `batch_size % kRegRows` on the last row (if != 0).
 constexpr size_t kRegRows = kRegCols;
 
-// NEON_BF16/SVE/AVX3_ZEN4 have instructions for bf16 * bf16 + f32 which are
-// more efficient than f32 * f32 + f32 because they process twice as many lanes
-// at a time. Any combination of A and B can be bf16: activations may already be
-// bf16, and weights can be decompressed to bf16.
-//
-// The corresponding op is `ReorderWidenMulAccumulate`, and it is always
-// supported, but only useful if it returns a single vector of pairwise sums
-// `a[0] * b[0] + a[1] * b[1]`. On other targets, `ReorderWidenMulAccumulate`
-// insteads return `a[1] * b[1]` in its `sum1` output. We cannot afford to keep
-// a `sum1` for each of the `kRegRows * kRegCols` C vectors, and it would be
-// expensive to add each `sum0` and `sum1`, hence we only 'decompress' A and B
-// to bf16 if the native op is available. This will actually demote f32
-// activations to bf16. Otherwise, we decompress to f32 and use normal FMA.
-using MulT = hwy::If<HWY_NATIVE_DOT_BF16, BF16, float>;
-
-// Loads two vectors at a time with element type MulT from a row of transposed
-// B. Called in a loop over col_ab. No bounds checking because `kRow` is
-// actually from B columns, which we checked is a multiple of `kRegCols`.
+// Loads two vectors at a time with element type hn::TFromD<DR> from a row of
+// transposed B. Called in a loop over col_ab. No bounds checking because
+// `kRow` is from B columns, which we checked is a multiple of `kRegCols`.
 template <size_t kRow, typename MatTB>
 class BRow {
   static_assert(kRow < kRegRows);  // which unrolled instance we are
 
  public:
-  BRow(const Mat<const MatTB>& B, size_t row_b, size_t cols_c)
-      // B.cols * C.cols is the total number of elements, required for
-      // PackedSpan::BoundsCheck.
-      : B_(MakeSpan(B.ptr, B.ofs + B.cols * cols_c)),
-        B_ofs_(B.Row(row_b + kRow)) {}
+  BRow(const ConstMat<MatTB>& B, size_t row_b)
+      : B_(MakeSpan(B.ptr, B.ofs + B.Extents().Area())),
+        B_ofs_(B.Row(HWY_MIN(row_b + kRow, B.Extents().rows - 1))) {}
 
-  template <class DM, class VM = hn::Vec<DM>>
-  HWY_INLINE void Load2(DM d, size_t col_ab, VM& b0, VM& b1) const {
-    static_assert(hwy::IsSame<hn::TFromD<DM>, MulT>());
+  template <class DR, class VR = hn::Vec<DR>>
+  HWY_INLINE void Load2(DR d, size_t col_ab, VR& b0, VR& b1) const {
     Decompress2(d, B_, B_ofs_ + col_ab, b0, b1);
   }
 
@@ -93,11 +76,11 @@ class BRow {
   const size_t B_ofs_;
 };
 
-// Loads *two* row vectors from A via `Decompress2`, multiplies element-wise
-// with `kRegRows` x 2 row vectors from transposed B, and adds them to
-// `kRegRows` x `kRegCols` C vectors. The lanes of `C[r,c]` are thus a subset of
-// the terms of the dot products that make up the MatMul result at `r,c`.
-// No-op for the bottom-most tile where kRow >= kNumRows.
+// Loads *two* row vectors from A via `Decompress2`, widens to f32, multiplies
+// element-wise with `kRegRows` x 2 row vectors from transposed B, and adds
+// them to `kRegRows` x `kRegCols` C vectors. The lanes of `C[r,c]` are thus a
+// subset of the terms of the dot products that make up the MatMul result at
+// `r,c`. No-op for the bottom-most rows whose `kRow >= kNumRows`.
 //
 // This approach is atypical because it requires a horizontal sum, for which we
 // introduce a fast and new(?) vector-length agnostic 'transpose', see
@@ -107,22 +90,24 @@ class BRow {
 // - `Decompress2` decompresses two vectors at a time;
 // - B is column-major, so unit-stride SIMD loads return a column, not values
 //   from different columns, i.e. a row.
-// Both could be fixed in a packing stage, which is not implemented yet, and
-// might not be necessary otherwise. However, `ReorderWidenMulAccumulate` is
-// important for bf16 performance and incompatible with the conventional
-// approach, because its pairwise adds would add together unrelated terms.
-// By contrast, pairwise adds are fine when our C lanes are the terms of a
-// single dot product, which can be reordered or pre-reduced.
+// - `ReorderWidenMulAccumulate` is important for bf16 performance, but its
+//   pairwise adds would add together unrelated terms.
+// The first two could be fixed in a packing stage, which is not implemented
+// yet, and might not be necessary otherwise. The third seems a fundamental
+// mismatch. However, pairwise adds are fine in our setting because C lanes are
+// the terms of a single dot product, which can be reordered or pre-reduced.
 template <size_t kRow, typename MatTA>
 class ALoadAccumulate {
-  static_assert(kRow < kRegRows);  // which unrolled instance we are
-
  public:
-  ALoadAccumulate(const Mat<const MatTA>& A, size_t row_ac, size_t batch_size)
-      // A.cols * batch_size is the total number of elements, required for
-      // PackedSpan::BoundsCheck.
-      : A_(MakeSpan(A.ptr, A.ofs + A.cols * batch_size)),
-        A_ofs_(A.Row(row_ac + kRow)) {}
+  static_assert(kRow < kRegRows);  // which unrolled instance we are
+  // `First` and `Next` handle a single row of A, so the horizontal sums of
+  // their `C0..3` are the (partial) dot products for 4 consecutive values in
+  // one row of C.
+  static_assert(kRegCols == 4);
+
+  ALoadAccumulate(const ConstMat<MatTA>& A, size_t row_ac)
+      : A_(MakeSpan(A.ptr, A.ofs + A.Extents().Area())),
+        A_ofs_(A.Row(HWY_MIN(row_ac + kRow, A.Extents().rows - 1))) {}
 
   // First iteration, col_ab = 0: initialize C0..3 instead of updating them.
   template <size_t kNumRows, class DM, class VM = hn::Vec<DM>, HWY_IF_F32_D(DM)>
@@ -161,20 +146,27 @@ class ALoadAccumulate {
       Decompress2(dm, A_, A_ofs_, a0, a1);
 
       const DF df;
-      VF unused_sum1 = hn::Zero(df);
 
       static_assert(kRegCols == 4);
       C0 = hn::WidenMulPairwiseAdd(df, a0, b00);
       C1 = hn::WidenMulPairwiseAdd(df, a0, b10);
       C2 = hn::WidenMulPairwiseAdd(df, a0, b20);
       C3 = hn::WidenMulPairwiseAdd(df, a0, b30);
-      C0 = hn::ReorderWidenMulAccumulate(df, a1, b01, C0, unused_sum1);
-      C1 = hn::ReorderWidenMulAccumulate(df, a1, b11, C1, unused_sum1);
-      C2 = hn::ReorderWidenMulAccumulate(df, a1, b21, C2, unused_sum1);
-      C3 = hn::ReorderWidenMulAccumulate(df, a1, b31, C3, unused_sum1);
-
-      // Ensure sum1 was indeed unused.
-      HWY_DASSERT(hn::AllTrue(df, hn::Eq(unused_sum1, hn::Zero(df))));
+      if constexpr (HWY_NATIVE_DOT_BF16) {
+        // Native ReorderWidenMulAccumulate adds to C0..3 for free.
+        VF unused_sum1 = hn::Zero(df);
+        C0 = hn::ReorderWidenMulAccumulate(df, a1, b01, C0, unused_sum1);
+        C1 = hn::ReorderWidenMulAccumulate(df, a1, b11, C1, unused_sum1);
+        C2 = hn::ReorderWidenMulAccumulate(df, a1, b21, C2, unused_sum1);
+        C3 = hn::ReorderWidenMulAccumulate(df, a1, b31, C3, unused_sum1);
+        // Ensure sum1 was indeed unused.
+        HWY_DASSERT(hn::AllTrue(df, hn::Eq(unused_sum1, hn::Zero(df))));
+      } else {
+        C0 = hn::Add(C0, hn::WidenMulPairwiseAdd(df, a1, b01));
+        C1 = hn::Add(C1, hn::WidenMulPairwiseAdd(df, a1, b11));
+        C2 = hn::Add(C2, hn::WidenMulPairwiseAdd(df, a1, b21));
+        C3 = hn::Add(C3, hn::WidenMulPairwiseAdd(df, a1, b31));
+      }
     }
   }
 
@@ -217,20 +209,31 @@ class ALoadAccumulate {
       Decompress2(dm, A_, A_ofs_ + col_ab, a0, a1);
 
       const DF df;
-      hn::Vec<DF> unused_sum1 = hn::Zero(df);
 
       static_assert(kRegCols == 4);
-      C0 = hn::ReorderWidenMulAccumulate(df, a0, b00, C0, unused_sum1);
-      C1 = hn::ReorderWidenMulAccumulate(df, a0, b10, C1, unused_sum1);
-      C2 = hn::ReorderWidenMulAccumulate(df, a0, b20, C2, unused_sum1);
-      C3 = hn::ReorderWidenMulAccumulate(df, a0, b30, C3, unused_sum1);
-      C0 = hn::ReorderWidenMulAccumulate(df, a1, b01, C0, unused_sum1);
-      C1 = hn::ReorderWidenMulAccumulate(df, a1, b11, C1, unused_sum1);
-      C2 = hn::ReorderWidenMulAccumulate(df, a1, b21, C2, unused_sum1);
-      C3 = hn::ReorderWidenMulAccumulate(df, a1, b31, C3, unused_sum1);
-
-      // Ensure sum1 was indeed unused.
-      HWY_DASSERT(hn::AllTrue(df, hn::Eq(unused_sum1, hn::Zero(df))));
+      if constexpr (HWY_NATIVE_DOT_BF16) {
+        // Native ReorderWidenMulAccumulate adds to C0..3 for free.
+        VF unused_sum1 = hn::Zero(df);
+        C0 = hn::ReorderWidenMulAccumulate(df, a0, b00, C0, unused_sum1);
+        C1 = hn::ReorderWidenMulAccumulate(df, a0, b10, C1, unused_sum1);
+        C2 = hn::ReorderWidenMulAccumulate(df, a0, b20, C2, unused_sum1);
+        C3 = hn::ReorderWidenMulAccumulate(df, a0, b30, C3, unused_sum1);
+        C0 = hn::ReorderWidenMulAccumulate(df, a1, b01, C0, unused_sum1);
+        C1 = hn::ReorderWidenMulAccumulate(df, a1, b11, C1, unused_sum1);
+        C2 = hn::ReorderWidenMulAccumulate(df, a1, b21, C2, unused_sum1);
+        C3 = hn::ReorderWidenMulAccumulate(df, a1, b31, C3, unused_sum1);
+        // Ensure sum1 was indeed unused.
+        HWY_DASSERT(hn::AllTrue(df, hn::Eq(unused_sum1, hn::Zero(df))));
+      } else {
+        C0 = hn::Add(C0, hn::WidenMulPairwiseAdd(df, a0, b00));
+        C1 = hn::Add(C1, hn::WidenMulPairwiseAdd(df, a0, b10));
+        C2 = hn::Add(C2, hn::WidenMulPairwiseAdd(df, a0, b20));
+        C3 = hn::Add(C3, hn::WidenMulPairwiseAdd(df, a0, b30));
+        C0 = hn::Add(C0, hn::WidenMulPairwiseAdd(df, a1, b01));
+        C1 = hn::Add(C1, hn::WidenMulPairwiseAdd(df, a1, b11));
+        C2 = hn::Add(C2, hn::WidenMulPairwiseAdd(df, a1, b21));
+        C3 = hn::Add(C3, hn::WidenMulPairwiseAdd(df, a1, b31));
+      }
     }
   }
 
@@ -356,116 +359,113 @@ class AddHorizontalSums {
 // Streams a `kNumRows` high strip of `A` and the transposed `B`, then writes a
 // *finished* tile of f32 `C` whose top left is (row_ac, row_b_col_c).
 // TODO: loop over sections instead of full rows and accumulate into `tile_c`.
+// `buf` is 16 vectors of thread-local storage.
 template <size_t kNumRows, bool kAdd, typename MatTA, typename MatTB>
-HWY_INLINE void MatMulTile(const size_t batch_size, const Mat<const MatTA>& A,
-                           const Mat<const MatTB>& B, const size_t row_ac,
-                           const size_t row_b_col_c, const float scale,
-                           const float* HWY_RESTRICT add,
-                           float* HWY_RESTRICT buf, const Mat<float>& C) {
-  // For 'decompressing' A and B into BF16 or float.
-  const hn::ScalableTag<MulT> dm;
-  using VM = hn::Vec<decltype(dm)>;
-  const size_t NM = hn::Lanes(dm);
+HWY_INLINE void MatMulTile(const ConstMat<MatTA>& A, const size_t row_ac,
+                           const ConstMat<MatTB>& B, const size_t row_b_col_c,
+                           const float scale, const float* HWY_RESTRICT add,
+                           float* HWY_RESTRICT buf, const RowPtr<float>& C) {
+  // Decompress A and B to which type, which will then be widened to f32,
+  // multiplied, added once into f32, then promoted to f64 and accumulated.
+  // NEON_BF16/SVE/AVX3_ZEN4 have instructions for bf16 * bf16 + f32 which are
+  // more efficient than f32 * f32 + f32 because they process twice as many
+  // lanes at a time. If available, we definitely want to use them. Otherwise,
+  // bf16 is still worthwhile if A (activations) are bf16: SFP weights are
+  // cheaper to decode to bf16, relative to the minor extra cost of promoting
+  // bf16 when multiplying. However, if A is f32, demoting to bf16 can be
+  // expensive unless we also have native bf16 dot.
+  using Raw = hwy::If<HWY_NATIVE_DOT_BF16 || !IsF32<MatTA>(), BF16, float>;
+  const hn::ScalableTag<Raw> dr;
+  using VR = hn::Vec<decltype(dr)>;
+  const size_t NR = hn::Lanes(dr);
+
+  const Range1D cols_ab(0, A.Extents().cols);
+  HWY_DASSERT(row_ac + kNumRows <= A.Extents().rows);
+  HWY_DASSERT(row_b_col_c + kNumRows <= B.Extents().rows);
+  HWY_DASSERT(cols_ab.end() % (2 * NR) == 0);
 
   static_assert(kRegRows == 4);
-  const BRow<0, MatTB> b_row0(B, row_b_col_c, C.cols);
-  const BRow<1, MatTB> b_row1(B, row_b_col_c, C.cols);
-  const BRow<2, MatTB> b_row2(B, row_b_col_c, C.cols);
-  const BRow<3, MatTB> b_row3(B, row_b_col_c, C.cols);
+  const BRow<0, MatTB> b_row0(B, row_b_col_c);
+  const BRow<1, MatTB> b_row1(B, row_b_col_c);
+  const BRow<2, MatTB> b_row2(B, row_b_col_c);
+  const BRow<3, MatTB> b_row3(B, row_b_col_c);
 
-  const ALoadAccumulate<0, MatTA> a_row0(A, row_ac, batch_size);
-  const ALoadAccumulate<1, MatTA> a_row1(A, row_ac, batch_size);
-  const ALoadAccumulate<2, MatTA> a_row2(A, row_ac, batch_size);
-  const ALoadAccumulate<3, MatTA> a_row3(A, row_ac, batch_size);
+  const ALoadAccumulate<0, MatTA> a_row0(A, row_ac);
+  const ALoadAccumulate<1, MatTA> a_row1(A, row_ac);
+  const ALoadAccumulate<2, MatTA> a_row2(A, row_ac);
+  const ALoadAccumulate<3, MatTA> a_row3(A, row_ac);
 
-  const hn::Repartition<float, decltype(dm)> df;
+  const hn::Repartition<float, decltype(dr)> df;
   using VF = hn::Vec<decltype(df)>;
   VF C00, C01, C02, C03;
   VF C10, C11, C12, C13;
   VF C20, C21, C22, C23;
   VF C30, C31, C32, C33;
 
+  size_t col_ab = cols_ab.begin();
   {  // First iteration initializes the `Crc` vectors.
-    VM b00, b01, b10, b11, b20, b21, b30, b31;
-    b_row0.Load2(dm, /*col_ab=*/0, b00, b01);
-    b_row1.Load2(dm, /*col_ab=*/0, b10, b11);
-    b_row2.Load2(dm, /*col_ab=*/0, b20, b21);
-    b_row3.Load2(dm, /*col_ab=*/0, b30, b31);
+    VR b00, b01, b10, b11, b20, b21, b30, b31;
+    b_row0.Load2(dr, col_ab, b00, b01);
+    b_row1.Load2(dr, col_ab, b10, b11);
+    b_row2.Load2(dr, col_ab, b20, b21);
+    b_row3.Load2(dr, col_ab, b30, b31);
 
-    a_row0.template First<kNumRows>(dm, b00, b01, b10, b11, b20, b21, b30, b31,
+    a_row0.template First<kNumRows>(dr, b00, b01, b10, b11, b20, b21, b30, b31,
                                     C00, C01, C02, C03);
-    a_row1.template First<kNumRows>(dm, b00, b01, b10, b11, b20, b21, b30, b31,
+    a_row1.template First<kNumRows>(dr, b00, b01, b10, b11, b20, b21, b30, b31,
                                     C10, C11, C12, C13);
-    a_row2.template First<kNumRows>(dm, b00, b01, b10, b11, b20, b21, b30, b31,
+    a_row2.template First<kNumRows>(dr, b00, b01, b10, b11, b20, b21, b30, b31,
                                     C20, C21, C22, C23);
-    a_row3.template First<kNumRows>(dm, b00, b01, b10, b11, b20, b21, b30, b31,
+    a_row3.template First<kNumRows>(dr, b00, b01, b10, b11, b20, b21, b30, b31,
                                     C30, C31, C32, C33);
+    col_ab += 2 * NR;
   }
 
-  // `2 * NM` per iteration because `Load2` returns two vectors.
+  // `2 * NR` per iteration because `Load2` returns two vectors.
   HWY_UNROLL(1)
-  for (size_t col_ab = 2 * NM; col_ab <= A.cols - 2 * NM; col_ab += 2 * NM) {
-    VM b00, b01, b10, b11, b20, b21, b30, b31;
-    b_row0.Load2(dm, col_ab, b00, b01);
-    b_row1.Load2(dm, col_ab, b10, b11);
-    b_row2.Load2(dm, col_ab, b20, b21);
-    b_row3.Load2(dm, col_ab, b30, b31);
+  for (; col_ab < cols_ab.end(); col_ab += 2 * NR) {
+    VR b00, b01, b10, b11, b20, b21, b30, b31;
+    b_row0.Load2(dr, col_ab, b00, b01);
+    b_row1.Load2(dr, col_ab, b10, b11);
+    b_row2.Load2(dr, col_ab, b20, b21);
+    b_row3.Load2(dr, col_ab, b30, b31);
 
-    a_row0.template Next<kNumRows>(dm, col_ab, b00, b01, b10, b11, b20, b21,
+    a_row0.template Next<kNumRows>(dr, col_ab, b00, b01, b10, b11, b20, b21,
                                    b30, b31, C00, C01, C02, C03);
-    a_row1.template Next<kNumRows>(dm, col_ab, b00, b01, b10, b11, b20, b21,
+    a_row1.template Next<kNumRows>(dr, col_ab, b00, b01, b10, b11, b20, b21,
                                    b30, b31, C10, C11, C12, C13);
-    a_row2.template Next<kNumRows>(dm, col_ab, b00, b01, b10, b11, b20, b21,
+    a_row2.template Next<kNumRows>(dr, col_ab, b00, b01, b10, b11, b20, b21,
                                    b30, b31, C20, C21, C22, C23);
-    a_row3.template Next<kNumRows>(dm, col_ab, b00, b01, b10, b11, b20, b21,
+    a_row3.template Next<kNumRows>(dr, col_ab, b00, b01, b10, b11, b20, b21,
                                    b30, b31, C30, C31, C32, C33);
   }
 
   // TODO: hoist into outer loop.
-  float* HWY_RESTRICT C_tile = C.ptr + C.Row(row_ac) + row_b_col_c;
-  InitC<kNumRows, kAdd>(add, row_b_col_c, C_tile, C.stride);
+  float* HWY_RESTRICT C_tile = C.Row(row_ac) + row_b_col_c;
+  InitC<kNumRows, kAdd>(add, row_b_col_c, C_tile, C.Stride());
 
   AddHorizontalSums<kNumRows>()(df, scale, C00, C01, C02, C03, C10, C11, C12,
                                 C13, C20, C21, C22, C23, C30, C31, C32, C33,
-                                buf, C_tile, C.stride);
+                                buf, C_tile, C.Stride());
 }
 
-// Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
-//
-// `A` is a row-major matrix of shape `(batch_size, A.cols)`.
-// `B` is transposed; `B.cols`, which must match `A.cols`, denotes the number of
-// rows in the original B, and `C.cols` the number of columns in the original B.
-//
-// `scale` allows expanding the smaller range of `SfpStream` to the original
-// values. When `A` and/or `B` are from CompressedArray, `scale` should be the
-// product of their `.scale()` values, otherwise 1.0f.
-//
-// If `kAdd` is true, the row-vector `add` is added to each row of `C`,
-// otherwise `add` is ignored and can be nullptr. A scale for `add` is not
-// supported, so make sure its scale is 1.
-//
-// `C` is a row-major matrix of size `(batch_size, C.cols)`.
-//
-// Updates 4x4 tiles of C in parallel using a work-stealing thread pool.
-// Typically `batch_size` is 1..512, `A.cols` and `C.cols` are 3k or 24k.
-// Must not be called concurrently with the same `env`.
 template <bool kAdd, typename MatTA, typename MatTB>
-HWY_NOINLINE void MatMul(const size_t batch_size, const Mat<const MatTA>& A,
-                         const Mat<const MatTB>& B, const float scale,
-                         const float* HWY_RESTRICT add, MatMulEnv& env,
-                         const Mat<float>& C) {
+HWY_NOINLINE void MatMulImpl(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
+                             const float* HWY_RESTRICT add, MatMulEnv& env,
+                             const RowPtr<float>& C) {
   // PROFILER_ZONE("Matmul");
-  HWY_DASSERT(A.NotEmpty() && B.NotEmpty() && C.NotEmpty());
-  HWY_DASSERT(A.cols == B.cols);
+  HWY_DASSERT(A.Extents().cols == B.Extents().cols);
+  const size_t batch_size = A.Extents().rows;
+  HWY_DASSERT(C.Cols() % kRegCols == 0);
+  HWY_DASSERT(C.Stride() >= C.Cols());
+  HWY_DASSERT(B.Extents().rows == C.Cols());
 
-  // Must be a multiple of two vectors because we Decompress2.
-  HWY_DASSERT(A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0);
-  HWY_DASSERT(C.cols % kRegCols == 0);
+  const float scale = A.scale * B.scale;
 
   // We currently write C directly, which touches more memory than fits in L3.
   // TODO: add another level of loops to finish L3-sized pieces of C at a time.
   const size_t tilesY = hwy::DivCeil(batch_size, kRegRows);
-  const size_t tilesX = C.cols / kRegCols;
+  const size_t tilesX = C.Cols() / kRegCols;
 
   env.Pool().Run(
       0, tilesX * tilesY, [&](const uint64_t idx_tile, size_t thread) HWY_ATTR {
@@ -481,22 +481,43 @@ HWY_NOINLINE void MatMul(const size_t batch_size, const Mat<const MatTA>& A,
         HWY_DASSERT(num_rows != 0);
         switch (num_rows) {
           case 1:
-            MatMulTile<1, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
-                                add, buf, C);
+            MatMulTile<1, kAdd>(A, row_ac, B, row_b_col_c, scale, add, buf, C);
             break;
           case 2:
-            MatMulTile<2, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
-                                add, buf, C);
+            MatMulTile<2, kAdd>(A, row_ac, B, row_b_col_c, scale, add, buf, C);
             break;
           case 3:
-            MatMulTile<3, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
-                                add, buf, C);
+            MatMulTile<3, kAdd>(A, row_ac, B, row_b_col_c, scale, add, buf, C);
             break;
           default:
-            MatMulTile<4, kAdd>(batch_size, A, B, row_ac, row_b_col_c, scale,
-                                add, buf, C);
+            MatMulTile<4, kAdd>(A, row_ac, B, row_b_col_c, scale, add, buf, C);
         }
       });
+}
+
+// Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
+//
+// `A` is a row-major matrix and `B` is transposed. Its `B.Extents().cols`,
+// which must match `A.Extents().cols`, is the number of rows in the original B.
+//
+// If `add` is non-null, the row-vector `add` is added to each row of `C`.
+// A scale for `add` is not supported, so make sure its scale is 1.
+//
+// `C` is a row-major matrix of size `(A.rows, C.Cols())` with support for
+// arbitrary strides.
+//
+// Updates 4x4 tiles of C in parallel using a work-stealing thread pool.
+// Typically `A.rows` is 1..512, `A.Extents().cols` and `B.Extents().rows` are
+// 3k or 24k. Must not be called concurrently with the same `env`.
+template <typename MatTA, typename MatTB>
+HWY_NOINLINE void MatMul(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
+                         const float* HWY_RESTRICT add, MatMulEnv& env,
+                         const RowPtr<float>& C) {
+  if (add) {
+    MatMulImpl<true>(A, B, add, env, C);
+  } else {
+    MatMulImpl<false>(A, B, nullptr, env, C);
+  }
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

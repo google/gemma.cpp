@@ -25,12 +25,13 @@
 #include <complex>
 #include <cstdio>
 
+// IWYU pragma: begin_exports
+#include "util/basics.h"  // BF16
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // HWY_INLINE
+// IWYU pragma: end_exports
 
 namespace gcpp {
-
-using BF16 = hwy::bfloat16_t;
 
 // Switching Floating Point: a hybrid 8-bit float representation of bf16/f32
 // inputs that combines the advantages of e4m3 and e5m2 into a single format.
@@ -266,8 +267,12 @@ struct PackedSpan {
     // check the compressed count and ensure we have that many.
     const size_t required =
         CompressedArrayElements<Packed>(packed_ofs + num_accessible);
-    HWY_DASSERT(num >= required);
-    (void)required;
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (num < required) {
+        HWY_ABORT("PackedSpan: ofs %zu, want %zu, req %zu > %zu packed",
+                  packed_ofs, num_accessible, required, num);
+      }
+    }
   }
 
   Packed* HWY_RESTRICT ptr;

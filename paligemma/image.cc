@@ -14,8 +14,8 @@
 // limitations under the License.
 
 #include "paligemma/image.h"
-#include "compression/io.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <algorithm>
@@ -24,11 +24,15 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "compression/io.h"
+#include "hwy/aligned_allocator.h"  // hwy::Span
 #include "hwy/base.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 namespace {
@@ -95,12 +99,12 @@ bool Image::ReadPPM(const std::string& filename) {
     std::cerr << filename << " does not exist\n";
     return false;
   }
-  auto content = ReadFileToString(path);
+  const std::string content = ReadFileToString(path);
   return ReadPPM(hwy::Span<const char>(content.data(), content.size()));
 }
 
 bool Image::ReadPPM(const hwy::Span<const char>& buf) {
-  auto pos = CheckP6Format(buf.cbegin(), buf.cend());
+  const char* pos = CheckP6Format(buf.cbegin(), buf.cend());
   if (!pos) {
     std::cerr << "We only support binary PPM (P6)\n";
     return false;
@@ -134,8 +138,8 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
     return false;
   }
   ++pos;
-  auto data_size = width * height * 3;
-  if (buf.cend() - pos < data_size) {
+  const size_t data_size = width * height * 3;
+  if (buf.cend() - pos < static_cast<ptrdiff_t>(data_size)) {
     std::cerr << "Insufficient data remaining\n";
     return false;
   }
@@ -147,6 +151,27 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
     data_[i] = StretchToSigned(static_cast<float>(value) / max_value);
   }
   return true;
+}
+
+void Image::Set(int width, int height, const float* data) {
+  width_ = width;
+  height_ = height;
+  int num_elements = width * height * 3;
+  data_.resize(num_elements);
+  data_.assign(data, data + num_elements);
+  float min_value = std::numeric_limits<float>::infinity();
+  float max_value = -std::numeric_limits<float>::infinity();
+  for (int i = 0; i < num_elements; ++i) {
+    if (data_[i] < min_value) min_value = data_[i];
+    if (data_[i] > max_value) max_value = data_[i];
+  }
+  // -> out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
+  float in_range = max_value - min_value;
+  if (in_range == 0.0f) in_range = 1.0f;
+  float scale = 2.0f / in_range;
+  for (int i = 0; i < num_elements; ++i) {
+    data_[i] = (data_[i] - min_value) * scale - 1.0f;
+  }
 }
 
 void Image::Resize() {
@@ -190,23 +215,24 @@ bool Image::WriteBinary(const std::string& filename) const {
 // We want the N-th patch (of 256) of size kPatchSize x kPatchSize x 3.
 // Patches are numbered in usual "pixel-order".
 void Image::GetPatch(size_t patch_num, float* patch) const {
+  PROFILER_FUNC;
   constexpr size_t kDataSize = kImageSize * kImageSize * 3;
   HWY_ASSERT(size() == kDataSize);
   constexpr size_t kPatchDataSize = kPatchSize * kPatchSize * 3;
-  int i_offs = patch_num / kNumPatches;
-  int j_offs = patch_num % kNumPatches;
+  size_t i_offs = patch_num / kNumPatches;
+  size_t j_offs = patch_num % kNumPatches;
   HWY_ASSERT(0 <= i_offs && i_offs < kNumPatches);
   HWY_ASSERT(0 <= j_offs && j_offs < kNumPatches);
   i_offs *= kPatchSize;
   j_offs *= kPatchSize;
   // This can be made faster, but let's first see whether it matters.
   const float* image_data = data();
-  for (int i = 0; i < kPatchSize; ++i) {
-    for (int j = 0; j < kPatchSize; ++j) {
-      for (int k = 0; k < 3; ++k) {
-        const int patch_index = (i * kPatchSize + j) * 3 + k;
+  for (size_t i = 0; i < kPatchSize; ++i) {
+    for (size_t j = 0; j < kPatchSize; ++j) {
+      for (size_t k = 0; k < 3; ++k) {
+        const size_t patch_index = (i * kPatchSize + j) * 3 + k;
         HWY_ASSERT(patch_index < kPatchDataSize);
-        const int image_index =
+        const size_t image_index =
             ((i + i_offs) * kImageSize + (j + j_offs)) * 3 + k;
         HWY_ASSERT(image_index < kDataSize);
         patch[patch_index] = image_data[image_index];
@@ -214,4 +240,5 @@ void Image::GetPatch(size_t patch_num, float* patch) const {
     }
   }
 }
+
 }  // namespace gcpp

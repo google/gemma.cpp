@@ -275,7 +275,8 @@ BlobError BlobReader::ReadAll(hwy::ThreadPool& pool) {
            [pfile, &requests, &err](uint64_t i, size_t /*thread*/) {
              if (!pfile->Read(requests[i].offset, requests[i].size,
                               requests[i].data)) {
-               fprintf(stderr, "Failed to read blob %zu\n", i);
+               fprintf(stderr, "Failed to read blob %zu\n",
+                       static_cast<size_t>(i));
                err.test_and_set();
              }
            });
@@ -288,6 +289,14 @@ BlobError BlobReader::ReadOne(hwy::uint128_t key, void* data,
   uint64_t offset;
   size_t actual_size;
   if (!blob_store_->FindKey(key, offset, actual_size)) return __LINE__;
+  if (actual_size != size) {
+    fprintf(stderr,
+            "Mismatch between expected %d and actual %d KiB size of blob %s. "
+            "Please see README.md on how to update the weights.\n",
+            static_cast<int>(size >> 10), static_cast<int>(actual_size >> 10),
+            StringFromKey(key).c_str());
+    return __LINE__;
+  }
   if (!file_->Read(offset, actual_size, data)) {
     return __LINE__;
   }

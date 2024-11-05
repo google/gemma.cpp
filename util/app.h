@@ -28,6 +28,7 @@
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // For CreateGemma
 #include "util/args.h"
+#include "util/basics.h"  // Tristate
 #include "util/threading.h"
 #include "hwy/base.h"  // HWY_IS_ASAN
 
@@ -59,7 +60,9 @@ class AppArgs : public ArgsBase<AppArgs> {
   int verbosity;
 
   size_t max_threads;  // divided among the detected clusters
-  int pin;  // -1 = auto, 0 = no, 1 = yes
+  Tristate pin;        // pin threads?
+  Tristate spin;       // use spin waits?
+
   // For BoundedSlice:
   size_t skip_packages;
   size_t max_packages;
@@ -81,7 +84,10 @@ class AppArgs : public ArgsBase<AppArgs> {
     // The exact meaning is more subtle: see the comment at NestedPools ctor.
     visitor(max_threads, "num_threads", size_t{0},
             "Maximum number of threads to use; default 0 = unlimited.", 2);
-    visitor(pin, "pin", -1, "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
+    visitor(pin, "pin", Tristate::kDefault,
+            "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
+    visitor(spin, "spin", Tristate::kDefault,
+            "Use spin waits? -1 = auto, 0 = no, 1 = yes.", 2);
     // These can be used to partition CPU sockets/packages and their
     // clusters/CCXs across several program instances. The default is to use
     // all available resources.

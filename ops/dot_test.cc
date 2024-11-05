@@ -1011,14 +1011,14 @@ struct TestShortDotsT {
       // hence they require padding to one vector.
       const size_t padded_num = hwy::RoundUpTo(num, N);
       const size_t packed_num = CompressedArrayElements<Packed>(num);
-      RowVectorBatch<float> raw_w(1, padded_num);
-      RowVectorBatch<float> raw_v(1, padded_num);
-      RowVectorBatch<Packed> weights(1, packed_num);
+      RowVectorBatch<float> raw_w(Extents2D(1, padded_num));
+      RowVectorBatch<float> raw_v(Extents2D(1, padded_num));
+      RowVectorBatch<Packed> weights(Extents2D(1, packed_num));
       const PackedSpan<Packed> w(weights.Batch(0), packed_num);
-      RowVectorBatch<T> vectors(1, num);
+      RowVectorBatch<T> vectors(Extents2D(1, num));
       const PackedSpan<T> v(vectors.Batch(0), num);
 
-      RowVectorBatch<double> bufs(1, num);
+      RowVectorBatch<double> bufs(Extents2D(1, num));
       double* HWY_RESTRICT buf = bufs.Batch(0);
 
       for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
@@ -1107,11 +1107,11 @@ void TestAllDot() {
 
     constexpr size_t kReps = hn::AdjustedReps(40);
     const size_t num = 24 * 1024;
-    NestedPools pools(kMaxWorkers - 1, /*pin=*/1, BoundedSlice(0, 1),
-                      BoundedSlice(0, 1));
-    RowVectorBatch<float> a(kMaxWorkers, num);
-    RowVectorBatch<float> b(kMaxWorkers, num);
-    RowVectorBatch<double> bufs(kMaxWorkers, num);
+    NestedPools pools(kMaxWorkers - 1, /*pin=*/Tristate::kDefault,
+                      BoundedSlice(0, 1), BoundedSlice(0, 1));
+    RowVectorBatch<float> a(Extents2D(kMaxWorkers, num));
+    RowVectorBatch<float> b(Extents2D(kMaxWorkers, num));
+    RowVectorBatch<double> bufs(Extents2D(kMaxWorkers, num));
     std::array<DotStats, kMaxWorkers> all_stats;
 
     pools.Cluster(0, 0).Run(0, kReps, [&](const uint32_t rep, size_t thread) {

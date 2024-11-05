@@ -19,9 +19,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <cstdlib>  // std::aligned_alloc
+#include <cstdlib>  // std::aligned_alloc / _aligned_malloc
 
 // IWYU pragma: begin_exports
+#include "util/basics.h"
 #include "util/threading.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -51,49 +52,6 @@ template <typename T>
 ByteStorageT AllocateSizeof() {
   return hwy::AllocateAligned<uint8_t>(sizeof(T));
 }
-
-// Owns dynamically-allocated aligned memory for a batch of row vectors.
-// This can be seen as a (batch_size x len) matrix.
-template <typename T>
-class RowVectorBatch {
- public:
-  // Default ctor for Activations ctor.
-  RowVectorBatch() : batch_size_(0), len_(0) {}
-  // Main ctor, called from Activations::Allocate.
-  RowVectorBatch(size_t batch_size, size_t len)
-      : batch_size_(batch_size), len_(len) {
-    mem_ = hwy::AllocateAligned<T>(batch_size * len);
-  }
-
-  // Move-only
-  RowVectorBatch(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch& operator=(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch(RowVectorBatch&&) noexcept = default;
-  RowVectorBatch& operator=(RowVectorBatch&&) noexcept = default;
-
-  size_t BatchSize() const { return batch_size_; }
-  size_t Len() const { return len_; }
-
-  // Returns the given row vector of length `Len()`.
-  T* Batch(size_t batch_idx) {
-    HWY_DASSERT(batch_idx < batch_size_);
-    return mem_.get() + batch_idx * len_;
-  }
-  const T* Batch(size_t batch_idx) const {
-    HWY_DASSERT(batch_idx < batch_size_);
-    return mem_.get() + batch_idx * len_;
-  }
-
-  // For MatMul or other operations that process the entire batch at once.
-  T* All() { return mem_.get(); }
-  const T* Const() const { return mem_.get(); }
-  size_t NumBytes() const { return batch_size_ * len_ * sizeof(T); }
-
- private:
-  hwy::AlignedFreeUniquePtr<T[]> mem_;
-  size_t batch_size_;  // rows in the matrix
-  size_t len_;         // columns in the matrix = vector length
-};
 
 // Stateful in order to know whether to bind to NUMA nodes. `Monostate` for
 // convenience - avoids passing around a reference.
@@ -140,15 +98,19 @@ class Allocator {
     }
 
     // AlignedFreeUniquePtr has a deleter that can call an arbitrary `free`, but
-    // with an extra opaque pointer, which we discard via this adapter.
+    // with an extra opaque pointer, which we discard via `call_free`.
+#if defined(__ANDROID_API__) && __ANDROID_API__ < 28
     const auto call_free = [](void* ptr, void*) { std::free(ptr); };
-#if !defined(__ANDROID_API__) || __ANDROID_API__ >= 28
-    T* p = static_cast<T*>(std::aligned_alloc(Alignment(), bytes));
-#else
     void* mem = nullptr;
     int err = posix_memalign(&mem, Alignment(), bytes);
     HWY_ASSERT(err == 0);
     T* p = static_cast<T*>(mem);
+#elif HWY_OS_WIN
+    const auto call_free = [](void* ptr, void*) { _aligned_free(ptr); };
+    T* p = static_cast<T*>(_aligned_malloc(bytes, Alignment()));
+#else
+    const auto call_free = [](void* ptr, void*) { std::free(ptr); };
+    T* p = static_cast<T*>(std::aligned_alloc(Alignment(), bytes));
 #endif
     return hwy::AlignedFreeUniquePtr<T[]>(
         p, hwy::AlignedFreer(call_free, nullptr));
@@ -163,10 +125,24 @@ class Allocator {
   static size_t alignment_;
 };
 
+// For shorter arguments to the StaticPartitionRowsAndCols functor.
+struct TaskLocation {
+  TaskLocation(size_t node, size_t package_idx, hwy::ThreadPool& cluster,
+               size_t worker_offset)
+      : node(node),
+        package_idx(package_idx),
+        cluster(cluster),
+        worker_offset(worker_offset) {}
+  size_t node;
+  size_t package_idx;
+  hwy::ThreadPool& cluster;
+  const size_t worker_offset;
+};
+
 // Used in MatMul and allocator.h. Defined here because it depends on
 // Allocator::Alignment().
 template <class Func>
-void StaticPartitionRowsAndCols(NestedPools& nested, size_t rows, size_t cols,
+void StaticPartitionRowsAndCols(NestedPools& nested, Extents2D extents,
                                 size_t bytes_per_element, const Func& func) {
   // Both rows and cols must be a multiple of the alignment to avoid
   // touching remote pages.
@@ -179,14 +155,15 @@ void StaticPartitionRowsAndCols(NestedPools& nested, size_t rows, size_t cols,
   hwy::ThreadPool& all_packages = nested.AllPackages();
   const size_t num_packages = all_packages.NumWorkers();
   const size_t cols_per_package =
-      hwy::RoundUpTo(hwy::DivCeil(cols, num_packages), multiple);
-  const size_t col_tasks = hwy::DivCeil(cols, cols_per_package);
+      hwy::RoundUpTo(hwy::DivCeil(extents.cols, num_packages), multiple);
+  const size_t col_tasks = hwy::DivCeil(extents.cols, cols_per_package);
   HWY_ASSERT(col_tasks <= num_packages);
   all_packages.Run(
       0, col_tasks, [&](uint64_t package_idx, size_t package_thread) {
         HWY_ASSERT(package_idx == package_thread);  // one task per worker
         const size_t col_begin = package_idx * cols_per_package;
-        const size_t col_end = HWY_MIN(col_begin + cols_per_package, cols);
+        const Range1D col_range =
+            MakeRange1D(col_begin, extents.cols, cols_per_package);
 
         // Static partitioning of rows across the package's clusters. We assume
         // that row sharding is cheaper. In MatMul, results can indeed be
@@ -194,8 +171,8 @@ void StaticPartitionRowsAndCols(NestedPools& nested, size_t rows, size_t cols,
         hwy::ThreadPool& all_clusters = nested.AllClusters(package_idx);
         const size_t num_clusters = all_clusters.NumWorkers();
         const size_t rows_per_cluster =
-            hwy::RoundUpTo(hwy::DivCeil(rows, num_clusters), multiple);
-        const size_t row_tasks = hwy::DivCeil(rows, rows_per_cluster);
+            hwy::RoundUpTo(hwy::DivCeil(extents.rows, num_clusters), multiple);
+        const size_t row_tasks = hwy::DivCeil(extents.rows, rows_per_cluster);
         HWY_ASSERT(row_tasks <= num_clusters);
         all_clusters.Run(
             0, row_tasks, [&](uint64_t cluster_idx, size_t cluster_thread) {
@@ -213,11 +190,11 @@ void StaticPartitionRowsAndCols(NestedPools& nested, size_t rows, size_t cols,
                   nested.WorkerOffset(package_idx, cluster_idx);
 
               const size_t row_begin = cluster_idx * rows_per_cluster;
-              const size_t row_end =
-                  HWY_MIN(row_begin + rows_per_cluster, rows);
+              const Range1D row_range =
+                  MakeRange1D(row_begin, extents.rows, rows_per_cluster);
 
-              func(node, cluster, worker_offset, row_begin, row_end, col_begin,
-                   col_end);
+              func(Range2D(row_range, col_range),
+                   TaskLocation(node, package_idx, cluster, worker_offset));
             });
       });
 }
