@@ -306,8 +306,8 @@ class GemmaAttention {
     }
 
     // Self-extension
-    const hwy::Divisor& div_grp_size{
-        static_cast<uint32_t>(layer_config_.grp_size)};
+    const hwy::Divisor div_grp_size(
+        static_cast<uint32_t>(layer_config_.grp_size));
     // Apply positional encodings for K (and copy KV to cache if MHA).
     pool_.Run(0, layer_config_.kv_heads * num_interleaved,
               [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
