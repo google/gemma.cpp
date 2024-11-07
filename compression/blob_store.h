@@ -84,6 +84,9 @@ class BlobReader {
   // Reads one blob directly.
   BlobError ReadOne(hwy::uint128_t key, void* data, size_t size) const;
 
+  // Returns all available blob keys.
+  hwy::Span<const hwy::uint128_t> Keys() const;
+
  private:
   BlobStorePtr blob_store_;  // holds header, not the entire file
   std::vector<BlobIO> requests_;

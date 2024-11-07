@@ -70,6 +70,11 @@ TEST(BlobStoreTest, TestReadWrite) {
     HWY_ASSERT_STRING_EQ("DATA", buffer.data());
   }
 
+  const hwy::Span<const hwy::uint128_t> keys = reader.Keys();
+  HWY_ASSERT_EQ(keys.size(), 2);
+  HWY_ASSERT_EQ(keys[0], keyA);
+  HWY_ASSERT_EQ(keys[1], keyB);
+
   close(fd);
   unlink(path_str);
 }
