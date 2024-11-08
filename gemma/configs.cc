@@ -183,7 +183,7 @@ static ModelConfig ConfigGriffin2B() {
       .softmax_attn_output_biases = true,
       .type = LayerAttentionType::kGriffinRecurrentBlock,
       .activation = ActivationType::Gelu,
-      .post_qk = PostQKType::Rope,
+      .post_qk = PostQKType::HalfRope,
   };
   config.layer_configs = {26, layer_config};
   for (size_t i = 2; i < config.layer_configs.size(); i += 3) {

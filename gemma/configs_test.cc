@@ -397,7 +397,11 @@ void AssertMatch(const ModelConfig& config) {
     ASSERT_EQ(TConfig::kPostNorm, config.layer_configs[i].post_norm);
     ASSERT_EQ(TConfig::kLayerConfig[i], config.layer_configs[i].type);
     ASSERT_EQ(TConfig::kActivation, config.layer_configs[i].activation);
-    ASSERT_EQ(TConfig::kPostQK, config.layer_configs[i].post_qk);
+    PostQKType post_qk = TConfig::kPostQK;
+    if (TConfig::kUseHalfRope) {
+      post_qk = PostQKType::HalfRope;
+    }
+    ASSERT_EQ(post_qk, config.layer_configs[i].post_qk);
   }
 
   ASSERT_EQ(TConfig::kAttentionWindowSizes.size(),

@@ -1240,8 +1240,12 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
                const QueriesPos& queries_prefix_end,
                const size_t query_idx_start, const KVCaches& kv_caches,
                TimingInfo& timing_info) {
-  const size_t vocab_size = model.Config().vocab_size;
-  const ModelWeightsPtrs<T>& weights = *model.GetWeightsOfType<T>();
+  // Griffin assumes that the recurrent block cache is zero-initialized.
+  for (size_t i = 0; i < kv_caches.size(); ++i) {
+    if (queries_pos_in[i] == 0) {
+      kv_caches[i].ZeroGriffinCache();  // No-op for non-Griffin models.
+    }
+  }
 
   // Copy so we can increment without requiring users to pass in a mutable span.
   std::vector<size_t> queries_pos_copy(queries_pos_in.cbegin(),
@@ -1268,7 +1272,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   HWY_ASSERT(queries_pos_in.size() == num_queries);
   HWY_ASSERT(kv_caches.size() == num_queries);
   const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
-
+  const ModelWeightsPtrs<T>& weights = *model.GetWeightsOfType<T>();
   size_t max_prompt_size = MaxQueryLength(queries_prompt);
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
   RangeChecks(weights.weights_config, max_generated_tokens, max_prompt_size);
@@ -1314,6 +1318,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
                          0.0f);
   }
 
+  const size_t vocab_size = model.Config().vocab_size;
   const double gen_start = hwy::platform::Now();
   for (size_t gen = 0; gen < max_generated_tokens; ++gen) {
     // Decode generates one token per query and increments queries_mutable_pos.

@@ -31,9 +31,15 @@ struct KVCache {
 
   // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]> conv1d_cache;
+  size_t conv1d_cache_size = 0;
 
   // kModelDim * kGriffinLayers
   hwy::AlignedFreeUniquePtr<float[]> rglru_cache;
+  size_t rglru_cache_size = 0;
+
+  // Zero-initialize the Griffin recurrent block cache, i.e. the conv1d_cache
+  // and rglru_cache.
+  void ZeroGriffinCache();
 
   static KVCache Create(const ModelConfig& weights_config,
                         size_t prefill_tbatch_size);
