@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "third_party/absl/types/span.h"
+#include "absl/types/span.h"
 
 namespace gcpp {
 

@@ -1,5 +1,5 @@
-load("//devtools/clif/python:clif_build_rule.bzl", "py_clif_cc")
 # [internal] load strict.bzl
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(
     default_applicable_licenses = [
@@ -12,8 +12,9 @@ cc_library(
     name = "compression_clif_aux",
     srcs = ["compression_clif_aux.cc"],
     hdrs = ["compression_clif_aux.h"],
+    visibility = ["//visibility:private"],
     deps = [
-        "//third_party/absl/types:span",
+        "@abseil-cpp//absl/types:span",
         "//compression:compress",
         "//compression:io",
         "@highway//:hwy",
@@ -21,12 +22,12 @@ cc_library(
     ],
 )
 
-py_clif_cc(
+pybind_extension(
     name = "compression",
-    srcs = ["compression.clif"],
+    srcs = ["compression_extension.cc"],
     deps = [
         ":compression_clif_aux",
-        "//third_party/absl/python/numpy:span_clif_lib",
+        "@abseil-cpp//absl/types:span",
     ],
 )
 
