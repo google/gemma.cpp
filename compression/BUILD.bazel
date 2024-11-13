@@ -6,7 +6,7 @@ package(
     ],
     default_visibility = [
         # Placeholder for internal visibility,
-        "//:__subpackages__",  # Placeholder, do not modify
+        "//:__subpackages__",
     ],
 )
 
