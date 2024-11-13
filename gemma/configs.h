@@ -178,7 +178,6 @@ struct ModelConfig {
   size_t vit_seq_len = 0;
   size_t num_tensor_scales = 0;
   size_t num_vit_scales = 0;
-  size_t top_k = kTopK;
   float att_cap = 0.0f;
   float final_cap = 0.0f;
   bool absolute_pe = false;

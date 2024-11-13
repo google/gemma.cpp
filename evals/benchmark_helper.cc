@@ -74,8 +74,8 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
   runtime_config_ = {
       .max_generated_tokens = inference.max_generated_tokens,
       .temperature = inference.temperature,
-      .verbosity = app.verbosity,
       .gen = &gen_,
+      .verbosity = app.verbosity,
   };
 }
 

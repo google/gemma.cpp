@@ -74,8 +74,8 @@ TEST(OptimizeTest, GradientDescent) {
     RuntimeConfig runtime = {
         .max_generated_tokens = 16,
         .temperature = 1.0f,
-        .verbosity = 0,
         .gen = &gen,
+        .verbosity = 0,
         .stream_token = stream_token,
         .eos_id = ReverseSequenceSampler::kEndToken,
     };

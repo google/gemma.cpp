@@ -1196,13 +1196,12 @@ class TokenStreamer {
   hwy::BitSet4096<> is_eos_;
 };
 
-HWY_INLINE SampleFunc ChooseSampleFunc(int top_k,
-                                       const RuntimeConfig& runtime_config) {
+HWY_INLINE SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
   // Fast path for top-1 with no accept_token.
-  if (top_k == 1 && !runtime_config.accept_token) {
+  if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
     return [](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
       PROFILER_ZONE("Gen.Sample Top1");
       return Top1OfSoftmax(logits, vocab_size);
@@ -1210,13 +1209,13 @@ HWY_INLINE SampleFunc ChooseSampleFunc(int top_k,
   }
 
   // General case: Softmax with top-k sampling.
-  return [top_k, &runtime_config](float* logits,
-                                  size_t vocab_size) HWY_ATTR -> TokenAndProb {
+  return [&runtime_config](float* logits,
+                           size_t vocab_size) HWY_ATTR -> TokenAndProb {
     PROFILER_ZONE("Gen.Sample general");
     Softmax(logits, vocab_size);
-    const int token =
-        SampleTopK(logits, top_k, vocab_size, *runtime_config.gen,
-                   runtime_config.temperature, runtime_config.accept_token);
+    const int token = SampleTopK(
+        logits, runtime_config.top_k, vocab_size, *runtime_config.gen,
+        runtime_config.temperature, runtime_config.accept_token);
     return TokenAndProb{.token = token, .prob = logits[token]};
   };
 }
@@ -1276,8 +1275,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   size_t max_prompt_size = MaxQueryLength(queries_prompt);
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
   RangeChecks(weights.weights_config, max_generated_tokens, max_prompt_size);
-  const SampleFunc sample_token =
-      ChooseSampleFunc(weights.weights_config.top_k, runtime_config);
+  const SampleFunc sample_token = ChooseSampleFunc(runtime_config);
 
   // Prefill stops before min_prompt_size - 1 because the last prompt
   // token is the first input token for generation.

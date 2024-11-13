@@ -56,7 +56,7 @@ void PaliGemmaTest::InitVit(const std::string& path) {
   HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
   image.Resize();
-  RuntimeConfig runtime_config = {.verbosity = 0, .gen = &s_env->MutableGen()};
+  RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
   model.GenerateImageTokens(runtime_config, image, image_tokens_);
 }
 
@@ -64,8 +64,8 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
   Gemma& model = *(s_env->GetModel());
   s_env->MutableGen().seed(0x12345678);
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,
-                                  .verbosity = 0,
-                                  .gen = &s_env->MutableGen()};
+                                  .gen = &s_env->MutableGen(),
+                                  .verbosity = 0};
   runtime_config.image_tokens = &image_tokens_;
   size_t abs_pos = 0;
   std::string mutable_prompt = prompt_text;

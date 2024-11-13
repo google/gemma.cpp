@@ -220,6 +220,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   size_t decode_qbatch_size;
 
   float temperature;
+  size_t top_k;
   bool deterministic;
   bool multiturn;
   Path image_file;
@@ -244,6 +245,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Decode: max queries per batch.");
 
     visitor(temperature, "temperature", 1.0f, "Temperature for top-K", 2);
+    visitor(top_k, "top_k", size_t{1}, "Number of top-K tokens to sample from",
+            2);
     visitor(deterministic, "deterministic", false,
             "Make top-k sampling deterministic", 2);
     visitor(multiturn, "multiturn", false,
@@ -259,6 +262,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     runtime_config.prefill_tbatch_size = prefill_tbatch_size;
     runtime_config.decode_qbatch_size = decode_qbatch_size;
     runtime_config.temperature = temperature;
+    runtime_config.top_k = top_k;
   }
 };
 
