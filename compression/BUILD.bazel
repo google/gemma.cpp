@@ -259,3 +259,14 @@ cc_binary(
         "@highway//:thread_pool",
     ],
 )
+
+cc_binary(
+    name = "blob_compare",
+    srcs = ["blob_compare.cc"],
+    deps = [
+        ":blob_store",
+        ":io",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
