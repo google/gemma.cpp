@@ -33,6 +33,10 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 int main(int argc, char** argv) {
+  {
+    // Placeholder for internal init, do not modify.
+  }
+
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
   gcpp::AppArgs app(argc, argv);
