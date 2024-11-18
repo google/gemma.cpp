@@ -116,7 +116,20 @@ enum class Model {
   PALIGEMMA_224,
 };
 
+// Allows the Model enum to be iterated over.
+static constexpr Model kAllModels[] = {
+    Model::GEMMA_2B, Model::GEMMA_7B, Model::GEMMA2_9B, Model::GEMMA2_27B,
+    Model::GRIFFIN_2B, Model::GEMMA_TINY, Model::GEMMA2_2B,
+    Model::PALIGEMMA_224,
+};
+
 struct LayerConfig {
+  // Returns true if *this and other are equal.
+  // If partial is true, then we don't check for items that are only set after
+  // the tensors are loaded from the checkpoint.
+  // If debug is true, then we output the mismatched fields to stderr.
+  bool TestEqual(const LayerConfig& other, bool partial, bool debug) const;
+
   size_t CacheLayerSize() const { return kv_heads * qkv_dim * 2; }
 
   // Multi-Head Attention?
@@ -132,9 +145,10 @@ struct LayerConfig {
   size_t heads = 0;
   size_t kv_heads = 0;
   size_t qkv_dim = 0;
-  size_t conv1d_width = 0;
+  size_t conv1d_width = 0;  // griffin only
   bool ff_biases = false;
   bool softmax_attn_output_biases = false;
+  bool optimized_gating = true;
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
@@ -142,6 +156,16 @@ struct LayerConfig {
 };
 
 struct ModelConfig {
+  // Returns true if *this and other are equal.
+  // If partial is true, then we don't check for items that are only set after
+  // the tensors are loaded from the checkpoint.
+  // If debug is true, then we output the mismatched fields to stderr.
+  bool TestEqual(const ModelConfig& other, bool partial, bool debug) const;
+
+  void AddLayerConfig(const LayerConfig& layer_config) {
+    layer_configs.push_back(layer_config);
+  }
+
   size_t CachePosSize() const {
     size_t num_layers = layer_configs.size();
     return num_layers * layer_configs[0].CacheLayerSize();
@@ -171,6 +195,7 @@ struct ModelConfig {
   Model model;
   ModelTraining training;
   Type weight;
+  size_t num_layers = 0;
   size_t model_dim = 0;
   size_t vit_model_dim = 0;
   size_t vocab_size = 0;
@@ -181,7 +206,7 @@ struct ModelConfig {
   float att_cap = 0.0f;
   float final_cap = 0.0f;
   bool absolute_pe = false;
-  bool use_local_attention = false;
+  bool use_local_attention = false;  // griffin only
   QueryScaleType query_scale = QueryScaleType::SqrtKeySize;
   std::vector<LayerConfig> layer_configs;
   std::vector<size_t> attention_window_sizes;
@@ -190,12 +215,15 @@ struct ModelConfig {
   int norm_num_groups = 1;
   int model_family_version = 1;
   // Dimensions related to image processing.
-  int patch_width = 14;
-  int image_size = 224;
+  size_t patch_width = 14;
+  size_t image_size = 224;
 };
 
 // Returns the config for the given model.
 ModelConfig ConfigFromModel(Model model);
+
+// Returns the model for the given config, if it matches any standard model.
+Model ModelFromConfig(const ModelConfig& config);
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
 ModelConfig VitConfig(const ModelConfig& config);

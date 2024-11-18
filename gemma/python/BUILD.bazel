@@ -1,0 +1,17 @@
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+
+package(
+    default_applicable_licenses = [
+        "//:license",  # Placeholder comment, do not modify
+    ],
+    default_visibility = ["//visibility:public"],
+)
+
+pybind_extension(
+    name = "configs",
+    srcs = ["configs.cc"],
+    deps = [
+        "//:common",
+        "//compression:sfp",
+    ],
+)
