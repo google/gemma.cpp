@@ -374,7 +374,7 @@ void AssertMatch(const ModelConfig& config) {
   }
   ASSERT_EQ(TConfig::kVocabSize, config.vocab_size);
   ASSERT_EQ(TConfig::kSeqLen, config.seq_len);
-  ASSERT_EQ(TConfig::kTopK, config.top_k);
+  // ASSERT_EQ(TConfig::kTopK, config.top_k); - is now a runtime config value.
   ASSERT_EQ(TConfig::kAttCap, config.att_cap);
   ASSERT_EQ(TConfig::kFinalCap, config.final_cap);
   ASSERT_EQ(TConfig::kAbsolutePE, config.absolute_pe);
@@ -397,7 +397,11 @@ void AssertMatch(const ModelConfig& config) {
     ASSERT_EQ(TConfig::kPostNorm, config.layer_configs[i].post_norm);
     ASSERT_EQ(TConfig::kLayerConfig[i], config.layer_configs[i].type);
     ASSERT_EQ(TConfig::kActivation, config.layer_configs[i].activation);
-    ASSERT_EQ(TConfig::kPostQK, config.layer_configs[i].post_qk);
+    PostQKType post_qk = TConfig::kPostQK;
+    if (TConfig::kUseHalfRope) {
+      post_qk = PostQKType::HalfRope;
+    }
+    ASSERT_EQ(post_qk, config.layer_configs[i].post_qk);
   }
 
   ASSERT_EQ(TConfig::kAttentionWindowSizes.size(),

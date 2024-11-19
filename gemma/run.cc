@@ -119,7 +119,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
     image.Resize();
     RuntimeConfig runtime_config = {
-        .verbosity = app.verbosity, .gen = &gen, .use_spinning = app.spin};
+        .gen = &gen, .verbosity = app.verbosity, .use_spinning = app.spin};
     double image_tokens_start = hwy::platform::Now();
     model.GenerateImageTokens(runtime_config, image, image_tokens);
     if (app.verbosity >= 1) {
@@ -192,8 +192,8 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     }
 
     TimingInfo timing_info = {.verbosity = app.verbosity};
-    RuntimeConfig runtime_config = {.verbosity = app.verbosity,
-                                    .gen = &gen,
+    RuntimeConfig runtime_config = {.gen = &gen,
+                                    .verbosity = app.verbosity,
                                     .stream_token = stream_token,
                                     .accept_token = accept_token,
                                     .use_spinning = app.spin};

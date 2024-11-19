@@ -33,6 +33,10 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 int main(int argc, char** argv) {
+  {
+    // Placeholder for internal init, do not modify.
+  }
+
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
   gcpp::AppArgs app(argc, argv);
@@ -89,8 +93,8 @@ int main(int argc, char** argv) {
   gcpp::RuntimeConfig runtime_config = {
       .max_generated_tokens = 1024,
       .temperature = 1.0,
-      .verbosity = 0,
       .gen = &gen,
+      .verbosity = 0,
       .stream_token = stream_token,
       .accept_token =
           [&](int token, float /* prob */) {

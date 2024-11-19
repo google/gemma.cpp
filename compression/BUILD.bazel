@@ -6,7 +6,7 @@ package(
     ],
     default_visibility = [
         # Placeholder for internal visibility,
-        "//:__subpackages__",  # Placeholder, do not modify
+        "//:__subpackages__",
     ],
 )
 
@@ -201,6 +201,7 @@ cc_library(
         ":sfp",
         "//:allocator",
         "//:basics",
+        "//:common",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
@@ -257,5 +258,16 @@ cc_binary(
         "//:weights",
         "@highway//:hwy",
         "@highway//:thread_pool",
+    ],
+)
+
+cc_binary(
+    name = "blob_compare",
+    srcs = ["blob_compare.cc"],
+    deps = [
+        ":blob_store",
+        ":io",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )

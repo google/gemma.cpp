@@ -201,6 +201,10 @@ class BlobStore {
     return false;
   }
 
+  hwy::Span<const hwy::uint128_t> Keys() const {
+    return hwy::Span<const hwy::uint128_t>(keys_, num_blobs_);
+  }
+
  private:
   uint32_t magic_;
   uint32_t num_blobs_;      // never 0
@@ -301,6 +305,10 @@ BlobError BlobReader::ReadOne(hwy::uint128_t key, void* data,
     return __LINE__;
   }
   return 0;
+}
+
+hwy::Span<const hwy::uint128_t> BlobReader::Keys() const {
+  return blob_store_->Keys();
 }
 
 BlobError BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {

@@ -25,6 +25,7 @@
 #include "compression/io.h"  // Path
 #include "gemma/activations.h"
 #include "gemma/common.h"
+#include "gemma/configs.h"
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
 #include "gemma/weights.h"
@@ -102,9 +103,12 @@ struct RuntimeConfig {
   // Max queries per batch (one token from each) during decode.
   size_t decode_qbatch_size = 16;
 
-  float temperature;  // Temperature for sampling.
+  // Sampling-related parameters.
+  float temperature;     // Temperature for sampling.
+  size_t top_k = kTopK;  // Top-k for sampling.
+  std::mt19937* gen;     // Random number generator used for sampling.
+
   int verbosity;  // Controls verbosity of printed messages.
-  std::mt19937* gen;  // Random number generator used for sampling.
 
   // Functions operating on the generated tokens.
   StreamFunc stream_token;

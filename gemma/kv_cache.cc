@@ -23,6 +23,17 @@
 
 namespace gcpp {
 
+void KVCache::ZeroGriffinCache() {
+  if (conv1d_cache_size != 0) {
+    hwy::ZeroBytes(conv1d_cache.get(),
+                   conv1d_cache_size * sizeof(conv1d_cache[0]));
+  }
+  if (rglru_cache_size != 0) {
+    hwy::ZeroBytes(rglru_cache.get(),
+                   rglru_cache_size * sizeof(rglru_cache[0]));
+  }
+}
+
 // prefill_tbatch_size is the maximum number of tokens from one query to
 // prefill at a time.
 KVCache KVCache::Create(const ModelConfig& weights_config,
@@ -37,9 +48,9 @@ KVCache KVCache::Create(const ModelConfig& weights_config,
     kv_cache.kv_cache =
         hwy::AllocateAligned<float>(kv_cache.seq_len * size_cache_pos);
   }
-  size_t num_griffin_layers = weights_config.NumLayersOfType(
-      LayerAttentionType::kGriffinRecurrentBlock);
 
+  const size_t num_griffin_layers = weights_config.NumLayersOfType(
+      LayerAttentionType::kGriffinRecurrentBlock);
   // TODO(patrickms): Add query batching support for Griffin.
   if (num_griffin_layers > 0) {
     size_t conv1d_width = 0;
@@ -49,20 +60,18 @@ KVCache KVCache::Create(const ModelConfig& weights_config,
     const size_t conv1d_cache_size =
         num_griffin_layers * (conv1d_width == 0 ? 0 : conv1d_width - 1) *
         weights_config.model_dim;
+    kv_cache.conv1d_cache_size = conv1d_cache_size;
     if (conv1d_cache_size != 0) {
       kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
-      hwy::ZeroBytes(kv_cache.conv1d_cache.get(),
-                     conv1d_cache_size * sizeof(kv_cache.conv1d_cache[0]));
     }
 
     const size_t rglru_cache_size =
         num_griffin_layers * weights_config.model_dim;
+    kv_cache.rglru_cache_size = rglru_cache_size;
     if (rglru_cache_size != 0) {
       kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
-      hwy::ZeroBytes(kv_cache.rglru_cache.get(),
-                     rglru_cache_size * sizeof(kv_cache.rglru_cache[0]));
     }
-  }  // kGriffinLayers
+  }  // num_griffin_layers
 
   return kv_cache;
 }

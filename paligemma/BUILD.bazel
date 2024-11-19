@@ -3,7 +3,7 @@ package(
         "//:license",  # Placeholder comment, do not modify
     ],
     default_visibility = [
-        "//:__subpackages__",  # Placeholder, do not modify
+        "//:__subpackages__",
     ],
 )
 

@@ -139,8 +139,8 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
   RuntimeConfig runtime = {
       .max_generated_tokens = max_generated_tokens - 1,
       .temperature = 0.0f,
-      .verbosity = verbosity,
       .gen = nullptr,
+      .verbosity = verbosity,
       .stream_token = stream_token,
       .sample_func = sample_token,
   };

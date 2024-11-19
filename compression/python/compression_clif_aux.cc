@@ -20,7 +20,7 @@
 #ifndef GEMMA_ONCE
 #define GEMMA_ONCE
 
-#include "third_party/absl/types/span.h"
+#include "absl/types/span.h"
 #include "compression/io.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
