@@ -302,7 +302,7 @@ class GemmaAttention {
 
     // Self-extension
     const hwy::Divisor div_grp_size(
-        static_cast<uint32_t>(layer_config_.grp_size));
+        static_cast<uint32_t>(layer_config_.se_group_size));
     // Apply positional encodings for K (and copy KV to cache if MHA).
     pool_.Run(0, kv_heads * num_interleaved,
               [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
@@ -317,8 +317,8 @@ class GemmaAttention {
                                          head * qkv_dim * 2;
                 KVCache& kv_cache = kv_caches_[query_idx];
 
-                const size_t ngb_size = layer_config_.ngb_size;
-                const bool self_extend = layer_config_.self_extend;
+                const size_t se_neighbor_size = layer_config_.se_neighbor_size;
+                const bool enable_self_extend = layer_config_.self_extend;
 
                 float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
                 const float* HWY_RESTRICT mha_kv =
@@ -327,7 +327,7 @@ class GemmaAttention {
 
                 // In self-extend, when embedding position,
                 // we will use grouped key position
-                if (self_extend && pos > ngb_size) {
+                if (enable_self_extend && pos > se_neighbor_size) {
                   pos = div_grp_size.Divide(pos);
                 }
                 // Copy from `q` if MHA, or apply in-place.
@@ -417,18 +417,21 @@ class GemmaAttention {
                 const size_t head_offset =
                     (head / kHeadGroups) * layer_config_.qkv_dim * 2;
 
-                const size_t grp_size = layer_config_.grp_size;
-                const size_t ngb_size = layer_config_.ngb_size;
-                const bool self_extend = layer_config_.self_extend;
+                const size_t se_group_size = layer_config_.se_group_size;
+                const size_t se_neighbor_size = layer_config_.se_neighbor_size;
+                const bool enable_self_extend =
+                    layer_config_.self_extend;
+
                 KVCache& kv_cache = kv_caches_[query_idx];
                 float* HWY_RESTRICT q =
                     activations_.q.Batch(interleaved_idx) + head * q_stride_;
 
                 // Apply rope and scaling to Q.
                 size_t pos = queries_pos_[query_idx] + batch_idx;
-                if (self_extend && pos > ngb_size) {
-                  const size_t grp_pos = pos / grp_size;
-                  const size_t shift = ngb_size - ngb_size / grp_size;
+                if (enable_self_extend && pos > se_neighbor_size) {
+                  const size_t grp_pos = pos / se_group_size;
+                  const size_t shift =
+                      se_neighbor_size - se_neighbor_size / se_group_size;
                   const size_t shifted_grouped_pos = grp_pos + shift;
                   pos = shifted_grouped_pos;
                 }
