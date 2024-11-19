@@ -194,13 +194,15 @@ cc_library(
     srcs = [
         "gemma/common.cc",
         "gemma/configs.cc",
+        "gemma/tensor_index.cc",
     ],
     hdrs = [
         "gemma/common.h",
         "gemma/configs.h",
+        "gemma/tensor_index.h",
     ],
     deps = [
-        "//compression:compress",
+        "//compression:sfp",
         "@highway//:hwy",  # base.h
         "@highway//:thread_pool",
     ],
@@ -212,6 +214,20 @@ cc_test(
     deps = [
         ":common",
         "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "tensor_index_test",
+    srcs = ["gemma/tensor_index_test.cc"],
+    deps = [
+        ":basics",
+        ":common",
+        ":weights",
+        "@googletest//:gtest_main",
+        "//compression:compress",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
     ],
 )
 

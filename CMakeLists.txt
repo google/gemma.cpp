@@ -84,6 +84,8 @@ set(SOURCES
   gemma/instantiations/sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
+  gemma/tensor_index.cc
+  gemma/tensor_index.h
   gemma/tokenizer.cc
   gemma/tokenizer.h
   gemma/weights.cc
@@ -157,6 +159,7 @@ set(GEMMA_TEST_FILES
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
+  gemma/tensor_index_test.cc
   ops/dot_test.cc
   ops/gemma_matvec_test.cc
   ops/matmul_test.cc

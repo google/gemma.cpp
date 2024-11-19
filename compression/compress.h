@@ -17,6 +17,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_H_
 
+#include "hwy/base.h"
 #define COMPRESS_STATS 0
 
 #include <stddef.h>
@@ -33,6 +34,7 @@
 #include "compression/blob_store.h"
 #include "compression/io.h"
 #include "compression/shared.h"
+#include "gemma/tensor_index.h"
 #include "util/basics.h"
 // IWYU pragma: end_exports
 #include "util/allocator.h"
@@ -211,6 +213,26 @@ class MatPtrT : public MatPtr {
   // Full constructor for dynamic sizing.
   MatPtrT(const std::string& name, size_t rows, size_t cols)
       : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), rows, cols) {}
+  // Construction from TensorIndex entry to remove duplication of sizes.
+  MatPtrT(const std::string& name, const TensorIndex& tensor_index)
+      : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), 0, 0) {
+    const TensorInfo* tensor = tensor_index.FindName(name);
+    HWY_ASSERT(tensor != nullptr);
+    cols_ = tensor->shape.back();
+    rows_ = 1;
+    if (tensor->cols_take_extra_dims) {
+      // The columns eat the extra dimensions.
+      rows_ = tensor->shape[0];
+      for (size_t i = 1; i < tensor->shape.size() - 1; ++i) {
+        cols_ *= tensor->shape[i];
+      }
+    } else {
+      // The rows eat the extra dimensions.
+      for (size_t i = 0; i < tensor->shape.size() - 1; ++i) {
+        rows_ *= tensor->shape[i];
+      }
+    }
+  }
 
   // Copying allowed as the metadata is small.
   MatPtrT(const MatPtr& other) : MatPtr(other) {}

@@ -4,6 +4,7 @@
 #include <pybind11/stl.h>
 
 #include "compression/shared.h"
+#include "gemma/tensor_index.h"
 #include "pybind11/cast.h"
 
 using gcpp::ActivationType;
@@ -16,6 +17,8 @@ using gcpp::PostNormType;
 using gcpp::PostQKType;
 using gcpp::QueryScaleType;
 using gcpp::ResidualType;
+using gcpp::TensorIndex;
+using gcpp::TensorInfo;
 using gcpp::Type;
 
 namespace pybind11 {
@@ -71,6 +74,23 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA_TINY", Model::GEMMA_TINY)
       .value("GEMMA2_2B", Model::GEMMA2_2B)
   .value("PALIGEMMA_224", Model::PALIGEMMA_224);
+
+  class_<TensorInfo>(py_module, "TensorInfo")
+      .def(init())
+      .def_readwrite("name", &TensorInfo::name)
+      .def_readwrite("source_names", &TensorInfo::source_names)
+      .def_readwrite("preshape", &TensorInfo::preshape)
+      .def_readwrite("axes", &TensorInfo::axes)
+      .def_readwrite("shape", &TensorInfo::shape)
+      .def_readwrite("concat_names", &TensorInfo::concat_names)
+      .def_readwrite("concat_axis", &TensorInfo::concat_axis)
+      .def_readwrite("min_size", &TensorInfo::min_size)
+      .def_readwrite("scaled_softplus", &TensorInfo::scaled_softplus)
+      .def_readwrite("cols_take_extra_dims", &TensorInfo::cols_take_extra_dims);
+
+  class_<TensorIndex>(py_module, "TensorIndex")
+      .def(init<const ModelConfig&, int, int, bool>())
+      .def("get_tensor_info", &TensorIndex::GetTensorInfo, arg("path"));
 
   class_<LayerConfig>(py_module, "LayerConfig")
       .def(init())
