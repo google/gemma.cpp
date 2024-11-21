@@ -699,6 +699,9 @@ class Compressor {
     return err;
   }
 
+  // Returns the number of blobs added.
+  size_t NumAdded() const { return writer_.NumAdded(); }
+
  private:
   CompressWorkingSet work_;
   hwy::ThreadPool& pool_;
