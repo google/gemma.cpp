@@ -135,6 +135,9 @@ install(TARGETS gemma DESTINATION bin)
 add_executable(single_benchmark evals/benchmark.cc)
 target_link_libraries(single_benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
+add_executable(gemma_batch_bench evals/gemma_batch_bench.cc)
+target_link_libraries(gemma_batch_bench libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+
 add_executable(benchmarks evals/benchmarks.cc)
 target_link_libraries(benchmarks libgemma hwy hwy_contrib nlohmann_json::nlohmann_json benchmark)
 
