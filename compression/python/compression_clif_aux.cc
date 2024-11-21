@@ -31,7 +31,9 @@ class WriterInterface {
  public:
   virtual ~WriterInterface() = default;
 
-  virtual void Insert(std::string name, absl::Span<const float> weights) = 0;
+  virtual void Insert(std::string name, absl::Span<const float> weights,
+                      Type type) = 0;
+  virtual void InsertSfp(std::string name, absl::Span<const float> weights) = 0;
   virtual void InsertNUQ(std::string name, absl::Span<const float> weights) = 0;
   virtual void InsertBfloat16(std::string name,
                               absl::Span<const float> weights) = 0;
@@ -39,7 +41,7 @@ class WriterInterface {
                            absl::Span<const float> weights) = 0;
   virtual void AddScales(const std::vector<float>& scales) = 0;
 
-  virtual void Write(std::string path) = 0;
+  virtual int Write(std::string path) = 0;
 };
 
 }  // namespace gcpp
@@ -67,7 +69,27 @@ class SbsWriterImpl : public WriterInterface {
  public:
   SbsWriterImpl() : pool_(0), compressor_(pool_) {}
 
-  void Insert(std::string name, absl::Span<const float> weights) override {
+  void Insert(std::string name, absl::Span<const float> weights,
+              Type type) override {
+    switch (type) {
+      case Type::kSFP:
+        AllocateAndCompress<SfpStream>(name, weights);
+        break;
+      case Type::kNUQ:
+        AllocateAndCompress<NuqStream>(name, weights);
+        break;
+      case Type::kBF16:
+        AllocateAndCompress<BF16>(name, weights);
+        break;
+      case Type::kF32:
+        AllocateAndCompress<float>(name, weights);
+        break;
+      default:
+        HWY_ABORT("Unsupported type");
+    }
+  }
+
+  void InsertSfp(std::string name, absl::Span<const float> weights) override {
     AllocateAndCompress<SfpStream>(name, weights);
   }
 
@@ -90,8 +112,8 @@ class SbsWriterImpl : public WriterInterface {
     compressor_.AddScales(scales_.data(), scales_.size());
   }
 
-  void Write(std::string path) override {
-    compressor_.WriteAll(pool_, gcpp::Path(path));
+  int Write(std::string path) override {
+    return compressor_.WriteAll(pool_, gcpp::Path(path));
   }
 
   hwy::ThreadPool pool_;
@@ -115,8 +137,12 @@ HWY_EXPORT(NewSbsWriter);
 SbsWriter::SbsWriter() : impl_(HWY_DYNAMIC_DISPATCH(NewSbsWriter)()) {}
 SbsWriter::~SbsWriter() = default;
 
-void SbsWriter::Insert(std::string name, absl::Span<const float> weights) {
-  impl_->Insert(name, weights);
+void SbsWriter::Insert(std::string name, absl::Span<const float> weights,
+                       Type type) {
+  impl_->Insert(name, weights, type);
+}
+void SbsWriter::InsertSfp(std::string name, absl::Span<const float> weights) {
+  impl_->InsertSfp(name, weights);
 }
 void SbsWriter::InsertNUQ(std::string name, absl::Span<const float> weights) {
   impl_->InsertNUQ(name, weights);
@@ -132,7 +158,7 @@ void SbsWriter::InsertFloat(std::string name, absl::Span<const float> weights) {
 void SbsWriter::AddScales(const std::vector<float>& scales) {
   impl_->AddScales(scales);
 }
-void SbsWriter::Write(std::string path) { impl_->Write(path); }
+int SbsWriter::Write(std::string path) { return impl_->Write(path); }
 
 }  // namespace gcpp
 #endif  // HWY_ONCE

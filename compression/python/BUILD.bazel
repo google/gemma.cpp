@@ -28,6 +28,7 @@ pybind_extension(
     deps = [
         ":compression_clif_aux",
         "@abseil-cpp//absl/types:span",
+        "//compression:sfp",
     ],
 )
 
@@ -38,6 +39,7 @@ py_test(
     deps = [
         ":compression",
         "//testing/pybase",
+        "//python:configs",
         "//third_party/py/numpy",
     ],
 )

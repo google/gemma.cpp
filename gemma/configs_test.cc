@@ -374,7 +374,6 @@ void AssertMatch(const ModelConfig& config) {
   }
   ASSERT_EQ(TConfig::kVocabSize, config.vocab_size);
   ASSERT_EQ(TConfig::kSeqLen, config.seq_len);
-  // ASSERT_EQ(TConfig::kTopK, config.top_k); - is now a runtime config value.
   ASSERT_EQ(TConfig::kAttCap, config.att_cap);
   ASSERT_EQ(TConfig::kFinalCap, config.final_cap);
   ASSERT_EQ(TConfig::kAbsolutePE, config.absolute_pe);

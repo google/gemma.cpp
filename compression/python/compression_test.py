@@ -4,6 +4,7 @@ import numpy as np
 
 import unittest
 from compression.python import compression
+from gemma.python import configs
 
 
 class CompressionTest(unittest.TestCase):
@@ -13,9 +14,11 @@ class CompressionTest(unittest.TestCase):
 
     writer = compression.SbsWriter()
     writer.insert(
-        "foo", np.array([0.0012] * 128 + [0.001] * 64, dtype=np.float32)
+        "foo",
+        np.array([0.0012] * 128 + [0.001] * 64, dtype=np.float32),
+        configs.Type.kSFP,
     )
-    writer.insert(
+    writer.insert_sfp(
         "bar", np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32)
     )
     writer.insert_nuq(
@@ -27,7 +30,7 @@ class CompressionTest(unittest.TestCase):
     writer.insert_float(
         "quux", np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32)
     )
-    writer.write(temp_file.full_path)
+    self.assertEqual(writer.write(temp_file.full_path), 0)
 
 
 if __name__ == "__main__":
