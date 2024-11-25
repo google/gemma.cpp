@@ -49,6 +49,7 @@ static ModelConfig ConfigGemma2_27B() {
                               .heads = 32,
                               .kv_heads = 16,
                               .qkv_dim = 128,
+                              .optimized_gating = false,
                               .post_norm = PostNormType::Scale};
   config.layer_configs = {46, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();
@@ -70,6 +71,7 @@ static ModelConfig ConfigGemma2_9B() {
                               .heads = 16,
                               .kv_heads = 8,
                               .qkv_dim = 256,
+                              .optimized_gating = false,
                               .post_norm = PostNormType::Scale};
   config.layer_configs = {42, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();
@@ -91,6 +93,7 @@ static ModelConfig ConfigGemma2_2B() {
                               .heads = 8,
                               .kv_heads = 4,
                               .qkv_dim = 256,
+                              .optimized_gating = false,
                               .post_norm = PostNormType::Scale};
   config.layer_configs = {26, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();

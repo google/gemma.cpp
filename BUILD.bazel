@@ -388,6 +388,26 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "gemma_batch_bench",
+    srcs = ["evals/gemma_batch_bench.cc"],
+    # Requires model files
+    tags = [
+        "local",
+        "manual",
+        "no_tap",
+    ],
+    deps = [
+        ":benchmark_helper",
+        ":common",
+        ":gemma_lib",
+        ":tokenizer",
+        "@googletest//:gtest_main",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
 cc_binary(
     name = "gemma",
     srcs = ["gemma/run.cc"],

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "absl/types/span.h"
+#include "compression/shared.h"
 
 namespace gcpp {
 
@@ -16,13 +17,14 @@ class SbsWriter {
   SbsWriter();
   ~SbsWriter();
 
-  void Insert(std::string name, absl::Span<const float> weights);
+  void Insert(std::string name, absl::Span<const float> weights, Type type);
+  void InsertSfp(std::string name, absl::Span<const float> weights);
   void InsertNUQ(std::string name, absl::Span<const float> weights);
   void InsertBfloat16(std::string name, absl::Span<const float> weights);
   void InsertFloat(std::string name, absl::Span<const float> weights);
   void AddScales(const std::vector<float>& scales);
 
-  void Write(std::string path);
+  int Write(std::string path);
 
  private:
   // Isolates Highway-dispatched types and other internals from CLIF.
