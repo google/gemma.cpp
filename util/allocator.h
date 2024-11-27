@@ -125,82 +125,8 @@ class Allocator {
   static size_t alignment_;
 };
 
-// For shorter arguments to the StaticPartitionRowsAndCols functor.
-struct TaskLocation {
-  TaskLocation(size_t node, size_t package_idx, hwy::ThreadPool& cluster,
-               size_t worker_offset)
-      : node(node),
-        package_idx(package_idx),
-        cluster(cluster),
-        worker_offset(worker_offset) {}
-  size_t node;
-  size_t package_idx;
-  hwy::ThreadPool& cluster;
-  const size_t worker_offset;
-};
-
-// Used in MatMul and allocator.h. Defined here because it depends on
-// Allocator::Alignment().
-template <class Func>
-void StaticPartitionRowsAndCols(NestedPools& nested, Extents2D extents,
-                                size_t bytes_per_element, const Func& func) {
-  // Both rows and cols must be a multiple of the alignment to avoid
-  // touching remote pages.
-  const size_t multiple = Allocator::Alignment() / bytes_per_element;
-
-  // Static partitioning of columns across packages. We assume that column
-  // sharding is more expensive, hence we distribute columns across packages,
-  // of which there are usually only one or two. For MatMul, the final result is
-  // the sum of each package's partial dot products.
-  hwy::ThreadPool& all_packages = nested.AllPackages();
-  const size_t num_packages = all_packages.NumWorkers();
-  const size_t cols_per_package =
-      hwy::RoundUpTo(hwy::DivCeil(extents.cols, num_packages), multiple);
-  const size_t col_tasks = hwy::DivCeil(extents.cols, cols_per_package);
-  HWY_ASSERT(col_tasks <= num_packages);
-  all_packages.Run(
-      0, col_tasks, [&](uint64_t package_idx, size_t package_thread) {
-        HWY_ASSERT(package_idx == package_thread);  // one task per worker
-        const size_t col_begin = package_idx * cols_per_package;
-        const Range1D col_range =
-            MakeRange1D(col_begin, extents.cols, cols_per_package);
-
-        // Static partitioning of rows across the package's clusters. We assume
-        // that row sharding is cheaper. In MatMul, results can indeed be
-        // computed independently for each row of B.
-        hwy::ThreadPool& all_clusters = nested.AllClusters(package_idx);
-        const size_t num_clusters = all_clusters.NumWorkers();
-        const size_t rows_per_cluster =
-            hwy::RoundUpTo(hwy::DivCeil(extents.rows, num_clusters), multiple);
-        const size_t row_tasks = hwy::DivCeil(extents.rows, rows_per_cluster);
-        HWY_ASSERT(row_tasks <= num_clusters);
-        all_clusters.Run(
-            0, row_tasks, [&](uint64_t cluster_idx, size_t cluster_thread) {
-              HWY_ASSERT(cluster_idx == cluster_thread);  // one task per worker
-
-              // For binding to NUMA node.
-              const size_t node = nested.Node(package_idx, cluster_idx);
-              // Older CPUs that predate chiplets typically have only one
-              // cluster, so callers should also parallelize using this
-              // per-cluster pool.
-              hwy::ThreadPool& cluster =
-                  nested.Cluster(package_idx, cluster_idx);
-              // This plus the worker from `cluster->Run` is the TLS index.
-              const size_t worker_offset =
-                  nested.WorkerOffset(package_idx, cluster_idx);
-
-              const size_t row_begin = cluster_idx * rows_per_cluster;
-              const Range1D row_range =
-                  MakeRange1D(row_begin, extents.rows, rows_per_cluster);
-
-              func(Range2D(row_range, col_range),
-                   TaskLocation(node, package_idx, cluster, worker_offset));
-            });
-      });
-}
-
-void BindTensor(NestedPools& nested, size_t rows, size_t cols,
-                size_t bytes_per_col, void* ptr);
+// For future NUMA support. TODO: use.
+void BindMemory(void* ptr, size_t bytes, size_t node);
 
 }  // namespace gcpp
 

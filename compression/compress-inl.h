@@ -51,6 +51,12 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+#ifdef HWY_IS_TEST
+static constexpr bool kIsTest = true;
+#else
+static constexpr bool kIsTest = false;
+#endif
+
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
@@ -438,7 +444,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     }
   }
 
-  const bool want_bench = num > 1024 * 1024 || COMPRESS_STATS;
+  const bool want_bench = COMPRESS_STATS || !kIsTest;
   const double t0 = want_bench ? hwy::platform::Now() : 0.0;
 
   using Traits = CompressTraits<Packed>;

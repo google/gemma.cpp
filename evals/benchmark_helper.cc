@@ -56,6 +56,7 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
                    const AppArgs& app)
     : pools_(CreatePools(app)) {
+  Allocator::Init(pools_.Topology());
   InferenceArgs mutable_inference = inference;
   AbortIfInvalidArgs(mutable_inference);
   LoaderArgs mutable_loader = loader;

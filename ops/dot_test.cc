@@ -1109,6 +1109,7 @@ void TestAllDot() {
     const size_t num = 24 * 1024;
     NestedPools pools(kMaxWorkers - 1, /*pin=*/Tristate::kDefault,
                       BoundedSlice(0, 1), BoundedSlice(0, 1));
+    Allocator::Init(pools.Topology());
     RowVectorBatch<float> a(Extents2D(kMaxWorkers, num));
     RowVectorBatch<float> b(Extents2D(kMaxWorkers, num));
     RowVectorBatch<double> bufs(Extents2D(kMaxWorkers, num));

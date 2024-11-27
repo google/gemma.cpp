@@ -38,6 +38,7 @@
 #include "util/basics.h"
 // IWYU pragma: end_exports
 #include "util/allocator.h"
+#include "hwy/per_target.h"
 #if COMPRESS_STATS
 #include "compression/distortion.h"
 #include "hwy/stats.h"
@@ -360,7 +361,11 @@ class MatStorageT : public MatPtrT<MatT> {
     } else {
       this->num_elements_ = num_elements;
     }
-    data_ = Allocator::Alloc<MatT>(num_elements);
+    // Pad to allow overrunning the last row by 2 BF16 vectors, hence at most
+    // `2 * VectorBytes / sizeof(BF16)` elements of MatT.
+    const size_t padding = hwy::VectorBytes();
+    data_ = Allocator::Alloc<MatT>(num_elements + padding);
+    hwy::ZeroBytes(&data_[num_elements], padding * sizeof(MatT));
     this->ptr_ = data_.get();
   }
 

@@ -17,20 +17,32 @@
 #define THIRD_PARTY_GEMMA_CPP_UTIL_THREADING_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <memory>  // std::unique_ptr
 #include <vector>
 
+// IWYU pragma: begin_exports
 #include "util/basics.h"  // Tristate
 #include "hwy/base.h"       // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/contrib/thread_pool/topology.h"
+// IWYU pragma: end_exports
 
 #ifndef GEMMA_DISABLE_TOPOLOGY
 #define GEMMA_DISABLE_TOPOLOGY 0
 #endif  // !GEMMA_DISABLE_TOPOLOGY
 
 namespace gcpp {
+
+static inline size_t SaturatingSub(size_t a, size_t b) {
+  return a - HWY_MIN(a, b);
+}
+
+// `max_or_zero` == 0 means no limit.
+static inline size_t CapIfNonZero(size_t num, size_t max_or_zero) {
+  return (max_or_zero == 0) ? num : HWY_MIN(num, max_or_zero);
+}
 
 // A slice of a 1D integer range such as the indices of packages or clusters.
 // This allows assigning them to multiple instances of our binary.
@@ -86,6 +98,7 @@ using PoolPtr = std::unique_ptr<hwy::ThreadPool>;
 // back to a single package and cluster.
 class BoundedTopology {
  public:
+  // Thread-hostile, typically called from main thread.
   BoundedTopology(BoundedSlice package_slice, BoundedSlice cluster_slice,
                   BoundedSlice lp_slice);
 
@@ -112,6 +125,8 @@ class BoundedTopology {
     }
 
     size_t Node() const { return node_; }
+    size_t PrivateKiB() const { return private_kib_; }
+    size_t SharedKiB() const { return shared_kib_; }
 
    private:
     void AddLP(size_t lp) {
@@ -126,6 +141,10 @@ class BoundedTopology {
     size_t num_workers_ = 0;
     // NUMA node, set from hwy::Topology::LP::node.
     size_t node_ = 0;
+    // L2 cache size in KiB, or 0 if unknown.
+    size_t private_kib_ = 0;
+    // L3 cache size in KiB, or 0 if unknown.
+    size_t shared_kib_ = 0;
   };  // Cluster
 
   size_t NumClusters(size_t package_idx) const {
@@ -144,6 +163,10 @@ class BoundedTopology {
     HWY_ASSERT(cluster_idx < package.clusters.size());
     return package.clusters[cluster_idx];
   }
+
+#if !GEMMA_DISABLE_TOPOLOGY
+  const hwy::Topology& FullTopology() const { return topology_; }
+#endif
 
  private:
   struct Package {
@@ -257,6 +280,8 @@ class NestedPools {
   // Returns the first of `cluster.NumWorkers()` TLS indices, to which callers
   // add the worker index given by `cluster.Run`.
   size_t WorkerOffset(size_t package_idx, size_t cluster_idx) const {
+    HWY_DASSERT(package_idx < packages_.size());
+    HWY_DASSERT(cluster_idx < packages_[package_idx].NumClusters());
     return (package_idx * max_clusters_per_package_ + cluster_idx) *
            max_workers_per_cluster_;
   }
@@ -267,26 +292,25 @@ class NestedPools {
   const char* TopologyString() const { return topology_.TopologyString(); }
   const char* PinString() const { return pin_string_; }
 
-  // Returns a single pool on the first package: either one thread per cluster
+  // Returns a single pool on the given package: either one thread per cluster
   // if there is more than one, which maximizes available memory bandwidth, or
   // the first cluster, which is typically the whole package. For use by callers
-  // that only parallelize over a 1D range, as opposed to the nested
-  // parallelism of `StaticPartitionRowsAndCols`.
-  hwy::ThreadPool& Pool() {
+  // that only have a single parallel-for.
+  hwy::ThreadPool& Pool(size_t package_idx = 0) {
     // Only one cluster: use its pool, typically a whole socket.
-    if (AllClusters(0).NumWorkers() == 1) return Cluster(0, 0);
-    return AllClusters(0);
+    if (AllClusters(package_idx).NumWorkers() == 1) {
+      return Cluster(package_idx, 0);
+    }
+    // One worker per cluster to maximize bandwidth availability.
+    return AllClusters(package_idx);
   }
 
  private:
-  class Pinning;
-
   class Package {
    public:
     Package() = default;  // for vector
     Package(const BoundedTopology& topology, size_t package_idx,
-            size_t max_workers_per_package, Pinning& pinning,
-            BoundedSlice lp_slice);
+            size_t max_workers_per_package, BoundedSlice lp_slice);
 
     size_t NumClusters() const { return clusters_.size(); }
     size_t MaxWorkersPerCluster() const {
@@ -330,10 +354,133 @@ class NestedPools {
   std::vector<Package> packages_;
   PoolPtr all_packages_;
 
-  // For TLS indices.
+  // For TLS indices. One might think this belongs in BoundedTopology, but it
+  // depends on max_threads, which is passed to the NestedPools constructor.
   size_t max_clusters_per_package_ = 0;
   size_t max_workers_per_cluster_ = 0;
 };
+
+// Splits `range` into subranges of size `task_size`, except for the last,
+// which receives the remainder. Used with the `ParallelizeOneRange` etc.
+// functions below.
+class IndexRangePartition {
+ public:
+  IndexRangePartition(const IndexRange& range, const size_t task_size)
+      : range_(range), task_size_(task_size) {
+    const size_t num = range.Num();
+    HWY_DASSERT(task_size_ != 0);
+    num_tasks_ = hwy::DivCeil(num, task_size_);
+    HWY_DASSERT(num_tasks_ != 0);
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      const size_t handled = num_tasks_ * task_size_;
+      // The last task may extend beyond items, but at most by (task_size_ - 1).
+      HWY_DASSERT(num <= handled && handled < num + task_size_);
+    }
+  }
+
+  size_t TaskSize() const { return task_size_; }
+  size_t NumTasks() const { return num_tasks_; }
+
+  IndexRange Range(size_t task_idx) const {
+    HWY_DASSERT(task_idx < NumTasks());
+    return MakeIndexRange(range_.begin() + task_idx * task_size_, range_.end(),
+                          task_size_);
+  }
+
+ private:
+  IndexRange range_;
+  size_t task_size_;
+  size_t num_tasks_;
+};
+
+// Starts with `max_size` and rounds DOWN to a multiple of `size_multiple`
+// unless that would be zero. It is the caller's responsibility to choose
+// `size_multiple` to avoid two heavily imbalanced tasks.
+// Use when the number of tasks does not matter, but each must fit into caches.
+static inline IndexRangePartition MaxSizePartition(const IndexRange& range,
+                                                   const size_t max_size,
+                                                   const size_t size_multiple) {
+  HWY_DASSERT(size_multiple != 0);
+  size_t size = HWY_MIN(range.Num(), max_size);
+  if (size > size_multiple) size = hwy::RoundDownTo(size, size_multiple);
+  return IndexRangePartition(range, size);
+}
+
+// Up to `max_tasks` tasks, each rounded UP to `size_multiple`, unless that
+// would be more than the range. Use when the number of tasks is known, e.g.
+// one per ThreadPool worker.
+static inline IndexRangePartition StaticPartition(const IndexRange& range,
+                                                  const size_t max_tasks,
+                                                  const size_t size_multiple) {
+  HWY_DASSERT(max_tasks != 0);
+  size_t size =
+      hwy::RoundUpTo(hwy::DivCeil(range.Num(), max_tasks), size_multiple);
+  size = HWY_MIN(size, range.Num());
+  return IndexRangePartition(range, size);
+}
+
+// Parallel-for over a single range. This takes care of translating the task
+// index to a range.
+template <class Func>
+void ParallelizeOneRange(const IndexRangePartition& get1, hwy::ThreadPool& pool,
+                         const Func& func) {
+  const size_t num_tasks = get1.NumTasks();
+  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+    const IndexRange range1 = get1.Range(task);
+    func(range1, thread);
+  });
+}
+
+// Parallel-for over the Cartesian product of the two sets of ranges. This
+// combines their indices into a single 'task' so they can be executed by one
+// `pool.Run`, which increases the amount of work available to workers and
+// reduces fork-join overhead vs. nested parallel-for loops. Calls `func` with
+// the two ranges and the thread index within `pool`.
+template <class Func>
+void ParallelizeTwoRanges(const IndexRangePartition& get1,
+                          const IndexRangePartition& get2,
+                          hwy::ThreadPool& pool, const Func& func) {
+  const hwy::Divisor div1(static_cast<uint32_t>(get1.NumTasks()));
+
+  const size_t num_tasks = get1.NumTasks() * get2.NumTasks();
+  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+    HWY_DASSERT(task < (uint64_t{1} << 32));
+    const size_t idx2 = div1.Divide(static_cast<uint32_t>(task));
+    const size_t idx1 = div1.Remainder(static_cast<uint32_t>(task));
+    HWY_DASSERT(idx1 < get1.NumTasks());
+    HWY_DASSERT(idx2 < get2.NumTasks());
+    const IndexRange range1 = get1.Range(idx1);
+    const IndexRange range2 = get2.Range(idx2);
+    func(range1, range2, thread);
+  });
+}
+
+// As above, for three ranges.
+template <class Func>
+void ParallelizeThreeRanges(const IndexRangePartition& get1,
+                            const IndexRangePartition& get2,
+                            const IndexRangePartition& get3,
+                            hwy::ThreadPool& pool, const Func& func) {
+  const hwy::Divisor div1(static_cast<uint32_t>(get1.NumTasks()));
+  const size_t num12 = get1.NumTasks() * get2.NumTasks();
+  const hwy::Divisor div12(static_cast<uint32_t>(num12));
+
+  const size_t num_tasks = num12 * get3.NumTasks();
+  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+    HWY_DASSERT(task < (uint64_t{1} << 32));
+    const size_t idx3 = div12.Divide(static_cast<uint32_t>(task));
+    const size_t task12 = div12.Remainder(static_cast<uint32_t>(task));
+    const size_t idx2 = div1.Divide(static_cast<uint32_t>(task12));
+    const size_t idx1 = div1.Remainder(static_cast<uint32_t>(task12));
+    HWY_DASSERT(idx1 < get1.NumTasks());
+    HWY_DASSERT(idx2 < get2.NumTasks());
+    HWY_DASSERT(idx3 < get3.NumTasks());
+    const IndexRange range1 = get1.Range(idx1);
+    const IndexRange range2 = get2.Range(idx2);
+    const IndexRange range3 = get3.Range(idx3);
+    func(range1, range2, range3, thread);
+  });
+}
 
 }  // namespace gcpp
 

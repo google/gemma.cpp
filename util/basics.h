@@ -21,7 +21,7 @@
 #include <stdint.h>
 
 #include "hwy/aligned_allocator.h"
-#include "hwy/base.h"  // HWY_IS_MSAN
+#include "hwy/base.h"
 // IWYU pragma: end_exports
 
 #if HWY_IS_MSAN
@@ -60,7 +60,7 @@ struct TokenAndProb {
   float prob;
 };
 
-// Entire size of a 2D array. By contrast, Range2D is a subrange.
+// Entire size of a 2D array.
 struct Extents2D {
   Extents2D() : rows(0), cols(0) {}
   Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {
@@ -74,11 +74,13 @@ struct Extents2D {
   size_t cols;
 };
 
-// Range2D consists of two Range1D.
-struct Range1D {
-  Range1D(size_t begin, size_t end) : begin_(begin), end_(end) {
+struct IndexRange {
+  IndexRange(size_t begin, size_t end) : begin_(begin), end_(end) {
     HWY_DASSERT(begin < end);
   }
+  IndexRange(const IndexRange& other) = default;
+  IndexRange& operator=(const IndexRange& other) = default;
+
   size_t Num() const { return end_ - begin_; }
 
   // Enable range-based for loops.
@@ -101,21 +103,14 @@ struct Range1D {
   Iterator begin() const { return Iterator(begin_); }
   Iterator end() const { return Iterator(end_); }
 
-  const size_t begin_;
-  const size_t end_;
+  size_t begin_;
+  size_t end_;
 };
 
-static inline Range1D MakeRange1D(size_t begin, size_t end, size_t max_size) {
-  return Range1D(begin, HWY_MIN(begin + max_size, end));
+static inline IndexRange MakeIndexRange(size_t begin, size_t end,
+                                        size_t max_size) {
+  return IndexRange(begin, HWY_MIN(begin + max_size, end));
 }
-
-// In MatMul, the two axes are used independently, hence we do not define
-// Range2D as a top-left and extents.
-struct Range2D {
-  Range2D(Range1D rows, Range1D cols) : rows(rows), cols(cols) {}
-  const Range1D rows;
-  const Range1D cols;
-};
 
 // Lightweight version of `MatPtr` used for the C argument of `MatMul`, because
 // it is always float and does not support compressed T, but does support an
@@ -125,6 +120,10 @@ class RowPtr {
  public:
   RowPtr(T* HWY_RESTRICT row0, size_t cols)
       : row0_(row0), cols_(cols), stride_(cols) {}
+  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
+      : row0_(row0), cols_(cols), stride_(stride) {
+    HWY_DASSERT(stride >= cols);
+  }
 
   T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
   size_t Cols() const { return cols_; }
@@ -207,6 +206,7 @@ struct ConstMat {
   }
 
   const Extents2D& Extents() const { return extents; }
+  size_t Stride() const { return extents.cols; }
 
   // Shrinks the row-extent of this matrix view, i.e. reduces the view to a
   // subrange of the original rows starting at row 0.

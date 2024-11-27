@@ -27,6 +27,7 @@
 #include "compression/io.h"  // Path
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // For CreateGemma
+#include "ops/matmul.h"
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/threading.h"
@@ -115,6 +116,7 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 };
 
+// Callers must call Allocator::Init(pools.Topology()) after this.
 static inline NestedPools CreatePools(const AppArgs& app) {
   return NestedPools(app.max_threads, app.pin,
                      BoundedSlice(app.skip_packages, app.max_packages),

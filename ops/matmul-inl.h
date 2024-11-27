@@ -38,22 +38,6 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-// The MatMul result C[r,c] is Dot(A.Row(r), B.Col(c)). To reduce the number of
-// loads, we reuse the same A row for several B columns, which are also loaded
-// once for several rows of C. Thus we produce one 'tile' of C at a time of
-// dimensions `kRegRows` x `kRegCols`. The Reg naming is because these are
-// limited by the number of registers: 32 for NEON/SVE/AVX-512. `kRegCols` == 4
-// enables the `StoreInterleaved4` transpose in `AddHorizontalSums`. We assume
-// and verify that `C.cols % kRegCols == 0`.
-constexpr size_t kRegCols = 4;
-
-// Choosing `kRegRows == kRegCols` minimizes the ratio of loads to FMA, because
-// we load `kRegCols + kRegRows` vectors per `kRegRows * kRegCols` element tile.
-// In general, `batch_size` (C rows) is not a multiple of `kRegRows`. Thus
-// functions that load or store a tile are parameterized on `kNumRows`, which is
-// generally `kRegRows`, but `batch_size % kRegRows` on the last row (if != 0).
-constexpr size_t kRegRows = kRegCols;
-
 // Loads two vectors at a time with element type hn::TFromD<DR> from a row of
 // transposed B. Called in a loop over col_ab. No bounds checking because
 // `kRow` is from B columns, which we checked is a multiple of `kRegCols`.

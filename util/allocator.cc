@@ -103,7 +103,7 @@ size_t CountBusyPages(size_t num_pages, size_t node, void** pages,
 // which means it would have to be called before pages are faulted in, but
 // `aligned_allocator.h` modifies the first bytes for its bookkeeping.
 // May overwrite some of the memory with zeros.
-static void BindMemory(void* ptr, size_t bytes, size_t node) {
+void BindMemory(void* ptr, size_t bytes, size_t node) {
   constexpr size_t kMaxNodes = 1024;  // valid for x86/x64, and "enough"
   // Avoid mbind because it does not report why it failed, which is most likely
   // because pages are busy, in which case we want to know which.
@@ -159,24 +159,7 @@ static void BindMemory(void* ptr, size_t bytes, size_t node) {
 
 #else
 // TODO: support other OSes.
-static void BindMemory(void*, size_t, size_t) {}
+void BindMemory(void*, size_t, size_t) {}
 #endif  // GEMMA_NUMA && HWY_OS_LINUX
-
-void BindTensor(NestedPools& nested, const Extents2D& extents,
-                size_t bytes_per_col, void* ptr) {
-  if (!Allocator::UseNUMA()) return;
-  uint8_t* p8 = static_cast<uint8_t*>(ptr);
-  const size_t bytes_per_row = extents.cols * bytes_per_col;
-  StaticPartitionRowsAndCols(
-      nested, extents, bytes_per_col,
-      [&](const Range2D& r, const TaskLocation& loc) {
-        for (size_t row : r.rows) {
-          uint8_t* slice =
-              p8 + row * bytes_per_row + r.cols.begin() * bytes_per_col;
-          const size_t slice_size = r.cols.Num() * bytes_per_col;
-          BindMemory(slice, slice_size, loc.node);
-        }
-      });
-}
 
 }  // namespace gcpp

@@ -163,9 +163,11 @@ set(GEMMA_TEST_FILES
   compression/sfp_test.cc
   evals/gemma_test.cc
   gemma/tensor_index_test.cc
+  ops/bench_matmul.cc
   ops/dot_test.cc
   ops/gemma_matvec_test.cc
   ops/matmul_test.cc
+  ops/matmul_unit_test.cc
   ops/ops_test.cc
   paligemma/image_test.cc
   paligemma/paligemma_test.cc

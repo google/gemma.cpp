@@ -13,6 +13,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// End to end test of MatMul, comparing against a reference implementation.
+
+#include "hwy/detect_compiler_arch.h"
 #ifndef HWY_DISABLED_TARGETS
 // Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
 // double-precision support.
@@ -23,14 +26,14 @@
 #endif
 #endif
 
-#include "ops/matmul.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
 #include <memory>
 
 #include "compression/compress.h"
+#include "compression/shared.h"
+#include "ops/matmul.h"
 #include "util/allocator.h"
 #include "util/basics.h"
 #include "util/threading.h"
@@ -52,7 +55,11 @@
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
+// For running TestBatchSizes only once. Defined within HWY_ONCE.
+extern int64_t first_target;
+
 namespace HWY_NAMESPACE {
+namespace hn = hwy::HWY_NAMESPACE;
 
 using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
 
@@ -71,8 +78,9 @@ MatStoragePtr<MatT> GenerateMat(const Extents2D extents,
   const float scale = SfpStream::kMax / (mat->NumElements());
   pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
     for (size_t c = 0; c < extents.cols; c++) {
-      content[r * extents.cols + c] =
-          static_cast<float>(r * extents.cols + c) * scale;
+      float f = static_cast<float>(r * extents.cols + c) * scale;
+      if ((r + c) & 1) f = -f;  // Also generate some negative values.
+      content[r * extents.cols + c] = f;
     }
   });
 
@@ -92,8 +100,9 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
   const float scale = SfpStream::kMax / (mat->NumElements());
   pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
     for (size_t c = 0; c < extents.cols; c++) {
-      content[r * extents.cols + c] =
-          static_cast<float>(c * extents.rows + r) * scale;
+      float f = static_cast<float>(c * extents.rows + r) * scale;
+      if ((r + c) & 1) f = -f;  // Also generate some negative values.
+      content[r * extents.cols + c] = f;
     }
   });
 
@@ -104,16 +113,28 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
 }
 
 // Returns 1-norm, used for estimating tolerable numerical differences.
-double MaxColAbsSum(const float* HWY_RESTRICT a, const Extents2D& extents) {
-  double max_col_abs_sum = 0.0;
-  for (size_t c = 0; c < extents.cols; c++) {
-    double col_abs_sum = 0.0;
-    for (size_t r = 0; r < extents.rows; r++) {
-      col_abs_sum += hwy::ScalarAbs(a[r * extents.cols + c]);
+double MaxRowAbsSum(const float* HWY_RESTRICT a, const Extents2D& extents) {
+  double max_row_abs_sum = 0.0;
+  for (size_t r = 0; r < extents.rows; r++) {
+    const float* row = a + r * extents.cols;
+    double row_abs_sum = 0.0;
+    for (size_t c = 0; c < extents.cols; c++) {
+      row_abs_sum += hwy::ScalarAbs(row[c]);
     }
-    max_col_abs_sum = HWY_MAX(max_col_abs_sum, col_abs_sum);
+    max_row_abs_sum = HWY_MAX(max_row_abs_sum, row_abs_sum);
   }
-  return max_col_abs_sum;
+  return max_row_abs_sum;
+}
+
+// Returns the maximum absolute value of `a`.
+float MaxAbs(const float* HWY_RESTRICT a, const Extents2D& extents) {
+  float max_abs = 0.0f;
+  for (size_t c = 0; c < extents.cols; c++) {
+    for (size_t r = 0; r < extents.rows; r++) {
+      max_abs = HWY_MAX(max_abs, hwy::ScalarAbs(a[r * extents.cols + c]));
+    }
+  }
+  return max_abs;
 }
 
 // B is already transposed.
@@ -132,12 +153,25 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
   DecompressAndZeroPad(df, MakeSpan(A.ptr, num_a), 0, a.get(), num_a);
   DecompressAndZeroPad(df, MakeSpan(B.ptr, num_b), 0, b_trans.get(), num_b);
 
-  const double norm = MaxColAbsSum(a.get(), A.Extents()) *
-                      MaxColAbsSum(b_trans.get(), B.Extents());
-  // Dot(float,BF16) rounds both to BF16.
-  using RefType = hwy::If<IsF32<MatTA>() && IsF32<MatTB>(), float, BF16>;
-  const double epsilon = hwy::ConvertScalarTo<double>(hwy::Epsilon<RefType>());
-  const double tolerance = 200.0 * norm * epsilon;
+  // MatMul rounds inputs to BF16, so error is proportional to the max input
+  // magnitude, but also to f32 accumulation of rows in A and B.
+  const double norm = MaxRowAbsSum(a.get(), A.Extents()) *
+                      MaxRowAbsSum(b_trans.get(), B.Extents());
+  const float max_abs =
+      MaxAbs(a.get(), A.Extents()) * MaxAbs(b_trans.get(), B.Extents());
+  const double eps_bf16 = hwy::ConvertScalarTo<double>(hwy::Epsilon<BF16>());
+  const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
+  double tolerance = 8 * norm * eps_f32;
+  // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
+  // tolerance there.
+  if (IsF32<MatTA>() && IsF32<MatTB>()) {
+    tolerance += 4 * max_abs * eps_bf16;
+  }
+  EXPECT_GE(tolerance, 1E-4);
+  if (tolerance > 4.0) {
+    fprintf(stderr, "WARN: high tolerance %f norm %f maxabs %f\n", tolerance,
+            norm, max_abs);
+  }
 
   for (size_t r = 0; r < A.extents.rows; r++) {
     const float* expected_row = C_slow.Row(r);
@@ -148,10 +182,11 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
 
       if (!(expected_value - tolerance <= actual_value &&
             actual_value <= expected_value + tolerance)) {
-        fprintf(
-            stderr,
-            "(%zu,%zu): expected %f, actual %f, norm %f eps %E tolerance %f\n",
-            r, c, expected_value, actual_value, norm, epsilon, tolerance);
+        fprintf(stderr,
+                "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
+                "tolerance %f\n",
+                r, c, expected_value, actual_value, norm, max_abs, tolerance);
+        return;
       }
     }
   }
@@ -171,20 +206,31 @@ HWY_INLINE void MatMulSlow(const ConstMat<MatTA> A, const ConstMat<MatTB> B,
   const hn::ScalableTag<float> df;  // lane type is ignored
   const PackedSpan<const MatTB> b_span =
       MakeSpan(B.ptr, B.ofs + B.extents.Area());
-  const Extents2D C_extents(A.extents.rows, C.Cols());
+  const IndexRange all_rows_c(0, A.Extents().rows);
+  const IndexRange all_cols_c(0, C.Cols());
 
-  StaticPartitionRowsAndCols(
-      env.Pools(), C_extents, sizeof(MatTB),
-      [&](const Range2D& C_range, const TaskLocation& loc) {
-        loc.cluster.Run(
-            C_range.rows.begin(), C_range.rows.end(),
-            [&](const uint64_t row, size_t /*thread*/) {
-              float* HWY_RESTRICT C_row = C.Row(row);
-              for (size_t row_b_col_c : C_range.cols) {
-                const float add = add_row ? add_row[row_b_col_c] : 0.0f;
-                C_row[row_b_col_c] =
-                    add + scale * Dot(df, b_span, row_b_col_c * B.extents.cols,
-                                      A.ptr + A.Row(row), A.extents.cols);
+  NestedPools& pools = env.Pools();
+  hwy::ThreadPool& all_packages = pools.AllPackages();
+  const IndexRangePartition get_row_c =
+      StaticPartition(all_rows_c, all_packages.NumWorkers(), 1);
+  ParallelizeOneRange(
+      get_row_c, all_packages,
+      [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
+        hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
+        const size_t multiple = Allocator::Alignment() / sizeof(MatTB);
+        const IndexRangePartition get_col_c =
+            StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
+        ParallelizeOneRange(
+            get_col_c, all_clusters,
+            [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
+              for (size_t r : rows_c) {
+                float* HWY_RESTRICT C_row = C.Row(r);
+                for (size_t c : cols_c) {
+                  const float add = add_row ? add_row[c] : 0.0f;
+                  C_row[c] =
+                      add + scale * Dot(df, b_span, c * B.extents.cols,
+                                        A.ptr + A.Row(r), A.extents.cols);
+                }
               }
             });
       });
@@ -250,6 +296,40 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   AssertClose(A, B, C_slow, C);
 }
 
+using F32 = float;
+using SFP = SfpStream;
+
+// Sweep batch_size for a single input type and Highway target, to verify the
+// row partitioning.
+void TestBatchSizes() {
+  if (first_target == 0) first_target = HWY_TARGET;
+  if (HWY_TARGET != first_target) return;
+
+  for (size_t max_packages : {1, 2}) {
+    const size_t max_threads = 0;  // no limit
+    NestedPools pools(max_threads, Tristate::kDefault,
+                      BoundedSlice(0, max_packages));
+#if GEMMA_DISABLE_TOPOLOGY
+    if (max_packages == 2) break;  // we only have one package
+#else
+    // If less than the limit, we have already tested all num_packages.
+    if (pools.Topology().FullTopology().packages.size() < max_packages) break;
+#endif
+    fprintf(stderr, "TestBatchSizes %zu: %s %s\n", max_packages,
+            pools.TopologyString(), pools.PinString());
+
+    Tristate use_spinning = Tristate::kDefault;
+    pools.MaybeStartSpinning(use_spinning);
+    Allocator::Init(pools.Topology());
+    MatMulEnv env(pools);
+
+    for (size_t batch_size = 1; batch_size <= 3 * kRegRows; ++batch_size) {
+      TestMatMul<F32, F32>(batch_size, 256, 256, /*add=*/false, env);
+    }
+    pools.MaybeStopSpinning(use_spinning);
+  }
+}
+
 void TestAllMatMul() {
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
   if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSE4 ||
@@ -257,32 +337,30 @@ void TestAllMatMul() {
     return;
   }
 
-  NestedPools pools(4, /*pin=*/Tristate::kDefault);
+  NestedPools pools(0);  // no limits
   Tristate use_spinning = Tristate::kDefault;
   pools.MaybeStartSpinning(use_spinning);
   Allocator::Init(pools.Topology());
   MatMulEnv env(pools);
 
-  using F32 = float;
-  using SFP = SfpStream;
+  // Sizes seen in gemma_test 2B.
+  TestMatMul<F32>(1, 2048, 512, /*add=*/false, env);
+  TestMatMul<F32>(1, 2048, 2048, /*add=*/false, env);
+  TestMatMul<F32>(1, 2048, 16384, /*add=*/false, env);
+  TestMatMul<F32>(1, 16384, 2048, /*add=*/false, env);
+  TestMatMul<F32>(1, 2048, 256000, /*add=*/false, env);
+  TestMatMul<F32>(5, 2048, 512, /*add=*/false, env);
+  TestMatMul<F32>(5, 2048, 2048, /*add=*/false, env);
+  TestMatMul<F32>(5, 2048, 16384, /*add=*/false, env);
+  TestMatMul<F32>(5, 16384, 2048, /*add=*/false, env);
 
-  // large-scale test: batch_size=128 is better than 64 or 256 for SKX.
-  //  TestMatMul<F32, SFP>(128, 24576, 3072, /*add=*/false, env);
-  //  TestMatMul<F32, SFP>(128, 3072, 24576, /*add=*/false, env);
-  TestMatMul<F32, F32>(1, 24576, 3072, /*add=*/false, env);
-  TestMatMul<F32, F32>(1, 3072, 24576, /*add=*/false, env);
-  TestMatMul<F32, SFP>(1, 24576, 3072, /*add=*/false, env);
-  TestMatMul<F32, SFP>(1, 3072, 24576, /*add=*/false, env);
-
-  // medium-sized square test - temporarily disabled for faster testing.
-  if constexpr (false) {
-    TestMatMul<F32>(512, 512, 512, /*add=*/false, env);
-    TestMatMul<BF16>(512, 512, 512, /*add=*/true, env);
-    TestMatMul<F32, BF16>(512, 512, 512, /*add=*/false, env);
-    TestMatMul<BF16, F32>(512, 512, 512, /*add=*/true, env);
-    TestMatMul<F32, SFP>(512, 512, 512, /*add=*/false, env);
-    TestMatMul<BF16, SFP>(512, 512, 512, /*add=*/true, env);
-  }
+  // medium-sized square
+  TestMatMul<F32>(512, 512, 512, /*add=*/false, env);
+  TestMatMul<BF16>(512, 512, 512, /*add=*/true, env);
+  TestMatMul<F32, BF16>(512, 512, 512, /*add=*/false, env);
+  TestMatMul<BF16, F32>(512, 512, 512, /*add=*/true, env);
+  TestMatMul<F32, SFP>(512, 512, 512, /*add=*/false, env);
+  TestMatMul<BF16, SFP>(512, 512, 512, /*add=*/true, env);
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
   TestMatMul<F32>(35, 128, 32, /*add=*/false, env);
@@ -325,8 +403,10 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 
 namespace gcpp {
-HWY_BEFORE_TEST(MatmulTest);
-HWY_EXPORT_AND_TEST_P(MatmulTest, TestAllMatMul);
+int64_t first_target = 0;  // none run yet
+HWY_BEFORE_TEST(MatMulTest);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestBatchSizes);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestAllMatMul);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

@@ -71,6 +71,7 @@ cc_test(
         "@googletest//:gtest_main",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -167,6 +168,26 @@ cc_test(
 )
 
 cc_test(
+    name = "matmul_unit_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["ops/matmul_unit_test.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":ops",
+        ":test_util",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_test(
     name = "matmul_test",
     size = "small",
     timeout = "long",
@@ -178,7 +199,28 @@ cc_test(
         ":allocator",
         ":basics",
         ":ops",
-        ":test_util",
+        ":threading",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "bench_matmul",
+    size = "small",
+    timeout = "long",
+    srcs = ["ops/bench_matmul.cc"],
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":ops",
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
@@ -343,6 +385,7 @@ cc_library(
         ":basics",
         ":common",
         ":gemma_lib",
+        ":ops",
         ":threading",
         "//compression:io",
         "@highway//:hwy",
@@ -624,6 +667,7 @@ cc_test(
         "mem": "28g",
     },
     deps = [
+        ":allocator",
         ":backprop",
         ":basics",
         ":common",
