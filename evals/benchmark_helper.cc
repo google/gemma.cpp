@@ -36,6 +36,7 @@
 #include "util/args.h"
 #include "util/threading.h"
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/highway.h"
 #include "hwy/per_target.h"  // VectorBytes
 #include "hwy/timer.h"
@@ -215,6 +216,25 @@ void LogSpeedStats(double time_start, size_t total_tokens) {
             << " [" << tok_sec << " tokens / sec" << "]\n";
 }
 
+std::string CacheString() {
+  const hwy::Cache* caches = hwy::DataCaches();
+  if (caches == nullptr) return "cache unknown";
+  char buf[200];
+  // Do not print cores_sharing because that is visible from the topology.
+  const int len =
+      snprintf(buf, sizeof(buf), "L1 %uK=%u*%u@%u, L2 %uK=%u*%u@%u ",
+               caches[1].size_kib, caches[1].sets, caches[1].bytes_per_line,
+               caches[1].associativity, caches[2].size_kib, caches[2].sets,
+               caches[2].bytes_per_line, caches[2].associativity);
+  HWY_ASSERT(len >= 24);
+  if (caches[3].size_kib != 0) {
+    snprintf(buf + len, sizeof(buf) - len, "L3 %uK=%u*%u@%u",
+             caches[3].size_kib, caches[3].sets, caches[3].bytes_per_line,
+             caches[3].associativity);
+  }
+  return buf;
+}
+
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
                 NestedPools& pools) {
   loader.Print(app.verbosity);
@@ -230,15 +250,15 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n
             "CPU                           : %s\n"
-            "CPU topology                  : %s, %s\n"
+            "CPU topology                  : %s, %s, %s\n"
             "Instruction set               : %s (%zu bits)\n"
             "Compiled config               : %s\n"
             "Weight Type                   : %s\n"
             "EmbedderInput Type            : %s\n",
             dt, cpu100, pools.TopologyString(), pools.PinString(),
-            hwy::TargetName(hwy::DispatchedTarget()), hwy::VectorBytes() * 8,
-            CompiledConfig(), StringFromType(loader.Info().weight),
-            TypeName<EmbedderInputT>());
+            CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
+            hwy::VectorBytes() * 8, CompiledConfig(),
+            StringFromType(loader.Info().weight), TypeName<EmbedderInputT>());
   }
 }
 
