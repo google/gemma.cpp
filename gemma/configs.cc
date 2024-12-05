@@ -246,6 +246,22 @@ ModelConfig VitConfig(const ModelConfig& config) {
   return vit_config;
 }
 
+static ModelConfig ConfigPaliGemma2_3B_224() {
+  ModelConfig config = ConfigGemma2_2B();
+  config.model_name = "PaliGemma2_3B_224";
+  config.model = Model::PALIGEMMA2_3B_224;
+  AddVitConfig(config);
+  return config;
+}
+
+static ModelConfig ConfigPaliGemma2_10B_224() {
+  ModelConfig config = ConfigGemma2_9B();
+  config.model_name = "PaliGemma2_10B_224";
+  config.model = Model::PALIGEMMA2_10B_224;
+  AddVitConfig(config);
+  return config;
+}
+
 ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -264,6 +280,10 @@ ModelConfig ConfigFromModel(Model model) {
       return ConfigGemmaTiny();
     case Model::PALIGEMMA_224:
       return ConfigPaliGemma_224();
+    case Model::PALIGEMMA2_3B_224:
+      return ConfigPaliGemma2_3B_224();
+    case Model::PALIGEMMA2_10B_224:
+      return ConfigPaliGemma2_10B_224();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
