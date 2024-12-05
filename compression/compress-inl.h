@@ -392,7 +392,7 @@ struct CompressTraits<NuqStream> {
                                   size_t num, CompressPerThread& tls,
                                   const PackedSpan<Packed>& packed,
                                   const size_t packed_ofs) {
-    NuqCodec::Enc(df, raw, num, tls.buf, packed, packed_ofs);
+    NuqCodec::EncInterleaved(df, raw, num, tls.buf, packed, packed_ofs);
 
     if (COMPRESS_STATS) {
       for (size_t i = 0; i < num; ++i) {
@@ -402,8 +402,8 @@ struct CompressTraits<NuqStream> {
       const hn::Repartition<BF16, DF> dbf;
       const size_t N16 = hn::Lanes(dbf);
       auto distorted = hwy::AllocateAligned<BF16>(hwy::RoundUpTo(num, N16));
-      NuqCodec::DecompressAndZeroPad(dbf, MakeConst(packed), packed_ofs,
-                                     distorted.get(), num);
+      NuqCodec::DecompressAndZeroPadInterleaved(
+          dbf, MakeConst(packed), packed_ofs, distorted.get(), num);
       DistortionStats stats;
       for (size_t i = 0; i < num; ++i) {
         stats.Notify(raw[i], hwy::F32FromBF16(distorted[i]));
@@ -416,7 +416,7 @@ struct CompressTraits<NuqStream> {
   static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, hn::Vec<D>& raw0,
                                hn::Vec<D>& raw1) {
-    NuqCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
+    NuqCodec::Dec2Interleaved(d, packed, packed_ofs, raw0, raw1);
   }
 
   // Store2 is not yet implemented.
@@ -425,7 +425,7 @@ struct CompressTraits<NuqStream> {
   static HWY_INLINE void DecompressAndZeroPad(
       D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
       Raw* raw, const size_t num) {
-    NuqCodec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
+    NuqCodec::DecompressAndZeroPadInterleaved(d, packed, packed_ofs, raw, num);
   }
 };
 

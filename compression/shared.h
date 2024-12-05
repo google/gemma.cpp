@@ -159,16 +159,20 @@ struct NuqStream {
 
   // Returns offset of packed indices from the start of the stream. This matches
   // the (padded) total table size because table entries are bytes.
+  // TODO(philculliton): Remove when removing non-interleaved functions.
   static constexpr size_t PackedStart(size_t capacity) {
     // Round up to avoid cache-line splits when loading indices. No effect on
     // size as long as capacity / kGroupSize is a multiple of 4.
-    return hwy::RoundUpTo(hwy::DivCeil(capacity, kGroupSize) * kClusters, 64);
+    return kClusters;  // hwy::RoundUpTo(hwy::DivCeil(capacity, kGroupSize) *
+                       // kClusters, 64);
   }
 
   // Returns number of NuqStream to allocate for the stream, which matches its
   // size in bytes.
   static constexpr size_t PackedEnd(size_t capacity) {
-    return PackedStart(capacity) + hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
+    const size_t num_groups = hwy::DivCeil(capacity, kGroupSize);
+    return (kClusters * num_groups) +
+           hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
   }
 
   uint8_t byte;
