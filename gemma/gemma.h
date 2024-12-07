@@ -198,6 +198,7 @@ class Gemma {
   ~Gemma();
 
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
+  ModelConfig& GetMutableModelConfig() { return model_.MutableConfig(); }
   const ModelInfo& Info() const { return info_; }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ModelWeightsStorage& Weights() const { return model_; }
