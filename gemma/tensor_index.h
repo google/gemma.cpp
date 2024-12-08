@@ -68,7 +68,17 @@ class TensorIndex {
   // or an empty TensorInfo if not found.
   // NOTE: that the returned TensorInfo is a copy, so that the source
   // TensorIndex can be destroyed without affecting the returned TensorInfo.
-  TensorInfo GetTensorInfo(const std::string& path) const;
+  TensorInfo TensorInfoFromSourcePath(const std::string& path) const;
+
+  // Returns the TensorInfo whose name matches the given name,
+  // or an empty TensorInfo if not found.
+  // NOTE: that the returned TensorInfo is a copy, so that the source
+  // TensorIndex can be destroyed without affecting the returned TensorInfo.
+  TensorInfo TensorInfoFromName(const std::string& name) const {
+    const TensorInfo* info = FindName(name);
+    if (info == nullptr) return TensorInfo();
+    return *info;
+  }
 
   // Returns the TensorInfo for the given tensor name, for concise construction
   // of ModelWeightsPtrs/LayerWeightsPtrs.
