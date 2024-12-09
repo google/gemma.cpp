@@ -416,6 +416,7 @@ cc_library(
 cc_test(
     name = "gemma_test",
     srcs = ["evals/gemma_test.cc"],
+    linkstatic = True,
     # Requires model files
     tags = [
         "local",
