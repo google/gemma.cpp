@@ -80,7 +80,7 @@ std::vector<TensorInfo> ModelTensors(const ModelConfig& config) {
           .name = "img_pos_emb",
           .source_names = {"img/pos_embedding"},
           .axes = {0, 1},
-          .shape = {/*1,*/ 256, config.vit_model_dim},
+          .shape = {/*1,*/ config.vit_seq_len, config.vit_model_dim},
           .min_size = Type::kF32,
       },
   };

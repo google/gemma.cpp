@@ -15,16 +15,20 @@
 
 #include "paligemma/image.h"
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 #include "gtest/gtest.h"
 
 namespace gcpp {
 namespace {
 
-float Normalize(int value) { return 2.0f * (value / 255.0f) - 1.0f; }
+float Normalize(float value, float max_value = 255.0f) {
+  return 2.0f * (value / max_value) - 1.0f;
+}
 
-TEST(ImageTest, BasicFunctionality) {
+TEST(ImageTest, LoadResize224GetPatch) {
   return;  // Need to figure out how to get the external path for the test file.
   std::string path;
   Image image;
@@ -48,7 +52,7 @@ TEST(ImageTest, BasicFunctionality) {
   EXPECT_EQ(image.data()[33], Normalize(164));
   EXPECT_EQ(image.data()[34], Normalize(185));
   EXPECT_EQ(image.data()[35], Normalize(191));
-  image.Resize();
+  image.Resize(224, 224);
   // Check first and last pixel.
   EXPECT_EQ(image.data()[0], Normalize(160));
   EXPECT_EQ(image.data()[1], Normalize(184));
@@ -63,8 +67,64 @@ TEST(ImageTest, BasicFunctionality) {
   EXPECT_EQ(patch[1], Normalize(184));
   EXPECT_EQ(patch[2], Normalize(188));
   image.GetPatch(18, patch);
-  for (int i = 0; i < 10; ++i) {
+  // Check the first row of the patch.
+  for (size_t i = 0; i < 14 * 3; ++i) {
     EXPECT_EQ(patch[i], image.data()[(14 * 224 + 2 * 14) * 3 + i]);
+  }
+}
+
+TEST(ImageTest, Non224) {
+  std::vector<float> data(28 * 42 * 3);
+  for (int i = 0; i < data.size(); ++i) {
+    data[i] = static_cast<float>(i);
+  }
+  float max_value = data.back();
+  Image image;
+  image.Set(28, 42, data.data());
+  EXPECT_EQ(image.width(), 28);
+  EXPECT_EQ(image.height(), 42);
+  EXPECT_EQ(image.size(), data.size());
+  // Resize 28 x 42 -> 56 x 42, "double" each pixel horizontally.
+  image.Resize(/*new_width=*/56, /*new_height=*/42);
+  // Check a few pixels.
+  EXPECT_NEAR(image.data()[0], Normalize(0.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[1], Normalize(1.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[2], Normalize(2.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[3], Normalize(0.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[4], Normalize(1.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[5], Normalize(2.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[6], Normalize(3.0f, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 9],
+            Normalize(data.size() - 6, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 8],
+            Normalize(data.size() - 5, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 7],
+            Normalize(data.size() - 4, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 3],
+            Normalize(data.size() - 3, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 2],
+            Normalize(data.size() - 2, max_value), 1e-6);
+  EXPECT_NEAR(image.data()[image.size() - 1],
+            Normalize(data.size() - 1, max_value), 1e-6);
+  // Extract two patches.
+  const size_t kPatchValues = 14 * 14 * 3;  // = 588
+  float patch[kPatchValues];
+  // Patch 0 is just the "start" of the image.
+  image.GetPatch(0, patch);
+  EXPECT_NEAR(patch[0], Normalize(0.0f, max_value), 1e-6);
+  EXPECT_NEAR(patch[1], Normalize(1.0f, max_value), 1e-6);
+  EXPECT_NEAR(patch[2], Normalize(2.0f, max_value), 1e-6);
+  // The "image" has 4x3 patches, so patch 6 has coordinates (1, 2) and its
+  // pixel coordinates are offset by (14, 28).
+  image.GetPatch(6, patch);
+  for (size_t n = 0; n < kPatchValues; ++n) {
+    size_t k = n % 3;
+    size_t j = ((n - k) / 3) % 14;
+    size_t i = (n - k - j * 3) / (14 * 3);
+    EXPECT_EQ(n, (i * 14 + j) * 3 + k);
+    i += 14;
+    j += 28;
+    EXPECT_EQ(patch[n], image.data()[(i * 56 + j) * 3 + k]);
   }
 }
 

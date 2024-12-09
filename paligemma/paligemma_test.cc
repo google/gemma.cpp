@@ -28,7 +28,7 @@
 // To run the test, pass the following flags:
 // --model paligemma-224 --tokenizer <tokenizer_path> --weights <weights_path>
 // It should pass for the following models:
-// paligemma-3b-mix-224
+// paligemma-3b-mix-224, paligemma2-3b-pt-448
 
 namespace gcpp {
 namespace {
@@ -55,7 +55,8 @@ void PaliGemmaTest::InitVit(const std::string& path) {
   Image image;
   HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
-  image.Resize();
+  const size_t image_size = model.GetModelConfig().image_size;
+  image.Resize(image_size, image_size);
   RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
   model.GenerateImageTokens(runtime_config, image, image_tokens_);
 }
@@ -102,7 +103,8 @@ void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
 }
 
 TEST_F(PaliGemmaTest, General) {
-  static const char* kQA[][2] = {
+  ASSERT_NE(s_env->GetModel(), nullptr);
+  static const char* kQA_3B_mix_224[][2] = {
       {"describe this image",
        "A large building with two towers stands tall on the water's edge."},
       {"describe image briefly",
@@ -113,8 +115,29 @@ TEST_F(PaliGemmaTest, General) {
       {"segment water", "<seg010> water"},
       {"Which city is this more likely? Tokio or Zurich?", "zurich"},
   };
-  static const size_t kNum = sizeof(kQA) / sizeof(kQA[0]);
-  TestQuestions(kQA, kNum);
+  static const char* kQA_2_3B_pt_448[][2] = {
+      {"describe this image", "The Grossmünster in Zürich"},
+      {"describe image briefly", "The Grossmünster"},
+      {"answer en What objects are in the image?", "Building, Tower"},
+      {"segment water", "<loc1023> water"},
+  };
+  const char* (*qa)[2];
+  size_t num;
+  switch (s_env->GetModel()->Info().model) {
+    case Model::PALIGEMMA_224:
+      qa = kQA_3B_mix_224;
+      num = sizeof(kQA_3B_mix_224) / sizeof(kQA_3B_mix_224[0]);
+      break;
+    case Model::PALIGEMMA2_3B_448:
+      qa = kQA_2_3B_pt_448;
+      num = sizeof(kQA_2_3B_pt_448) / sizeof(kQA_2_3B_pt_448[0]);
+      break;
+    default:
+      FAIL() << "Unsupported model: "
+             << s_env->GetModel()->GetModelConfig().model_name;
+      break;
+  }
+  TestQuestions(qa, num);
 }
 
 }  // namespace

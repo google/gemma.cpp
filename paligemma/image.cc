@@ -36,10 +36,8 @@
 
 namespace gcpp {
 namespace {
-// Hardcoded for PaliGemma-224 ViT input.
+// Hardcoded for PaliGemma ViT input.
 constexpr size_t kPatchSize = 14;
-constexpr size_t kImageSize = 224;
-constexpr size_t kNumPatches = kImageSize / kPatchSize;  // 16
 
 // Returns the linearly scaled index in [0, to_size) closest to the
 // value in [0, from_size).
@@ -174,9 +172,7 @@ void Image::Set(int width, int height, const float* data) {
   }
 }
 
-void Image::Resize() {
-  int new_width = 224;
-  int new_height = kImageSize;
+void Image::Resize(int new_width, int new_height) {
   std::vector<float> new_data(new_width * new_height * 3);
   // TODO: go to bilinear interpolation, or antialias.
   // E.g. consider WeightsSymmetric3Lowpass and SlowSymmetric3 from
@@ -211,18 +207,19 @@ bool Image::WriteBinary(const std::string& filename) const {
   return true;
 }
 
-// Image.data() is kImageSize x kImageSize x 3, H x W x C.
-// We want the N-th patch (of 256) of size kPatchSize x kPatchSize x 3.
-// Patches are numbered in usual "pixel-order".
+// Image.data() is H x W x 3.
+// We want the N-th patch of size kPatchSize x kPatchSize x 3.
 void Image::GetPatch(size_t patch_num, float* patch) const {
   PROFILER_FUNC;
-  constexpr size_t kDataSize = kImageSize * kImageSize * 3;
+  const size_t kDataSize = width_ * height_ * 3;
   HWY_ASSERT(size() == kDataSize);
-  constexpr size_t kPatchDataSize = kPatchSize * kPatchSize * 3;
-  size_t i_offs = patch_num / kNumPatches;
-  size_t j_offs = patch_num % kNumPatches;
-  HWY_ASSERT(0 <= i_offs && i_offs < kNumPatches);
-  HWY_ASSERT(0 <= j_offs && j_offs < kNumPatches);
+  HWY_ASSERT(width_ % kPatchSize == 0);
+  HWY_ASSERT(height_ % kPatchSize == 0);
+  const size_t kNumPatchesPerRow = width_ / kPatchSize;
+  size_t i_offs = patch_num / kNumPatchesPerRow;
+  size_t j_offs = patch_num % kNumPatchesPerRow;
+  HWY_ASSERT(0 <= i_offs && i_offs < height_ / kPatchSize);
+  HWY_ASSERT(0 <= j_offs && j_offs < kNumPatchesPerRow);
   i_offs *= kPatchSize;
   j_offs *= kPatchSize;
   // This can be made faster, but let's first see whether it matters.
@@ -231,10 +228,10 @@ void Image::GetPatch(size_t patch_num, float* patch) const {
     for (size_t j = 0; j < kPatchSize; ++j) {
       for (size_t k = 0; k < 3; ++k) {
         const size_t patch_index = (i * kPatchSize + j) * 3 + k;
-        HWY_ASSERT(patch_index < kPatchDataSize);
+        HWY_DASSERT(patch_index < kPatchSize * kPatchSize * 3);
         const size_t image_index =
-            ((i + i_offs) * kImageSize + (j + j_offs)) * 3 + k;
-        HWY_ASSERT(image_index < kDataSize);
+            ((i + i_offs) * width_ + (j + j_offs)) * 3 + k;
+        HWY_DASSERT(image_index < kDataSize);
         patch[patch_index] = image_data[image_index];
       }
     }

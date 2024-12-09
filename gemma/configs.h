@@ -114,15 +114,20 @@ enum class Model {
   GEMMA_TINY,
   GEMMA2_2B,
   PALIGEMMA_224,
+  PALIGEMMA_448,
   PALIGEMMA2_3B_224,
+  PALIGEMMA2_3B_448,
   PALIGEMMA2_10B_224,
+  PALIGEMMA2_10B_448,
 };
 
 // Allows the Model enum to be iterated over.
 static constexpr Model kAllModels[] = {
     Model::GEMMA_2B, Model::GEMMA_7B, Model::GEMMA2_9B, Model::GEMMA2_27B,
     Model::GRIFFIN_2B, Model::GEMMA_TINY, Model::GEMMA2_2B,
-    Model::PALIGEMMA_224, Model::PALIGEMMA2_3B_224, Model::PALIGEMMA2_10B_224,
+    Model::PALIGEMMA_224, Model::PALIGEMMA_448,
+    Model::PALIGEMMA2_3B_224, Model::PALIGEMMA2_3B_448,
+    Model::PALIGEMMA2_10B_224, Model::PALIGEMMA2_10B_448,
 };
 
 struct LayerConfig {

@@ -205,10 +205,10 @@ static ModelConfig ConfigGriffin2B() {
 }
 
 // Adds a ViT config (SigLIP SoViT ViT, used in PaliGemma) to the model config.
-static void AddVitConfig(ModelConfig& config) {
+static void AddVitConfig(ModelConfig& config, size_t image_size = 224) {
   config.vit_model_dim = 1152;
   config.vocab_size = 256000 + 1024 + 128;  // = 257152
-  config.image_size = 224;
+  config.image_size = image_size;
   config.patch_width = 14;
   for (auto& layer_config : config.layer_configs) {
     layer_config.optimized_gating = false;
@@ -236,6 +236,14 @@ static ModelConfig ConfigPaliGemma_224() {
   return config;
 }
 
+static ModelConfig ConfigPaliGemma_448() {
+  ModelConfig config = ConfigGemma2B();
+  config.model_name = "PaliGemma_448";
+  config.model = Model::PALIGEMMA_448;
+  AddVitConfig(config, /*image_size=*/448);
+  return config;
+}
+
 ModelConfig VitConfig(const ModelConfig& config) {
   ModelConfig vit_config = ConfigNoSSM();
   vit_config.model_dim = config.vit_model_dim;
@@ -254,11 +262,27 @@ static ModelConfig ConfigPaliGemma2_3B_224() {
   return config;
 }
 
+static ModelConfig ConfigPaliGemma2_3B_448() {
+  ModelConfig config = ConfigGemma2_2B();
+  config.model_name = "PaliGemma2_3B_448";
+  config.model = Model::PALIGEMMA2_3B_448;
+  AddVitConfig(config, /*image_size=*/448);
+  return config;
+}
+
 static ModelConfig ConfigPaliGemma2_10B_224() {
   ModelConfig config = ConfigGemma2_9B();
   config.model_name = "PaliGemma2_10B_224";
   config.model = Model::PALIGEMMA2_10B_224;
   AddVitConfig(config);
+  return config;
+}
+
+static ModelConfig ConfigPaliGemma2_10B_448() {
+  ModelConfig config = ConfigGemma2_9B();
+  config.model_name = "PaliGemma2_10B_448";
+  config.model = Model::PALIGEMMA2_10B_448;
+  AddVitConfig(config, /*image_size=*/448);
   return config;
 }
 
@@ -280,10 +304,16 @@ ModelConfig ConfigFromModel(Model model) {
       return ConfigGemmaTiny();
     case Model::PALIGEMMA_224:
       return ConfigPaliGemma_224();
+    case Model::PALIGEMMA_448:
+      return ConfigPaliGemma_448();
     case Model::PALIGEMMA2_3B_224:
       return ConfigPaliGemma2_3B_224();
+    case Model::PALIGEMMA2_3B_448:
+      return ConfigPaliGemma2_3B_448();
     case Model::PALIGEMMA2_10B_224:
       return ConfigPaliGemma2_10B_224();
+    case Model::PALIGEMMA2_10B_448:
+      return ConfigPaliGemma2_10B_448();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }

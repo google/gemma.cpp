@@ -24,8 +24,7 @@
 
 namespace gcpp {
 
-// Very basic image loading and processing for PaliGemma-224. Does not try to be
-// generic at the moment, e.g. the size to normalize to is hardcoded.
+// Very basic image loading and processing for PaliGemma.
 class Image {
  public:
   Image() = default;
@@ -38,15 +37,17 @@ class Image {
   // Sets the image content to the given data. The data is copied and normalized
   // to [-1, 1]. The data is expected to be of size width * height * 3.
   void Set(int width, int height, const float* data);
-  // Resizes to 224x224 (nearest-neighbor for now, bilinear or antialias would
-  // be better).
-  void Resize();
+  // Resizes to width x height (nearest-neighbor for now, bilinear or antialias
+  // would be better).
+  void Resize(int width, int height);
   // Writes the file as plain floats in binary. Useful to e.g. load in a colab.
   bool WriteBinary(const std::string& filename) const;
-  // Stores the patch for the given patch number [0, 256) in `patch`.
-  // As sizes are hardcoded, the patch number is sufficient here.
+  // Stores the patch for the given patch number in `patch`.
+  // Patches are numbered in usual raster-order. E.g. for an image of size
+  // 224 x 224, there are 16 x 16 = 256 patches.
   // `patch` should have space for at least 14 * 14 * 3 = 588 floats.
-  // Requires that Normalize() has been called.
+  // Requires that Normalize() has been called and that the image width and
+  // height are multiples of 14.
   void GetPatch(size_t patch_num, float* patch) const;
 
   float *data() { return data_.data(); }

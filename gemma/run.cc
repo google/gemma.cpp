@@ -97,7 +97,8 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
                                          model.GetModelConfig().model_dim));
     HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
-    image.Resize();
+    const size_t image_size = model.GetModelConfig().image_size;
+    image.Resize(image_size, image_size);
     RuntimeConfig runtime_config = {
         .gen = &gen, .verbosity = app.verbosity, .use_spinning = app.spin};
     double image_tokens_start = hwy::platform::Now();
