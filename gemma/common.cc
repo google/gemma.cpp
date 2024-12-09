@@ -73,29 +73,24 @@ constexpr ModelTraining kModelTraining[] = {
     ModelTraining::PALIGEMMA, ModelTraining::PALIGEMMA,  // PG2 10B 224 / 448
 };
 
-constexpr size_t kNumModelFlags =
-    std::end(kModelFlags) - std::begin(kModelFlags);
-static_assert(kNumModelFlags ==
-              std::end(kModelTypes) - std::begin(kModelTypes));
-static_assert(kNumModelFlags ==
-              std::end(kModelTraining) - std::begin(kModelTraining));
+constexpr size_t kNumModelFlags = std::size(kModelFlags);
+static_assert(kNumModelFlags == std::size(kModelTypes));
+static_assert(kNumModelFlags == std::size(kModelTraining));
 
 const char* ParseModelTypeAndTraining(const std::string& model_flag,
                                       Model& model, ModelTraining& training) {
-  static char kErrorMessageBuffer[kNumModelFlags * 8 + 1024] =
+  static std::string kErrorMessageBuffer =
       "Invalid or missing model flag, need to specify one of ";
-  for (size_t i = 0; i + 1 < kNumModelFlags; i++) {
-    strcat(kErrorMessageBuffer, kModelFlags[i]);  // NOLINT
-    strcat(kErrorMessageBuffer, ", ");            // NOLINT
+  for (size_t i = 0; i + 1 < kNumModelFlags; ++i) {
+    kErrorMessageBuffer.append(kModelFlags[i]);
+    kErrorMessageBuffer.append(", ");
   }
-  strcat(kErrorMessageBuffer, kModelFlags[kNumModelFlags - 1]);  // NOLINT
-  strcat(kErrorMessageBuffer, ".");                    // NOLINT
-
+  kErrorMessageBuffer.append(kModelFlags[kNumModelFlags - 1]);
+  kErrorMessageBuffer.append(".");
   std::string model_type_lc = model_flag;
-  std::transform(begin(model_type_lc), end(model_type_lc), begin(model_type_lc),
-                 [](unsigned char c) { return std::tolower(c); });
-
-  for (size_t i = 0; i < kNumModelFlags; i++) {
+  std::transform(model_type_lc.begin(), model_type_lc.end(),
+                 model_type_lc.begin(), ::tolower);
+  for (size_t i = 0; i < kNumModelFlags; ++i) {
     if (kModelFlags[i] == model_type_lc) {
       model = kModelTypes[i];
       training = kModelTraining[i];
@@ -103,7 +98,7 @@ const char* ParseModelTypeAndTraining(const std::string& model_flag,
       return nullptr;
     }
   }
-  return kErrorMessageBuffer;
+  return kErrorMessageBuffer.c_str();
 }
 
 const char* ModelString(Model model, ModelTraining training) {
@@ -120,26 +115,25 @@ const char* StringFromType(Type type) {
 }
 
 const char* ParseType(const std::string& type_string, Type& type) {
-  constexpr size_t kNum = std::end(kTypeStrings) - std::begin(kTypeStrings);
-  static char kErrorMessageBuffer[kNum * 8 + 100] =
+  constexpr size_t kNum = std::size(kTypeStrings);
+  static std::string kErrorMessageBuffer =
       "Invalid or missing type, need to specify one of ";
-  for (size_t i = 0; i + 1 < kNum; i++) {
-    strcat(kErrorMessageBuffer, kTypeStrings[i]);  // NOLINT
-    strcat(kErrorMessageBuffer, ", ");         // NOLINT
+  for (size_t i = 0; i + 1 < kNum; ++i) {
+    kErrorMessageBuffer.append(kTypeStrings[i]);
+    kErrorMessageBuffer.append(", ");
   }
-  strcat(kErrorMessageBuffer, kTypeStrings[kNum - 1]);  // NOLINT
-  strcat(kErrorMessageBuffer, ".");                 // NOLINT
+  kErrorMessageBuffer.append(kTypeStrings[kNum - 1]);
+  kErrorMessageBuffer.append(".");
   std::string type_lc = type_string;
-  std::transform(begin(type_lc), end(type_lc), begin(type_lc),
-                 [](unsigned char c) { return std::tolower(c); });
-  for (size_t i = 0; i < kNum; i++) {
+  std::transform(type_lc.begin(), type_lc.end(), type_lc.begin(), ::tolower);
+  for (size_t i = 0; i < kNum; ++i) {
     if (kTypeStrings[i] == type_lc) {
       type = static_cast<Type>(i);
       HWY_ASSERT(std::string(StringFromType(type)) == type_lc);
       return nullptr;
     }
   }
-  return kErrorMessageBuffer;
+  return kErrorMessageBuffer.c_str();
 }
 
 void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
