@@ -1,4 +1,6 @@
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <stdexcept>
 #include <string>
@@ -6,9 +8,6 @@
 #include "absl/types/span.h"
 #include "compression/python/compression_clif_aux.h"
 #include "compression/shared.h"
-#include "pybind11/numpy.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 
 using gcpp::SbsWriter;
 
