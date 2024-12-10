@@ -100,11 +100,10 @@ HWY_EXPORT(CallSoftmax);
 float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           int verbosity) {
-  const StreamFunc stream_token = [](int /*token*/, float) { return true; };
+  const StreamFunc stream_token = [](int, float) { return true; };
 
-  // TWeight is unused, but we have to pass it to Config*.
   const int vocab_size = gemma.GetModelConfig().vocab_size;
-  float cross_entropy = std::log(vocab_size);  // first token
+  float cross_entropy = std::log(vocab_size);  // first token; == -log(1/v_s)
   size_t pos = 1;
 
   const SampleFunc sample_token = [&](float* probs,
