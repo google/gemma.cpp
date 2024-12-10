@@ -40,6 +40,8 @@ static inline const char* ToString(Tristate t) {
       return "true";
     case Tristate::kDefault:
       return "default";
+    default:
+      HWY_ABORT("Bug: unknown Tristate %d", static_cast<int>(t));
   }
 }
 
