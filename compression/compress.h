@@ -216,8 +216,9 @@ class MatPtrT : public MatPtr {
       : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), rows, cols) {}
   // Construction from TensorIndex entry to remove duplication of sizes.
   MatPtrT(const std::string& name, const TensorIndex& tensor_index)
+      : MatPtrT<MatT>(name, tensor_index.FindName(name)) {}
+  MatPtrT(const std::string& name, const TensorInfo* tensor)
       : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), 0, 0) {
-    const TensorInfo* tensor = tensor_index.FindName(name);
     HWY_ASSERT(tensor != nullptr);
     cols_ = tensor->shape.back();
     rows_ = 1;

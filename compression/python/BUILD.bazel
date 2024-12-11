@@ -15,6 +15,7 @@ cc_library(
     visibility = ["//visibility:private"],
     deps = [
         "@abseil-cpp//absl/types:span",
+        "//:common",
         "//compression:compress",
         "//compression:io",
         "@highway//:hwy",
@@ -28,6 +29,7 @@ pybind_extension(
     deps = [
         ":compression_clif_aux",
         "@abseil-cpp//absl/types:span",
+        "//:common",
         "//compression:sfp",
     ],
 )

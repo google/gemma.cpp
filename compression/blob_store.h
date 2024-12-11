@@ -104,6 +104,9 @@ class BlobWriter {
   // Stores all blobs to disk in the given order with padding for alignment.
   BlobError WriteAll(hwy::ThreadPool& pool, const Path& filename);
 
+  // Returns the number of blobs added.
+  size_t DebugNumBlobsAdded() const { return keys_.size(); }
+
  private:
   std::vector<hwy::uint128_t> keys_;
   std::vector<hwy::Span<const uint8_t>> blobs_;
