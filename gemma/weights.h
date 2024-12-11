@@ -550,6 +550,7 @@ class ModelWeightsStorage {
   void CopyWithTranspose(hwy::ThreadPool& pool);
   void LogWeightStats();
   const ModelConfig& Config() const { return config_; }
+  ModelConfig& MutableConfig() { return config_; }
 
   template <typename T>
   ModelWeightsPtrs<T>* GetWeightsOfType() const {

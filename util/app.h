@@ -173,6 +173,11 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   std::string model_type_str;
   std::string weight_type_str;
 
+  // Self-extend
+  Tristate self_extend;
+  size_t se_group_size;
+  size_t se_neighbor_size;
+
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
@@ -191,6 +196,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     visitor(weight_type_str, "weight_type", std::string("sfp"),
             "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit FP\n"
             "    Required argument.");
+    visitor(self_extend, "self_extend", Tristate::kDefault,
+            "Apply self extend ? -1 = auto, 0 = no, 1 = yes.", 2);
+    visitor(se_group_size, "se_group_size", size_t{1}, "Group size for self extend");
+    visitor(se_neighbor_size, "se_neighbor_size",
+            std::numeric_limits<size_t>::max(),
+            "Neighbor window size for self extend");
   }
 
   // Uninitialized before Validate, must call after that.
