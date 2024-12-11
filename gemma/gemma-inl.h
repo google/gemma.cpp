@@ -1249,16 +1249,9 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   // Copy so we can increment without requiring users to pass in a mutable span.
   std::vector<size_t> queries_pos_copy(queries_pos_in.cbegin(),
                                        queries_pos_in.cend());
-  QueriesMutablePos queries_mutable_pos(queries_pos_copy.data(),
-                                        queries_pos_copy.size());
-  // For the first turn, qpos remains 0. Otherwise, rewind the previous EOS.
-  // Background: for multiturn, Gemma 2 expects only <end_of_turn>, not EOS. The
-  // previous `Generate` called `StreamToken` for the last token (EOS), hence
-  // our caller's qpos is 1 too high. This must be corrected because we didn't
-  // write to the KV cache at that position, so MSAN would complain.
-  for (size_t& qpos : queries_mutable_pos) {
-    qpos = qpos == 0 ? 0 : qpos - 1;
-  }
+  const QueriesMutablePos queries_mutable_pos(queries_pos_copy.data(),
+                                              queries_pos_copy.size());
+
   // Sanity check: prompts should not be empty, nor start with EOS.
   for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
     const PromptTokens& prompt = queries_prompt[query_idx];

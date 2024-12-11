@@ -157,13 +157,14 @@ TEST_F(GemmaTest, Multiturn) {
   Gemma* model = s_env->GetModel();
   ASSERT_NE(model, nullptr);
   size_t abs_pos = 0;
-  std::string dialog;
+  std::string response;
   auto stream_token = [&](int token, float) {
+    if (token == EOS_ID) return true;
     ++abs_pos;
     std::string token_text;
     EXPECT_TRUE(
         model->Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    dialog += token_text;
+    response += token_text;
     return true;
   };
   RuntimeConfig runtime_config{
@@ -180,18 +181,21 @@ TEST_F(GemmaTest, Multiturn) {
                                             abs_pos, mutable_prompt);
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
+  // Note: we do not rewind any <end_of_turn> tokens here. If the model
+  // produced one and WrapAndTokenize() inserts another one, it will just be
+  // duplicated.
   mutable_prompt = "Please repeat all prior statements.";
   tokens = WrapAndTokenize(model->Tokenizer(), model->Info(), abs_pos,
                            mutable_prompt);
-  // Reset the `dialog` string here, then check that the model actually has
+  // Reset the `response` string here, then check that the model actually has
   // access to the previous turn by asking to reproduce.
-  dialog.clear();
+  response.clear();
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
-  fprintf(stderr, "decoded: %s\n", dialog.c_str());
+  fprintf(stderr, "decoded: %s\n", response.c_str());
   bool remembered_turquoise =
-      dialog.find("turquoise") != std::string::npos;              // NOLINT
-  bool remembered_car = dialog.find("car") != std::string::npos;  // NOLINT
+      response.find("turquoise") != std::string::npos;              // NOLINT
+  bool remembered_car = response.find("car") != std::string::npos;  // NOLINT
   EXPECT_TRUE(remembered_turquoise || remembered_car);
 }
 
