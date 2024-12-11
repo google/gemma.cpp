@@ -411,12 +411,14 @@ TEST(BackPropTest, LayerVJP) {
   using T = double;
   using TC = std::complex<T>;
   ModelConfig config = TestConfig();
+  TensorIndex tensor_index(config, /*llm_layer_idx=*/0, /*img_layer_idx=*/-1,
+                           /*reshape_att=*/false);
   const size_t kOutputSize = config.seq_len * config.model_dim;
-  LayerWeightsPtrs<T> weights(config.layer_configs[0]);
-  LayerWeightsPtrs<T> grad(config.layer_configs[0]);
+  LayerWeightsPtrs<T> weights(config.layer_configs[0], tensor_index);
+  LayerWeightsPtrs<T> grad(config.layer_configs[0], tensor_index);
   ForwardLayer<T> forward(config.layer_configs[0], config.seq_len);
   ForwardLayer<T> backward(config.layer_configs[0], config.seq_len);
-  LayerWeightsPtrs<TC> c_weights(config.layer_configs[0]);
+  LayerWeightsPtrs<TC> c_weights(config.layer_configs[0], tensor_index);
   ForwardLayer<TC> c_forward(config.layer_configs[0], config.seq_len);
   MatStorageT<T> y("y", kOutputSize, 1);
   MatStorageT<T> dy("dy", kOutputSize, 1);

@@ -93,7 +93,7 @@ template <typename T>
 class WeightsWrapper {
  public:
   explicit WeightsWrapper(const ModelConfig& config)
-      : pool_(0), weights_(config, pool_) {
+      : pool_(0), weights_(config) {
     weights_.Allocate(data_, pool_);
   }
 

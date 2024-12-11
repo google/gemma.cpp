@@ -219,21 +219,27 @@ class MatPtrT : public MatPtr {
       : MatPtrT<MatT>(name, tensor_index.FindName(name)) {}
   MatPtrT(const std::string& name, const TensorInfo* tensor)
       : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), 0, 0) {
-    HWY_ASSERT(tensor != nullptr);
-    cols_ = tensor->shape.back();
-    rows_ = 1;
-    if (tensor->cols_take_extra_dims) {
-      // The columns eat the extra dimensions.
-      rows_ = tensor->shape[0];
-      for (size_t i = 1; i < tensor->shape.size() - 1; ++i) {
-        cols_ *= tensor->shape[i];
-      }
+    if (tensor == nullptr) {
+      cols_ = 0;
+      rows_ = 0;
     } else {
-      // The rows eat the extra dimensions.
-      for (size_t i = 0; i < tensor->shape.size() - 1; ++i) {
-        rows_ *= tensor->shape[i];
+      cols_ = tensor->shape.back();
+      rows_ = 1;
+      if (tensor->cols_take_extra_dims) {
+        // The columns eat the extra dimensions.
+        rows_ = tensor->shape[0];
+        for (size_t i = 1; i < tensor->shape.size() - 1; ++i) {
+          cols_ *= tensor->shape[i];
+        }
+      } else {
+        // The rows eat the extra dimensions.
+        for (size_t i = 0; i < tensor->shape.size() - 1; ++i) {
+          rows_ *= tensor->shape[i];
+        }
       }
     }
+    stride_ = cols_;
+    num_elements_ = rows_ * cols_;
   }
 
   // Copying allowed as the metadata is small.

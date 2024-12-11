@@ -165,9 +165,9 @@ void CompressWeights(const Path& weights_path,
          compressed_weights_path.path.c_str());
   ModelConfig config = ConfigFromModel(model_type);
   std::vector<MatStorage> model_storage;
-  ModelWeightsPtrs<T> c_weights(config, pool);
+  ModelWeightsPtrs<T> c_weights(config);
   c_weights.Allocate(model_storage, pool);
-  ModelWeightsPtrs<float> uc_weights(config, pool);
+  ModelWeightsPtrs<float> uc_weights(config);
   uc_weights.Allocate(model_storage, pool);
   // Get uncompressed weights, compress, and store.
   FILE* fptr = fopen(weights_path.path.c_str(), "rb");

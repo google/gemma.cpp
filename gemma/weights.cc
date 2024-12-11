@@ -186,18 +186,18 @@ void ModelWeightsStorage::CreateForType(Type weight_type,
                                         hwy::ThreadPool& pool) {
   switch (weight_type) {
     case Type::kF32:
-      float_weights_ = std::make_unique<ModelWeightsPtrs<float>>(config_, pool);
+      float_weights_ = std::make_unique<ModelWeightsPtrs<float>>(config_);
       break;
     case Type::kBF16:
-      bf16_weights_ = std::make_unique<ModelWeightsPtrs<BF16>>(config_, pool);
+      bf16_weights_ = std::make_unique<ModelWeightsPtrs<BF16>>(config_);
       break;
     case Type::kSFP:
       sfp_weights_ =
-          std::make_unique<ModelWeightsPtrs<SfpStream>>(config_, pool);
+          std::make_unique<ModelWeightsPtrs<SfpStream>>(config_);
       break;
     case Type::kNUQ:
       nuq_weights_ =
-          std::make_unique<ModelWeightsPtrs<NuqStream>>(config_, pool);
+          std::make_unique<ModelWeightsPtrs<NuqStream>>(config_);
       break;
     default:
       HWY_ABORT("Weight type %d unsupported.", static_cast<int>(weight_type));

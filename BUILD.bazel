@@ -269,7 +269,6 @@ cc_test(
         "@googletest//:gtest_main",
         "//compression:compress",
         "@highway//:hwy",
-        "@highway//:thread_pool",
     ],
 )
 

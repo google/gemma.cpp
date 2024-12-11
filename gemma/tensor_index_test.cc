@@ -13,7 +13,6 @@
 #include "gemma/weights.h"
 #include "util/basics.h"
 #include "hwy/aligned_allocator.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 namespace {
@@ -22,7 +21,6 @@ namespace {
 // and that the TensorIndex returns the correct shape and name for the tensor,
 // for all models.
 TEST(TensorIndexTest, FindName) {
-  hwy::ThreadPool pool(4);
   for (Model model : kAllModels) {
     fprintf(stderr, "Testing model %d\n", static_cast<int>(model));
     ModelConfig config = ConfigFromModel(model);
@@ -44,7 +42,7 @@ TEST(TensorIndexTest, FindName) {
                                   /*split_and_reshape=*/false);
     }
     // For each tensor in any model, exactly one TensorIndex should find it.
-    ModelWeightsPtrs<SfpStream> weights(config, pool);
+    ModelWeightsPtrs<SfpStream> weights(config);
     ModelWeightsPtrs<SfpStream>::ForEachTensor(
         {&weights}, ForEachType::kInitNoToc,
         [&tensor_indexes](const char* name, hwy::Span<MatPtr*> tensors) {
