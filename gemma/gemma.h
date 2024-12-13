@@ -244,7 +244,7 @@ class Gemma {
   ModelInfo info_;
 };
 
-// Adds BOS token and possibly 'turn' annotations, which depend on `training`
+// Adds BOS token and possibly 'turn' annotations, which depend on `info`
 // and `pos`, the number of tokens decoded so far; returns the corresponding
 // tokens. Asserts that tokenization is successful.
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,

@@ -60,25 +60,25 @@ constexpr Model kModelTypes[] = {
     Model::PALIGEMMA2_10B_224,             // PaliGemma2 10B 224
     Model::PALIGEMMA2_10B_448,             // PaliGemma2 10B 448
 };
-constexpr ModelTraining kModelTraining[] = {
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 2B
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma 7B
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // RecurrentGemma
-    ModelTraining::GEMMA_IT,                           // Gemma Tiny
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 2B
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 9B
-    ModelTraining::GEMMA_PT, ModelTraining::GEMMA_IT,  // Gemma2 27B
-    ModelTraining::PALIGEMMA, ModelTraining::PALIGEMMA,  // PaliGemma 224 / 448
-    ModelTraining::PALIGEMMA, ModelTraining::PALIGEMMA,  // PG2 3B 224 / 448
-    ModelTraining::PALIGEMMA, ModelTraining::PALIGEMMA,  // PG2 10B 224 / 448
+constexpr PromptWrapping kPromptWrapping[] = {
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma 2B
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma 7B
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // RecurrentGemma
+    PromptWrapping::GEMMA_IT,                              // Gemma Tiny
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma2 2B
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma2 9B
+    PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma2 27B
+    PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PaliGemma 224/448
+    PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 3B 224/448
+    PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 10B 224/448
 };
 
 constexpr size_t kNumModelFlags = std::size(kModelFlags);
 static_assert(kNumModelFlags == std::size(kModelTypes));
-static_assert(kNumModelFlags == std::size(kModelTraining));
+static_assert(kNumModelFlags == std::size(kPromptWrapping));
 
-const char* ParseModelTypeAndTraining(const std::string& model_flag,
-                                      Model& model, ModelTraining& training) {
+const char* ParseModelTypeAndWrapping(const std::string& model_flag,
+                                      Model& model, PromptWrapping& wrapping) {
   static std::string kErrorMessageBuffer =
       "Invalid or missing model flag, need to specify one of ";
   for (size_t i = 0; i + 1 < kNumModelFlags; ++i) {
@@ -93,21 +93,21 @@ const char* ParseModelTypeAndTraining(const std::string& model_flag,
   for (size_t i = 0; i < kNumModelFlags; ++i) {
     if (kModelFlags[i] == model_type_lc) {
       model = kModelTypes[i];
-      training = kModelTraining[i];
-      HWY_ASSERT(std::string(ModelString(model, training)) == model_type_lc);
+      wrapping = kPromptWrapping[i];
+      HWY_ASSERT(std::string(ModelString(model, wrapping)) == model_type_lc);
       return nullptr;
     }
   }
   return kErrorMessageBuffer.c_str();
 }
 
-const char* ModelString(Model model, ModelTraining training) {
+const char* ModelString(Model model, PromptWrapping wrapping) {
   for (size_t i = 0; i < kNumModelFlags; i++) {
-    if (kModelTypes[i] == model && kModelTraining[i] == training)
+    if (kModelTypes[i] == model && kPromptWrapping[i] == wrapping)
       return kModelFlags[i];
   }
-  HWY_ABORT("Unknown model %d training %d\n", static_cast<int>(model),
-            static_cast<int>(training));
+  HWY_ABORT("Unknown model %d wrapping %d\n", static_cast<int>(model),
+            static_cast<int>(wrapping));
 }
 
 const char* StringFromType(Type type) {
@@ -139,7 +139,7 @@ const char* ParseType(const std::string& type_string, Type& type) {
 void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
 
   // Instruction-tuned models are trained to expect control tokens.
-  if (info.training == ModelTraining::GEMMA_IT) {
+  if (info.wrapping == PromptWrapping::GEMMA_IT) {
     // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
     const std::string start = (pos == 0)
                                   ? "<start_of_turn>user\n"

@@ -49,7 +49,7 @@ TEST(OptimizeTest, GradientDescent) {
 
   const ModelInfo info = {
       .model = Model::GEMMA_TINY,
-      .training = ModelTraining::GEMMA_IT,
+      .wrapping = PromptWrapping::GEMMA_IT,
       .weight = Type::kF32,
   };
   ModelConfig config = ConfigFromModel(info.model);

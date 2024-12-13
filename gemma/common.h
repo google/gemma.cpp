@@ -20,7 +20,7 @@
 
 #include <string>
 
-#include "compression/shared.h"  // ModelTraining
+#include "compression/shared.h"  // PromptWrapping
 #include "gemma/configs.h"  // IWYU pragma: export
 #include "hwy/base.h"  // ConvertScalarTo
 
@@ -29,18 +29,18 @@ namespace gcpp {
 // Struct to bundle model information.
 struct ModelInfo {
   Model model;
-  ModelTraining training;
+  PromptWrapping wrapping;
   Type weight;
 };
 
 // Returns error string or nullptr if OK.
 // Thread-hostile.
-const char* ParseModelTypeAndTraining(const std::string& model_flag,
-                                      Model& model, ModelTraining& training);
+const char* ParseModelTypeAndWrapping(const std::string& model_flag,
+                                      Model& model, PromptWrapping& wrapping);
 const char* ParseType(const std::string& type_string, Type& type);
 
-// Inverse of ParseModelTypeAndTraining.
-const char* ModelString(Model model, ModelTraining training);
+// Inverse of ParseModelTypeAndWrapping.
+const char* ModelString(Model model, PromptWrapping wrapping);
 const char* StringFromType(Type type);
 
 // Wraps the given prompt using the expected control tokens for IT models.

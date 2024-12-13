@@ -196,7 +196,7 @@ constexpr bool IsNuqStream() {
 }
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
-enum class ModelTraining { GEMMA_IT, GEMMA_PT, PALIGEMMA };
+enum class PromptWrapping { GEMMA_IT, GEMMA_PT, PALIGEMMA };
 
 // Tensor types for loading weights. Note that not all types are supported as
 // weights for a model, but can be used for other purposes, such as types for

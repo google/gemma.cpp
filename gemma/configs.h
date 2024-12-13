@@ -200,7 +200,7 @@ struct ModelConfig {
 
   std::string model_name;
   Model model;
-  ModelTraining training;
+  PromptWrapping wrapping;
   Type weight;
   size_t num_layers = 0;
   size_t model_dim = 0;

@@ -366,13 +366,13 @@ bool LayerConfig::TestEqual(const LayerConfig& other, bool partial,
 bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
                             bool debug) const {
   bool result = true;
-  // We don't care about model_name, model, training, or weight being different,
+  // We don't care about model_name, model, wrapping, or weight being different,
   // but will output in debug mode if they are.
   if (debug) {
     WARN_IF_NOT_EQUAL(model_name, other.model_name);
     WARN_IF_NOT_EQUAL(static_cast<int>(model), static_cast<int>(other.model));
-    WARN_IF_NOT_EQUAL(static_cast<int>(training),
-                      static_cast<int>(other.training));
+    WARN_IF_NOT_EQUAL(static_cast<int>(wrapping),
+                      static_cast<int>(other.wrapping));
     WARN_IF_NOT_EQUAL(static_cast<int>(weight), static_cast<int>(other.weight));
   }
   TEST_EQUAL(model_dim, other.model_dim);

@@ -22,7 +22,7 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "compression/shared.h"  // ModelTraining
+#include "compression/shared.h"  // PromptWrapping
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
@@ -96,7 +96,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   if (have_image) {
     image_tokens = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
                                          model.GetModelConfig().model_dim));
-    HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
+    HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
     const size_t image_size = model.GetModelConfig().image_size;
     image.Resize(image_size, image_size);
@@ -207,7 +207,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     std::cout << "\n\n";
 
     // Prepare for the next turn.
-    if (!args.multiturn || model.Info().training == ModelTraining::PALIGEMMA) {
+    if (!args.multiturn || model.Info().wrapping == PromptWrapping::PALIGEMMA) {
       abs_pos = 0;  // Start a new turn at position 0.
       InitGenerator(args, gen);
     } else {

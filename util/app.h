@@ -136,8 +136,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    if (const char* err = ParseModelTypeAndTraining(model_type_str, info_.model,
-                                                    info_.training)) {
+    if (const char* err = ParseModelTypeAndWrapping(model_type_str, info_.model,
+                                                    info_.wrapping)) {
       return err;
     }
     if (const char* err = ParseType(weight_type_str, info_.weight)) {

@@ -187,7 +187,7 @@ int main(int argc, char** argv) {
     const std::string golden_path =
         benchmark_args.goldens.path + "/" +
         gcpp::ModelString(env.GetModel()->Info().model,
-                          env.GetModel()->Info().training) +
+                          env.GetModel()->Info().wrapping) +
         ".txt";
     return BenchmarkGoldens(env, golden_path);
   } else if (!benchmark_args.summarize_text.Empty()) {

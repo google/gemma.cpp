@@ -40,8 +40,8 @@
 #include <vector>
 
 #include "compression/compress.h"
-#include "compression/shared.h"  // ModelTraining
 #include "compression/io.h"      // Path
+#include "compression/shared.h"  // PromptWrapping
 #include "gemma/common.h"        // Model
 #include "gemma/weights.h"
 #include "util/allocator.h"
@@ -74,8 +74,8 @@ struct Args : public ArgsBase<Args> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    if (const char* err = ParseModelTypeAndTraining(model_type_str, model_type_,
-                                                    model_training_)) {
+    if (const char* err = ParseModelTypeAndWrapping(model_type_str, model_type_,
+                                                    prompt_wrapping_)) {
       return err;
     }
     if (const char* err = ParseType(weight_type_str, weight_type_)) {
@@ -127,12 +127,12 @@ struct Args : public ArgsBase<Args> {
 
   // Uninitialized before Validate, must call after that.
   gcpp::Model ModelType() const { return model_type_; }
-  gcpp::ModelTraining ModelTrainingType() const { return model_training_; }
+  gcpp::PromptWrapping PromptWrappingType() const { return prompt_wrapping_; }
   gcpp::Type WeightType() const { return weight_type_; }
 
  private:
   Model model_type_;
-  ModelTraining model_training_;
+  PromptWrapping prompt_wrapping_;
   Type weight_type_;
 };
 
@@ -212,7 +212,7 @@ namespace gcpp {
 
 void Run(Args& args) {
   hwy::ThreadPool pool(args.num_threads);
-  if (args.ModelTrainingType() == ModelTraining::PALIGEMMA) {
+  if (args.PromptWrappingType() == PromptWrapping::PALIGEMMA) {
     HWY_ABORT("PaliGemma is not supported in compress_weights.");
   }
   const Model model_type = args.ModelType();

@@ -53,7 +53,7 @@ void PaliGemmaTest::InitVit(const std::string& path) {
   image_tokens_ = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
                                         model.GetModelConfig().model_dim));
   Image image;
-  HWY_ASSERT(model.Info().training == ModelTraining::PALIGEMMA);
+  HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
   const size_t image_size = model.GetModelConfig().image_size;
   image.Resize(image_size, image_size);
