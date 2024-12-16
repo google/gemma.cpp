@@ -55,8 +55,9 @@ class IFields;  // breaks circular dependency
 // Visitors are internal-only, but their base class is visible to user code
 // because their `IFields::VisitFields` calls `visitor.operator()`.
 //
-// Supported field types `T`: `uint32_t`, `float`, `std::string`, classes
-// derived from `IFields`, `bool`, `enum`, `std::vector<T>`.
+// Supported field types `T`: `uint32_t`, `int32_t`, `uint64_t`, `float`,
+// `std::string`,
+// classes derived from `IFields`, `bool`, `enum`, `std::vector<T>`.
 class IFieldsVisitor {
  public:
   virtual ~IFieldsVisitor();
@@ -69,6 +70,8 @@ class IFieldsVisitor {
   // is out of range. A single generic/overloaded function is required to
   // support `std::vector<T>`.
   virtual void operator()(uint32_t& value) = 0;
+  virtual void operator()(int32_t& value) = 0;
+  virtual void operator()(uint64_t& value) = 0;
   virtual void operator()(float& value) = 0;
   virtual void operator()(std::string& value) = 0;
   virtual void operator()(IFields& fields) = 0;  // recurse into nested fields
@@ -92,7 +95,7 @@ class IFieldsVisitor {
     uint32_t u32 = static_cast<uint32_t>(value);
     operator()(u32);
     if (HWY_UNLIKELY(!EnumValid(static_cast<EnumT>(u32)))) {
-      return NotifyInvalid("Invalid enum %u\n");
+      return NotifyInvalid("Invalid enum %u\n", u32);
     }
     value = static_cast<EnumT>(u32);
   }

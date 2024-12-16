@@ -97,6 +97,8 @@ struct OldFields : public IFields {
     visitor(old_str);
     visitor(old_nested);
     visitor(old1);
+    visitor(oldi);
+    visitor(oldl);
     visitor(old_vec_str);
     visitor(old_vec_nested);
     visitor(old_f);
@@ -110,6 +112,8 @@ struct OldFields : public IFields {
     EXPECT_EQ(old_str, n.old_str);
     old_nested.CheckEqual(n.old_nested);
     EXPECT_EQ(old1, n.old1);
+    EXPECT_EQ(oldi, n.oldi);
+    EXPECT_EQ(oldl, n.oldl);
     CheckVectorEqual(old_vec_str, n.old_vec_str);
     CheckVectorEqual(old_vec_nested, n.old_vec_nested);
     EXPECT_EQ(old_f, n.old_f);
@@ -120,6 +124,8 @@ struct OldFields : public IFields {
   std::string old_str = "old";
   Nested old_nested = Nested(0);
   uint32_t old1 = 1;
+  int32_t oldi = -1;
+  uint64_t oldl = 1234567890123456789;
   std::vector<std::string> old_vec_str = {"abc", "1234"};
   std::vector<Nested> old_vec_nested = {Nested(1), Nested(4)};
   float old_f = 1.125f;
@@ -134,6 +140,8 @@ struct NewFields : public IFields {
     visitor(old_str);
     visitor(old_nested);
     visitor(old1);
+    visitor(oldi);
+    visitor(oldl);
     visitor(old_vec_str);
     visitor(old_vec_nested);
     visitor(old_f);
@@ -149,6 +157,8 @@ struct NewFields : public IFields {
     visitor(new_enum);
     visitor(new2);
     visitor(new_str);
+    visitor(new_i);
+    visitor(new_l);
   }
 
   void CheckEqual(const NewFields& n) const {
@@ -176,6 +186,8 @@ struct NewFields : public IFields {
   std::string old_str = "old";
   Nested old_nested = Nested(0);
   uint32_t old1 = 1;
+  int32_t oldi = -1;
+  uint64_t oldl = 1234567890123456789;
   std::vector<std::string> old_vec_str = {"abc", "1234"};
   std::vector<Nested> old_vec_nested = {Nested(1), Nested(4)};
   float old_f = 1.125f;
@@ -190,6 +202,8 @@ struct NewFields : public IFields {
   Enum new_enum = Enum::k3;
   uint32_t new2 = 2;
   std::string new_str = std::string();  // empty is allowed
+  int32_t new_i = 123456789;
+  uint64_t new_l = 876543210987654321;
 };  // NewFields
 
 // Changes all fields to non-default values.
@@ -212,6 +226,8 @@ NewFields ModifiedNewFields() {
   n.new_enum = Enum::k8;
   n.new2 = 22;
   n.new_str = "new and even longer";
+  n.new_i = 246810121;
+  n.new_l = 1357913579113579135;
 
   return n;
 }

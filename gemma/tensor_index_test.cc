@@ -56,7 +56,8 @@ TEST(TensorIndexTest, FindName) {
               // Test that the MatPtr can be constructed from the TensorInfo,
               // and that the dimensions match.
               MatPtrT<SfpStream> mat_ptr(tensor.Name(), tensor_index);
-              EXPECT_EQ(tensor.Name(), mat_ptr.Name()) << "on tensor " << name;
+              EXPECT_STREQ(tensor.Name(), mat_ptr.Name())
+                  << "on tensor " << name;
               EXPECT_EQ(tensor.Rows(), mat_ptr.Rows()) << "on tensor " << name;
               EXPECT_EQ(tensor.Cols(), mat_ptr.Cols()) << "on tensor " << name;
               ++num_found;

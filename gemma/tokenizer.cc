@@ -44,6 +44,17 @@ class GemmaTokenizer::Impl {
       HWY_ABORT("Failed to load the tokenizer file.");
     }
   }
+  // Loads the tokenizer from a serialized proto.
+  explicit Impl(const std::string& tokenizer_proto) {
+    PROFILER_ZONE("Startup.tokenizer");
+    spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
+    if (!spp_->LoadFromSerializedProto(tokenizer_proto).ok()) {
+      fprintf(stderr, "serialized proto size=%zu.\n", tokenizer_proto.size());
+      HWY_ABORT("Failed to load the tokenizer from serialized proto.");
+    }
+  }
+
+  std::string Serialize() const { return spp_->serialized_model_proto(); }
 
   bool Encode(const std::string& input,
               std::vector<std::string>* pieces) const {
@@ -80,6 +91,12 @@ GemmaTokenizer::GemmaTokenizer() = default;
 GemmaTokenizer::~GemmaTokenizer() = default;
 GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
 GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;
+
+std::string GemmaTokenizer::Serialize() const { return impl_->Serialize(); }
+
+void GemmaTokenizer::Deserialize(const std::string& tokenizer_proto) {
+  impl_ = std::make_unique<Impl>(tokenizer_proto);
+}
 
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<std::string>* pieces) const {

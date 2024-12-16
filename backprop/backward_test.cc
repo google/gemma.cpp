@@ -191,13 +191,12 @@ static ModelConfig TestConfig() {
   config.model_dim = 32;
   config.vocab_size = 16;
   config.seq_len = 24;
-  LayerConfig layer_config = {
-      .model_dim = config.model_dim,
-      .ff_hidden_dim = 64,
-      .heads = 3,
-      .kv_heads = 1,
-      .qkv_dim = 16,
-  };
+  LayerConfig layer_config;
+  layer_config.model_dim = config.model_dim;
+  layer_config.ff_hidden_dim = 64;
+  layer_config.heads = 3;
+  layer_config.kv_heads = 1;
+  layer_config.qkv_dim = 16;
   config.layer_configs = {2, layer_config};
   config.num_tensor_scales = 4 * config.layer_configs.size();
   config.query_scale = QueryScaleType::SqrtKeySize;
