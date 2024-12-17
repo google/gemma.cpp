@@ -4,14 +4,9 @@ gemma.cpp is a lightweight, standalone C++ inference engine for the Gemma
 foundation models from Google.
 
 For additional information about Gemma, see
-[ai.google.dev/gemma](https://ai.google.dev/gemma). Model weights, including gemma.cpp
-specific artifacts, are [available on
-kaggle](https://www.kaggle.com/models/google/gemma).
-
-NOTE: 2024-04-04: if using 2B models, please re-download weights from Kaggle and
-ensure you have the latest version (-mqa or version 3). We are changing the code
-to match the new weights. If you wish to use old weights, change `ConfigGemma2B`
-in `configs.h` back to `kVocabSize = 256128` and `kKVHeads = 8`.
+[ai.google.dev/gemma](https://ai.google.dev/gemma). Model weights, including
+gemma.cpp specific artifacts, are
+[available on kaggle](https://www.kaggle.com/models/google/gemma).
 
 ## Who is this project for?
 
@@ -23,10 +18,10 @@ deployment-oriented C++ inference runtimes, which are not designed for
 experimentation, and Python-centric ML research frameworks, which abstract away
 low-level computation through compilation.
 
-gemma.cpp provides a minimalist implementation of Gemma-1 and Gemma-2 models,
-focusing on simplicity and directness rather than full generality. This is
-inspired by vertically-integrated model implementations such as
-[ggml](https://github.com/ggerganov/ggml),
+gemma.cpp provides a minimalist implementation of Gemma-1, Gemma-2, and
+PaliGemma models, focusing on simplicity and directness rather than full
+generality. This is inspired by vertically-integrated model implementations such
+as [ggml](https://github.com/ggerganov/ggml),
 [llama.c](https://github.com/karpathy/llama2.c), and
 [llama.rs](https://github.com/srush/llama2.rs).
 
@@ -226,7 +221,7 @@ Argument        | Description                  | Example value
 ./gemma \
 --tokenizer [tokenizer file] \
 --weights [compressed weights file] \
---weight_type [f32 or bf16 or sfp] \
+--weight_type [f32 or bf16 or sfp (default:sfp)] \
 --model [2b-it or 2b-pt or 7b-it or 7b-pt or ...]
 ```
 
@@ -239,7 +234,7 @@ Example invocation for the following configuration:
 ```sh
 ./gemma \
 --tokenizer tokenizer.spm \
---weights 2b-it-sfp.sbs --weight_type sfp --model 2b-it
+--weights 2b-it-sfp.sbs --model 2b-it
 ```
 
 ### RecurrentGemma
@@ -263,8 +258,9 @@ Step 1, and run the binary as follows:
 
 This repository includes a version of the PaliGemma VLM
 ([paper](https://arxiv.org/abs/2407.07726),
-[code](https://github.com/google-research/big_vision/tree/main/big_vision/configs/proj/paligemma)).
-We  provide a C++ implementation of this model here.
+[code](https://github.com/google-research/big_vision/tree/main/big_vision/configs/proj/paligemma))
+and its successor PaliGemma 2 ([paper](https://arxiv.org/abs/2412.03555)). We
+provide a C++ implementation of the PaliGemma model family here.
 
 To use the version of PaliGemma included in this repository, build the gemma
 binary as noted above in Step 3. Download the compressed weights and tokenizer
