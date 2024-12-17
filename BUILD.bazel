@@ -7,6 +7,7 @@ package(
     default_applicable_licenses = [
         "//:license",  # Placeholder comment, do not modify
     ],
+    # Placeholder for internal compatible_with
     default_visibility = ["//visibility:public"],
 )
 

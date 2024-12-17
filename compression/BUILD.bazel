@@ -4,6 +4,7 @@ package(
     default_applicable_licenses = [
         "//:license",  # Placeholder comment, do not modify
     ],
+    # Placeholder for internal compatible_with
     default_visibility = [
         # Placeholder for internal visibility,
         "//:__subpackages__",
@@ -23,6 +24,7 @@ FILE_DEPS = select({
         # Placeholder for io deps, do not remove
     ],
     ":android": [],
+    # Placeholder for internal build rules, do not remove
 })
 
 cc_library(
@@ -32,6 +34,10 @@ cc_library(
         # Placeholder for io backend, do not remove
     ],
     hdrs = ["io.h"],
+    local_defines = select({
+        # Placeholder for internal build rules, do not remove
+        "//conditions:default": [],
+    }),
     deps = [
         "@highway//:hwy",
     ] + FILE_DEPS,
