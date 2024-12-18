@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <string>
 #include <utility>  // std::move
 #include <vector>
 
@@ -40,13 +41,21 @@ namespace gcpp {
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, NestedPools& pools)
-    : pools_(pools), tokenizer_(tokenizer_path), info_(info) {
-  model_.Load(weights, info.model, info.weight, pools_.Pool());
+    : pools_(pools), tokenizer_(tokenizer_path) {
+  model_.Load(weights, info.model, info.weight, info.wrapping, pools_.Pool(),
+              /*tokenizer_proto=*/nullptr);
+}
+
+Gemma::Gemma(const Path& weights, NestedPools& pools) : pools_(pools) {
+  std::string tokenizer_proto;
+  model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
+              pools_.Pool(), &tokenizer_proto);
+  tokenizer_.Deserialize(tokenizer_proto);
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
              NestedPools& pools)
-    : pools_(pools), tokenizer_(std::move(tokenizer)), info_(info) {
+    : pools_(pools), tokenizer_(std::move(tokenizer)) {
   HWY_ASSERT(info.weight == Type::kF32);
   model_.Allocate(info.model, info.weight, pools_.Pool());
 }
@@ -166,7 +175,7 @@ void RangeChecks(const ModelConfig& weights_config,
   if (!weights_config.use_local_attention) {
     if (max_generated_tokens > weights_config.seq_len) {
       fprintf(stderr,
-              "WARNING: max_generated_tokens %zu > kSeqLen %zu, truncating.\n",
+              "WARNING: max_generated_tokens %zu > kSeqLen %u, truncating.\n",
               max_generated_tokens, weights_config.seq_len);
       max_generated_tokens = weights_config.seq_len;
     }

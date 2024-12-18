@@ -522,7 +522,17 @@ class ModelWeightsStorage {
   ModelWeightsStorage() = default;
   ~ModelWeightsStorage() = default;
 
+  // Loads the weights from a blob store file. Supports old or new format.
+  // If the weights file contains a TOC, then it is in the new format, and
+  // model_type, weight_type, training are ignored, and tokenizer_proto is
+  // required and written to. With an old format file, model_type, weight_type,
+  // training are required and tokenizer_proto is ignored.
   BlobError Load(const Path& weights, Model model_type, Type weight_type,
+                 PromptWrapping wrapping, hwy::ThreadPool& pool,
+                 std::string* tokenizer_proto);
+  // Writes the weights to a blob store file, using the new format with a TOC
+  // and config included.
+  BlobError Save(const std::string& tokenizer, const Path& weights,
                  hwy::ThreadPool& pool);
   void Allocate(Model model_type, Type weight_type, hwy::ThreadPool& pool) {
     Allocate(ConfigFromModel(model_type), weight_type, pool);

@@ -8,6 +8,7 @@
 
 #include "absl/types/span.h"
 #include "compression/shared.h"
+#include "gemma/configs.h"
 #include "gemma/tensor_index.h"
 
 namespace gcpp {
@@ -36,10 +37,12 @@ class SbsWriter {
   void InsertBfloat16(std::string name, absl::Span<const float> weights);
   void InsertFloat(std::string name, absl::Span<const float> weights);
   void AddScales(const std::vector<float>& scales);
+  void AddTokenizer(const std::string& tokenizer_path);
 
   size_t DebugNumBlobsAdded() const;
 
-  int Write(std::string path);
+  int Write(std::string path) { return WriteWithConfig(path, nullptr); }
+  int WriteWithConfig(std::string path, const ModelConfig* config);
 
  private:
   // Isolates Highway-dispatched types and other internals from CLIF.

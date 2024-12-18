@@ -25,6 +25,7 @@
 // After highway.h
 #include "compression/compress-inl.h"
 #include "gemma/configs.h"
+#include "gemma/tokenizer.h"
 
 #ifndef GEMMA_COMPRESS_WEIGHTS_ONCE
 #define GEMMA_COMPRESS_WEIGHTS_ONCE
@@ -99,6 +100,9 @@ struct Args : public ArgsBase<Args> {
   std::string model_type_str;
   std::string weight_type_str;
   size_t num_threads;
+  // If non-empty, whether to include the config and TOC in the output file, as
+  // well as the tokenizer.
+  Path tokenizer;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -123,6 +127,9 @@ struct Args : public ArgsBase<Args> {
             "Number of threads to use.\n    Default = Estimate of the "
             "number of supported concurrent threads.",
             2);
+    visitor(tokenizer, "tokenizer", Path(),
+            "Path to tokenizer file. If given, the config and TOC are also "
+            "added to the output file.");
   }
 
   // Uninitialized before Validate, must call after that.
@@ -156,7 +163,8 @@ namespace HWY_NAMESPACE {
 template <typename T>
 void CompressWeights(const Path& weights_path,
                      const Path& compressed_weights_path, Model model_type,
-                     hwy::ThreadPool& pool) {
+                     Type weight_type, PromptWrapping wrapping,
+                     const Path& tokenizer_path, hwy::ThreadPool& pool) {
   if (!weights_path.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
               weights_path.path.c_str());
@@ -164,6 +172,8 @@ void CompressWeights(const Path& weights_path,
   printf("Compressing weights from %s to %s\n", weights_path.path.c_str(),
          compressed_weights_path.path.c_str());
   ModelConfig config = ConfigFromModel(model_type);
+  config.weight = weight_type;
+  config.wrapping = wrapping;
   std::vector<MatStorage> model_storage;
   ModelWeightsPtrs<T> c_weights(config);
   c_weights.Allocate(model_storage, pool);
@@ -185,6 +195,9 @@ void CompressWeights(const Path& weights_path,
         ok &= 1 == fread(tensors[0]->Ptr(), tensors[0]->SizeBytes(), 1, fptr);
         total_size += tensors[0]->SizeBytes();
       });
+  if (!tokenizer_path.path.empty()) {
+    uc_weights.AllocAndCopyWithTranspose(pool, model_storage);
+  }
   const bool scale_for_compression = config.num_tensor_scales > 0;
   std::vector<float> scales;
   if (scale_for_compression) {
@@ -193,14 +206,21 @@ void CompressWeights(const Path& weights_path,
   Compressor compressor(pool);
   ModelWeightsPtrs<T>::ForEachTensor(
       {reinterpret_cast<ModelWeightsPtrs<T>*>(&uc_weights), &c_weights},
-      ForEachType::kLoadNoToc,
+      tokenizer_path.path.empty() ? ForEachType::kLoadNoToc
+                                  : ForEachType::kLoadWithToc,
       [&compressor](const char* name, hwy::Span<MatPtr*> tensors) {
         tensors[1]->CallUpcasted(
             compressor, name,
             reinterpret_cast<const float*>(tensors[0]->Ptr()));
       });
-  compressor.AddScales(scales.data(), scales.size() * sizeof(scales[0]));
-  compressor.WriteAll(pool, compressed_weights_path);
+  if (!tokenizer_path.path.empty()) {
+    std::string tokenizer_proto = ReadFileToString(tokenizer_path);
+    compressor.AddTokenizer(tokenizer_proto);
+  } else {
+    compressor.AddScales(scales.data(), scales.size() * sizeof(scales[0]));
+  }
+  compressor.WriteAll(compressed_weights_path,
+                      tokenizer_path.path.empty() ? nullptr : &config);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -220,19 +240,23 @@ void Run(Args& args) {
   switch (weight_type) {
     case Type::kF32:
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<float>)
-      (args.weights, args.compressed_weights, model_type, pool);
+      (args.weights, args.compressed_weights, model_type, weight_type,
+       args.PromptWrappingType(), args.tokenizer, pool);
       break;
     case Type::kBF16:
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<BF16>)
-      (args.weights, args.compressed_weights, model_type, pool);
+      (args.weights, args.compressed_weights, model_type, weight_type,
+       args.PromptWrappingType(), args.tokenizer, pool);
       break;
     case Type::kSFP:
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<SfpStream>)
-      (args.weights, args.compressed_weights, model_type, pool);
+      (args.weights, args.compressed_weights, model_type, weight_type,
+       args.PromptWrappingType(), args.tokenizer, pool);
       break;
     case Type::kNUQ:
       HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(CompressWeights<NuqStream>)
-      (args.weights, args.compressed_weights, model_type, pool);
+      (args.weights, args.compressed_weights, model_type, weight_type,
+       args.PromptWrappingType(), args.tokenizer, pool);
       break;
     default:
       HWY_ABORT("Weight type %d unsupported.", static_cast<int>(weight_type));

@@ -245,6 +245,7 @@ cc_library(
         "gemma/tensor_index.h",
     ],
     deps = [
+        "//compression:fields",
         "//compression:sfp",
         "@highway//:hwy",  # base.h
         "@highway//:thread_pool",
@@ -257,6 +258,7 @@ cc_test(
     deps = [
         ":common",
         "@googletest//:gtest_main",
+        "@highway//:hwy",
     ],
 )
 
@@ -388,6 +390,7 @@ cc_library(
         ":ops",
         ":threading",
         "//compression:io",
+        "//compression:sfp",
         "@highway//:hwy",
     ],
 )

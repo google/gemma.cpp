@@ -190,18 +190,28 @@ struct TimingInfo {
 
 class Gemma {
  public:
+  // Reads old format weights file and tokenizer file.
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
         NestedPools& pools);
-
+  // Reads new format weights file that contains everything in a single file.
+  Gemma(const Path& weights, NestedPools& pools);
   // Allocates weights, caller is responsible for filling them.
   Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, NestedPools& pools);
   ~Gemma();
 
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
-  const ModelInfo& Info() const { return info_; }
+  ModelInfo Info() const {
+    return ModelInfo({.model = model_.Config().model,
+                      .wrapping = model_.Config().wrapping,
+                      .weight = model_.Config().weight});
+  }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
   const ModelWeightsStorage& Weights() const { return model_; }
   ModelWeightsStorage& MutableWeights() { return model_; }
+  void Save(const Path& weights, hwy::ThreadPool& pool) {
+    std::string tokenizer_proto = tokenizer_.Serialize();
+    model_.Save(tokenizer_proto, weights, pool);
+  }
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
@@ -241,7 +251,6 @@ class Gemma {
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.
   ModelWeightsStorage model_;
-  ModelInfo info_;
 };
 
 // Adds BOS token and possibly 'turn' annotations, which depend on `info`
