@@ -300,6 +300,9 @@ class GemmaAttention {
       }
     }  // !is_mha_
 
+    // Self-extension
+    const hwy::Divisor div_grp_size(
+        static_cast<uint32_t>(layer_config_.se_group_size));
     // Apply positional encodings for K (and copy KV to cache if MHA).
     pool_.Run(0, kv_heads * num_interleaved,
               [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
@@ -307,21 +310,29 @@ class GemmaAttention {
                 const size_t interleaved_idx = task / kv_heads;
                 const size_t query_idx = interleaved_idx % num_queries_;
                 const size_t batch_idx = interleaved_idx / num_queries_;
-                const size_t pos = queries_pos_[query_idx] + batch_idx;
+                size_t pos = queries_pos_[query_idx] + batch_idx;
                 const size_t cache_pos = div_seq_len_.Remainder(pos);
                 const size_t kv_offset = cache_pos * cache_pos_size_ +
                                          layer_ * cache_layer_size_ +
                                          head * qkv_dim * 2;
                 KVCache& kv_cache = kv_caches_[query_idx];
+
+                const size_t se_neighbor_size = layer_config_.se_neighbor_size;
+                const bool enable_self_extend = layer_config_.self_extend;
+
                 float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
                 const float* HWY_RESTRICT mha_kv =
                     activations_.q.Batch(interleaved_idx) + head * q_stride_ +
                     qkv_dim;
 
+                // In self-extend, when embedding position,
+                // we will use grouped key position
+                if (enable_self_extend && pos > se_neighbor_size) {
+                  pos = div_grp_size.Divide(pos);
+                }
                 // Copy from `q` if MHA, or apply in-place.
                 PositionalEncodingQK(is_mha_ ? mha_kv : kv, pos, layer_, 1.0f,
                                      kv);
-
                 // If MHA, also copy V into KVCache.
                 if (is_mha_) {
                   hwy::CopyBytes(mha_kv + qkv_dim, kv + qkv_dim,
@@ -405,12 +416,25 @@ class GemmaAttention {
                 const size_t batch_idx = interleaved_idx / num_queries_;
                 const size_t head_offset =
                     (head / kHeadGroups) * layer_config_.qkv_dim * 2;
+
+                const size_t se_group_size = layer_config_.se_group_size;
+                const size_t se_neighbor_size = layer_config_.se_neighbor_size;
+                const bool enable_self_extend =
+                    layer_config_.self_extend;
+
                 KVCache& kv_cache = kv_caches_[query_idx];
                 float* HWY_RESTRICT q =
                     activations_.q.Batch(interleaved_idx) + head * q_stride_;
 
                 // Apply rope and scaling to Q.
-                const size_t pos = queries_pos_[query_idx] + batch_idx;
+                size_t pos = queries_pos_[query_idx] + batch_idx;
+                if (enable_self_extend && pos > se_neighbor_size) {
+                  const size_t grp_pos = pos / se_group_size;
+                  const size_t shift =
+                      se_neighbor_size - se_neighbor_size / se_group_size;
+                  const size_t shifted_grouped_pos = grp_pos + shift;
+                  pos = shifted_grouped_pos;
+                }
                 PositionalEncodingQK(q, pos, layer_, query_scale, q);
 
                 const size_t start_pos = StartPos(pos, layer_);
@@ -1401,7 +1425,7 @@ void GenerateBatchT(const ModelWeightsStorage& model,
                                              qbatch_size);
     QueriesPos qbatch_pos(&queries_pos[qbatch_start], qbatch_size);
     const QueriesPos qbatch_prefix_end(&queries_prefix_end[qbatch_start],
-                                             qbatch_size);
+                                       qbatch_size);
     const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
     GenerateT<T>(model, activations, runtime_config, qbatch_prompts, qbatch_pos,
                  qbatch_prefix_end, qbatch_start, qbatch_kv, timing_info);

@@ -77,6 +77,26 @@ std::string GetPrompt(std::istream& input, int verbosity,
   return prompt_string;
 }
 
+// Extract args from the loader and modify model config
+void ApplySelfExtendIfGiven(Gemma& model, LoaderArgs loader) {
+  ModelConfig& config = model.GetMutableModelConfig();
+  if (loader.self_extend != Tristate::kTrue) {
+    return;
+  }
+
+  // Modify layer config in-place
+  auto& layer_configs = config.layer_configs;
+  std::transform(layer_configs.begin(), layer_configs.end(), layer_configs.begin(),
+                [&loader](LayerConfig& layer_config) {
+                  layer_config.self_extend =
+                      loader.self_extend == Tristate::kTrue;
+                  layer_config.se_group_size = loader.se_group_size;
+                  layer_config.se_neighbor_size = loader.se_neighbor_size;
+
+                  return layer_config;
+                });
+}
+
 // The main Read-Eval-Print Loop.
 void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
                const InferenceArgs& args, const AcceptFunc& accept_token,
@@ -243,6 +263,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   Allocator::Init(pools.Topology());
 
   Gemma model = CreateGemma(loader, pools);
+  ApplySelfExtendIfGiven(model, loader);
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 

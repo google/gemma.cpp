@@ -155,6 +155,15 @@ struct LayerConfig {
   size_t conv1d_width = 0;  // griffin only
   bool ff_biases = false;
   bool softmax_attn_output_biases = false;
+  /**
+   * Self-extend
+   * Jin, Hongye, et al. "Llm maybe longlm: Self-extend llm context window without tuning." arXiv preprint arXiv:2401.01325 (2024).
+   */
+  bool self_extend = false;
+  // Self-extend neighbor size
+  size_t se_neighbor_size = std::numeric_limits<size_t>::max();
+  // Self-extend group window size
+  size_t se_group_size = 1;
   bool optimized_gating = true;
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
