@@ -44,7 +44,7 @@ struct QueryResult {
 class GemmaEnv {
  public:
   // Calls the other constructor with *Args arguments initialized from argv.
-  GemmaEnv(int argc, char** argv);
+  GemmaEnv(int argc, char** argv, bool model_type_required = false);
   GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
            const AppArgs& app);
 

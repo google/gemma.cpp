@@ -198,6 +198,11 @@ constexpr bool IsNuqStream() {
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class PromptWrapping { GEMMA_IT, GEMMA_PT, PALIGEMMA };
 
+inline bool EnumValid(PromptWrapping type) {
+  return static_cast<int>(type) >= 0 &&
+         static_cast<int>(type) <= static_cast<int>(PromptWrapping::PALIGEMMA);
+}
+
 // Tensor types for loading weights. Note that not all types are supported as
 // weights for a model, but can be used for other purposes, such as types for
 // ModelWeightsPtrs. When adding a new type that is supported, also
@@ -205,6 +210,11 @@ enum class PromptWrapping { GEMMA_IT, GEMMA_PT, PALIGEMMA };
 enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64, kU128 };
 constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
                                         "nuq",     "f64", "c64",  "u128"};
+
+inline bool EnumValid(Type type) {
+  return static_cast<int>(type) >= 0 &&
+         static_cast<int>(type) <= static_cast<int>(Type::kU128);
+}
 
 // Returns a Type enum for the type of the template parameter.
 template <typename PackedT>

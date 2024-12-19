@@ -92,9 +92,9 @@ static AppArgs MakeAppArgs(int argc, char** argv) {
   return AppArgs(argc, argv);
 }
 
-GemmaEnv::GemmaEnv(int argc, char** argv)
-    : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
-               MakeAppArgs(argc, argv)) {}
+GemmaEnv::GemmaEnv(int argc, char** argv, bool model_type_required)
+    : GemmaEnv(LoaderArgs(argc, argv, model_type_required),
+               InferenceArgs(argc, argv), MakeAppArgs(argc, argv)) {}
 
 QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
   QueryResult result;
@@ -270,7 +270,9 @@ void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
          "specify 3 required model loading arguments:\n"
          "    --tokenizer\n"
          "    --weights\n"
-         "    --model.\n";
+         "    --model,\n"
+         " or with the newer weights format, specify just:\n"
+         "    --weights\n";
   std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
                "--weights 2b-it-sfp.sbs --model 2b-it\n";
   std::cerr << "\n*Model Loading Arguments*\n\n";

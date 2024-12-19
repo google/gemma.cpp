@@ -25,6 +25,7 @@
 #include <string>
 
 #include "compression/io.h"  // Path
+#include "compression/shared.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // For CreateGemma
 #include "ops/matmul.h"
@@ -125,7 +126,10 @@ static inline NestedPools CreatePools(const AppArgs& app) {
 }
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  LoaderArgs(int argc, char* argv[], bool required = true)
+      : model_type_required(required) {
+    InitAndParse(argc, argv);
+  }
   LoaderArgs(const std::string& tokenizer_path, const std::string& weights_path,
              const std::string& model) {
     Init();  // Init sets to defaults, so assignments must come after Init().
@@ -136,18 +140,24 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
+    info_.model = Model::UNKNOWN;
+    info_.wrapping = PromptWrapping::GEMMA_PT;
+    info_.weight = Type::kUnknown;
     if (const char* err = ParseModelTypeAndWrapping(model_type_str, info_.model,
                                                     info_.wrapping)) {
-      return err;
+      if (model_type_required) return err;
     }
     if (const char* err = ParseType(weight_type_str, info_.weight)) {
-      return err;
+      if (model_type_required) return err;
     }
-    if (tokenizer.path.empty()) {
-      return "Missing --tokenizer flag, a file for the tokenizer is required.";
-    }
-    if (!tokenizer.Exists()) {
-      return "Can't open file specified with --tokenizer flag.";
+    if (model_type_required) {
+      if (tokenizer.path.empty()) {
+        return "Missing --tokenizer flag, a file for the tokenizer is "
+               "required.";
+      }
+      if (!tokenizer.Exists()) {
+        return "Can't open file specified with --tokenizer flag.";
+      }
     }
     if (!compressed_weights.path.empty()) {
       if (weights.path.empty()) {
@@ -172,11 +182,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path compressed_weights;
   std::string model_type_str;
   std::string weight_type_str;
+  bool model_type_required = true;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
-            "Path name of tokenizer model file.\n    Required argument.");
+            "Path name of tokenizer model file.");
     visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file.\n    Required argument.");
     visitor(compressed_weights, "compressed_weights", Path(),
@@ -186,11 +197,9 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
             "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n    "
             "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
-            "gr2b-pt = griffin 2B parameters, pretrained\n    "
-            "    Required argument.");
+            "gr2b-pt = griffin 2B parameters, pretrained.");
     visitor(weight_type_str, "weight_type", std::string("sfp"),
-            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit FP\n"
-            "    Required argument.");
+            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit FP.");
   }
 
   // Uninitialized before Validate, must call after that.
@@ -208,6 +217,12 @@ static inline Gemma CreateGemma(const LoaderArgs& loader, NestedPools& pools) {
 
 static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
                                                    NestedPools& pools) {
+  if (Type::kUnknown == loader.Info().weight ||
+      Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
+    // Newer weights file format doesn't need tokenizer path or model/weight
+    // info.
+    return std::make_unique<Gemma>(loader.weights, pools);
+  }
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
                                  loader.Info(), pools);
 }

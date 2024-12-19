@@ -19,11 +19,13 @@
 #include <cstdlib>
 #include <memory>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "compression/blob_store.h"
 #include "compression/compress.h"
 #include "compression/io.h"  // Path
+#include "compression/shared.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
@@ -47,7 +49,9 @@ struct TensorLoader {
 };
 
 BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
-                                    Type weight_type, hwy::ThreadPool& pool) {
+                                    Type weight_type, PromptWrapping wrapping,
+                                    hwy::ThreadPool& pool,
+                                    std::string* tokenizer_proto) {
   PROFILER_ZONE("Startup.LoadModelWeightsPtrs");
   if (!weights.Exists()) {
     HWY_ABORT("The model weights file '%s' does not exist.",
@@ -56,17 +60,36 @@ BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
   ReadFromBlobStore loader(weights);
   ForEachType fet =
       loader.HaveToc() ? ForEachType::kLoadWithToc : ForEachType::kLoadNoToc;
+  std::vector<float> scales;
   if (fet == ForEachType::kLoadWithToc) {
-    // TODO(rays): Load the config from the file.
-    HWY_ABORT("TOC not supported yet.");
+    BlobError err = loader.LoadConfig(config_);
+    if (err != 0 || config_.model_dim == 0) {
+      fprintf(stderr, "Failed to load model config: %d\n", err);
+      return err;
+    }
+    if (tokenizer_proto != nullptr) {
+      err = loader.LoadTokenizer(*tokenizer_proto);
+      if (err != 0) {
+        fprintf(stderr, "Failed to load tokenizer: %d\n", err);
+        return err;
+      }
+    }
   } else {
+    if (weight_type == Type::kUnknown || model_type == Model::UNKNOWN) {
+      fprintf(stderr,
+              "weight type (%d) and model type (%d) must be specified when "
+              "no config is present in weights file\n",
+              static_cast<int>(weight_type), static_cast<int>(model_type));
+      return __LINE__;
+    }
     // No Toc-> no config.
     config_ = ConfigFromModel(model_type);
     config_.weight = weight_type;
+    config_.wrapping = wrapping;
+    scales.resize(config_.num_tensor_scales + config_.num_vit_scales);
   }
-  CreateForType(weight_type, pool);
+  CreateForType(config_.weight, pool);
   CallForModelWeightT<TensorLoader>(fet, loader);
-  std::vector<float> scales(config_.num_tensor_scales + config_.num_vit_scales);
   if (!scales.empty()) {
     loader.LoadScales(scales.data(), scales.size());
   }
@@ -81,6 +104,34 @@ BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
   if (fet == ForEachType::kLoadNoToc) {
     PROFILER_ZONE("Startup.Reshape");
     AllocAndCopyWithTranspose(pool);
+  }
+  return 0;
+}
+
+template <typename T>
+struct TensorSaver {
+  // Adds all the tensors to the blob writer.
+  void operator()(ModelWeightsPtrs<T>& weights, ForEachType fet,
+                  WriteToBlobStore& writer) {
+    weights.ForEachTensor(
+        {&weights}, fet,
+        [&writer](const char* name, hwy::Span<MatPtr*> tensors) {
+          tensors[0]->CallUpcasted(writer, name);
+        });
+  }
+};
+
+BlobError ModelWeightsStorage::Save(const std::string& tokenizer,
+                                    const Path& weights,
+                                    hwy::ThreadPool& pool) {
+  WriteToBlobStore writer(pool);
+  ForEachType fet = ForEachType::kLoadWithToc;
+  CallForModelWeightT<TensorSaver>(fet, writer);
+  writer.AddTokenizer(tokenizer);
+  int err = writer.WriteAll(weights, &config_);
+  if (err != 0) {
+    fprintf(stderr, "Failed to load model weights: %d\n", err);
+    return err;
   }
   return 0;
 }

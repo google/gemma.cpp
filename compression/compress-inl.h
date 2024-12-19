@@ -22,10 +22,13 @@
 #include <stdio.h>
 
 #include <cmath>  // lroundf, only if COMPRESS_STATS
+#include <string>
+#include <vector>
 
 #include "compression/blob_store.h"
 #include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
+#include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -673,36 +676,37 @@ HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
 // their scaling factors to BlobStore.
 class Compressor {
  public:
-  explicit Compressor(hwy::ThreadPool& pool) : pool_(pool) {}
+  explicit Compressor(hwy::ThreadPool& pool) : writer_(pool) {}
 
   template <typename Packed>
   void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
                   const float* HWY_RESTRICT weights) {
     size_t num_weights = compressed->NumElements();
+    if (num_weights == 0 || weights == nullptr || compressed->Ptr() == nullptr)
+      return;
     size_t num_compressed = compressed->NumElements();
     PackedSpan<Packed> packed = MakeSpan(compressed->data(), num_compressed);
     fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
             num_weights / (1000 * 1000));
-    Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0, pool_);
-    const size_t num_bytes = packed.num * sizeof(Packed);
-    writer_.Add(MakeKey(decorated_name), packed.ptr, num_bytes);
+    Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0,
+             writer_.pool());
+    writer_(compressed, decorated_name);
+  }
+
+  void AddTokenizer(const std::string& tokenizer) {
+    writer_.AddTokenizer(tokenizer);
   }
 
   void AddScales(const float* scales, size_t len) {
-    if (len) {
-      MatPtrT<float> scales_ptr("scales", 0, 1);
-      writer_.Add(MakeKey(scales_ptr.CacheName().c_str()), scales,
-                  len * sizeof(scales[0]));
-    }
+    writer_.AddScales(scales, len);
   }
 
-  BlobError WriteAll(hwy::ThreadPool& pool, const Path& blob_filename) {
-    const BlobError err = writer_.WriteAll(pool, blob_filename);
-    if (err != 0) {
-      fprintf(stderr, "Failed to write blobs to %s (error %d)\n",
-              blob_filename.path.c_str(), err);
-    }
-    return err;
+  // Writes all blobs to disk in the given order. The config is optional and
+  // if given, it is written to the file, along with the TOC, making it
+  // single-file format. Otherwise, the file is written in the multi-file format
+  // without a TOC.
+  BlobError WriteAll(const Path& blob_filename, const ModelConfig* config) {
+    return writer_.WriteAll(blob_filename, config);
   }
 
   // Returns the number of blobs added.
@@ -710,8 +714,7 @@ class Compressor {
 
  private:
   CompressWorkingSet work_;
-  hwy::ThreadPool& pool_;
-  BlobWriter writer_;
+  WriteToBlobStore writer_;
 };
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

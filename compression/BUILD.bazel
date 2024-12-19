@@ -58,7 +58,6 @@ cc_test(
     deps = [
         ":fields",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
 )
@@ -202,6 +201,7 @@ cc_library(
     deps = [
         ":blob_store",
         ":distortion",
+        ":fields",
         ":io",
         ":nuq",
         ":sfp",
@@ -210,7 +210,6 @@ cc_library(
         "//:common",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
-        "@highway//:profiler",
         "@highway//:stats",
         "@highway//:thread_pool",
     ],
@@ -261,6 +260,7 @@ cc_binary(
         "//:allocator",
         "//:args",
         "//:common",
+        "//:tokenizer",
         "//:weights",
         "@highway//:hwy",
         "@highway//:thread_pool",
@@ -275,5 +275,16 @@ cc_binary(
         ":io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+    ],
+)
+
+cc_binary(
+    name = "migrate_weights",
+    srcs = ["migrate_weights.cc"],
+    deps = [
+        "//:app",
+        "//:args",
+        "//:benchmark_helper",
+        "//:gemma_lib",
     ],
 )

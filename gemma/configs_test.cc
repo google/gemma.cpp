@@ -2,9 +2,12 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
+#include <vector>
 
 #include "gtest/gtest.h"
+#include "hwy/aligned_allocator.h"
 
 namespace gcpp {
 
@@ -412,8 +415,17 @@ void AssertMatch(const ModelConfig& config) {
   ASSERT_EQ(TConfig::kNumTensorScales, config.num_tensor_scales);
 }
 
+ModelConfig RoundTripSerialize(const ModelConfig& config) {
+  std::vector<uint32_t> config_buffer = config.Write();
+  ModelConfig deserialized;
+  deserialized.Read(hwy::Span<const uint32_t>(config_buffer), 0);
+  return deserialized;
+}
+
 TEST(ConfigsTest, OldConfigGemma2B) {
   AssertMatch<OldConfigGemma2B<float>>(ConfigFromModel(Model::GEMMA_2B));
+  ModelConfig config = RoundTripSerialize(ConfigFromModel(Model::GEMMA_2B));
+  AssertMatch<OldConfigGemma2B<float>>(config);
 }
 
 TEST(ConfigsTest, OldConfigGemma7B) {

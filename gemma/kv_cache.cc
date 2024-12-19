@@ -53,7 +53,7 @@ KVCache KVCache::Create(const ModelConfig& weights_config,
       LayerAttentionType::kGriffinRecurrentBlock);
   // TODO(patrickms): Add query batching support for Griffin.
   if (num_griffin_layers > 0) {
-    size_t conv1d_width = 0;
+    uint32_t conv1d_width = 0;
     for (const auto& layer_config : weights_config.layer_configs) {
       conv1d_width = std::max(conv1d_width, layer_config.conv1d_width);
     }

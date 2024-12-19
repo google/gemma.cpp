@@ -24,7 +24,9 @@
 
 #include "absl/types/span.h"
 #include "compression/io.h"
+#include "gemma/configs.h"
 #include "gemma/tensor_index.h"
+#include "gemma/tokenizer.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -44,10 +46,11 @@ class WriterInterface {
   virtual void InsertFloat(std::string name,
                            absl::Span<const float> weights) = 0;
   virtual void AddScales(const std::vector<float>& scales) = 0;
+  virtual void AddTokenizer(const std::string& tokenizer_path) = 0;
 
   virtual size_t DebugNumBlobsAdded() const = 0;
 
-  virtual int Write(std::string path) = 0;
+  virtual int WriteWithConfig(std::string path, const ModelConfig* config) = 0;
 };
 
 }  // namespace gcpp
@@ -133,14 +136,21 @@ class SbsWriterImpl : public WriterInterface {
     compressor_.AddScales(scales_.data(), scales_.size());
   }
 
+  void AddTokenizer(const std::string& tokenizer_path) override {
+    Path path(tokenizer_path);
+    GemmaTokenizer tokenizer(path);
+    tokenizer_proto_ = tokenizer.Serialize();
+    compressor_.AddTokenizer(tokenizer_proto_);
+  }
+
   // Returns the number of blobs added.
   size_t DebugNumBlobsAdded() const {
     if (mode_ == CompressorMode::kTEST_ONLY) return model_memory_.size();
     return compressor_.DebugNumBlobsAdded();
   }
 
-  int Write(std::string path) override {
-    return compressor_.WriteAll(pool_, gcpp::Path(path));
+  int WriteWithConfig(std::string path, const ModelConfig* config) override {
+    return compressor_.WriteAll(gcpp::Path(path), config);
   }
 
   hwy::ThreadPool pool_;
@@ -149,6 +159,7 @@ class SbsWriterImpl : public WriterInterface {
   std::vector<MatStorage> model_memory_;
   std::vector<float> scales_;
   CompressorMode mode_;
+  std::string tokenizer_proto_;
 };
 
 WriterInterface* NewSbsWriter(CompressorMode mode) {
@@ -190,11 +201,17 @@ void SbsWriter::AddScales(const std::vector<float>& scales) {
   impl_->AddScales(scales);
 }
 
+void SbsWriter::AddTokenizer(const std::string& tokenizer_path) {
+  impl_->AddTokenizer(tokenizer_path);
+}
+
 size_t SbsWriter::DebugNumBlobsAdded() const {
   return impl_->DebugNumBlobsAdded();
 }
 
-int SbsWriter::Write(std::string path) { return impl_->Write(path); }
+int SbsWriter::WriteWithConfig(std::string path, const ModelConfig* config) {
+  return impl_->WriteWithConfig(path, config);
+}
 
 }  // namespace gcpp
 #endif  // HWY_ONCE

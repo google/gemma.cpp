@@ -50,6 +50,8 @@ PYBIND11_MODULE(compression, m) {
       .def("insert_bf16", wrap_span<&SbsWriter::InsertBfloat16>)
       .def("insert_float", wrap_span<&SbsWriter::InsertFloat>)
       .def("add_scales", &SbsWriter::AddScales)
+      .def("add_tokenizer", &SbsWriter::AddTokenizer)
       .def("debug_num_blobs_added", &SbsWriter::DebugNumBlobsAdded)
-      .def("write", &SbsWriter::Write);
+      .def("write", &SbsWriter::Write)
+      .def("write_with_config", &SbsWriter::WriteWithConfig);
 }

@@ -83,6 +83,14 @@ class PrintVisitor : public VisitorBase {
     fprintf(stderr, "%sU32 %u\n", indent_.c_str(), value);
   }
 
+  void operator()(int32_t& value) override {
+    fprintf(stderr, "%sI32 %d\n", indent_.c_str(), value);
+  }
+
+  void operator()(uint64_t& value) override {
+    fprintf(stderr, "%sU64 %zu\n", indent_.c_str(), value);
+  }
+
   void operator()(float& value) override {
     fprintf(stderr, "%sF32 %f\n", indent_.c_str(), value);
   }
@@ -118,6 +126,21 @@ class ReadVisitor : public VisitorBase {
     if (HWY_UNLIKELY(SkipField())) return;
 
     value = span_[result_.pos++];
+  }
+
+  void operator()(int32_t& value) override {
+    if (HWY_UNLIKELY(SkipField())) return;
+
+    value = static_cast<int32_t>(span_[result_.pos++]);
+  }
+
+  void operator()(uint64_t& value) override {
+    if (HWY_UNLIKELY(SkipField())) return;
+    uint32_t lower = static_cast<uint32_t>(value);
+    operator()(lower);
+    uint32_t upper = static_cast<uint32_t>(value >> 32);
+    operator()(upper);
+    value = lower | (static_cast<uint64_t>(upper) << 32);
   }
 
   void operator()(float& value) override {
@@ -228,6 +251,15 @@ class WriteVisitor : public VisitorBase {
   // so we don't have to check SkipField.
 
   void operator()(uint32_t& value) override { storage_.push_back(value); }
+
+  void operator()(int32_t& value) override {
+    storage_.push_back(static_cast<uint32_t>(value));
+  }
+
+  void operator()(uint64_t& value) override {
+    storage_.push_back(static_cast<uint32_t>(value));
+    storage_.push_back(static_cast<uint32_t>(value >> 32));
+  }
 
   void operator()(float& value) override {
     storage_.push_back(hwy::BitCastScalar<uint32_t>(value));

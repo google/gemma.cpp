@@ -26,7 +26,6 @@
 #include <cmath>
 #include <random>
 
-#include "compression/compress.h"
 #include "compression/shared.h"
 #include "util/allocator.h"
 #include "util/test_util.h"

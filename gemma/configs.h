@@ -26,6 +26,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "compression/fields.h"  // IFieldsVisitor
 #include "compression/shared.h"  // BF16
 
 namespace gcpp {
@@ -52,11 +53,21 @@ enum class LayerAttentionType {
   kVit,
 };
 
+inline bool EnumValid(LayerAttentionType type) {
+  return static_cast<int>(type) >= 0 &&
+         static_cast<int>(type) <= static_cast<int>(LayerAttentionType::kVit);
+}
+
 // Post attention and ffw normalization type.
 enum class PostNormType {
   None,
   Scale,
 };
+
+inline bool EnumValid(PostNormType type) {
+  return static_cast<int>(type) >= 0 &&
+      static_cast<int>(type) <= static_cast<int>(PostNormType::Scale);
+}
 
 // Post qk projection operation type.
 enum class PostQKType {
@@ -64,10 +75,20 @@ enum class PostQKType {
   HalfRope,
 };
 
+inline bool EnumValid(PostQKType type) {
+  return static_cast<int>(type) >= 0 &&
+      static_cast<int>(type) <= static_cast<int>(PostQKType::HalfRope);
+}
+
 // FFW activation function.
 enum class ActivationType {
   Gelu,
 };
+
+inline bool EnumValid(ActivationType type) {
+  return static_cast<int>(type) >= 0 &&
+      static_cast<int>(type) <= static_cast<int>(ActivationType::Gelu);
+}
 
 // Attention query scale.
 enum class QueryScaleType {
@@ -75,29 +96,40 @@ enum class QueryScaleType {
   SqrtModelDimDivNumHeads,
 };
 
+inline bool EnumValid(QueryScaleType type) {
+  return static_cast<int>(type) >= 0 &&
+      static_cast<int>(type) <=
+      static_cast<int>(QueryScaleType::SqrtModelDimDivNumHeads);
+}
+
 // Residual connection type.
 enum class ResidualType {
   Add,
 };
+
+inline bool EnumValid(ResidualType type) {
+  return static_cast<int>(type) >= 0 &&
+      static_cast<int>(type) <= static_cast<int>(ResidualType::Add);
+}
 
 template <size_t kNum>
 std::vector<LayerAttentionType> FixedLayerConfig(LayerAttentionType type) {
   return std::vector<LayerAttentionType>(kNum, type);
 }
 
-template <size_t kNum>
-std::vector<size_t> FixedAttentionWindowSizes(size_t window_size) {
-  return std::vector<size_t>(kNum, window_size);
+template <uint32_t kNum>
+std::vector<uint32_t> FixedAttentionWindowSizes(uint32_t window_size) {
+  return std::vector<uint32_t>(kNum, window_size);
 }
 
 // Repeat window_size_pattern for kNum / kPatternSize times.
-template <size_t kNum, size_t kPatternSize>
-std::vector<size_t> RepeatedAttentionWindowSizes(
-    const std::array<size_t, kPatternSize>& window_size_pattern) {
+template <uint32_t kNum, uint32_t kPatternSize>
+std::vector<uint32_t> RepeatedAttentionWindowSizes(
+    const std::array<uint32_t, kPatternSize>& window_size_pattern) {
   static_assert(kNum % kPatternSize == 0,
                 "kNum must be a multiple of kPatternSize");
-  std::vector<size_t> window_size_configs(kNum);
-  for (size_t i = 0; i < kNum; ++i) {
+  std::vector<uint32_t> window_size_configs(kNum);
+  for (uint32_t i = 0; i < kNum; ++i) {
     window_size_configs[i] = window_size_pattern[i % kPatternSize];
   }
   return window_size_configs;
@@ -130,7 +162,14 @@ static constexpr Model kAllModels[] = {
     Model::PALIGEMMA2_10B_224, Model::PALIGEMMA2_10B_448,
 };
 
-struct LayerConfig {
+inline bool EnumValid(Model model) {
+  for (Model m : kAllModels) {
+    if (m == model) return true;
+  }
+  return false;
+}
+
+struct LayerConfig : public IFields {
   // Returns true if *this and other are equal.
   // If partial is true, then we don't check for items that are only set after
   // the tensors are loaded from the checkpoint.
@@ -146,13 +185,32 @@ struct LayerConfig {
   // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
   size_t QStride() const { return qkv_dim * (IsMHA() ? 3 : 1); }
 
-  size_t model_dim = 0;
-  size_t griffin_dim = 0;
-  size_t ff_hidden_dim = 0;
-  size_t heads = 0;
-  size_t kv_heads = 0;
-  size_t qkv_dim = 0;
-  size_t conv1d_width = 0;  // griffin only
+  const char* Name() const override { return "LayerConfig"; }
+
+  void VisitFields(IFieldsVisitor& visitor) override {
+    visitor(model_dim);
+    visitor(griffin_dim);
+    visitor(ff_hidden_dim);
+    visitor(heads);
+    visitor(kv_heads);
+    visitor(qkv_dim);
+    visitor(conv1d_width);
+    visitor(ff_biases);
+    visitor(softmax_attn_output_biases);
+    visitor(optimized_gating);
+    visitor(post_norm);
+    visitor(type);
+    visitor(activation);
+    visitor(post_qk);
+  }
+
+  uint32_t model_dim = 0;
+  uint32_t griffin_dim = 0;
+  uint32_t ff_hidden_dim = 0;
+  uint32_t heads = 0;
+  uint32_t kv_heads = 0;
+  uint32_t qkv_dim = 0;
+  uint32_t conv1d_width = 0;  // griffin only
   bool ff_biases = false;
   bool softmax_attn_output_biases = false;
   bool optimized_gating = true;
@@ -162,7 +220,7 @@ struct LayerConfig {
   PostQKType post_qk = PostQKType::Rope;
 };
 
-struct ModelConfig {
+struct ModelConfig : public IFields {
   // Returns true if *this and other are equal.
   // If partial is true, then we don't check for items that are only set after
   // the tensors are loaded from the checkpoint.
@@ -191,39 +249,68 @@ struct ModelConfig {
   }
 
   size_t NumHeads() const {
-    size_t num_heads = 0;
+    uint32_t num_heads = 0;
     for (const auto& layer_config : layer_configs) {
       num_heads = std::max(num_heads, layer_config.heads);
     }
     return num_heads;
   }
 
+  const char* Name() const override { return "ModelConfig"; }
+
+  void VisitFields(IFieldsVisitor& visitor) override {
+    visitor(model_family_version);
+    visitor(model_name);
+    visitor(model);
+    visitor(wrapping);
+    visitor(weight);
+    visitor(num_layers);
+    visitor(model_dim);
+    visitor(vocab_size);
+    visitor(seq_len);
+    visitor(num_tensor_scales);
+    visitor(att_cap);
+    visitor(final_cap);
+    visitor(absolute_pe);
+    visitor(use_local_attention);
+    visitor(query_scale);
+    visitor(layer_configs);
+    visitor(attention_window_sizes);
+    visitor(norm_num_groups);
+    visitor(vit_model_dim);
+    visitor(vit_seq_len);
+    visitor(num_vit_scales);
+    visitor(vit_layer_configs);
+    visitor(patch_width);
+    visitor(image_size);
+  }
+
   std::string model_name;
-  Model model;
-  PromptWrapping wrapping;
-  Type weight;
-  size_t num_layers = 0;
-  size_t model_dim = 0;
-  size_t vit_model_dim = 0;
-  size_t vocab_size = 0;
-  size_t seq_len = 0;
-  size_t vit_seq_len = 0;
-  size_t num_tensor_scales = 0;
-  size_t num_vit_scales = 0;
+  Model model = Model::UNKNOWN;
+  PromptWrapping wrapping = PromptWrapping::GEMMA_PT;
+  Type weight = Type::kUnknown;
+  uint32_t num_layers = 0;
+  uint32_t model_dim = 0;
+  uint32_t vit_model_dim = 0;
+  uint32_t vocab_size = 0;
+  uint32_t seq_len = 0;
+  uint32_t vit_seq_len = 0;
+  uint32_t num_tensor_scales = 0;
+  uint32_t num_vit_scales = 0;
   float att_cap = 0.0f;
   float final_cap = 0.0f;
   bool absolute_pe = false;
   bool use_local_attention = false;  // griffin only
   QueryScaleType query_scale = QueryScaleType::SqrtKeySize;
   std::vector<LayerConfig> layer_configs;
-  std::vector<size_t> attention_window_sizes;
+  std::vector<uint32_t> attention_window_sizes;
   std::vector<LayerConfig> vit_layer_configs;
   std::unordered_set<std::string> scale_names;
-  int norm_num_groups = 1;
-  int model_family_version = 1;
+  uint32_t norm_num_groups = 1;
+  uint32_t model_family_version = 1;
   // Dimensions related to image processing.
-  size_t patch_width = 14;
-  size_t image_size = 224;
+  uint32_t patch_width = 14;
+  uint32_t image_size = 224;
 };
 
 // Returns the config for the given model.

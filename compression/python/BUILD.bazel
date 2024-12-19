@@ -16,6 +16,7 @@ cc_library(
     deps = [
         "@abseil-cpp//absl/types:span",
         "//:common",
+        "//:tokenizer",
         "//compression:compress",
         "//compression:io",
         "@highway//:hwy",

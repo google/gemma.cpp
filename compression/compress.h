@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -32,11 +33,13 @@
 
 // IWYU pragma: begin_exports
 #include "compression/blob_store.h"
+#include "compression/fields.h"
 #include "compression/io.h"
 #include "compression/shared.h"
 #include "gemma/tensor_index.h"
 #include "util/basics.h"
 // IWYU pragma: end_exports
+#include "gemma/configs.h"
 #include "util/allocator.h"
 #include "hwy/per_target.h"
 #if COMPRESS_STATS
@@ -55,7 +58,7 @@ namespace gcpp {
 // fixed inner dimension and type.
 // It is designed to be put in a vector, and has default copy and operator=, so
 // it is easy to read/write a blob_store file.
-class MatPtr {
+class MatPtr : public IFields {
  public:
   // Full constructor for dynamic sizing.
   MatPtr(const std::string& name, Type type, size_t element_size, size_t rows,
@@ -72,36 +75,6 @@ class MatPtr {
   // Default is to leave all fields default-initialized.
   MatPtr() = default;
   virtual ~MatPtr();
-
-  // Number of hwy::uint128_t in a TOC entry.
-  // Note that the old-style BlobStore files only have a list of keys and size.
-  // The new-style BlobStore files have an entry called "toc" that contains a
-  // vector of 4-tuples of
-  // (name, type, (num_elements, element_size), (rows, cols)).
-  // The listed blobs can be read directly into MatPtr from the BlobStore
-  // file, without needing any external knowledge of the number of elements,
-  // element size or type of the data.
-  static constexpr size_t kNumU128InTocEntry = 4;
-
-  // Construct from a TOC entry.
-  MatPtr(const hwy::uint128_t& key0, const hwy::uint128_t& key1,
-         const hwy::uint128_t& key2, const hwy::uint128_t& key3)
-      : name_(StringFromKey(key0)),
-        type_(static_cast<Type>(key1.lo)),
-        element_size_(key2.hi),
-        num_elements_(key2.lo),
-        rows_(key3.lo),
-        cols_(key3.hi) {
-    stride_ = cols_;
-  }
-
-  // Adds the contents entry to the table of contents.
-  void AddToToc(std::vector<hwy::uint128_t>& toc) const {
-    toc.push_back(MakeKey(name_.c_str()));
-    toc.push_back({static_cast<uint64_t>(type_), 0});
-    toc.push_back({num_elements_, element_size_});
-    toc.push_back({rows_, cols_});
-  }
 
   // Compatibility interface for CompressedArray.
   // TODO: remove.
@@ -124,7 +97,7 @@ class MatPtr {
   MatPtr& operator=(const MatPtr& other) = default;
 
   // Returns the name of the blob.
-  const std::string& Name() const { return name_; }
+  const char* Name() const override { return name_.c_str(); }
   void SetName(const std::string& name) { name_ = name; }
 
   // Returns the type of the blob.
@@ -163,17 +136,22 @@ class MatPtr {
     return name;
   }
 
-  // Adds the blob to the writer.
-  void AddToWriter(BlobWriter& writer) const {
-    fprintf(stderr, "Adding %s to writer\n", name_.c_str());
-    writer.Add(MakeKey(name_.c_str()), ptr_, SizeBytes());
-  }
-
   // Sets all data to zero.
   void ZeroInit() {
     if (ptr_ == nullptr)
       HWY_ABORT("ptr_ is null on tensor %s\n", name_.c_str());
     hwy::ZeroBytes(ptr_, SizeBytes());
+  }
+
+  void VisitFields(IFieldsVisitor& visitor) override {
+    visitor(name_);
+    visitor(type_);
+    visitor(element_size_);
+    visitor(num_elements_);
+    visitor(rows_);
+    visitor(cols_);
+    visitor(scale_);
+    visitor(stride_);
   }
 
   // Calls func on the upcasted type. Since MatPtr by design is not templated,
@@ -188,13 +166,13 @@ class MatPtr {
   // Should be the result of TypeEnum<T> for CallUpcasted() to work.
   Type type_;
   // sizeof(T)
-  size_t element_size_ = 0;
+  uint32_t element_size_ = 0;
   // Number of elements in the array.
-  size_t num_elements_ = 0;  // In element_size units.
+  uint32_t num_elements_ = 0;  // In element_size units.
   // Number of rows in the 2-d array (outer dimension).
-  size_t rows_ = 0;
+  uint32_t rows_ = 0;
   // Number of columns in the 2-d array (inner dimension).
-  size_t cols_ = 0;
+  uint32_t cols_ = 0;
   // Scaling to apply to each element.
   float scale_ = 1.0f;
   // Aligned data array. This is always a borrowed pointer. It should never be
@@ -202,7 +180,7 @@ class MatPtr {
   // and must outlive this object.
   void* ptr_ = nullptr;
 
-  size_t stride_;
+  uint32_t stride_;
 };
 
 // MatPtrT adds a single template argument to MatPtr for an explicit type.
@@ -394,31 +372,28 @@ class BlobToc {
  public:
   BlobToc() = default;
 
-  // Adds all blobs to the blob writer. Note that the blobs must have unique
-  // names.
-  static void AddAllToBlobWriter(const std::vector<MatStorage>& blobs,
-                                 BlobWriter& writer) {
-    std::vector<hwy::uint128_t> toc;
-    for (const auto& blob : blobs) {
-      blob.AddToToc(toc);
-      blob.AddToWriter(writer);
-    }
-    writer.Add(MakeKey(kTocName), toc.data(), toc.size() * sizeof(toc[0]));
-  }
-
   // Loads the table of contents from the given reader.
   BlobError LoadToc(BlobReader& reader) {
     hwy::uint128_t toc_key = MakeKey(kTocName);
     size_t toc_size = reader.BlobSize(toc_key);
     if (toc_size != 0) {
-      std::vector<hwy::uint128_t> toc(toc_size / sizeof(hwy::uint128_t));
+      std::vector<uint32_t> toc(toc_size / sizeof(uint32_t));
       BlobError err = reader.ReadOne(toc_key, toc.data(), toc_size);
       if (err != 0) {
         fprintf(stderr, "Failed to read toc (error %d)\n", err);
         return err;
       }
-      for (size_t i = 0; i < toc.size(); i += MatPtr::kNumU128InTocEntry) {
-        AddToToc(MatPtr(toc[i], toc[i + 1], toc[i + 2], toc[i + 3]));
+      size_t consumed = 0;
+      size_t prev_consumed = static_cast<size_t>(-1);
+      while (consumed < toc.size() && prev_consumed != consumed) {
+        MatPtr blob;
+        const IFields::ReadResult result =
+            blob.Read(hwy::Span<const uint32_t>(toc), consumed);
+        prev_consumed = consumed;
+        consumed = result.pos;
+        if (blob.NumElements() > 0) {
+          AddToToc(blob);
+        }
       }
     }
     return 0;
@@ -437,11 +412,16 @@ class BlobToc {
     if (it == toc_map_.end()) return nullptr;
     return &toc_[it->second];
   }
-
- private:
   // The name of the toc in the blob store file.
   static constexpr char kTocName[] = "toc";
 
+  // The name of the config in the blob store file.
+  static constexpr char kConfigName[] = "config";
+
+  // The name of the tokenizer in the blob store file.
+  static constexpr char kTokenizerName[] = "tokenizer";
+
+ private:
   // Adds the blob to the table of contents.
   void AddToToc(const MatPtr& blob) {
     HWY_ASSERT(!Contains(blob.Name()));
@@ -519,6 +499,68 @@ struct CompressWorkingSet {
   std::vector<CompressPerThread> tls;
 };
 
+// Class to collect and write a set of tensors to a blob store file.
+class WriteToBlobStore {
+ public:
+  explicit WriteToBlobStore(hwy::ThreadPool& pool) : pool_(pool) {}
+
+  template <typename Packed>
+  void operator()(MatPtrT<Packed>* compressed, const char* decorated_name) {
+    if (compressed->Ptr() == nullptr) return;
+    writer_.Add(MakeKey(decorated_name), compressed->Ptr(),
+                compressed->SizeBytes());
+    MatPtr renamed_tensor(*compressed);
+    renamed_tensor.SetName(decorated_name);
+    renamed_tensor.AppendTo(toc_);
+  }
+
+  void AddTokenizer(const std::string& tokenizer) {
+    writer_.Add(MakeKey(BlobToc::kTokenizerName), tokenizer.data(),
+                tokenizer.size() * sizeof(tokenizer[0]));
+  }
+
+  void AddScales(const float* scales, size_t len) {
+    if (len) {
+      MatPtrT<float> scales_ptr("scales", 0, 1);
+      writer_.Add(MakeKey(scales_ptr.CacheName().c_str()), scales,
+                  len * sizeof(scales[0]));
+    }
+  }
+
+  // Writes all blobs to disk in the given order. The config is optional and
+  // if given, it is written to the file, along with the TOC, making it
+  // single-file format. Otherwise, the file is written in the multi-file format
+  // without a TOC.
+  BlobError WriteAll(const Path& blob_filename, const ModelConfig* config) {
+    if (config) {
+      writer_.Add(MakeKey(BlobToc::kTocName), toc_.data(),
+                  toc_.size() * sizeof(toc_[0]));
+      config_buffer_ = config->Write();
+      writer_.Add(MakeKey(BlobToc::kConfigName), config_buffer_.data(),
+                  config_buffer_.size() * sizeof(config_buffer_[0]));
+    }
+    const BlobError err = writer_.WriteAll(pool_, blob_filename);
+    if (err != 0) {
+      fprintf(stderr, "Failed to write blobs to %s (error %d)\n",
+              blob_filename.path.c_str(), err);
+    }
+    return err;
+  }
+
+  // Returns the number of blobs added.
+  size_t DebugNumBlobsAdded() const { return writer_.DebugNumBlobsAdded(); }
+
+  hwy::ThreadPool& pool() { return pool_; }
+
+ protected:
+  hwy::ThreadPool& pool_;
+
+ private:
+  std::vector<uint32_t> toc_;
+  BlobWriter writer_;
+  std::vector<uint32_t> config_buffer_;
+};
+
 // Functor called for each tensor, which loads them and their scaling factors
 // from BlobStore.
 class ReadFromBlobStore {
@@ -539,11 +581,40 @@ class ReadFromBlobStore {
   // Returns true if there is a TOC.
   bool HaveToc() const { return !file_toc_.Empty(); }
 
+  // Reads the config from the blob store file.
+  BlobError LoadConfig(ModelConfig& config) {
+    hwy::uint128_t config_key = MakeKey(BlobToc::kConfigName);
+    size_t config_size = reader_.BlobSize(config_key);
+    if (config_size == 0) return __LINE__;
+    std::vector<uint32_t> config_buffer(config_size / sizeof(uint32_t));
+    BlobError err =
+        reader_.ReadOne(config_key, config_buffer.data(), config_size);
+    if (err != 0) {
+      fprintf(stderr, "Failed to read config (error %d)\n", err);
+      return err;
+    }
+    config.Read(hwy::Span<const uint32_t>(config_buffer), 0);
+    return 0;
+  }
+
+  // Reads the tokenizer from the blob store file.
+  BlobError LoadTokenizer(std::string& tokenizer) {
+    hwy::uint128_t key = MakeKey(BlobToc::kTokenizerName);
+    size_t tokenizer_size = reader_.BlobSize(key);
+    if (tokenizer_size == 0) return __LINE__;
+    tokenizer.resize(tokenizer_size);
+    ;
+    BlobError err = reader_.ReadOne(key, tokenizer.data(), tokenizer_size);
+    if (err != 0) {
+      fprintf(stderr, "Failed to read tokenizer (error %d)\n", err);
+      return err;
+    }
+    return 0;
+  }
+
   // Called for each tensor, enqueues read requests.
   void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
     if (file_toc_.Empty() || file_toc_.Contains(name)) {
-      if (tensors[0]->NumElements() == 0)
-        fprintf(stderr, "Zero elements for %s\n", name);
       model_toc_.push_back(tensors[0]);
       file_keys_.push_back(name);
     }
@@ -579,12 +650,12 @@ class ReadFromBlobStore {
           fprintf(stderr, "Blob %s has size mismatch TOC\n", file_key.c_str());
           return __LINE__;
         }
-        MatStorage toc_blob_array(*toc_blob);
-        model_memory.push_back(std::move(toc_blob_array));
-      } else {
-        model_memory.emplace_back(*blob);
-        model_memory.back().SetName(file_key);
+        std::string name = blob->Name();
+        *blob = *toc_blob;
+        blob->SetName(name);
       }
+      model_memory.emplace_back(*blob);
+      model_memory.back().SetName(file_key);
     }
     // Allocate in parallel using the pool.
     pool.Run(0, model_memory.size(),
@@ -594,12 +665,12 @@ class ReadFromBlobStore {
              });
     // Enqueue the read requests.
     for (auto& blob : model_memory) {
-      err_ = reader_.Enqueue(MakeKey(blob.Name().c_str()), blob.data(),
-                             blob.SizeBytes());
+      err_ =
+          reader_.Enqueue(MakeKey(blob.Name()), blob.data(), blob.SizeBytes());
       if (err_ != 0) {
         fprintf(stderr,
                 "Failed to read blob %s (error %d) of size %zu x %zu x %zu\n",
-                blob.Name().c_str(), err_, blob.Rows(), blob.Cols(),
+                blob.Name(), err_, blob.Rows(), blob.Cols(),
                 blob.ElementSize());
         return err_;
       }
