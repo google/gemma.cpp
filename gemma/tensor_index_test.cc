@@ -35,7 +35,7 @@ TEST(TensorIndexTest, FindName) {
                                    /*split_and_reshape=*/false);
     }
     for (size_t img_layer_idx = 0;
-         img_layer_idx < config.vit_layer_configs.size();
+         img_layer_idx < config.vit_config.layer_configs.size();
          ++img_layer_idx) {
       tensor_indexes.emplace_back(config, /*llm_layer_idx=*/-1,
                                   static_cast<int>(img_layer_idx),

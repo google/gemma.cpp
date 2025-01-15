@@ -220,6 +220,33 @@ struct LayerConfig : public IFields {
   PostQKType post_qk = PostQKType::Rope;
 };
 
+// Dimensions related to image processing.
+struct VitConfig : public IFields {
+  // Returns true if *this and other are equal.
+  // If partial is true, then we don't check for items that are only set after
+  // the tensors are loaded from the checkpoint.
+  // If debug is true, then we output the mismatched fields to stderr.
+  bool TestEqual(const VitConfig& other, bool partial, bool debug) const;
+
+  const char* Name() const override { return "VitConfig"; }
+
+  void VisitFields(IFieldsVisitor& visitor) override {
+    visitor(model_dim);
+    visitor(seq_len);
+    visitor(num_scales);
+    visitor(patch_width);
+    visitor(image_size);
+    visitor(layer_configs);
+  }
+
+  uint32_t model_dim = 0;
+  uint32_t seq_len = 0;
+  uint32_t num_scales = 0;
+  uint32_t patch_width = 14;
+  uint32_t image_size = 224;
+  std::vector<LayerConfig> layer_configs;
+};
+
 struct ModelConfig : public IFields {
   // Returns true if *this and other are equal.
   // If partial is true, then we don't check for items that are only set after
@@ -277,26 +304,21 @@ struct ModelConfig : public IFields {
     visitor(layer_configs);
     visitor(attention_window_sizes);
     visitor(norm_num_groups);
-    visitor(vit_model_dim);
-    visitor(vit_seq_len);
-    visitor(num_vit_scales);
-    visitor(vit_layer_configs);
-    visitor(patch_width);
-    visitor(image_size);
+    visitor(vit_config);
   }
 
+  // Major version of the model family. It is used as a fallback to distinguish
+  // between model types when there is no explicit information in the config.
+  uint32_t model_family_version = 1;
   std::string model_name;
   Model model = Model::UNKNOWN;
   PromptWrapping wrapping = PromptWrapping::GEMMA_PT;
   Type weight = Type::kUnknown;
   uint32_t num_layers = 0;
   uint32_t model_dim = 0;
-  uint32_t vit_model_dim = 0;
   uint32_t vocab_size = 0;
   uint32_t seq_len = 0;
-  uint32_t vit_seq_len = 0;
   uint32_t num_tensor_scales = 0;
-  uint32_t num_vit_scales = 0;
   float att_cap = 0.0f;
   float final_cap = 0.0f;
   bool absolute_pe = false;
@@ -304,13 +326,10 @@ struct ModelConfig : public IFields {
   QueryScaleType query_scale = QueryScaleType::SqrtKeySize;
   std::vector<LayerConfig> layer_configs;
   std::vector<uint32_t> attention_window_sizes;
-  std::vector<LayerConfig> vit_layer_configs;
   std::unordered_set<std::string> scale_names;
   uint32_t norm_num_groups = 1;
-  uint32_t model_family_version = 1;
   // Dimensions related to image processing.
-  uint32_t patch_width = 14;
-  uint32_t image_size = 224;
+  VitConfig vit_config;
 };
 
 // Returns the config for the given model.
@@ -320,7 +339,7 @@ ModelConfig ConfigFromModel(Model model);
 Model ModelFromConfig(const ModelConfig& config);
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
-ModelConfig VitConfig(const ModelConfig& config);
+ModelConfig GetVitConfig(const ModelConfig& config);
 
 }  // namespace gcpp
 

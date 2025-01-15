@@ -344,8 +344,9 @@ struct ModelWeightsPtrs {
       c_layers.push_back(LayerWeightsPtrs<Weight>(layer_config, tensor_index));
     }
     for (int index = 0;
-         index < static_cast<int>(config.vit_layer_configs.size()); ++index) {
-      const auto& layer_config = config.vit_layer_configs[index];
+         index < static_cast<int>(config.vit_config.layer_configs.size());
+         ++index) {
+      const auto& layer_config = config.vit_config.layer_configs[index];
       TensorIndex tensor_index(config, /*llm_layer_idx=*/-1, index,
                                /*reshape_att=*/false);
       vit_layers.push_back(
@@ -479,7 +480,7 @@ struct ModelWeightsPtrs {
     int sep_index = -1;
     GEMMA_CALL_FUNC(embedder_input_embedding);
     GEMMA_CALL_FUNC(final_norm_scale);
-    if (ptrs[0]->weights_config.vit_layer_configs.size() > 0) {
+    if (ptrs[0]->weights_config.vit_config.layer_configs.size() > 0) {
       // Vit parts.
       GEMMA_CALL_FUNC(vit_encoder_norm_bias);
       GEMMA_CALL_FUNC(vit_encoder_norm_scale);
@@ -498,7 +499,7 @@ struct ModelWeightsPtrs {
     }
 
     // Vit layers. Not supported for compress_weights.
-    if (ptrs[0]->weights_config.vit_layer_configs.size() > 0) {
+    if (ptrs[0]->weights_config.vit_config.layer_configs.size() > 0) {
       for (int layer_idx = 0; layer_idx < ptrs[0]->vit_layers.size();
            ++layer_idx) {
         auto type = ptrs[0]->vit_layers[layer_idx].layer_config.type;

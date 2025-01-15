@@ -253,18 +253,19 @@ static LayerConfig LayerConfigVit(size_t model_dim) {
 
 // Adds a ViT config (SigLIP SoViT ViT, used in PaliGemma) to the model config.
 static void AddVitConfig(ModelConfig& config, size_t image_size = 224) {
-  config.vit_model_dim = 1152;
+  config.vit_config.model_dim = 1152;
   config.vocab_size = 256000 + 1024 + 128;  // = 257152
-  config.image_size = image_size;
-  config.patch_width = 14;
+  config.vit_config.image_size = image_size;
+  config.vit_config.patch_width = 14;
+  const size_t num_patches =
+      config.vit_config.image_size / config.vit_config.patch_width;
+  config.vit_config.seq_len = num_patches * num_patches;
   for (auto& layer_config : config.layer_configs) {
     layer_config.optimized_gating = false;
   }
-  const size_t num_patches = config.image_size / config.patch_width;
-  config.vit_seq_len = num_patches * num_patches;
-  LayerConfig vit_layer_config = LayerConfigVit(config.vit_model_dim);
-  config.vit_layer_configs = {27, vit_layer_config};
-  config.num_vit_scales = 4 * config.vit_layer_configs.size();
+  LayerConfig vit_layer_config = LayerConfigVit(config.vit_config.model_dim);
+  config.vit_config.layer_configs = {27, vit_layer_config};
+  config.vit_config.num_scales = 4 * config.vit_config.layer_configs.size();
 }
 
 static ModelConfig ConfigPaliGemma_224() {
@@ -283,11 +284,11 @@ static ModelConfig ConfigPaliGemma_448() {
   return config;
 }
 
-ModelConfig VitConfig(const ModelConfig& config) {
+ModelConfig GetVitConfig(const ModelConfig& config) {
   ModelConfig vit_config = ConfigNoSSM();
-  vit_config.model_dim = config.vit_model_dim;
-  vit_config.seq_len = config.vit_seq_len;
-  vit_config.layer_configs = config.vit_layer_configs;
+  vit_config.model_dim = config.vit_config.model_dim;
+  vit_config.seq_len = config.vit_config.seq_len;
+  vit_config.layer_configs = config.vit_config.layer_configs;
   // The Vit part does not have a vocabulary, the image patches are embedded.
   vit_config.vocab_size = 0;
   return vit_config;
@@ -402,9 +403,28 @@ bool LayerConfig::TestEqual(const LayerConfig& other, bool partial,
   return result;
 }
 
+bool VitConfig::TestEqual(const VitConfig& other, bool partial,
+                          bool debug) const {
+  bool result = true;
+  TEST_EQUAL(model_dim, other.model_dim);
+  TEST_EQUAL(seq_len, other.seq_len);
+  if (!partial) {
+    TEST_EQUAL(num_scales, other.num_scales);
+  }
+  TEST_EQUAL(patch_width, other.patch_width);
+  TEST_EQUAL(image_size, other.image_size);
+  RETURN_IF_NOT_EQUAL(layer_configs.size(), other.layer_configs.size());
+  for (size_t i = 0; i < layer_configs.size(); ++i) {
+    result &=
+        layer_configs[i].TestEqual(other.layer_configs[i], partial, debug);
+  }
+  return result;
+}
+
 bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
                             bool debug) const {
   bool result = true;
+  TEST_EQUAL(model_family_version, other.model_family_version);
   // We don't care about model_name, model, wrapping, or weight being different,
   // but will output in debug mode if they are.
   if (debug) {
@@ -415,13 +435,10 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
     WARN_IF_NOT_EQUAL(static_cast<int>(weight), static_cast<int>(other.weight));
   }
   TEST_EQUAL(model_dim, other.model_dim);
-  TEST_EQUAL(vit_model_dim, other.vit_model_dim);
   TEST_EQUAL(vocab_size, other.vocab_size);
   TEST_EQUAL(seq_len, other.seq_len);
-  TEST_EQUAL(vit_seq_len, other.vit_seq_len);
   if (!partial) {
     TEST_EQUAL(num_tensor_scales, other.num_tensor_scales);
-    TEST_EQUAL(num_vit_scales, other.num_vit_scales);
   }
   TEST_EQUAL(att_cap, other.att_cap);
   TEST_EQUAL(final_cap, other.final_cap);
@@ -439,11 +456,6 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
   for (size_t i = 0; i < attention_window_sizes.size(); ++i) {
     TEST_EQUAL(attention_window_sizes[i], other.attention_window_sizes[i]);
   }
-  RETURN_IF_NOT_EQUAL(vit_layer_configs.size(), other.vit_layer_configs.size());
-  for (size_t i = 0; i < vit_layer_configs.size(); ++i) {
-    result &= vit_layer_configs[i].TestEqual(other.vit_layer_configs[i],
-                                             partial, debug);
-  }
   if (!partial) {
     if (scale_names != other.scale_names) {
       result = false;
@@ -453,9 +465,7 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
     }
   }
   TEST_EQUAL(norm_num_groups, other.norm_num_groups);
-  TEST_EQUAL(model_family_version, other.model_family_version);
-  TEST_EQUAL(patch_width, other.patch_width);
-  TEST_EQUAL(image_size, other.image_size);
+  result &= vit_config.TestEqual(other.vit_config, partial, debug);
   return result;
 }
 

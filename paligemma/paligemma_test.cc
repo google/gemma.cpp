@@ -50,12 +50,13 @@ class PaliGemmaTest : public ::testing::Test {
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetModel(), nullptr);
   Gemma& model = *(s_env->GetModel());
-  image_tokens_ = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
-                                        model.GetModelConfig().model_dim));
+  image_tokens_ =
+      ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
+                            model.GetModelConfig().model_dim));
   Image image;
   HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
-  const size_t image_size = model.GetModelConfig().image_size;
+  const size_t image_size = model.GetModelConfig().vit_config.image_size;
   image.Resize(image_size, image_size);
   RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
   model.GenerateImageTokens(runtime_config, image, image_tokens_);

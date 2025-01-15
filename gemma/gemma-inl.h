@@ -1042,9 +1042,9 @@ template <typename T>
 HWY_NOINLINE void EmbedImagePatches(const Image& image,
                                     const ModelWeightsPtrs<T>& weights,
                                     Activations& activations) {
-  const size_t model_dim = weights.weights_config.vit_model_dim;
-  const size_t patch_width = weights.weights_config.patch_width;
-  const size_t seq_len = weights.weights_config.vit_seq_len;
+  const size_t model_dim = weights.weights_config.vit_config.model_dim;
+  const size_t patch_width = weights.weights_config.vit_config.patch_width;
+  const size_t seq_len = weights.weights_config.vit_config.seq_len;
   const size_t patch_size = patch_width * patch_width * 3;
   HWY_DASSERT(weights.vit_img_embedding_kernel.NumElements() ==
               patch_size * model_dim);
@@ -1087,14 +1087,15 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
                              const Image& image, ImageTokens& image_tokens,
                              Activations& activations) {
   PROFILER_ZONE("Gen.PrefillVit");
-  const size_t num_tokens = weights.weights_config.vit_seq_len;
-  const size_t vit_model_dim = weights.weights_config.vit_model_dim;
+  const size_t num_tokens = weights.weights_config.vit_config.seq_len;
+  const size_t vit_model_dim = weights.weights_config.vit_config.model_dim;
   HWY_ASSERT(num_tokens == activations.x.BatchSize());
   // Embed the image patches.
   EmbedImagePatches(image, weights, activations);
   // Go through all layers.
   for (size_t layer = 0;
-       layer < weights.weights_config.vit_layer_configs.size(); ++layer) {
+       layer < weights.weights_config.vit_config.layer_configs.size();
+       ++layer) {
     const auto* layer_weights = weights.GetVitLayer(layer);
     VitTransformerLayer(num_tokens, layer, layer_weights, activations);
   }
@@ -1413,11 +1414,11 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
                           NestedPools& pools) {
-  if (model.Config().vit_layer_configs.empty()) {
+  if (model.Config().vit_config.layer_configs.empty()) {
     HWY_ABORT("Model does not support generating image tokens.");
   }
   RuntimeConfig prefill_runtime_config = runtime_config;
-  ModelConfig vit_config = VitConfig(model.Config());
+  ModelConfig vit_config = GetVitConfig(model.Config());
   prefill_runtime_config.prefill_tbatch_size = vit_config.seq_len;
   Activations prefill_activations(vit_config);
   prefill_activations.Allocate(vit_config.seq_len, pools);

@@ -367,12 +367,13 @@ template <class TConfig>
 void AssertMatch(const ModelConfig& config) {
   ASSERT_EQ(TConfig::kModelDim, config.model_dim);
   if constexpr (TConfig::VitConfig::kModelDim != 0) {
-    ASSERT_EQ(TConfig::VitConfig::kModelDim, config.vit_model_dim);
-    ASSERT_EQ(TConfig::VitConfig::kSeqLen, config.vit_seq_len);
-    ASSERT_EQ(TConfig::VitConfig::kNumTensorScales, config.num_vit_scales);
-    for (size_t i = 0; i < config.vit_layer_configs.size(); ++i) {
+    ASSERT_EQ(TConfig::VitConfig::kModelDim, config.vit_config.model_dim);
+    ASSERT_EQ(TConfig::VitConfig::kSeqLen, config.vit_config.seq_len);
+    ASSERT_EQ(TConfig::VitConfig::kNumTensorScales,
+              config.vit_config.num_scales);
+    for (size_t i = 0; i < config.vit_config.layer_configs.size(); ++i) {
       ASSERT_EQ(TConfig::VitConfig::kLayerConfig[i],
-                config.vit_layer_configs[i].type);
+                config.vit_config.layer_configs[i].type);
     }
   }
   ASSERT_EQ(TConfig::kVocabSize, config.vocab_size);

@@ -86,7 +86,7 @@ BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
     config_ = ConfigFromModel(model_type);
     config_.weight = weight_type;
     config_.wrapping = wrapping;
-    scales.resize(config_.num_tensor_scales + config_.num_vit_scales);
+    scales.resize(config_.num_tensor_scales + config_.vit_config.num_scales);
   }
   CreateForType(config_.weight, pool);
   CallForModelWeightT<TensorLoader>(fet, loader);

@@ -94,11 +94,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   Image image;
   ImageTokens image_tokens;
   if (have_image) {
-    image_tokens = ImageTokens(Extents2D(model.GetModelConfig().vit_seq_len,
-                                         model.GetModelConfig().model_dim));
+    image_tokens =
+        ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
+                              model.GetModelConfig().model_dim));
     HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
-    const size_t image_size = model.GetModelConfig().image_size;
+    const size_t image_size = model.GetModelConfig().vit_config.image_size;
     image.Resize(image_size, image_size);
     RuntimeConfig runtime_config = {
         .gen = &gen, .verbosity = app.verbosity, .use_spinning = app.spin};
