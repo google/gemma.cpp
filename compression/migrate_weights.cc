@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Skipping model load because: %s\n", err);
     return 1;
   }
-  gcpp::GemmaEnv env(argc, argv, /*required=*/true);
+  gcpp::GemmaEnv env(argc, argv);
   hwy::ThreadPool pool(0);
   env.GetModel()->Save(args.output_weights, pool);
   return 0;

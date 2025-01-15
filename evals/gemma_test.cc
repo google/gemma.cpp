@@ -28,6 +28,7 @@
 // This test can be run manually with the downloaded gemma weights.
 // To run the test, pass the following flags:
 // --model <model> --tokenizer <tokenizer_path> --weights <weights_path>
+// or just use the single-file weights file with --weights <weights_path>.
 // It should pass for the following models:
 // Gemma1: 2b-it (v1 and v1.1), 7b-it (v1 and v1.1), gr2b-it,
 // Gemma2: gemma2-2b-it, 9b-it, 27b-it,

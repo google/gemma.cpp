@@ -92,9 +92,9 @@ static AppArgs MakeAppArgs(int argc, char** argv) {
   return AppArgs(argc, argv);
 }
 
-GemmaEnv::GemmaEnv(int argc, char** argv, bool model_type_required)
-    : GemmaEnv(LoaderArgs(argc, argv, model_type_required),
-               InferenceArgs(argc, argv), MakeAppArgs(argc, argv)) {}
+GemmaEnv::GemmaEnv(int argc, char** argv)
+    : GemmaEnv(LoaderArgs(argc, argv), InferenceArgs(argc, argv),
+               MakeAppArgs(argc, argv)) {}
 
 QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
   QueryResult result;

@@ -126,8 +126,7 @@ static inline NestedPools CreatePools(const AppArgs& app) {
 }
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, char* argv[], bool required = true)
-      : model_type_required(required) {
+  LoaderArgs(int argc, char* argv[]) {
     InitAndParse(argc, argv);
   }
   LoaderArgs(const std::string& tokenizer_path, const std::string& weights_path,
@@ -140,25 +139,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    info_.model = Model::UNKNOWN;
-    info_.wrapping = PromptWrapping::GEMMA_PT;
-    info_.weight = Type::kUnknown;
-    if (const char* err = ParseModelTypeAndWrapping(model_type_str, info_.model,
-                                                    info_.wrapping)) {
-      if (model_type_required) return err;
-    }
-    if (const char* err = ParseType(weight_type_str, info_.weight)) {
-      if (model_type_required) return err;
-    }
-    if (model_type_required) {
-      if (tokenizer.path.empty()) {
-        return "Missing --tokenizer flag, a file for the tokenizer is "
-               "required.";
-      }
-      if (!tokenizer.Exists()) {
-        return "Can't open file specified with --tokenizer flag.";
-      }
-    }
     if (!compressed_weights.path.empty()) {
       if (weights.path.empty()) {
         weights = compressed_weights;
@@ -174,6 +154,28 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     if (!weights.Exists()) {
       return "Can't open file specified with --weights flag.";
     }
+    info_.model = Model::UNKNOWN;
+    info_.wrapping = PromptWrapping::GEMMA_PT;
+    info_.weight = Type::kUnknown;
+    if (!model_type_str.empty()) {
+      const char* err = ParseModelTypeAndWrapping(model_type_str, info_.model,
+                                                  info_.wrapping);
+      if (err != nullptr) return err;
+    }
+    if (!weight_type_str.empty()) {
+      const char* err = ParseType(weight_type_str, info_.weight);
+      if (err != nullptr) return err;
+    }
+    if (!tokenizer.path.empty()) {
+      if (!tokenizer.Exists()) {
+        return "Can't open file specified with --tokenizer flag.";
+      }
+    }
+    // model_type and tokenizer must be either both present or both absent.
+    // Further checks happen on weight loading.
+    if (model_type_str.empty() != tokenizer.path.empty()) {
+      return "Missing or extra flags for model_type or tokenizer.";
+    }
     return nullptr;
   }
 
@@ -182,7 +184,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path compressed_weights;
   std::string model_type_str;
   std::string weight_type_str;
-  bool model_type_required = true;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -199,7 +200,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
             "gr2b-pt = griffin 2B parameters, pretrained.");
     visitor(weight_type_str, "weight_type", std::string("sfp"),
-            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit FP.");
+            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit SFP.");
   }
 
   // Uninitialized before Validate, must call after that.
@@ -212,6 +213,11 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 };
 
 static inline Gemma CreateGemma(const LoaderArgs& loader, NestedPools& pools) {
+  if (Type::kUnknown == loader.Info().weight ||
+      Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
+    // New weights file format doesn't need tokenizer path or model/weightinfo.
+    return Gemma(loader.weights, pools);
+  }
   return Gemma(loader.tokenizer, loader.weights, loader.Info(), pools);
 }
 
@@ -219,8 +225,7 @@ static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
                                                    NestedPools& pools) {
   if (Type::kUnknown == loader.Info().weight ||
       Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
-    // Newer weights file format doesn't need tokenizer path or model/weight
-    // info.
+    // New weights file format doesn't need tokenizer path or model/weight info.
     return std::make_unique<Gemma>(loader.weights, pools);
   }
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,

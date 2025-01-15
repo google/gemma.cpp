@@ -525,9 +525,9 @@ class ModelWeightsStorage {
 
   // Loads the weights from a blob store file. Supports multi-file or
   // single-file format. If the weights file contains a TOC, then it is in
-  // single-file format, and model_type, weight_type, training are ignored,
+  // single-file format, and model_type, weight_type, wrapping are ignored,
   // and tokenizer_proto is required and written to.
-  // With a multi-file format, file, model_type, weight_type, training are
+  // With a multi-file format, file, model_type, weight_type, wrapping are
   // required and tokenizer_proto is ignored.
   BlobError Load(const Path& weights, Model model_type, Type weight_type,
                  PromptWrapping wrapping, hwy::ThreadPool& pool,

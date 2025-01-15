@@ -27,6 +27,7 @@
 // This test can be run manually with the downloaded PaliGemma weights.
 // To run the test, pass the following flags:
 // --model paligemma-224 --tokenizer <tokenizer_path> --weights <weights_path>
+// or just use the single-file weights file with --weights <weights_path>.
 // It should pass for the following models:
 // paligemma-3b-mix-224, paligemma2-3b-pt-448
 

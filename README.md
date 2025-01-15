@@ -305,6 +305,24 @@ A tall tree stands in front of the building, and a window on the building is
 visible from the water. The water is green, and the sky is blue.
 ```
 
+### Migrating to single-file format
+
+There is now a new format for the weights file, which is a single file that
+allows to contain the tokenizer (and the model type) directly. A tool to migrate
+from the multi-file format to the single-file format is available.
+
+```sh
+compression/migrate_weights \
+  --tokenizer .../tokenizer.spm --weights .../gemma2-2b-it-sfp.sbs \
+  --model gemma2-2b-it --output_weights .../gemma2-2b-it-sfp-single.sbs
+```
+
+After migration, you can use the new weights file with gemma.cpp like this:
+
+```sh
+./gemma --weights .../gemma2-2b-it-sfp-single.sbs
+```
+
 ### Troubleshooting and FAQs
 
 **Running `./gemma` fails with "Failed to read cache gating_ein_0 (error 294) ..."**
@@ -331,9 +349,8 @@ and not a pre-trained model (any model with a `-pt` suffix).
 
 **How do I convert my fine-tune to a `.sbs` compressed model file?**
 
-We're working on a python script to convert a standard model format to `.sbs`,
-and hope have it available soon. Follow
-[this issue](https://github.com/google/gemma.cpp/issues/11) for updates.
+See compression/convert_weights.py to convert a pytorch checkpint. (The code may
+need updates to work with Gemma-2 models.)
 
 **What are some easy ways to make the model run faster?**
 
