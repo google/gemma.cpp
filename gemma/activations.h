@@ -19,6 +19,7 @@
 #include <stddef.h>
 
 #include <cmath>
+#include <memory>  // std::unique_ptr
 
 #include "compression/shared.h"  // BF16
 #include "gemma/configs.h"
@@ -63,7 +64,8 @@ struct Activations {
   // Rope
   RowVectorBatch<float> inv_timescale;
 
-  MatMulEnv env;
+  // Dynamic because no default ctor and only initialized in `Allocate`.
+  std::unique_ptr<MatMulEnv> env;
 
   PostQKType post_qk = PostQKType::Rope;
   // And the config.
@@ -122,7 +124,7 @@ struct Activations {
 
     inv_timescale = CreateInvTimescale(layer_config.qkv_dim, post_qk);
 
-    env = MatMulEnv(pools);
+    env = std::make_unique<MatMulEnv>(pools);
   }
 };
 

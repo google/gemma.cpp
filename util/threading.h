@@ -108,7 +108,7 @@ class BoundedTopology {
 
   class Cluster {
    public:
-    Cluster(const LPS& enabled_lps, BoundedSlice lp_slice);
+    Cluster(const LPS& lps);
     Cluster(const LPS& enabled_lps,
             const std::vector<hwy::Topology::LP>& all_lps,
             const hwy::Topology::Cluster& tcluster);
@@ -124,17 +124,12 @@ class BoundedTopology {
       return lps;
     }
 
+    const LPS& LPSet() const { return lps_; }
     size_t Node() const { return node_; }
     size_t PrivateKiB() const { return private_kib_; }
     size_t SharedKiB() const { return shared_kib_; }
 
    private:
-    void AddLP(size_t lp) {
-      HWY_ASSERT(!lps_.Get(lp));  // Foreach ensures uniqueness
-      lps_.Set(lp);
-      ++num_workers_;
-    }
-
     // Enabled LPs; if topology is known, only the ones in this cluster.
     LPS lps_;
     // How many workers in the per-cluster pool. If 0, this Cluster is removed.
@@ -147,19 +142,19 @@ class BoundedTopology {
     size_t shared_kib_ = 0;
   };  // Cluster
 
-  size_t NumClusters(size_t package_idx) const {
-    HWY_ASSERT(package_idx < NumPackages());
-    return packages_[package_idx].clusters.size();
+  size_t NumClusters(size_t pkg_idx) const {
+    HWY_ASSERT(pkg_idx < NumPackages());
+    return packages_[pkg_idx].clusters.size();
   }
-  const Cluster& GetCluster(size_t package_idx, size_t cluster_idx) const {
-    HWY_ASSERT(package_idx < NumPackages());
-    const Package& package = packages_[package_idx];
+  const Cluster& GetCluster(size_t pkg_idx, size_t cluster_idx) const {
+    HWY_ASSERT(pkg_idx < NumPackages());
+    const Package& package = packages_[pkg_idx];
     HWY_ASSERT(cluster_idx < package.clusters.size());
     return package.clusters[cluster_idx];
   }
-  Cluster& GetCluster(size_t package_idx, size_t cluster_idx) {
-    HWY_ASSERT(package_idx < NumPackages());
-    Package& package = packages_[package_idx];
+  Cluster& GetCluster(size_t pkg_idx, size_t cluster_idx) {
+    HWY_ASSERT(pkg_idx < NumPackages());
+    Package& package = packages_[pkg_idx];
     HWY_ASSERT(cluster_idx < package.clusters.size());
     return package.clusters[cluster_idx];
   }
@@ -170,13 +165,9 @@ class BoundedTopology {
 
  private:
   struct Package {
-    // Topology is unknown, rely on OS affinity and user-specified slice.
-    Package(const LPS& enabled_lps, BoundedSlice lp_slice) {
-      clusters.push_back(Cluster(enabled_lps, lp_slice));
-    }
-
+    Package(const LPS& enabled_lps, BoundedSlice lp_slice);
     Package(const LPS& enabled_lps, const hwy::Topology& topology,
-            size_t package_idx, BoundedSlice cluster_slice);
+            size_t pkg_idx, BoundedSlice cluster_slice);
 
     // For SortByDescendingSize.
     size_t Size() const { return clusters.size(); }
@@ -257,33 +248,36 @@ class NestedPools {
     }
   }
 
+  size_t NumPackages() const { return packages_.size(); }
   hwy::ThreadPool& AllPackages() { return *all_packages_; }
-  hwy::ThreadPool& AllClusters(size_t package_idx) {
-    HWY_DASSERT(package_idx < packages_.size());
-    return packages_[package_idx].AllClusters();
+  hwy::ThreadPool& AllClusters(size_t pkg_idx) {
+    HWY_DASSERT(pkg_idx < NumPackages());
+    return packages_[pkg_idx].AllClusters();
   }
-  hwy::ThreadPool& Cluster(size_t package_idx, size_t cluster_idx) {
-    HWY_DASSERT(package_idx < packages_.size());
-    return packages_[package_idx].Cluster(cluster_idx);
+  hwy::ThreadPool& Cluster(size_t pkg_idx, size_t cluster_idx) {
+    HWY_DASSERT(pkg_idx < NumPackages());
+    return packages_[pkg_idx].Cluster(cluster_idx);
   }
 
   // For binding to NUMA nodes.
-  size_t Node(size_t package_idx, size_t cluster_idx) const {
-    return topology_.GetCluster(package_idx, cluster_idx).Node();
+  size_t Node(size_t pkg_idx, size_t cluster_idx) const {
+    return topology_.GetCluster(pkg_idx, cluster_idx).Node();
   }
 
-  // Reasonably tight upper bound for allocating thread-local storage (TLS).
-  size_t MaxWorkers() const {
-    return packages_.size() * max_clusters_per_package_ *
-           max_workers_per_cluster_;
+  // Reasonably tight upper bounds for allocating thread-local storage (TLS).
+  size_t MaxWorkersPerCluster() const { return max_workers_per_cluster_; }
+  size_t MaxWorkersPerPackage() const {
+    return max_clusters_per_package_ * MaxWorkersPerCluster();
   }
-  // Returns the first of `cluster.NumWorkers()` TLS indices, to which callers
-  // add the worker index given by `cluster.Run`.
-  size_t WorkerOffset(size_t package_idx, size_t cluster_idx) const {
-    HWY_DASSERT(package_idx < packages_.size());
-    HWY_DASSERT(cluster_idx < packages_[package_idx].NumClusters());
-    return (package_idx * max_clusters_per_package_ + cluster_idx) *
-           max_workers_per_cluster_;
+  size_t MaxWorkers() const { return NumPackages() * MaxWorkersPerPackage(); }
+
+  // Actual number of workers.
+  size_t TotalWorkers() const {
+    size_t total_workers = 0;
+    for (size_t pkg_idx = 0; pkg_idx < NumPackages(); ++pkg_idx) {
+      total_workers += packages_[pkg_idx].TotalWorkers();
+    }
+    return total_workers;
   }
 
   // For Allocator
@@ -296,20 +290,20 @@ class NestedPools {
   // if there is more than one, which maximizes available memory bandwidth, or
   // the first cluster, which is typically the whole package. For use by callers
   // that only have a single parallel-for.
-  hwy::ThreadPool& Pool(size_t package_idx = 0) {
+  hwy::ThreadPool& Pool(size_t pkg_idx = 0) {
     // Only one cluster: use its pool, typically a whole socket.
-    if (AllClusters(package_idx).NumWorkers() == 1) {
-      return Cluster(package_idx, 0);
+    if (AllClusters(pkg_idx).NumWorkers() == 1) {
+      return Cluster(pkg_idx, 0);
     }
     // One worker per cluster to maximize bandwidth availability.
-    return AllClusters(package_idx);
+    return AllClusters(pkg_idx);
   }
 
  private:
   class Package {
    public:
     Package() = default;  // for vector
-    Package(const BoundedTopology& topology, size_t package_idx,
+    Package(const BoundedTopology& topology, size_t pkg_idx,
             size_t max_workers_per_package, BoundedSlice lp_slice);
 
     size_t NumClusters() const { return clusters_.size(); }
@@ -320,6 +314,13 @@ class NestedPools {
             HWY_MAX(max_workers_per_cluster, cluster->NumWorkers());
       }
       return max_workers_per_cluster;
+    }
+    size_t TotalWorkers() const {
+      size_t total_workers = 0;
+      for (const PoolPtr& cluster : clusters_) {
+        total_workers += cluster->NumWorkers();
+      }
+      return total_workers;
     }
 
     hwy::ThreadPool& AllClusters() { return *all_clusters_; }
@@ -365,32 +366,34 @@ class NestedPools {
 // functions below.
 class IndexRangePartition {
  public:
+  IndexRangePartition() = default;  // for MMPartitions
   IndexRangePartition(const IndexRange& range, const size_t task_size)
-      : range_(range), task_size_(task_size) {
-    const size_t num = range.Num();
+      : range_(range), task_size_(static_cast<uint32_t>(task_size)) {
+    const uint32_t num = static_cast<uint32_t>(range.Num());
     HWY_DASSERT(task_size_ != 0);
     num_tasks_ = hwy::DivCeil(num, task_size_);
     HWY_DASSERT(num_tasks_ != 0);
     if constexpr (HWY_IS_DEBUG_BUILD) {
-      const size_t handled = num_tasks_ * task_size_;
+      const uint32_t handled = num_tasks_ * task_size_;
       // The last task may extend beyond items, but at most by (task_size_ - 1).
       HWY_DASSERT(num <= handled && handled < num + task_size_);
+      (void)handled;
     }
   }
 
-  size_t TaskSize() const { return task_size_; }
-  size_t NumTasks() const { return num_tasks_; }
+  size_t TaskSize() const { return static_cast<size_t>(task_size_); }
+  size_t NumTasks() const { return static_cast<size_t>(num_tasks_); }
 
   IndexRange Range(size_t task_idx) const {
     HWY_DASSERT(task_idx < NumTasks());
-    return MakeIndexRange(range_.begin() + task_idx * task_size_, range_.end(),
-                          task_size_);
+    return MakeIndexRange(range_.begin() + task_idx * TaskSize(), range_.end(),
+                          TaskSize());
   }
 
  private:
   IndexRange range_;
-  size_t task_size_;
-  size_t num_tasks_;
+  uint32_t task_size_;
+  uint32_t num_tasks_;
 };
 
 // Starts with `max_size` and rounds DOWN to a multiple of `size_multiple`
@@ -452,33 +455,6 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
     const IndexRange range1 = get1.Range(idx1);
     const IndexRange range2 = get2.Range(idx2);
     func(range1, range2, thread);
-  });
-}
-
-// As above, for three ranges.
-template <class Func>
-void ParallelizeThreeRanges(const IndexRangePartition& get1,
-                            const IndexRangePartition& get2,
-                            const IndexRangePartition& get3,
-                            hwy::ThreadPool& pool, const Func& func) {
-  const hwy::Divisor div1(static_cast<uint32_t>(get1.NumTasks()));
-  const size_t num12 = get1.NumTasks() * get2.NumTasks();
-  const hwy::Divisor div12(static_cast<uint32_t>(num12));
-
-  const size_t num_tasks = num12 * get3.NumTasks();
-  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
-    HWY_DASSERT(task < (uint64_t{1} << 32));
-    const size_t idx3 = div12.Divide(static_cast<uint32_t>(task));
-    const size_t task12 = div12.Remainder(static_cast<uint32_t>(task));
-    const size_t idx2 = div1.Divide(static_cast<uint32_t>(task12));
-    const size_t idx1 = div1.Remainder(static_cast<uint32_t>(task12));
-    HWY_DASSERT(idx1 < get1.NumTasks());
-    HWY_DASSERT(idx2 < get2.NumTasks());
-    HWY_DASSERT(idx3 < get3.NumTasks());
-    const IndexRange range1 = get1.Range(idx1);
-    const IndexRange range2 = get2.Range(idx2);
-    const IndexRange range3 = get3.Range(idx3);
-    func(range1, range2, range3, thread);
   });
 }
 

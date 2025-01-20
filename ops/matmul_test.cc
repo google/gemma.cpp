@@ -39,7 +39,6 @@
 #include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/timer.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -55,7 +54,7 @@
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
-// For running TestBatchSizes only once. Defined within HWY_ONCE.
+// For running TestTiny only once. Defined within HWY_ONCE.
 extern int64_t first_target;
 
 namespace HWY_NAMESPACE {
@@ -144,10 +143,10 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
   const hn::ScalableTag<float> df;
   const size_t num_a = A.extents.Area();
   const size_t num_b = B.extents.Area();
-  HWY_ASSERT(num_a % hn::Lanes(df) == 0);  // for DecompressAndZeroPad
-  HWY_ASSERT(num_b % hn::Lanes(df) == 0);  // for DecompressAndZeroPad
-  FloatPtr a = hwy::AllocateAligned<float>(num_a);
-  FloatPtr b_trans = hwy::AllocateAligned<float>(num_b);
+  const size_t N = hn::Lanes(df);
+  // Round up for DecompressAndZeroPad.
+  FloatPtr a = hwy::AllocateAligned<float>(hwy::RoundUpTo(num_a, N));
+  FloatPtr b_trans = hwy::AllocateAligned<float>(hwy::RoundUpTo(num_b, N));
   HWY_ASSERT(a && b_trans);
   HWY_ASSERT(A.ofs == 0 && B.ofs == 0);
   DecompressAndZeroPad(df, MakeSpan(A.ptr, num_a), 0, a.get(), num_a);
@@ -164,13 +163,11 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
   double tolerance = 8 * norm * eps_f32;
   // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
   // tolerance there.
-  if (IsF32<MatTA>() && IsF32<MatTB>()) {
+  if (IsF32<MatTA>() && !IsF32<MatTB>()) {
     tolerance += 4 * max_abs * eps_bf16;
   }
-  EXPECT_GE(tolerance, 1E-4);
-  if (tolerance > 4.0) {
-    fprintf(stderr, "WARN: high tolerance %f norm %f maxabs %f\n", tolerance,
-            norm, max_abs);
+  if (tolerance > 8.0) {
+    HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);
   }
 
   for (size_t r = 0; r < A.extents.rows; r++) {
@@ -182,11 +179,10 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
 
       if (!(expected_value - tolerance <= actual_value &&
             actual_value <= expected_value + tolerance)) {
-        fprintf(stderr,
-                "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
-                "tolerance %f\n",
-                r, c, expected_value, actual_value, norm, max_abs, tolerance);
-        return;
+        HWY_ABORT(
+            "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
+            "tolerance %f\n",
+            r, c, expected_value, actual_value, norm, max_abs, tolerance);
       }
     }
   }
@@ -217,7 +213,7 @@ HWY_INLINE void MatMulSlow(const ConstMat<MatTA> A, const ConstMat<MatTB> B,
       get_row_c, all_packages,
       [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
         hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
-        const size_t multiple = Allocator::Alignment() / sizeof(MatTB);
+        const size_t multiple = Allocator::QuantumBytes() / sizeof(MatTB);
         const IndexRangePartition get_col_c =
             StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
         ParallelizeOneRange(
@@ -248,7 +244,6 @@ template <typename MatTA, typename MatTB = MatTA>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env) {
   hwy::ThreadPool& pool = env.Pool();
-  const bool want_bench = cols_bc > 2000;  // avoid spam for small matrices
   fprintf(stderr, "TestMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
           rows_ac, cols_a_rows_b, cols_bc, add, TypeName<MatTA>(),
           TypeName<MatTB>());
@@ -276,32 +271,17 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const RowPtrF C_slow = RowPtrFromBatch(c_slow_batch);
   const RowPtrF C = RowPtrFromBatch(c_batch);
 
-  const double start_slow = hwy::platform::Now();
   MatMulSlow(A, B, add_row, env, C_slow);
-  if (want_bench) {
-    PrintSpeed("MatMulSlow", A_extents, B_extents,
-               hwy::platform::Now() - start_slow);
-  }
-
-  double min_elapsed = hwy::HighestValue<double>();
-  for (int rep = 0; rep < (want_bench ? 3 : 1); ++rep) {
-    const double start_tiled = hwy::platform::Now();
-    MatMul(A, B, add_row, env, C);
-    min_elapsed = HWY_MIN(min_elapsed, hwy::platform::Now() - start_tiled);
-  }
-  if (want_bench) {
-    PrintSpeed("MatMul", A_extents, B_extents, min_elapsed);
-  }
-
+  MatMul(A, B, add_row, env, C);
   AssertClose(A, B, C_slow, C);
 }
 
 using F32 = float;
 using SFP = SfpStream;
 
-// Sweep batch_size for a single input type and Highway target, to verify the
-// row partitioning.
-void TestBatchSizes() {
+// Sweep all dimensions for a single input type and Highway target, to verify
+// the remainder handling.
+void TestTiny() {
   if (first_target == 0) first_target = HWY_TARGET;
   if (HWY_TARGET != first_target) return;
 
@@ -315,7 +295,7 @@ void TestBatchSizes() {
     // If less than the limit, we have already tested all num_packages.
     if (pools.Topology().FullTopology().packages.size() < max_packages) break;
 #endif
-    fprintf(stderr, "TestBatchSizes %zu: %s %s\n", max_packages,
+    fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
             pools.TopologyString(), pools.PinString());
 
     Tristate use_spinning = Tristate::kDefault;
@@ -405,7 +385,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 int64_t first_target = 0;  // none run yet
 HWY_BEFORE_TEST(MatMulTest);
-HWY_EXPORT_AND_TEST_P(MatMulTest, TestBatchSizes);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestTiny);
 HWY_EXPORT_AND_TEST_P(MatMulTest, TestAllMatMul);
 HWY_AFTER_TEST();
 

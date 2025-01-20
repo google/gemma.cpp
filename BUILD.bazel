@@ -76,6 +76,12 @@ cc_test(
     ],
 )
 
+# For building all tests in one command, so we can test several.
+test_suite(
+    name = "ops_tests",
+    tags = ["ops_tests"],
+)
+
 cc_library(
     name = "ops",
     hdrs = [
@@ -110,7 +116,7 @@ cc_test(
     srcs = ["ops/dot_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":allocator",
         ":ops",
@@ -135,7 +141,7 @@ cc_test(
     srcs = ["ops/ops_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":allocator",
         ":common",
@@ -157,7 +163,7 @@ cc_test(
     srcs = ["ops/gemma_matvec_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":ops",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -175,7 +181,7 @@ cc_test(
     srcs = ["ops/matmul_unit_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":allocator",
         ":basics",
@@ -195,7 +201,7 @@ cc_test(
     srcs = ["ops/matmul_test.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":allocator",
         ":basics",
@@ -205,7 +211,6 @@ cc_test(
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
-        "@highway//:nanobenchmark",
         "@highway//:thread_pool",
     ],
 )
@@ -217,7 +222,7 @@ cc_test(
     srcs = ["ops/bench_matmul.cc"],
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
-    tags = ["hwy_ops_test"],
+    tags = ["ops_tests"],
     deps = [
         ":allocator",
         ":basics",
@@ -228,6 +233,7 @@ cc_test(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
+        "@highway//:profiler",
         "@highway//:thread_pool",
     ],
 )

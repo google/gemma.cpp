@@ -309,13 +309,6 @@ decltype(auto) MatPtr::CallUpcasted(FuncT& func, TArgs&&... args) {
   }
 }
 
-template <typename T>
-ConstMat<T> ConstMatFromWeights(const MatPtrT<T>& m, size_t ofs = 0) {
-  ConstMat<T> mat = MakeConstMat(const_cast<T*>(m.data()), m.Extents(), ofs);
-  mat.scale = m.scale();
-  return mat;
-}
-
 // MatStorageT adds the actual data storage to MatPtrT.
 // TODO: use Extents2D instead of rows and cols.
 template <typename MatT>
@@ -361,7 +354,7 @@ class MatStorageT : public MatPtrT<MatT> {
   }
 
  private:
-  hwy::AlignedFreeUniquePtr<MatT[]> data_;
+  AlignedPtr<MatT> data_;
 };
 
 // MatStorage allows heterogeneous tensors to be stored in a single vector.

@@ -138,6 +138,13 @@ TEST(ThreadingTest, TestMaxSizePartition) {
     HWY_ASSERT(partition.TaskSize() == 55);
     HWY_ASSERT(partition.NumTasks() == 2);
   }
+  // `size_multiple` almost as large as range: imbalanced
+  {
+    const IndexRangePartition partition =
+        MaxSizePartition(IndexRange(0, 6), 6, 4);
+    HWY_ASSERT(partition.TaskSize() == 4);
+    HWY_ASSERT(partition.NumTasks() == 2);
+  }
   // Small `max_size`: small tasks
   {
     const IndexRangePartition partition = MaxSizePartition(range, 2, 1);
@@ -244,97 +251,5 @@ TEST(ThreadingTest, TestParallelizeTwoRanges) {
   }
 }
 
-TEST(ThreadingTest, TestParallelizeThreeRanges) {
-  // Named according to number of tasks.
-  const IndexRangePartition partition3 =
-      StaticPartition(IndexRange(0, 8), 3, 1);  // [0, 3) [3, 6) [6, 8)
-  HWY_ASSERT(partition3.NumTasks() == 3);
-  const IndexRangePartition partition2 =
-      MaxSizePartition(IndexRange(10, 30), 10, 10);  // [10, 20), [20, 30)
-  HWY_ASSERT(partition2.NumTasks() == 2);
-  const IndexRangePartition partition4 =
-      MaxSizePartition(IndexRange(100, 500), 100, 100);  // 100, 200, 300, 400
-  HWY_ASSERT(partition4.NumTasks() == 4);
-
-  const auto check_ranges = [&](const IndexRange& range3,
-                                const IndexRange& range2,
-                                const IndexRange& range4) {
-    HWY_ASSERT(range3.begin() == 0 || range3.begin() == 3 ||
-               range3.begin() == 6);
-    HWY_ASSERT(range2.begin() == 10 || range2.begin() == 20);
-    HWY_ASSERT(range4.begin() % 100 == 0);
-  };
-
-  hwy::ThreadPool null_pool(0);
-  // All 6 permutations of the three ranges to test the Remainder() logic:
-  // 3, 2, 4
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition3, partition2, partition4, null_pool,
-        [&](IndexRange range3, IndexRange range2, IndexRange range4, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-  // 3, 4, 2
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition3, partition4, partition2, null_pool,
-        [&](IndexRange range3, IndexRange range4, IndexRange range2, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-
-  // 4, 2, 3
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition4, partition2, partition3, null_pool,
-        [&](IndexRange range4, IndexRange range2, IndexRange range3, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-  // 4, 3, 2
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition4, partition3, partition2, null_pool,
-        [&](IndexRange range4, IndexRange range3, IndexRange range2, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-
-  // 2, 3, 4
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition2, partition3, partition4, null_pool,
-        [&](IndexRange range2, IndexRange range3, IndexRange range4, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-  // 2, 4, 3
-  {
-    size_t calls = 0;
-    ParallelizeThreeRanges(
-        partition2, partition4, partition3, null_pool,
-        [&](IndexRange range2, IndexRange range4, IndexRange range3, size_t) {
-          ++calls;
-          check_ranges(range3, range2, range4);
-        });
-    HWY_ASSERT(calls == 3 * 2 * 4);
-  }
-}
 }  // namespace
 }  // namespace gcpp

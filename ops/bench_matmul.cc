@@ -16,7 +16,7 @@
 // Benchmark of large MatMul instances for which the MatMulSlow would be too
 // slow. This lacks a reference and is only useful for performance measurement.
 
-#include "hwy/detect_compiler_arch.h"
+#include "hwy/base.h"
 #ifndef HWY_DISABLED_TARGETS
 // Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
 // double-precision support.
@@ -30,7 +30,9 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 
 #include "compression/compress.h"
 #include "compression/shared.h"
@@ -38,8 +40,8 @@
 #include "util/allocator.h"
 #include "util/basics.h"
 #include "util/threading.h"
-#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/nanobenchmark.h"
 #include "hwy/timer.h"
 
 // clang-format off
@@ -51,6 +53,7 @@
 // After highway.h
 #include "compression/compress-inl.h"
 #include "ops/matmul-inl.h"
+#include "hwy/profiler.h"  // also uses SIMD
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -74,7 +77,8 @@ MatStoragePtr<MatT> GenerateMat(const Extents2D extents,
       std::make_unique<MatStorageT<MatT>>("mat", extents.rows, extents.cols);
   FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
   HWY_ASSERT(content);
-  const float scale = SfpStream::kMax / (mat->NumElements());
+  const float scale =
+      SfpStream::kMax / (mat->NumElements() + hwy::Unpredictable1() - 1);
   pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
     for (size_t c = 0; c < extents.cols; c++) {
       float f = static_cast<float>(r * extents.cols + c) * scale;
@@ -96,7 +100,8 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
   auto mat =
       std::make_unique<MatStorageT<MatT>>("trans", extents.rows, extents.cols);
   FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
-  const float scale = SfpStream::kMax / (mat->NumElements());
+  const float scale =
+      SfpStream::kMax / (mat->NumElements() + hwy::Unpredictable1() - 1);
   pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
     for (size_t c = 0; c < extents.cols; c++) {
       float f = static_cast<float>(c * extents.rows + r) * scale;
@@ -111,52 +116,63 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
   return mat;
 }
 
-void PrintSpeed(const char* algo, const Extents2D& A_extents,
-                const Extents2D& B_extents, double elapsed) {
+void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
+                std::vector<double>& times) {
+  std::sort(times.begin(), times.end());
+  // Many measurements are with suboptimal configs, so report the best like
+  // bench_dnn, but also the ratio to the 3rd best.
+  const double elapsed = times[0];
+  const double ratio = times[2] / HWY_MAX(elapsed, 1E-6);
+
   const size_t num_b = B_extents.Area();
   // 2x because of FMA.
-  fprintf(stderr, "                     %10s: %f seconds, %.1f GFLOPS.\n", algo,
-          elapsed, 2 * 1E-9 * A_extents.rows * num_b / elapsed);
+  fprintf(stderr, "%.1f\t%.2f\n", 2 * 1E-9 * A_extents.rows * num_b / elapsed,
+          ratio);
 }
 
 // Generates inputs and prints observed throughput of MatMul.
+// M = A rows, K = A cols, N = C cols.
 template <typename MatTA, typename MatTB = MatTA>
-void BenchMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
-                 MatMulEnv& env) {
+void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   hwy::ThreadPool& pool = env.Pool();
-  fprintf(stderr, "BenchMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
-          rows_ac, cols_a_rows_b, cols_bc, add, TypeName<MatTA>(),
-          TypeName<MatTB>());
+  fprintf(stderr, "BenchMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n", M,
+          K, N, add, TypeName<MatTA>(), TypeName<MatTB>());
 
-  const Extents2D A_extents(rows_ac, cols_a_rows_b);
-  const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
-  const Extents2D C_extents(rows_ac, cols_bc);
+  const Extents2D A_extents(M, K);
+  const Extents2D B_extents(N, K);  // already transposed
+  const Extents2D C_extents(M, N);
 
-  MatStoragePtr<MatTA> a = GenerateMat<MatTA>(A_extents, pool);
-  MatStoragePtr<MatTB> b_trans = GenerateTransposedMat<MatTB>(B_extents, pool);
   RowVectorBatch<float> c_slow_batch(C_extents);
   RowVectorBatch<float> c_batch(C_extents);
-  HWY_ASSERT(a && b_trans);
 
   std::unique_ptr<MatStorageT<float>> add_storage;
   if (add) {
-    add_storage = GenerateMat<float>(Extents2D(1, cols_bc), pool);
+    add_storage = GenerateMat<float>(Extents2D(1, N), pool);
     HWY_ASSERT(add_storage);
     add_storage->set_scale(1.0f);
   }
 
+  MatStoragePtr<MatTA> a = GenerateMat<MatTA>(A_extents, pool);
+  MatStoragePtr<MatTB> b_trans = GenerateTransposedMat<MatTB>(B_extents, pool);
+  HWY_ASSERT(a && b_trans);
   const auto A = ConstMatFromWeights(*a);
   const auto B = ConstMatFromWeights(*b_trans);
+
   const float* add_row = add ? add_storage->data_scale1() : nullptr;
   const RowPtrF C = RowPtrFromBatch(c_batch);
 
-  double min_elapsed = hwy::HighestValue<double>();
-  for (int rep = 0; rep < 3; ++rep) {
-    const double start_tiled = hwy::platform::Now();
+  std::vector<double> times;
+  times.reserve(20);
+  double result = 0.0;
+  for (;;) {
+    const double t0 = hwy::platform::Now();
     MatMul(A, B, add_row, env, C);
-    min_elapsed = HWY_MIN(min_elapsed, hwy::platform::Now() - start_tiled);
+    times.push_back(hwy::platform::Now() - t0);
+    result += C.Row(0)[hwy::Unpredictable1()];
+    if (times.size() >= 20) break;
   }
-  PrintSpeed("MatMul", A_extents, B_extents, min_elapsed);
+  hwy::PreventElision(result);
+  PrintSpeed(A_extents, B_extents, times);
 }
 
 using F32 = float;
@@ -184,16 +200,15 @@ void BenchAllMatMul() {
     Allocator::Init(pools.Topology());
     MatMulEnv env(pools);
 
-    for (size_t batch_size : {1, /*4, 64,*/ 128}) {
-      BenchMatMul<F32, F32>(batch_size, 24576, 3072, /*add=*/false, env);
-      BenchMatMul<F32, F32>(batch_size, 3072, 24576, /*add=*/false, env);
-      BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, /*add=*/false, env);
-      BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, /*add=*/false, env);
-      BenchMatMul<F32, SFP>(batch_size, 24576, 3072, /*add=*/false, env);
-      BenchMatMul<F32, SFP>(batch_size, 3072, 24576, /*add=*/false, env);
+    for (size_t batch_size : {1, /* 4, 128,*/ 512}) {
+      constexpr bool kAdd = false;
+      BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, kAdd, env);
+      BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, kAdd, env);
     }
     pools.MaybeStopSpinning(use_spinning);
   }
+
+  PROFILER_PRINT_RESULTS();
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

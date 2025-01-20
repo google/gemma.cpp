@@ -273,11 +273,11 @@ struct PackedSpan {
   // Ensures callers can read or write `num_accessible` elements starting at
   // `packed_ofs`.
   void BoundsCheck(size_t packed_ofs, size_t num_accessible) const {
-    // For NUQ, there can be fewer Packed than the number of elements, hence
-    // check the compressed count and ensure we have that many.
-    const size_t required =
-        CompressedArrayElements<Packed>(packed_ofs + num_accessible);
     if constexpr (HWY_IS_DEBUG_BUILD) {
+      // For NUQ, there can be fewer Packed than the number of elements, hence
+      // check the compressed count and ensure we have that many.
+      const size_t required =
+          CompressedArrayElements<Packed>(packed_ofs + num_accessible);
       if (num < required) {
         HWY_ABORT("PackedSpan: ofs %zu, want %zu, req %zu > %zu packed",
                   packed_ofs, num_accessible, required, num);

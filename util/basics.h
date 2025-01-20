@@ -64,8 +64,8 @@ struct TokenAndProb {
 
 // Entire size of a 2D array.
 struct Extents2D {
-  Extents2D() : rows(0), cols(0) {}
-  Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {
+  constexpr Extents2D() : rows(0), cols(0) {}
+  constexpr Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {
     HWY_DASSERT(rows != 0);
     HWY_DASSERT(cols != 0);
   }
@@ -77,6 +77,7 @@ struct Extents2D {
 };
 
 struct IndexRange {
+  IndexRange() = default;
   IndexRange(size_t begin, size_t end) : begin_(begin), end_(end) {
     HWY_DASSERT(begin < end);
   }
@@ -113,144 +114,6 @@ static inline IndexRange MakeIndexRange(size_t begin, size_t end,
                                         size_t max_size) {
   return IndexRange(begin, HWY_MIN(begin + max_size, end));
 }
-
-// Lightweight version of `MatPtr` used for the C argument of `MatMul`, because
-// it is always float and does not support compressed T, but does support an
-// arbitrary stride >= cols.
-template <typename T>
-class RowPtr {
- public:
-  RowPtr(T* HWY_RESTRICT row0, size_t cols)
-      : row0_(row0), cols_(cols), stride_(cols) {}
-  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
-      : row0_(row0), cols_(cols), stride_(stride) {
-    HWY_DASSERT(stride >= cols);
-  }
-
-  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
-  size_t Cols() const { return cols_; }
-
-  size_t Stride() const { return stride_; }
-  void SetStride(size_t stride) {
-    HWY_DASSERT(stride >= Cols());
-    stride_ = stride;
-  }
-
- private:
-  T* HWY_RESTRICT row0_;
-  size_t stride_;
-  size_t cols_;
-};
-
-using RowPtrF = RowPtr<float>;
-
-// Owns dynamically-allocated aligned memory for a batch of row vectors.
-// This can be seen as a (batch_size x cols) matrix. Unlike `RowPtr`, this owns
-// the memory.
-template <typename T>
-class RowVectorBatch {
- public:
-  // Default ctor for Activations ctor.
-  RowVectorBatch() = default;
-  // Main ctor, called from Activations::Allocate.
-  RowVectorBatch(Extents2D extents) : extents_(extents) {
-    mem_ = hwy::AllocateAligned<T>(extents_.rows * extents_.cols);
-  }
-
-  // Move-only
-  RowVectorBatch(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch& operator=(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch(RowVectorBatch&&) noexcept = default;
-  RowVectorBatch& operator=(RowVectorBatch&&) noexcept = default;
-
-  size_t BatchSize() const { return extents_.rows; }
-  size_t Cols() const { return extents_.cols; }
-  Extents2D Extents() const { return extents_; }
-
-  // Returns the given row vector of length `Cols()`.
-  T* Batch(size_t batch_idx) {
-    HWY_DASSERT(batch_idx < BatchSize());
-    return mem_.get() + batch_idx * Cols();
-  }
-  const T* Batch(size_t batch_idx) const {
-    HWY_DASSERT(batch_idx < BatchSize());
-    return mem_.get() + batch_idx * Cols();
-  }
-
-  // For MatMul or other operations that process the entire batch at once.
-  // TODO: remove once we only use Mat.
-  T* All() { return mem_.get(); }
-  const T* Const() const { return mem_.get(); }
-  size_t NumBytes() const { return BatchSize() * Cols() * sizeof(T); }
-
- private:
-  hwy::AlignedFreeUniquePtr<T[]> mem_;
-  Extents2D extents_;
-};
-
-// Used for the A and B arguments of `MatMul`, which are always const.
-// Create via MakeConstMat. This differs from `RowPtr` in that it supports the
-// `ofs` required for compressed T.
-template <typename T>
-struct ConstMat {
-  ConstMat(const T* ptr, Extents2D extents, size_t ofs = 0)
-      : ptr(ptr), extents(extents), ofs(ofs) {
-    HWY_DASSERT(ptr != nullptr);
-  }
-  // TODO: support stride for page alignment.
-  size_t Row(size_t r) const {
-    if constexpr (HWY_IS_DEBUG_BUILD) {
-      if (r >= extents.rows) {
-        HWY_ABORT("ConstMat::Row %zu out of bounds %zu", r, extents.rows);
-      }
-    }
-    return ofs + extents.cols * r;
-  }
-
-  const Extents2D& Extents() const { return extents; }
-  size_t Stride() const { return extents.cols; }
-
-  // Shrinks the row-extent of this matrix view, i.e. reduces the view to a
-  // subrange of the original rows starting at row 0.
-  void ShrinkRows(size_t rows) {
-    HWY_ASSERT(rows <= extents.rows);
-    extents.rows = rows;
-  }
-
-  const T* HWY_RESTRICT ptr;
-  Extents2D extents;
-
-  // `scale` allows expanding the smaller range of `SfpStream` to the original
-  // values. MatFromWeights sets this from `MatPtr`.
-  float scale = 1.0f;
-
-  // Offset to add to `ptr`; separate because T=NuqStream does not support
-  // pointer arithmetic.
-  size_t ofs;
-};
-
-// For deducing T.
-template <typename T>
-ConstMat<T> MakeConstMat(T* HWY_RESTRICT ptr, Extents2D extents,
-                         size_t ofs = 0) {
-  return ConstMat<T>(ptr, extents, ofs);
-}
-
-// For A argument to MatMul (activations).
-template <typename T>
-ConstMat<T> ConstMatFromBatch(size_t batch_size,
-                              const RowVectorBatch<T>& row_vectors) {
-  HWY_DASSERT(batch_size <= row_vectors.BatchSize());
-  return MakeConstMat(const_cast<T*>(row_vectors.Const()),
-                      Extents2D(batch_size, row_vectors.Cols()));
-}
-
-// For C argument to MatMul.
-template <typename T>
-RowPtr<T> RowPtrFromBatch(RowVectorBatch<T>& row_vectors) {
-  return RowPtr<T>(row_vectors.All(), row_vectors.Cols());
-}
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_BASICS_H_

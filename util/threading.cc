@@ -55,10 +55,8 @@ class Pinning {
     LPS enabled_lps;
     if (HWY_UNLIKELY(!GetThreadAffinity(enabled_lps))) {
       const size_t num_lps = hwy::TotalLogicalProcessors();
-      fprintf(
-          stderr,
-          "Warning, unknown OS affinity, considering all %zu LPs enabled\n.",
-          num_lps);
+      HWY_WARN("unknown OS affinity, considering all %zu LPs enabled.",
+               num_lps);
       for (size_t lp = 0; lp < num_lps; ++lp) {
         enabled_lps.Set(lp);
       }
@@ -71,8 +69,7 @@ class Pinning {
       const size_t lp = enabled_lps.First();
       enabled_lps = LPS();
       enabled_lps.Set(lp);
-      fprintf(stderr,
-              "Warning, threads not supported, using only the main thread\n.");
+      HWY_WARN("Warning, threads not supported, using only the main thread.");
     }
 
     original_affinity_ = enabled_lps;
@@ -155,23 +152,10 @@ BoundedTopology::BoundedTopology(BoundedSlice package_slice,
   HWY_ASSERT(NumPackages() != 0 && NumClusters(0) != 0 && NumNodes() != 0);
 }
 
-// Topology is unknown, rely on OS affinity and user-specified slice.
-BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
-                                  BoundedSlice lp_slice) {
-  // Interpret `lp_slice` as a slice of the 1-bits of `enabled_lps`, so
-  // we honor both the OS affinity and the user-specified slice. Note that
-  // this can be used to exclude hyperthreads because Linux groups LPs by
-  // sibling index. For example, the first `num_cores` are not siblings.
-  const size_t detected = enabled_lps.Count();
-  size_t enabled_idx = 0;
-  enabled_lps.Foreach([&](size_t lp) {
-    if (lp_slice.Contains(detected, enabled_idx++)) {
-      AddLP(lp);
-    }
-  });
-
-  // lp_slice can only reduce the number of `enabled_lps`, and not below 1.
-  HWY_ASSERT(num_workers_ != 0);
+// Topology is unknown, take the given set of LPs.
+BoundedTopology::Cluster::Cluster(const LPS& lps) {
+  lps_ = lps;
+  num_workers_ = lps.Count();
 }
 
 BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
@@ -183,7 +167,9 @@ BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
     // Skip if not first-hyperthread or disabled.
     if (all_lps[lp].smt != 0 || !enabled_lps.Get(lp)) return;
 
-    AddLP(lp);
+    HWY_ASSERT(!lps_.Get(lp));  // Foreach ensures uniqueness
+    lps_.Set(lp);
+    ++num_workers_;
 
     // Set fields once, and ensure subsequent LPs match - we assume there
     // is only one NUMA node per cluster, with the same L2/L3 size.
@@ -198,30 +184,63 @@ BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
       if (HWY_LIKELY(!warned)) {
         if (HWY_UNLIKELY(lp_node != node_)) {
           warned = true;
-          fprintf(stderr, "WARNING: lp %zu on node %zu != cluster node %zu.\n",
-                  lp, lp_node, node_);
+          HWY_WARN("lp %zu on node %zu != cluster node %zu.", lp, lp_node,
+                   node_);
         }
         if (HWY_UNLIKELY(private_kib_ != tcluster.private_kib)) {
           warned = true;
-          fprintf(stderr, "WARNING: lp %zu private_kib %zu != cluster %zu.\n",
-                  lp, private_kib_, tcluster.private_kib);
+          HWY_WARN("lp %zu private_kib %zu != cluster %zu.", lp, private_kib_,
+                   tcluster.private_kib);
         }
         if (HWY_UNLIKELY(shared_kib_ != tcluster.shared_kib)) {
           warned = true;
-          fprintf(stderr, "WARNING: lp %zu shared_kib %zu != cluster %zu.\n",
-                  lp, shared_kib_, tcluster.shared_kib);
+          HWY_WARN("lp %zu shared_kib %zu != cluster %zu.", lp, shared_kib_,
+                   tcluster.shared_kib);
         }
       }  // !warned
     }
   });
 }
 
+// CPUs without clusters are rarely more than dozens of cores, and 6 is a
+// decent number of threads in a per-cluster pool.
+constexpr bool kSplitLargeClusters = false;
+constexpr size_t kMaxClusters = 8;
+constexpr size_t kMaxLPsPerCluster = 6;
+
+// Topology is unknown, rely on OS affinity and user-specified slice.
+BoundedTopology::Package::Package(const LPS& enabled_lps,
+                                  BoundedSlice lp_slice) {
+  LPS clusters_lps[kMaxClusters];
+  const size_t num_clusters =
+      kSplitLargeClusters
+          ? HWY_MIN(kMaxClusters,
+                    hwy::DivCeil(enabled_lps.Count(), kMaxLPsPerCluster))
+          : 1;
+
+  // Interpret `lp_slice` as a slice of the 1-bits of `enabled_lps`, so
+  // we honor both the OS affinity and the user-specified slice. Note that
+  // this can be used to exclude hyperthreads because Linux groups LPs by
+  // sibling index. For example, the first `num_cores` are not siblings.
+  const size_t detected = enabled_lps.Count();
+  size_t enabled_idx = 0;
+  enabled_lps.Foreach([&](size_t lp) {
+    if (lp_slice.Contains(detected, enabled_idx)) {
+      clusters_lps[enabled_idx % num_clusters].Set(lp);
+    }
+    ++enabled_idx;
+  });
+
+  for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+    clusters.push_back(Cluster(clusters_lps[cluster_idx]));
+  }
+}
+
 // NOTE: caller is responsible for checking whether `clusters` is empty.
 BoundedTopology::Package::Package(const LPS& enabled_lps,
-                                  const hwy::Topology& topology,
-                                  size_t package_idx,
+                                  const hwy::Topology& topology, size_t pkg_idx,
                                   BoundedSlice cluster_slice) {
-  const hwy::Topology::Package& tpackage = topology.packages[package_idx];
+  const hwy::Topology::Package& tpackage = topology.packages[pkg_idx];
   // Populate `clusters` with the subset of clusters in `cluster_slice` that
   // have any enabled LPs. If `clusters` remains empty, the caller will
   // skip this `Package`.
@@ -233,10 +252,34 @@ BoundedTopology::Package::Package(const LPS& enabled_lps,
 
         // Skip if empty, i.e. too few `enabled_lps`.
         if (HWY_LIKELY(cluster.Size() != 0)) {
-          clusters.push_back(std::move(cluster));
+          clusters.push_back(cluster);
         }
       });
   SortByDescendingSize(clusters);
+
+  // If there is only one large cluster, split it into smaller ones.
+  if (kSplitLargeClusters && clusters.size() == 1 &&
+      enabled_lps.Count() >= 16) {
+    const LPS lps = clusters[0].LPSet();  // copy so we can clear
+    clusters.clear();
+
+    // Split `lps` into several clusters.
+    LPS clusters_lps[kMaxClusters];
+    const size_t num_clusters =
+        HWY_MIN(kMaxClusters, hwy::DivCeil(lps.Count(), kMaxLPsPerCluster));
+    size_t num_lps = 0;
+    lps.Foreach(
+        [&](size_t lp) { clusters_lps[num_lps++ % num_clusters].Set(lp); });
+    HWY_DASSERT(num_lps == lps.Count());
+
+    // Create new clusters, just inserting the new LPS.
+    hwy::Topology::Cluster tcluster = tpackage.clusters[0];  // modifiable copy
+    for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+      tcluster.lps = clusters_lps[cluster_idx];
+      // Keep same `private_kib` and `shared_kib`.
+      clusters.push_back(Cluster(enabled_lps, topology.lps, tcluster));
+    }
+  }
 }
 
 #if !GEMMA_DISABLE_TOPOLOGY
@@ -256,10 +299,9 @@ static void ScanTClusters(hwy::Topology& topology_, size_t& max_tclusters,
   max_tclusters = 0;
   max_tcluster_cores = 0;
   max_tcluster_lps = 0;
-  for (size_t package_idx = 0; package_idx < topology_.packages.size();
-       ++package_idx) {
+  for (size_t pkg_idx = 0; pkg_idx < topology_.packages.size(); ++pkg_idx) {
     const std::vector<hwy::Topology::Cluster>& tclusters =
-        topology_.packages[package_idx].clusters;
+        topology_.packages[pkg_idx].clusters;
     max_tclusters = HWY_MAX(max_tclusters, tclusters.size());
     size_t tcluster_cores = 0;
     size_t tcluster_lps = 0;
@@ -272,10 +314,10 @@ static void ScanTClusters(hwy::Topology& topology_, size_t& max_tclusters,
     }
 
     if (tclusters.size() > 1 && tcluster_cores > 8) {
-      fprintf(stderr,
-              "Package %zu: multiple clusters with max size %zu, whereas CCX "
-              "only have 8, may indicate a bug in hwy::Topology.\n",
-              package_idx, tcluster_cores);
+      HWY_WARN(
+          "Package %zu: multiple clusters with max size %zu, whereas CCX "
+          "only have 8, may indicate a bug in hwy::Topology.",
+          pkg_idx, tcluster_cores);
     }
     max_tcluster_cores = HWY_MAX(max_tcluster_cores, tcluster_cores);
     max_tcluster_lps = HWY_MAX(max_tcluster_lps, tcluster_lps);
@@ -294,8 +336,8 @@ void BoundedTopology::InitFromTopology(const LPS& enabled_lps,
 
   // (Possibly empty) subset of `Topology` packages that have `enabled_lps`.
   package_slice.Foreach(
-      "package", topology_.packages.size(), [&](size_t package_idx) {
-        Package package(enabled_lps, topology_, package_idx, cluster_slice);
+      "package", topology_.packages.size(), [&](size_t pkg_idx) {
+        Package package(enabled_lps, topology_, pkg_idx, cluster_slice);
         // Skip if empty, i.e. too few `enabled_lps`.
         if (HWY_LIKELY(!package.clusters.empty())) {
           packages_.push_back(std::move(package));
@@ -313,18 +355,18 @@ void BoundedTopology::InitFromTopology(const LPS& enabled_lps,
 
   // Scan for max BoundedTopology clusters and their size, for topology_string_.
   size_t all_max_cluster_size = 0;
-  for (size_t package_idx = 0; package_idx < NumPackages(); ++package_idx) {
+  for (size_t pkg_idx = 0; pkg_idx < NumPackages(); ++pkg_idx) {
     size_t max_cluster_size = 0;
-    for (size_t cluster_idx = 0; cluster_idx < NumClusters(package_idx);
+    for (size_t cluster_idx = 0; cluster_idx < NumClusters(pkg_idx);
          ++cluster_idx) {
-      max_cluster_size = HWY_MAX(max_cluster_size,
-                                 GetCluster(package_idx, cluster_idx).Size());
+      max_cluster_size =
+          HWY_MAX(max_cluster_size, GetCluster(pkg_idx, cluster_idx).Size());
     }
-    if (NumClusters(package_idx) > 1 && max_cluster_size > 8) {
-      fprintf(stderr,
-              "Package %zu: multiple clusters with max size %zu, whereas CCX "
-              "only have 8, may indicate a bug in BoundedTopology.\n",
-              package_idx, max_cluster_size);
+    if (NumClusters(pkg_idx) > 1 && max_cluster_size > 8) {
+      HWY_WARN(
+          "Package %zu: multiple clusters with max size %zu, whereas CCX "
+          "only have 8, may indicate a bug in BoundedTopology.",
+          pkg_idx, max_cluster_size);
     }
     all_max_cluster_size = HWY_MAX(all_max_cluster_size, max_cluster_size);
   }
@@ -382,10 +424,10 @@ NestedPools::NestedPools(size_t max_threads, Tristate pin,
   // calling thread of an all_clusters->Run, and hence pinned to one of the
   // `cluster.lps` if `pin`.
   all_packages_->Run(
-      0, all_packages_->NumWorkers(), [&](uint64_t package_idx, size_t thread) {
-        HWY_ASSERT(package_idx == thread);  // each thread has one task
-        packages_[package_idx] =
-            Package(topology_, package_idx, max_workers_per_package, lp_slice);
+      0, all_packages_->NumWorkers(), [&](uint64_t pkg_idx, size_t thread) {
+        HWY_ASSERT(pkg_idx == thread);  // each thread has one task
+        packages_[pkg_idx] =
+            Package(topology_, pkg_idx, max_workers_per_package, lp_slice);
       });
 
   all_pinned_ = GetPinning().AllPinned(&pin_string_);
@@ -405,12 +447,11 @@ NestedPools::NestedPools(size_t max_threads, Tristate pin,
   HWY_ASSERT(max_workers_per_cluster_ <= 256);
 }
 
-NestedPools::Package::Package(const BoundedTopology& topology,
-                              size_t package_idx,
+NestedPools::Package::Package(const BoundedTopology& topology, size_t pkg_idx,
                               size_t max_workers_per_package,
                               BoundedSlice lp_slice) {
   // Pre-allocate because elements are set concurrently.
-  clusters_.resize(topology.NumClusters(package_idx));
+  clusters_.resize(topology.NumClusters(pkg_idx));
   const size_t max_workers_per_cluster =
       DivideMaxAcross(max_workers_per_package, clusters_.size());
 
@@ -421,7 +462,7 @@ NestedPools::Package::Package(const BoundedTopology& topology,
       0, all_clusters_->NumWorkers(), [&](size_t cluster_idx, size_t thread) {
         HWY_ASSERT(cluster_idx == thread);  // each thread has one task
         const BoundedTopology::Cluster& cluster =
-            topology.GetCluster(package_idx, cluster_idx);
+            topology.GetCluster(pkg_idx, cluster_idx);
         clusters_[cluster_idx] =
             MakePool(CapIfNonZero(cluster.Size(), max_workers_per_cluster));
         // Pin workers AND the calling thread from `all_clusters`.
