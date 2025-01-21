@@ -126,8 +126,6 @@ std::vector<uint32_t> FixedAttentionWindowSizes(uint32_t window_size) {
 template <uint32_t kNum, uint32_t kPatternSize>
 std::vector<uint32_t> RepeatedAttentionWindowSizes(
     const std::array<uint32_t, kPatternSize>& window_size_pattern) {
-  static_assert(kNum % kPatternSize == 0,
-                "kNum must be a multiple of kPatternSize");
   std::vector<uint32_t> window_size_configs(kNum);
   for (uint32_t i = 0; i < kNum; ++i) {
     window_size_configs[i] = window_size_pattern[i % kPatternSize];
@@ -157,9 +155,9 @@ enum class Model {
 static constexpr Model kAllModels[] = {
     Model::GEMMA_2B, Model::GEMMA_7B, Model::GEMMA2_9B, Model::GEMMA2_27B,
     Model::GRIFFIN_2B, Model::GEMMA_TINY, Model::GEMMA2_2B,
-    Model::PALIGEMMA_224, Model::PALIGEMMA_448,
-    Model::PALIGEMMA2_3B_224, Model::PALIGEMMA2_3B_448,
-    Model::PALIGEMMA2_10B_224, Model::PALIGEMMA2_10B_448,
+    Model::PALIGEMMA_224, Model::PALIGEMMA_448, Model::PALIGEMMA2_3B_224,
+    Model::PALIGEMMA2_3B_448, Model::PALIGEMMA2_10B_224,
+    Model::PALIGEMMA2_10B_448,
 };
 
 inline bool EnumValid(Model model) {
