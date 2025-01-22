@@ -190,7 +190,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
 }
 
 // Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
-template <typename VecT, typename WeightT>
+template <typename WeightT, typename VecT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const WeightT* HWY_RESTRICT weight, VecT* HWY_RESTRICT inout,
     const size_t size) {
