@@ -213,19 +213,18 @@ class GemmaAttention {
   }
 
   template <typename U>
-  HWY_INLINE void PositionalEncodingQK(const U* qk, size_t pos, size_t layer,
-                                       const float mul, U* qk_out) {
+  HWY_INLINE void PositionalEncodingQK(U* qk, size_t pos, size_t layer,
+                                       const float mul) {
     // qk is either q or k, so qkv_dim is the length we operate on.
     const size_t qkv_dim = layer_config_.qkv_dim;
     const float* inv_timescale = activations_.inv_timescale.Const();
     // PostQKType::Rope
     (void)layer;
     if (layer_weights_.layer_config.post_qk == PostQKType::HalfRope) {
-      hwy::CopyBytes(qk, qk_out, qkv_dim * sizeof(*qk));
-      Rope(qk_out, qkv_dim / 2, inv_timescale, pos);
-      MulByConst(mul, qk_out, qkv_dim);
+      Rope(qk, qkv_dim / 2, inv_timescale, pos);
+      if (mul != 1.0f) MulByConst(mul, qk, qkv_dim);
     } else {
-      RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, qk_out);
+      RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos);
     }
   }
 
@@ -315,19 +314,16 @@ class GemmaAttention {
                                          head * qkv_dim * 2;
                 KVCache& kv_cache = kv_caches_[query_idx];
                 float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-                const float* HWY_RESTRICT mha_kv =
-                    activations_.q.Batch(interleaved_idx) + head * q_stride_ +
-                    qkv_dim;
-
-                // Copy from `q` if MHA, or apply in-place.
-                PositionalEncodingQK(is_mha_ ? mha_kv : kv, pos, layer_, 1.0f,
-                                     kv);
-
-                // If MHA, also copy V into KVCache.
+                // If MHA, copy computed K and V into KVCache.
                 if (is_mha_) {
-                  hwy::CopyBytes(mha_kv + qkv_dim, kv + qkv_dim,
-                                 qkv_dim * sizeof(*kv));
+                  const float* HWY_RESTRICT mha_kv =
+                      activations_.q.Batch(interleaved_idx) + head * q_stride_ +
+                      qkv_dim;
+                  hwy::CopyBytes(mha_kv, kv, 2 * qkv_dim * sizeof(*kv));
                 }
+
+                // Apply further processing to K.
+                PositionalEncodingQK(kv, pos, layer_, /*mul=*/1.0f);
               });
   }
 
@@ -414,7 +410,7 @@ class GemmaAttention {
 
                 // Apply rope and scaling to Q.
                 const size_t pos = queries_pos_[query_idx] + batch_idx;
-                PositionalEncodingQK(q, pos, layer_, query_scale, q);
+                PositionalEncodingQK(q, pos, layer_, query_scale);
 
                 const size_t start_pos = StartPos(pos, layer_);
                 size_t last_pos = pos;

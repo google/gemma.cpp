@@ -370,9 +370,8 @@ void TestSigmoid() {
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
-    const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, int pos,
-    float* HWY_RESTRICT x_out) {
+    const float mul, float* HWY_RESTRICT x, size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, int pos) {
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
@@ -381,8 +380,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
     const float sin_val = sinf(theta);
     const float x0 = x[dim];
     const float x1 = x[dim + half_dim_qkv];
-    x_out[dim] = mul * (x0 * cos_val - x1 * sin_val);
-    x_out[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
+    x[dim] = mul * (x0 * cos_val - x1 * sin_val);
+    x[dim + half_dim_qkv] = mul * (x0 * sin_val + x1 * cos_val);
   }
 }
 
@@ -413,10 +412,11 @@ void TestRopeAndMulBy() {
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings
-    ScalarRopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                       qexpected.data());
-    RopeAndMulBy(qmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                 qactual.data());
+    hwy::CopyBytes(x.Const(), qactual.data(), dim_qkv);
+    hwy::CopyBytes(x.Const(), qexpected.data(), dim_qkv);
+    ScalarRopeAndMulBy(qmul, qexpected.data(), dim_qkv, inv_timescale.Const(),
+                       pos);
+    RopeAndMulBy(qmul, qactual.data(), dim_qkv, inv_timescale.Const(), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qactual[i], qexpected[i], 1e-4)
@@ -424,10 +424,11 @@ void TestRopeAndMulBy() {
     }
 
     // Rope'd K embeddings
-    ScalarRopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                       kexpected.data());
-    RopeAndMulBy(kmul, x.Const(), dim_qkv, inv_timescale.Const(), pos,
-                 kactual.data());
+    hwy::CopyBytes(x.Const(), kactual.data(), dim_qkv);
+    hwy::CopyBytes(x.Const(), kexpected.data(), dim_qkv);
+    ScalarRopeAndMulBy(kmul, kexpected.data(), dim_qkv, inv_timescale.Const(),
+                       pos);
+    RopeAndMulBy(kmul, kactual.data(), dim_qkv, inv_timescale.Const(), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(kactual[i], kexpected[i], 1e-4)

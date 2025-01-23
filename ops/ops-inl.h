@@ -333,9 +333,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
 
 // `inv_timescale[dim_qkv / 2]` is precomputed in Activations::Allocate.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
-    const float mul, const float* HWY_RESTRICT x, size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, int pos,
-    float* HWY_RESTRICT x_out) {
+    const float mul, float* HWY_RESTRICT x, size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, int pos) {
   PROFILER_FUNC;
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
@@ -369,8 +368,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
                                             hn::Mul(x1_vec, cos_theta_vec));
 
     // Store
-    hn::StoreU(xout_0_vec, d, x_out + dim);
-    hn::StoreU(xout_1_vec, d, x_out + dim + half_dim_qkv);
+    hn::StoreU(xout_0_vec, d, x + dim);
+    hn::StoreU(xout_1_vec, d, x + dim + half_dim_qkv);
   }
 
   // Vectorize computation for remaining dims - same as above, but with LoadN.
@@ -399,8 +398,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
         hn::MulAdd(x0_vec, sin_theta_vec, hn::Mul(x1_vec, cos_theta_vec));
 
     // Store
-    hn::StoreN(xout_0_vec, d, x_out + dim, remaining_dims);
-    hn::StoreN(xout_1_vec, d, x_out + dim + half_dim_qkv, remaining_dims);
+    hn::StoreN(xout_0_vec, d, x + dim, remaining_dims);
+    hn::StoreN(xout_1_vec, d, x + dim + half_dim_qkv, remaining_dims);
   }
 }
 
