@@ -74,17 +74,18 @@ struct Activations {
   size_t seq_len;
   size_t cache_pos_size = 0;
 
-  static RowVectorBatch<float> CreateInvTimescale(size_t qkv_dim,
-                                                  PostQKType post_qk) {
+  static RowVectorBatch<float> CreateInvTimescale(
+      size_t qkv_dim, PostQKType post_qk, double base_frequency = 10000.0) {
     const size_t rope_dim =
         post_qk == PostQKType::HalfRope ? qkv_dim / 2 : qkv_dim;
     RowVectorBatch<float> inv_timescale(Extents2D(1, rope_dim / 2));
     for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
-      const float freq_exponents =
-          static_cast<float>(2 * dim) / static_cast<float>(rope_dim);
+      const double freq_exponents =
+          static_cast<double>(2 * dim) / static_cast<double>(rope_dim);
       // Replacing with expf(ln(1E4) * freq_exponents) changes results
       // noticeably.
-      inv_timescale.Batch(0)[dim] = 1.0f / std::pow(10000.0f, freq_exponents);
+      inv_timescale.Batch(0)[dim] =
+          static_cast<float>(1.0 / std::pow(base_frequency, freq_exponents));
     }
     return inv_timescale;
   }
@@ -94,19 +95,20 @@ struct Activations {
     const size_t model_dim = weights_config.model_dim;
     const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
     const size_t vocab_size = weights_config.vocab_size;
+    const size_t qkv_dim = layer_config.qkv_dim;
+    const size_t heads = layer_config.heads;
 
     x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
     q = RowVectorBatch<float>(
-        Extents2D(batch_size, layer_config.heads * layer_config.QStride()));
+        Extents2D(batch_size, heads * layer_config.QStride()));
     if (vocab_size > 0) {
       logits = RowVectorBatch<float>(Extents2D(batch_size, vocab_size));
     }
 
     pre_att_rms_out = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
     att = RowVectorBatch<float>(
-        Extents2D(batch_size, layer_config.heads * weights_config.seq_len));
-    att_out = RowVectorBatch<float>(
-        Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim));
+        Extents2D(batch_size, heads * weights_config.seq_len));
+    att_out = RowVectorBatch<float>(Extents2D(batch_size, heads * qkv_dim));
     att_sums = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
 
     bf_pre_ffw_rms_out = RowVectorBatch<BF16>(Extents2D(batch_size, model_dim));
@@ -122,7 +124,7 @@ struct Activations {
           RowVectorBatch<float>(Extents2D(batch_size, model_dim));
     }
 
-    inv_timescale = CreateInvTimescale(layer_config.qkv_dim, post_qk);
+    inv_timescale = CreateInvTimescale(qkv_dim, post_qk);
 
     env = std::make_unique<MatMulEnv>(pools);
   }
