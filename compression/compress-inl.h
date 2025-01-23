@@ -303,6 +303,42 @@ struct CompressTraits<BF16> {
     }
   }
 
+#if 0
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void DecompressAndZeroPad(
+      DBF dbf, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      BF16* HWY_RESTRICT raw, size_t num) {
+    const size_t N16 = hn::Lanes(dbf);
+
+#if 1
+    const BF16* HWY_RESTRICT start = packed.ptr + packed_ofs;
+    using VBF = hn::Vec<decltype(dbf)>;
+    size_t i = 0;
+    if (num >= 4 * N16) {
+      for (; i <= num - 4 * N16; i += 4 * N16) {
+        const VBF packed0 = hn::LoadU(dbf, start + i + 0 * N16);
+        const VBF packed1 = hn::LoadU(dbf, start + i + 1 * N16);
+        const VBF packed2 = hn::LoadU(dbf, start + i + 2 * N16);
+        const VBF packed3 = hn::LoadU(dbf, start + i + 3 * N16);
+        hn::StoreU(packed0, dbf, raw + i + 0 * N16);
+        hn::StoreU(packed1, dbf, raw + i + 1 * N16);
+        hn::StoreU(packed2, dbf, raw + i + 2 * N16);
+        hn::StoreU(packed3, dbf, raw + i + 3 * N16);
+      }
+    }
+
+    for (; i < num; i += N16) {
+      const size_t remaining = num - i;
+      const VBF packed0 = hn::LoadN(dbf, start + i, remaining);
+      hn::StoreU(packed0, dbf, raw + i);
+    }
+#else
+    hwy::CopyBytes(packed.ptr + packed_ofs, raw, num * sizeof(BF16));
+    hwy::ZeroBytes(raw + num, (hwy::RoundUpTo(num, N16) - num) * sizeof(BF16));
+#endif
+  }
+#endif
+
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void DecompressAndZeroPad(
       DF df, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
@@ -534,9 +570,9 @@ HWY_INLINE void Decompress2(DRaw d, const PackedSpan<Packed>& packed,
 // also wants to scale the decompressed elements.
 // `TRaw` can be `float/BF16`, or `double` if `Packed` is `float`.
 template <class DRaw, typename Packed, typename TRaw = hn::TFromD<DRaw>>
-HWY_NOINLINE void DecompressAndZeroPad(DRaw d, const PackedSpan<Packed>& packed,
-                                       const size_t packed_ofs, TRaw* raw,
-                                       size_t num) {
+HWY_INLINE void DecompressAndZeroPad(DRaw d, const PackedSpan<Packed>& packed,
+                                     const size_t packed_ofs, TRaw* raw,
+                                     size_t num) {
   detail::VerifyRawAndPackedForDecompress<DRaw, Packed>();
   packed.BoundsCheck(packed_ofs, num);
   using Traits = CompressTraits<hwy::RemoveCvRef<Packed>>;

@@ -17,6 +17,7 @@
 
 #include "compression/compress.h"
 #include "hwy/base.h"
+#include "hwy/profiler.h"
 
 // Include guard for (potentially) SIMD code.
 #if defined(THIRD_PARTY_GEMMA_CPP_DOT_TOGGLE) == defined(HWY_TARGET_TOGGLE)
@@ -31,7 +32,6 @@
 #include "compression/compress-inl.h"
 #include "ops/fp_arith-inl.h"
 #include "hwy/contrib/math/math-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

@@ -390,6 +390,25 @@ class IndexRangePartition {
                           TaskSize());
   }
 
+  template <typename Func>
+  void VisitAll(const Func& func) const {
+    for (size_t task_idx = 0; task_idx < NumTasks(); ++task_idx) {
+      func(Range(task_idx));
+    }
+  }
+
+  template <typename Func>
+  void VisitFirst(const Func& func) const {
+    func(Range(0));
+  }
+
+  template <typename Func>
+  void VisitRemaining(const Func& func) const {
+    for (size_t task_idx = 1; task_idx < NumTasks(); ++task_idx) {
+      func(Range(task_idx));
+    }
+  }
+
  private:
   IndexRange range_;
   uint32_t task_size_;

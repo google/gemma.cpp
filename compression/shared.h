@@ -286,7 +286,7 @@ struct PackedSpan {
   }
 
   Packed* HWY_RESTRICT ptr;
-  size_t num;  // for BoundsCheck and nuq-inl.h HWY_ASSERT.
+  size_t num;  // for BoundsCheck, also required by nuq-inl.h.
 };
 
 // Avoids spelling out the template parameter in every call.

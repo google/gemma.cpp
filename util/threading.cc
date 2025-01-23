@@ -89,22 +89,28 @@ class Pinning {
 
   // If want_pin_, tries to pin each worker in `pool` to an LP in `cluster`,
   // and sets `any_error_` if any fails.
-  void MaybePin(const BoundedTopology::Cluster& cluster, PoolPtr& pool) {
-    if (HWY_UNLIKELY(!want_pin_)) return;
-
+  void MaybePin(size_t pkg_idx, size_t cluster_idx,
+                const BoundedTopology::Cluster& cluster, PoolPtr& pool) {
     const std::vector<size_t> lps = cluster.LPVector();
     HWY_ASSERT(pool->NumWorkers() <= lps.size());
-    pool->Run(
-        0, pool->NumWorkers(),
-        [this, &pool, &lps](uint64_t task, size_t thread) {
-          HWY_ASSERT(task == thread);  // each worker has one task
-          if (HWY_UNLIKELY(!hwy::PinThreadToLogicalProcessor(lps[task]))) {
-            fprintf(stderr,
-                    "Pinning failed for task %zu of %zu to %zu (size %zu)\n",
-                    task, pool->NumWorkers(), lps[task], lps.size());
-            (void)any_error_.test_and_set();
-          }
-        });
+    pool->Run(0, pool->NumWorkers(), [&](uint64_t task, size_t thread) {
+      HWY_ASSERT(task == thread);  // each worker has one task
+
+      char buf[16];  // Linux limitation
+      const int bytes_written = snprintf(buf, sizeof(buf), "P%zu X%02zu C%03zu",
+                                         pkg_idx, cluster_idx, task);
+      HWY_ASSERT(bytes_written < sizeof(buf));
+      hwy::SetThreadName(buf, 0);  // does not support varargs
+
+      if (HWY_LIKELY(want_pin_)) {
+        if (HWY_UNLIKELY(!hwy::PinThreadToLogicalProcessor(lps[task]))) {
+          fprintf(stderr,
+                  "Pinning failed for task %zu of %zu to %zu (size %zu)\n",
+                  task, pool->NumWorkers(), lps[task], lps.size());
+          (void)any_error_.test_and_set();
+        }
+      }
+    });
   }
 
   // Called ONCE after all MaybePin because it invalidates the error status.
@@ -466,7 +472,8 @@ NestedPools::Package::Package(const BoundedTopology& topology, size_t pkg_idx,
         clusters_[cluster_idx] =
             MakePool(CapIfNonZero(cluster.Size(), max_workers_per_cluster));
         // Pin workers AND the calling thread from `all_clusters`.
-        GetPinning().MaybePin(cluster, clusters_[cluster_idx]);
+        GetPinning().MaybePin(pkg_idx, cluster_idx, cluster,
+                              clusters_[cluster_idx]);
       });
 }
 

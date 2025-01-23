@@ -37,6 +37,7 @@
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/profiler.h"
 #include "hwy/timer.h"
 
 // Include guard (still compiled once per target)
@@ -53,7 +54,6 @@
 #include "ops/matmul-inl.h"
 #include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 #ifndef GEMMA_TYPE
 #if HWY_IDE
@@ -81,7 +81,7 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
                                    const KVCaches& kv_caches) {
   PROFILER_ZONE("Gen.Griffin");
   KVCache& kv_cache = kv_caches[0];
-  hwy::ThreadPool& pool = activations.env->Pool();
+  hwy::ThreadPool& pool = activations.env->parallel.Pools().Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const size_t model_dim = layer_weights->layer_config.model_dim;
@@ -517,7 +517,7 @@ class GemmaAttention {
         layer_weights_(*layer_weights),
         div_seq_len_(div_seq_len),
         kv_caches_(kv_caches),
-        pool_(activations.env->Pool()) {
+        pool_(activations.env->parallel.Pools().Pool(0)) {
     HWY_DASSERT(num_queries_ <= kv_caches_.size());
     HWY_DASSERT_M((layer_config_.heads % layer_config_.kv_heads) == 0,
                   "query heads must be a multiple of key-value heads");
@@ -654,7 +654,7 @@ class VitAttention {
         activations_(activations),
         layer_weights_(*layer_weights),
         layer_config_(layer_weights->layer_config),
-        pool_(activations.env->Pool()) {}
+        pool_(activations.env->parallel.Pools().Pool(0)) {}
 
   HWY_INLINE void operator()() {
     ComputeQKV();
@@ -1072,10 +1072,10 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // which is not the case here. We should relax that requirement on MatMul and
   // then use the above. For now, we rely on MatVecAdd instead.
   for (size_t i = 0; i < seq_len; ++i) {
-    MatVecAdd(weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
-              image_patches[i].get(),
-              weights.vit_img_embedding_bias.data_scale1(),
-              activations.x.Batch(i), activations.env->Pool());
+    MatVecAdd(
+        weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
+        image_patches[i].get(), weights.vit_img_embedding_bias.data_scale1(),
+        activations.x.Batch(i), activations.env->parallel.Pools().Pool(0));
   }
   // Add position embeddings.
   AddFrom(weights.vit_img_pos_embedding.data_scale1(), activations.x.All(),
@@ -1283,7 +1283,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   Activations prefill_activations(weights.weights_config);
   if (use_prefill_activations) {
     prefill_activations.Allocate(runtime_config.prefill_tbatch_size,
-                                 activations.env->Pools());
+                                 activations.env);
   }
   Prefill(queries_prompt, queries_mutable_pos, queries_prefix_end,
           query_idx_start, weights,
@@ -1354,14 +1354,14 @@ template <typename T>
 void GenerateSingleT(const ModelWeightsStorage& model,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                     KVCache& kv_cache, NestedPools& pools,
+                     KVCache& kv_cache, MatMulEnv* env,
                      TimingInfo& timing_info) {
   constexpr size_t kNumQueries = 1;
   const size_t qbatch_start = 0;
 
   // TODO: move into Gemma?
   Activations activations(model.Config());
-  activations.Allocate(kNumQueries, pools);
+  activations.Allocate(kNumQueries, env);
 
   const QueriesPromptTokens queries_prompt(&prompt, kNumQueries);
   QueriesPos queries_pos(&pos, kNumQueries);
@@ -1378,7 +1378,7 @@ void GenerateBatchT(const ModelWeightsStorage& model,
                     const QueriesPromptTokens& queries_prompt,
                     const QueriesPos& queries_pos,
                     const QueriesPos& queries_prefix_end,
-                    const KVCaches& kv_caches, NestedPools& pools,
+                    const KVCaches& kv_caches, MatMulEnv* env,
                     TimingInfo& timing_info) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(queries_pos.size() == num_queries);
@@ -1393,7 +1393,7 @@ void GenerateBatchT(const ModelWeightsStorage& model,
   }
 
   Activations activations(model.Config());
-  activations.Allocate(max_qbatch_size, pools);
+  activations.Allocate(max_qbatch_size, env);
 
   for (size_t qbatch_start = 0; qbatch_start < num_queries;
        qbatch_start += max_qbatch_size) {
@@ -1415,7 +1415,7 @@ template <typename T>
 void GenerateImageTokensT(const ModelWeightsStorage& model,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
-                          NestedPools& pools) {
+                          MatMulEnv* env) {
   if (model.Config().vit_config.layer_configs.empty()) {
     HWY_ABORT("Model does not support generating image tokens.");
   }
@@ -1423,7 +1423,7 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
   ModelConfig vit_config = GetVitConfig(model.Config());
   prefill_runtime_config.prefill_tbatch_size = vit_config.seq_len;
   Activations prefill_activations(vit_config);
-  prefill_activations.Allocate(vit_config.seq_len, pools);
+  prefill_activations.Allocate(vit_config.seq_len, env);
   // Weights are for the full PaliGemma model, not just the ViT part.
   PrefillVit(*model.GetWeightsOfType<T>(), prefill_runtime_config, image,
              image_tokens, prefill_activations);
@@ -1438,11 +1438,10 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
     GEMMA_TYPE, const ModelWeightsStorage& model,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
-    size_t prefix_end, KVCache& kv_cache, NestedPools& pools,
+    size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_TYPE>)
-  (model, runtime_config, prompt, pos, prefix_end, kv_cache, pools,
-   timing_info);
+  (model, runtime_config, prompt, pos, prefix_end, kv_cache, env, timing_info);
 }
 
 void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
@@ -1450,18 +1449,18 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
     const RuntimeConfig& runtime_config,
     const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
-    NestedPools& pools, TimingInfo& timing_info) {
+    MatMulEnv* env, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_TYPE>)
   (model, runtime_config, queries_prompt, queries_pos, queries_prefix_end,
-   kv_caches, pools, timing_info);
+   kv_caches, env, timing_info);
 }
 
 void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
     GEMMA_TYPE, const ModelWeightsStorage& model,
     const RuntimeConfig& runtime_config, const Image& image,
-    ImageTokens& image_tokens, NestedPools& pools) {
+    ImageTokens& image_tokens, MatMulEnv* env) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_TYPE>)
-  (model, runtime_config, image, image_tokens, pools);
+  (model, runtime_config, image, image_tokens, env);
 }
 
 #endif  // HWY_ONCE

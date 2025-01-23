@@ -41,23 +41,24 @@ namespace gcpp {
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, NestedPools& pools)
-    : pools_(pools), tokenizer_(tokenizer_path) {
-  model_.Load(weights, info.model, info.weight, info.wrapping, pools_.Pool(),
+    : env_(pools), tokenizer_(tokenizer_path) {
+  model_.Load(weights, info.model, info.weight, info.wrapping,
+              env_.parallel.Pools().Pool(0),
               /*tokenizer_proto=*/nullptr);
 }
 
-Gemma::Gemma(const Path& weights, NestedPools& pools) : pools_(pools) {
+Gemma::Gemma(const Path& weights, NestedPools& pools) : env_(pools) {
   std::string tokenizer_proto;
   model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
-              pools_.Pool(), &tokenizer_proto);
+              env_.parallel.Pools().Pool(0), &tokenizer_proto);
   tokenizer_.Deserialize(tokenizer_proto);
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
              NestedPools& pools)
-    : pools_(pools), tokenizer_(std::move(tokenizer)) {
+    : env_(pools), tokenizer_(std::move(tokenizer)) {
   HWY_ASSERT(info.weight == Type::kF32);
-  model_.Allocate(info.model, info.weight, pools_.Pool());
+  model_.Allocate(info.model, info.weight, env_.parallel.Pools().Pool(0));
 }
 
 Gemma::~Gemma() {
@@ -72,16 +73,16 @@ Gemma::~Gemma() {
                              const RuntimeConfig& runtime_config,              \
                              const PromptTokens& prompt, size_t pos,           \
                              size_t prefix_end, KVCache& kv_cache,             \
-                             NestedPools& pools, TimingInfo& timing_info);     \
+                             MatMulEnv* env, TimingInfo& timing_info);         \
   extern void GenerateBatch(                                                   \
       TWEIGHT, const ModelWeightsStorage& model,                               \
       const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
       const QueriesPos& queries_pos, const QueriesPos& queries_prefix_end,     \
-      const KVCaches& kv_caches, NestedPools& pools, TimingInfo& timing_info); \
-  extern void GenerateImageTokens(                                             \
-      TWEIGHT, const ModelWeightsStorage& model,                               \
-      const RuntimeConfig& runtime_config, const Image& image,                 \
-      ImageTokens& image_tokens, NestedPools& pools);
+      const KVCaches& kv_caches, MatMulEnv* env, TimingInfo& timing_info);     \
+  extern void GenerateImageTokens(TWEIGHT, const ModelWeightsStorage& model,   \
+                                  const RuntimeConfig& runtime_config,         \
+                                  const Image& image,                          \
+                                  ImageTokens& image_tokens, MatMulEnv* env);
 GEMMA_DECLARE(float)
 GEMMA_DECLARE(BF16)
 GEMMA_DECLARE(NuqStream)
@@ -93,10 +94,10 @@ struct GenerateSingleT {
   void operator()(const ModelWeightsStorage& model,
                   const RuntimeConfig& runtime_config,
                   const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                  KVCache& kv_cache, NestedPools& pools,
+                  KVCache& kv_cache, MatMulEnv* env,
                   TimingInfo& timing_info) const {
     GenerateSingle(TConfig(), model, runtime_config, prompt, pos, prefix_end,
-                   kv_cache, pools, timing_info);
+                   kv_cache, env, timing_info);
   }
 };
 
@@ -107,10 +108,10 @@ struct GenerateBatchT {
                   const QueriesPromptTokens& queries_prompt,
                   const QueriesPos& queries_pos,
                   const QueriesPos& queries_prefix_end,
-                  const KVCaches& kv_caches, NestedPools& pools,
+                  const KVCaches& kv_caches, MatMulEnv* env,
                   TimingInfo& timing_info) const {
     GenerateBatch(TConfig(), model, runtime_config, queries_prompt, queries_pos,
-                  queries_prefix_end, kv_caches, pools, timing_info);
+                  queries_prefix_end, kv_caches, env, timing_info);
   }
 };
 
@@ -118,21 +119,21 @@ template <class TConfig>
 struct GenerateImageTokensT {
   void operator()(const ModelWeightsStorage& model,
                   const RuntimeConfig& runtime_config, const Image& image,
-                  ImageTokens& image_tokens, NestedPools& pools) const {
+                  ImageTokens& image_tokens, MatMulEnv* env) const {
     GenerateImageTokens(TConfig(), model, runtime_config, image, image_tokens,
-                        pools);
+                        env);
   }
 };
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      KVCache& kv_cache, TimingInfo& timing_info) {
-  pools_.MaybeStartSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateSingleT>(
-      runtime_config, prompt, pos, prefix_end, kv_cache, pools_, timing_info);
+      runtime_config, prompt, pos, prefix_end, kv_cache, &env_, timing_info);
 
-  pools_.MaybeStopSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
@@ -149,23 +150,23 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
         QueriesPos(prefix_end_vec.data(), prefix_end_vec.size());
   }
 
-  pools_.MaybeStartSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateBatchT>(
       runtime_config, queries_prompt, queries_pos, mutable_queries_prefix_end,
-      kv_caches, pools_, timing_info);
+      kv_caches, &env_, timing_info);
 
-  pools_.MaybeStopSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 const Image& image, ImageTokens& image_tokens) {
-  pools_.MaybeStartSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateImageTokensT>(runtime_config, image,
-                                                  image_tokens, pools_);
+                                                  image_tokens, &env_);
 
-  pools_.MaybeStopSpinning(runtime_config.use_spinning);
+  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 // Non-template functions moved from gemma-inl.h to avoid ODR violations.

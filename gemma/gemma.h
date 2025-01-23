@@ -29,6 +29,7 @@
 #include "gemma/kv_cache.h"
 #include "gemma/tokenizer.h"
 #include "gemma/weights.h"
+#include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
 #include "util/allocator.h"  // RowVectorBatch
 #include "util/basics.h"     // TokenAndProb
@@ -246,7 +247,7 @@ class Gemma {
                            const Image& image, ImageTokens& image_tokens);
 
  private:
-  NestedPools& pools_;
+  MatMulEnv env_;
 
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.

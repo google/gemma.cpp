@@ -18,7 +18,6 @@
 #include <stdio.h>
 
 #include <atomic>
-#include <cstdio>
 #include <vector>
 
 #include "util/basics.h"  // MaybeCheckInitialized
@@ -76,30 +75,41 @@ size_t DetectPageSize() {
 
 static size_t line_bytes_;
 static size_t vector_bytes_;
+static size_t step_bytes_;
 static size_t quantum_bytes_;
+static size_t quantum_steps_;
 static size_t l1_bytes_;
 static size_t l2_bytes_;
+static size_t l3_bytes_;
 static bool should_bind_ = false;
 
 size_t Allocator::LineBytes() { return line_bytes_; }
 size_t Allocator::VectorBytes() { return vector_bytes_; }
+size_t Allocator::StepBytes() { return step_bytes_; }
 size_t Allocator::QuantumBytes() { return quantum_bytes_; }
+size_t Allocator::QuantumSteps() { return quantum_steps_; }
 size_t Allocator::L1Bytes() { return l1_bytes_; }
 size_t Allocator::L2Bytes() { return l2_bytes_; }
+size_t Allocator::L3Bytes() { return l3_bytes_; }
 bool Allocator::ShouldBind() { return should_bind_; }
 
 void Allocator::Init(const BoundedTopology& topology) {
   line_bytes_ = DetectLineBytes();
   vector_bytes_ = hwy::VectorBytes();
-  quantum_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);  // may overwrite below
+  step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
+  quantum_bytes_ = step_bytes_;  // may overwrite below
 
+  const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
   if (const hwy::Cache* caches = hwy::DataCaches()) {
     l1_bytes_ = caches[1].size_kib << 10;
     l2_bytes_ = caches[2].size_kib << 10;
+    l3_bytes_ = (caches[3].size_kib << 10) * caches[3].cores_sharing;
   } else {  // Unknown, make reasonable assumptions.
-    const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
     l1_bytes_ = 32 << 10;
     l2_bytes_ = (cluster.PrivateKiB() ? cluster.PrivateKiB() : 256) << 10;
+  }
+  if (l3_bytes_ == 0) {
+    l3_bytes_ = (cluster.SharedKiB() ? cluster.SharedKiB() : 1024) << 10;
   }
 
   // Prerequisites for binding:
@@ -115,9 +125,15 @@ void Allocator::Init(const BoundedTopology& topology) {
       // Ensure pages meet the alignment requirements of `AllocBytes`.
       HWY_ASSERT(page_bytes >= quantum_bytes_);
       quantum_bytes_ = page_bytes;
+      // Ensure MaxQuantumBytes() is an upper bound.
+      HWY_ASSERT(MaxQuantumBytes() >= quantum_bytes_);
+      quantum_bytes_ = HWY_MIN(quantum_bytes_, MaxQuantumBytes());
       should_bind_ = true;
     }
   }
+
+  HWY_DASSERT(quantum_bytes_ % step_bytes_ == 0);
+  quantum_steps_ = quantum_bytes_ / step_bytes_;
 }
 
 Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {

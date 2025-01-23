@@ -18,12 +18,10 @@
 
 #include <stddef.h>
 
-#include <cmath>
-#include <memory>  // std::unique_ptr
-
 #include "compression/shared.h"  // BF16
 #include "gemma/configs.h"
 #include "ops/matmul.h"          // MatMulEnv
+#include "ops/ops.h"             // CreateInvTimescale
 #include "util/allocator.h"      // RowVectorBatch
 #include "util/threading.h"
 #include "hwy/base.h"  // HWY_DASSERT
@@ -65,7 +63,7 @@ struct Activations {
   RowVectorBatch<float> inv_timescale;
 
   // Dynamic because no default ctor and only initialized in `Allocate`.
-  std::unique_ptr<MatMulEnv> env;
+  MatMulEnv* env;
 
   PostQKType post_qk = PostQKType::Rope;
   // And the config.
@@ -74,23 +72,7 @@ struct Activations {
   size_t seq_len;
   size_t cache_pos_size = 0;
 
-  static RowVectorBatch<float> CreateInvTimescale(
-      size_t qkv_dim, PostQKType post_qk, double base_frequency = 10000.0) {
-    const size_t rope_dim =
-        post_qk == PostQKType::HalfRope ? qkv_dim / 2 : qkv_dim;
-    RowVectorBatch<float> inv_timescale(Extents2D(1, rope_dim / 2));
-    for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
-      const double freq_exponents =
-          static_cast<double>(2 * dim) / static_cast<double>(rope_dim);
-      // Replacing with expf(ln(1E4) * freq_exponents) changes results
-      // noticeably.
-      inv_timescale.Batch(0)[dim] =
-          static_cast<float>(1.0 / std::pow(base_frequency, freq_exponents));
-    }
-    return inv_timescale;
-  }
-
-  void Allocate(size_t batch_size, NestedPools& pools) {
+  void Allocate(size_t batch_size, MatMulEnv* env) {
     post_qk = layer_config.post_qk;
     const size_t model_dim = weights_config.model_dim;
     const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
@@ -124,9 +106,10 @@ struct Activations {
           RowVectorBatch<float>(Extents2D(batch_size, model_dim));
     }
 
-    inv_timescale = CreateInvTimescale(qkv_dim, post_qk);
+    inv_timescale = CreateInvTimescale(layer_config.qkv_dim,
+                                       post_qk == PostQKType::HalfRope);
 
-    env = std::make_unique<MatMulEnv>(pools);
+    this->env = env;
   }
 };
 

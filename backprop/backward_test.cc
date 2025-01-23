@@ -31,8 +31,8 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "ops/ops.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -223,8 +223,9 @@ void TestEndToEnd() {
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
-  RowVectorBatch<float> inv_timescale = Activations::CreateInvTimescale(
-      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
+  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+      config.layer_configs[0].qkv_dim,
+      config.layer_configs[0].post_qk == PostQKType::HalfRope);
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
     RandInit(weights.get(), 1.0f, gen);

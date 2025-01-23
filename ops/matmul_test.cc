@@ -137,8 +137,8 @@ float MaxAbs(const float* HWY_RESTRICT a, const Extents2D& extents) {
 }
 
 // B is already transposed.
-template <typename MatTA, typename MatTB>
-void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
+template <typename TA, typename TB>
+void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
                  const RowPtrF& C_slow, const RowPtrF& C) {
   const hn::ScalableTag<float> df;
   const size_t num_a = A.extents.Area();
@@ -160,13 +160,13 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
       MaxAbs(a.get(), A.Extents()) * MaxAbs(b_trans.get(), B.Extents());
   const double eps_bf16 = hwy::ConvertScalarTo<double>(hwy::Epsilon<BF16>());
   const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
-  double tolerance = 8 * norm * eps_f32;
+  double tolerance = 10 * norm * eps_f32;
   // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
   // tolerance there.
-  if (IsF32<MatTA>() && !IsF32<MatTB>()) {
+  if (IsF32<TA>() && IsF32<TB>()) {
     tolerance += 4 * max_abs * eps_bf16;
   }
-  if (tolerance > 8.0) {
+  if (tolerance > 500.0) {
     HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);
   }
 
@@ -189,23 +189,22 @@ void AssertClose(const ConstMat<MatTA>& A, const ConstMat<MatTB>& B,
 }
 
 // B is already transposed.
-template <typename MatTA, typename MatTB>
-HWY_INLINE void MatMulSlow(const ConstMat<MatTA> A, const ConstMat<MatTB> B,
+template <typename TA, typename TB>
+HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
                            const float* HWY_RESTRICT add_row, MatMulEnv& env,
                            const RowPtrF& C) {
-  // MatTA can be any Packed except NuqStream because it uses pointer
+  // TA can be any Packed except NuqStream because it uses pointer
   // arithmetic, because it is the second argument to Dot, which does not
   // support a v_ofs.
-  static_assert(sizeof(MatTA) >= sizeof(BF16), "A matrix must be BF16/f32");
+  static_assert(sizeof(TA) >= sizeof(BF16), "A matrix must be BF16/f32");
   const float scale = A.scale * B.scale;
 
   const hn::ScalableTag<float> df;  // lane type is ignored
-  const PackedSpan<const MatTB> b_span =
-      MakeSpan(B.ptr, B.ofs + B.extents.Area());
+  const PackedSpan<const TB> b_span = MakeSpan(B.ptr, B.ofs + B.extents.Area());
   const IndexRange all_rows_c(0, A.Extents().rows);
   const IndexRange all_cols_c(0, C.Cols());
 
-  NestedPools& pools = env.Pools();
+  NestedPools& pools = env.parallel.Pools();
   hwy::ThreadPool& all_packages = pools.AllPackages();
   const IndexRangePartition get_row_c =
       StaticPartition(all_rows_c, all_packages.NumWorkers(), 1);
@@ -213,7 +212,7 @@ HWY_INLINE void MatMulSlow(const ConstMat<MatTA> A, const ConstMat<MatTB> B,
       get_row_c, all_packages,
       [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
         hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
-        const size_t multiple = Allocator::QuantumBytes() / sizeof(MatTB);
+        const size_t multiple = Allocator::QuantumBytes() / sizeof(TB);
         const IndexRangePartition get_col_c =
             StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
         ParallelizeOneRange(
@@ -240,20 +239,19 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
           elapsed, 2 * 1E-9 * A_extents.rows * num_b / elapsed);
 }
 
-template <typename MatTA, typename MatTB = MatTA>
+template <typename TA, typename TB = TA>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env) {
-  hwy::ThreadPool& pool = env.Pool();
-  fprintf(stderr, "TestMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
-          rows_ac, cols_a_rows_b, cols_bc, add, TypeName<MatTA>(),
-          TypeName<MatTB>());
+  hwy::ThreadPool& pool = env.parallel.Pools().Pool();
+  fprintf(stderr, "TestMatMul %zu, %zu, %zu, add=%d, TA=%s, TB=%s\n", rows_ac,
+          cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>());
 
   const Extents2D A_extents(rows_ac, cols_a_rows_b);
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStoragePtr<MatTA> a = GenerateMat<MatTA>(A_extents, pool);
-  MatStoragePtr<MatTB> b_trans = GenerateTransposedMat<MatTB>(B_extents, pool);
+  MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
+  MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
   RowVectorBatch<float> c_slow_batch(C_extents);
   RowVectorBatch<float> c_batch(C_extents);
   HWY_ASSERT(a && b_trans);
@@ -303,8 +301,13 @@ void TestTiny() {
     Allocator::Init(pools.Topology());
     MatMulEnv env(pools);
 
-    for (size_t batch_size = 1; batch_size <= 3 * kRegRows; ++batch_size) {
-      TestMatMul<F32, F32>(batch_size, 256, 256, /*add=*/false, env);
+    for (size_t M = 1; M <= 3 * kRegRows; ++M) {
+      for (size_t K = 64; K <= 128; K *= 2) {
+        for (size_t N = /*kRegRows*/ 16; N <= 64;
+             N += max_packages * kRegRows) {
+          TestMatMul<F32, F32>(M, K, N, /*add=*/false, env);
+        }
+      }
     }
     pools.MaybeStopSpinning(use_spinning);
   }

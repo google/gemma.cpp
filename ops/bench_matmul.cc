@@ -42,6 +42,7 @@
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/nanobenchmark.h"
+#include "hwy/profiler.h"
 #include "hwy/timer.h"
 
 // clang-format off
@@ -53,7 +54,6 @@
 // After highway.h
 #include "compression/compress-inl.h"
 #include "ops/matmul-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -119,24 +119,24 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
 void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
                 std::vector<double>& times) {
   std::sort(times.begin(), times.end());
-  // Many measurements are with suboptimal configs, so report the best like
-  // bench_dnn, but also the ratio to the 3rd best.
-  const double elapsed = times[0];
-  const double ratio = times[2] / HWY_MAX(elapsed, 1E-6);
+  // bench_dnn reports the best and average, but the median seems more
+  // consistent and resistant to outliers.
+  const double elapsed = times[times.size() / 2];
+  const double ratio = elapsed / (times[0] + 1E-6);  // vs best, avoid / 0
 
   const size_t num_b = B_extents.Area();
-  // 2x because of FMA.
-  fprintf(stderr, "%.1f\t%.2f\n", 2 * 1E-9 * A_extents.rows * num_b / elapsed,
-          ratio);
+  // FMA counts as two FLOP.
+  fprintf(stderr, "%.1f\t(med %.3f ms = %0.2fx min)\n",
+          2 * 1E-9 * A_extents.rows * num_b / elapsed, elapsed * 1E3, ratio);
 }
 
 // Generates inputs and prints observed throughput of MatMul.
 // M = A rows, K = A cols, N = C cols.
 template <typename MatTA, typename MatTB = MatTA>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
-  hwy::ThreadPool& pool = env.Pool();
-  fprintf(stderr, "BenchMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n", M,
-          K, N, add, TypeName<MatTA>(), TypeName<MatTB>());
+  hwy::ThreadPool& pool = env.parallel.Pools().Pool(0);
+  fprintf(stderr, "\nBenchMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
+          M, K, N, add, TypeName<MatTA>(), TypeName<MatTB>());
 
   const Extents2D A_extents(M, K);
   const Extents2D B_extents(N, K);  // already transposed
@@ -161,17 +161,26 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const float* add_row = add ? add_storage->data_scale1() : nullptr;
   const RowPtrF C = RowPtrFromBatch(c_batch);
 
+  constexpr size_t kSamples = 20;
   std::vector<double> times;
-  times.reserve(20);
-  double result = 0.0;
-  for (;;) {
+  times.reserve(kSamples);
+
+  Tristate use_spinning = Tristate::kDefault;
+  env.parallel.Pools().MaybeStartSpinning(use_spinning);
+
+  double keep = 0.0;
+  // Until enough samples collected *after* autotuning finished:
+  while (times.size() < kSamples) {
     const double t0 = hwy::platform::Now();
     MatMul(A, B, add_row, env, C);
-    times.push_back(hwy::platform::Now() - t0);
-    result += C.Row(0)[hwy::Unpredictable1()];
-    if (times.size() >= 20) break;
+    const double t1 = hwy::platform::Now();
+    double elapsed = t1 - t0;
+    keep += C.Row(0)[hwy::Unpredictable1()];
+
+    times.push_back(elapsed);
   }
-  hwy::PreventElision(result);
+  hwy::PreventElision(keep);
+  env.parallel.Pools().MaybeStopSpinning(use_spinning);
   PrintSpeed(A_extents, B_extents, times);
 }
 
@@ -182,7 +191,7 @@ void BenchAllMatMul() {
   if (first_target == 0) first_target = HWY_TARGET;
   if (HWY_TARGET != first_target) return;
 
-  for (size_t max_packages : {1, 2}) {
+  for (size_t max_packages : {/*1,*/ 2}) {
     const size_t max_threads = 0;  // no limit
     NestedPools pools(max_threads, Tristate::kDefault,
                       BoundedSlice(0, max_packages));
@@ -195,17 +204,14 @@ void BenchAllMatMul() {
     fprintf(stderr, "BenchAllMatMul %zu: %s %s\n", max_packages,
             pools.TopologyString(), pools.PinString());
 
-    Tristate use_spinning = Tristate::kDefault;
-    pools.MaybeStartSpinning(use_spinning);
     Allocator::Init(pools.Topology());
     MatMulEnv env(pools);
 
-    for (size_t batch_size : {1, /* 4, 128,*/ 512}) {
+    for (size_t batch_size : {1, 4, 128, 512}) {
       constexpr bool kAdd = false;
       BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, kAdd, env);
       BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, kAdd, env);
     }
-    pools.MaybeStopSpinning(use_spinning);
   }
 
   PROFILER_PRINT_RESULTS();

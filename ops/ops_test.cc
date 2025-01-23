@@ -18,6 +18,8 @@
 #define HWY_DISABLED_TARGETS HWY_SCALAR
 #endif
 
+#include "ops/ops.h"
+
 #include <stddef.h>
 #include <stdio.h>
 
@@ -30,12 +32,10 @@
 #include <vector>
 
 #include "compression/compress.h"  // BF16
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "util/allocator.h"
 #include "util/test_util.h"
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -407,8 +407,9 @@ void TestRopeAndMulBy() {
   std::vector<float> qactual(dim_qkv);
   std::vector<float> kexpected(dim_qkv);
   std::vector<float> kactual(dim_qkv);
-  RowVectorBatch<float> inv_timescale = gcpp::Activations::CreateInvTimescale(
-      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
+  RowVectorBatch<float> inv_timescale = gcpp::CreateInvTimescale(
+      config.layer_configs[0].qkv_dim,
+      config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings

@@ -72,12 +72,17 @@ class Allocator {
   static size_t LineBytes();
   // Bytes per full vector. Used to compute loop steps.
   static size_t VectorBytes();
-  // Granularity of regions processed by different threads. Their start and
-  // length of regions should be divisible by this, which is at least
-  // `HWY_MAX(LineBytes(), VectorBytes())`.
+  // Work granularity that avoids false sharing and partial vectors.
+  static size_t StepBytes();  // = HWY_MAX(LineBytes(), VectorBytes())
+  // Granularity like `StepBytes()`, but when NUMA may be involved.
   static size_t QuantumBytes();
+  // Upper bound on `QuantumBytes()`, for stack allocations.
+  static constexpr size_t MaxQuantumBytes() { return 4096; }
+  static size_t QuantumSteps();  // = QuantumBytes() / StepBytes()
+
   static size_t L1Bytes();
   static size_t L2Bytes();
+  static size_t L3Bytes();
 
   // Returns pointer aligned to `QuantumBytes()`.
   template <typename T>
@@ -192,10 +197,9 @@ class RowPtr {
   RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
       : row0_(row0),
         stride_(stride),
-        step_(static_cast<uint32_t>(
-            HWY_MAX(Allocator::LineBytes(), Allocator::VectorBytes()))),
+        step_(static_cast<uint32_t>(Allocator::StepBytes())),
         cols_(static_cast<uint32_t>(cols)),
-        row_mask_(Allocator::QuantumBytes() / step_ - 1) {
+        row_mask_(Allocator::QuantumSteps() - 1) {
     HWY_DASSERT(stride >= cols);
     HWY_DASSERT(row_mask_ != ~size_t{0});
     row_mask_ = 0;  // TODO: remove

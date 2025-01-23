@@ -86,6 +86,7 @@ cc_library(
     name = "ops",
     hdrs = [
         "ops/matmul.h",
+        "ops/ops.h",
     ],
     textual_hdrs = [
         "ops/dot-inl.h",
@@ -104,6 +105,7 @@ cc_library(
         "@highway//:hwy",
         "@highway//:math",
         "@highway//:matvec",
+        "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
     ],
@@ -145,7 +147,6 @@ cc_test(
     deps = [
         ":allocator",
         ":common",
-        ":gemma_lib",
         ":ops",
         ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -221,8 +222,11 @@ cc_test(
     timeout = "long",
     srcs = ["ops/bench_matmul.cc"],
     local_defines = ["HWY_IS_TEST"],
-    # for test_suite.
-    tags = ["ops_tests"],
+    tags = [
+        "manual",
+        "notap",
+        "ops_tests",  # for test_suite.
+    ],
     deps = [
         ":allocator",
         ":basics",
@@ -683,6 +687,7 @@ cc_test(
         ":basics",
         ":common",
         ":gemma_lib",
+        ":ops",
         ":optimizer",
         ":prompt",
         ":sampler",

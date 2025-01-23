@@ -28,11 +28,11 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "compression/shared.h"
-#include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
+#include "ops/ops.h"
 #include "util/allocator.h"
 #include "util/basics.h"
 #include "util/threading.h"
@@ -62,8 +62,9 @@ TEST(OptimizeTest, GradientDescent) {
   ForwardPass<float> forward(config), backward(config);
   KVCache kv_cache = KVCache::Create(config, /*prefill_tbatch_size=*/16);
 
-  RowVectorBatch<float> inv_timescale = Activations::CreateInvTimescale(
-      config.layer_configs[0].qkv_dim, config.layer_configs[0].post_qk);
+  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+      config.layer_configs[0].qkv_dim,
+      config.layer_configs[0].post_qk == PostQKType::HalfRope);
 
   Gemma gemma(GemmaTokenizer(), info, pools);
 

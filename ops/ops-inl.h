@@ -32,6 +32,7 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
+#include "hwy/profiler.h"
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_INL_H_
 
 // Include guard for (potentially) SIMD code.
@@ -47,7 +48,6 @@
 #include "ops/sum-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/math/math-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

@@ -32,6 +32,7 @@
 #include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/profiler.h"
 #include "hwy/stats.h"
 #include "hwy/timer.h"
 
@@ -44,7 +45,6 @@
 // After highway.h
 #include "compression/test_util-inl.h"
 #include "ops/dot-inl.h"
-#include "hwy/profiler.h"  // also uses SIMD
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {

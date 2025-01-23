@@ -65,22 +65,36 @@ struct CacheSizes {
   size_t l3_bytes;
 };
 
+class MMParallel {
+ public:
+  MMParallel() : pools_(nullptr) {}
+  explicit MMParallel(NestedPools& pools) : pools_(&pools) {}
+
+  NestedPools& Pools() const { return *pools_; }
+  hwy::ThreadPool& Pool() const { return pools_->Pool(); }
+
+ private:
+  NestedPools* pools_;
+};
+
 // Allocations and threads, shared across MatMul calls.
 class MatMulEnv {
  public:
-  MatMulEnv() : pools_(nullptr) {}
-  explicit MatMulEnv(NestedPools& pools) : pools_(&pools) {
+  explicit MatMulEnv(NestedPools& pools) : parallel(pools) {
     const size_t N = hwy::VectorBytes() / sizeof(float);
     buf_ = RowVectorBatch<float>(Extents2D(pools.MaxWorkers(), 16 * N));
   }
 
   RowVectorBatch<float>& Buf() { return buf_; }
-  NestedPools& Pools() const { return *pools_; }
-  hwy::ThreadPool& Pool() const { return pools_->Pool(); }
+
+  MMParallel parallel;
+
+  // TODO: remove once no longer used.
+  NestedPools& Pools() const { return parallel.Pools(); }
+  hwy::ThreadPool& Pool() const { return parallel.Pool(); }
 
  private:
   RowVectorBatch<float> buf_;
-  NestedPools* pools_;
 };
 
 // Used for the A and B arguments of `MatMul`, which are always const.

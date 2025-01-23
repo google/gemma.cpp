@@ -85,6 +85,9 @@ struct IndexRange {
   IndexRange& operator=(const IndexRange& other) = default;
 
   size_t Num() const { return end_ - begin_; }
+  bool Contains(IndexRange other) const {
+    return other.begin_ >= begin_ && other.end_ <= end_;
+  }
 
   // Enable range-based for loops.
   class Iterator {
