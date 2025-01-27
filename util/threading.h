@@ -165,7 +165,7 @@ class BoundedTopology {
 
  private:
   struct Package {
-    Package(const LPS& enabled_lps, BoundedSlice lp_slice);
+    explicit Package(const LPS& enabled_lps);
     Package(const LPS& enabled_lps, const hwy::Topology& topology,
             size_t pkg_idx, BoundedSlice cluster_slice);
 
@@ -177,7 +177,7 @@ class BoundedTopology {
 
   void InitFromTopology(const LPS& enabled_lps, BoundedSlice package_slice,
                         BoundedSlice cluster_slice);
-  void InitFromSlice(const LPS& enabled_lps, BoundedSlice lp_slice);
+  void InitFromLPs(const LPS& enabled_lps);
 
 #if !GEMMA_DISABLE_TOPOLOGY
   hwy::Topology topology_;
@@ -304,7 +304,7 @@ class NestedPools {
    public:
     Package() = default;  // for vector
     Package(const BoundedTopology& topology, size_t pkg_idx,
-            size_t max_workers_per_package, BoundedSlice lp_slice);
+            size_t max_workers_per_package);
 
     size_t NumClusters() const { return clusters_.size(); }
     size_t MaxWorkersPerCluster() const {
