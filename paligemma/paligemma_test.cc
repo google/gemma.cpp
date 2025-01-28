@@ -93,8 +93,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
 
 void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
   ASSERT_NE(s_env->GetModel(), nullptr);
-  return;  // Need to figure out how to get the external path for the test file.
-  std::string path;
+  std::string path = "paligemma/testdata/image.ppm";
   InitVit(path);
   for (size_t i = 0; i < num_questions; ++i) {
     fprintf(stderr, "Question %zu\n\n", i + 1);

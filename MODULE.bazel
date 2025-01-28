@@ -4,14 +4,15 @@ module(
 )
 
 bazel_dep(name = "abseil-cpp", version = "20240722.0")
-bazel_dep(name = "bazel_skylib", version = "1.6.1")
+bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "googletest", version = "1.15.2")
 bazel_dep(name = "highway", version = "1.1.0")
 bazel_dep(name = "nlohmann_json", version = "3.11.3")
 bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "pybind11_bazel", version = "2.12.0")
-bazel_dep(name = "rules_cc", version = "0.0.9")
-bazel_dep(name = "rules_license", version = "0.0.7")
+bazel_dep(name = "rules_cc", version = "0.0.16")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "rules_python", version = "1.0.0")
 bazel_dep(name = "google_benchmark", version = "1.8.5")
 
 # Require a more recent version.
@@ -22,6 +23,15 @@ git_override(
 )
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "com_google_absl_py",
+    sha256 = "8a3d0830e4eb4f66c4fa907c06edf6ce1c719ced811a12e26d9d3162f8471758",
+    strip_prefix = "abseil-py-2.1.0",
+    urls = [
+        "https://github.com/abseil/abseil-py/archive/refs/tags/v2.1.0.tar.gz",
+    ],
+)
 
 http_archive(
     name = "com_google_sentencepiece",
@@ -53,3 +63,17 @@ cc_library(
         "https://github.com/s-yata/darts-clone/archive/e40ce4627526985a7767444b6ed6893ab6ff8983.zip",
     ],
 )
+
+pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+pip.parse(
+    hub_name = "compression_deps",
+    python_version = "3.11",
+    requirements_lock = "//compression/python:requirements.txt",
+)
+use_repo(pip, "compression_deps")
+pip.parse(
+    hub_name = "python_deps",
+    python_version = "3.11",
+    requirements_lock = "//python:requirements.txt",
+)
+use_repo(pip, "python_deps")

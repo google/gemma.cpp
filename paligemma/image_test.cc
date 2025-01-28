@@ -29,8 +29,7 @@ float Normalize(float value, float max_value = 255.0f) {
 }
 
 TEST(ImageTest, LoadResize224GetPatch) {
-  return;  // Need to figure out how to get the external path for the test file.
-  std::string path;
+  std::string path = "paligemma/testdata/image.ppm";
   Image image;
   EXPECT_EQ(image.width(), 0);
   EXPECT_EQ(image.height(), 0);

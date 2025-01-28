@@ -41,8 +41,8 @@ py_test(
     srcs = ["compression_test.py"],
     deps = [
         ":compression",
-        "//testing/pybase",
+        "@com_google_absl_py//absl/testing:absltest",
         "//python:configs",
-        "//third_party/py/numpy",
+        "@compression_deps//numpy",
     ],
 )

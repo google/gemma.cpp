@@ -1,0 +1,43 @@
+# [internal] load py_binary
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+
+package(
+    default_applicable_licenses = [
+        "//:license",  # Placeholder comment, do not modify
+    ],
+    default_visibility = ["//visibility:public"],
+)
+
+pybind_extension(
+    name = "configs",
+    srcs = ["configs.cc"],
+    deps = [
+        "//:common",
+        "//compression:sfp",
+    ],
+)
+
+pybind_extension(
+    name = "gemma",
+    srcs = ["gemma_py.cc"],
+    deps = [
+        "//:app",
+        "//:benchmark_helper",
+        "//:gemma_lib",
+        "//compression:sfp",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+    ],
+)
+
+py_binary(
+    name = "run_example",
+    srcs = ["run_example.py"],
+    python_version = "PY3",
+    deps = [
+        ":gemma",
+        "@python_deps//absl_py",
+        # placeholder forabsl/flags
+        "@compression_deps//numpy",
+    ],
+)
