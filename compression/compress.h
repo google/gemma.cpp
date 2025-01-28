@@ -629,7 +629,7 @@ class ReadFromBlobStore {
     // reader_ invalid or any Enqueue failed
     if (err_ != 0) return err_;
     // Setup the model_memory.
-    for (int b = 0; b < model_toc_.size(); ++b) {
+    for (size_t b = 0; b < model_toc_.size(); ++b) {
       const std::string& file_key = file_keys_[b];
       MatPtr* blob = model_toc_[b];
       if (!file_toc_.Empty()) {

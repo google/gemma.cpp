@@ -690,7 +690,6 @@ HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
   PROFILER_ZONE("Gen.FFW");
   const size_t model_dim = layer_weights->layer_config.model_dim;
   const size_t ffh_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
-  using WeightType = T;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
 
   const bool add_bias = layer_weights->layer_config.ff_biases;
@@ -746,7 +745,6 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
                          const LayerWeightsPtrs<T>* layer_weights) {
   PROFILER_ZONE("Gen.FFW");
   const size_t ff_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
-  using WeightType = typename LayerWeightsPtrs<T>::WeightF32OrBF16;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
 
   const bool add_bias = layer_weights->layer_config.ff_biases;

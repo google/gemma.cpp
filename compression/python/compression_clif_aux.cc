@@ -139,8 +139,9 @@ class SbsWriterImpl : public WriterInterface {
   void AddTokenizer(const std::string& tokenizer_path) override {
     Path path(tokenizer_path);
     GemmaTokenizer tokenizer(path);
-    tokenizer_proto_ = tokenizer.Serialize();
-    compressor_.AddTokenizer(tokenizer_proto_);
+    std::string tokenizer_proto = tokenizer.Serialize();
+    HWY_ASSERT(!tokenizer_proto.empty());
+    compressor_.AddTokenizer(tokenizer_proto);
   }
 
   // Returns the number of blobs added.
@@ -159,7 +160,6 @@ class SbsWriterImpl : public WriterInterface {
   std::vector<MatStorage> model_memory_;
   std::vector<float> scales_;
   CompressorMode mode_;
-  std::string tokenizer_proto_;
 };
 
 WriterInterface* NewSbsWriter(CompressorMode mode) {

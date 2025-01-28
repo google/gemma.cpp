@@ -130,7 +130,7 @@ BlobError ModelWeightsStorage::Save(const std::string& tokenizer,
   writer.AddTokenizer(tokenizer);
   int err = writer.WriteAll(weights, &config_);
   if (err != 0) {
-    fprintf(stderr, "Failed to load model weights: %d\n", err);
+    fprintf(stderr, "Failed to write model weights: %d\n", err);
     return err;
   }
   return 0;
