@@ -126,15 +126,27 @@ static inline NestedPools CreatePools(const AppArgs& app) {
 }
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, char* argv[]) {
+  LoaderArgs(int argc, char* argv[], bool validate = true) {
     InitAndParse(argc, argv);
+
+    if (validate) {
+      if (const char* error = Validate()) {
+        HWY_ABORT("Invalid args: %s", error);
+      }
+    }
   }
   LoaderArgs(const std::string& tokenizer_path, const std::string& weights_path,
-             const std::string& model) {
+             const std::string& model, bool validate = true) {
     Init();  // Init sets to defaults, so assignments must come after Init().
     tokenizer.path = tokenizer_path;
     weights.path = weights_path;
     model_type_str = model;
+
+    if (validate) {
+      if (const char* error = Validate()) {
+        HWY_ABORT("Invalid args: %s", error);
+      }
+    }
   };
 
   // Returns error string or nullptr if OK.

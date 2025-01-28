@@ -1,0 +1,39 @@
+# Hello World example frontend to gemma.cpp.
+package(
+    default_applicable_licenses = [
+        "//:license",  # Placeholder comment, do not modify
+    ],
+    default_visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "gemma",
+    hdrs = ["gemma.hpp"],
+    deps = [
+        "//:app",
+        "//:args",
+        "//:common",
+        "//:gemma_lib",
+        "//:threading",
+        "//:tokenizer",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_binary(
+    name = "simplified_gemma",
+    srcs = ["run.cc"],
+    deps = [
+        ":gemma",
+        # Placeholder for internal dep, do not remove.,
+        "//:app",
+        "//:args",
+        "//:common",
+        "//:gemma_lib",
+        "//:threading",
+        "//:tokenizer",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+    ],
+)
