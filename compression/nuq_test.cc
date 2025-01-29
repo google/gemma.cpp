@@ -277,6 +277,189 @@ struct TestOffset {
 void TestOffsetBF16() { hn::ForGEVectors<128, TestOffset>()(BF16()); }
 void TestOffsetF32() { hn::ForGEVectors<128, TestOffset>()(float()); }
 
+// Can encode and decode sub-regions.
+struct TestUnalignedOffset {
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    const hn::Repartition<float, D> df;
+    const size_t total = 10 * kGroupSize;  // already padded
+
+    const int num_unaligned_offsets = 4;
+    const std::array<size_t, num_unaligned_offsets> unaligned_offsets = {
+        4, kGroupSize + 100, 2 * kGroupSize + 100, 3 * kGroupSize + 100};
+    const std::array<size_t, num_unaligned_offsets> num = {4, 16, 32, 64};
+
+    for (int i = 0; i < num_unaligned_offsets; ++i) {
+      const size_t unaligned_offset = unaligned_offsets[i];
+      const size_t num_decompressed = num[i];
+
+      auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
+      auto dec1 = hwy::AllocateAligned<T>(total);
+      auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+      auto dec2 = hwy::AllocateAligned<T>(num_decompressed);
+      HWY_ASSERT(in && dec1 && dec2 && nuq);
+      const auto nuq_span = MakeSpan(nuq.get(), total);
+
+      hwy::RandomState rng;
+      for (size_t i = 0; i < total; ++i) {
+        in[i] = static_cast<float>(RandomGaussian(rng));
+      }
+
+      // Encode + decode everything
+      NuqStream::ClusterBuf buf;
+      (void)NuqCodec::Enc(df, in.get(), total, buf, nuq_span, 0);
+      NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, dec1.get(),
+                                     total);
+
+      NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), unaligned_offset,
+                                     dec2.get(), num_decompressed);
+
+      for (size_t i = 0; i < num_decompressed; ++i) {
+        T expected = hwy::ConvertScalarTo<T>(dec1[unaligned_offset + i]);
+        T actual = hwy::ConvertScalarTo<T>(dec2[i]);
+
+        HWY_ASSERT_EQ(f_should_be_correct, f_might_be_wrong);
+      }
+    }
+  }
+};
+
+void TestUnalignedOffsetBF16() {
+  hn::ForGEVectors<128, TestUnalignedOffset>()(BF16());
+}
+void TestUnalignedOffsetF32() {
+  hn::ForGEVectors<128, TestUnalignedOffset>()(float());
+}
+
+// Can encode and decode sub-regions.
+// Uses Dec2Interleaved to decode all elements in the packed buffer, then
+// compares against the non-interleaved decode.
+struct TestDec2Interleaved {
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    const hn::Repartition<float, D> df;
+    // incl. partial group to test partial group handling
+    const size_t total = 1 * kGroupSize + (kGroupSize / 2);
+    const size_t kMidLen = 2 * kGroupSize;  // length of middle piece
+
+    auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
+    auto dec0 = hwy::AllocateAligned<T>(total);
+    auto dec1 = hwy::AllocateAligned<T>(total);
+    auto dec2 = hwy::AllocateAligned<T>(kMidLen);
+    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    HWY_ASSERT(in && dec0 && dec1 && dec2 && nuq);
+    const auto nuq_span = MakeSpan(nuq.get(), total);
+
+    hwy::RandomState rng;
+    for (size_t i = 0; i < total; ++i) {
+      in[i] = static_cast<float>(RandomGaussian(rng));
+    }
+
+    // Non-interleaved encode + decode for comparison
+    NuqStream::ClusterBuf buf0;
+    (void)NuqCodec::Enc(df, in.get(), total, buf0, nuq_span, 0);
+    NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, dec0.get(),
+                                   total);
+
+    // Encode + decode everything
+    NuqStream::ClusterBuf buf;
+    (void)NuqCodec::EncInterleaved(df, in.get(), total, buf, nuq_span, 0);
+
+    using V = hn::Vec<decltype(d)>;
+    const size_t N = Lanes(d);
+
+    for (size_t i = 0; i < total; i += 2 * N) {
+      V f0, f1;
+      NuqCodec::Dec2Interleaved(d, MakeConst(nuq_span), i, f0, f1);
+
+      hn::StoreU(f0, d, dec1.get() + i + 0 * N);
+      hn::StoreU(f1, d, dec1.get() + i + 1 * N);
+    }
+
+    for (size_t i = 0; i < total; ++i) {
+      if (dec0[i] != dec1[i]) {
+        fprintf(stderr, "dec0[%zu] = %g, dec1[%zu] = %g\n", i, (float)dec0[i],
+                i, (float)dec1[i]);
+      }
+
+      HWY_ASSERT(dec0[i] == dec1[i]);
+    }
+  }
+};
+
+void TestDec2BF16Interleaved() {
+  hn::ForGEVectors<128, TestDec2Interleaved>()(BF16());
+}
+void TestDec2F32Interleaved() {
+  hn::ForGEVectors<128, TestDec2Interleaved>()(float());
+}
+
+// Can encode and decode sub-regions.
+struct TestOffsetInterleaved {
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    const hn::Repartition<float, D> df;
+    const size_t total =
+        10 * kGroupSize +
+        (kGroupSize /
+         2);  // adding a partial group to test... partial group handling!
+    const size_t kMidLen = 2 * kGroupSize;  // length of middle piece
+
+    auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
+    auto dec0 = hwy::AllocateAligned<T>(total);
+    auto dec1 = hwy::AllocateAligned<T>(total);
+    auto dec2 = hwy::AllocateAligned<T>(kMidLen);
+    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    HWY_ASSERT(in && dec0 && dec1 && dec2 && nuq);
+    const auto nuq_span = MakeSpan(nuq.get(), total);
+
+    hwy::RandomState rng;
+    for (size_t i = 0; i < total; ++i) {
+      in[i] = static_cast<float>(RandomGaussian(rng));
+    }
+
+    // Non-interleaved encode + decode for comparison
+    NuqStream::ClusterBuf buf0;
+    (void)NuqCodec::Enc(df, in.get(), total, buf0, nuq_span, 0);
+    NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, dec0.get(),
+                                   total);
+
+    // Encode + decode everything
+    NuqStream::ClusterBuf buf;
+    (void)NuqCodec::EncInterleaved(df, in.get(), total, buf, nuq_span, 0);
+    NuqCodec::DecompressAndZeroPadInterleaved(d, MakeConst(nuq_span), 0,
+                                              dec1.get(), total);
+
+    for (size_t i = 0; i < total; ++i) {
+      if (dec0[i] != dec1[i]) {
+        fprintf(stderr, "dec0[%zu] = %g, dec1[%zu] = %g\n", i, (float)dec0[i],
+                i, (float)dec1[i]);
+      }
+
+      HWY_ASSERT(dec0[i] == dec1[i]);
+    }
+
+    // Overwrite middle with first inputs
+    const size_t offset = 5 * kGroupSize;
+    (void)NuqCodec::EncInterleaved(df, in.get(), kMidLen, buf, nuq_span,
+                                   offset);
+
+    // Decoded middle now matches previously decoded first
+    NuqCodec::DecompressAndZeroPadInterleaved(d, MakeConst(nuq_span), offset,
+                                              dec2.get(), kMidLen);
+    for (size_t i = 0; i < kMidLen; ++i) {
+      HWY_ASSERT(dec1[i] == dec2[i]);
+    }
+  }
+};
+
+void TestOffsetBF16Interleaved() {
+  hn::ForGEVectors<128, TestOffsetInterleaved>()(BF16());
+}
+void TestOffsetF32Interleaved() {
+  hn::ForGEVectors<128, TestOffsetInterleaved>()(float());
+}
+
 struct TestNibble {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
@@ -409,6 +592,12 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestAllRamp);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNormal);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetF32);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestDec2BF16Interleaved);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestDec2F32Interleaved);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestUnalignedOffsetBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestUnalignedOffsetF32);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetBF16Interleaved);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestOffsetF32Interleaved);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecF32);

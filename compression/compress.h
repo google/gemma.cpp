@@ -110,7 +110,7 @@ class MatPtr : public IFields {
   size_t NumElements() const { return num_elements_; }
 
   // Returns the number of bytes in the array.
-  size_t SizeBytes() const { return num_elements_ * element_size_; }
+  virtual size_t SizeBytes() const { return num_elements_ * element_size_; }
 
   // Returns the number of rows in the 2-d array (outer dimension).
   size_t Rows() const { return rows_; }
@@ -248,10 +248,13 @@ class MatPtrT : public MatPtr {
     return name;
   }
 
-  // Sets the number of elements in the array. For use when the number of
-  // elements is != rows * cols ONLY.
-  void SetNumElements(size_t num_elements) {
-    num_elements_ = CompressedArrayElements<MatT>(num_elements);
+  // Returns the number of bytes in the array. Overrides MatPtr::SizeBytes()
+  // to account for NUQ's differing packed size.
+  size_t SizeBytes() const override {
+    if (hwy::IsSame<hwy::RemoveCvRef<MatT>, NuqStream>()) {
+      return NuqStream::PackedEnd(num_elements_);
+    }
+    return num_elements_ * element_size_;
   }
 
   // 2-d Accessor for a specific type but with a dynamic inner dimension.
@@ -334,6 +337,12 @@ class MatStorageT : public MatPtrT<MatT> {
   // from the current num_elements_ which was set by the constructor from the
   // rows and cols.
   void Allocate(size_t num_elements = 0) {
+    // size_t num_elements = 0;
+    // TODO: optimize this check or obviate it.
+    if (hwy::IsSame<hwy::RemoveCvRef<MatT>, NuqStream>()) {
+      HWY_DASSERT(num_elements == 0);
+    }
+
     if (num_elements == 0) {
       num_elements = hwy::DivCeil(this->SizeBytes(), sizeof(MatT));
     } else {

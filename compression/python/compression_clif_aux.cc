@@ -81,8 +81,7 @@ class SbsWriterImpl : public WriterInterface {
   template <typename Packed>
   void AllocateAndCompress(const std::string& name,
                            absl::Span<const float> weights) {
-    const size_t num_packed = CompressedArrayElements<Packed>(weights.size());
-    MatPtrT<Packed> storage(name, 1, num_packed);
+    MatPtrT<Packed> storage(name, 1, weights.size());
     model_memory_.push_back(storage);
     model_memory_.back().Allocate();
     storage.SetPtr(model_memory_.back());
