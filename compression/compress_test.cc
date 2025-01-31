@@ -81,9 +81,13 @@ struct TestDecompress2T {
     }
 
     if constexpr (false) {
-      fprintf(stderr, "%s %s: %zu: %f %f %f %f\n", TypeName<Packed>(),
-              TypeName<T>(), num, stats.SumL1(), stats.GeomeanValueDivL1(),
-              stats.WeightedAverageL1(), stats.L1().Max());
+      fprintf(stderr,
+              "TypeName<Packed>() %s TypeName<T>() %s: num %zu: stats.SumL1() "
+              "%f stats.GeomeanValueDivL1() %f stats.WeightedAverageL1() %f "
+              "stats.L1().Max() %f\n",
+              TypeName<Packed>(), TypeName<T>(), num, stats.SumL1(),
+              stats.GeomeanValueDivL1(), stats.WeightedAverageL1(),
+              stats.L1().Max());
     }
 
     constexpr bool kFromFloat = hwy::IsSame<Packed, float>();
