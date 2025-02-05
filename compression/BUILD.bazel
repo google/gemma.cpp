@@ -7,7 +7,8 @@ package(
     # Placeholder for internal compatible_with
     default_visibility = [
         # Placeholder for internal visibility,
-        "//:__subpackages__",
+        # Users require gcpp::Path etc., which are defined in this package.
+        "//visibility:public",
     ],
 )
 
