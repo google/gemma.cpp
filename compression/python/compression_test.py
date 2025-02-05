@@ -39,6 +39,18 @@ class CompressionTest(absltest.TestCase):
         tensor_info,
         1.0,
     )
+
+    tensor_info_nuq = configs.TensorInfo()
+    tensor_info_nuq.name = "fooNUQ"
+    tensor_info_nuq.axes = [0]
+    tensor_info_nuq.shape = [256]
+    writer.insert(
+        "fooNUQ",
+        np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32),
+        configs.Type.kNUQ,
+        tensor_info_nuq,
+        1.0,
+    )
     writer.insert_sfp(
         "bar", np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32)
     )
@@ -51,7 +63,7 @@ class CompressionTest(absltest.TestCase):
     writer.insert_float(
         "quux", np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32)
     )
-    self.assertEqual(writer.debug_num_blobs_added(), 5)
+    self.assertEqual(writer.debug_num_blobs_added(), 6)
     self.assertEqual(writer.write(temp_file.full_path), 0)
 
 

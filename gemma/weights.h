@@ -179,31 +179,7 @@ struct LayerWeightsPtrs {
   // Initializes att_weights from attn_vec_einsum_w, hence this must be called
   // after loading weights via ForEachTensor.
   // TODO: update compression/convert_weights to bake this in.
-  void Reshape(MatStorage* storage) {
-    if (attn_vec_einsum_w.data() == nullptr) return;
-
-    const size_t model_dim = layer_config.model_dim;
-    const size_t heads = layer_config.heads;
-    const size_t qkv_dim = layer_config.qkv_dim;
-
-    // TODO: implement a CompressTraits::Copy for NUQ.
-    // static_assert(!hwy::IsSame<Weight, NuqStream>());
-
-    // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
-    if (storage != nullptr) {
-      storage->Allocate();
-      att_weights.SetPtr(*storage);
-    }
-    for (size_t m = 0; m < model_dim; ++m) {
-      Weight* HWY_RESTRICT out_row = att_weights.data() + m * heads * qkv_dim;
-      for (size_t h = 0; h < heads; ++h) {
-        hwy::CopyBytes(
-            attn_vec_einsum_w.data() + h * model_dim * qkv_dim + m * qkv_dim,
-            out_row + h * qkv_dim, qkv_dim * sizeof(Weight));
-      }
-    }
-    att_weights.set_scale(attn_vec_einsum_w.scale());
-  }
+  void Reshape(MatStorage* storage);
 
 // Used by ForEachTensor for per-layer tensors.
 #define GEMMA_CALL_FUNC(member)                                             \

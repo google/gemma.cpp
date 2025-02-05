@@ -81,8 +81,7 @@ class SbsWriterImpl : public WriterInterface {
   template <typename Packed>
   void AllocateAndCompress(const std::string& name,
                            absl::Span<const float> weights) {
-    const size_t num_packed = CompressedArrayElements<Packed>(weights.size());
-    MatPtrT<Packed> storage(name, 1, num_packed);
+    MatPtrT<Packed> storage(name, 1, weights.size());
     model_memory_.push_back(storage);
     model_memory_.back().Allocate();
     storage.SetPtr(model_memory_.back());
@@ -95,7 +94,12 @@ class SbsWriterImpl : public WriterInterface {
                          const TensorInfo& tensor_info, float scale) {
     MatPtrT<Packed> storage(name, &tensor_info);
     storage.set_scale(scale);
-    storage.SetNumElements(CompressedArrayElements<Packed>(weights.size()));
+
+    // Don't reset num_elements for NUQ.
+    if (!hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
+      storage.SetNumElements(CompressedArrayElements<Packed>(weights.size()));
+    }
+
     model_memory_.push_back(storage);
     if (mode_ == CompressorMode::kTEST_ONLY) return;
     model_memory_.back().Allocate();

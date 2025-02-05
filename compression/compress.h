@@ -110,7 +110,12 @@ class MatPtr : public IFields {
   size_t NumElements() const { return num_elements_; }
 
   // Returns the number of bytes in the array.
-  size_t SizeBytes() const { return num_elements_ * element_size_; }
+  size_t SizeBytes() const {
+    if (this->GetType() == TypeEnum<NuqStream>()) {
+      return NuqStream::PackedEnd(num_elements_);
+    }
+    return num_elements_ * element_size_;
+  }
 
   // Returns the number of rows in the 2-d array (outer dimension).
   size_t Rows() const { return rows_; }

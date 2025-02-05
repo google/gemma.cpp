@@ -159,7 +159,7 @@ struct TestShortLengthsT {
         stats.Notify(raw[i], hwy::ConvertScalarTo<float>(dec[i]));
       }
 
-      if constexpr (false) {
+      if constexpr (true) {
         fprintf(stderr, "%s %s: %zu: %f %f %f %f\n", TypeName<Packed>(),
                 TypeName<T>(), num, stats.SumL1(), stats.GeomeanValueDivL1(),
                 stats.WeightedAverageL1(), stats.L1().Max());

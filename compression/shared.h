@@ -168,7 +168,9 @@ struct NuqStream {
   // Returns number of NuqStream to allocate for the stream, which matches its
   // size in bytes.
   static constexpr size_t PackedEnd(size_t capacity) {
-    return PackedStart(capacity) + hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
+    const size_t num_groups = hwy::DivCeil(capacity, kGroupSize);
+    return (kClusters * num_groups) +
+           hwy::DivCeil(capacity, 2);  // 2x 4-bit/byte
   }
 
   uint8_t byte;
