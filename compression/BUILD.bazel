@@ -274,6 +274,8 @@ cc_binary(
     deps = [
         ":blob_store",
         ":io",
+        "//:allocator",
+        "//:threading",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
