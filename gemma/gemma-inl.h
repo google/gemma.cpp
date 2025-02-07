@@ -109,7 +109,7 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
     const size_t layer_offset = layer * model_dim * (conv_1d_width - 1);
 
     // cache[i] = input at time t-i.
-    float* HWY_RESTRICT cache[HWY_MAX(conv_1d_width, 1)];
+    float* HWY_RESTRICT cache[kMaxConv1DWidth];
     cache[0] = x;
     for (size_t i = 1; i < conv_1d_width; i++) {
       cache[i] =
@@ -887,6 +887,7 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
   const size_t model_dim = activations.weights_config.model_dim;
   auto type = layer_weights->layer_config.type;
   HWY_DASSERT(type == LayerAttentionType::kVit);
+  (void)type;
 
   auto& x = activations.x;
   HWY_DASSERT(x.BatchSize() == num_tokens);

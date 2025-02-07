@@ -50,7 +50,7 @@ namespace gcpp {
 //   fields: not required for the intended use case of `ModelConfig`.
 // - support any other languages than C++ and Python (for the exporter).
 
-class IFields;  // breaks circular dependency
+struct IFields;  // breaks circular dependency
 
 // Visitors are internal-only, but their base class is visible to user code
 // because their `IFields::VisitFields` calls `visitor.operator()`.

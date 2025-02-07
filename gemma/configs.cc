@@ -207,6 +207,7 @@ static LayerConfig LayerConfigGriffin2B(size_t model_dim) {
   config.kv_heads = 1;
   config.qkv_dim = 256;
   config.conv1d_width = 4;
+  HWY_DASSERT(config.conv1d_width <= kMaxConv1DWidth);
   config.ff_biases = true;
   config.softmax_attn_output_biases = true;
   config.optimized_gating = false;

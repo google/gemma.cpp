@@ -44,6 +44,7 @@ namespace gcpp {
 static constexpr size_t kSeqLen = GEMMA_MAX_SEQLEN;
 static constexpr size_t kTopK = GEMMA_TOPK;
 static constexpr size_t kVocabSize = 256000;
+static constexpr size_t kMaxConv1DWidth = 4;
 
 using EmbedderInputT = BF16;
 

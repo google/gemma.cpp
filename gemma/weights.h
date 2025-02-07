@@ -189,7 +189,7 @@ struct LayerWeightsPtrs {
     }                                                                       \
     if (tensors[0]->Ptr() != nullptr || fet != ForEachType::kIgnoreNulls) { \
       func(ptrs[0]->member.CacheName(layer_idx, sep, sep_index).c_str(),    \
-           hwy::Span<MatPtr*>(tensors, ptrs.size()));                       \
+           hwy::Span<MatPtr*>(tensors.data(), ptrs.size()));                \
     }                                                                       \
   }
 
@@ -197,7 +197,7 @@ struct LayerWeightsPtrs {
   static void ForEachTensor(const std::vector<LayerWeightsPtrs<Weight>*>& ptrs,
                             int layer_idx, ForEachType fet, Func func,
                             char sep = ' ', int sep_index = -1) {
-    MatPtr* tensors[ptrs.size()];
+    std::vector<MatPtr*> tensors(ptrs.size(), nullptr);
     auto type = ptrs[0]->layer_config.type;
     if (type == LayerAttentionType::kVit) {
       // MHA.
@@ -449,7 +449,7 @@ struct ModelWeightsPtrs {
                             ForEachType fet, Func func) {
     std::vector<LayerWeightsPtrs<Weight>*> layers(ptrs.size());
     std::vector<LayerWeightsPtrs<Weight>*> vit_layers(ptrs.size());
-    MatPtr* tensors[ptrs.size()];
+    std::vector<MatPtr*> tensors(ptrs.size(), nullptr);
     // Variables used by GEMMA_CALL_FUNC.
     int layer_idx = -1;
     char sep = ' ';
