@@ -33,7 +33,6 @@ pybind_extension(
 py_binary(
     name = "run_example",
     srcs = ["run_example.py"],
-    python_version = "PY3",
     deps = [
         ":gemma",
         "@python_deps//absl_py",
