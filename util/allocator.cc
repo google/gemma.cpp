@@ -177,7 +177,7 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
   };
   return PtrAndDeleter{p, Deleter(call_munmap, bytes)};
 #elif HWY_OS_WIN
-  const auto call_free = [](void* ptr, void*) { _aligned_free(ptr); };
+  const auto call_free = [](void* ptr, size_t) { _aligned_free(ptr); };
   const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
   return PtrAndDeleter{_aligned_malloc(bytes, alignment),
                        Deleter(call_free, bytes)};

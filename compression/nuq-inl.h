@@ -252,7 +252,6 @@ class NuqClustering {
     using VF = hn::Vec<decltype(df)>;
     using MF = hn::Mask<decltype(df)>;
     using VI = hn::Vec<decltype(di)>;
-    const VI k1 = hn::Set(di, 1);
     const size_t N = hn::Lanes(df);
     HWY_DASSERT(kGroupSize % N == 0);
 
