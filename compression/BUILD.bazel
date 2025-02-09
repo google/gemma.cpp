@@ -275,9 +275,11 @@ cc_binary(
         ":blob_store",
         ":io",
         "//:allocator",
+        "//:basics",
         "//:threading",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
     ],
 )
 
