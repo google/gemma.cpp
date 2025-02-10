@@ -43,6 +43,9 @@ struct KVCache {
 
   static KVCache Create(const ModelConfig& weights_config,
                         size_t prefill_tbatch_size);
+
+  // Returns a deep copy of the KVCache.
+  KVCache Copy(const ModelConfig& weights_config, size_t prefill_tbatch_size);
 };
 
 }  // namespace gcpp
