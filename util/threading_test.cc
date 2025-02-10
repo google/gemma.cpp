@@ -22,8 +22,10 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/nanobenchmark.h"
 
 namespace gcpp {
 namespace {
@@ -248,6 +250,72 @@ TEST(ThreadingTest, TestParallelizeTwoRanges) {
           HWY_ASSERT(range2.Num() % 32 == 0);
         });
     HWY_ASSERT(calls == 2 * 4);
+  }
+}
+
+// Governs duration of test; avoid timeout in debug builds.
+#if HWY_IS_DEBUG_BUILD
+constexpr size_t kMaxEvals = 2;
+#else
+constexpr size_t kMaxEvals = 8;
+#endif
+
+static constexpr size_t kU64PerThread = HWY_ALIGNMENT / sizeof(size_t);
+static uint64_t outputs[hwy::kMaxLogicalProcessors * kU64PerThread];
+
+hwy::FuncOutput ForkJoin(const void* opaque, hwy::FuncInput in) {
+  hwy::ThreadPool& pool =
+      *reinterpret_cast<hwy::ThreadPool*>(const_cast<void*>(opaque));
+  pool.Run(0, in, [&](uint64_t task, size_t thread) {
+    outputs[thread * kU64PerThread] = in;
+  });
+  return in;
+}
+
+TEST(ThreadingTest, BenchJoin) {
+  constexpr size_t kInputs = 1;
+  static hwy::FuncInput inputs[kInputs];
+
+  const auto measure = [&](hwy::ThreadPool& pool, const char* caption) {
+    inputs[0] =
+        static_cast<hwy::FuncInput>(hwy::Unpredictable1() * pool.NumWorkers());
+    hwy::Result results[kInputs];
+    hwy::Params params;
+    params.max_evals = kMaxEvals;
+    const size_t num_results =
+        Measure(&ForkJoin, reinterpret_cast<const uint8_t*>(&pool), inputs,
+                kInputs, results, params);
+    for (size_t i = 0; i < num_results; ++i) {
+      printf("%s: %5d: %6.2f us; MAD=%4.2f%%\n", caption,
+             static_cast<int>(results[i].input),
+             results[i].ticks / hwy::platform::InvariantTicksPerSecond() * 1E6,
+             results[i].variability * 100.0);
+    }
+
+    // Verify outputs to ensure the measured code is not a no-op.
+    for (size_t lp = 0; lp < pool.NumWorkers(); ++lp) {
+      HWY_ASSERT(outputs[lp * kU64PerThread] == pool.NumWorkers());
+      for (size_t i = 1; i < kU64PerThread; ++i) {
+        HWY_ASSERT(outputs[lp * kU64PerThread + i] == 0);
+      }
+    }
+  };
+
+  NestedPools pools(0);
+  measure(pools.AllPackages(), "\nblock packages");
+  if (pools.AllClusters(0).NumWorkers() > 1) {
+    measure(pools.AllClusters(0), "\nblock clusters");
+  }
+  measure(pools.Cluster(0, 0), "\nblock in_cluster");
+
+  Tristate use_spinning = Tristate::kDefault;
+  pools.MaybeStartSpinning(use_spinning);
+  if (use_spinning == Tristate::kTrue) {
+    measure(pools.AllPackages(), "\nspin packages");
+    if (pools.AllClusters(0).NumWorkers() > 1) {
+      measure(pools.AllClusters(0), "\nspin clusters");
+    }
+    measure(pools.Cluster(0, 0), "\nspin in_cluster");
   }
 }
 

@@ -72,6 +72,7 @@ cc_test(
         "@googletest//:gtest_main",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
         "@highway//:thread_pool",
     ],
 )
