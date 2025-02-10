@@ -140,21 +140,9 @@ struct NuqStream {
     ClusterBuf(ClusterBuf&&) = default;
     ClusterBuf& operator=(ClusterBuf&&) = default;
 
-    void Resize(size_t new_num_groups) {
-      if (new_num_groups < num_groups) return;
-
-      num_groups = new_num_groups;
-      centers = hwy::AllocateAligned<float>(num_groups * kClusters);
-      idx = hwy::AllocateAligned<uint16_t>(num_groups * kGroupSize);
-    }
-
     // Independent of num_groups.
     AlignedMatrix<float> costs;
     AlignedMatrix<int32_t> argmin;
-
-    size_t num_groups = 0;
-    hwy::AlignedFreeUniquePtr<float[]> centers;
-    hwy::AlignedFreeUniquePtr<uint16_t[]> idx;
   };
 
   // Returns offset of packed indices from the start of the stream. This matches
