@@ -137,14 +137,17 @@ struct RuntimeConfig {
 };
 
 struct TimingInfo {
-  void NotifyPrefill(size_t tokens, double start) {
-    prefill_duration = hwy::platform::Now() - start;
+  // be sure to populate prefill_start before calling NotifyPrefill.
+  void NotifyPrefill(size_t tokens) {
+    prefill_duration = hwy::platform::Now() - prefill_start;
     prefill_tokens = tokens;
     time_to_first_token = 0.0;
     tokens_generated = 0;
   }
 
-  void NotifyGenerated(double prefill_start, double gen_start) {
+  // be sure to populate prefill_start and generate_start before calling
+  // NotifyGenerated.
+  void NotifyGenerated() {
     ++tokens_generated;
     if (HWY_UNLIKELY(tokens_generated == 1)) {
       time_to_first_token = hwy::platform::Now() - prefill_start;
@@ -160,7 +163,7 @@ struct TimingInfo {
     }
     if (verbosity >= 2 && tokens_generated % 128 == 0) {
       double gen_tok_sec = static_cast<double>(tokens_generated) /
-                           (hwy::platform::Now() - gen_start);
+                           (hwy::platform::Now() - generate_start);
       fprintf(stderr,
               "\n\n[ Timing info ] %zu tokens generated "
               "(avg speed %.2f tokens / sec)\n\n",
@@ -168,8 +171,9 @@ struct TimingInfo {
     }
   }
 
-  void NotifyGenerateDone(double gen_start) {
-    generate_duration = hwy::platform::Now() - gen_start;
+  // be sure to populate generate_start before calling NotifyGenerateDone.
+  void NotifyGenerateDone() {
+    generate_duration = hwy::platform::Now() - generate_start;
     if (verbosity >= 1) {
       double gen_tok_sec =
           static_cast<double>(tokens_generated) / generate_duration;
@@ -182,6 +186,8 @@ struct TimingInfo {
   }
 
   int verbosity = 0;
+  double prefill_start = 0;
+  double generate_start = 0;
   double prefill_duration = 0;
   size_t prefill_tokens = 0;
   double time_to_first_token = 0;

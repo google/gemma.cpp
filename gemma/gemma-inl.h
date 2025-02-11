@@ -1227,8 +1227,7 @@ bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
                  const size_t query_idx_start, const KVCaches& kv_caches,
                  const QueriesPos& queries_prefix_end,
                  const hwy::Divisor div_seq_len, const size_t vocab_size,
-                 const SampleFunc& sample_token, double prefill_start,
-                 double gen_start, Activations& activations,
+                 const SampleFunc& sample_token, Activations& activations,
                  TokenStreamer& token_streamer, std::vector<int>& gen_tokens,
                  TimingInfo& timing_info,
                  const QueriesMutablePos& queries_mutable_pos) {
@@ -1255,7 +1254,7 @@ bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
     float* HWY_RESTRICT logits = activations.logits.Batch(query_idx);
     MaybeLogitsSoftCap(weights.weights_config.final_cap, logits, vocab_size);
     const TokenAndProb tp = sample_token(logits, vocab_size);
-    timing_info.NotifyGenerated(prefill_start, gen_start);
+    timing_info.NotifyGenerated();
 
     const bool is_eos =
         token_streamer(query_idx_start + query_idx,
@@ -1318,7 +1317,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
 
   // Prefill stops before min_prompt_size - 1 because the last prompt
   // token is the first input token for generation.
-  const double prefill_start = hwy::platform::Now();
+  timing_info.prefill_start = hwy::platform::Now();
   // If tbatch is larger than the qbatch we already have in `activations`, then
   // allocate prefill_activations, otherwise reuse.
   const bool use_prefill_activations =
@@ -1337,7 +1336,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   for (size_t qi = 0; qi < num_queries; ++qi) {
     prefilled_tokens += queries_prompt[qi].size() - 1;
   }
-  timing_info.NotifyPrefill(prefilled_tokens, prefill_start);
+  timing_info.NotifyPrefill(prefilled_tokens);
   // queries_pos are incremented by Prefill.
 
   // Storage for the last generated token from each query, passed to the next
@@ -1357,16 +1356,16 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
 
   {
     const size_t vocab_size = model.Config().vocab_size;
-    const double gen_start = hwy::platform::Now();
+    timing_info.generate_start = hwy::platform::Now();
     for (size_t gen = 0; gen < max_generated_tokens; ++gen) {
       bool all_queries_eos = DecodeStepT<T>(
           weights, runtime_config, queries_prompt, query_idx_start, kv_caches,
           queries_prefix_end, div_seq_len, vocab_size, sample_token,
-          prefill_start, gen_start, activations, token_streamer, gen_tokens,
+          activations, token_streamer, gen_tokens,
           timing_info, queries_mutable_pos);
       if (all_queries_eos) break;
     }  // foreach token to generate
-    timing_info.NotifyGenerateDone(gen_start);
+    timing_info.NotifyGenerateDone();
   }
 }
 
