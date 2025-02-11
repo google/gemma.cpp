@@ -257,8 +257,8 @@ void ModelWeightsStorage::CreateForType(Type weight_type,
   }
 }
 
-template <class Weight>
-void LayerWeightsPtrs<Weight>::Reshape(MatStorage* storage) {
+template <>
+void LayerWeightsPtrs<NuqStream>::Reshape(MatStorage* storage) {
   if (attn_vec_einsum_w.data() == nullptr) return;
 
   const size_t model_dim = layer_config.model_dim;
@@ -271,48 +271,34 @@ void LayerWeightsPtrs<Weight>::Reshape(MatStorage* storage) {
     att_weights.SetPtr(*storage);
   }
 
-  if (hwy::IsSame<Weight, NuqStream>()) {
-    const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
 
-    hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
-        hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
-    hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
-        hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
+  hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
+      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
+  hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
+      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
 
-    HWY_NAMESPACE::DecompressAndZeroPad(
-        df, MakeSpan(attn_vec_einsum_w.data(), model_dim * heads * qkv_dim), 0,
-        attn_vec_einsum_w_tmp.get(), model_dim * heads * qkv_dim);
-
-    for (size_t m = 0; m < model_dim; ++m) {
-      float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
-      for (size_t h = 0; h < heads; ++h) {
-        hwy::CopyBytes(
-            attn_vec_einsum_w_tmp.get() + h * model_dim * qkv_dim + m * qkv_dim,
-            out_row + h * qkv_dim, qkv_dim * sizeof(float));
-      }
-    }
-
-    CompressWorkingSet work;
-    hwy::ThreadPool pool(0);
-
-    HWY_NAMESPACE::Compress(
-        att_weights_tmp.get(), model_dim * heads * qkv_dim, work,
-        MakeSpan(att_weights.data(), model_dim * heads * qkv_dim),
-        /*packed_ofs=*/0, pool);
-
-    att_weights.set_scale(attn_vec_einsum_w.scale());
-
-    return;
-  }
+  HWY_NAMESPACE::DecompressAndZeroPad(
+      df, MakeSpan(attn_vec_einsum_w.data(), model_dim * heads * qkv_dim), 0,
+      attn_vec_einsum_w_tmp.get(), model_dim * heads * qkv_dim);
 
   for (size_t m = 0; m < model_dim; ++m) {
-    Weight* HWY_RESTRICT out_row = att_weights.data() + m * heads * qkv_dim;
+    float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
     for (size_t h = 0; h < heads; ++h) {
       hwy::CopyBytes(
-          attn_vec_einsum_w.data() + h * model_dim * qkv_dim + m * qkv_dim,
-          out_row + h * qkv_dim, qkv_dim * sizeof(Weight));
+          attn_vec_einsum_w_tmp.get() + h * model_dim * qkv_dim + m * qkv_dim,
+          out_row + h * qkv_dim, qkv_dim * sizeof(float));
     }
   }
+
+  CompressWorkingSet work;
+  hwy::ThreadPool pool(0);
+
+  HWY_NAMESPACE::Compress(
+      att_weights_tmp.get(), model_dim * heads * qkv_dim, work,
+      MakeSpan(att_weights.data(), model_dim * heads * qkv_dim),
+      /*packed_ofs=*/0, pool);
+
   att_weights.set_scale(attn_vec_einsum_w.scale());
 }
 
