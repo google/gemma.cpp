@@ -349,8 +349,26 @@ and not a pre-trained model (any model with a `-pt` suffix).
 
 **How do I convert my fine-tune to a `.sbs` compressed model file?**
 
-See compression/convert_weights.py to convert a pytorch checkpint. (The code may
-need updates to work with Gemma-2 models.)
+For PaliGemma (1 and 2) checkpoints, you can use
+python/convert_from_safetensors.py to convert from safetensors format (tested
+with building via bazel). For an adapter model, you will likely need to call
+merge_and_unload() to convert the adapter model to a single-file format before
+converting it.
+
+Here is how to use it using a bazel build of the compression library assuming
+locally installed (venv) torch, numpy, safetensors, absl-py, etc.:
+
+```sh
+bazel build //compression/python:compression
+BAZEL_OUTPUT_DIR="${PWD}/bazel-bin/compression"
+python3 -c "import site; print(site.getsitepackages())"
+# Use your sites-packages file here:
+ln -s $BAZEL_OUTPUT_DIR [...]/site-packages/compression
+python3 python/convert_from_safetensors.py --load_path [...].safetensors.index.json
+```
+
+See also compression/convert_weights.py for a slightly older option to convert a
+pytorch checkpoint. (The code may need updates to work with Gemma-2 models.)
 
 **What are some easy ways to make the model run faster?**
 

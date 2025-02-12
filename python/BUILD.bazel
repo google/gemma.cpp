@@ -36,7 +36,7 @@ py_binary(
     deps = [
         ":gemma",
         "@python_deps//absl_py",
-        # placeholder forabsl/flags
+        # placeholder for absl/flags
         "@compression_deps//numpy",
     ],
 )
