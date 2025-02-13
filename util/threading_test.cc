@@ -281,12 +281,13 @@ TEST(ThreadingTest, BenchJoin) {
         static_cast<hwy::FuncInput>(hwy::Unpredictable1() * pool.NumWorkers());
     hwy::Result results[kInputs];
     hwy::Params params;
+    params.verbose = false;
     params.max_evals = kMaxEvals;
     const size_t num_results =
         Measure(&ForkJoin, reinterpret_cast<const uint8_t*>(&pool), inputs,
                 kInputs, results, params);
     for (size_t i = 0; i < num_results; ++i) {
-      printf("%s: %5d: %6.2f us; MAD=%4.2f%%\n", caption,
+      printf("%-20s: %5d: %6.2f us; MAD=%4.2f%%\n", caption,
              static_cast<int>(results[i].input),
              results[i].ticks / hwy::platform::InvariantTicksPerSecond() * 1E6,
              results[i].variability * 100.0);
@@ -302,20 +303,20 @@ TEST(ThreadingTest, BenchJoin) {
   };
 
   NestedPools pools(0);
-  measure(pools.AllPackages(), "\nblock packages");
+  measure(pools.AllPackages(), "block packages");
   if (pools.AllClusters(0).NumWorkers() > 1) {
-    measure(pools.AllClusters(0), "\nblock clusters");
+    measure(pools.AllClusters(0), "block clusters");
   }
-  measure(pools.Cluster(0, 0), "\nblock in_cluster");
+  measure(pools.Cluster(0, 0), "block in_cluster");
 
   Tristate use_spinning = Tristate::kDefault;
   pools.MaybeStartSpinning(use_spinning);
   if (use_spinning == Tristate::kTrue) {
-    measure(pools.AllPackages(), "\nspin packages");
+    measure(pools.AllPackages(), "spin packages");
     if (pools.AllClusters(0).NumWorkers() > 1) {
-      measure(pools.AllClusters(0), "\nspin clusters");
+      measure(pools.AllClusters(0), "spin clusters");
     }
-    measure(pools.Cluster(0, 0), "\nspin in_cluster");
+    measure(pools.Cluster(0, 0), "spin in_cluster");
   }
 }
 
