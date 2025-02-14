@@ -236,6 +236,7 @@ struct VitConfig : public IFields {
     visitor(patch_width);
     visitor(image_size);
     visitor(layer_configs);
+    visitor(pool_dim);
   }
 
   uint32_t model_dim = 0;
@@ -243,6 +244,8 @@ struct VitConfig : public IFields {
   uint32_t num_scales = 0;
   uint32_t patch_width = 14;
   uint32_t image_size = 224;
+  // Average pooling; 1 for no pooling.
+  uint32_t pool_dim = 1;
   std::vector<LayerConfig> layer_configs;
 };
 
