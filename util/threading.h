@@ -226,6 +226,8 @@ class NestedPools {
               BoundedSlice cluster_slice = BoundedSlice(),
               BoundedSlice lp_slice = BoundedSlice());
 
+  bool AllPinned() const { return all_pinned_; }
+
   // Subject to `use_spinning`, enables spin waits with the goal of reducing the
   // latency of barrier synchronization. We only spin during Generate to avoid
   // wasting energy during long waits. If `use_spinning` is kDefault, we first
