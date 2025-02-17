@@ -106,7 +106,6 @@ cc_library(
         "@highway//:hwy",
         "@highway//:math",
         "@highway//:matvec",
-        "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
     ],

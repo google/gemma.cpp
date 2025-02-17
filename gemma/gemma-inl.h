@@ -1210,11 +1210,9 @@ HWY_INLINE SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   return [&runtime_config](float* logits,
                            size_t vocab_size) HWY_ATTR -> TokenAndProb {
     PROFILER_ZONE("Gen.Sample general");
-    Softmax(logits, vocab_size);
-    const int token = SampleTopK(
+    return FusedSoftmaxAndSampleTopK(
         logits, runtime_config.top_k, vocab_size, *runtime_config.gen,
         runtime_config.temperature, runtime_config.accept_token);
-    return TokenAndProb{.token = token, .prob = logits[token]};
   };
 }
 
