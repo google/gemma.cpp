@@ -22,7 +22,7 @@
 #include <stdio.h>
 
 #include <cmath>
-#include <limits>
+#include <cstdint>
 #include <random>
 #include <type_traits>  // std::enable_if_t
 #include <vector>
@@ -30,6 +30,8 @@
 #include "compression/compress.h"
 #include "util/basics.h"  // TokenAndProb
 #include "hwy/base.h"
+#include "hwy/contrib/sort/order.h"
+#include "hwy/contrib/sort/vqsort.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
 #include "hwy/profiler.h"
@@ -53,6 +55,35 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+
+HWY_INLINE double PackTokenAndProb(int32_t token, float prob) {
+  // casting prob from float to double just makes some changes to the
+  // exponent bias and pads zeros in the mantissa.
+  double packed = static_cast<double>(prob);
+  int64_t packed_int64;
+  hwy::CopySameSize(&packed, &packed_int64);
+  // stuff the token into the lower 32 bits of packed_int64. (it is an int32_t
+  // anyway)
+  packed_int64 &= 0xFFFFFFFF00000000;
+  packed_int64 |= token;
+  // copy bytes back into packed.
+  hwy::CopySameSize(&packed_int64, &packed);
+  return packed;
+}
+
+HWY_INLINE TokenAndProb UnpackTokenAndProb(double packed) {
+  TokenAndProb tp;
+
+  int64_t packed_int64;
+  hwy::CopySameSize(&packed, &packed_int64);
+  tp.token = static_cast<int>(packed_int64 & 0xFFFFFFFFULL);
+
+  // clear the lower 32 bits of packed_int64 before copying back into packed.
+  packed_int64 &= 0xFFFFFFFF00000000ULL;
+  hwy::CopySameSize(&packed_int64, &packed);
+  tp.prob = static_cast<float>(packed);
+  return tp;
+}
 
 template <typename To, typename From>
 HWY_INLINE constexpr std::enable_if_t<
@@ -705,37 +736,44 @@ HWY_INLINE HWY_MAYBE_UNUSED std::discrete_distribution<int> create_distribution(
 }
 
 template <typename TAcceptToken>
+HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
+    const float* HWY_RESTRICT probabilities, size_t vocab_size, size_t k,
+    TAcceptToken& accept_token) {
+  HWY_ASSERT(k != 0);
+  HWY_ASSERT(k <= vocab_size);
+  std::vector<double> packed_token_probs;
+  for (int32_t i = 0; i < vocab_size; ++i) {
+    if (accept_token && !accept_token(StaticCast<int>(i), probabilities[i])) {
+      continue;
+    }
+    packed_token_probs.push_back(PackTokenAndProb(i, probabilities[i]));
+  }
+
+  hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), k,
+                hwy::SortDescending());
+  hwy::VQSort(packed_token_probs.data(), k, hwy::SortDescending());
+
+  std::vector<TokenAndProb> token_probs;
+  token_probs.reserve(k);
+  for (int32_t i = 0; i < k; ++i) {
+    token_probs.push_back(UnpackTokenAndProb(packed_token_probs[i]));
+  }
+  return token_probs;
+}
+
+template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
     const float* HWY_RESTRICT probabilities, size_t k, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
-  HWY_ASSERT(k != 0);
-  HWY_ASSERT(k <= vocab_size);
-  // TODO: Optimize, potentially using new VQSort PartialSort.
-  // Sorted from highest [0], to lowest [k-1]
-  std::vector<float> top_k(k, -std::numeric_limits<float>::infinity());
-  std::vector<int> indices(k);
-  size_t num_accepted = 0;
-  for (size_t i = 0; i < vocab_size; ++i) {
-    if (probabilities[i] < top_k[k - 1]) continue;
-    bool accepted =
-        !accept_token || accept_token(StaticCast<int>(i), probabilities[i]);
-    if (!accepted) continue;
-    num_accepted++;
-    for (size_t j = 0; j < k; ++j) {
-      if (probabilities[i] > top_k[j]) {
-        // shift elements by 1, insert the new value, move on to next value
-        for (size_t idx = k - 1; idx > j; --idx) {
-          top_k[idx] = top_k[idx - 1];
-          indices[idx] = indices[idx - 1];
-        }
-        top_k[j] = probabilities[i];
-        indices[j] = StaticCast<int>(i);
-        break;
-      }
-    }
+  std::vector<TokenAndProb> token_probs =
+      TopK(probabilities, vocab_size, k, accept_token);
+  std::vector<int> topk_indices(k);
+  std::vector<float> topk_probs(k);
+  for (int i = 0; i < k; ++i) {
+    topk_indices[i] = token_probs[i].token;
+    topk_probs[i] = token_probs[i].prob;
   }
-  HWY_ASSERT(k <= num_accepted);
-  return indices[create_distribution(top_k, temperature)(gen)];
+  return topk_indices[create_distribution(topk_probs, temperature)(gen)];
 }
 
 template <typename TAcceptToken>
@@ -745,40 +783,23 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
   // Softmax and sample top-K is equivalent to taking the top-K logits and
   // sampling from the softmax of the top-K logits. The latter is faster as it
   // avoids computing the softmax of all logits.
-  HWY_ASSERT(k != 0);
-  HWY_ASSERT(k <= vocab_size);
-
-  std::vector<float> top_k(k, -std::numeric_limits<float>::infinity());
-  std::vector<int> indices(k);
-  size_t num_accepted = 0;
-  for (size_t i = 0; i < vocab_size; ++i) {
-    if (logits[i] < top_k[k - 1]) continue;
-    bool accepted =
-        !accept_token || accept_token(StaticCast<int>(i), logits[i]);
-    if (!accepted) continue;
-    num_accepted++;
-    for (size_t j = 0; j < k; ++j) {
-      if (logits[i] > top_k[j]) {
-        // shift elements by 1, insert the new value, move on to next value
-        for (size_t idx = k - 1; idx > j; --idx) {
-          top_k[idx] = top_k[idx - 1];
-          indices[idx] = indices[idx - 1];
-        }
-        top_k[j] = logits[i];
-        indices[j] = StaticCast<int>(i);
-        break;
-      }
-    }
+  std::vector<TokenAndProb> token_logits =
+      TopK(logits, vocab_size, k, accept_token);
+  std::vector<int> topk_indices(k);
+  std::vector<float> topk_logits(k);
+  for (int i = 0; i < token_logits.size(); ++i) {
+    topk_indices[i] = token_logits[i].token;
+    topk_logits[i] = token_logits[i].prob;
   }
 
-  size_t mask = k <= num_accepted ? k : num_accepted;
-  Softmax(top_k.data(), mask, temperature);
-  auto distribution = std::discrete_distribution<int>(std::begin(top_k),
-                                                      std::begin(top_k) + mask);
+  size_t mask = token_logits.size();
+  Softmax(topk_logits.data(), mask, temperature);
+  auto distribution = std::discrete_distribution<int>(
+      std::begin(topk_logits), std::begin(topk_logits) + mask);
   int topk_sampled_index = distribution(gen);
-  int sampled_index = indices[topk_sampled_index];
+  int sampled_index = topk_indices[topk_sampled_index];
   return TokenAndProb{.token = sampled_index,
-                      .prob = top_k[topk_sampled_index]};
+                      .prob = topk_logits[topk_sampled_index]};
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

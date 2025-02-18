@@ -57,10 +57,12 @@ static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
 }
 
 // Shared between gemma.h and ops-inl.h.
+#pragma pack(push, 1)
 struct TokenAndProb {
   int token;
   float prob;
 };
+#pragma pack(pop)
 
 // Entire size of a 2D array.
 struct Extents2D {

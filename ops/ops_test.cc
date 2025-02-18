@@ -600,6 +600,17 @@ void TestSampleTopK() {
   }
 }
 
+void TestPackTokenAndProb() {
+  double packed1 = PackTokenAndProb(10, 0.96f);
+  TokenAndProb unpacked1 = UnpackTokenAndProb(packed1);
+  EXPECT_EQ(unpacked1.token, 10);
+  EXPECT_NEAR(unpacked1.prob, 0.96f, 1e-6);
+
+  double packed2 = PackTokenAndProb(1000000000, 0.87f);
+
+  EXPECT_LT(packed2, packed1);
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -621,6 +632,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestPackTokenAndProb);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp
