@@ -295,6 +295,19 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     runtime_config.max_generated_tokens = max_generated_tokens;
     runtime_config.prefill_tbatch_size = prefill_tbatch_size;
     runtime_config.decode_qbatch_size = decode_qbatch_size;
+    if (prefill_tbatch_size > MMStorage::kMaxM) {
+      HWY_ABORT(
+          "prefill_tbatch_size %zu > kMaxM %zu: specify a smaller value, "
+          "or increase the constant in MMStorage.\n",
+          prefill_tbatch_size, MMStorage::kMaxM);
+    }
+    if (decode_qbatch_size > MMStorage::kMaxM) {
+      HWY_ABORT(
+          "decode_qbatch_size %zu > kMaxM %zu: specify a smaller value, "
+          "or increase the constant in MMStorage.\n",
+          decode_qbatch_size, MMStorage::kMaxM);
+    }
+
     runtime_config.temperature = temperature;
     runtime_config.top_k = top_k;
   }

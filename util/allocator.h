@@ -16,6 +16,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_ALLOCATOR_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_ALLOCATOR_H_
 
+// Allocator with support for sharding tensors across NUMA nodes.
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -65,7 +67,8 @@ class Allocator {
  public:
   // Must be called at least once before any other function. Not thread-safe,
   // hence only call this from the main thread.
-  static void Init(const BoundedTopology& topology);
+  // TODO: remove enable_bind once Gemma tensors support binding.
+  static void Init(const BoundedTopology& topology, bool enable_bind = false);
 
   // Bytes per cache line, or a reasonable guess if unknown. Used to choose
   // ranges such that there will be no false sharing.
@@ -80,8 +83,10 @@ class Allocator {
   static constexpr size_t MaxQuantumBytes() { return 4096; }
   static size_t QuantumSteps();  // = QuantumBytes() / StepBytes()
 
+  // L1 and L2 are typically per core.
   static size_t L1Bytes();
   static size_t L2Bytes();
+  // Clusters often share an L3. We return the total size per package.
   static size_t L3Bytes();
 
   // Returns pointer aligned to `QuantumBytes()`.
@@ -119,6 +124,19 @@ class Allocator {
   static PtrAndDeleter AllocBytes(size_t bytes);
 };
 
+// Value of `stride` to pass to `RowVectorBatch` to enable the "cyclic offsets"
+// optimization. If `Allocator::ShouldBind()`, `Allocator::QuantumBytes()` is
+// typically 4KiB. To avoid remote accesses, we would thus pad each row to that,
+// which results in 4K aliasing and/or cache conflict misses. `RowPtr` is able
+// to prevent that by pulling rows forward by a cyclic offset, which is still a
+// multiple of the cache line size. This requires an additional
+// `Allocator::QuantumBytes()` of padding after also rounding up to that.
+template <typename T>
+constexpr size_t StrideForCyclicOffsets(size_t cols) {
+  const size_t quantum = Allocator::MaxQuantumBytes() / sizeof(T);
+  return hwy::RoundUpTo(cols, quantum) + quantum;
+}
+
 // Owns dynamically-allocated aligned memory for a batch of row vectors.
 // This can be seen as a (batch_size x cols) matrix. Unlike `RowPtr`, this owns
 // the memory.
@@ -130,6 +148,7 @@ class RowVectorBatch {
   // Main ctor, called from Activations::Allocate. If `stride` = 0, the default,
   // we default to tightly packed rows (`stride = cols`).
   // WARNING: not all call sites support `stride` != cols.
+  // TODO: once they do, remove stride and behave like AllocateAlignedRows here.
   RowVectorBatch(Extents2D extents, size_t stride = 0) : extents_(extents) {
     if (stride == 0) {
       stride_ = extents_.cols;
@@ -137,7 +156,10 @@ class RowVectorBatch {
       HWY_ASSERT(stride >= extents_.cols);
       stride_ = stride;
     }
-    mem_ = Allocator::Alloc<T>(extents_.rows * stride_);
+    // Allow binding the entire matrix.
+    const size_t padded = hwy::RoundUpTo(extents_.rows * stride_,
+                                         Allocator::QuantumBytes() / sizeof(T));
+    mem_ = Allocator::Alloc<T>(padded);
   }
 
   // Move-only
@@ -186,6 +208,11 @@ static HWY_INLINE size_t RoundUpToOddLines(size_t num, size_t line_bytes) {
   return padded_num;
 }
 
+template <typename T>
+RowVectorBatch<T> AllocateAlignedRows(Extents2D extents) {
+  return RowVectorBatch<T>(extents, StrideForCyclicOffsets<T>(extents.cols));
+}
+
 // Lightweight version of `MatPtr` used for the C argument of `MatMul`, because
 // it is always float and does not support compressed T, but does support an
 // arbitrary stride >= cols.
@@ -202,7 +229,19 @@ class RowPtr {
         row_mask_(Allocator::QuantumSteps() - 1) {
     HWY_DASSERT(stride >= cols);
     HWY_DASSERT(row_mask_ != ~size_t{0});
-    row_mask_ = 0;  // TODO: remove
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (stride < StrideForCyclicOffsets<T>(cols)) {
+        static bool once;
+        if (!once) {
+          once = true;
+          HWY_WARN(
+              "Check why RowPtr stride=%zu < StrideForCyclicOffsets(cols=%zu), "
+              "T=%zu; this forces us to disable cyclic offsets.",
+              stride, cols, sizeof(T));
+        }
+        row_mask_ = 0;
+      }
+    }
   }
   RowPtr(T* HWY_RESTRICT row0, size_t cols) : RowPtr(row0, cols, cols) {}
 

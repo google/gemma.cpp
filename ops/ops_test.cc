@@ -35,6 +35,7 @@
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "util/allocator.h"
+#include "util/app.h"
 #include "util/test_util.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
@@ -386,6 +387,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
+  NestedPools pools = CreatePools(AppArgs());
+  Allocator::Init(pools.Topology());
+
   ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
   int dim_qkv = config.layer_configs[0].qkv_dim;
   RowVectorBatch<float> x(Extents2D(1, dim_qkv));

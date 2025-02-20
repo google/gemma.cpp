@@ -252,6 +252,10 @@ class Gemma {
   void GenerateImageTokens(const RuntimeConfig& runtime_config,
                            const Image& image, ImageTokens& image_tokens);
 
+  void SetMatMulVerbosity(int verbosity) {
+    if (verbosity >= 2) env_.print_best = true;
+  }
+
  private:
   MatMulEnv env_;
 

@@ -92,6 +92,8 @@ set(SOURCES
   gemma/weights.h
   ops/dot-inl.h
   ops/matmul-inl.h
+  ops/matmul.cc
+  ops/matmul.h
   ops/matvec-inl.h
   ops/ops-inl.h
   ops/ops.h
@@ -168,7 +170,6 @@ set(GEMMA_TEST_FILES
   ops/dot_test.cc
   ops/gemma_matvec_test.cc
   ops/matmul_test.cc
-  ops/matmul_unit_test.cc
   ops/ops_test.cc
   paligemma/image_test.cc
   paligemma/paligemma_test.cc

@@ -34,6 +34,11 @@
 #endif
 
 #ifndef GEMMA_BIND  // allow override
+// OSes will generally do the right thing when threads allocate their own
+// working memory. However, matmul's B and C matrices are preferably sharded
+// across NUMA nodes. To simplify the matrix representation, we prefer a
+// single allocation. This requires page-level control over the memory layout,
+// which Linux provides via `move_pages`, but Windows does not.
 #if defined(GEMMA_LINUX_SYSCALL6) && !defined(__ANDROID_API__)
 #define GEMMA_BIND 1
 #else
@@ -93,7 +98,7 @@ size_t Allocator::L2Bytes() { return l2_bytes_; }
 size_t Allocator::L3Bytes() { return l3_bytes_; }
 bool Allocator::ShouldBind() { return should_bind_; }
 
-void Allocator::Init(const BoundedTopology& topology) {
+void Allocator::Init(const BoundedTopology& topology, bool enable_bind) {
   line_bytes_ = DetectLineBytes();
   vector_bytes_ = hwy::VectorBytes();
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
@@ -122,13 +127,19 @@ void Allocator::Init(const BoundedTopology& topology) {
     const size_t page_bytes = DetectPageSize();
     if ((page_bytes != 0 && page_bytes <= 16 * 1024) &&
         topology.NumNodes() > 1 && topology.NumPackages() > 1) {
-      // Ensure pages meet the alignment requirements of `AllocBytes`.
-      HWY_ASSERT(page_bytes >= quantum_bytes_);
-      quantum_bytes_ = page_bytes;
-      // Ensure MaxQuantumBytes() is an upper bound.
-      HWY_ASSERT(MaxQuantumBytes() >= quantum_bytes_);
-      quantum_bytes_ = HWY_MIN(quantum_bytes_, MaxQuantumBytes());
-      should_bind_ = true;
+      if (enable_bind) {
+        // Ensure pages meet the alignment requirements of `AllocBytes`.
+        HWY_ASSERT(page_bytes >= quantum_bytes_);
+        quantum_bytes_ = page_bytes;
+        // Ensure MaxQuantumBytes() is an upper bound.
+        HWY_ASSERT(MaxQuantumBytes() >= quantum_bytes_);
+        quantum_bytes_ = HWY_MIN(quantum_bytes_, MaxQuantumBytes());
+        should_bind_ = true;
+      } else {
+        HWY_WARN(
+            "Multiple sockets but binding disabled. This reduces speed; "
+            "set or remove enable_bind to avoid this warning.");
+      }
     }
   }
 

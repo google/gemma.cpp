@@ -28,6 +28,7 @@
 
 #include "compression/shared.h"
 #include "util/allocator.h"
+#include "util/app.h"
 #include "util/test_util.h"
 #include "util/threading.h"
 #include "hwy/base.h"
@@ -999,6 +1000,8 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
+    NestedPools pools = CreatePools(AppArgs());
+    Allocator::Init(pools.Topology());
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);

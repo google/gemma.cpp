@@ -117,17 +117,18 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
 }
 
 void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
-                std::vector<double>& times) {
+                std::vector<double>& times, MMPerKey* per_key) {
   std::sort(times.begin(), times.end());
   // bench_dnn reports the best and average, but the median seems more
   // consistent and resistant to outliers.
   const double elapsed = times[times.size() / 2];
-  const double ratio = elapsed / (times[0] + 1E-6);  // vs best, avoid / 0
+  const double vs_best = elapsed / (times[0] + 1E-6);  // avoid / 0
 
   const size_t num_b = B_extents.Area();
-  // FMA counts as two FLOP.
-  fprintf(stderr, "%.1f\t(med %.3f ms = %0.2fx min)\n",
-          2 * 1E-9 * A_extents.rows * num_b / elapsed, elapsed * 1E3, ratio);
+  const double flops = 2 * A_extents.rows * num_b / elapsed;  // FMA = 2 ops
+
+  fprintf(stderr, "\t%.1f GFLOPS %.3f ms %0.2fx\n", flops * 1E-9, elapsed * 1E3,
+          vs_best);
 }
 
 // Generates inputs and prints observed throughput of MatMul.
@@ -135,15 +136,18 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 template <typename MatTA, typename MatTB = MatTA>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   hwy::ThreadPool& pool = env.parallel.Pools().Pool(0);
-  fprintf(stderr, "\nBenchMatMul %lu, %lu, %lu, add=%d, MatTA=%s, MatTB=%s\n",
-          M, K, N, add, TypeName<MatTA>(), TypeName<MatTB>());
+  if (env.print_config || env.print_measurement) {
+    fprintf(stderr, "\n");
+  }
+  fprintf(stderr, "BenchMatMul %zu, %zu, %zu, add=%d, TA=%s, TB=%s\n", M, K, N,
+          add, TypeName<MatTA>(), TypeName<MatTB>());
 
   const Extents2D A_extents(M, K);
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  RowVectorBatch<float> c_slow_batch(C_extents);
-  RowVectorBatch<float> c_batch(C_extents);
+  RowVectorBatch<float> c_slow_batch = AllocateAlignedRows<float>(C_extents);
+  RowVectorBatch<float> c_batch = AllocateAlignedRows<float>(C_extents);
 
   std::unique_ptr<MatStorageT<float>> add_storage;
   if (add) {
@@ -161,27 +165,40 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const float* add_row = add ? add_storage->data_scale1() : nullptr;
   const RowPtrF C = RowPtrFromBatch(c_batch);
 
-  constexpr size_t kSamples = 20;
+  // Fewer reps for large batch sizes, which take longer.
+  const size_t num_samples = M < 32 ? 20 : 12;
   std::vector<double> times;
-  times.reserve(kSamples);
+  times.reserve(num_samples);
+
+  // Ensure usage conditions are set before autotuning. Both binding and
+  // spinning may materially affect the choice of config. No harm in calling
+  // BindB/C if there is a single package: they will be a no-op.
+  BindB(B_extents.rows, B, env.parallel);
+  BindC(A_extents.rows, C, env.parallel);
 
   Tristate use_spinning = Tristate::kDefault;
   env.parallel.Pools().MaybeStartSpinning(use_spinning);
 
+  // env.print_config = true;
+  // env.print_measurement = true;
+  env.print_best = true;
+
   double keep = 0.0;
+  MMPerKey* per_key;
   // Until enough samples collected *after* autotuning finished:
-  while (times.size() < kSamples) {
+  while (times.size() < num_samples) {
     const double t0 = hwy::platform::Now();
-    MatMul(A, B, add_row, env, C);
+    per_key = MatMul(A, B, add_row, env, C);
     const double t1 = hwy::platform::Now();
     double elapsed = t1 - t0;
     keep += C.Row(0)[hwy::Unpredictable1()];
 
-    times.push_back(elapsed);
+    // Only record times after autotuning finished.
+    if (per_key->autotune.Best()) times.push_back(elapsed);
   }
   hwy::PreventElision(keep);
   env.parallel.Pools().MaybeStopSpinning(use_spinning);
-  PrintSpeed(A_extents, B_extents, times);
+  PrintSpeed(A_extents, B_extents, times, per_key);
 }
 
 using F32 = float;
@@ -189,29 +206,31 @@ using SFP = SfpStream;
 
 void BenchAllMatMul() {
   if (first_target == 0) first_target = HWY_TARGET;
-  if (HWY_TARGET != first_target) return;
+  // Disable the best-target-only limitation.
+  // if (HWY_TARGET != first_target) return;
 
-  for (size_t max_packages : {/*1,*/ 2}) {
-    const size_t max_threads = 0;  // no limit
-    NestedPools pools(max_threads, Tristate::kDefault,
-                      BoundedSlice(0, max_packages));
-#if GEMMA_DISABLE_TOPOLOGY
-    if (max_packages == 2) break;  // we only have one package
-#else
-    // If less than the limit, we have already tested all num_packages.
-    if (pools.Topology().FullTopology().packages.size() < max_packages) break;
-#endif
-    fprintf(stderr, "BenchAllMatMul %zu: %s %s\n", max_packages,
-            pools.TopologyString(), pools.PinString());
+  // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
+  if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSSE3 ||
+      HWY_TARGET == HWY_SSE2) {
+    return;
+  }
 
-    Allocator::Init(pools.Topology());
-    MatMulEnv env(pools);
+  const size_t max_threads = 0;      // no limit
+  const BoundedSlice package_slice;  // all packages/sockets
+  const BoundedSlice cluster_slice;  // all clusters/CCX
+  const BoundedSlice lp_slice;       // default to all cores (per package).
+  NestedPools pools(max_threads, Tristate::kDefault, package_slice,
+                    cluster_slice, lp_slice);
+  fprintf(stderr, "BenchAllMatMul %s %s\n", pools.TopologyString(),
+          pools.PinString());
 
-    for (size_t batch_size : {1, 4, 128, 512}) {
-      constexpr bool kAdd = false;
-      BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, kAdd, env);
-      BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, kAdd, env);
-    }
+  Allocator::Init(pools.Topology(), /*enable_bind=*/true);
+  MatMulEnv env(pools);
+
+  for (size_t batch_size : {1, 4, 128, 512}) {
+    constexpr bool kAdd = false;
+    BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, kAdd, env);
+    BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();

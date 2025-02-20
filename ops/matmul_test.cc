@@ -243,8 +243,11 @@ template <typename TA, typename TB = TA>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env) {
   hwy::ThreadPool& pool = env.parallel.Pools().Pool();
-  fprintf(stderr, "TestMatMul %zu, %zu, %zu, add=%d, TA=%s, TB=%s\n", rows_ac,
+  fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s\n", rows_ac,
           cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>());
+
+  env.print_config = true;
+  env.print_best = true;
 
   const Extents2D A_extents(rows_ac, cols_a_rows_b);
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
@@ -252,8 +255,8 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
   MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
-  RowVectorBatch<float> c_slow_batch(C_extents);
-  RowVectorBatch<float> c_batch(C_extents);
+  RowVectorBatch<float> c_slow_batch = AllocateAlignedRows<float>(C_extents);
+  RowVectorBatch<float> c_batch = AllocateAlignedRows<float>(C_extents);
   HWY_ASSERT(a && b_trans);
 
   std::unique_ptr<MatStorageT<float>> add_storage;
@@ -270,8 +273,12 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const RowPtrF C = RowPtrFromBatch(c_batch);
 
   MatMulSlow(A, B, add_row, env, C_slow);
-  MatMul(A, B, add_row, env, C);
-  AssertClose(A, B, C_slow, C);
+  // A few reps to get coverage of the various autotuned code paths.
+  for (size_t rep = 0; rep < 16; ++rep) {
+    MMPerKey* per_key = MatMul(A, B, add_row, env, C);
+    AssertClose(A, B, C_slow, C);
+    if (per_key->autotune.Best()) break;
+  }
 }
 
 using F32 = float;
@@ -298,13 +305,12 @@ void TestTiny() {
 
     Tristate use_spinning = Tristate::kDefault;
     pools.MaybeStartSpinning(use_spinning);
-    Allocator::Init(pools.Topology());
+    Allocator::Init(pools.Topology(), /*enable_bind=*/true);
     MatMulEnv env(pools);
 
-    for (size_t M = 1; M <= 3 * kRegRows; ++M) {
-      for (size_t K = 64; K <= 128; K *= 2) {
-        for (size_t N = /*kRegRows*/ 16; N <= 64;
-             N += max_packages * kRegRows) {
+    for (size_t M = 1; M <= 12; ++M) {
+      for (size_t K = 1; K <= 64; K *= 2) {
+        for (size_t N = 4; N <= 64; N += max_packages * 4) {
           TestMatMul<F32, F32>(M, K, N, /*add=*/false, env);
         }
       }
@@ -323,7 +329,7 @@ void TestAllMatMul() {
   NestedPools pools(0);  // no limits
   Tristate use_spinning = Tristate::kDefault;
   pools.MaybeStartSpinning(use_spinning);
-  Allocator::Init(pools.Topology());
+  Allocator::Init(pools.Topology(), /*enable_bind=*/true);
   MatMulEnv env(pools);
 
   // Sizes seen in gemma_test 2B.

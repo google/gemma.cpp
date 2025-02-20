@@ -33,6 +33,7 @@
 #include "backprop/test_util.h"
 #include "gemma/configs.h"
 #include "ops/ops.h"
+#include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -58,7 +59,9 @@ void TestMatMulVJP() {
   static const size_t kRows = 8;
   static const size_t kCols = 64;
   static const size_t kTokens = 5;
-  hwy::ThreadPool pool(8);
+  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
+                          BoundedSlice(0, 8));
+  Allocator::Init(pools.Topology());
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", kRows, kCols);
   MatStorageT<float> x("x", kTokens, kCols);
@@ -85,7 +88,7 @@ void TestMatMulVJP() {
 
     grad.ZeroInit();
     MatMulVJP(weights.data(), x.data(), dy.data(), kCols, kRows, kTokens,
-              grad.data(), dx.data(), pool);
+              grad.data(), dx.data(), pools.Pool());
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
@@ -102,7 +105,9 @@ void TestMultiHeadMatMulVJP() {
   static const size_t kCols = 16;
   static const size_t kHeads = 4;
   static const size_t kTokens = 3;
-  hwy::ThreadPool pool(8);
+  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
+                          BoundedSlice(0, 8));
+  Allocator::Init(pools.Topology());
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", kRows, kCols * kHeads);
   MatStorageT<float> x("x", kTokens, kCols * kHeads);
@@ -130,7 +135,7 @@ void TestMultiHeadMatMulVJP() {
 
     grad.ZeroInit();
     MultiHeadMatMulVJP(weights.data(), x.data(), dy.data(), kHeads, kCols,
-                       kRows, kTokens, grad.data(), dx.data(), pool);
+                       kRows, kTokens, grad.data(), dx.data(), pools.Pool());
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
@@ -145,7 +150,9 @@ void TestMultiHeadMatMulVJP() {
 void TestRMSNormVJP() {
   static const size_t K = 2;
   static const size_t N = 64;
-  hwy::ThreadPool pool(8);
+  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
+                          BoundedSlice(0, 8));
+  Allocator::Init(pools.Topology());
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", N, 1);
   MatStorageT<float> x("x", K, N);
@@ -172,7 +179,7 @@ void TestRMSNormVJP() {
 
     grad.ZeroInit();
     RMSNormVJP(weights.data(), x.data(), dy.data(), N, K, grad.data(),
-               dx.data(), pool);
+               dx.data(), pools.Pool());
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
@@ -209,7 +216,9 @@ static ModelConfig TestConfig() {
 
 void TestEndToEnd() {
   std::mt19937 gen(42);
-  hwy::ThreadPool pool(0);
+  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
+                          BoundedSlice(0, 1));
+  Allocator::Init(pools.Topology());
   ModelConfig config = TestConfig();
   WeightsWrapper<float> weights(config);
   WeightsWrapper<float> grad(config);
@@ -234,13 +243,13 @@ void TestEndToEnd() {
 
     float loss1 = CrossEntropyLossForwardPass(
         prompt.tokens, prompt.context_size, weights.get(), forward1,
-        inv_timescale, pool);
+        inv_timescale, pools.Pool());
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.ZeroInit();
     CrossEntropyLossBackwardPassInl(prompt, weights.get(), forward1, grad.get(),
-                                    backward, inv_timescale, pool);
+                                    backward, inv_timescale, pools.Pool());
 
     Complexify(weights.get(), c_weights.get());
     auto func = [&]() {

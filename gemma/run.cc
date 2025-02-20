@@ -225,7 +225,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     }
     if (end_of_turn_seen && abs_pos > 0) {
       // If we have seen an end_of_turn token, we need to rewind abs_pos by one
-      // more, because we will pre-pend it again to the prompt in
+      // more, because we will prepend it again to the prompt in
       // WrapAndTokenize.
       abs_pos--;
     }
@@ -236,14 +236,13 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
 void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
   PROFILER_ZONE("Run.misc");
 
-  // TODO: remove once MatMul is updated.
-  app.max_packages = 1;
   // Note that num_threads is an upper bound; we also limit to the number of
   // detected and enabled cores.
   NestedPools pools = CreatePools(app);
   Allocator::Init(pools.Topology());
 
   Gemma model = CreateGemma(loader, pools);
+  model.SetMatMulVerbosity(app.verbosity);
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 

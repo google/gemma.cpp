@@ -85,6 +85,9 @@ test_suite(
 
 cc_library(
     name = "ops",
+    srcs = [
+        "ops/matmul.cc",
+    ],
     hdrs = [
         "ops/matmul.h",
         "ops/ops.h",
@@ -103,11 +106,14 @@ cc_library(
         ":threading",
         "//compression:compress",
         "@highway//:algo",
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:math",
         "@highway//:matvec",
+        "@highway//:nanobenchmark",
         "@highway//:profiler",
         "@highway//:thread_pool",
+        "@highway//:topology",
         "@highway//hwy/contrib/sort:vqsort",
     ],
 )
@@ -126,6 +132,7 @@ cc_test(
         ":test_util",
         ":threading",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:app",
         "//compression:compress",
         "//compression:test_util",
         "@highway//:hwy",
@@ -151,6 +158,7 @@ cc_test(
         ":ops",
         ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:app",
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
@@ -173,26 +181,6 @@ cc_test(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:thread_pool",
-    ],
-)
-
-cc_test(
-    name = "matmul_unit_test",
-    size = "small",
-    timeout = "long",
-    srcs = ["ops/matmul_unit_test.cc"],
-    local_defines = ["HWY_IS_TEST"],
-    # for test_suite.
-    tags = ["ops_tests"],
-    deps = [
-        ":allocator",
-        ":basics",
-        ":ops",
-        ":test_util",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:compress",
-        "@highway//:hwy",
-        "@highway//:hwy_test_util",
     ],
 )
 
@@ -652,6 +640,7 @@ cc_test(
         ":sampler",
         ":weights",
         "@googletest//:gtest_main",
+        "//:threading",
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
