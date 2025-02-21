@@ -138,9 +138,6 @@ install(TARGETS gemma DESTINATION bin)
 add_executable(single_benchmark evals/benchmark.cc)
 target_link_libraries(single_benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
-add_executable(gemma_batch_bench evals/gemma_batch_bench.cc)
-target_link_libraries(gemma_batch_bench libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
-
 add_executable(benchmarks evals/benchmarks.cc)
 target_link_libraries(benchmarks libgemma hwy hwy_contrib nlohmann_json::nlohmann_json benchmark)
 
@@ -186,10 +183,14 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
   # that include us may set them.
   target_compile_options(${TESTNAME} PRIVATE -DHWY_IS_TEST=1)
 
-  target_link_libraries(${TESTNAME} PRIVATE libgemma GTest::gtest_main hwy hwy_contrib hwy_test)
+  target_link_libraries(${TESTNAME} PRIVATE libgemma GTest::Main hwy hwy_contrib hwy_test)
 
   gtest_discover_tests(${TESTNAME})
 endforeach ()
+
+add_executable(gemma_batch_bench evals/gemma_batch_bench.cc)
+target_link_libraries(gemma_batch_bench libgemma GTest::Main hwy hwy_contrib nlohmann_json::nlohmann_json)
+
 endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
