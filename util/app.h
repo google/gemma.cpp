@@ -273,7 +273,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
 
-    visitor(prefill_tbatch_size, "prefill_tbatch", size_t{64},
+    visitor(prefill_tbatch_size, "prefill_tbatch", size_t{256},
             "Prefill: max tokens per batch.");
     visitor(decode_qbatch_size, "decode_qbatch", size_t{16},
             "Decode: max queries per batch.");
