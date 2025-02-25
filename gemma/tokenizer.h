@@ -31,6 +31,9 @@ namespace gcpp {
 constexpr int EOS_ID = 1;
 constexpr int BOS_ID = 2;
 
+// The tokenizer's end of turn token id.
+constexpr int END_OF_TURN_ID = 107;
+
 class GemmaTokenizer {
  public:
   GemmaTokenizer();
