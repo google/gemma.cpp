@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
       .stream_token = stream_token,
       .accept_token =
           [&](int token, float /* prob */) {
-            return !reject_tokens.contains(token);
+            return reject_tokens.find(token) == reject_tokens.end();
           },
   };
   model.Generate(runtime_config, tokens, 0, kv_cache, timing_info);
