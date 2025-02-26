@@ -133,21 +133,22 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 
 // Generates inputs and prints observed throughput of MatMul.
 // M = A rows, K = A cols, N = C cols.
-template <typename MatTA, typename MatTB = MatTA>
+template <typename TA, typename TB = TA, typename TC = float>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   hwy::ThreadPool& pool = env.parallel.Pools().Pool(0);
   if (env.print_config || env.print_measurement) {
     fprintf(stderr, "\n");
   }
-  fprintf(stderr, "BenchMatMul %zu, %zu, %zu, add=%d, TA=%s, TB=%s\n", M, K, N,
-          add, TypeName<MatTA>(), TypeName<MatTB>());
+  fprintf(stderr,
+          "BenchMatMul %zu, %zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",  //
+          M, K, N, add, TypeName<TA>(), TypeName<TB>(), TypeName<TC>());
 
   const Extents2D A_extents(M, K);
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  RowVectorBatch<float> c_slow_batch = AllocateAlignedRows<float>(C_extents);
-  RowVectorBatch<float> c_batch = AllocateAlignedRows<float>(C_extents);
+  RowVectorBatch<TC> c_slow_batch = AllocateAlignedRows<TC>(C_extents);
+  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(C_extents);
 
   std::unique_ptr<MatStorageT<float>> add_storage;
   if (add) {
@@ -156,14 +157,14 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     add_storage->set_scale(1.0f);
   }
 
-  MatStoragePtr<MatTA> a = GenerateMat<MatTA>(A_extents, pool);
-  MatStoragePtr<MatTB> b_trans = GenerateTransposedMat<MatTB>(B_extents, pool);
+  MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
+  MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
   HWY_ASSERT(a && b_trans);
   const auto A = ConstMatFromWeights(*a);
   const auto B = ConstMatFromWeights(*b_trans);
 
   const float* add_row = add ? add_storage->data_scale1() : nullptr;
-  const RowPtrF C = RowPtrFromBatch(c_batch);
+  const RowPtr<TC> C = RowPtrFromBatch(c_batch);
 
   // Fewer reps for large batch sizes, which take longer.
   const size_t num_samples = M < 32 ? 20 : 12;
@@ -173,7 +174,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(B_extents.rows, B, env.parallel);
+  BindB(B_extents.rows, sizeof(TC), B, env.parallel);
   BindC(A_extents.rows, C, env.parallel);
 
   Tristate use_spinning = Tristate::kDefault;
@@ -191,7 +192,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     per_key = MatMul(A, B, add_row, env, C);
     const double t1 = hwy::platform::Now();
     double elapsed = t1 - t0;
-    keep += C.Row(0)[hwy::Unpredictable1()];
+    keep += hwy::ConvertScalarTo<double>(C.Row(0)[hwy::Unpredictable1()]);
 
     // Only record times after autotuning finished.
     if (per_key->autotune.Best()) times.push_back(elapsed);
@@ -229,8 +230,8 @@ void BenchAllMatMul() {
 
   for (size_t batch_size : {1, 4, 128, 512}) {
     constexpr bool kAdd = false;
-    BenchMatMul<BF16, SFP>(batch_size, 24576, 3072, kAdd, env);
-    BenchMatMul<BF16, SFP>(batch_size, 3072, 24576, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 24576, 3072, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 3072, 24576, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();

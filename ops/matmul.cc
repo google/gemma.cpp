@@ -60,10 +60,13 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 // and holds most of their arguments in member variables.
 class GenerateCandidates {
  public:
-  GenerateCandidates(size_t M, size_t K, size_t N, size_t max_mr, size_t nr,
+  GenerateCandidates(size_t M, size_t K, size_t N, size_t sizeof_TC,
+                     size_t max_mr, size_t nr,
                      const IndexRangePartition& ranges_np, bool print_config)
       : M_(M),
         K_(K),
+        N_(N),
+        sizeof_TC_(sizeof_TC),
         max_mr_(max_mr),
         nr_(nr),
         // These influence kc/nc, but are also stored in `MMConfig` for
@@ -71,7 +74,7 @@ class GenerateCandidates {
         // is likely still in L1, but we expect K > 1000 and might as well round
         // up to the line size.
         kc_multiple_(HWY_MIN(K, Allocator::LineBytes() / sizeof(BF16))),
-        nc_multiple_(Allocator::StepBytes() / sizeof(float)),
+        nc_multiple_(Allocator::StepBytes() / sizeof_TC),
         ranges_np_(ranges_np),
         print_config_(print_config) {}
 
@@ -88,7 +91,7 @@ class GenerateCandidates {
             for (size_t nc : NC(mr, mc, kc, order)) {
               for (int inner_tasks : all_inner_tasks) {
                 for (MMOut out : all_outs) {
-                  const MMConfig config(K_, mr, mc, kc, nc, kc_multiple_,
+                  const MMConfig config(K_, N_, mr, mc, kc, nc, kc_multiple_,
                                         nc_multiple_, order, out, inner_tasks);
                   const size_t M_tasks = config.RangesOfMC(M_).NumTasks();
                   const size_t K_tasks = config.RangesOfKC(K_).NumTasks();
@@ -114,7 +117,7 @@ class GenerateCandidates {
  private:
   using SizeVec = std::vector<size_t>;
 
-  // How many rows of A per call to `MMKernel::LoopOverKC`. Lower values may
+  // How many rows of A per call to `MMKernel::LoopKC`. Lower values may
   // be better for SIMD targets with fewer registers.
   SizeVec MR() const {
     const int64_t target = hwy::DispatchedTarget();
@@ -153,7 +156,7 @@ class GenerateCandidates {
 
   // The number of A and B columns to read between updating `partial`.
   SizeVec KC(size_t mr, MMOrder order) const {
-    // `LoopOverKC` handles up to `mr` rows of A.
+    // `LoopKC` handles up to `mr` rows of A.
     const size_t rows_a = HWY_MIN(M_, mr);
 
     // After looping over `kc` columns, we write `mr x 4` outputs and 16 vector
@@ -161,9 +164,9 @@ class GenerateCandidates {
     // is important that B fits in L1, because batch=1 only has a single row of
     // A and thus no reuse of the packed B. When L1-resident, we can use the
     // separate `DecompressAndZeroPad` to write `kc` columns, rather than having
-    // to integrate `Decompress2` into `LoopOverKC`, which is less efficient for
+    // to integrate `Decompress2` into `LoopKC`, which is less efficient for
     // TB=NUQ due to less amortization of the table loads. Due to the low L1
-    // latency, the packing is still effectively fused into `LoopOverKC`. It may
+    // latency, the packing is still effectively fused into `LoopKC`. It may
     // be better to round up and accept a few L2 accesses in exchange for
     // fewer loops over K, and thus fewer writes to `partial`. Hence we do not
     // subtract the output and buf, and allow using more than the actual L1
@@ -255,7 +258,7 @@ class GenerateCandidates {
   SizeVec NC(size_t mr, size_t mc, size_t kc, MMOrder order) const {
     const size_t np_max = ranges_np_.TaskSize();
     size_t nc_max = np_max;
-    const size_t out_bytes = IsOneKC(order) ? sizeof(float) : sizeof(double);
+    const size_t out_bytes = IsOneKC(order) ? sizeof_TC_ : sizeof(double);
     // Only if there will be reuse of B: choose the largest `nc_max` (C cols)
     // such that `nc x kc` of B and `mc x nc` of `partial` or `C` fit in L3.
     // Otherwise, leave it unbounded.
@@ -350,6 +353,8 @@ class GenerateCandidates {
 
   const size_t M_;
   const size_t K_;
+  const size_t N_;
+  const size_t sizeof_TC_;
 
   const size_t max_mr_;
   const size_t nr_;
@@ -365,23 +370,25 @@ class GenerateCandidates {
 }  // namespace
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
-std::vector<MMConfig> MMCandidates(size_t M, size_t K, size_t N, size_t max_mr,
-                                   size_t nr,
+std::vector<MMConfig> MMCandidates(size_t M, size_t K, size_t N,
+                                   size_t sizeof_TC, size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
                                    bool print_config) {
-  return GenerateCandidates(M, K, N, max_mr, nr, ranges_np, print_config)();
+  return GenerateCandidates(M, K, N, sizeof_TC, max_mr, nr, ranges_np,
+                            print_config)();
 }
 
 // Returns the granularity of B rows for `RangesOfNP`. Aims to avoid remote
 // memory accesses or false sharing, unless there are insufficient per-package
 // rows for that.
-static size_t NPMultiple(size_t N, size_t nr, size_t num_packages) {
-  size_t np_multiple = Allocator::QuantumBytes() / sizeof(float);
+static size_t NPMultiple(size_t N, size_t sizeof_TC, size_t nr,
+                         size_t num_packages) {
+  size_t np_multiple = Allocator::QuantumBytes() / sizeof_TC;
   // If binding, `np_multiple` is typically 1024 and `num_packages` > 1. For
   // `N` < 4096, this can cause significant load imbalance. If split unevenly,
   // choose a smaller multiple.
   if (N % (np_multiple * num_packages)) {
-    const size_t min_multiple = Allocator::LineBytes() / sizeof(float);
+    const size_t min_multiple = Allocator::LineBytes() / sizeof_TC;
     np_multiple =
         PrevDivisor(min_multiple, np_multiple, N / num_packages, min_multiple);
     if (HWY_UNLIKELY(np_multiple == 0)) {
@@ -398,10 +405,10 @@ static size_t NPMultiple(size_t N, size_t nr, size_t num_packages) {
 }
 
 IndexRangePartition MMParallel::RangesOfNP(size_t max_packages, size_t N,
-                                           size_t nr) const {
+                                           size_t sizeof_TC, size_t nr) const {
   const size_t num_packages = HWY_MIN(max_packages, pools_.NumPackages());
   return StaticPartition(IndexRange(0, N), num_packages,
-                         NPMultiple(N, nr, num_packages));
+                         NPMultiple(N, sizeof_TC, nr, num_packages));
 }
 
 MatMulEnv::MatMulEnv(NestedPools& pools) : parallel(pools), storage(parallel) {

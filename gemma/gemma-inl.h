@@ -734,7 +734,8 @@ HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
 
   // Hidden layer -> output layer.
   auto activations_mat = MakeConstMat(
-      hidden_activations.Row(0), Extents2D(num_interleaved, ffh_hidden_dim));
+      hidden_activations.Row(0), Extents2D(num_interleaved, ffh_hidden_dim),
+      hidden_activations.Stride());
 
   MatMul(activations_mat, w_output, output_bias, *activations.env, ffw_out);
 }
@@ -773,8 +774,9 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
              multiplier.Row(0), ff_hidden_dim * num_interleaved);
 
   // Hidden layer -> output layer.
-  auto activations_mat = MakeConstMat(
-      hidden_activations.Row(0), Extents2D(num_interleaved, ff_hidden_dim));
+  auto activations_mat = MakeConstMat(hidden_activations.Row(0),
+                                      Extents2D(num_interleaved, ff_hidden_dim),
+                                      hidden_activations.Stride());
 
   MatMul(activations_mat, w_output, output_bias, *activations.env, ffw_out);
 }

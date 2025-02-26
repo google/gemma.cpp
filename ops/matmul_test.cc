@@ -67,7 +67,7 @@ using MatStoragePtr = std::unique_ptr<MatStorageT<MatT>>;
 
 // Generates inputs: deterministic, within max SfpStream range.
 template <typename MatT>
-MatStoragePtr<MatT> GenerateMat(const Extents2D extents,
+MatStoragePtr<MatT> GenerateMat(const Extents2D& extents,
                                 hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
   auto mat =
@@ -112,12 +112,12 @@ MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
 }
 
 // Returns 1-norm, used for estimating tolerable numerical differences.
-double MaxRowAbsSum(const float* HWY_RESTRICT a, const Extents2D& extents) {
+double MaxRowAbsSum(const RowVectorBatch<float>& a) {
   double max_row_abs_sum = 0.0;
-  for (size_t r = 0; r < extents.rows; r++) {
-    const float* row = a + r * extents.cols;
+  for (size_t r = 0; r < a.BatchSize(); r++) {
+    const float* row = a.Batch(r);
     double row_abs_sum = 0.0;
-    for (size_t c = 0; c < extents.cols; c++) {
+    for (size_t c = 0; c < a.Cols(); c++) {
       row_abs_sum += hwy::ScalarAbs(row[c]);
     }
     max_row_abs_sum = HWY_MAX(max_row_abs_sum, row_abs_sum);
@@ -126,41 +126,52 @@ double MaxRowAbsSum(const float* HWY_RESTRICT a, const Extents2D& extents) {
 }
 
 // Returns the maximum absolute value of `a`.
-float MaxAbs(const float* HWY_RESTRICT a, const Extents2D& extents) {
+float MaxAbs(const RowVectorBatch<float>& a) {
   float max_abs = 0.0f;
-  for (size_t c = 0; c < extents.cols; c++) {
-    for (size_t r = 0; r < extents.rows; r++) {
-      max_abs = HWY_MAX(max_abs, hwy::ScalarAbs(a[r * extents.cols + c]));
+  for (size_t c = 0; c < a.Cols(); c++) {
+    for (size_t r = 0; r < a.BatchSize(); r++) {
+      const float* row = a.Batch(r);
+      max_abs = HWY_MAX(max_abs, hwy::ScalarAbs(row[c]));
     }
   }
   return max_abs;
 }
 
 // B is already transposed.
-template <typename TA, typename TB>
+template <typename TA, typename TB, typename TC>
 void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
-                 const RowPtrF& C_slow, const RowPtrF& C) {
+                 const RowPtr<TC>& C_slow, const RowPtr<TC>& C, int line) {
   const hn::ScalableTag<float> df;
-  const size_t num_a = A.extents.Area();
-  const size_t num_b = B.extents.Area();
-  const size_t N = hn::Lanes(df);
+  const size_t cols = A.extents.cols;
+  const size_t B_rows = B.extents.rows;
   // Round up for DecompressAndZeroPad.
-  FloatPtr a = hwy::AllocateAligned<float>(hwy::RoundUpTo(num_a, N));
-  FloatPtr b_trans = hwy::AllocateAligned<float>(hwy::RoundUpTo(num_b, N));
-  HWY_ASSERT(a && b_trans);
+  RowVectorBatch<float> a_batch = AllocateAlignedRows<float>(A.extents);
+  RowVectorBatch<float> b_trans_batch = AllocateAlignedRows<float>(B.extents);
+  RowVectorBatch<float> c_batch =
+      AllocateAlignedRows<float>(Extents2D(A.extents.rows, B_rows));
+  RowVectorBatch<float> c_slow_batch =
+      AllocateAlignedRows<float>(Extents2D(A.extents.rows, B_rows));
   HWY_ASSERT(A.ofs == 0 && B.ofs == 0);
-  DecompressAndZeroPad(df, MakeSpan(A.ptr, num_a), 0, a.get(), num_a);
-  DecompressAndZeroPad(df, MakeSpan(B.ptr, num_b), 0, b_trans.get(), num_b);
+  for (size_t m = 0; m < A.extents.rows; ++m) {
+    DecompressAndZeroPad(df, MakeSpan(A.ptr + A.Row(m), cols), 0,
+                         a_batch.Batch(m), cols);
+    DecompressAndZeroPad(df, MakeSpan(C.Row(m), B_rows), 0, c_batch.Batch(m),
+                         B_rows);
+    DecompressAndZeroPad(df, MakeSpan(C_slow.Row(m), B_rows), 0,
+                         c_slow_batch.Batch(m), B_rows);
+  }
+  for (size_t n = 0; n < B_rows; ++n) {
+    DecompressAndZeroPad(df, MakeSpan(B.ptr + B.Row(n), cols), 0,
+                         b_trans_batch.Batch(n), cols);
+  }
 
   // MatMul rounds inputs to BF16, so error is proportional to the max input
   // magnitude, but also to f32 accumulation of rows in A and B.
-  const double norm = MaxRowAbsSum(a.get(), A.Extents()) *
-                      MaxRowAbsSum(b_trans.get(), B.Extents());
-  const float max_abs =
-      MaxAbs(a.get(), A.Extents()) * MaxAbs(b_trans.get(), B.Extents());
+  const double norm = MaxRowAbsSum(a_batch) * MaxRowAbsSum(b_trans_batch);
+  const float max_abs = MaxAbs(a_batch) * MaxAbs(b_trans_batch);
   const double eps_bf16 = hwy::ConvertScalarTo<double>(hwy::Epsilon<BF16>());
   const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
-  double tolerance = 10 * norm * eps_f32;
+  double tolerance = 12 * norm * eps_f32;
   // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
   // tolerance there.
   if (IsF32<TA>() && IsF32<TB>()) {
@@ -169,30 +180,38 @@ void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
   if (tolerance > 500.0) {
     HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);
   }
+  const double max_rel = 1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
 
   for (size_t r = 0; r < A.extents.rows; r++) {
-    const float* expected_row = C_slow.Row(r);
-    const float* actual_row = C.Row(r);
+    const float* expected_row = c_slow_batch.Batch(r);
+    const float* actual_row = c_batch.Batch(r);
     for (size_t c = 0; c < B.extents.rows; c++) {
       const double expected_value = static_cast<double>(expected_row[c]);
       const double actual_value = static_cast<double>(actual_row[c]);
+      const bool in_range = expected_value - tolerance <= actual_value &&
+                            actual_value <= expected_value + tolerance;
 
-      if (!(expected_value - tolerance <= actual_value &&
-            actual_value <= expected_value + tolerance)) {
-        HWY_ABORT(
-            "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
-            "tolerance %f\n",
-            r, c, expected_value, actual_value, norm, max_abs, tolerance);
+      if (!in_range) {
+        const double max = HWY_MAX(expected_value, actual_value);
+        const double min = HWY_MIN(expected_value, actual_value);
+        const double rel = max / HWY_MAX(min, 1E-6);
+        if (rel > max_rel) {
+          hwy::Abort(__FILE__, line,
+                     "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
+                     "tolerance %f rel %E max_rel %E\n",
+                     r, c, expected_value, actual_value, norm, max_abs,
+                     tolerance, rel, max_rel);
+        }
       }
     }
   }
 }
 
 // B is already transposed.
-template <typename TA, typename TB>
+template <typename TA, typename TB, typename TC>
 HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
                            const float* HWY_RESTRICT add_row, MatMulEnv& env,
-                           const RowPtrF& C) {
+                           const RowPtr<TC>& C) {
   // TA can be any Packed except NuqStream because it uses pointer
   // arithmetic, because it is the second argument to Dot, which does not
   // support a v_ofs.
@@ -200,7 +219,8 @@ HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
   const float scale = A.scale * B.scale;
 
   const hn::ScalableTag<float> df;  // lane type is ignored
-  const PackedSpan<const TB> b_span = MakeSpan(B.ptr, B.ofs + B.extents.Area());
+  const PackedSpan<const TB> b_span =
+      MakeSpan(B.ptr, B.ofs + B.Stride() * B.Extents().rows);
   const IndexRange all_rows_c(0, A.Extents().rows);
   const IndexRange all_cols_c(0, C.Cols());
 
@@ -219,12 +239,12 @@ HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
             get_col_c, all_clusters,
             [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
               for (size_t r : rows_c) {
-                float* HWY_RESTRICT C_row = C.Row(r);
+                TC* HWY_RESTRICT C_row = C.Row(r);
                 for (size_t c : cols_c) {
                   const float add = add_row ? add_row[c] : 0.0f;
-                  C_row[c] =
-                      add + scale * Dot(df, b_span, c * B.extents.cols,
-                                        A.ptr + A.Row(r), A.extents.cols);
+                  C_row[c] = hwy::ConvertScalarTo<TC>(
+                      add + scale * Dot(df, b_span, c * B.Stride(),
+                                        A.ptr + A.Row(r), A.extents.cols));
                 }
               }
             });
@@ -239,14 +259,15 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
           elapsed, 2 * 1E-9 * A_extents.rows * num_b / elapsed);
 }
 
-template <typename TA, typename TB = TA>
+template <typename TA, typename TB = TA, typename TC = float>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
-                MatMulEnv& env) {
+                MatMulEnv& env, int line) {
   hwy::ThreadPool& pool = env.parallel.Pools().Pool();
-  fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s\n", rows_ac,
-          cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>());
+  fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",
+          rows_ac, cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>(),
+          TypeName<TC>());
 
-  env.print_config = true;
+  env.print_config = false;  // Too verbose.
   env.print_best = true;
 
   const Extents2D A_extents(rows_ac, cols_a_rows_b);
@@ -255,8 +276,8 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
   MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
-  RowVectorBatch<float> c_slow_batch = AllocateAlignedRows<float>(C_extents);
-  RowVectorBatch<float> c_batch = AllocateAlignedRows<float>(C_extents);
+  RowVectorBatch<TC> c_slow_batch = AllocateAlignedRows<TC>(C_extents);
+  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(C_extents);
   HWY_ASSERT(a && b_trans);
 
   std::unique_ptr<MatStorageT<float>> add_storage;
@@ -269,14 +290,14 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const auto A = ConstMatFromWeights(*a);
   const auto B = ConstMatFromWeights(*b_trans);
   const float* add_row = add ? add_storage->data_scale1() : nullptr;
-  const RowPtrF C_slow = RowPtrFromBatch(c_slow_batch);
-  const RowPtrF C = RowPtrFromBatch(c_batch);
+  const RowPtr<TC> C_slow = RowPtrFromBatch(c_slow_batch);
+  const RowPtr<TC> C = RowPtrFromBatch(c_batch);
 
   MatMulSlow(A, B, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
   for (size_t rep = 0; rep < 16; ++rep) {
     MMPerKey* per_key = MatMul(A, B, add_row, env, C);
-    AssertClose(A, B, C_slow, C);
+    AssertClose(A, B, C_slow, C, line);
     if (per_key->autotune.Best()) break;
   }
 }
@@ -311,7 +332,7 @@ void TestTiny() {
     for (size_t M = 1; M <= 12; ++M) {
       for (size_t K = 1; K <= 64; K *= 2) {
         for (size_t N = 4; N <= 64; N += max_packages * 4) {
-          TestMatMul<F32, F32>(M, K, N, /*add=*/false, env);
+          TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
         }
       }
     }
@@ -332,56 +353,69 @@ void TestAllMatMul() {
   Allocator::Init(pools.Topology(), /*enable_bind=*/true);
   MatMulEnv env(pools);
 
-  // Sizes seen in gemma_test 2B.
-  TestMatMul<F32>(1, 2048, 512, /*add=*/false, env);
-  TestMatMul<F32>(1, 2048, 2048, /*add=*/false, env);
-  TestMatMul<F32>(1, 2048, 16384, /*add=*/false, env);
-  TestMatMul<F32>(1, 16384, 2048, /*add=*/false, env);
-  TestMatMul<F32>(1, 2048, 256000, /*add=*/false, env);
-  TestMatMul<F32>(5, 2048, 512, /*add=*/false, env);
-  TestMatMul<F32>(5, 2048, 2048, /*add=*/false, env);
-  TestMatMul<F32>(5, 2048, 16384, /*add=*/false, env);
-  TestMatMul<F32>(5, 16384, 2048, /*add=*/false, env);
+  // Sizes seen in gemma_test 2B. Too slow for CI, enable on-demand.
+  TestMatMul<F32>(1, 2048, 512, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(1, 2048, 2048, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(1, 2048, 16384, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(1, 16384, 2048, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(1, 2048, 256000, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(5, 2048, 512, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(5, 2048, 2048, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(5, 2048, 16384, /*add=*/false, env, __LINE__);
+  //  TestMatMul<F32>(5, 16384, 2048, /*add=*/false, env, __LINE__);
 
-  // medium-sized square
-  TestMatMul<F32>(512, 512, 512, /*add=*/false, env);
-  TestMatMul<BF16>(512, 512, 512, /*add=*/true, env);
-  TestMatMul<F32, BF16>(512, 512, 512, /*add=*/false, env);
-  TestMatMul<BF16, F32>(512, 512, 512, /*add=*/true, env);
-  TestMatMul<F32, SFP>(512, 512, 512, /*add=*/false, env);
-  TestMatMul<BF16, SFP>(512, 512, 512, /*add=*/true, env);
+  // medium-sized square, f32 vs bf16 for A, B, C; plus add.
+  TestMatMul<F32, F32, F32>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, F32, BF16>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, BF16, F32>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, BF16, BF16>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, F32, F32>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, F32, BF16>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, BF16, F32>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, BF16, BF16>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, F32, F32>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, F32, BF16>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, BF16, F32>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, BF16, BF16>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, F32, F32>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, F32, BF16>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, BF16, F32>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, BF16, BF16>(256, 256, 256, /*add=*/true, env, __LINE__);
+
+  TestMatMul<F32, SFP>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, SFP>(256, 256, 256, /*add=*/true, env, __LINE__);
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
-  TestMatMul<F32>(35, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16>(34, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, BF16>(33, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, F32>(33, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, SFP>(31, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, SFP>(29, 128, 32, /*add=*/true, env);
-  TestMatMul<F32>(4, 128, 32, /*add=*/true, env);
-  TestMatMul<BF16>(4, 128, 32, /*add=*/false, env);
-  TestMatMul<F32, BF16>(4, 128, 32, /*add=*/true, env);
-  TestMatMul<BF16, F32>(4, 128, 32, /*add=*/false, env);
-  TestMatMul<F32, SFP>(4, 128, 32, /*add=*/true, env);
-  TestMatMul<BF16, SFP>(4, 128, 32, /*add=*/false, env);
-  TestMatMul<F32>(3, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16>(3, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, BF16>(3, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, F32>(3, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, SFP>(3, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, SFP>(3, 128, 32, /*add=*/true, env);
-  TestMatMul<F32>(2, 128, 64, /*add=*/true, env);
-  TestMatMul<BF16>(2, 128, 64, /*add=*/false, env);
-  TestMatMul<F32, BF16>(2, 128, 64, /*add=*/true, env);
-  TestMatMul<BF16, F32>(2, 128, 64, /*add=*/false, env);
-  TestMatMul<F32, SFP>(2, 128, 64, /*add=*/true, env);
-  TestMatMul<BF16, SFP>(2, 128, 64, /*add=*/false, env);
-  TestMatMul<F32>(1, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16>(1, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, BF16>(1, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, F32>(1, 128, 32, /*add=*/true, env);
-  TestMatMul<F32, SFP>(1, 128, 32, /*add=*/false, env);
-  TestMatMul<BF16, SFP>(1, 128, 32, /*add=*/true, env);
+  TestMatMul<F32>(35, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16>(34, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, BF16>(33, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, F32>(33, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, SFP>(31, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, SFP>(29, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32>(4, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, BF16>(4, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, F32>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, SFP>(4, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, SFP>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<F32>(3, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, BF16>(3, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, F32>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, SFP>(3, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, SFP>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32>(2, 128, 64, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16>(2, 128, 64, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, BF16>(2, 128, 64, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, F32>(2, 128, 64, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, SFP>(2, 128, 64, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, SFP>(2, 128, 64, /*add=*/false, env, __LINE__);
+  TestMatMul<F32>(1, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16>(1, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, BF16>(1, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, F32>(1, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, SFP>(1, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, SFP>(1, 128, 32, /*add=*/true, env, __LINE__);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

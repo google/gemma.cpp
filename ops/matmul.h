@@ -60,7 +60,7 @@ class MMParallel {
 
   // Initial static partitioning of B rows across packages.
   IndexRangePartition RangesOfNP(size_t max_packages, size_t N,
-                                 size_t nr) const;
+                                 size_t sizeof_TC, size_t nr) const;
 
   // For `BindB` and `BindC`.
   size_t Node(size_t pkg_idx) const {
@@ -170,13 +170,13 @@ class MMParallel {
   NestedPools& pools_;
 };
 
-template <typename T>  // float for C, double for partial
-void BindC(size_t M, const RowPtr<T>& C, MMParallel& parallel) {
+template <typename TC>  // BF16/float for C, double for partial
+void BindC(size_t M, const RowPtr<TC>& C, MMParallel& parallel) {
   if (!Allocator::ShouldBind()) return;
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, C.Cols(), kNR);
-  const size_t quantum = Allocator::QuantumBytes() / sizeof(T);
+      parallel.RangesOfNP(MMParallel::kMaxPackages, C.Cols(), sizeof(TC), kNR);
+  const size_t quantum = Allocator::QuantumBytes() / sizeof(TC);
   bool ok = true;
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& cols_c = ranges_np.Range(pkg_idx);
@@ -185,7 +185,7 @@ void BindC(size_t M, const RowPtr<T>& C, MMParallel& parallel) {
       // BindRowsToPackageNodes may not be page-aligned.
       const size_t begin = hwy::RoundUpTo(cols_c.begin(), quantum);
       const size_t end = hwy::RoundDownTo(cols_c.end(), quantum);
-      ok &= Allocator::BindMemory(C.Row(im) + begin, (end - begin) * sizeof(T),
+      ok &= Allocator::BindMemory(C.Row(im) + begin, (end - begin) * sizeof(TC),
                                   node);
     }
   }
@@ -355,11 +355,11 @@ static inline const char* StringFromParA(MMParA par_a) {
 class MMConfig {
  public:
   MMConfig() = default;  // for std::vector
-  // `mr` is the number of A rows per call to `MMKernel::LoopOverKC`.
+  // `mr` is the number of A rows per call to `MMKernel::LoopKC`.
   // `MMOrder` is how to parallelize the outer loops.
   // `MMOut` is how/whether to parallelize filling the C result.
   // `inner_tasks` chooses the within-cluster task granularity in `ForNP`.
-  MMConfig(size_t K, size_t mr, size_t mc, size_t kc, size_t nc,
+  MMConfig(size_t K, size_t N, size_t mr, size_t mc, size_t kc, size_t nc,
            size_t kc_multiple, size_t nc_multiple, MMOrder order, MMOut out,
            int inner_tasks)
       : mr_(static_cast<uint32_t>(mr)),
@@ -381,7 +381,7 @@ class MMConfig {
     if (kc != K && (kc % kc_multiple) != 0) {
       HWY_WARN("kc %zu not a multiple of kc_multiple %zu", kc, kc_multiple);
     }
-    if (nc % nc_multiple != 0) {
+    if (nc != N && (nc % nc_multiple) != 0) {
       HWY_WARN("nc %zu not a multiple of nc_multiple %zu", nc, nc_multiple);
     }
     HWY_DASSERT(StringFromOrder(order_) != nullptr);
@@ -428,8 +428,8 @@ class MMConfig {
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
-std::vector<MMConfig> MMCandidates(size_t M, size_t K, size_t N, size_t max_mr,
-                                   size_t nr,
+std::vector<MMConfig> MMCandidates(size_t M, size_t K, size_t N,
+                                   size_t sizeof_TC, size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
                                    bool print_config);
 
@@ -588,8 +588,9 @@ class MMKeys {
 
 // Per-MatMul-shape state.
 struct MMPerKey {
-  MMPerKey(size_t max_packages, size_t N, size_t nr, MMParallel& parallel)
-      : ranges_np(parallel.RangesOfNP(max_packages, N, nr)) {}
+  MMPerKey(size_t max_packages, size_t N, size_t sizeof_TC, size_t nr,
+           MMParallel& parallel)
+      : ranges_np(parallel.RangesOfNP(max_packages, N, sizeof_TC, nr)) {}
 
   // Only profile if enabled and the main autotuner finished (the par_a
   // autotuner is per-package and we want to avoid synchronization).
@@ -623,18 +624,16 @@ struct MatMulEnv {
   std::vector<MMPerKey> per_key;
 };
 
-// Arguments to MatMul() that are independent of the A/B type.
+// Arguments to MatMul() that are independent of the A/B/C types.
 // Reduces register pressure compared to individual values/references.
 struct MMArgs {
   MMArgs(MatMulEnv& env, MMPerKey& per_key, double scale,
-         const float* HWY_RESTRICT add, const RowPtrD& partial,
-         const RowPtrF& C)
+         const float* HWY_RESTRICT add, const RowPtrD& partial)
       : env(&env),
         per_key(&per_key),
         scale(scale),
         add(add),
-        partial(partial),
-        C(C) {}
+        partial(partial) {}
 
   MatMulEnv* env;
   MMPerKey* per_key;
@@ -643,7 +642,6 @@ struct MMArgs {
   const float* HWY_RESTRICT add;
   // Same size as C, threads write at false-sharing-free granularity.
   RowPtrD partial;
-  RowPtrF C;
 };
 
 // Wrapper over hwy::Zone that is only enabled when autotuning finished.
@@ -683,22 +681,22 @@ struct MMZone {
 // `ofs` required for compressed T.
 template <typename T>
 struct ConstMat {
-  ConstMat(const T* ptr, Extents2D extents, size_t ofs = 0)
-      : ptr(ptr), extents(extents), ofs(ofs) {
+  ConstMat(const T* ptr, Extents2D extents, size_t stride, size_t ofs = 0)
+      : ptr(ptr), extents(extents), stride(stride), ofs(ofs) {
     HWY_DASSERT(ptr != nullptr);
+    HWY_DASSERT(stride >= extents.cols);
   }
-  // TODO: support stride for page alignment.
   size_t Row(size_t r) const {
     if constexpr (HWY_IS_DEBUG_BUILD) {
       if (r >= extents.rows) {
         HWY_ABORT("ConstMat::Row %zu out of bounds %zu", r, extents.rows);
       }
     }
-    return ofs + extents.cols * r;
+    return ofs + r * stride;
   }
 
   const Extents2D& Extents() const { return extents; }
-  size_t Stride() const { return extents.cols; }
+  size_t Stride() const { return stride; }
 
   // Shrinks the row-extent of this matrix view, i.e. reduces the view to a
   // subrange of the original rows starting at row 0.
@@ -709,6 +707,7 @@ struct ConstMat {
 
   const T* HWY_RESTRICT ptr;
   Extents2D extents;
+  size_t stride;
 
   // `scale` allows expanding the smaller range of `SfpStream` to the original
   // values. MatFromWeights sets this from `MatPtr`.
@@ -721,9 +720,9 @@ struct ConstMat {
 
 // For deducing T.
 template <typename T>
-ConstMat<T> MakeConstMat(T* HWY_RESTRICT ptr, Extents2D extents,
+ConstMat<T> MakeConstMat(T* HWY_RESTRICT ptr, Extents2D extents, size_t stride,
                          size_t ofs = 0) {
-  return ConstMat<T>(ptr, extents, ofs);
+  return ConstMat<T>(ptr, extents, stride, ofs);
 }
 
 // For A argument to MatMul (activations).
@@ -732,22 +731,25 @@ ConstMat<T> ConstMatFromBatch(size_t batch_size,
                               const RowVectorBatch<T>& row_vectors) {
   HWY_DASSERT(batch_size <= row_vectors.BatchSize());
   return MakeConstMat(const_cast<T*>(row_vectors.Const()),
-                      Extents2D(batch_size, row_vectors.Cols()));
+                      Extents2D(batch_size, row_vectors.Cols()),
+                      row_vectors.Stride());
 }
 
 template <typename T>
 ConstMat<T> ConstMatFromWeights(const MatPtrT<T>& m, size_t ofs = 0) {
-  ConstMat<T> mat = MakeConstMat(const_cast<T*>(m.data()), m.Extents(), ofs);
+  ConstMat<T> mat =
+      MakeConstMat(const_cast<T*>(m.data()), m.Extents(), m.Stride(), ofs);
   mat.scale = m.scale();
   return mat;
 }
 
 template <typename TB>
-void BindB(size_t N, const ConstMat<TB>& B, MMParallel& parallel) {
+void BindB(size_t N, size_t sizeof_TC, const ConstMat<TB>& B,
+           MMParallel& parallel) {
   if (!Allocator::ShouldBind()) return;
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, N, kNR);
+      parallel.RangesOfNP(MMParallel::kMaxPackages, N, sizeof_TC, kNR);
   const size_t quantum = Allocator::QuantumBytes() / sizeof(TB);
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& rows_b = ranges_np.Range(pkg_idx);
