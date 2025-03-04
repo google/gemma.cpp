@@ -110,9 +110,17 @@ struct Args : public ArgsBase<Args> {
             "Path to model weights (.bin) file.\n"
             "    Required argument.");
     visitor(model_type_str, "model", std::string(),
-            "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
-            "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
-            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n    "
+            "Model type\n    "
+            "gemma-2b-it = Gemma 2B parameters, instruction-tuned\n    "
+            "gemma-2b-pt = Gemma 2B parameters, pretrained\n    "
+            "gemma-7b-it = Gemma 7B parameters, instruction-tuned\n    "
+            "gemma-7b-pt = Gemma 7B parameters, pretrained\n    "
+            "gemma2-2b-it = Gemma2 2B parameters, instruction-tuned\n    "
+            "gemma2-2b-pt = Gemma2 2B parameters, pretrained\n    "
+            "gemma2-9b-it = Gemma2 9B parameters, instruction-tuned\n    "
+            "gemma2-9b-pt = Gemma2 9B parameters, pretrained\n    "
+            "gemma2-27b-it = Gemma2 27B parameters, instruction-tuned\n    "
+            "gemma2-27b-pt = Gemma2 27B parameters, pretrained\n    "
             "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
             "gr2b-pt = griffin 2B parameters, pretrained\n    "
             "    Required argument.");
