@@ -18,7 +18,7 @@ deployment-oriented C++ inference runtimes, which are not designed for
 experimentation, and Python-centric ML research frameworks, which abstract away
 low-level computation through compilation.
 
-gemma.cpp provides a minimalist implementation of Gemma-1, Gemma-2, and
+gemma.cpp provides a minimalist implementation of Gemma-1, Gemma-2, Gemma-3, and
 PaliGemma models, focusing on simplicity and directness rather than full
 generality. This is inspired by vertically-integrated model implementations such
 as [ggml](https://github.com/ggerganov/ggml),
