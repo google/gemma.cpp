@@ -86,7 +86,7 @@ jobs:
         assert("write an email to the moon." not in output.lower());
         assert("moon" in output.lower());
         EOF
-      
+
     - if: matrix.os == 'ubuntu-20.04'
       name: Run kaggle test notebook
       uses: pculliton/kaggle-action@v1.0.28
@@ -112,7 +112,7 @@ jobs:
 
       - uses: bazelbuild/setup-bazelisk@b39c379c82683a5f25d34f0d062761f62693e0b2 # v3.0.0
 
-      - uses: actions/cache@ab5e6d0c87105b4c9c2047343972218f562e4319 # v4.0.1
+      - uses: actions/cache@d4323d4df104b026a6aa633fdb11d772146be0bf # v4.2.2
         with:
           path: ~/.cache/bazel
           key: bazel-${{ runner.os }}
