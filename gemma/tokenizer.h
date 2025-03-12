@@ -57,6 +57,10 @@ std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const ModelInfo& info, size_t pos,
                                  std::string& prompt);
 
+std::vector<int> WrapVLM(const GemmaTokenizer& tokenizer, const ModelInfo& info,
+                         size_t pos, std::vector<int>& tokens,
+                         size_t image_batch_size, size_t max_image_batch_size);
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_TOKENIZER_H_

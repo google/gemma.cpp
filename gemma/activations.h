@@ -61,6 +61,7 @@ struct Activations {
 
   // Rope
   RowVectorBatch<float> inv_timescale;
+  RowVectorBatch<float> inv_timescale_global;
 
   // Dynamic because no default ctor and only initialized in `Allocate`.
   MatMulEnv* env;
@@ -108,6 +109,8 @@ struct Activations {
 
     inv_timescale = CreateInvTimescale(layer_config.qkv_dim,
                                        post_qk == PostQKType::HalfRope);
+    inv_timescale_global =
+        CreateInvTimescale(qkv_dim, post_qk == PostQKType::HalfRope, 1000000.0);
 
     this->env = env;
   }

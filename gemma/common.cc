@@ -44,6 +44,10 @@ constexpr const char* kModelFlags[] = {
     "paligemma2-3b-448",             // PaliGemma2 3B 448
     "paligemma2-10b-224",            // PaliGemma2 10B 224
     "paligemma2-10b-448",            // PaliGemma2 10B 448
+    "gemma3-4b",                     // Gemma3 4B
+    "gemma3-1b",                     // Gemma3 1B
+    "gemma3-12b",                    // Gemma3 12B
+    "gemma3-27b",                    // Gemma3 27B
 };
 constexpr Model kModelTypes[] = {
     Model::GEMMA_2B, Model::GEMMA_2B,      // Gemma 2B
@@ -59,6 +63,10 @@ constexpr Model kModelTypes[] = {
     Model::PALIGEMMA2_3B_448,              // PaliGemma2 3B 448
     Model::PALIGEMMA2_10B_224,             // PaliGemma2 10B 224
     Model::PALIGEMMA2_10B_448,             // PaliGemma2 10B 448
+    Model::GEMMA3_4B,                      // Gemma3 4B
+    Model::GEMMA3_1B,                      // Gemma3 1B
+    Model::GEMMA3_12B,                     // Gemma3 12B
+    Model::GEMMA3_27B,                     // Gemma3 27B
 };
 constexpr PromptWrapping kPromptWrapping[] = {
     PromptWrapping::GEMMA_PT, PromptWrapping::GEMMA_IT,    // Gemma 2B
@@ -71,6 +79,10 @@ constexpr PromptWrapping kPromptWrapping[] = {
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PaliGemma 224/448
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 3B 224/448
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 10B 224/448
+    PromptWrapping::GEMMA_VLM,                             // Gemma3 4B
+    PromptWrapping::GEMMA_PT,                              // Gemma3 1B
+    PromptWrapping::GEMMA_VLM,                             // Gemma3 12B
+    PromptWrapping::GEMMA_VLM,                             // Gemma3 27B
 };
 
 constexpr size_t kNumModelFlags = std::size(kModelFlags);

@@ -94,10 +94,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   Image image;
   ImageTokens image_tokens;
   if (have_image) {
-    image_tokens =
-        ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
-                              model.GetModelConfig().model_dim));
-    HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
+    size_t pool_dim = model.GetModelConfig().vit_config.pool_dim;
+    image_tokens = ImageTokens(Extents2D(
+        model.GetModelConfig().vit_config.seq_len / (pool_dim * pool_dim),
+        model.GetModelConfig().model_dim));
+    HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA ||
+               model.Info().wrapping == PromptWrapping::GEMMA_VLM);
     HWY_ASSERT(image.ReadPPM(args.image_file.path));
     const size_t image_size = model.GetModelConfig().vit_config.image_size;
     image.Resize(image_size, image_size);
@@ -190,7 +192,15 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     size_t prefix_end = 0;
     if (have_image) {
       runtime_config.image_tokens = &image_tokens;
-      prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
+      if (model.Info().wrapping == PromptWrapping::PALIGEMMA) {
+        prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
+      } else if (model.Info().wrapping == PromptWrapping::GEMMA_VLM) {
+        size_t seq_len = model.GetModelConfig().vit_config.seq_len;
+        size_t pool_dim = model.GetModelConfig().vit_config.pool_dim;
+        prompt =
+            WrapVLM(model.Tokenizer(), model.Info(), abs_pos, prompt,
+                    image_tokens.BatchSize(), seq_len / (pool_dim * pool_dim));
+      }
       prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.
@@ -209,9 +219,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
 
     // Prepare for the next turn.
     if (!args.multiturn || model.Info().wrapping == PromptWrapping::PALIGEMMA) {
-      abs_pos = 0;  // Start a new turn at position 0.
-      InitGenerator(args, gen);
-    } else {
       // The last token was either EOS, then it should be ignored because it is
       // never part of the dialog, see Table 5 in the Gemma-2 paper:
       // https://arxiv.org/pdf/2408.00118

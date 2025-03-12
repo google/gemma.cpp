@@ -219,6 +219,17 @@ class GemmaAttention {
     // qk is either q or k, so qkv_dim is the length we operate on.
     const size_t qkv_dim = layer_config_.qkv_dim;
     const float* inv_timescale = activations_.inv_timescale.Const();
+    bool is_global_layer =
+        activations_.weights_config.attention_window_sizes[layer] ==
+        activations_.seq_len;
+    // TODO: add a config flag instead of hardcoding the model.
+    if (is_global_layer &&
+        (activations_.weights_config.model == Model::GEMMA3_4B ||
+         activations_.weights_config.model == Model::GEMMA3_12B ||
+         activations_.weights_config.model == Model::GEMMA3_27B ||
+         activations_.weights_config.model == Model::GEMMA3_1B)) {
+      inv_timescale = activations_.inv_timescale_global.Const();
+    }
     // PostQKType::Rope
     (void)layer;
     if (layer_weights_.layer_config.post_qk == PostQKType::HalfRope) {
@@ -324,6 +335,10 @@ class GemmaAttention {
                 }
 
                 // Apply further processing to K.
+                if (layer_weights_.key_norm_scale.data()) {
+                  RMSNormInplace(layer_weights_.key_norm_scale.data(), kv,
+                                 qkv_dim);
+                }
                 PositionalEncodingQK(kv, pos, layer_, /*mul=*/1.0f);
               });
   }
@@ -411,6 +426,10 @@ class GemmaAttention {
 
                 // Apply rope and scaling to Q.
                 const size_t pos = queries_pos_[query_idx] + batch_idx;
+                if (layer_weights_.query_norm_scale.data()) {
+                  RMSNormInplace(layer_weights_.query_norm_scale.data(), q,
+                                 qkv_dim);
+                }
                 PositionalEncodingQK(q, pos, layer_, query_scale);
 
                 const size_t start_pos = StartPos(pos, layer_);
@@ -590,6 +609,7 @@ class VitAttention {
            RowPtrFromBatch(qkv));
   }
 
+  // TODO(philculliton): transition fully to MatMul.
   HWY_NOINLINE void DotSoftmaxWeightedSum() {
     const size_t qkv_dim = layer_config_.qkv_dim;
     const size_t heads = layer_config_.heads;
@@ -598,34 +618,55 @@ class VitAttention {
     const float query_scale = 1.0f / sqrtf(static_cast<float>(qkv_dim));
     PROFILER_ZONE("Gen.VitAttention.DotSoftmax");
 
-    // Compute Q.K, softmax, and weighted V.
-    pool_.Run(0, layer_config_.heads * num_tokens_,
-              [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
-                const size_t head = task % layer_config_.heads;
-                const size_t token = task / layer_config_.heads;
-                // Compute Q.K scores, which are "logits" stored in head_att.
-                float* HWY_RESTRICT q =
-                    activations_.q.Batch(token) + head * 3 * qkv_dim;
-                MulByConst(query_scale, q, qkv_dim);
-                float* HWY_RESTRICT head_att =
-                    activations_.att.Batch(token) + head * activations_.seq_len;
-                for (size_t i = 0; i < seq_len; ++i) {
-                  float* HWY_RESTRICT k =
-                      activations_.q.Batch(i) + head * 3 * qkv_dim + qkv_dim;
-                  head_att[i] = Dot(q, k, qkv_dim);  // score = q.k
-                }
-                // SoftMax yields "probabilities" in head_att.
-                Softmax(head_att, seq_len);
-                // Compute weighted sum of v into att_out.
-                float* HWY_RESTRICT att_out =
-                    activations_.att_out.Batch(token) + head * qkv_dim;
-                hwy::ZeroBytes(att_out, qkv_dim * sizeof(*att_out));
-                for (size_t i = 0; i < seq_len; ++i) {
-                  float* HWY_RESTRICT v = activations_.q.Batch(i) +
-                                          head * 3 * qkv_dim + 2 * qkv_dim;
-                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim);
-                }
-              });
+    // Shift Q, K, VT to RowVectorBatches with AllocateAlignedRows(extents)
+    RowVectorBatch<float> Q =
+        AllocateAlignedRows<float>(Extents2D(num_tokens_, qkv_dim));
+    RowVectorBatch<float> K =
+        AllocateAlignedRows<float>(Extents2D(seq_len, qkv_dim));
+    RowVectorBatch<float> C(Extents2D(num_tokens_, seq_len));
+
+    // Initialize att_out to zero prior to head loop.
+    hwy::ZeroBytes(activations_.att_out.All(),
+                   num_tokens_ * heads * qkv_dim * sizeof(float));
+
+    for (size_t head = 0; head < heads; ++head) {
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+        const size_t token = task;
+        float* HWY_RESTRICT q =
+            activations_.q.Batch(token) + head * 3 * qkv_dim;
+        // TODO: shift to MatMul with A.scale once MatMul is confirmed working
+        MulByConst(query_scale, q, qkv_dim);
+        hwy::CopyBytes(q, Q.Batch(token), qkv_dim * sizeof(float));
+      });
+
+      pool_.Run(0, seq_len, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+        const size_t seq_idx = task;
+        float* HWY_RESTRICT k =
+            activations_.q.Batch(seq_idx) + head * 3 * qkv_dim + qkv_dim;
+        hwy::CopyBytes(k, K.Batch(seq_idx), qkv_dim * sizeof(float));
+      });
+
+      // this produces C, a (num_tokens_, seq_len) matrix of dot products
+      MatMul(ConstMatFromBatch(Q.BatchSize(), Q),
+             ConstMatFromBatch(K.BatchSize(), K), nullptr, *activations_.env,
+             RowPtrFromBatch(C));
+
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+        float* HWY_RESTRICT c = C.Batch(task);
+        Softmax(c, C.Cols());
+      });
+
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+        size_t token = task;
+        float* HWY_RESTRICT att_out =
+            activations_.att_out.Batch(token) + head * qkv_dim;
+        for (size_t i = 0; i < seq_len; ++i) {
+          float* HWY_RESTRICT v =
+              activations_.q.Batch(i) + head * 3 * qkv_dim + 2 * qkv_dim;
+          MulByConstAndAdd(C.Batch(token)[i], v, att_out, qkv_dim);
+        }
+      });
+    }
   }
 
   // Sums encoded (`att_out`) over num_heads (`layer_config_.heads`) and
@@ -784,14 +825,30 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
 // `batch_idx` indicates which row of `x` to write to.
 // `pos` is the *token*'s position, not the start of the batch, because this is
 // called for batches of tokens in prefill, but batches of queries in decode.
+//
+// For GEMMA_VLM, image tokens are copied into -2 locations (per the Gemma 3
+// spec) until we run out of image tokens. This allows for a multi-image prompt
+// if -2 locations with appropriate begin/end image tokens are created by the
+// calling application.
 template <typename T>
-HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
-                             size_t pos_in_prompt,
-                             const ModelWeightsPtrs<T>& weights,
-                             RowVectorBatch<float>& x,
-                             const ImageTokens* image_tokens) {
+HWY_NOINLINE void EmbedMMToken(int token, size_t batch_idx, size_t pos,
+                               size_t pos_in_prompt,
+                               const ModelWeightsPtrs<T>& weights,
+                               RowVectorBatch<float>& x,
+                               const ImageTokens* image_tokens,
+                               size_t& image_token_position) {
   // Image tokens just need to be copied.
-  if (image_tokens != nullptr && pos_in_prompt < image_tokens->BatchSize()) {
+  if (weights.weights_config.wrapping == PromptWrapping::GEMMA_VLM &&
+      image_tokens != nullptr && token == -2 &&
+      image_token_position < image_tokens->BatchSize()) {
+    hwy::CopyBytes(image_tokens->Batch(image_token_position),
+                   x.Batch(batch_idx), x.Cols() * sizeof(x.Const()[0]));
+    image_token_position++;
+    return;
+  }
+
+  if (weights.weights_config.wrapping == PromptWrapping::PALIGEMMA &&
+      image_tokens != nullptr && pos_in_prompt < image_tokens->BatchSize()) {
     hwy::CopyBytes(image_tokens->Batch(pos_in_prompt), x.Batch(batch_idx),
                    x.Cols() * sizeof(x.Const()[0]));
     return;
@@ -814,6 +871,21 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
   if (weights.weights_config.absolute_pe) {
     AddAbsolutePositionalEmbeddings(x.Batch(batch_idx), model_dim, pos);
   }
+}
+
+// `batch_idx` indicates which row of `x` to write to.
+// `pos` is the *token*'s position, not the start of the batch, because this is
+// called for batches of tokens in prefill, but batches of queries in decode.
+// This version of the function doesn't track internal image token position.
+template <typename T>
+HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
+                             size_t pos_in_prompt,
+                             const ModelWeightsPtrs<T>& weights,
+                             RowVectorBatch<float>& x,
+                             const ImageTokens* image_tokens) {
+  size_t image_token_position = 0;
+  EmbedMMToken<T>(token, batch_idx, pos, pos_in_prompt, weights, x,
+                  image_tokens, image_token_position);
 }
 
 template <typename Weights, typename T>
@@ -990,12 +1062,13 @@ HWY_NOINLINE void Prefill(
           HWY_MIN(max_tbatch_size, prefill_this_query - tbatch_start);
 
       // Fill activations.x (much faster than TransformerLayer).
+      size_t image_token_position = 0;
       for (size_t ti = 0; ti < tbatch_size; ++ti) {
         const size_t pos = queries_pos[qi] + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
         const int token = queries_prompt[qi][pos_in_prompt];
-        EmbedToken(token, ti, pos, pos_in_prompt, weights, activations.x,
-                   runtime_config.image_tokens);
+        EmbedMMToken(token, ti, pos, pos_in_prompt, weights, activations.x,
+                     runtime_config.image_tokens, image_token_position);
       }
 
       // Transformer with one batch of tokens from a single query.
@@ -1104,8 +1177,14 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
                    weights.vit_encoder_norm_bias.data_scale1(),
                    activations.x.All(), vit_model_dim);
 
+  activations.x = AvgPool4x4(activations.x);
+
+  // Apply soft embedding norm before input projection.
+  RMSNormInplace(weights.mm_embed_norm.data_scale1(), activations.x.All(),
+                 vit_model_dim);
+
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
-  MatMul(ConstMatFromBatch(num_tokens, activations.x),
+  MatMul(ConstMatFromBatch(activations.x.BatchSize(), activations.x),
          ConstMatFromWeights(weights.vit_img_head_kernel),
          weights.vit_img_head_bias.data_scale1(), *activations.env,
          RowPtrFromBatch(image_tokens));
@@ -1133,10 +1212,11 @@ HWY_NOINLINE void Transformer(
     }
   }
 
+  size_t image_token_position = 0;
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
-    EmbedToken(queries_token[query_idx], query_idx, queries_pos[query_idx],
-               /*pos_in_prompt=*/0, weights, activations.x,
-               /*image_tokens=*/nullptr);
+    EmbedMMToken(queries_token[query_idx], query_idx, queries_pos[query_idx],
+                 /*pos_in_prompt=*/0, weights, activations.x,
+                 /*image_tokens=*/nullptr, image_token_position);
   }
 
   for (size_t layer = 0; layer < weights.c_layers.size(); ++layer) {
@@ -1440,7 +1520,8 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
   }
   RuntimeConfig prefill_runtime_config = runtime_config;
   ModelConfig vit_config = GetVitConfig(model.Config());
-  prefill_runtime_config.prefill_tbatch_size = vit_config.seq_len;
+  prefill_runtime_config.prefill_tbatch_size =
+      vit_config.seq_len / (vit_config.pool_dim * vit_config.pool_dim);
   Activations prefill_activations(vit_config);
   prefill_activations.Allocate(vit_config.seq_len, env);
   // Weights are for the full PaliGemma model, not just the ViT part.

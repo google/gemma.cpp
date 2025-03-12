@@ -99,6 +99,8 @@ struct LayerWeightsPtrs {
         ffw_gating_biases("ffw_gat_b", tensor_index),
         ffw_output_biases("ffw_out_b", tensor_index),
         att_weights("att_w", tensor_index),
+        key_norm_scale("key_norm", tensor_index),
+        query_norm_scale("query_norm", tensor_index),
         layer_config(config) {}
   ~LayerWeightsPtrs() = default;
 
@@ -204,6 +206,9 @@ struct LayerWeightsPtrs {
     att_weights.set_scale(attn_vec_einsum_w.scale());
   }
 
+  ArrayT<WeightF32OrBF16> key_norm_scale;
+  ArrayT<WeightF32OrBF16> query_norm_scale;
+
 // Used by ForEachTensor for per-layer tensors.
 #define GEMMA_CALL_FUNC(member)                                             \
   {                                                                         \
@@ -282,6 +287,10 @@ struct LayerWeightsPtrs {
       GEMMA_CALL_FUNC(post_attention_norm_scale);
       GEMMA_CALL_FUNC(post_ffw_norm_scale);
     }
+    if (ptrs[0]->layer_config.use_qk_norm) {
+      GEMMA_CALL_FUNC(key_norm_scale);
+      GEMMA_CALL_FUNC(query_norm_scale);
+    }
 
     if (ptrs[0]->layer_config.ff_biases) {
       GEMMA_CALL_FUNC(ffw_gating_biases);
@@ -332,6 +341,7 @@ struct ModelWeightsPtrs {
         vit_img_pos_embedding("img_pos_emb", tensor_index),
         vit_img_head_bias("img_head_bias", tensor_index),
         vit_img_head_kernel("img_head_kernel", tensor_index),
+        mm_embed_norm("mm_embed_norm", tensor_index),
         scale_names(config.scale_names),
         weights_config(config) {
     c_layers.reserve(config.layer_configs.size());
@@ -371,6 +381,8 @@ struct ModelWeightsPtrs {
   // kModelDim (LLM input).
   MatPtrT<float> vit_img_head_bias;
   MatPtrT<WeightF32OrBF16> vit_img_head_kernel;
+
+  MatPtrT<WeightF32OrBF16> mm_embed_norm;
 
   std::unordered_set<std::string> scale_names;
 
@@ -488,6 +500,7 @@ struct ModelWeightsPtrs {
       GEMMA_CALL_FUNC(vit_img_pos_embedding);
       GEMMA_CALL_FUNC(vit_img_head_bias);
       GEMMA_CALL_FUNC(vit_img_head_kernel);
+      GEMMA_CALL_FUNC(mm_embed_norm);
     }
 
     for (int layer_idx = 0; layer_idx < ptrs[0]->c_layers.size(); ++layer_idx) {

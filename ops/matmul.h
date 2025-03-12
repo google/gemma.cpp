@@ -202,7 +202,7 @@ class MMStorage {
   // Compile-time bounds on matrix dimensions to enable pre-allocating storage
   // and reusing it across `MatMul` calls. The resulting allocations are 256 MiB
   // per package and 512 MiB, respectively.
-  static constexpr size_t kMaxM = 2048;
+  static constexpr size_t kMaxM = 4096;
   static constexpr size_t kMaxK = 64 * 1024;
   static constexpr size_t kMaxN = 256 * 1024;
   // Upper bound for per-worker B storage on the stack. Chosen such that one row

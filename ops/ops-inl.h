@@ -802,6 +802,48 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
                       .prob = topk_logits[topk_sampled_index]};
 }
 
+// Performs 4x4 average pooling across row vectors
+// Input has 4096 (64*64) rows, output has 256 (16*16) rows
+// Each output row is the average of a 4x4 block of input rows
+template <typename T>
+RowVectorBatch<T> AvgPool4x4(RowVectorBatch<T>& input) {
+  Extents2D extents = input.Extents();
+  // Input validation
+  HWY_DASSERT(extents.rows == 4096);  // 64 * 64 = 4096 input rows
+  // Create output with 256 rows and same number of columns
+  const size_t out_rows = 256;  // 16 * 16 = 256 output rows
+  RowVectorBatch<T> result(Extents2D{out_rows, extents.cols});
+  const size_t input_dim = 64;   // Input is 64×64
+  const size_t output_dim = 16;  // Output is 16×16
+  for (size_t out_row_idx = 0; out_row_idx < output_dim; ++out_row_idx) {
+    for (size_t out_col_idx = 0; out_col_idx < output_dim; ++out_col_idx) {
+      size_t out_idx = out_row_idx * output_dim + out_col_idx;
+      T* output_row = result.Batch(out_idx);
+      // Initialize output row to zeros
+      std::fill(output_row, output_row + extents.cols, 0);
+      // Average 16 row vectors from a 4x4 block
+      for (size_t i = 0; i < 4; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+          size_t in_row_idx = out_row_idx * 4 + i;
+          size_t in_col_idx = out_col_idx * 4 + j;
+          size_t in_idx = in_row_idx * input_dim + in_col_idx;
+          const T* input_row = input.Batch(in_idx);
+          // Add each input row to the output
+          // TODO(philculliton): use AddFrom in ops-inl for a vectorized loop.
+          for (size_t col = 0; col < extents.cols; ++col) {
+            output_row[col] += input_row[col];
+          }
+        }
+      }
+      // Divide by 16 to get the average
+      for (size_t col = 0; col < extents.cols; ++col) {
+        output_row[col] *= T{0.0625};
+      }
+    }
+  }
+  return result;
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp

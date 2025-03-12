@@ -64,14 +64,14 @@ std::vector<TensorInfo> ModelTensors(const ModelConfig& config) {
       },
       TensorInfo{
           .name = "img_head_bias",
-          .source_names = {"img/head/bias"},
+          .source_names = {"img/head/bias", "embedder/mm_input_projection/b"},
           .axes = {0},
           .shape = {config.model_dim},
           .min_size = Type::kF32,
       },
       TensorInfo{
           .name = "img_head_kernel",
-          .source_names = {"img/head/kernel"},
+          .source_names = {"img/head/kernel", "embedder/mm_input_projection/w"},
           .axes = {1, 0},
           .shape = {config.model_dim, config.vit_config.model_dim},
           .min_size = Type::kBF16,
@@ -84,12 +84,21 @@ std::vector<TensorInfo> ModelTensors(const ModelConfig& config) {
                     config.vit_config.model_dim},
           .min_size = Type::kF32,
       },
+      // RMS norm applied to soft tokens prior to pos embedding.
+      TensorInfo{
+          .name = "mm_embed_norm",
+          .source_names = {"embedder/mm_soft_embedding_norm/scale"},
+          .axes = {0},
+          .shape = {config.vit_config.model_dim},
+          .min_size = Type::kBF16,
+      },
   };
 }
 
 // Returns the tensors for the given image layer config.
 std::vector<TensorInfo> ImageLayerTensors(const ModelConfig& config,
-                                          const LayerConfig& layer_config) {
+                                          const LayerConfig& layer_config,
+                                          const int img_layer_idx) {
   return {
       // Vit layers.
       TensorInfo{
@@ -207,28 +216,40 @@ std::vector<TensorInfo> ImageLayerTensors(const ModelConfig& config,
       },
       TensorInfo{
           .name = "ln_0_bias",
-          .source_names = {"img/Transformer/encoderblock/LayerNorm_0/bias"},
+          .source_names = {"img/Transformer/encoderblock/LayerNorm_0/bias",
+                           "img/Transformer/encoderblock_" +
+                               std::to_string(img_layer_idx) +
+                               "/LayerNorm_0/bias"},
           .axes = {0},
           .shape = {config.vit_config.model_dim},
           .min_size = Type::kBF16,
       },
       TensorInfo{
           .name = "ln_0_scale",
-          .source_names = {"img/Transformer/encoderblock/LayerNorm_0/scale"},
+          .source_names = {"img/Transformer/encoderblock/LayerNorm_0/scale",
+                           "img/Transformer/encoderblock_" +
+                               std::to_string(img_layer_idx) +
+                               "/LayerNorm_0/scale"},
           .axes = {0},
           .shape = {config.vit_config.model_dim},
           .min_size = Type::kBF16,
       },
       TensorInfo{
           .name = "ln_1_bias",
-          .source_names = {"img/Transformer/encoderblock/LayerNorm_1/bias"},
+          .source_names = {"img/Transformer/encoderblock/LayerNorm_1/bias",
+                           "img/Transformer/encoderblock_" +
+                               std::to_string(img_layer_idx) +
+                               "/LayerNorm_1/bias"},
           .axes = {0},
           .shape = {config.vit_config.model_dim},
           .min_size = Type::kBF16,
       },
       TensorInfo{
           .name = "ln_1_scale",
-          .source_names = {"img/Transformer/encoderblock/LayerNorm_1/scale"},
+          .source_names = {"img/Transformer/encoderblock/LayerNorm_1/scale",
+                           "img/Transformer/encoderblock_" +
+                               std::to_string(img_layer_idx) +
+                               "/LayerNorm_1/scale"},
           .axes = {0},
           .shape = {config.vit_config.model_dim},
           .min_size = Type::kBF16,
@@ -241,6 +262,20 @@ std::vector<TensorInfo> LLMLayerTensors(const ModelConfig& config,
                                         const LayerConfig& layer_config,
                                         bool reshape_att) {
   std::vector<TensorInfo> tensors = {
+      TensorInfo{
+          .name = "key_norm",
+          .source_names = {"attn/_key_norm/scale"},
+          .axes = {0},
+          .shape = {layer_config.qkv_dim},
+          .min_size = Type::kBF16,
+      },
+      TensorInfo{
+          .name = "query_norm",
+          .source_names = {"attn/_query_norm/scale"},
+          .axes = {0},
+          .shape = {layer_config.qkv_dim},
+          .min_size = Type::kBF16,
+      },
       TensorInfo{
           .name = "qkv1_w",
           .source_names = {"attn/q_einsum/w"},
@@ -529,7 +564,7 @@ TensorIndex::TensorIndex(const ModelConfig& config, int llm_layer_idx,
   } else if (llm_layer_idx_ < 0 && 0 <= img_layer_idx &&
              img_layer_idx < config.vit_config.layer_configs.size()) {
     const auto& layer_config = config.vit_config.layer_configs[img_layer_idx];
-    tensors_ = ImageLayerTensors(config, layer_config);
+    tensors_ = ImageLayerTensors(config, layer_config, img_layer_idx);
   } else if (0 <= llm_layer_idx &&
              llm_layer_idx < config.layer_configs.size()) {
     const auto& layer_config = config.layer_configs[llm_layer_idx];

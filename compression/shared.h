@@ -189,6 +189,7 @@ constexpr bool IsNuqStream() {
 enum class PromptWrapping {
   GEMMA_IT,
   GEMMA_PT,
+  GEMMA_VLM,
   PALIGEMMA,
   kSentinel  // must be last
 };

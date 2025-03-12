@@ -127,10 +127,41 @@ std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
   }
 
   // PaliGemma separator. The SEP token "\n" is always tokenized separately.
-  if (info.wrapping == PromptWrapping::PALIGEMMA) {
+  if (info.wrapping == PromptWrapping::PALIGEMMA
+      // || info.wrapping == PromptWrapping::GEMMA_VLM
+  ) {
     std::vector<int> sep_tokens;
     HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
     tokens.insert(tokens.end(), sep_tokens.begin(), sep_tokens.end());
+  }
+
+  return tokens;
+}
+
+std::vector<int> WrapVLM(const GemmaTokenizer& tokenizer, const ModelInfo& info,
+                         size_t pos, std::vector<int>& tokens,
+                         size_t image_batch_size, size_t max_image_batch_size) {
+  HWY_ASSERT(info.wrapping == PromptWrapping::GEMMA_VLM);
+  size_t num_images = hwy::DivCeil(image_batch_size, max_image_batch_size);
+
+  std::vector<int> sep_tokens;
+  HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
+
+  std::string begin_image_prompt = "\n\n<start_of_image>";
+  std::vector<int> begin_image_tokens =
+      WrapAndTokenize(tokenizer, info, pos, begin_image_prompt);
+
+  std::string end_image_prompt = "<end_of_image>\n\n";
+  std::vector<int> end_image_tokens =
+      WrapAndTokenize(tokenizer, info, pos, end_image_prompt);
+
+  for (size_t i = 0; i < num_images; ++i) {
+    tokens.insert(tokens.begin(), begin_image_tokens.begin(),
+                  begin_image_tokens.end());
+    tokens.insert(tokens.begin() + begin_image_tokens.size(), image_batch_size,
+                  -2);
+    tokens.insert(tokens.begin() + begin_image_tokens.size() + image_batch_size,
+                  end_image_tokens.begin(), end_image_tokens.end());
   }
 
   return tokens;

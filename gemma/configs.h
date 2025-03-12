@@ -151,6 +151,10 @@ enum class Model {
   PALIGEMMA2_3B_448,
   PALIGEMMA2_10B_224,
   PALIGEMMA2_10B_448,
+  GEMMA3_4B,
+  GEMMA3_1B,
+  GEMMA3_12B,
+  GEMMA3_27B,
 };
 
 // Allows the Model enum to be iterated over.
@@ -159,7 +163,8 @@ static constexpr Model kAllModels[] = {
     Model::GRIFFIN_2B, Model::GEMMA_TINY, Model::GEMMA2_2B,
     Model::PALIGEMMA_224, Model::PALIGEMMA_448, Model::PALIGEMMA2_3B_224,
     Model::PALIGEMMA2_3B_448, Model::PALIGEMMA2_10B_224,
-    Model::PALIGEMMA2_10B_448,
+    Model::PALIGEMMA2_10B_448, Model::GEMMA3_4B, Model::GEMMA3_1B,
+    Model::GEMMA3_12B, Model::GEMMA3_27B,
 };
 
 inline bool EnumValid(Model model) {
@@ -202,6 +207,7 @@ struct LayerConfig : public IFields {
     visitor(type);
     visitor(activation);
     visitor(post_qk);
+    visitor(use_qk_norm);
   }
 
   uint32_t model_dim = 0;
@@ -218,6 +224,7 @@ struct LayerConfig : public IFields {
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
   PostQKType post_qk = PostQKType::Rope;
+  bool use_qk_norm = false;
 };
 
 // Dimensions related to image processing.

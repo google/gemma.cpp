@@ -328,6 +328,186 @@ static ModelConfig ConfigPaliGemma2_10B_448() {
   return config;
 }
 
+static ModelConfig ConfigBaseGemmaV3() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 0.0f;
+  config.final_cap = 0.0f;
+  return config;
+}
+
+// 1B does not include a vision encoder.
+static LayerConfig LayerConfigGemma3_1B_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 6912;
+  config.heads = 4;
+  config.kv_heads = 1;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigGemma3_1B() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.model_name = "Gemma3_1B";
+  config.model = Model::GEMMA3_1B;
+  config.model_dim = 1152;
+  config.vocab_size = 262144;  // new vocab size / tokenizer
+  config.seq_len = 32 * 1024;
+  LayerConfig layer_config = LayerConfigGemma3_1B_LM(config.model_dim);
+  config.layer_configs = {26, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // interleaved local / global attention
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<26, 6>(
+      {512, 512, 512, 512, 512, config.seq_len});
+  return config;
+}
+
+static LayerConfig LayerConfigGemma3_4B_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 8 * 2560 / 2;  // = 10240
+  config.heads = 8;
+  config.kv_heads = 4;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  return config;
+}
+
+// Until we have the SigLIP checkpoints included, we use the LM config directly.
+static ModelConfig ConfigGemma3_4B_LM() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.model_name = "Gemma3_4B";
+  config.model = Model::GEMMA3_4B;
+  config.model_dim = 2560;
+  config.vocab_size = 262144;  // new vocab size / tokenizer
+  config.seq_len = 32 * 1024;
+  LayerConfig layer_config = LayerConfigGemma3_4B_LM(config.model_dim);
+  config.layer_configs = {34, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // interleaved local / global attention
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<34, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+  return config;
+}
+
+static ModelConfig ConfigGemma3_4B() {
+  ModelConfig config = ConfigGemma3_4B_LM();
+  config.model_name = "Gemma3_4B";
+  config.model = Model::GEMMA3_4B;
+  AddVitConfig(config, /*image_size=*/896);
+  config.vocab_size = 262144;
+  config.vit_config.pool_dim = 4;
+  const size_t num_patches =
+      config.vit_config.image_size / config.vit_config.patch_width;
+  config.vit_config.seq_len = (num_patches * num_patches);
+  // The above resets optimized gating to false; for Gemma 3 it should be true.
+  for (auto& layer_config : config.layer_configs) {
+    layer_config.optimized_gating = true;
+  }
+  return config;
+}
+
+static LayerConfig LayerConfigGemma3_12B_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 15360;
+  config.heads = 16;
+  config.kv_heads = 8;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigGemma3_12B_LM() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.model_name = "Gemma3_12B";
+  config.model = Model::GEMMA3_12B;
+  config.model_dim = 3840;
+  config.vocab_size = 262144;  // new vocab size / tokenizer
+  config.seq_len = 32 * 1024;
+  LayerConfig layer_config = LayerConfigGemma3_12B_LM(config.model_dim);
+  config.layer_configs = {48, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // interleaved local / global attention
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<48, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+  return config;
+}
+
+static ModelConfig ConfigGemma3_12B() {
+  ModelConfig config = ConfigGemma3_12B_LM();
+  config.model_name = "Gemma3_12B";
+  config.model = Model::GEMMA3_12B;
+  AddVitConfig(config, /*image_size=*/896);
+  config.vocab_size = 262144;
+  config.vit_config.pool_dim = 4;
+  const size_t num_patches =
+      config.vit_config.image_size / config.vit_config.patch_width;
+  config.vit_config.seq_len = (num_patches * num_patches);
+  // The above resets optimized gating to false; for Gemma 3 it should be true.
+  for (auto& layer_config : config.layer_configs) {
+    layer_config.optimized_gating = true;
+  }
+  return config;
+}
+
+static LayerConfig LayerConfigGemma3_27B_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 21504;
+  config.heads = 32;
+  config.kv_heads = 16;
+  config.qkv_dim = 128;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigGemma3_27B_LM() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.model_name = "Gemma3_27B";
+  config.model = Model::GEMMA3_27B;
+  config.model_dim = 5376;
+  config.vocab_size = 262144;  // new vocab size / tokenizer
+  config.seq_len = 32 * 1024;
+  LayerConfig layer_config = LayerConfigGemma3_27B_LM(config.model_dim);
+  config.layer_configs = {62, layer_config};
+  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // interleaved local / global attention
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<62, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+  return config;
+}
+
+static ModelConfig ConfigGemma3_27B() {
+  ModelConfig config = ConfigGemma3_27B_LM();
+  config.model_name = "Gemma3_27B";
+  config.model = Model::GEMMA3_27B;
+  AddVitConfig(config, /*image_size=*/896);
+  config.vocab_size = 262144;
+  config.vit_config.pool_dim = 4;
+  const size_t num_patches =
+      config.vit_config.image_size / config.vit_config.patch_width;
+  config.vit_config.seq_len = (num_patches * num_patches);
+  // The above resets optimized gating to false; for Gemma 3 it should be true.
+  for (auto& layer_config : config.layer_configs) {
+    layer_config.optimized_gating = true;
+  }
+  return config;
+}
+
 ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA_2B:
@@ -356,6 +536,14 @@ ModelConfig ConfigFromModel(Model model) {
       return ConfigPaliGemma2_10B_224();
     case Model::PALIGEMMA2_10B_448:
       return ConfigPaliGemma2_10B_448();
+    case Model::GEMMA3_4B:
+      return ConfigGemma3_4B();
+    case Model::GEMMA3_1B:
+      return ConfigGemma3_1B();
+    case Model::GEMMA3_12B:
+      return ConfigGemma3_12B();
+    case Model::GEMMA3_27B:
+      return ConfigGemma3_27B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
