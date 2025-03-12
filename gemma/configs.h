@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -236,6 +237,7 @@ struct VitConfig : public IFields {
     visitor(patch_width);
     visitor(image_size);
     visitor(layer_configs);
+    visitor(pool_dim);
   }
 
   uint32_t model_dim = 0;
@@ -243,6 +245,7 @@ struct VitConfig : public IFields {
   uint32_t num_scales = 0;
   uint32_t patch_width = 14;
   uint32_t image_size = 224;
+  uint32_t pool_dim = 1;
   std::vector<LayerConfig> layer_configs;
 };
 
@@ -304,6 +307,7 @@ struct ModelConfig : public IFields {
     visitor(attention_window_sizes);
     visitor(norm_num_groups);
     visitor(vit_config);
+    visitor(pool_dim);
   }
 
   // Major version of the model family. It is used as a fallback to distinguish
@@ -329,6 +333,7 @@ struct ModelConfig : public IFields {
   uint32_t norm_num_groups = 1;
   // Dimensions related to image processing.
   VitConfig vit_config;
+  uint32_t pool_dim = 1;  // used only for VitConfig copy
 };
 
 // Returns the config for the given model.

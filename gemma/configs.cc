@@ -290,6 +290,7 @@ ModelConfig GetVitConfig(const ModelConfig& config) {
   vit_config.model_dim = config.vit_config.model_dim;
   vit_config.seq_len = config.vit_config.seq_len;
   vit_config.layer_configs = config.vit_config.layer_configs;
+  vit_config.pool_dim = config.vit_config.pool_dim;
   // The Vit part does not have a vocabulary, the image patches are embedded.
   vit_config.vocab_size = 0;
   return vit_config;

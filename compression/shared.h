@@ -186,11 +186,16 @@ constexpr bool IsNuqStream() {
 }
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
-enum class PromptWrapping { GEMMA_IT, GEMMA_PT, PALIGEMMA };
+enum class PromptWrapping {
+  GEMMA_IT,
+  GEMMA_PT,
+  PALIGEMMA,
+  kSentinel  // must be last
+};
 
 inline bool EnumValid(PromptWrapping type) {
   return static_cast<int>(type) >= 0 &&
-         static_cast<int>(type) <= static_cast<int>(PromptWrapping::PALIGEMMA);
+         static_cast<int>(type) < static_cast<int>(PromptWrapping::kSentinel);
 }
 
 // Tensor types for loading weights. Note that not all types are supported as
