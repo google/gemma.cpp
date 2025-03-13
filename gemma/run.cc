@@ -217,8 +217,11 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
                    timing_info);
     std::cout << "\n\n";
 
-    // Prepare for the next turn.
+    // Prepare for the next turn. Works only for PaliGemma.
     if (!args.multiturn || model.Info().wrapping == PromptWrapping::PALIGEMMA) {
+      abs_pos = 0;  // Start a new turn at position 0.
+      InitGenerator(args, gen);
+    } else {
       // The last token was either EOS, then it should be ignored because it is
       // never part of the dialog, see Table 5 in the Gemma-2 paper:
       // https://arxiv.org/pdf/2408.00118

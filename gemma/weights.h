@@ -500,7 +500,9 @@ struct ModelWeightsPtrs {
       GEMMA_CALL_FUNC(vit_img_pos_embedding);
       GEMMA_CALL_FUNC(vit_img_head_bias);
       GEMMA_CALL_FUNC(vit_img_head_kernel);
-      GEMMA_CALL_FUNC(mm_embed_norm);
+
+      if (ptrs[0]->weights_config.wrapping == PromptWrapping::GEMMA_VLM)
+        GEMMA_CALL_FUNC(mm_embed_norm);
     }
 
     for (int layer_idx = 0; layer_idx < ptrs[0]->c_layers.size(); ++layer_idx) {
