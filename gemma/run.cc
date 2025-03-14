@@ -26,12 +26,12 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
+#include "ops/matmul.h"   // MatMulEnv
 #include "paligemma/image.h"
 #include "util/app.h"
 #include "util/args.h"  // HasHelp
 #include "util/threading.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 
@@ -248,11 +248,11 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
   // Note that num_threads is an upper bound; we also limit to the number of
   // detected and enabled cores.
-  NestedPools pools = CreatePools(app);
-  Allocator::Init(pools.Topology());
-
-  Gemma model = CreateGemma(loader, pools);
-  model.SetMatMulVerbosity(app.verbosity);
+  const BoundedTopology topology = CreateTopology(app);
+  NestedPools pools = CreatePools(topology, app);
+  MatMulEnv env(topology, pools);
+  if (app.verbosity >= 2) env.print_best = true;
+  Gemma model = CreateGemma(loader, env);
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 
@@ -279,7 +279,7 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
               << kAsciiArtBanner << "\n\n";
-    ShowConfig(loader, inference, app, pools);
+    ShowConfig(loader, inference, app, topology, pools);
     std::cout << "\n" << instructions << "\n";
   }
 

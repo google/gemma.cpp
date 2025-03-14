@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "gemma/gemma.h"
+#include "ops/matmul.h"
 #include "util/app.h"
 #include "util/threading.h"
 #include "hwy/base.h"
@@ -105,15 +106,12 @@ class GemmaEnv {
   KVCache& MutableKVCache() { return kv_caches_[0]; }
 
  private:
-  // Thread pool for running inference.
-  NestedPools pools_;
-  // Random number generator.
-  std::mt19937 gen_;
-  // The model to run inference on.
+  BoundedTopology topology_;
+  NestedPools pools_;  // Thread pool.
+  MatMulEnv env_;
+  std::mt19937 gen_;  // Random number generator.
   std::unique_ptr<Gemma> model_;
-  // KV caches, same number as query batch.
-  std::vector<KVCache> kv_caches_;
-  // Runtime config for inference.
+  std::vector<KVCache> kv_caches_;  // Same number as query batch.
   RuntimeConfig runtime_config_;
 };
 
@@ -121,7 +119,7 @@ class GemmaEnv {
 void LogSpeedStats(double time_start, size_t total_tokens);
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
-                NestedPools& pools);
+                const BoundedTopology& topology, NestedPools& pools);
 void ShowHelp(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app);
 
 }  // namespace gcpp

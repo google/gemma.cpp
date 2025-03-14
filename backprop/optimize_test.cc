@@ -41,9 +41,10 @@
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
-                    BoundedSlice(0, 1));
-  Allocator::Init(pools.Topology());
+  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1));
+  Allocator::Init(topology);
+  NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
+  MatMulEnv env(topology, pools);
   hwy::ThreadPool& pool = pools.Pool();
   std::mt19937 gen(42);
 
@@ -66,7 +67,7 @@ TEST(OptimizeTest, GradientDescent) {
       config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
 
-  Gemma gemma(GemmaTokenizer(), info, pools);
+  Gemma gemma(GemmaTokenizer(), info, env);
 
   const auto generate = [&](const std::vector<int>& prompt) {
     std::vector<int> reply;

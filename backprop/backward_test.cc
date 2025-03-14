@@ -35,7 +35,6 @@
 #include "ops/ops.h"
 #include "util/threading.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -59,9 +58,9 @@ void TestMatMulVJP() {
   static const size_t kRows = 8;
   static const size_t kCols = 64;
   static const size_t kTokens = 5;
-  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
-                          BoundedSlice(0, 8));
-  Allocator::Init(pools.Topology());
+  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
+  Allocator::Init(topology);
+  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", kRows, kCols);
   MatStorageT<float> x("x", kTokens, kCols);
@@ -105,9 +104,9 @@ void TestMultiHeadMatMulVJP() {
   static const size_t kCols = 16;
   static const size_t kHeads = 4;
   static const size_t kTokens = 3;
-  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
-                          BoundedSlice(0, 8));
-  Allocator::Init(pools.Topology());
+  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
+  Allocator::Init(topology);
+  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", kRows, kCols * kHeads);
   MatStorageT<float> x("x", kTokens, kCols * kHeads);
@@ -150,9 +149,9 @@ void TestMultiHeadMatMulVJP() {
 void TestRMSNormVJP() {
   static const size_t K = 2;
   static const size_t N = 64;
-  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
-                          BoundedSlice(0, 8));
-  Allocator::Init(pools.Topology());
+  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
+  Allocator::Init(topology);
+  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
   std::mt19937 gen(42);
   MatStorageT<float> weights("weights", N, 1);
   MatStorageT<float> x("x", K, N);
@@ -216,9 +215,9 @@ static ModelConfig TestConfig() {
 
 void TestEndToEnd() {
   std::mt19937 gen(42);
-  gcpp::NestedPools pools(1, /*pin=*/Tristate::kFalse, BoundedSlice(0, 1),
-                          BoundedSlice(0, 1));
-  Allocator::Init(pools.Topology());
+  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1));
+  Allocator::Init(topology);
+  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
   ModelConfig config = TestConfig();
   WeightsWrapper<float> weights(config);
   WeightsWrapper<float> grad(config);

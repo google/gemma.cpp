@@ -11,13 +11,11 @@ cc_library(
     hdrs = ["gemma.hpp"],
     deps = [
         "//:app",
-        "//:args",
-        "//:common",
         "//:gemma_lib",
+        "//:ops",
         "//:threading",
         "//:tokenizer",
         "@highway//:hwy",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -31,6 +29,7 @@ cc_binary(
         "//:args",
         "//:common",
         "//:gemma_lib",
+        "//:ops",
         "//:threading",
         "//:tokenizer",
         "@highway//:hwy",

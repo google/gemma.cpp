@@ -17,12 +17,11 @@
 
 #include <stdio.h>
 
-#include <atomic>
-#include <vector>
-
 #include "util/basics.h"  // MaybeCheckInitialized
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/futex.h"
+#include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/per_target.h"  // VectorBytes
 
 // To avoid a dependency on libnuma, use syscalls directly. We require six
@@ -52,6 +51,7 @@
 #include <sys/syscall.h>
 
 #include <cerrno>
+#include <vector>
 #endif  // GEMMA_BIND && HWY_OS_LINUX
 
 namespace gcpp {
@@ -166,7 +166,7 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
     auto call_free = [](void* ptr, size_t /*bytes*/) {
       hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
     };
-    return PtrAndDeleter{p.release(), Deleter(call_free, bytes)};
+    return PtrAndDeleter{p.release(), DeleterFree(call_free, bytes)};
   }
 
   // Binding, or large vector/cache line size: use platform-specific allocator.
@@ -186,14 +186,14 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
     const int ret = munmap(ptr, bytes);
     HWY_ASSERT(ret == 0);
   };
-  return PtrAndDeleter{p, Deleter(call_munmap, bytes)};
+  return PtrAndDeleter{p, DeleterFree(call_munmap, bytes)};
 #elif HWY_OS_WIN
   const auto call_free = [](void* ptr, size_t) { _aligned_free(ptr); };
   const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
   return PtrAndDeleter{_aligned_malloc(bytes, alignment),
-                       Deleter(call_free, bytes)};
+                       DeleterFree(call_free, bytes)};
 #else
-  return PtrAndDeleter{nullptr, Deleter(nullptr, 0)};
+  return PtrAndDeleter{nullptr, DeleterFree(nullptr, 0)};
 #endif
 }
 
@@ -288,7 +288,7 @@ bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) {
       CountBusyPages(num_pages, node, pages.data(), status.data());
   if (HWY_UNLIKELY(num_busy != 0)) {
     // Trying again is usually enough to succeed.
-    usleep(5);  // NOLINT(runtime/sleep)
+    hwy::NanoSleep(5000);
     (void)SyscallWrappers::move_pages(
         /*pid=*/0, num_pages, pages.data(), nodes.data(), status.data(), flags);
     const size_t still_busy =

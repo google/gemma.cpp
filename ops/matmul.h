@@ -28,10 +28,10 @@
 #include "util/allocator.h"
 #include "util/basics.h"
 #include "util/threading.h"
+#include "util/topology.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 // IWYU pragma: end_exports
 
@@ -51,7 +51,9 @@ class MMParallel {
  public:
   static constexpr size_t kMaxPackages = 4;
 
-  MMParallel(NestedPools& pools) : pools_(pools) {
+  // Both references must outlive this object.
+  MMParallel(const BoundedTopology& topology, NestedPools& pools)
+      : topology_(topology), pools_(pools) {
     HWY_DASSERT(pools_.NumPackages() <= kMaxPackages);
   }
 
@@ -64,7 +66,7 @@ class MMParallel {
 
   // For `BindB` and `BindC`.
   size_t Node(size_t pkg_idx) const {
-    return pools_.Topology().GetCluster(pkg_idx, 0).Node();
+    return topology_.GetCluster(pkg_idx, 0).Node();
   }
 
   // Calls `func(pkg_idx)` for each package in parallel.
@@ -167,6 +169,7 @@ class MMParallel {
   }
 
  private:
+  const BoundedTopology& topology_;
   NestedPools& pools_;
 };
 
@@ -603,7 +606,7 @@ struct MMPerKey {
 
 // Stores state shared across MatMul calls. Non-copyable.
 struct MatMulEnv {
-  explicit MatMulEnv(NestedPools& pools);
+  explicit MatMulEnv(const BoundedTopology& topology, NestedPools& pools);
 
   bool have_timer_stop = false;
 

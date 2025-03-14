@@ -56,8 +56,9 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
                    const AppArgs& app)
-    : pools_(CreatePools(app)) {
-  Allocator::Init(pools_.Topology());
+    : topology_(CreateTopology(app)),
+      pools_(CreatePools(topology_, app)),
+      env_(topology_, pools_) {
   InferenceArgs mutable_inference = inference;
   AbortIfInvalidArgs(mutable_inference);
   LoaderArgs mutable_loader = loader;
@@ -66,7 +67,7 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const InferenceArgs& inference,
     fprintf(stderr, "Skipping model load because: %s\n", err);
   } else {
     fprintf(stderr, "Loading model...\n");
-    model_ = AllocateGemma(mutable_loader, pools_);
+    model_ = AllocateGemma(mutable_loader, env_);
     // Only allocate one for starters because GenerateBatch might not be called.
     kv_caches_.resize(1);
     kv_caches_[0] = KVCache::Create(model_->GetModelConfig(),
@@ -236,7 +237,7 @@ std::string CacheString() {
 }
 
 void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
-                NestedPools& pools) {
+                const BoundedTopology& topology, NestedPools& pools) {
   loader.Print(app.verbosity);
   inference.Print(app.verbosity);
   app.Print(app.verbosity);
@@ -255,7 +256,7 @@ void ShowConfig(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app,
             "Compiled config               : %s\n"
             "Weight Type                   : %s\n"
             "EmbedderInput Type            : %s\n",
-            dt, cpu100, pools.TopologyString(), pools.PinString(),
+            dt, cpu100, topology.TopologyString(), pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
             hwy::VectorBytes() * 8, CompiledConfig(),
             StringFromType(loader.Info().weight), TypeName<EmbedderInputT>());

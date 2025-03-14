@@ -411,7 +411,8 @@ IndexRangePartition MMParallel::RangesOfNP(size_t max_packages, size_t N,
                          NPMultiple(N, sizeof_TC, nr, num_packages));
 }
 
-MatMulEnv::MatMulEnv(NestedPools& pools) : parallel(pools), storage(parallel) {
+MatMulEnv::MatMulEnv(const BoundedTopology& topology, NestedPools& pools)
+    : parallel(topology, pools), storage(parallel) {
   // Ensure Allocator:Init was called.
   HWY_ASSERT(Allocator::LineBytes() != 0 && Allocator::VectorBytes() != 0);
 

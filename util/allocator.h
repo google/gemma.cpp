@@ -22,12 +22,11 @@
 #include <stdint.h>
 
 // IWYU pragma: begin_exports
-#include <memory>
+#include <memory>  // std::unique_ptr
 
 #include "util/basics.h"
-#include "util/threading.h"
+#include "util/topology.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 // IWYU pragma: end_exports
 
 #include "hwy/aligned_allocator.h"
@@ -38,12 +37,12 @@ namespace gcpp {
 // `bytes` argument is required for the latter.
 using FreeFunc = void (*)(void* mem, size_t bytes);
 
-// Custom deleter for std::unique_ptr that calls `FreeFunc`.
-class Deleter {
+// Custom deleter for std::unique_ptr that calls `FreeFunc`. T is POD.
+class DeleterFree {
  public:
   // `MatStorageT` requires this to be default-constructible.
-  Deleter() : free_func_(nullptr), bytes_(0) {}
-  Deleter(FreeFunc free_func, size_t bytes)
+  DeleterFree() : free_func_(nullptr), bytes_(0) {}
+  DeleterFree(FreeFunc free_func, size_t bytes)
       : free_func_(free_func), bytes_(bytes) {}
 
   template <typename T>
@@ -56,9 +55,31 @@ class Deleter {
   size_t bytes_;
 };
 
+// Wrapper that also calls the destructor for non-POD T.
+class DeleterDtor {
+ public:
+  DeleterDtor() {}
+  DeleterDtor(size_t num, DeleterFree free) : num_(num), free_(free) {}
+
+  template <typename T>
+  void operator()(T* p) const {
+    for (size_t i = 0; i < num_; ++i) {
+      p[i].~T();
+    }
+    free_(p);
+  }
+
+ private:
+  size_t num_;  // not the same as free_.bytes_ / sizeof(T)!
+  DeleterFree free_;
+};
+
 // Unique (move-only) pointer to an aligned array of POD T.
 template <typename T>
-using AlignedPtr = std::unique_ptr<T[], Deleter>;
+using AlignedPtr = std::unique_ptr<T[], DeleterFree>;
+// Unique (move-only) pointer to an aligned array of non-POD T.
+template <typename T>
+using AlignedClassPtr = std::unique_ptr<T[], DeleterDtor>;
 
 // Both allocation, binding, and row accessors depend on the sizes of memory
 // pages and cache lines. To avoid having to pass `Allocator&` everywhere, we
@@ -105,6 +126,26 @@ class Allocator {
     return AlignedPtr<T>(static_cast<T*>(pd.p), pd.deleter);
   }
 
+  // Same as Alloc, but calls constructor(s) with `args`.
+  template <typename T, class... Args>
+  static AlignedClassPtr<T> AllocClasses(size_t num, Args&&... args) {
+    constexpr size_t kSize = sizeof(T);
+    constexpr bool kIsPow2 = (kSize & (kSize - 1)) == 0;
+    constexpr size_t kBits = hwy::detail::ShiftCount(kSize);
+    static_assert(!kIsPow2 || (1ull << kBits) == kSize, "ShiftCount has a bug");
+    const size_t bytes = kIsPow2 ? num << kBits : num * kSize;
+    // Fail if the `bytes = num * kSize` computation overflowed.
+    const size_t check = kIsPow2 ? bytes >> kBits : bytes / kSize;
+    if (check != num) return AlignedClassPtr<T>();
+
+    PtrAndDeleter pd = AllocBytes(bytes);
+    T* p = static_cast<T*>(pd.p);
+    for (size_t i = 0; i < num; ++i) {
+      new (p + i) T(std::forward<Args>(args)...);
+    }
+    return AlignedClassPtr<T>(p, DeleterDtor(num, pd.deleter));
+  }
+
   // Returns whether `BindMemory` can/should be called, i.e. we have page-level
   // control over memory placement and multiple packages and NUMA nodes.
   static bool ShouldBind();
@@ -119,7 +160,7 @@ class Allocator {
   // Type-erased so this can be implemented in allocator.cc.
   struct PtrAndDeleter {
     void* p;
-    Deleter deleter;
+    DeleterFree deleter;
   };
   static PtrAndDeleter AllocBytes(size_t bytes);
 };

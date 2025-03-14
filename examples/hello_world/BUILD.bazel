@@ -13,7 +13,6 @@ cc_binary(
         # Placeholder for internal dep, do not remove.,
         "//:app",
         "//:args",
-        "//:common",
         "//:gemma_lib",
         "//:threading",
         "//:tokenizer",

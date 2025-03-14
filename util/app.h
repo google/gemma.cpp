@@ -117,12 +117,15 @@ class AppArgs : public ArgsBase<AppArgs> {
   }
 };
 
-// Callers must call Allocator::Init(pools.Topology()) after this.
-static inline NestedPools CreatePools(const AppArgs& app) {
-  return NestedPools(app.max_threads, app.pin,
-                     BoundedSlice(app.skip_packages, app.max_packages),
-                     BoundedSlice(app.skip_clusters, app.max_clusters),
-                     BoundedSlice(app.skip_lps, app.max_lps));
+static inline BoundedTopology CreateTopology(const AppArgs& app) {
+  return BoundedTopology(BoundedSlice(app.skip_packages, app.max_packages),
+                         BoundedSlice(app.skip_clusters, app.max_clusters),
+                         BoundedSlice(app.skip_lps, app.max_lps));
+}
+static inline NestedPools CreatePools(const BoundedTopology& topology,
+                                      const AppArgs& app) {
+  Allocator::Init(topology);
+  return NestedPools(topology, app.max_threads, app.pin);
 }
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
@@ -224,24 +227,26 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   ModelInfo info_;
 };
 
-static inline Gemma CreateGemma(const LoaderArgs& loader, NestedPools& pools) {
+// `env` must remain valid for the lifetime of the Gemma.
+static inline Gemma CreateGemma(const LoaderArgs& loader, MatMulEnv& env) {
   if (Type::kUnknown == loader.Info().weight ||
       Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
     // New weights file format doesn't need tokenizer path or model/weightinfo.
-    return Gemma(loader.weights, pools);
+    return Gemma(loader.weights, env);
   }
-  return Gemma(loader.tokenizer, loader.weights, loader.Info(), pools);
+  return Gemma(loader.tokenizer, loader.weights, loader.Info(), env);
 }
 
+// `env` must remain valid for the lifetime of the Gemma.
 static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
-                                                   NestedPools& pools) {
+                                                   MatMulEnv& env) {
   if (Type::kUnknown == loader.Info().weight ||
       Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
     // New weights file format doesn't need tokenizer path or model/weight info.
-    return std::make_unique<Gemma>(loader.weights, pools);
+    return std::make_unique<Gemma>(loader.weights, env);
   }
   return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
-                                 loader.Info(), pools);
+                                 loader.Info(), env);
 }
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

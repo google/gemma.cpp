@@ -22,10 +22,17 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include "util/allocator.h"
+#include "util/basics.h"
 #include "hwy/aligned_allocator.h"
+#include "hwy/auto_tune.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/nanobenchmark.h"
+#include "hwy/nanobenchmark.h"  // Unpredictable1
+#include "hwy/robust_statistics.h"
+#include "hwy/stats.h"
+#include "hwy/tests/test_util.h"  // AdjustedReps
+#include "hwy/timer.h"
 
 namespace gcpp {
 namespace {
@@ -253,80 +260,150 @@ TEST(ThreadingTest, TestParallelizeTwoRanges) {
   }
 }
 
-// Governs duration of test; avoid timeout in debug builds.
-#if HWY_IS_DEBUG_BUILD
-constexpr size_t kMaxEvals = 2;
-#else
-constexpr size_t kMaxEvals = 8;
-#endif
-
 static constexpr size_t kU64PerThread = HWY_ALIGNMENT / sizeof(size_t);
 static uint64_t outputs[hwy::kMaxLogicalProcessors * kU64PerThread];
 
-hwy::FuncOutput ForkJoin(const void* opaque, hwy::FuncInput in) {
-  hwy::ThreadPool& pool =
-      *reinterpret_cast<hwy::ThreadPool*>(const_cast<void*>(opaque));
-  pool.Run(0, in, [&](uint64_t task, size_t thread) {
-    outputs[thread * kU64PerThread] = in;
-  });
-  return in;
+std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
+  // Governs duration of test; avoid timeout in debug builds.
+  const size_t max_reps = hwy::AdjustedReps(50 * 1000);
+
+  std::vector<uint64_t> times;
+  times.reserve(max_reps);
+
+  const size_t base = hwy::Unpredictable1();
+
+  const double t0 = hwy::platform::Now();
+  for (size_t reps = 0; reps < 1200; ++reps) {
+    pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
+      outputs[thread * kU64PerThread] = base + thread;
+    });
+    hwy::PreventElision(outputs[base]);
+    if (pool.AutoTuneComplete()) break;
+  }
+  const double t1 = hwy::platform::Now();
+
+// TODO(janwas): enable after Highway update
+#if 0
+  if (pool.AutoTuneComplete()) {
+    hwy::Span<hwy::CostDistribution> cd = pool.AutoTuneCosts();
+    std::vector<double> costs;
+    costs.reserve(cd.size());
+    double min_cost = hwy::HighestValue<double>();
+    for (size_t i = 0; i < cd.size(); ++i) {
+      costs.push_back(cd[i].EstimateCost());
+      min_cost = HWY_MIN(min_cost, costs.back());
+    }
+    // Harmonic mean = reciprocal of the arithmetic mean of the reciprocals.
+    double sum_recip_speedup = 0.0;
+    size_t count_sum = 0;
+    for (size_t i = 0; i < costs.size(); ++i) {
+      if (costs[i] == min_cost) continue;
+      const double speedup = costs[i] / min_cost;
+      HWY_ASSERT(speedup > 1.0);
+      sum_recip_speedup += 1.0 / speedup;
+      ++count_sum;
+    }
+    const double harm_mean_speedup =
+        static_cast<double>(count_sum / sum_recip_speedup);
+    fprintf(stderr, "\nAuto-tuning took %f ms; harm. mean speedup: %f.\n",
+            (t1 - t0) * 1E3, harm_mean_speedup);
+  } else {
+    HWY_WARN("Auto-tuning did not complete yet.");
+  }
+#else
+  (void)t0;
+  (void)t1;
+#endif
+
+  char cpu100[100];
+  static const bool have_stop = hwy::platform::HaveTimerStop(cpu100);
+  if (have_stop) {
+    for (size_t rep = 0; rep < max_reps; ++rep) {
+      const uint64_t t0 = hwy::timer::Start();
+      pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
+        outputs[thread * kU64PerThread] = base + thread;
+      });
+      const uint64_t t1 = hwy::timer::Stop();
+      times.push_back(t1 - t0);
+    }
+  } else {
+    for (size_t rep = 0; rep < max_reps; ++rep) {
+      const uint64_t t0 = hwy::timer::Start();
+      pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
+        outputs[thread * kU64PerThread] = base + thread;
+      });
+      const uint64_t t1 = hwy::timer::Start();
+      times.push_back(t1 - t0);
+    }
+  }
+  return times;
 }
 
 TEST(ThreadingTest, BenchJoin) {
-  constexpr size_t kInputs = 1;
-  static hwy::FuncInput inputs[kInputs];
-
   const auto measure = [&](hwy::ThreadPool& pool, bool spin,
                            const char* caption) {
-    inputs[0] =
-        static_cast<hwy::FuncInput>(hwy::Unpredictable1() * pool.NumWorkers());
-    hwy::Result results[kInputs];
-    hwy::Params params;
-    params.verbose = false;
-    params.max_evals = kMaxEvals;
-
     // Only spin for the duration of the benchmark to avoid wasting energy and
     // interfering with the other pools.
     if (spin) {
       pool.SetWaitMode(hwy::PoolWaitMode::kSpin);
     }
-    const size_t num_results =
-        Measure(&ForkJoin, reinterpret_cast<const uint8_t*>(&pool), inputs,
-                kInputs, results, params);
+    std::vector<uint64_t> times = MeasureForkJoin(pool);
+    // Capture before SetWaitMode changes it.
+    const hwy::pool::Config config = pool.config();
     if (spin) {
       pool.SetWaitMode(hwy::PoolWaitMode::kBlock);
     }
 
-    for (size_t i = 0; i < num_results; ++i) {
-      printf("%-20s: %5d: %6.2f us; MAD=%4.2f%%\n", caption,
-             static_cast<int>(results[i].input),
-             results[i].ticks / hwy::platform::InvariantTicksPerSecond() * 1E6,
-             results[i].variability * 100.0);
+    const uint64_t median =
+        hwy::robust_statistics::Median(times.data(), times.size());
+    const uint64_t mode =
+        hwy::robust_statistics::ModeOfSorted(times.data(), times.size());
+    // Trim upper half and lower quarter to reduce outliers before Stats.
+    const size_t quarter = times.size() / 4;
+    times.erase(times.begin() + 2 * quarter, times.end());
+    times.erase(times.begin(), times.begin() + quarter);
+
+    hwy::Stats stats;
+    for (uint64_t t : times) {
+      stats.Notify(static_cast<float>(t));
     }
+
+    fprintf(stderr, "%-20s: %3d: %6.2f %6.2f us %s\n", caption,
+            static_cast<int>(pool.NumWorkers()),
+            median / hwy::platform::InvariantTicksPerSecond() * 1E6,
+            mode / hwy::platform::InvariantTicksPerSecond() * 1E6,
+            config.ToString().c_str());
+    fprintf(stderr, "%s\n", stats.ToString().c_str());
 
     // Verify outputs to ensure the measured code is not a no-op.
     for (size_t lp = 0; lp < pool.NumWorkers(); ++lp) {
-      HWY_ASSERT(outputs[lp * kU64PerThread] == pool.NumWorkers());
+      HWY_ASSERT(outputs[lp * kU64PerThread] >= 1);
+      HWY_ASSERT(outputs[lp * kU64PerThread] <= 1 + pool.NumWorkers());
       for (size_t i = 1; i < kU64PerThread; ++i) {
         HWY_ASSERT(outputs[lp * kU64PerThread + i] == 0);
       }
     }
   };
 
-  NestedPools pools(0);
+  BoundedTopology topology;
+  Allocator::Init(topology, true);
+  NestedPools pools(topology);
+  // Use last package because the main thread has been pinned to it.
+  const size_t pkg_idx = pools.NumPackages() - 1;
+
   measure(pools.AllPackages(), false, "block packages");
-  if (pools.AllClusters(0).NumWorkers() > 1) {
-    measure(pools.AllClusters(0), false, "block clusters");
+  if (pools.AllClusters(pkg_idx).NumWorkers() > 1) {
+    measure(pools.AllClusters(pkg_idx), false, "block clusters");
   }
-  measure(pools.Cluster(0, 0), false, "block in_cluster");
+  measure(pools.Cluster(pkg_idx, 0), false, "block in_cluster");
 
   if (pools.AllPinned()) {
     const bool kSpin = true;
     measure(pools.AllPackages(), kSpin, "spin packages");
-    if (pools.AllClusters(0).NumWorkers() > 1) {
-      measure(pools.AllClusters(0), kSpin, "spin clusters");
+    if (pools.AllClusters(pkg_idx).NumWorkers() > 1) {
+      measure(pools.AllClusters(pkg_idx), kSpin, "spin clusters");
     }
-    measure(pools.Cluster(0, 0), kSpin, "spin in_cluster");
+    measure(pools.Cluster(pkg_idx, 0), kSpin, "spin in_cluster");
   }
 }
 

@@ -202,8 +202,9 @@ void ReadAndCompareBlobs(const char* path1, const char* path2) {
   if (!CompareKeys(reader1, reader2)) return;
 
   // Single allocation, avoid initializing the memory.
-  NestedPools pools(0);
-  Allocator::Init(pools.Topology());
+  BoundedTopology topology;
+  Allocator::Init(topology);
+  NestedPools pools(topology);
   const size_t total_bytes = TotalBytes(reader1) + TotalBytes(reader2);
   BytePtr all_blobs = hwy::AllocateAligned<uint8_t>(total_bytes);
   size_t pos = 0;

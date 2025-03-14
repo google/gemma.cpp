@@ -25,10 +25,10 @@
 
 #include "third_party/gemma_cpp/gemma/gemma.h"
 #include "third_party/gemma_cpp/gemma/tokenizer.h"
+#include "third_party/gemma_cpp/ops/matmul.h"
 #include "third_party/gemma_cpp/util/app.h"  // LoaderArgs
 #include "third_party/gemma_cpp/util/threading.h"
 #include "third_party/highway/hwy/base.h"
-#include "third_party/highway/hwy/contrib/thread_pool/thread_pool.h"
 
 class SimplifiedGemma {
  public:
@@ -38,8 +38,10 @@ class SimplifiedGemma {
       : loader_(loader),
         inference_(inference),
         app_(app),
-        pools_(gcpp::CreatePools(app_)),
-        model_(gcpp::CreateGemma(loader_, pools_)) {
+        topology_(gcpp::CreateTopology(app_)),
+        pools_(gcpp::CreatePools(topology_, app_)),
+        env_(topology_, pools_),
+        model_(gcpp::CreateGemma(loader_, env_)) {
     Init();
   }
 
@@ -47,14 +49,14 @@ class SimplifiedGemma {
       : loader_(argc, argv, /*validate=*/true),
         inference_(argc, argv),
         app_(argc, argv),
-        pools_(gcpp::CreatePools(app_)),
-        model_(gcpp::CreateGemma(loader_, pools_)) {
+        topology_(gcpp::CreateTopology(app_)),
+        pools_(gcpp::CreatePools(topology_, app_)),
+        env_(topology_, pools_),
+        model_(gcpp::CreateGemma(loader_, env_)) {
     Init();
   }
 
   void Init() {
-    gcpp::Allocator::Init(pools_.Topology());
-
     // Instantiate model and KV Cache
     kv_cache_ = gcpp::KVCache::Create(model_.GetModelConfig(),
                                       inference_.prefill_tbatch_size);
@@ -106,7 +108,9 @@ class SimplifiedGemma {
   gcpp::LoaderArgs loader_;
   gcpp::InferenceArgs inference_;
   gcpp::AppArgs app_;
+  gcpp::BoundedTopology topology_;
   gcpp::NestedPools pools_;
+  gcpp::MatMulEnv env_;
   gcpp::Gemma model_;
   gcpp::KVCache kv_cache_;
   std::mt19937 gen_;

@@ -58,9 +58,10 @@ int main(int argc, char** argv) {
   }
 
   // Instantiate model and KV Cache
-  gcpp::NestedPools pools = gcpp::CreatePools(app);
-  gcpp::Allocator::Init(pools.Topology());
-  gcpp::Gemma model = gcpp::CreateGemma(loader, pools);
+  gcpp::BoundedTopology topology(gcpp::CreateTopology(app));
+  gcpp::NestedPools pools = gcpp::CreatePools(topology, app);
+  gcpp::MatMulEnv env(topology, pools);
+  gcpp::Gemma model = gcpp::CreateGemma(loader, env);
   gcpp::KVCache kv_cache =
       gcpp::KVCache::Create(model.GetModelConfig(),
                             inference.prefill_tbatch_size);

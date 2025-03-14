@@ -312,22 +312,22 @@ void TestTiny() {
   if (HWY_TARGET != first_target) return;
 
   for (size_t max_packages : {1, 2}) {
+    const BoundedTopology topology(BoundedSlice(0, max_packages));
+    Allocator::Init(topology, /*enable_bind=*/true);
     const size_t max_threads = 0;  // no limit
-    NestedPools pools(max_threads, Tristate::kDefault,
-                      BoundedSlice(0, max_packages));
+    NestedPools pools(topology, max_threads, Tristate::kDefault);
 #if GEMMA_DISABLE_TOPOLOGY
     if (max_packages == 2) break;  // we only have one package
 #else
     // If less than the limit, we have already tested all num_packages.
-    if (pools.Topology().FullTopology().packages.size() < max_packages) break;
+    if (topology.FullTopology().packages.size() < max_packages) break;
 #endif
     fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
-            pools.TopologyString(), pools.PinString());
+            topology.TopologyString(), pools.PinString());
 
     Tristate use_spinning = Tristate::kDefault;
     pools.MaybeStartSpinning(use_spinning);
-    Allocator::Init(pools.Topology(), /*enable_bind=*/true);
-    MatMulEnv env(pools);
+    MatMulEnv env(topology, pools);
 
     for (size_t M = 1; M <= 12; ++M) {
       for (size_t K = 1; K <= 64; K *= 2) {
@@ -347,11 +347,12 @@ void TestAllMatMul() {
     return;
   }
 
-  NestedPools pools(0);  // no limits
+  const BoundedTopology topology;
+  Allocator::Init(topology, /*enable_bind=*/true);
+  NestedPools pools(topology);
   Tristate use_spinning = Tristate::kDefault;
   pools.MaybeStartSpinning(use_spinning);
-  Allocator::Init(pools.Topology(), /*enable_bind=*/true);
-  MatMulEnv env(pools);
+  MatMulEnv env(topology, pools);
 
   // Sizes seen in gemma_test 2B. Too slow for CI, enable on-demand.
   TestMatMul<F32>(1, 2048, 512, /*add=*/false, env, __LINE__);

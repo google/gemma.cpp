@@ -1000,8 +1000,9 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
-    NestedPools pools = CreatePools(AppArgs());
-    Allocator::Init(pools.Topology());
+    const AppArgs app;
+    BoundedTopology topology(CreateTopology(app));
+    NestedPools pools = CreatePools(topology, app);
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);
@@ -1109,9 +1110,9 @@ void TestAllDot() {
 
     constexpr size_t kReps = hn::AdjustedReps(40);
     const size_t num = 24 * 1024;
-    NestedPools pools(kMaxWorkers - 1, /*pin=*/Tristate::kDefault,
-                      BoundedSlice(0, 1), BoundedSlice(0, 1));
-    Allocator::Init(pools.Topology());
+    const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1),
+                                   BoundedSlice());
+    NestedPools pools(topology, kMaxWorkers - 1, /*pin=*/Tristate::kDefault);
     RowVectorBatch<float> a(Extents2D(kMaxWorkers, num));
     RowVectorBatch<float> b(Extents2D(kMaxWorkers, num));
     RowVectorBatch<double> bufs(Extents2D(kMaxWorkers, num));

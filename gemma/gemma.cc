@@ -34,29 +34,27 @@
 #include "ops/ops-inl.h"
 #include "paligemma/image.h"
 #include "util/threading.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 
 namespace gcpp {
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
-             const ModelInfo& info, NestedPools& pools)
-    : env_(pools), tokenizer_(tokenizer_path) {
+             const ModelInfo& info, MatMulEnv& env)
+    : env_(env), tokenizer_(tokenizer_path) {
   model_.Load(weights, info.model, info.weight, info.wrapping,
               env_.parallel.Pools().Pool(0),
               /*tokenizer_proto=*/nullptr);
 }
 
-Gemma::Gemma(const Path& weights, NestedPools& pools) : env_(pools) {
+Gemma::Gemma(const Path& weights, MatMulEnv& env) : env_(env) {
   std::string tokenizer_proto;
   model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
               env_.parallel.Pools().Pool(0), &tokenizer_proto);
   tokenizer_.Deserialize(tokenizer_proto);
 }
 
-Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info,
-             NestedPools& pools)
-    : env_(pools), tokenizer_(std::move(tokenizer)) {
+Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env)
+    : env_(env), tokenizer_(std::move(tokenizer)) {
   HWY_ASSERT(info.weight == Type::kF32);
   model_.Allocate(info.model, info.weight, env_.parallel.Pools().Pool(0));
 }

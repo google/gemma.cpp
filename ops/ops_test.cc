@@ -37,6 +37,7 @@
 #include "util/allocator.h"
 #include "util/app.h"
 #include "util/test_util.h"
+#include "util/threading.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -387,8 +388,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  NestedPools pools = CreatePools(AppArgs());
-  Allocator::Init(pools.Topology());
+  AppArgs app;
+  BoundedTopology topology = CreateTopology(app);
+  NestedPools pools = CreatePools(topology, app);
 
   ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
   int dim_qkv = config.layer_configs[0].qkv_dim;

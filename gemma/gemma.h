@@ -33,8 +33,6 @@
 #include "paligemma/image.h"
 #include "util/allocator.h"  // RowVectorBatch
 #include "util/basics.h"     // TokenAndProb
-#include "util/threading.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"  // Span
@@ -198,12 +196,14 @@ struct TimingInfo {
 class Gemma {
  public:
   // Reads old format weights file and tokenizer file.
+  // `env` must remain valid for the lifetime of this Gemma.
   Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
-        NestedPools& pools);
+        MatMulEnv& env);
   // Reads new format weights file that contains everything in a single file.
-  Gemma(const Path& weights, NestedPools& pools);
+  // `env` must remain valid for the lifetime of this Gemma.
+  Gemma(const Path& weights, MatMulEnv& env);
   // Allocates weights, caller is responsible for filling them.
-  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, NestedPools& pools);
+  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env);
   ~Gemma();
 
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
@@ -252,12 +252,8 @@ class Gemma {
   void GenerateImageTokens(const RuntimeConfig& runtime_config,
                            const Image& image, ImageTokens& image_tokens);
 
-  void SetMatMulVerbosity(int verbosity) {
-    if (verbosity >= 2) env_.print_best = true;
-  }
-
  private:
-  MatMulEnv env_;
+  MatMulEnv& env_;
 
   GemmaTokenizer tokenizer_;
   // Type-erased so that this can be defined in the header.

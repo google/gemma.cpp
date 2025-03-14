@@ -212,7 +212,7 @@ void BenchAllMatMul() {
 
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
   if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSSE3 ||
-      HWY_TARGET == HWY_SSE2) {
+      HWY_TARGET == HWY_SSE2 || HWY_TARGET == HWY_NEON_WITHOUT_AES) {
     return;
   }
 
@@ -220,13 +220,13 @@ void BenchAllMatMul() {
   const BoundedSlice package_slice;  // all packages/sockets
   const BoundedSlice cluster_slice;  // all clusters/CCX
   const BoundedSlice lp_slice;       // default to all cores (per package).
-  NestedPools pools(max_threads, Tristate::kDefault, package_slice,
-                    cluster_slice, lp_slice);
-  fprintf(stderr, "BenchAllMatMul %s %s\n", pools.TopologyString(),
+  const BoundedTopology topology(package_slice, cluster_slice, lp_slice);
+  Allocator::Init(topology, /*enable_bind=*/true);
+  NestedPools pools(topology, max_threads, Tristate::kDefault);
+  fprintf(stderr, "BenchAllMatMul %s %s\n", topology.TopologyString(),
           pools.PinString());
 
-  Allocator::Init(pools.Topology(), /*enable_bind=*/true);
-  MatMulEnv env(pools);
+  MatMulEnv env(topology, pools);
 
   for (size_t batch_size : {1, 4, 128, 512}) {
     constexpr bool kAdd = false;
