@@ -80,7 +80,7 @@ constexpr PromptWrapping kPromptWrapping[] = {
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 3B 224/448
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 10B 224/448
     PromptWrapping::GEMMA_VLM,                             // Gemma3 4B
-    PromptWrapping::GEMMA_PT,                              // Gemma3 1B
+    PromptWrapping::GEMMA_IT,                              // Gemma3 1B
     PromptWrapping::GEMMA_VLM,                             // Gemma3 12B
     PromptWrapping::GEMMA_VLM,                             // Gemma3 27B
 };
