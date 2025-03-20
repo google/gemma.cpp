@@ -347,6 +347,12 @@ instruction-tuned and thus does not respond to instructions. Make sure you are
 using an instruction-tuned model (`2b-it-sfp`, `2b-it`, `7b-it-sfp`, `7b-it`)
 and not a pre-trained model (any model with a `-pt` suffix).
 
+**What sequence lengths are supported?**
+
+See `seq_len` in `configs.cc`. For the Gemma 3 models larger than 1B, this is
+typically 32K but 128K would also work given enough RAM. Note that long
+sequences will be slow due to the quadratic cost of attention.
+
 **How do I convert my fine-tune to a `.sbs` compressed model file?**
 
 For PaliGemma (1 and 2) checkpoints, you can use
@@ -372,15 +378,17 @@ pytorch checkpoint. (The code may need updates to work with Gemma-2 models.)
 
 **What are some easy ways to make the model run faster?**
 
-1. Make sure you are using the 8-bit switched floating point `-sfp` models.
-2. If you're on a laptop, make sure power mode is set to maximize performance
-and saving mode is **off**. For most laptops, the power saving modes get
-activated automatically if the computer is not plugged in.
-3. Close other unused cpu-intensive applications.
-4. On macs, anecdotally we observe a "warm-up" ramp-up in speed as performance
-cores get engaged.
-5. Experiment with the `--num_threads` argument value. Depending on the device,
-larger numbers don't always mean better performance.
+1.  Make sure you are using the 8-bit switched floating point `-sfp` models.
+    These are half the size of bf16 and thus use less memory bandwidth and cache
+    space.
+2.  If you're on a laptop, make sure power mode is set to maximize performance
+    and saving mode is **off**. For most laptops, the power saving modes get
+    activated automatically if the computer is not plugged in.
+3.  Close other unused cpu-intensive applications.
+4.  On macs, anecdotally we observe a "warm-up" ramp-up in speed as performance
+    cores get engaged.
+5.  Experiment with the `--num_threads` argument value. Depending on the device,
+    larger numbers don't always mean better performance.
 
 We're also working on algorithmic and optimization approaches for faster
 inference, stay tuned.
