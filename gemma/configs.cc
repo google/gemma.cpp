@@ -195,6 +195,8 @@ static ModelConfig ConfigGemmaTiny() {
   config.attention_window_sizes = FixedAttentionWindowSizes<3>(32);
   // This is required for optimize_test to pass.
   config.final_cap = 30.0f;
+  config.eos_id = 11;
+  config.secondary_eos_id = 11;
   return config;
 }
 
@@ -333,6 +335,8 @@ static ModelConfig ConfigBaseGemmaV3() {
   ModelConfig config = ConfigNoSSM();
   config.att_cap = 0.0f;
   config.final_cap = 0.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 106;
   return config;
 }
 

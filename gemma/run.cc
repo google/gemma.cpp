@@ -118,7 +118,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   // callback function invoked for each generated token.
   auto stream_token = [&](int token, float) {
     ++abs_pos;
-    if (token == EOS_ID) {
+    if (model.GetModelConfig().IsEOS(token)) {
       if (app.verbosity >= 2) {
         std::cout << "\n[ End ]\n";
       }

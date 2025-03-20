@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     ++generated;
     if (generated < prompt_size) {
       // print feedback
-    } else if (token != gcpp::EOS_ID) {
+    } else if (!model.GetModelConfig().IsEOS(token)) {
       std::string token_text;
       HWY_ASSERT(model.Tokenizer().Decode({token}, &token_text));
       std::cout << token_text << std::flush;

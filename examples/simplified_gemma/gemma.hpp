@@ -80,7 +80,7 @@ class SimplifiedGemma {
       ++generated;
       if (generated < prompt_size) {
         // print feedback
-      } else if (token != gcpp::EOS_ID) {
+      } else if (!this->model_.GetModelConfig().IsEOS(token)) {
         std::string token_text;
         HWY_ASSERT(this->model_.Tokenizer().Decode({token}, &token_text));
         std::cout << token_text << std::flush;

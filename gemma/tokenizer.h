@@ -29,6 +29,7 @@ namespace gcpp {
 
 // The tokenizer's end of sentence and beginning of sentence token ids.
 constexpr int EOS_ID = 1;
+constexpr int SECONDARY_EOS_ID = 106;  // for Gemma 3
 constexpr int BOS_ID = 2;
 
 class GemmaTokenizer {

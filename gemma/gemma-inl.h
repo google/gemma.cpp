@@ -1299,8 +1299,9 @@ static size_t MaxQueryLength(const QueriesPromptTokens& queries_prompt) {
 // Holds "is at end of stream" state for each query.
 class TokenStreamer {
  public:
-  explicit TokenStreamer(const RuntimeConfig& runtime_config)
-      : runtime_config_(runtime_config) {}
+  explicit TokenStreamer(const RuntimeConfig& runtime_config,
+                         const ModelConfig& model_config)
+      : runtime_config_(runtime_config), model_config_(model_config) {}
 
   // Returns whether the query was already at, or has just reached, the end of
   // the stream: either via token == eos_id, or StreamToken returning false.
@@ -1308,7 +1309,7 @@ class TokenStreamer {
     if (HWY_UNLIKELY(is_eos_.Get(query_idx))) return true;
 
     if (!runtime_config_.StreamToken(query_idx, pos, token, prob) ||
-        token == runtime_config_.eos_id) {
+        model_config_.IsEOS(token)) {
       is_eos_.Set(query_idx);
       return true;
     }
@@ -1318,6 +1319,7 @@ class TokenStreamer {
 
  private:
   const RuntimeConfig& runtime_config_;
+  const ModelConfig& model_config_;
   hwy::BitSet4096<> is_eos_;
 };
 
@@ -1425,7 +1427,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   // Sanity check: prompts should not be empty, nor start with EOS.
   for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
     const PromptTokens& prompt = queries_prompt[query_idx];
-    HWY_ASSERT(prompt.size() != 0 && prompt[0] != runtime_config.eos_id);
+    HWY_ASSERT(prompt.size() != 0 && !model.Config().IsEOS(prompt[0]));
   }
 
   const size_t num_queries = queries_prompt.size();
@@ -1469,7 +1471,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   std::vector<int> gen_tokens(num_queries);
 
   // Stream the last prompt token from each query and fill gen_tokens.
-  TokenStreamer token_streamer(runtime_config);
+  TokenStreamer token_streamer(runtime_config, model.Config());
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
     size_t last_token_pos_in_prompt =
         queries_mutable_pos[query_idx] - queries_pos_in[query_idx];

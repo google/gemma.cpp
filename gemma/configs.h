@@ -294,6 +294,8 @@ struct ModelConfig : public IFields {
 
   const char* Name() const override { return "ModelConfig"; }
 
+  bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
+
   void VisitFields(IFieldsVisitor& visitor) override {
     visitor(model_family_version);
     visitor(model_name);
@@ -315,6 +317,8 @@ struct ModelConfig : public IFields {
     visitor(norm_num_groups);
     visitor(vit_config);
     visitor(pool_dim);
+    visitor(eos_id);
+    visitor(secondary_eos_id);
   }
 
   // Major version of the model family. It is used as a fallback to distinguish
@@ -341,6 +345,8 @@ struct ModelConfig : public IFields {
   // Dimensions related to image processing.
   VitConfig vit_config;
   uint32_t pool_dim = 1;  // used only for VitConfig copy
+  int eos_id = 1;
+  int secondary_eos_id = 1;
 };
 
 // Returns the config for the given model.
