@@ -85,7 +85,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
   size_t prompt_size = 0;
-  bool end_of_turn_seen = false;
 
   std::mt19937 gen;
   InitGenerator(args, gen);
@@ -139,13 +138,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
       if (app.verbosity >= 1) {
         std::cout << "\n\n";
       }
-    }
-    if (token_text == "<end_of_turn>") {
-      // We don't want to show the <end_of_turn> token to the user.
-      // We also need to remember that we've seen it, so that we can rewind
-      // abs_pos appropriately. We expect EOS as the next token.
-      end_of_turn_seen = true;
-      return true;
     }
     std::cout << token_text << std::flush;
     return true;
@@ -232,13 +224,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
       HWY_ASSERT(abs_pos > 0);
       abs_pos--;
     }
-    if (end_of_turn_seen && abs_pos > 0) {
-      // If we have seen an end_of_turn token, we need to rewind abs_pos by one
-      // more, because we will prepend it again to the prompt in
-      // WrapAndTokenize.
-      abs_pos--;
-    }
-    end_of_turn_seen = false;
   }
 }
 

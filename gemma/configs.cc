@@ -35,6 +35,8 @@ static ModelConfig ConfigBaseGemmaV2() {
   ModelConfig config = ConfigNoSSM();
   config.att_cap = 50.0f;
   config.final_cap = 30.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 107;
   return config;
 }
 
