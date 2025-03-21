@@ -118,18 +118,17 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   // callback function invoked for each generated token.
   auto stream_token = [&](int token, float) {
     ++abs_pos;
-    if (model.GetModelConfig().IsEOS(token)) {
-      if (app.verbosity >= 2) {
-        std::cout << "\n[ End ]\n";
-      }
-      return true;
-    }
     const bool in_prompt = tokens_generated_this_turn < prompt_size;
     const bool first_response_token = tokens_generated_this_turn == prompt_size;
     ++tokens_generated_this_turn;
     if (in_prompt) {
       if (app.verbosity >= 1) {
         std::cerr << "." << std::flush;
+      }
+      return true;
+    } else if (model.GetModelConfig().IsEOS(token)) {
+      if (app.verbosity >= 2) {
+        std::cout << "\n[ End ]\n";
       }
       return true;
     }
