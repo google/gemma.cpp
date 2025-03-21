@@ -205,15 +205,12 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
     visitor(tokenizer, "tokenizer", Path(),
             "Path name of tokenizer model file.");
     visitor(weights, "weights", Path(),
-            "Path name of model weights (.sbs) file.\n    Required argument.");
+            "Path name of model weights (.sbs) file.\n  Required argument.\n");
     visitor(compressed_weights, "compressed_weights", Path(),
-            "Alias for --weights.");
-    visitor(model_type_str, "model", std::string(),
-            "Model type\n    2b-it = 2B parameters, instruction-tuned\n    "
-            "2b-pt = 2B parameters, pretrained\n    7b-it = 7B parameters "
-            "instruction-tuned\n    7b-pt = 7B parameters, pretrained\n    "
-            "gr2b-it = griffin 2B parameters, instruction-tuned\n    "
-            "gr2b-pt = griffin 2B parameters, pretrained.");
+            "Deprecated alias for --weights.");
+    visitor(
+        model_type_str, "model", std::string(),
+        "Model type, see common.cc for valid values.\n");
     visitor(weight_type_str, "weight_type", std::string("sfp"),
             "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit SFP.");
   }
