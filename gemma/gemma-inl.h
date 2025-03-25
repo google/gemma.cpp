@@ -1427,7 +1427,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   // Sanity check: prompts should not be empty, nor start with EOS.
   for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
     const PromptTokens& prompt = queries_prompt[query_idx];
-    HWY_ASSERT(prompt.size() != 0 && !model.Config().IsEOS(prompt[0]));
+    HWY_ASSERT(prompt.size() != 0 && prompt[0] != runtime_config.eos_id);
   }
 
   const size_t num_queries = queries_prompt.size();
