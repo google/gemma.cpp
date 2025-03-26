@@ -72,7 +72,8 @@ class SimplifiedGemma {
     size_t generated = 0;
 
     const std::vector<int> tokens = gcpp::WrapAndTokenize(
-        model_.Tokenizer(), loader_.Info(), generated, prompt);
+        model_.Tokenizer(), model_.ChatTemplate(), loader_.Info(),
+        generated, prompt);
     const size_t prompt_size = tokens.size();
 
     // This callback function gets invoked every time a token is generated

@@ -75,7 +75,8 @@ int main(int argc, char** argv) {
   // Tokenize instructions.
   std::string prompt = "Write a greeting to the world.";
   const std::vector<int> tokens = gcpp::WrapAndTokenize(
-      model.Tokenizer(), loader.Info(), generated, prompt);
+      model.Tokenizer(), model.ChatTemplate(), loader.Info(),
+      generated, prompt);
   const size_t prompt_size = tokens.size();
 
   // This callback function gets invoked every time a token is generated

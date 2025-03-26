@@ -148,18 +148,6 @@ const char* ParseType(const std::string& type_string, Type& type) {
   return kErrorMessageBuffer.c_str();
 }
 
-void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
-
-  // Instruction-tuned models are trained to expect control tokens.
-  if (info.wrapping == PromptWrapping::GEMMA_IT) {
-    // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
-    const std::string start = (pos == 0)
-                                  ? "<start_of_turn>user\n"
-                                  : "<end_of_turn>\n<start_of_turn>user\n";
-    prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
-  }
-}
-
 float EmbeddingScaling(size_t model_dim) {
   // Round to bf16 to match Gemma's Embedder, which casts before mul.
   return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(

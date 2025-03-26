@@ -54,13 +54,30 @@ class GemmaTokenizer {
   std::unique_ptr<Impl> impl_;
 };
 
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelInfo& info, size_t pos,
-                                 std::string& prompt);
+class GemmaChatTemplate {
+ public:
+  GemmaChatTemplate() = default;
+  explicit GemmaChatTemplate(const GemmaTokenizer& tokenizer);
 
-std::vector<int> WrapVLM(const GemmaTokenizer& tokenizer, const ModelInfo& info,
-                         size_t pos, std::vector<int>& tokens,
-                         size_t image_batch_size, size_t max_image_batch_size);
+  void Init(const GemmaTokenizer& tokenizer);
+  std::vector<int> Apply(size_t pos, const std::vector<int>& ids) const;
+
+ private:
+  std::vector<int> sot_user_;
+  std::vector<int> sot_model_;
+  std::vector<int> eot_;
+};
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt);
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt,
+                                 size_t image_batch_size);
 
 }  // namespace gcpp
 
