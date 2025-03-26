@@ -396,8 +396,10 @@ static size_t NPMultiple(size_t N, size_t sizeof_TC, size_t nr,
     }
     // This happens in tests with small N, hence do not assert.
     if (N % (np_multiple * num_packages) && N >= 128) {
-      HWY_WARN("NPMultiple: N=%zu still not divisible by np_multiple=%zu\n", N,
-               np_multiple);
+      HWY_WARN(
+          "NPMultiple: N=%zu still not divisible by np_multiple=%zu "
+          "num_packages=%zu\n",
+          N, np_multiple, num_packages);
       np_multiple = nr;
     }
   }
