@@ -63,11 +63,18 @@ class GemmaChatTemplate {
 
   void Init(const GemmaTokenizer& tokenizer);
   std::vector<int> Apply(size_t pos, const std::vector<int>& ids) const;
+  std::vector<int> WrapPali(const std::vector<int>& text_part,
+                            size_t image_batch_size) const;
+  std::vector<int> WrapVLM(const std::vector<int>& text_part,
+                           size_t image_batch_size) const;
 
  private:
   std::vector<int> sot_user_;
   std::vector<int> sot_model_;
   std::vector<int> eot_;
+  std::vector<int> pali_sep_;
+  std::vector<int> vlm_soi_;
+  std::vector<int> vlm_eoi_;
 };
 
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
