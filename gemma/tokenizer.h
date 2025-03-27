@@ -57,7 +57,9 @@ class GemmaTokenizer {
 class GemmaChatTemplate {
  public:
   GemmaChatTemplate() = default;
-  explicit GemmaChatTemplate(const GemmaTokenizer& tokenizer);
+  explicit GemmaChatTemplate(const GemmaTokenizer& tokenizer) {
+    Init(tokenizer);
+  }
 
   void Init(const GemmaTokenizer& tokenizer);
   std::vector<int> Apply(size_t pos, const std::vector<int>& ids) const;

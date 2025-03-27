@@ -114,10 +114,6 @@ bool GemmaTokenizer::Decode(const std::vector<int>& ids,
   return impl_->Decode(ids, detokenized);
 }
 
-GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer) {
-  Init(tokenizer);
-}
-
 void GemmaChatTemplate::Init(const GemmaTokenizer& tokenizer) {
   sot_user_.reserve(3);
   HWY_ASSERT(tokenizer.Encode("<start_of_turn>user\n", &sot_user_));
