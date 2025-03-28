@@ -111,7 +111,7 @@ class MMStoreHorizontalSumsIntoC {
                              VF C30, VF C31, VF C32, VF C33,  //
                              const size_t row_c, const size_t col_c,
                              const MMArgs& args, const RowPtr<TC>& C) const {
-    float buf[16 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf[16 * hn::MaxLanes(df)];
     const size_t N = hn::Lanes(df);
     // Horizontal reductions (`ReduceSum`) are rather expensive, entailing
     // log(N) operations for vectors of length N. Because `kNR` == 4, we
@@ -226,7 +226,7 @@ class MMAddHorizontalSumsIntoPartial {
     static_assert(HWY_HAVE_FLOAT64, "Disable Armv7 NEON: we require fp64");
 
     const hn::Repartition<double, DF> dd;
-    double buf[16 * hn::MaxLanes(dd)];
+    HWY_ALIGN double buf[16 * hn::MaxLanes(dd)];
     using VD = hn::Vec<decltype(dd)>;
     const size_t ND = hn::Lanes(dd);
     VD C00 = SumOfPromotedPairs(dd, F00);
