@@ -213,6 +213,7 @@ class Gemma {
                       .weight = model_.Config().weight});
   }
   const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
+  const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
   const ModelWeightsStorage& Weights() const { return model_; }
   ModelWeightsStorage& MutableWeights() { return model_; }
   void Save(const Path& weights, hwy::ThreadPool& pool) {
@@ -256,6 +257,7 @@ class Gemma {
   MatMulEnv& env_;
 
   GemmaTokenizer tokenizer_;
+  GemmaChatTemplate chat_template_;
   // Type-erased so that this can be defined in the header.
   ModelWeightsStorage model_;
 };

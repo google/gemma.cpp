@@ -80,7 +80,7 @@ constexpr PromptWrapping kPromptWrapping[] = {
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 3B 224/448
     PromptWrapping::PALIGEMMA, PromptWrapping::PALIGEMMA,  // PG2 10B 224/448
     PromptWrapping::GEMMA_VLM,                             // Gemma3 4B
-    PromptWrapping::GEMMA_PT,                              // Gemma3 1B
+    PromptWrapping::GEMMA_IT,                              // Gemma3 1B
     PromptWrapping::GEMMA_VLM,                             // Gemma3 12B
     PromptWrapping::GEMMA_VLM,                             // Gemma3 27B
 };
@@ -146,18 +146,6 @@ const char* ParseType(const std::string& type_string, Type& type) {
     }
   }
   return kErrorMessageBuffer.c_str();
-}
-
-void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
-
-  // Instruction-tuned models are trained to expect control tokens.
-  if (info.wrapping == PromptWrapping::GEMMA_IT) {
-    // Prepend "<end_of_turn>" if this is a multi-turn dialogue continuation.
-    const std::string start = (pos == 0)
-                                  ? "<start_of_turn>user\n"
-                                  : "<end_of_turn>\n<start_of_turn>user\n";
-    prompt = start + prompt + "<end_of_turn>\n<start_of_turn>model\n";
-  }
 }
 
 float EmbeddingScaling(size_t model_dim) {

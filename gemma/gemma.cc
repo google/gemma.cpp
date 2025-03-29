@@ -40,7 +40,7 @@ namespace gcpp {
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, MatMulEnv& env)
-    : env_(env), tokenizer_(tokenizer_path) {
+    : env_(env), tokenizer_(tokenizer_path), chat_template_(tokenizer_) {
   model_.Load(weights, info.model, info.weight, info.wrapping,
               env_.parallel.Pools().Pool(0),
               /*tokenizer_proto=*/nullptr);
@@ -51,10 +51,11 @@ Gemma::Gemma(const Path& weights, MatMulEnv& env) : env_(env) {
   model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
               env_.parallel.Pools().Pool(0), &tokenizer_proto);
   tokenizer_.Deserialize(tokenizer_proto);
+  chat_template_.Init(tokenizer_);
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env)
-    : env_(env), tokenizer_(std::move(tokenizer)) {
+    : env_(env), tokenizer_(std::move(tokenizer)), chat_template_(tokenizer_) {
   HWY_ASSERT(info.weight == Type::kF32);
   model_.Allocate(info.model, info.weight, env_.parallel.Pools().Pool(0));
 }
