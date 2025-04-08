@@ -67,10 +67,7 @@ struct TokenAndProb {
 // Entire size of a 2D array.
 struct Extents2D {
   constexpr Extents2D() : rows(0), cols(0) {}
-  constexpr Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {
-    HWY_DASSERT(rows != 0);
-    HWY_DASSERT(cols != 0);
-  }
+  constexpr Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {}
 
   size_t Area() const { return rows * cols; }
 

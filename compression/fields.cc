@@ -24,7 +24,6 @@
 #include <string>
 #include <vector>
 
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -115,7 +114,7 @@ class PrintVisitor : public VisitorBase {
 
 class ReadVisitor : public VisitorBase {
  public:
-  ReadVisitor(const hwy::Span<const uint32_t>& span, size_t pos)
+  ReadVisitor(const SerializedSpan span, size_t pos)
       : span_(span), result_(pos) {}
   ~ReadVisitor() {
     HWY_ASSERT(end_.empty());  // Bug if push/pop are not balanced.
@@ -236,7 +235,7 @@ class ReadVisitor : public VisitorBase {
   }
 
  private:
-  const hwy::Span<const uint32_t> span_;
+  const SerializedSpan span_;
   IFields::ReadResult result_;
   // Stack of end positions of nested IFields. Updated in operator()(IFields&),
   // but read in SkipField.
@@ -326,8 +325,7 @@ void IFields::Print() const {
   visitor(*const_cast<IFields*>(this));
 }
 
-IFields::ReadResult IFields::Read(const hwy::Span<const uint32_t>& span,
-                                  size_t pos) {
+IFields::ReadResult IFields::Read(const SerializedSpan span, size_t pos) {
   ReadVisitor visitor(span, pos);
   visitor(*this);
   return visitor.Result();

@@ -24,9 +24,8 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"
+#include "util/basics.h"  // BF16
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
@@ -162,8 +161,8 @@ void Wrap(const ModelInfo& info, size_t pos, std::string& prompt) {
 
 float EmbeddingScaling(size_t model_dim) {
   // Round to bf16 to match Gemma's Embedder, which casts before mul.
-  return hwy::ConvertScalarTo<float>(hwy::ConvertScalarTo<hwy::bfloat16_t>(
-      sqrtf(static_cast<float>(model_dim))));
+  return hwy::ConvertScalarTo<float>(
+      hwy::ConvertScalarTo<BF16>(sqrtf(static_cast<float>(model_dim))));
 }
 
 float ChooseQueryScale(const ModelConfig& config) {

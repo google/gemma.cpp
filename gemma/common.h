@@ -20,9 +20,9 @@
 
 #include <string>
 
-#include "compression/shared.h"  // PromptWrapping
-#include "gemma/configs.h"  // IWYU pragma: export
-#include "hwy/base.h"  // ConvertScalarTo
+#include "compression/shared.h"  // Type
+#include "gemma/configs.h"       // IWYU pragma: export
+#include "hwy/base.h"              // ConvertScalarTo
 
 namespace gcpp {
 

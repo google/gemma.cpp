@@ -265,10 +265,10 @@ cc_library(
         "gemma/tensor_index.h",
     ],
     deps = [
+        ":basics",
         "//compression:fields",
         "//compression:sfp",
         "@highway//:hwy",  # base.h
-        "@highway//:thread_pool",
     ],
 )
 

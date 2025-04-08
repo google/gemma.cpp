@@ -27,7 +27,7 @@
 #include <string>
 #include <vector>
 
-#include "hwy/aligned_allocator.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
 // IWYU pragma: end_exports
 
@@ -133,6 +133,8 @@ class IFieldsVisitor {
   bool any_invalid_ = false;
 };
 
+using SerializedSpan = hwy::Span<const uint32_t>;
+
 // Abstract base class for user-defined serializable classes, which are
 // forward- and backward compatible collection of fields (members). This means
 // old code can safely read new data, and new code can still handle old data.
@@ -178,13 +180,13 @@ struct IFields {
     // the code, but valid, and extra_u32 should be zero.
     uint32_t missing_fields;
     // How many extra u32 are in the stored size, vs. what we actually read as
-    // requested by VisitFields. If non-zero,, the data is newer than the code,
+    // requested by VisitFields. If non-zero, the data is newer than the code,
     // but valid, and missing_fields should be zero.
     uint32_t extra_u32;
   };
 
   // Reads fields starting at `span[pos]`.
-  ReadResult Read(const hwy::Span<const uint32_t>& span, size_t pos);
+  ReadResult Read(SerializedSpan span, size_t pos);
 
   // Returns false if there was an unrecoverable error, typically because a
   // field has an invalid value. If so, `storage` is undefined.
