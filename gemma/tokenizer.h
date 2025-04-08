@@ -54,13 +54,43 @@ class GemmaTokenizer {
   std::unique_ptr<Impl> impl_;
 };
 
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelInfo& info, size_t pos,
-                                 std::string& prompt);
+class GemmaChatTemplate {
+ public:
+  GemmaChatTemplate() = default;
+  explicit GemmaChatTemplate(const GemmaTokenizer& tokenizer, Model model) {
+    (void)Init(tokenizer, model);
+  }
 
-std::vector<int> WrapVLM(const GemmaTokenizer& tokenizer, const ModelInfo& info,
-                         size_t pos, std::vector<int>& tokens,
-                         size_t image_batch_size, size_t max_image_batch_size);
+  // Returns false if the tokenizer is not available (as in optimize_test.cc).
+  bool Init(const GemmaTokenizer& tokenizer, Model model);
+
+  // Given prompt tokens, this returns the wrapped prompt including BOS and
+  // any "start_of_turn" structure required by the model.
+  std::vector<int> Apply(size_t pos, const std::vector<int>& ids) const;
+  std::vector<int> WrapPali(const std::vector<int>& text_part,
+                            size_t image_batch_size) const;
+  std::vector<int> WrapVLM(const std::vector<int>& text_part,
+                           size_t image_batch_size) const;
+
+ private:
+  std::vector<int> sot_user_;
+  std::vector<int> sot_model_;
+  std::vector<int> eot_;
+  std::vector<int> pali_sep_;
+  std::vector<int> vlm_soi_;
+  std::vector<int> vlm_eoi_;
+};
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt);
+
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt,
+                                 size_t image_batch_size);
 
 }  // namespace gcpp
 

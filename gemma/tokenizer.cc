@@ -100,71 +100,123 @@ void GemmaTokenizer::Deserialize(const std::string& tokenizer_proto) {
 
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<std::string>* pieces) const {
-  return impl_->Encode(input, pieces);
+  return impl_ && impl_->Encode(input, pieces);
 }
 
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<int>* ids) const {
-  return impl_->Encode(input, ids);
+  return impl_ && impl_->Encode(input, ids);
 }
 
 // Given a sequence of ids, decodes it into a detokenized output.
 bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
-  return impl_->Decode(ids, detokenized);
+  return impl_ && impl_->Decode(ids, detokenized);
 }
 
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelInfo& info, size_t pos,
-                                 std::string& prompt) {
-  Wrap(info, pos, prompt);
+bool GemmaChatTemplate::Init(const GemmaTokenizer& tokenizer, Model model) {
+  sot_user_.reserve(3);
+  if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return false;
+  sot_model_.reserve(3);
+  HWY_ASSERT(tokenizer.Encode("<start_of_turn>model\n", &sot_model_));
+  eot_.reserve(2);
+  HWY_ASSERT(tokenizer.Encode("<end_of_turn>\n", &eot_));
 
+  HWY_ASSERT(tokenizer.Encode("\n", &pali_sep_));
+  vlm_soi_.reserve(2);
+  HWY_ASSERT(tokenizer.Encode("\n\n<start_of_image>", &vlm_soi_));
+  vlm_eoi_.reserve(2);
+  HWY_ASSERT(tokenizer.Encode("<end_of_image>\n\n", &vlm_eoi_));
+  return true;
+}
+
+std::vector<int> GemmaChatTemplate::Apply(size_t pos,
+                                          const std::vector<int>& ids) const {
+  HWY_ASSERT_M(!sot_user_.empty() && !sot_model_.empty() && !eot_.empty(),
+               "GemmaChatTemplate has not been initialized.");
+  std::vector<int> out;
+  out.reserve(eot_.size() + sot_user_.size() + ids.size() + eot_.size() +
+              sot_model_.size());
+
+  // Start with BOS, or prepend end_of_turn if this is a continuation.
+  if (pos == 0) {
+    out.push_back(BOS_ID);
+  } else {
+    out.insert(out.cend(), eot_.cbegin(), eot_.cend());
+  }
+  // Start of user turn, user prompt, end of turn; then start of model turn.
+  out.insert(out.cend(), sot_user_.cbegin(), sot_user_.cend());
+  out.insert(out.cend(), ids.cbegin(), ids.cend());
+  out.insert(out.cend(), eot_.cbegin(), eot_.cend());
+  out.insert(out.cend(), sot_model_.cbegin(), sot_model_.cend());
+  return out;
+}
+
+std::vector<int> GemmaChatTemplate::WrapPali(const std::vector<int>& text_part,
+                                             size_t image_batch_size) const {
+  HWY_ASSERT_M(!pali_sep_.empty(),
+               "GemmaChatTemplate has not been initialized.");
+  std::vector<int> out;
+  out.reserve(image_batch_size + 1 + text_part.size() + pali_sep_.size());
+  out.resize(image_batch_size, 0);
+  out.push_back(BOS_ID);
+  out.insert(out.cend(), text_part.cbegin(), text_part.cend());
+  out.insert(out.cend(), pali_sep_.cbegin(), pali_sep_.cend());
+  return out;
+}
+
+std::vector<int> GemmaChatTemplate::WrapVLM(const std::vector<int>& text_part,
+                                            size_t image_batch_size) const {
+  HWY_ASSERT_M(!vlm_soi_.empty() && !vlm_eoi_.empty(),
+               "GemmaChatTemplate has not been initialized.");
+  std::vector<int> out;
+  out.reserve(text_part.size() + vlm_soi_.size() + image_batch_size +
+              vlm_eoi_.size());
+  out.insert(out.cend(), text_part.cbegin(), text_part.cend());
+  out.insert(out.cend(), vlm_soi_.cbegin(), vlm_soi_.cend());
+  out.insert(out.cend(), image_batch_size, -2);
+  out.insert(out.cend(), vlm_eoi_.cbegin(), vlm_eoi_.cend());
+  return out;
+}
+
+// Text
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt) {
   std::vector<int> tokens;
   HWY_ASSERT(tokenizer.Encode(prompt, &tokens));
-  // Both pre-trained and instruction-tuned require BOS as first token.
-  if (pos == 0) {
-    tokens.insert(tokens.begin(), BOS_ID);
-  }
 
-  // PaliGemma separator. The SEP token "\n" is always tokenized separately.
-  if (info.wrapping == PromptWrapping::PALIGEMMA
-      // || info.wrapping == PromptWrapping::GEMMA_VLM
-  ) {
-    std::vector<int> sep_tokens;
-    HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
-    tokens.insert(tokens.end(), sep_tokens.begin(), sep_tokens.end());
+  switch (info.wrapping) {
+    case PromptWrapping::GEMMA_IT:
+    case PromptWrapping::GEMMA_VLM:
+      return chat_template.Apply(pos, tokens);
+    default:
+      if (pos == 0) {
+        tokens.insert(tokens.cbegin(), BOS_ID);
+      }
+      return tokens;
   }
-
-  return tokens;
 }
 
-std::vector<int> WrapVLM(const GemmaTokenizer& tokenizer, const ModelInfo& info,
-                         size_t pos, std::vector<int>& tokens,
-                         size_t image_batch_size, size_t max_image_batch_size) {
-  HWY_ASSERT(info.wrapping == PromptWrapping::GEMMA_VLM);
-  size_t num_images = hwy::DivCeil(image_batch_size, max_image_batch_size);
-
-  std::vector<int> sep_tokens;
-  HWY_ASSERT(tokenizer.Encode("\n", &sep_tokens));
-
-  std::string begin_image_prompt = "\n\n<start_of_image>";
-  std::vector<int> begin_image_tokens =
-      WrapAndTokenize(tokenizer, info, pos, begin_image_prompt);
-
-  std::string end_image_prompt = "<end_of_image>\n\n";
-  std::vector<int> end_image_tokens =
-      WrapAndTokenize(tokenizer, info, pos, end_image_prompt);
-
-  for (size_t i = 0; i < num_images; ++i) {
-    tokens.insert(tokens.begin(), begin_image_tokens.begin(),
-                  begin_image_tokens.end());
-    tokens.insert(tokens.begin() + begin_image_tokens.size(), image_batch_size,
-                  -2);
-    tokens.insert(tokens.begin() + begin_image_tokens.size() + image_batch_size,
-                  end_image_tokens.begin(), end_image_tokens.end());
+// Vision
+std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
+                                 const GemmaChatTemplate& chat_template,
+                                 const ModelInfo& info, size_t pos,
+                                 const std::string& prompt,
+                                 size_t image_batch_size) {
+  std::vector<int> text_part;
+  HWY_ASSERT(tokenizer.Encode(prompt, &text_part));
+  switch (info.wrapping) {
+    case PromptWrapping::PALIGEMMA:
+      HWY_ASSERT(pos == 0);
+      return chat_template.WrapPali(text_part, image_batch_size);
+    case PromptWrapping::GEMMA_VLM:
+      return chat_template.Apply(
+          pos, chat_template.WrapVLM(text_part, image_batch_size));
+    default:
+      HWY_ASSERT_M(false, "Current variant does not support vision prompt.");
   }
-
-  return tokens;
 }
 
 }  // namespace gcpp

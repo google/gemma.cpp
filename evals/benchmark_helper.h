@@ -69,7 +69,8 @@ class GemmaEnv {
   }
 
   std::vector<int> WrapAndTokenize(std::string& input) const {
-    return gcpp::WrapAndTokenize(model_->Tokenizer(), model_->Info(), 0, input);
+    return gcpp::WrapAndTokenize(model_->Tokenizer(), model_->ChatTemplate(),
+                                 model_->Info(), 0, input);
   }
 
   std::string StringFromTokens(const std::vector<int>& tokens) const {

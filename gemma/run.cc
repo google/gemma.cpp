@@ -162,16 +162,6 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
       continue;
     }
 
-    // Wrap, tokenize and maybe log prompt tokens.
-    std::vector<int> prompt = WrapAndTokenize(
-        model.Tokenizer(), model.Info(), abs_pos, prompt_string);
-    prompt_size = prompt.size();
-    if constexpr (kVerboseLogTokens) {
-      for (int i = 0; i < prompt_size; ++i) {
-        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
-      }
-    }
-
     // Set up runtime config.
     TimingInfo timing_info = {.verbosity = app.verbosity};
     RuntimeConfig runtime_config = {.gen = &gen,
@@ -181,23 +171,29 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
                                     .use_spinning = app.spin};
     args.CopyTo(runtime_config);
     size_t prefix_end = 0;
+
+    std::vector<int> prompt;
     if (have_image) {
+      prompt =
+          WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
+                          abs_pos, prompt_string, image_tokens.BatchSize());
       runtime_config.image_tokens = &image_tokens;
-      if (model.Info().wrapping == PromptWrapping::PALIGEMMA) {
-        prompt.insert(prompt.begin(), image_tokens.BatchSize(), 0);
-      } else if (model.Info().wrapping == PromptWrapping::GEMMA_VLM) {
-        size_t seq_len = model.GetModelConfig().vit_config.seq_len;
-        size_t pool_dim = model.GetModelConfig().vit_config.pool_dim;
-        prompt =
-            WrapVLM(model.Tokenizer(), model.Info(), abs_pos, prompt,
-                    image_tokens.BatchSize(), seq_len / (pool_dim * pool_dim));
-      }
       prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.
       prefix_end = prompt_size;
       // We need to look at all the tokens for the prefix.
       runtime_config.prefill_tbatch_size = prompt_size;
+    } else {
+      prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
+                               model.Info(), abs_pos, prompt_string);
+      prompt_size = prompt.size();
+    }
+
+    if constexpr (kVerboseLogTokens) {
+      for (int i = 0; i < prompt_size; ++i) {
+        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
+      }
     }
 
     // Generate until EOS or max_generated_tokens.

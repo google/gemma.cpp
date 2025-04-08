@@ -178,22 +178,25 @@ TEST_F(GemmaTest, Multiturn) {
   TimingInfo timing_info{.verbosity = 0};
   // First "say" something slightly unusual.
   std::string mutable_prompt = "I have a car and its color is turquoise.";
-  std::vector<int> tokens = WrapAndTokenize(model->Tokenizer(), model->Info(),
-                                            abs_pos, mutable_prompt);
+  std::vector<int> tokens =
+      WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(), model->Info(),
+                      abs_pos, mutable_prompt);
+
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
   // Note: we do not rewind any <end_of_turn> tokens here. If the model
   // produced one and WrapAndTokenize() inserts another one, it will just be
   // duplicated.
   mutable_prompt = "Please repeat all prior statements.";
-  tokens = WrapAndTokenize(model->Tokenizer(), model->Info(), abs_pos,
-                           mutable_prompt);
+  tokens = WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(),
+                           model->Info(), abs_pos, mutable_prompt);
+
   // Reset the `response` string here, then check that the model actually has
   // access to the previous turn by asking to reproduce.
   response.clear();
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
-  fprintf(stderr, "decoded: %s\n", response.c_str());
+  fprintf(stderr, "decoded: '%s'\n", response.c_str());
   bool remembered_turquoise =
       response.find("turquoise") != std::string::npos;              // NOLINT
   bool remembered_car = response.find("car") != std::string::npos;  // NOLINT

@@ -44,6 +44,7 @@ const char* ModelString(Model model, PromptWrapping wrapping);
 const char* StringFromType(Type type);
 
 // Wraps the given prompt using the expected control tokens for IT models.
+// `GemmaChatTemplate` is preferred if a tokenized return value is fine.
 void Wrap(const ModelInfo& info, size_t pos, std::string& prompt);
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).

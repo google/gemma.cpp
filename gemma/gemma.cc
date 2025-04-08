@@ -44,6 +44,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
   model_.Load(weights, info.model, info.weight, info.wrapping,
               env_.parallel.Pools().Pool(0),
               /*tokenizer_proto=*/nullptr);
+  chat_template_.Init(tokenizer_, model_.Config().model);
 }
 
 Gemma::Gemma(const Path& weights, MatMulEnv& env) : env_(env) {
@@ -51,10 +52,13 @@ Gemma::Gemma(const Path& weights, MatMulEnv& env) : env_(env) {
   model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
               env_.parallel.Pools().Pool(0), &tokenizer_proto);
   tokenizer_.Deserialize(tokenizer_proto);
+  chat_template_.Init(tokenizer_, model_.Config().model);
 }
 
 Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env)
-    : env_(env), tokenizer_(std::move(tokenizer)) {
+    : env_(env),
+      tokenizer_(std::move(tokenizer)),
+      chat_template_(tokenizer_, info.model) {
   HWY_ASSERT(info.weight == Type::kF32);
   model_.Allocate(info.model, info.weight, env_.parallel.Pools().Pool(0));
 }
