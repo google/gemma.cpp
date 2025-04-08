@@ -138,13 +138,13 @@ BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
         }
         if (HWY_UNLIKELY(private_kib_ != tcluster.private_kib)) {
           warned = true;
-          HWY_WARN("lp %zu private_kib %zu != cluster %zu.", lp, private_kib_,
-                   tcluster.private_kib);
+          HWY_WARN("lp %zu private_kib %zu != cluster %u.", lp, private_kib_,
+                   static_cast<unsigned>(tcluster.private_kib));
         }
         if (HWY_UNLIKELY(shared_kib_ != tcluster.shared_kib)) {
           warned = true;
-          HWY_WARN("lp %zu shared_kib %zu != cluster %zu.", lp, shared_kib_,
-                   tcluster.shared_kib);
+          HWY_WARN("lp %zu shared_kib %zu != cluster %u.", lp, shared_kib_,
+                   static_cast<unsigned>(tcluster.shared_kib));
         }
       }  // !warned
     }
