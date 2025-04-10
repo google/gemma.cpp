@@ -138,7 +138,7 @@ cc_library(
     deps = [
         ":basics",
         "//compression:fields",
-        "//compression:sfp",
+        "//compression:shared",
         "@highway//:hwy",  # base.h
     ],
 )
@@ -159,10 +159,11 @@ cc_test(
     deps = [
         ":basics",
         ":common",
+        ":mat",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
-        "@highway//:hwy",
+        "@highway//:hwy",  # aligned_allocator.h
     ],
 )
 
@@ -176,7 +177,7 @@ cc_library(
         ":common",
         ":threading_context",
         "//compression:fields",
-        "//compression:sfp",
+        "//compression:shared",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -348,7 +349,7 @@ cc_library(
         ":mat",
         "//compression:blob_store",
         "//compression:compress",
-        "//compression:io",
+        "//compression:io",  # Path
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:stats",
@@ -362,8 +363,8 @@ cc_library(
     hdrs = ["gemma/tokenizer.h"],
     deps = [
         ":common",
-        "//compression:io",
-        "//compression:sfp",
+        "//compression:io",  # Path
+        "//compression:shared",
         "@highway//:hwy",
         "@highway//:profiler",
         "@com_google_sentencepiece//:sentencepiece_processor",
@@ -405,16 +406,17 @@ cc_library(
         ":allocator",
         ":basics",
         ":common",
-        ":ops",
-        ":mat",
-        ":tokenizer",
         ":kv_cache",
-        ":weights",
+        ":mat",
+        ":ops",
+        ":tokenizer",
         ":threading",
         ":threading_context",
+        ":weights",
         # Placeholder for internal dep, do not remove.,
+        "//compression:blob_store",
         "//compression:io",
-        "//compression:sfp",
+        "//compression:shared",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
@@ -445,7 +447,7 @@ cc_library(
         ":gemma_lib",
         ":ops",
         "//compression:io",
-        "//compression:sfp",
+        "//compression:shared",
         "@highway//:hwy",
     ],
 )
@@ -517,7 +519,7 @@ cc_binary(
         ":gemma_lib",
         ":ops",
         ":threading_context",
-        "//compression:sfp",
+        "//compression:shared",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:profiler",
@@ -706,6 +708,7 @@ cc_library(
         ":mat",
         ":weights",
         "//compression:compress",
+        "//compression:shared",
         "@highway//:hwy",
         "@highway//:thread_pool",
     ],
@@ -731,7 +734,7 @@ cc_test(
         ":threading",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:sfp",
+        "//compression:shared",
         "@highway//:thread_pool",
     ],
 )

@@ -40,6 +40,7 @@ cc_library(
         "//conditions:default": [],
     }),
     deps = [
+        "//:allocator",
         "@highway//:hwy",
     ] + FILE_DEPS,
 )
@@ -69,6 +70,7 @@ cc_library(
     hdrs = ["blob_store.h"],
     deps = [
         ":io",
+        "//:threading_context",
         "@highway//:hwy",
         "@highway//:thread_pool",
     ],
@@ -81,7 +83,7 @@ cc_test(
         ":blob_store",
         ":io",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "@highway//:hwy",
+        "//:threading_context",
         "@highway//:hwy_test_util",
         "@highway//:thread_pool",
     ],
@@ -115,9 +117,8 @@ cc_test(
 )
 
 cc_library(
-    name = "sfp",
+    name = "shared",
     hdrs = ["shared.h"],
-    textual_hdrs = ["sfp-inl.h"],
     deps = [
         "//:basics",
         "@highway//:hwy",
@@ -125,11 +126,21 @@ cc_library(
 )
 
 cc_library(
+    name = "sfp",
+    textual_hdrs = ["sfp-inl.h"],
+    deps = [
+        ":shared",
+        "//:basics",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
     name = "nuq",
-    hdrs = ["shared.h"],
     textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
+        ":shared",
         "//:basics",
         "@highway//:hwy",
         "@highway//hwy/contrib/sort:vqsort",
@@ -144,6 +155,7 @@ cc_library(
     deps = [
         ":compress",
         ":distortion",
+        "//:mat",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:thread_pool",
@@ -251,6 +263,16 @@ cc_library(
         "@highway//:stats",
         "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_library(
+    name = "io_win",
+    srcs = ["io_win.cc"],
+    deps = [
+        ":io",
+        "//:allocator",
+        "@highway//:hwy",
     ],
 )
 

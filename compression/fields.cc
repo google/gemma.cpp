@@ -87,7 +87,7 @@ class PrintVisitor : public VisitorBase {
   }
 
   void operator()(uint64_t& value) override {
-    fprintf(stderr, "%sU64 %zu\n", indent_.c_str(), value);
+    fprintf(stderr, "%sU64 %zu\n", indent_.c_str(), static_cast<size_t>(value));
   }
 
   void operator()(float& value) override {

@@ -32,7 +32,7 @@ pybind_extension(
     deps = [
         ":compression_clif_aux",
         "@abseil-cpp//absl/types:span",
-        "//compression:sfp",
+        "//compression:shared",
     ],
 )
 

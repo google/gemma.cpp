@@ -23,6 +23,7 @@
 #include <string>
 #include <utility>  // std::move
 
+#include "util/allocator.h"
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -31,6 +32,8 @@ namespace gcpp {
 // File and has a Path argument, and Path::Exists calls OpenFileOrNull. We
 // prefer to define Exists inline because there are multiple io*.cc files.
 struct Path;
+
+using MapPtr = AlignedPtr2<const uint8_t[]>;
 
 // Abstract base class enables multiple I/O backends in the same binary.
 class File {
@@ -50,6 +53,12 @@ class File {
 
   // Returns true if all the requested bytes were written.
   virtual bool Write(const void* from, uint64_t size, uint64_t offset) = 0;
+
+  // Maps the entire file into read-only memory or returns nullptr on failure.
+  // We do not support offsets because Windows requires them to be a multiple of
+  // the allocation granularity, which is 64 KiB. Some implementations may fail
+  // if the file is zero-sized and return a nullptr.
+  virtual MapPtr Map() = 0;
 };
 
 // Returns nullptr on failure. `mode` is either "r" or "w+". This is not just
@@ -87,6 +96,7 @@ struct Path {
   std::string path;
 };
 
+// Aborts on error.
 static inline HWY_MAYBE_UNUSED std::string ReadFileToString(const Path& path) {
   std::unique_ptr<File> file = OpenFileOrNull(path, "r");
   if (!file) {

@@ -43,7 +43,7 @@ cc_test(
         "//:benchmark_helper",
         "//:common",
         "//:gemma_lib",
-        "//compression:sfp",
+        "//compression:shared",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

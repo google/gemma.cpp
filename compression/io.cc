@@ -36,12 +36,16 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>     // SEEK_END - unistd isn't enough for IDE.
+#include <sys/types.h>
+// Old OSX may require sys/types.h before sys/mman.h.
+#include <sys/mman.h>  // mmap
 #include <sys/stat.h>  // O_RDONLY
 #include <unistd.h>    // read, write, close
 
 #include <memory>
 
 #include "compression/io.h"
+#include "util/allocator.h"
 #include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
@@ -92,6 +96,28 @@ class FilePosix : public File {
       if (pos == size) break;
     }
     return pos == size;  // success if managed to write desired size
+  }
+
+  MapPtr Map() override {
+    const size_t mapping_size = FileSize();
+    // No `MAP_POPULATE` because we do not want to wait for I/O, and
+    // `MAP_NONBLOCK` is not guaranteed. `MAP_HUGETLB` fails. `MAP_SHARED` is
+    // more efficient than `MAP_PRIVATE`; the main difference is that the former
+    // will eventually see subsequent changes to the file.
+    const int flags = MAP_SHARED;
+    void* mapping =
+        mmap(nullptr, mapping_size, PROT_READ, flags, fd_, /*offset=*/0);
+    if (mapping == MAP_FAILED) return MapPtr();
+
+#ifdef MADV_WILLNEED  // Missing on some OSX.
+    // (Maybe) initiate readahead.
+    madvise(mapping, mapping_size, MADV_WILLNEED);
+#endif
+
+    return MapPtr(static_cast<const uint8_t*>(mapping),
+                  DeleterFunc2([mapping_size](void* ptr) {
+                    HWY_ASSERT(munmap(ptr, mapping_size) == 0);
+                  }));
   }
 };  // FilePosix
 

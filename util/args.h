@@ -181,6 +181,10 @@ class ArgsBase {
   void ForEach(Visitor& visitor) {
     static_cast<Args*>(this)->ForEach(visitor);
   }
+  template <class Visitor>
+  void ForEach(Visitor& visitor) const {
+    const_cast<ArgsBase*>(this)->ForEach(visitor);
+  }
 
  public:
   // WARNING: cannot call from ctor because the derived ctor has not yet run.
@@ -189,12 +193,12 @@ class ArgsBase {
     ForEach(visitor);
   }
 
-  void Help() {
+  void Help() const {
     HelpVisitor visitor;
     ForEach(visitor);
   }
 
-  void Print(int verbosity = 0) {
+  void Print(int verbosity = 0) const {
     PrintVisitor visitor(verbosity);
     ForEach(visitor);
   }

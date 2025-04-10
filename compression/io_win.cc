@@ -22,6 +22,7 @@
 #include <stdint.h>
 
 #include "compression/io.h"
+#include "util/allocator.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -95,6 +96,22 @@ class FileWin : public File {
       size -= got;
     }
     return true;  // wrote everything => success
+  }
+
+  MapPtr Map() override {
+    if (hFile_ == INVALID_HANDLE_VALUE) return MapPtr();
+
+    // Size=0 means the entire file.
+    HANDLE hMapping =
+        CreateFileMappingA(hFile_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    // Offset zero and size=0 means the entire file.
+    void* ptr = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
+    if (!ptr) return MapPtr();
+    return MapPtr(static_cast<const uint8_t*>(ptr),
+                  DeleterFunc2([hMapping](void* ptr) {
+                    HWY_ASSERT(UnmapViewOfFile(ptr));
+                    HWY_ASSERT(CloseHandle(hMapping));
+                  }));
   }
 };  // FileWin
 

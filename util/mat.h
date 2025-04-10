@@ -112,6 +112,7 @@ class MatPtr : public IFields {
     type_ = type;
     element_bytes_ = static_cast<uint32_t>(hwy::DivCeil(TypeBits(type), 8));
     num_elements_ = static_cast<uint32_t>(ComputeNumElements(type, Extents()));
+    HWY_DASSERT(0 != element_bytes_ && element_bytes_ <= 16);
   }
 
   bool IsEmpty() const { return rows_ == 0 || cols_ == 0; }
