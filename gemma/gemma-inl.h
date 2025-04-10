@@ -17,13 +17,13 @@
 
 #include <math.h>  // sqrtf
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <algorithm>  // std::min
 #include <cstdio>
 #include <vector>
 
-#include "compression/compress.h"
 #include "gemma/activations.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
@@ -32,11 +32,9 @@
 #include "gemma/weights.h"
 #include "paligemma/image.h"
 #include "util/allocator.h"
-#include "util/basics.h"
-#include "util/threading.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
-#include "hwy/bit_set.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
@@ -82,7 +80,7 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
                                    const KVCaches& kv_caches) {
   PROFILER_ZONE("Gen.Griffin");
   KVCache& kv_cache = kv_caches[0];
-  hwy::ThreadPool& pool = activations.env->parallel.Pools().Pool(0);
+  hwy::ThreadPool& pool = activations.env->ctx.pools.Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const size_t model_dim = layer_weights->layer_config.model_dim;
@@ -96,8 +94,8 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
     TwoMatVecAdd(layer_weights->griffin.linear_x_w,
                  layer_weights->griffin.linear_y_w, 0, model_dim, model_dim,
                  activations.pre_att_rms_out.Batch(batch_idx),
-                 /*add0=*/layer_weights->griffin.linear_x_biases.data_scale1(),
-                 /*add1=*/layer_weights->griffin.linear_y_biases.data_scale1(),
+                 /*add0=*/layer_weights->griffin.linear_x_biases.PackedScale1(),
+                 /*add1=*/layer_weights->griffin.linear_y_biases.PackedScale1(),
                  /*out0=*/x, /*out1=*/y, pool);
     Gelu(y, model_dim);
   }
@@ -121,15 +119,15 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
     for (size_t i = 0; i < model_dim; i += hn::Lanes(df)) {
       auto xv = hn::Load(df, x + i);
       auto accum0 =
-          hn::Load(df, layer_weights->griffin.conv_biases.data_scale1() + i);
+          hn::Load(df, layer_weights->griffin.conv_biases.PackedScale1() + i);
       auto accum1 = hn::Zero(df);
       HWY_ASSERT_M(conv_1d_width % 2 == 0, "Conv width must be even");
       for (size_t l = 0; 2 * l < conv_1d_width; l++) {
         auto wv0 =
-            hn::Load(df, layer_weights->griffin.conv_w.data_scale1() +
+            hn::Load(df, layer_weights->griffin.conv_w.PackedScale1() +
                              (conv_1d_width - 1 - 2 * l) * model_dim + i);
         auto wv1 =
-            hn::Load(df, layer_weights->griffin.conv_w.data_scale1() +
+            hn::Load(df, layer_weights->griffin.conv_w.PackedScale1() +
                              (conv_1d_width - 2 - 2 * l) * model_dim + i);
         accum0 = hn::MulAdd(wv0, hn::Load(df, cache[l * 2] + i), accum0);
         accum1 = hn::MulAdd(wv1, hn::Load(df, cache[l * 2 + 1] + i), accum1);
@@ -156,9 +154,9 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
       TwoOfsMatVecAddLoop(
           layer_weights->griffin.gate_w, kMatrixSize * head,
           kMatrixSize * (heads + head), kHeadDim, kHeadDim, x + head_offset,
-          /*add0=*/layer_weights->griffin.gate_biases.data_scale1() +
+          /*add0=*/layer_weights->griffin.gate_biases.PackedScale1() +
               head_offset,
-          /*add1=*/layer_weights->griffin.gate_biases.data_scale1() +
+          /*add1=*/layer_weights->griffin.gate_biases.PackedScale1() +
               model_dim + head_offset,
           /*out0=*/gate_x + head_offset, /*out1=*/a + head_offset);
       Sigmoid(gate_x + head_offset, kHeadDim);
@@ -166,7 +164,7 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
       const auto fn_mul = [](D d, hn::Vec<D> x, hn::Vec<D> gate_x)
                           HWY_ATTR { return hn::Mul(x, gate_x); };
       hn::Transform1(D(), a + head_offset, kHeadDim,
-                     layer_weights->griffin.a.data_scale1() + head_offset,
+                     layer_weights->griffin.a.PackedScale1() + head_offset,
                      fn_mul);
       hn::Transform1(D(), x + head_offset, kHeadDim, gate_x + head_offset,
                      fn_mul);
@@ -198,7 +196,7 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
     float* HWY_RESTRICT x = activations.griffin_x.Batch(batch_idx);
     float* out_ptr = activations.att_sums.Batch(batch_idx);
     MatVecAdd(layer_weights->griffin.linear_out_w, 0, model_dim, model_dim, x,
-              layer_weights->griffin.linear_out_biases.data_scale1(), out_ptr,
+              layer_weights->griffin.linear_out_biases.PackedScale1(), out_ptr,
               pool);
   }
 }
@@ -253,7 +251,7 @@ class GemmaAttention {
 
     const auto pre_att_rms_out =
         ConstMatFromBatch(num_interleaved, activations_.pre_att_rms_out);
-    auto w_q1 = layer_weights_.qkv_einsum_w.data()
+    auto w_q1 = layer_weights_.qkv_einsum_w.HasPtr()
                     ? ConstMatFromWeights(layer_weights_.qkv_einsum_w)
                     : ConstMatFromWeights(layer_weights_.qkv_einsum_w1);
     // The original qkv_einsum_w has shape [(heads + kv_heads * 2), kKQVDim,
@@ -265,15 +263,20 @@ class GemmaAttention {
     const size_t w1_rows = heads * layer_config_.QStride();
     w_q1.ShrinkRows(w1_rows);
     MatMul(pre_att_rms_out, w_q1,
-           /*add=*/nullptr, *activations_.env, RowPtrFromBatch(activations_.q));
+           /*add=*/nullptr, *activations_.env,
+           RowPtrFromBatch(allocator_, activations_.q));
 
     if (is_mha_) {
       // Multi-Head Attention a.k.a. "use_qkv_einsum" computed QKV already.
     } else {
-      auto w_q2 = layer_weights_.qkv_einsum_w.data()
-                      ? ConstMatFromWeights(layer_weights_.qkv_einsum_w,
-                                            w1_rows * model_dim)
-                      : ConstMatFromWeights(layer_weights_.qkv_einsum_w2);
+      decltype(w_q1) w_q2;
+      if (layer_weights_.qkv_einsum_w.HasPtr()) {
+        w_q2 = ConstMatFromWeights(layer_weights_.qkv_einsum_w);
+        // Skip first half of the matrix.
+        w_q2.ofs = w_q2.Row(w1_rows);
+      } else {
+        w_q2 = ConstMatFromWeights(layer_weights_.qkv_einsum_w2);
+      }
       // KV structure is [k, v, k, v, ....] = kv_heads pairs of (k, v).
       const size_t w_rows_kv_cols = kv_heads * 2 * qkv_dim;
       w_q2.ShrinkRows(w_rows_kv_cols);
@@ -285,7 +288,7 @@ class GemmaAttention {
         const size_t kv_ofs =
             queries_pos_[0] * cache_pos_size_ + layer_ * cache_layer_size_;
         float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
-        RowPtrF kv_rows(kv, w_rows_kv_cols);
+        RowPtrF kv_rows(allocator_, kv, w_rows_kv_cols);
         kv_rows.SetStride(cache_pos_size_);
         MatMul(pre_att_rms_out, w_q2,
                /*add=*/nullptr, *activations_.env, kv_rows);
@@ -302,7 +305,7 @@ class GemmaAttention {
           const size_t kv_offset =
               cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-          if (layer_weights_.qkv_einsum_w.data()) {
+          if (layer_weights_.qkv_einsum_w.HasPtr()) {
             MatVec(layer_weights_.qkv_einsum_w, heads * qkv_dim * model_dim,
                    w_rows_kv_cols, model_dim, x, kv, pool_);
           } else {
@@ -336,8 +339,8 @@ class GemmaAttention {
                 }
 
                 // Apply further processing to K.
-                if (layer_weights_.key_norm_scale.data()) {
-                  RMSNormInplace(layer_weights_.key_norm_scale.data(), kv,
+                if (layer_weights_.key_norm_scale.HasPtr()) {
+                  RMSNormInplace(layer_weights_.key_norm_scale.Row(0), kv,
                                  qkv_dim);
                 }
                 PositionalEncodingQK(kv, pos, layer_, /*mul=*/1.0f);
@@ -427,8 +430,8 @@ class GemmaAttention {
 
                 // Apply rope and scaling to Q.
                 const size_t pos = queries_pos_[query_idx] + batch_idx;
-                if (layer_weights_.query_norm_scale.data()) {
-                  RMSNormInplace(layer_weights_.query_norm_scale.data(), q,
+                if (layer_weights_.query_norm_scale.HasPtr()) {
+                  RMSNormInplace(layer_weights_.query_norm_scale.Row(0), q,
                                  qkv_dim);
                 }
                 PositionalEncodingQK(q, pos, layer_, query_scale);
@@ -473,17 +476,18 @@ class GemmaAttention {
     HWY_DASSERT(layer_config_.model_dim > 0);
     HWY_DASSERT(layer_config_.heads > 0);
     HWY_DASSERT(layer_config_.qkv_dim > 0);
-    HWY_DASSERT(layer_weights_.att_weights.data() != nullptr);
+    HWY_DASSERT(layer_weights_.att_weights.HasPtr());
     HWY_DASSERT(activations_.att_out.All() != nullptr);
     HWY_DASSERT(activations_.att_sums.All() != nullptr);
 
     const float* add =
         layer_weights_.layer_config.softmax_attn_output_biases
-            ? layer_weights_.attention_output_biases.data_scale1()
+            ? layer_weights_.attention_output_biases.PackedScale1()
             : nullptr;
     MatMul(ConstMatFromBatch(num_interleaved, activations_.att_out),
            ConstMatFromWeights(layer_weights_.att_weights), add,
-           *activations_.env, RowPtrFromBatch(activations_.att_sums));
+           *activations_.env,
+           RowPtrFromBatch(allocator_, activations_.att_sums));
   }
 
  public:
@@ -533,7 +537,8 @@ class GemmaAttention {
         layer_weights_(*layer_weights),
         div_seq_len_(div_seq_len),
         kv_caches_(kv_caches),
-        pool_(activations.env->parallel.Pools().Pool(0)) {
+        allocator_(activations.env->ctx.allocator),
+        pool_(activations.env->ctx.pools.Pool(0)) {
     HWY_DASSERT(num_queries_ <= kv_caches_.size());
     HWY_DASSERT_M((layer_config_.heads % layer_config_.kv_heads) == 0,
                   "query heads must be a multiple of key-value heads");
@@ -562,6 +567,7 @@ class GemmaAttention {
   const LayerWeightsPtrs<T>& layer_weights_;
   const hwy::Divisor& div_seq_len_;
   const KVCaches& kv_caches_;
+  const Allocator2& allocator_;
   hwy::ThreadPool& pool_;
 };
 
@@ -606,8 +612,8 @@ class VitAttention {
     HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
     MatMul(ConstMatFromBatch(num_tokens_, activations_.pre_att_rms_out),
            ConstMatFromWeights(layer_weights_.vit.qkv_einsum_w),
-           layer_weights_.vit.qkv_einsum_b.data_scale1(), *activations_.env,
-           RowPtrFromBatch(qkv));
+           layer_weights_.vit.qkv_einsum_b.PackedScale1(), *activations_.env,
+           RowPtrFromBatch(allocator_, qkv));
   }
 
   // TODO(philculliton): transition fully to MatMul.
@@ -621,10 +627,10 @@ class VitAttention {
 
     // Shift Q, K, VT to RowVectorBatches with AllocateAlignedRows(extents)
     RowVectorBatch<float> Q =
-        AllocateAlignedRows<float>(Extents2D(num_tokens_, qkv_dim));
+        AllocateAlignedRows<float>(allocator_, Extents2D(num_tokens_, qkv_dim));
     RowVectorBatch<float> K =
-        AllocateAlignedRows<float>(Extents2D(seq_len, qkv_dim));
-    RowVectorBatch<float> C(Extents2D(num_tokens_, seq_len));
+        AllocateAlignedRows<float>(allocator_, Extents2D(seq_len, qkv_dim));
+    RowVectorBatch<float> C(allocator_, Extents2D(num_tokens_, seq_len));
 
     // Initialize att_out to zero prior to head loop.
     hwy::ZeroBytes(activations_.att_out.All(),
@@ -650,7 +656,7 @@ class VitAttention {
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
       MatMul(ConstMatFromBatch(Q.BatchSize(), Q),
              ConstMatFromBatch(K.BatchSize(), K), nullptr, *activations_.env,
-             RowPtrFromBatch(C));
+             RowPtrFromBatch(allocator_, C));
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         float* HWY_RESTRICT c = C.Batch(task);
@@ -712,13 +718,13 @@ class VitAttention {
   // head_dim (`qkv_dim`) into output (`att_sums`).
   HWY_NOINLINE void SumHeads() {
     PROFILER_ZONE("Gen.VitAttention.SumHeads");
-    auto* bias = layer_weights_.vit.attn_out_b.data_scale1();
+    auto* bias = layer_weights_.vit.attn_out_b.PackedScale1();
     // att_weights and att_out are concatenated heads, each of length
     // qkv_dim. Thus the [num_tokens_, layer_config_.model_dim]
     // matmul output is the sum over heads.
     auto att_out = ConstMatFromBatch(num_tokens_, activations_.att_out);
     auto att_weights = ConstMatFromWeights(layer_weights_.vit.attn_out_w);
-    auto att_sums = RowPtrFromBatch(activations_.att_sums);
+    auto att_sums = RowPtrFromBatch(allocator_, activations_.att_sums);
     MatMul(att_out, att_weights, bias, *activations_.env, att_sums);
   }
 
@@ -730,7 +736,8 @@ class VitAttention {
         activations_(activations),
         layer_weights_(*layer_weights),
         layer_config_(layer_weights->layer_config),
-        pool_(activations.env->parallel.Pools().Pool(0)) {}
+        allocator_(activations.env->ctx.allocator),
+        pool_(activations.env->ctx.pools.Pool(0)) {}
 
   HWY_INLINE void operator()() {
     ComputeQKV();
@@ -748,6 +755,7 @@ class VitAttention {
   Activations& activations_;
   const LayerWeightsPtrs<T>& layer_weights_;
   const LayerConfig& layer_config_;
+  const Allocator2& allocator_;
   hwy::ThreadPool& pool_;
 };
 
@@ -779,32 +787,35 @@ HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
 
   const bool add_bias = layer_weights->layer_config.ff_biases;
   const float* bias1 =
-      add_bias ? layer_weights->ffw_gating_biases.data_scale1() : nullptr;
+      add_bias ? layer_weights->ffw_gating_biases.PackedScale1() : nullptr;
   const float* bias2 = add_bias ? bias1 + ffh_hidden_dim : nullptr;
   const float* output_bias =
-      add_bias ? layer_weights->ffw_output_biases.data_scale1() : nullptr;
+      add_bias ? layer_weights->ffw_output_biases.PackedScale1() : nullptr;
 
   // Define slightly more readable names for the weights and activations.
   const auto x =
       ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
 
-  auto hidden_activations = RowPtrFromBatch(activations.C1);
-  auto multiplier = RowPtrFromBatch(activations.C2);
-  auto ffw_out = RowPtrFromBatch(activations.ffw_out);
+  const Allocator2& allocator = activations.env->ctx.allocator;
+  auto hidden_activations = RowPtrFromBatch(allocator, activations.C1);
+  auto multiplier = RowPtrFromBatch(allocator, activations.C2);
+  auto ffw_out = RowPtrFromBatch(allocator, activations.ffw_out);
 
   // gating_einsum_w holds two half-matrices. We plan to change the importer to
   // avoid this confusion by splitting into gating_einsum_w1 and
   // gating_einsum_w2.
-  const bool split = !!layer_weights->gating_einsum_w.data();
+  const bool split = layer_weights->gating_einsum_w.HasPtr();
   auto w1 = split ? ConstMatFromWeights(layer_weights->gating_einsum_w)
                   : ConstMatFromWeights(layer_weights->gating_einsum_w1);
-  auto w2 = split ? ConstMatFromWeights(layer_weights->gating_einsum_w,
-                                        model_dim * ffh_hidden_dim)
-                  : ConstMatFromWeights(layer_weights->gating_einsum_w2);
+  decltype(w1) w2;
   if (split) {
+    w2 = ConstMatFromWeights(layer_weights->gating_einsum_w);
+    w2.ofs = w2.Row(ffh_hidden_dim);
     // Ensure that B.Extents().row matches C.Cols() because MatMul checks that.
     w1.ShrinkRows(ffh_hidden_dim);
     w2.ShrinkRows(ffh_hidden_dim);
+  } else {
+    w2 = ConstMatFromWeights(layer_weights->gating_einsum_w2);
   }
   auto w_output = ConstMatFromWeights(layer_weights->linear_w);
 
@@ -835,16 +846,17 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
 
   const bool add_bias = layer_weights->layer_config.ff_biases;
   const float* bias1 =
-      add_bias ? layer_weights->vit.linear_0_b.data_scale1() : nullptr;
+      add_bias ? layer_weights->vit.linear_0_b.PackedScale1() : nullptr;
   const float* output_bias =
-      add_bias ? layer_weights->vit.linear_1_b.data_scale1() : nullptr;
+      add_bias ? layer_weights->vit.linear_1_b.PackedScale1() : nullptr;
 
   // Define slightly more readable names for the weights and activations.
   const auto x =
       ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
 
-  auto hidden_activations = RowPtrFromBatch(activations.C1);
-  auto ffw_out = RowPtrFromBatch(activations.ffw_out);
+  const Allocator2& allocator = activations.env->ctx.allocator;
+  auto hidden_activations = RowPtrFromBatch(allocator, activations.C1);
+  auto ffw_out = RowPtrFromBatch(allocator, activations.ffw_out);
 
   auto w1 = ConstMatFromWeights(layer_weights->vit.linear_0_w);
   auto w_output = ConstMatFromWeights(layer_weights->vit.linear_1_w);
@@ -853,7 +865,7 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
   MatMul(x, w1, bias1, *activations.env, hidden_activations);
 
   // Activation (Gelu), store in act.
-  RowPtrF multiplier = RowPtrF(nullptr, 0);
+  RowPtrF multiplier = RowPtrF(allocator, nullptr, 0);
   Activation(layer_weights->layer_config.activation, hidden_activations.Row(0),
              multiplier.Row(0), ff_hidden_dim * num_interleaved);
 
@@ -905,11 +917,9 @@ HWY_NOINLINE void EmbedMMToken(int token, size_t batch_idx, size_t pos,
   HWY_DASSERT(token < static_cast<int>(vocab_size));
 
   const hn::ScalableTag<float> df;
-  DecompressAndZeroPad(
-      df,
-      MakeSpan(weights.embedder_input_embedding.data(), vocab_size * model_dim),
-      token * model_dim, x.Batch(batch_idx), model_dim);
-  MulByConst(emb_scaling * weights.embedder_input_embedding.scale(),
+  DecompressAndZeroPad(df, weights.embedder_input_embedding.Span(),
+                       token * model_dim, x.Batch(batch_idx), model_dim);
+  MulByConst(emb_scaling * weights.embedder_input_embedding.Scale(),
              x.Batch(batch_idx), model_dim);
   if (weights.weights_config.absolute_pe) {
     AddAbsolutePositionalEmbeddings(x.Batch(batch_idx), model_dim, pos);
@@ -943,9 +953,10 @@ HWY_NOINLINE void ResidualConnection(
 template <typename WeightT, typename InOutT>
 void PostNorm(PostNormType post_norm, size_t num_interleaved,
               const WeightT& weights, InOutT* inout) {
+  HWY_DASSERT(weights.Rows() == 1);
   if (post_norm == PostNormType::Scale) {
-    RMSNormInplaceBatched(num_interleaved, weights.data_scale1(), inout,
-                          weights.NumElements());
+    RMSNormInplaceBatched(num_interleaved, weights.PackedScale1(), inout,
+                          weights.Cols());
   }
 }
 
@@ -962,7 +973,7 @@ HWY_NOINLINE void TransformerLayer(const QueriesPos& queries_pos,
   auto type = layer_weights->layer_config.type;
 
   RMSNormBatched(num_interleaved, activations.x.All(),
-                 layer_weights->pre_attention_norm_scale.data_scale1(),
+                 layer_weights->pre_attention_norm_scale.PackedScale1(),
                  activations.pre_att_rms_out.All(), model_dim);
 
   Attention(type, queries_pos, queries_prefix_end, num_tokens, cache_layer_idx,
@@ -976,7 +987,7 @@ HWY_NOINLINE void TransformerLayer(const QueriesPos& queries_pos,
                      activations.x.All(), layer_weights, /*is_attention=*/true);
 
   RMSNormBatched(num_interleaved, activations.x.All(),
-                 layer_weights->pre_ffw_norm_scale.data_scale1(),
+                 layer_weights->pre_ffw_norm_scale.PackedScale1(),
                  activations.bf_pre_ffw_rms_out.All(), model_dim);
 
   if (layer_weights->layer_config.type == LayerAttentionType::kVit) {
@@ -1014,8 +1025,8 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
   // y = nn.LayerNorm()(x)
   // y ~ pre_att_rms_out
   LayerNormBatched(num_tokens, x.All(),
-                   layer_weights->vit.layer_norm_0_scale.data_scale1(),
-                   layer_weights->vit.layer_norm_0_bias.data_scale1(),
+                   layer_weights->vit.layer_norm_0_scale.PackedScale1(),
+                   layer_weights->vit.layer_norm_0_bias.PackedScale1(),
                    activations.pre_att_rms_out.All(), model_dim);
 
   // y = out["sa"] = nn.MultiHeadDotProductAttention(...)(y, y)
@@ -1028,8 +1039,8 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
   // y = nn.LayerNorm()(x)
   // y ~ bf_pre_ffw_rms_out
   LayerNormBatched(num_tokens, x.All(),
-                   layer_weights->vit.layer_norm_1_scale.data_scale1(),
-                   layer_weights->vit.layer_norm_1_bias.data_scale1(),
+                   layer_weights->vit.layer_norm_1_scale.PackedScale1(),
+                   layer_weights->vit.layer_norm_1_bias.PackedScale1(),
                    activations.bf_pre_ffw_rms_out.All(), model_dim);
 
   // y = out["mlp"] = MlpBlock(...)(y)
@@ -1161,8 +1172,8 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   const size_t patch_width = weights.weights_config.vit_config.patch_width;
   const size_t seq_len = weights.weights_config.vit_config.seq_len;
   const size_t patch_size = patch_width * patch_width * 3;
-  HWY_DASSERT(weights.vit_img_embedding_kernel.NumElements() ==
-              patch_size * model_dim);
+  HWY_DASSERT(weights.vit_img_embedding_kernel.Rows() == model_dim);
+  HWY_DASSERT(weights.vit_img_embedding_kernel.Cols() == patch_size);
   HWY_DASSERT(activations.x.Cols() == model_dim);
   std::vector<hwy::AlignedFreeUniquePtr<float[]>> image_patches(seq_len);
   for (size_t i = 0; i < seq_len; ++i) {
@@ -1178,20 +1189,20 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // MatMul(
   //       MatFromBatch(kVitSeqLen, image_patches),
   //       MatFromWeights(weights.vit_img_embedding_kernel),
-  //       weights.vit_img_embedding_bias.data_scale1(), *activations.env,
+  //       weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
   //       RowPtrF(activations.x.All(), kVitModelDim));
   // However, MatMul currently requires that
   //   A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0
   // which is not the case here. We should relax that requirement on MatMul and
   // then use the above. For now, we rely on MatVecAdd instead.
   for (size_t i = 0; i < seq_len; ++i) {
-    MatVecAdd(
-        weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
-        image_patches[i].get(), weights.vit_img_embedding_bias.data_scale1(),
-        activations.x.Batch(i), activations.env->parallel.Pools().Pool(0));
+    MatVecAdd(weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
+              image_patches[i].get(),
+              weights.vit_img_embedding_bias.PackedScale1(),
+              activations.x.Batch(i), activations.env->ctx.pools.Pool(0));
   }
   // Add position embeddings.
-  AddFrom(weights.vit_img_pos_embedding.data_scale1(), activations.x.All(),
+  AddFrom(weights.vit_img_pos_embedding.PackedScale1(), activations.x.All(),
           seq_len * model_dim);
 }
 
@@ -1216,23 +1227,23 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
   }
   // Final Layernorm.
   LayerNormBatched(num_tokens, activations.x.All(),
-                   weights.vit_encoder_norm_scale.data_scale1(),
-                   weights.vit_encoder_norm_bias.data_scale1(),
+                   weights.vit_encoder_norm_scale.PackedScale1(),
+                   weights.vit_encoder_norm_bias.PackedScale1(),
                    activations.x.All(), vit_model_dim);
 
   if (weights.weights_config.wrapping == PromptWrapping::GEMMA_VLM) {
     activations.x = AvgPool4x4(activations.x);
 
     // Apply soft embedding norm before input projection.
-    RMSNormInplace(weights.mm_embed_norm.data_scale1(), activations.x.All(),
+    RMSNormInplace(weights.mm_embed_norm.PackedScale1(), activations.x.All(),
                    vit_model_dim);
   }
 
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
   MatMul(ConstMatFromBatch(activations.x.BatchSize(), activations.x),
          ConstMatFromWeights(weights.vit_img_head_kernel),
-         weights.vit_img_head_bias.data_scale1(), *activations.env,
-         RowPtrFromBatch(image_tokens));
+         weights.vit_img_head_bias.PackedScale1(), *activations.env,
+         RowPtrFromBatch(activations.env->ctx.allocator, image_tokens));
 }
 
 // Generates one token for each query. `queries_token` is the previous token
@@ -1274,7 +1285,7 @@ HWY_NOINLINE void Transformer(
     }
   }
 
-  RMSNormInplaceBatched(num_queries, weights.final_norm_scale.data_scale1(),
+  RMSNormInplaceBatched(num_queries, weights.final_norm_scale.PackedScale1(),
                         activations.x.All(), model_dim);
 
   if (activations_observer) {
@@ -1374,7 +1385,7 @@ bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
     MatMul(ConstMatFromBatch(num_queries, activations.x),
            ConstMatFromWeights(weights.embedder_input_embedding),
            /*add=*/nullptr, *activations.env,
-           RowPtrFromBatch(activations.logits));
+           RowPtrFromBatch(activations.env->ctx.allocator, activations.logits));
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {

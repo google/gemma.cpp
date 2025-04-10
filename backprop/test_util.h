@@ -24,20 +24,12 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "compression/compress.h"
 #include "gemma/configs.h"
 #include "gemma/weights.h"
+#include "util/mat.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
-
-template <typename T>
-void RandInit(MatPtrT<T>& x, T stddev, std::mt19937& gen) {
-  std::normal_distribution<T> dist(0.0, stddev);
-  for (size_t i = 0; i < x.NumElements(); ++i) {
-    x.At(i) = dist(gen);
-  }
-}
 
 // TODO: make a member of Layer<T>.
 template <typename T>
@@ -62,8 +54,12 @@ void RandInit(ModelWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
 
 template <typename T, typename U>
 void Complexify(const MatPtrT<T>& x, MatPtrT<std::complex<U>>& c_x) {
-  for (size_t i = 0; i < x.NumElements(); ++i) {
-    c_x.At(i) = std::complex<U>(x.At(i), 0.0);
+  for (size_t r = 0; r < x.Rows(); ++r) {
+    const T* row = x.Row(r);
+    std::complex<U>* c_row = c_x.Row(r);
+    for (size_t c = 0; c < x.Cols(); ++c) {
+      c_row[c] = std::complex<U>(row[c], 0.0);
+    }
   }
 }
 
@@ -87,14 +83,14 @@ void Complexify(const ModelWeightsPtrs<T>& w, ModelWeightsPtrs<U>& c_w) {
   }
 }
 
-// Somewhat duplicates ModelWeightsStorage, but that has neither double nor
+// Somewhat duplicates WeightsOwner, but that has neither double nor
 // complex types allowed and it would cause code bloat to add them there.
 template <typename T>
 class WeightsWrapper {
  public:
   explicit WeightsWrapper(const ModelConfig& config)
       : pool_(0), weights_(config) {
-    weights_.Allocate(data_, pool_);
+    weights_.Allocate(owners_, pool_);
   }
 
   const ModelWeightsPtrs<T>& get() const { return weights_; }
@@ -106,7 +102,7 @@ class WeightsWrapper {
 
  private:
   hwy::ThreadPool pool_;
-  std::vector<MatStorage> data_;
+  std::vector<MatOwner> owners_;
   ModelWeightsPtrs<T> weights_;
 };
 
@@ -116,13 +112,18 @@ void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
   double sum0 = 0;
   double sum1 = 0;
   double sum01 = 0;
-  for (size_t i = 0; i < actual.NumElements(); ++i) {
-    sum0 += actual.At(i) * actual.At(i);
-    sum1 += expected.At(i) * expected.At(i);
-    sum01 += actual.At(i) * expected.At(i);
-    ASSERT_NEAR(actual.At(i), expected.At(i),
-                std::max(max_abs_err, std::abs(expected.At(i)) * max_rel_err))
-        << "line: " << line << " dim=" << expected.NumElements() << " i=" << i;
+  for (size_t r = 0; r < actual.Rows(); ++r) {
+    const T* actual_row = actual.Row(r);
+    const U* expected_row = expected.Row(r);
+    for (size_t c = 0; c < actual.Cols(); ++c) {
+      sum0 += actual_row[c] * actual_row[c];
+      sum1 += expected_row[c] * expected_row[c];
+      sum01 += actual_row[c] * expected_row[c];
+      ASSERT_NEAR(
+          actual_row[c], expected_row[c],
+          std::max(max_abs_err, std::abs(expected_row[c]) * max_rel_err))
+          << "line: " << line << " r " << r << " c " << c;
+    }
   }
   if (sum0 > 1e-40) {
     double norm_dot = sum01 / std::sqrt(sum0) / std::sqrt(sum1);
@@ -148,15 +149,19 @@ void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
 template <typename FUNC, typename T, typename U>
 void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<U>>& x,
                   FUNC func, U step, T max_abs_err, T max_rel_err, int line) {
-  MatStorageT<T> exp_grad("exp_grad", x.Rows(), x.Cols());
+  MatStorageT<T> exp_grad = MakePacked<T>("exp_grad", x.Rows(), x.Cols());
   const U inv_step = 1.0 / step;
-  for (size_t i = 0; i < x.NumElements(); ++i) {
-    const U x0 = std::real(x.At(i));
-    const std::complex<U> x1 = std::complex<U>(x0, step);
-    x.At(i) = x1;
-    const std::complex<U> f1 = func();
-    exp_grad.At(i) = std::imag(f1) * inv_step;
-    x.At(i) = x0;
+  for (size_t r = 0; r < x.Rows(); ++r) {
+    std::complex<U>* x_row = x.Row(r);
+    T* exp_row = exp_grad.Row(r);
+    for (size_t c = 0; c < x.Cols(); ++c) {
+      const U x0 = std::real(x_row[c]);
+      const std::complex<U> x1 = std::complex<U>(x0, step);
+      x_row[c] = x1;
+      const std::complex<U> f1 = func();
+      exp_row[c] = std::imag(f1) * inv_step;
+      x_row[c] = x0;
+    }
   }
   TestNear(grad, exp_grad, max_abs_err, max_rel_err, line);
 }

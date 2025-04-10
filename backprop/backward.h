@@ -19,7 +19,7 @@
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
 #include "gemma/weights.h"
-#include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {

@@ -89,7 +89,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
       "A",  "B",   "C",   "D",   //
       " A", " B",  " C",  " D",  //
       "**", "**:", ":**", "The", "Answer", "is", ":", "."};
-  const TokenSet accept_set(env.GetModel()->Tokenizer(), accept_strings);
+  const TokenSet accept_set(env.GetGemma()->Tokenizer(), accept_strings);
 
   for (auto sample : json_data["samples"]) {
     const int id = sample["i"];
@@ -131,7 +131,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         .verbosity = env.Verbosity(),
         .stream_token = stream_token,
     };
-    env.GetModel()->Generate(runtime_config, prompt, /*pos=*/0,
+    env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
                              env.MutableKVCache(), timing_info);
 
     std::string output_string = env.StringFromTokens(predicted_token_ids);

@@ -33,8 +33,10 @@
 #include "backprop/test_util.h"
 #include "gemma/configs.h"
 #include "ops/ops.h"
-#include "util/threading.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -46,33 +48,45 @@
 // After highway.h
 #include "backprop/backward-inl.h"
 #include "backprop/forward-inl.h"
-#include "compression/compress.h"
 #include "ops/ops-inl.h"
-#include "util/allocator.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
+hwy::ThreadPool& ThreadHostileGetPool() {
+  // Assume this is only called at the top level, i.e. not in a thread. Then we
+  // can safely call `SetArgs` only once, because it would assert otherwise.
+  // This is preferable to calling `ThreadHostileInvalidate`, because we would
+  // repeat the topology initialization for every test.
+  if (!ThreadingContext2::IsInitialized()) {
+    gcpp::ThreadingArgs threading_args;
+    threading_args.max_packages = 1;
+    threading_args.max_clusters = 8;
+    threading_args.pin = Tristate::kFalse;
+    ThreadingContext2::SetArgs(threading_args);
+  }
+  return ThreadingContext2::Get().pools.Pool();
+}
+
 void TestMatMulVJP() {
   static const size_t kRows = 8;
   static const size_t kCols = 64;
   static const size_t kTokens = 5;
-  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
-  Allocator::Init(topology);
-  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
+
+  hwy::ThreadPool& pool = ThreadHostileGetPool();
   std::mt19937 gen(42);
-  MatStorageT<float> weights("weights", kRows, kCols);
-  MatStorageT<float> x("x", kTokens, kCols);
-  MatStorageT<float> dy("dy", kTokens, kRows);
-  MatStorageT<float> grad("grad", kRows, kCols);
-  MatStorageT<float> dx("dx", kTokens, kCols);
-  MatStorageT<float> grad_scalar("grad_scalar", kRows, kCols);
-  MatStorageT<float> dx_scalar("dx_scalar", kTokens, kCols);
+  auto weights = MakePacked<float>("weights", kRows, kCols);
+  auto x = MakePacked<float>("x", kTokens, kCols);
+  auto dy = MakePacked<float>("dy", kTokens, kRows);
+  auto grad = MakePacked<float>("grad", kRows, kCols);
+  auto dx = MakePacked<float>("dx", kTokens, kCols);
+  auto grad_scalar = MakePacked<float>("grad_scalar", kRows, kCols);
+  auto dx_scalar = MakePacked<float>("dx_scalar", kTokens, kCols);
   using TC = std::complex<double>;
-  MatStorageT<TC> c_weights("c_weights", kRows, kCols);
-  MatStorageT<TC> c_x("c_x", kTokens, kCols);
-  MatStorageT<TC> c_y("c_y", kTokens, kRows);
+  auto c_weights = MakePacked<TC>("c_weights", kRows, kCols);
+  auto c_x = MakePacked<TC>("c_x", kTokens, kCols);
+  auto c_y = MakePacked<TC>("c_y", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -81,19 +95,20 @@ void TestMatMulVJP() {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      MatMulT(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
-      return DotT(dy.data(), c_y.data(), kTokens * kRows);
+      MatMulT(c_weights.Packed(), c_x.Packed(), c_y.Packed(), kRows, kCols,
+              kTokens);
+      return DotT(dy.Packed(), c_y.Packed(), kTokens * kRows);
     };
 
-    grad.ZeroInit();
-    MatMulVJP(weights.data(), x.data(), dy.data(), kCols, kRows, kTokens,
-              grad.data(), dx.data(), pools.Pool());
+    ZeroInit(grad);
+    MatMulVJP(weights.Packed(), x.Packed(), dy.Packed(), kCols, kRows, kTokens,
+              grad.Packed(), dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    grad_scalar.ZeroInit();
-    MatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
-               dx_scalar.data(), kRows, kCols, kTokens);
+    ZeroInit(grad_scalar);
+    MatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
+               dx_scalar.Packed(), kRows, kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__);
     TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
   }
@@ -104,21 +119,19 @@ void TestMultiHeadMatMulVJP() {
   static const size_t kCols = 16;
   static const size_t kHeads = 4;
   static const size_t kTokens = 3;
-  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
-  Allocator::Init(topology);
-  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
+  hwy::ThreadPool& pool = ThreadHostileGetPool();
   std::mt19937 gen(42);
-  MatStorageT<float> weights("weights", kRows, kCols * kHeads);
-  MatStorageT<float> x("x", kTokens, kCols * kHeads);
-  MatStorageT<float> grad("grad", kRows, kCols * kHeads);
-  MatStorageT<float> dx("dx", kTokens, kCols * kHeads);
-  MatStorageT<float> dy("dy", kTokens, kRows);
-  MatStorageT<float> grad_scalar("grad_scalar", kRows, kCols * kHeads);
-  MatStorageT<float> dx_scalar("dx_scalar", kTokens, kCols * kHeads);
+  auto weights = MakePacked<float>("weights", kRows, kCols * kHeads);
+  auto x = MakePacked<float>("x", kTokens, kCols * kHeads);
+  auto grad = MakePacked<float>("grad", kRows, kCols * kHeads);
+  auto dx = MakePacked<float>("dx", kTokens, kCols * kHeads);
+  auto dy = MakePacked<float>("dy", kTokens, kRows);
+  auto grad_scalar = MakePacked<float>("grad_scalar", kRows, kCols * kHeads);
+  auto dx_scalar = MakePacked<float>("dx_scalar", kTokens, kCols * kHeads);
   using TC = std::complex<double>;
-  MatStorageT<TC> c_weights("c_weights", kRows, kCols * kHeads);
-  MatStorageT<TC> c_x("c_x", kTokens, kCols * kHeads);
-  MatStorageT<TC> c_y("c_y", kTokens, kRows);
+  auto c_weights = MakePacked<TC>("c_weights", kRows, kCols * kHeads);
+  auto c_x = MakePacked<TC>("c_x", kTokens, kCols * kHeads);
+  auto c_y = MakePacked<TC>("c_y", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -127,20 +140,21 @@ void TestMultiHeadMatMulVJP() {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      MultiHeadMatMul(c_weights.data(), c_x.data(), c_y.data(), kHeads, kRows,
-                      kCols, kTokens);
-      return DotT(dy.data(), c_y.data(), kTokens * kRows);
+      MultiHeadMatMul(c_weights.Packed(), c_x.Packed(), c_y.Packed(), kHeads,
+                      kRows, kCols, kTokens);
+      return DotT(dy.Packed(), c_y.Packed(), kTokens * kRows);
     };
 
-    grad.ZeroInit();
-    MultiHeadMatMulVJP(weights.data(), x.data(), dy.data(), kHeads, kCols,
-                       kRows, kTokens, grad.data(), dx.data(), pools.Pool());
+    ZeroInit(grad);
+    MultiHeadMatMulVJP(weights.Packed(), x.Packed(), dy.Packed(), kHeads, kCols,
+                       kRows, kTokens, grad.Packed(), dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    grad_scalar.ZeroInit();
-    MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
-                        dx_scalar.data(), kHeads, kRows, kCols, kTokens);
+    ZeroInit(grad_scalar);
+    MultiHeadMatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(),
+                        grad_scalar.Packed(), dx_scalar.Packed(), kHeads, kRows,
+                        kCols, kTokens);
     TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
     TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
   }
@@ -149,21 +163,19 @@ void TestMultiHeadMatMulVJP() {
 void TestRMSNormVJP() {
   static const size_t K = 2;
   static const size_t N = 64;
-  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 8));
-  Allocator::Init(topology);
-  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
+  hwy::ThreadPool& pool = ThreadHostileGetPool();
   std::mt19937 gen(42);
-  MatStorageT<float> weights("weights", N, 1);
-  MatStorageT<float> x("x", K, N);
-  MatStorageT<float> grad("grad", N, 1);
-  MatStorageT<float> dx("dx", K, N);
-  MatStorageT<float> dy("dy", K, N);
-  MatStorageT<float> grad_scalar("grad_scalar", N, 1);
-  MatStorageT<float> dx_scalar("dx_scalar", K, N);
+  auto weights = MakePacked<float>("weights", N, 1);
+  auto x = MakePacked<float>("x", K, N);
+  auto grad = MakePacked<float>("grad", N, 1);
+  auto dx = MakePacked<float>("dx", K, N);
+  auto dy = MakePacked<float>("dy", K, N);
+  auto grad_scalar = MakePacked<float>("grad_scalar", N, 1);
+  auto dx_scalar = MakePacked<float>("dx_scalar", K, N);
   using TC = std::complex<double>;
-  MatStorageT<TC> c_weights("c_weights", N, 1);
-  MatStorageT<TC> c_x("c_x", K, N);
-  MatStorageT<TC> c_y("c_y", K, N);
+  auto c_weights = MakePacked<TC>("c_weights", N, 1);
+  auto c_x = MakePacked<TC>("c_x", K, N);
+  auto c_y = MakePacked<TC>("c_y", K, N);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0f * (1 << iter), gen);
@@ -172,19 +184,19 @@ void TestRMSNormVJP() {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      RMSNormT(c_weights.data(), c_x.data(), c_y.data(), N, K);
-      return DotT(dy.data(), c_y.data(), K * N);
+      RMSNormT(c_weights.Packed(), c_x.Packed(), c_y.Packed(), N, K);
+      return DotT(dy.Packed(), c_y.Packed(), K * N);
     };
 
-    grad.ZeroInit();
-    RMSNormVJP(weights.data(), x.data(), dy.data(), N, K, grad.data(),
-               dx.data(), pools.Pool());
+    ZeroInit(grad);
+    RMSNormVJP(weights.Packed(), x.Packed(), dy.Packed(), N, K, grad.Packed(),
+               dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
 
-    grad_scalar.ZeroInit();
-    RMSNormVJPT(weights.data(), x.data(), dy.data(), grad_scalar.data(),
-                dx_scalar.data(), N, K);
+    ZeroInit(grad_scalar);
+    RMSNormVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
+                dx_scalar.Packed(), N, K);
     TestNear(dx, dx_scalar, 0, 2e-5, __LINE__);
     TestNear(grad, grad_scalar, 0, 2e-5, __LINE__);
   }
@@ -215,9 +227,7 @@ static ModelConfig TestConfig() {
 
 void TestEndToEnd() {
   std::mt19937 gen(42);
-  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1));
-  Allocator::Init(topology);
-  gcpp::NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
+  hwy::ThreadPool& pool = ThreadHostileGetPool();
   ModelConfig config = TestConfig();
   WeightsWrapper<float> weights(config);
   WeightsWrapper<float> grad(config);
@@ -232,7 +242,7 @@ void TestEndToEnd() {
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
   RowVectorBatch<float> inv_timescale = CreateInvTimescale(
-      config.layer_configs[0].qkv_dim,
+      ThreadingContext2::Get().allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
@@ -242,13 +252,13 @@ void TestEndToEnd() {
 
     float loss1 = CrossEntropyLossForwardPass(
         prompt.tokens, prompt.context_size, weights.get(), forward1,
-        inv_timescale, pools.Pool());
+        inv_timescale, pool);
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
     grad.ZeroInit();
     CrossEntropyLossBackwardPassInl(prompt, weights.get(), forward1, grad.get(),
-                                    backward, inv_timescale, pools.Pool());
+                                    backward, inv_timescale, pool);
 
     Complexify(weights.get(), c_weights.get());
     auto func = [&]() {

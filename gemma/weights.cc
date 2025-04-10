@@ -29,6 +29,7 @@
 #include "compression/shared.h"
 #include "gemma/common.h"
 #include "gemma/configs.h"
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // HWY_ABORT
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -118,7 +119,7 @@ struct TensorSaver {
     weights.ForEachTensor(
         {&weights}, fet,
         [&writer](const char* name, hwy::Span<MatPtr*> tensors) {
-          tensors[0]->CallUpcasted(writer, name);
+          CallUpcasted(tensors[0]->GetType(), tensors[0], writer, name);
         });
   }
 };
@@ -155,11 +156,11 @@ class WeightInitializer {
   WeightInitializer(std::mt19937& gen) : dist_(0.0f, 1.0f), gen_(gen) {}
 
   void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
-    float* data = tensors[0]->data<float>();
-    for (size_t i = 0; i < tensors[0]->NumElements(); ++i) {
+    float* data = tensors[0]->RowT<float>(0);
+    for (size_t i = 0; i < tensors[0]->Extents().Area(); ++i) {
       data[i] = dist_(gen_);
     }
-    tensors[0]->set_scale(1.0f);
+    tensors[0]->SetScale(1.0f);
   }
 
  private:
@@ -226,11 +227,11 @@ void ModelWeightsStorage::LogWeightStats() {
       {float_weights_.get()}, ForEachType::kInitNoToc,
       [&total_weights](const char* name, hwy::Span<MatPtr*> tensors) {
         const MatPtr& tensor = *tensors[0];
-        if (tensor.scale() != 1.0f) {
-          printf("[scale=%f] ", tensor.scale());
+        if (tensor.Scale() != 1.0f) {
+          printf("[scale=%f] ", tensor.Scale());
         }
-        LogVec(name, tensor.data<float>(), tensor.NumElements());
-        total_weights += tensor.NumElements();
+        LogVec(name, tensor.RowT<float>(0), tensor.Extents().Area());
+        total_weights += tensor.Extents().Area();
       });
   printf("%-20s  %12zu\n", "Total", total_weights);
 }
@@ -258,8 +259,8 @@ void ModelWeightsStorage::CreateForType(Type weight_type,
 }
 
 template <>
-void LayerWeightsPtrs<NuqStream>::Reshape(MatStorage* storage) {
-  if (attn_vec_einsum_w.data() == nullptr) return;
+void LayerWeightsPtrs<NuqStream>::Reshape(MatOwner* storage) {
+  if (!attn_vec_einsum_w.HasPtr()) return;
 
   const size_t model_dim = layer_config.model_dim;
   const size_t heads = layer_config.heads;
@@ -267,8 +268,7 @@ void LayerWeightsPtrs<NuqStream>::Reshape(MatStorage* storage) {
 
   // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
   if (storage != nullptr) {
-    storage->Allocate();
-    att_weights.SetPtr(*storage);
+    storage->AllocateFor(att_weights, MatPadding::kPacked);
   }
 
   const hwy::HWY_NAMESPACE::ScalableTag<float> df;
@@ -279,7 +279,7 @@ void LayerWeightsPtrs<NuqStream>::Reshape(MatStorage* storage) {
       hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
 
   HWY_NAMESPACE::DecompressAndZeroPad(
-      df, MakeSpan(attn_vec_einsum_w.data(), model_dim * heads * qkv_dim), 0,
+      df, MakeSpan(attn_vec_einsum_w.Packed(), model_dim * heads * qkv_dim), 0,
       attn_vec_einsum_w_tmp.get(), model_dim * heads * qkv_dim);
 
   for (size_t m = 0; m < model_dim; ++m) {
@@ -296,10 +296,10 @@ void LayerWeightsPtrs<NuqStream>::Reshape(MatStorage* storage) {
 
   HWY_NAMESPACE::Compress(
       att_weights_tmp.get(), model_dim * heads * qkv_dim, work,
-      MakeSpan(att_weights.data(), model_dim * heads * qkv_dim),
+      MakeSpan(att_weights.Packed(), model_dim * heads * qkv_dim),
       /*packed_ofs=*/0, pool);
 
-  att_weights.set_scale(attn_vec_einsum_w.scale());
+  att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
 
 }  // namespace gcpp

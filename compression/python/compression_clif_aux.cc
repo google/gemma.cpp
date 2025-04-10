@@ -22,7 +22,8 @@
 
 #include "compression/compress.h"
 #include "compression/shared.h"
-#include "hwy/aligned_allocator.h"
+#include "gemma/weights.h"
+#include "util/mat.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
@@ -81,30 +82,23 @@ class SbsWriterImpl : public WriterInterface {
   template <typename Packed>
   void AllocateAndCompress(const std::string& name,
                            absl::Span<const float> weights) {
-    MatPtrT<Packed> storage(name, 1, weights.size());
-    model_memory_.push_back(storage);
-    model_memory_.back().Allocate();
-    storage.SetPtr(model_memory_.back());
-    std::string decorated_name = storage.CacheName();
+    MatPtrT<Packed> storage(name.c_str(), Extents2D(1, weights.size()));
+    model_memory_.push_back(MatOwner());
+    model_memory_.back().AllocateFor(storage, MatPadding::kPacked);
+    std::string decorated_name = CacheName(storage);
     compressor_(&storage, decorated_name.c_str(), weights.data());
   }
   template <typename Packed>
   void AllocateWithShape(const std::string& name,
                          absl::Span<const float> weights,
                          const TensorInfo& tensor_info, float scale) {
-    MatPtrT<Packed> storage(name, &tensor_info);
-    storage.set_scale(scale);
+    MatPtrT<Packed> storage(name.c_str(), &tensor_info);
+    storage.SetScale(scale);
 
-    // Don't reset num_elements for NUQ.
-    if (!hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
-      storage.SetNumElements(CompressedArrayElements<Packed>(weights.size()));
-    }
-
-    model_memory_.push_back(storage);
+    model_memory_.push_back(MatOwner());
     if (mode_ == CompressorMode::kTEST_ONLY) return;
-    model_memory_.back().Allocate();
-    storage.SetPtr(model_memory_.back());
-    std::string decorated_name = storage.CacheName();
+    model_memory_.back().AllocateFor(storage, MatPadding::kPacked);
+    std::string decorated_name = CacheName(storage);
     compressor_(&storage, decorated_name.c_str(), weights.data());
   }
 
@@ -176,7 +170,7 @@ class SbsWriterImpl : public WriterInterface {
   hwy::ThreadPool pool_;
   Compressor compressor_;
   CompressWorkingSet working_set_;
-  std::vector<MatStorage> model_memory_;
+  std::vector<MatOwner> model_memory_;
   std::vector<float> scales_;
   CompressorMode mode_;
 };

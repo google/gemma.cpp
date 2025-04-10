@@ -31,9 +31,9 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
-#include "compression/compress.h"
 #include "gemma/configs.h"
 #include "gemma/weights.h"
+#include "util/mat.h"
 
 namespace gcpp {
 
@@ -44,14 +44,14 @@ TEST(BackPropTest, MatMulVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> weights("weights", kRows, kCols);
-  MatStorageT<T> x("x", kTokens, kCols);
-  MatStorageT<T> grad("grad", kRows, kCols);
-  MatStorageT<T> dx("dx", kTokens, kCols);
-  MatStorageT<TC> c_weights("c_weights", kRows, kCols);
-  MatStorageT<TC> c_x("c_x", kTokens, kCols);
-  MatStorageT<TC> c_y("c_y", kTokens, kRows);
-  MatStorageT<T> dy("dy", kTokens, kRows);
+  auto weights = MakePacked<T>("weights", kRows, kCols);
+  auto x = MakePacked<T>("x", kTokens, kCols);
+  auto grad = MakePacked<T>("grad", kRows, kCols);
+  auto dx = MakePacked<T>("dx", kTokens, kCols);
+  auto c_weights = MakePacked<TC>("c_weights", kRows, kCols);
+  auto c_x = MakePacked<TC>("c_x", kTokens, kCols);
+  auto c_y = MakePacked<TC>("c_y", kTokens, kRows);
+  auto dy = MakePacked<T>("dy", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
@@ -60,12 +60,13 @@ TEST(BackPropTest, MatMulVJP) {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      MatMulT(c_weights.data(), c_x.data(), c_y.data(), kRows, kCols, kTokens);
-      return DotT(dy.data(), c_y.data(), kTokens * kRows);
+      MatMulT(c_weights.Packed(), c_x.Packed(), c_y.Packed(), kRows, kCols,
+              kTokens);
+      return DotT(dy.Packed(), c_y.Packed(), kTokens * kRows);
     };
-    grad.ZeroInit();
-    MatMulVJPT(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
-               kRows, kCols, kTokens);
+    ZeroInit(grad);
+    MatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad.Packed(),
+               dx.Packed(), kRows, kCols, kTokens);
     TestGradient(dx, c_x, func, 1e-11, 1e-12, __LINE__);
     TestGradient(grad, c_weights, func, 1e-14, 1e-12, __LINE__);
   }
@@ -79,14 +80,14 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> weights("weights", kRows, kCols * kHeads);
-  MatStorageT<T> x("x", kTokens, kCols * kHeads);
-  MatStorageT<T> grad("grad", kRows, kCols * kHeads);
-  MatStorageT<T> dx("dx", kTokens, kCols * kHeads);
-  MatStorageT<TC> c_weights("c_weights", kRows, kCols * kHeads);
-  MatStorageT<TC> c_x("c_x", kTokens, kCols * kHeads);
-  MatStorageT<TC> c_y("c_y", kTokens, kRows);
-  MatStorageT<T> dy("dy", kTokens, kRows);
+  auto weights = MakePacked<T>("weights", kRows, kCols * kHeads);
+  auto x = MakePacked<T>("x", kTokens, kCols * kHeads);
+  auto grad = MakePacked<T>("grad", kRows, kCols * kHeads);
+  auto dx = MakePacked<T>("dx", kTokens, kCols * kHeads);
+  auto c_weights = MakePacked<TC>("c_weights", kRows, kCols * kHeads);
+  auto c_x = MakePacked<TC>("c_x", kTokens, kCols * kHeads);
+  auto c_y = MakePacked<TC>("c_y", kTokens, kRows);
+  auto dy = MakePacked<T>("dy", kTokens, kRows);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
@@ -95,13 +96,14 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
-      MultiHeadMatMul(c_weights.data(), c_x.data(), c_y.data(), kHeads, kRows,
-                      kCols, kTokens);
-      return DotT(dy.data(), c_y.data(), kTokens * kRows);
+      MultiHeadMatMul(c_weights.Packed(), c_x.Packed(), c_y.Packed(), kHeads,
+                      kRows, kCols, kTokens);
+      return DotT(dy.Packed(), c_y.Packed(), kTokens * kRows);
     };
-    grad.ZeroInit();
-    MultiHeadMatMulVJPT(weights.data(), x.data(), dy.data(), grad.data(),
-                        dx.data(), kHeads, kRows, kCols, kTokens);
+    ZeroInit(grad);
+    MultiHeadMatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(),
+                        grad.Packed(), dx.Packed(), kHeads, kRows, kCols,
+                        kTokens);
     TestGradient(dx, c_x, func, 1e-15, 1e-13, __LINE__);
     TestGradient(grad, c_weights, func, 1e-15, 1e-13, __LINE__);
   }
@@ -113,14 +115,14 @@ TEST(BackPropTest, RMSNormVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> weights("weights", N, 1);
-  MatStorageT<T> grad("grad", N, 1);
-  MatStorageT<T> x("x", K, N);
-  MatStorageT<T> dx("dx", K, N);
-  MatStorageT<T> dy("dy", K, N);
-  MatStorageT<TC> c_weights("c_weights", N, 1);
-  MatStorageT<TC> c_x("c_x", K, N);
-  MatStorageT<TC> c_y("c_y", K, N);
+  auto weights = MakePacked<T>("weights", N, 1);
+  auto grad = MakePacked<T>("grad", N, 1);
+  auto x = MakePacked<T>("x", K, N);
+  auto dx = MakePacked<T>("dx", K, N);
+  auto dy = MakePacked<T>("dy", K, N);
+  auto c_weights = MakePacked<TC>("c_weights", N, 1);
+  auto c_x = MakePacked<TC>("c_x", K, N);
+  auto c_y = MakePacked<TC>("c_y", K, N);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
@@ -129,12 +131,12 @@ TEST(BackPropTest, RMSNormVJP) {
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      RMSNormT(c_weights.data(), c_x.data(), c_y.data(), N, K);
-      return DotT(dy.data(), c_y.data(), K * N);
+      RMSNormT(c_weights.Packed(), c_x.Packed(), c_y.Packed(), N, K);
+      return DotT(dy.Packed(), c_y.Packed(), K * N);
     };
-    grad.ZeroInit();
-    RMSNormVJPT(weights.data(), x.data(), dy.data(), grad.data(), dx.data(),
-                N, K);
+    ZeroInit(grad);
+    RMSNormVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad.Packed(),
+                dx.Packed(), N, K);
     TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
     TestGradient(grad, c_weights, func, 1e-15, 1e-14, __LINE__);
   }
@@ -145,24 +147,24 @@ TEST(BackPropTest, SoftmaxVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", N, 1);
-  MatStorageT<T> dx("dx", N, 1);
-  MatStorageT<T> dy("dy", N, 1);
-  MatStorageT<TC> c_x("c_x", N, 1);
-  MatStorageT<TC> c_y("c_y", N, 1);
+  auto x = MakePacked<T>("x", N, 1);
+  auto dx = MakePacked<T>("dx", N, 1);
+  auto dy = MakePacked<T>("dy", N, 1);
+  auto c_x = MakePacked<TC>("c_x", N, 1);
+  auto c_y = MakePacked<TC>("c_y", N, 1);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      memcpy(c_y.data(), c_x.data(), c_x.SizeBytes());
-      Softmax(c_y.data(), N);
-      return DotT(dy.data(), c_y.data(), N);
+      CopyMat(c_x, c_y);
+      Softmax(c_y.Packed(), N);
+      return DotT(dy.Packed(), c_y.Packed(), N);
     };
-    Softmax(x.data(), N);
-    memcpy(dx.data(), dy.data(), dx.SizeBytes());
-    SoftmaxVJPT(x.data(), dx.data(), N);
+    Softmax(x.Packed(), N);
+    CopyMat(dy, dx);
+    SoftmaxVJPT(x.Packed(), dx.Packed(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -175,26 +177,25 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", N, 1);
-  MatStorageT<T> dy("dy", N, 1);
-  MatStorageT<T> dx("dx", N, 1);
-  MatStorageT<TC> c_x("c_x", N, 1);
-  MatStorageT<TC> c_y("c_y", N, 1);
-  dx.ZeroInit();
+  auto x = MakePacked<T>("x", N, 1);
+  auto dy = MakePacked<T>("dy", N, 1);
+  auto dx = MakePacked<T>("dx", N, 1);
+  auto c_x = MakePacked<TC>("c_x", N, 1);
+  auto c_y = MakePacked<TC>("c_y", N, 1);
+  ZeroInit(dx);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      memcpy(c_y.data(), c_x.data(),
-             kTokens * kHeads * kSeqLen * sizeof(c_x.At(0)));
-      MaskedSoftmax(c_y.data(), kTokens, kHeads, kSeqLen);
-      return DotT(dy.data(), c_y.data(), N);
+      CopyMat(c_x, c_y);
+      MaskedSoftmax(c_y.Packed(), kTokens, kHeads, kSeqLen);
+      return DotT(dy.Packed(), c_y.Packed(), N);
     };
-    MaskedSoftmax(x.data(), kTokens, kHeads, kSeqLen);
-    memcpy(dx.data(), dy.data(), kTokens * kHeads * kSeqLen * sizeof(dx.At(0)));
-    MaskedSoftmaxVJPT(x.data(), dx.data(), kTokens, kHeads, kSeqLen);
+    MaskedSoftmax(x.Packed(), kTokens, kHeads, kSeqLen);
+    CopyMat(dy, dx);
+    MaskedSoftmaxVJPT(x.Packed(), dx.Packed(), kTokens, kHeads, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
   }
 }
@@ -204,11 +205,11 @@ TEST(BackPropTest, SoftcapVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", N, 1);
-  MatStorageT<T> dx("dx", N, 1);
-  MatStorageT<T> dy("dy", N, 1);
-  MatStorageT<TC> c_x("c_x", N, 1);
-  MatStorageT<TC> c_y("c_y", N, 1);
+  auto x = MakePacked<T>("x", N, 1);
+  auto dx = MakePacked<T>("dx", N, 1);
+  auto dy = MakePacked<T>("dy", N, 1);
+  auto c_x = MakePacked<TC>("c_x", N, 1);
+  auto c_y = MakePacked<TC>("c_y", N, 1);
 
   constexpr float kCap = 30.0f;
   for (int iter = 0; iter < 10; ++iter) {
@@ -216,13 +217,13 @@ TEST(BackPropTest, SoftcapVJP) {
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      memcpy(c_y.data(), c_x.data(), N * sizeof(c_x.At(0)));
-      Softcap(kCap, c_y.data(), N);
-      return DotT(dy.data(), c_y.data(), N);
+      CopyMat(c_x, c_y);
+      Softcap(kCap, c_y.Packed(), N);
+      return DotT(dy.Packed(), c_y.Packed(), N);
     };
-    Softcap(kCap, x.data(), N);
-    memcpy(dx.data(), dy.data(), dx.SizeBytes());
-    SoftcapVJPT(kCap, x.data(), dx.data(), N);
+    Softcap(kCap, x.Packed(), N);
+    CopyMat(dy, dx);
+    SoftcapVJPT(kCap, x.Packed(), dx.Packed(), N);
     TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
   }
 }
@@ -233,9 +234,9 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", K, V);
-  MatStorageT<T> dx("dx", K, V);
-  MatStorageT<TC> c_x("c_x", K, V);
+  auto x = MakePacked<T>("x", K, V);
+  auto dx = MakePacked<T>("dx", K, V);
+  auto c_x = MakePacked<TC>("c_x", K, V);
   Prompt prompt;
   prompt.tokens = { 0, 1, 2, 3, 0, 3, 2, 1, 0 };
 
@@ -243,13 +244,11 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
   for (int iter = 0; iter < 10; ++iter) {
     prompt.context_size = 1 + (iter % 6);
     RandInit(x, 1.0 * (1 << iter), gen);
-    Softcap(kCap, x.data(), V * K);
-    Softmax(x.data(), V, K);
-    CrossEntropyLossGrad(x.data(), dx.data(), prompt, V);
+    Softcap(kCap, x.Packed(), V * K);
+    Softmax(x.Packed(), V, K);
+    CrossEntropyLossGrad(x.Packed(), dx.Packed(), prompt, V);
     Complexify(x, c_x);
-    auto func = [&]() {
-      return CrossEntropyLoss(c_x.data(), prompt, V);
-    };
+    auto func = [&]() { return CrossEntropyLoss(c_x.Packed(), prompt, V); };
     TestGradient(dx, c_x, func, 1e-100, 1e-15, __LINE__);
   }
 }
@@ -260,21 +259,21 @@ TEST(BackPropTest, GatedGeluVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", K, 2 * N);
-  MatStorageT<T> dx("dx", K, 2 * N);
-  MatStorageT<T> dy("dy", K, N);
-  MatStorageT<TC> c_x("c_x", K, 2 * N);
-  MatStorageT<TC> c_y("c_y", K, N);
+  auto x = MakePacked<T>("x", K, 2 * N);
+  auto dx = MakePacked<T>("dx", K, 2 * N);
+  auto dy = MakePacked<T>("dy", K, N);
+  auto c_x = MakePacked<TC>("c_x", K, 2 * N);
+  auto c_y = MakePacked<TC>("c_y", K, N);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0, gen);
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      GatedGelu(c_x.data(), c_y.data(), N, K);
-      return DotT(dy.data(), c_y.data(), N * K);
+      GatedGelu(c_x.Packed(), c_y.Packed(), N, K);
+      return DotT(dy.Packed(), c_y.Packed(), N * K);
     };
-    GatedGeluVJP(x.data(), dy.data(), dx.data(), N, K);
+    GatedGeluVJP(x.Packed(), dy.Packed(), dx.Packed(), N, K);
     TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
   }
 }
@@ -289,25 +288,25 @@ TEST(BackPropTest, MaskedAttentionVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> x("x", kQKVSize, 1);
-  MatStorageT<T> dx("dx", kQKVSize, 1);
-  MatStorageT<T> dy("dy", kOutSize, 1);
-  MatStorageT<TC> c_x("c_x", kQKVSize, 1);
-  MatStorageT<TC> c_y("c_y", kOutSize, 1);
-  dx.ZeroInit();
-  c_y.ZeroInit();
+  auto x = MakePacked<T>("x", kQKVSize, 1);
+  auto dx = MakePacked<T>("dx", kQKVSize, 1);
+  auto dy = MakePacked<T>("dy", kOutSize, 1);
+  auto c_x = MakePacked<TC>("c_x", kQKVSize, 1);
+  auto c_y = MakePacked<TC>("c_y", kOutSize, 1);
+  ZeroInit(dx);
+  ZeroInit(c_y);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0, gen);
     Complexify(x, c_x);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      MaskedAttention(c_x.data(), c_y.data(), kTokens, kHeads, kQKVDim,
+      MaskedAttention(c_x.Packed(), c_y.Packed(), kTokens, kHeads, kQKVDim,
                       kSeqLen);
-      return DotT(dy.data(), c_y.data(), kOutSize);
+      return DotT(dy.Packed(), c_y.Packed(), kOutSize);
     };
-    MaskedAttentionVJP(x.data(), dy.data(), dx.data(),
-                       kTokens, kHeads, kQKVDim, kSeqLen);
+    MaskedAttentionVJP(x.Packed(), dy.Packed(), dx.Packed(), kTokens, kHeads,
+                       kQKVDim, kSeqLen);
     TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
   }
 }
@@ -323,17 +322,17 @@ TEST(BackPropTest, MixByAttentionVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> qkv("qkv", kQKVSize, 1);
-  MatStorageT<T> dqkv("dqkv", kQKVSize, 1);
-  MatStorageT<T> attn("attn", kAttnSize, 1);
-  MatStorageT<T> dattn("dattn", kAttnSize, 1);
-  MatStorageT<T> dy("dy", kOutSize, 1);
-  MatStorageT<TC> c_qkv("c_qkv", kQKVSize, 1);
-  MatStorageT<TC> c_attn("c_attn", kAttnSize, 1);
-  MatStorageT<TC> c_y("c_y", kOutSize, 1);
-  dqkv.ZeroInit();
-  dattn.ZeroInit();
-  c_y.ZeroInit();
+  auto qkv = MakePacked<T>("qkv", kQKVSize, 1);
+  auto dqkv = MakePacked<T>("dqkv", kQKVSize, 1);
+  auto attn = MakePacked<T>("attn", kAttnSize, 1);
+  auto dattn = MakePacked<T>("dattn", kAttnSize, 1);
+  auto dy = MakePacked<T>("dy", kOutSize, 1);
+  auto c_qkv = MakePacked<TC>("c_qkv", kQKVSize, 1);
+  auto c_attn = MakePacked<TC>("c_attn", kAttnSize, 1);
+  auto c_y = MakePacked<TC>("c_y", kOutSize, 1);
+  ZeroInit(dqkv);
+  ZeroInit(dattn);
+  ZeroInit(c_y);
 
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(qkv, 1.0, gen);
@@ -342,12 +341,12 @@ TEST(BackPropTest, MixByAttentionVJP) {
     Complexify(attn, c_attn);
     RandInit(dy, 1.0, gen);
     auto func = [&]() {
-      MixByAttention(c_qkv.data(), c_attn.data(), c_y.data(),
-                     kTokens, kHeads, kQKVDim, kSeqLen);
-      return DotT(dy.data(), c_y.data(), kOutSize);
+      MixByAttention(c_qkv.Packed(), c_attn.Packed(), c_y.Packed(), kTokens,
+                     kHeads, kQKVDim, kSeqLen);
+      return DotT(dy.Packed(), c_y.Packed(), kOutSize);
     };
-    MixByAttentionVJP(qkv.data(), attn.data(), dy.data(), dqkv.data(),
-                      dattn.data(), kTokens, kHeads, kQKVDim, kSeqLen);
+    MixByAttentionVJP(qkv.Packed(), attn.Packed(), dy.Packed(), dqkv.Packed(),
+                      dattn.Packed(), kTokens, kHeads, kQKVDim, kSeqLen);
     TestGradient(dqkv, c_qkv, func, 1e-14, 1e-15, __LINE__);
     TestGradient(dattn, c_attn, func, 1e-14, 1e-15, __LINE__);
   }
@@ -360,11 +359,11 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   std::mt19937 gen(42);
   using T = double;
   using TC = std::complex<T>;
-  MatStorageT<T> weights("weights", kVocabSize, kModelDim);
-  MatStorageT<T> grad("grad", kVocabSize, kModelDim);
-  MatStorageT<T> dy("dy", kSeqLen, kModelDim);
-  MatStorageT<TC> c_weights("c_weights", kVocabSize, kModelDim);
-  MatStorageT<TC> c_y("c_y", kSeqLen, kModelDim);
+  auto weights = MakePacked<T>("weights", kVocabSize, kModelDim);
+  auto grad = MakePacked<T>("grad", kVocabSize, kModelDim);
+  auto dy = MakePacked<T>("dy", kSeqLen, kModelDim);
+  auto c_weights = MakePacked<TC>("c_weights", kVocabSize, kModelDim);
+  auto c_y = MakePacked<TC>("c_y", kSeqLen, kModelDim);
   std::vector<int> tokens = { 0, 1, 2, 3, 0, 1, 2 };
   size_t num_tokens = tokens.size() - 1;
 
@@ -373,12 +372,13 @@ TEST(BackPropTest, InputEmbeddingVJP) {
     RandInit(dy, 1.0, gen);
     Complexify(weights, c_weights);
     auto func = [&]() {
-      InputEmbedding(c_weights.data(), tokens, TC(3.0), c_y.data(), kModelDim);
-      return DotT(dy.data(), c_y.data(), num_tokens * kModelDim);
+      InputEmbedding(c_weights.Packed(), tokens, TC(3.0), c_y.Packed(),
+                     kModelDim);
+      return DotT(dy.Packed(), c_y.Packed(), num_tokens * kModelDim);
     };
-    grad.ZeroInit();
-    InputEmbeddingVJPT(weights.data(), tokens, 3.0, dy.data(), grad.data(),
-                       kModelDim);
+    ZeroInit(grad);
+    InputEmbeddingVJPT(weights.Packed(), tokens, 3.0, dy.Packed(),
+                       grad.Packed(), kModelDim);
     TestGradient(grad, c_weights, func, 1e-16, 1e-14, __LINE__);
   }
 }
@@ -410,8 +410,7 @@ TEST(BackPropTest, LayerVJP) {
   using T = double;
   using TC = std::complex<T>;
   ModelConfig config = TestConfig();
-  TensorIndex tensor_index(config, /*llm_layer_idx=*/0, /*img_layer_idx=*/-1,
-                           /*reshape_att=*/false);
+  const TensorIndex tensor_index = TensorIndexLLM(config, size_t{0});
   const size_t kOutputSize = config.seq_len * config.model_dim;
   LayerWeightsPtrs<T> weights(config.layer_configs[0], tensor_index);
   LayerWeightsPtrs<T> grad(config.layer_configs[0], tensor_index);
@@ -419,15 +418,15 @@ TEST(BackPropTest, LayerVJP) {
   ForwardLayer<T> backward(config.layer_configs[0], config.seq_len);
   LayerWeightsPtrs<TC> c_weights(config.layer_configs[0], tensor_index);
   ForwardLayer<TC> c_forward(config.layer_configs[0], config.seq_len);
-  MatStorageT<T> y("y", kOutputSize, 1);
-  MatStorageT<T> dy("dy", kOutputSize, 1);
-  MatStorageT<TC> c_y("c_y", kOutputSize, 1);
+  auto y = MakePacked<T>("y", kOutputSize, 1);
+  auto dy = MakePacked<T>("dy", kOutputSize, 1);
+  auto c_y = MakePacked<TC>("c_y", kOutputSize, 1);
   const size_t num_tokens = 3;
-  std::vector<MatStorage> layer_storage;
+  std::vector<MatOwner> layer_storage;
   weights.Allocate(layer_storage);
   grad.Allocate(layer_storage);
   c_weights.Allocate(layer_storage);
-  backward.input.ZeroInit();
+  ZeroInit(backward.input);
 
   for (size_t iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0, gen);
@@ -436,12 +435,12 @@ TEST(BackPropTest, LayerVJP) {
     Complexify(weights, c_weights);
     Complexify(forward.input, c_forward.input);
     auto func = [&]() {
-      ApplyLayer(c_weights, c_forward, num_tokens, c_y.data());
-      return DotT(dy.data(), c_y.data(), num_tokens * config.model_dim);
+      ApplyLayer(c_weights, c_forward, num_tokens, c_y.Packed());
+      return DotT(dy.Packed(), c_y.Packed(), num_tokens * config.model_dim);
     };
     grad.ZeroInit(/*layer_idx=*/0);
-    ApplyLayer(weights, forward, num_tokens, y.data());
-    LayerVJP(weights, forward, dy.data(), grad, backward, num_tokens);
+    ApplyLayer(weights, forward, num_tokens, y.Packed());
+    LayerVJP(weights, forward, dy.Packed(), grad, backward, num_tokens);
     TestGradient(backward.input, c_forward.input, func, 1e-11, 5e-11,
                  __LINE__);
     TestGradient(grad, c_weights, func, 1e-11);

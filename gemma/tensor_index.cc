@@ -562,11 +562,12 @@ TensorIndex::TensorIndex(const ModelConfig& config, int llm_layer_idx,
   if (llm_layer_idx < 0 && img_layer_idx < 0) {
     tensors_ = ModelTensors(config);
   } else if (llm_layer_idx_ < 0 && 0 <= img_layer_idx &&
-             img_layer_idx < config.vit_config.layer_configs.size()) {
+             img_layer_idx <
+                 static_cast<int>(config.vit_config.layer_configs.size())) {
     const auto& layer_config = config.vit_config.layer_configs[img_layer_idx];
     tensors_ = ImageLayerTensors(config, layer_config, img_layer_idx);
   } else if (0 <= llm_layer_idx &&
-             llm_layer_idx < config.layer_configs.size()) {
+             llm_layer_idx < static_cast<int>(config.layer_configs.size())) {
     const auto& layer_config = config.layer_configs[llm_layer_idx];
     tensors_ = LLMLayerTensors(config, layer_config, reshape_att);
   }

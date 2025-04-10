@@ -24,39 +24,22 @@
 #include <vector>
 
 #include "third_party/gemma_cpp/gemma/gemma.h"
+#include "third_party/gemma_cpp/gemma/gemma_args.h"  // LoaderArgs
 #include "third_party/gemma_cpp/gemma/tokenizer.h"
 #include "third_party/gemma_cpp/ops/matmul.h"
-#include "third_party/gemma_cpp/util/app.h"  // LoaderArgs
-#include "third_party/gemma_cpp/util/threading.h"
+#include "third_party/gemma_cpp/util/threading_context.h"
 #include "third_party/highway/hwy/base.h"
 
 class SimplifiedGemma {
  public:
   SimplifiedGemma(const gcpp::LoaderArgs& loader,
-                  const gcpp::InferenceArgs& inference = gcpp::InferenceArgs(),
-                  const gcpp::AppArgs& app = gcpp::AppArgs())
+                  const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
+                  const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
       : loader_(loader),
+        threading_(threading),
         inference_(inference),
-        app_(app),
-        topology_(gcpp::CreateTopology(app_)),
-        pools_(gcpp::CreatePools(topology_, app_)),
-        env_(topology_, pools_),
+        env_(MakeMatMulEnv(threading_)),
         model_(gcpp::CreateGemma(loader_, env_)) {
-    Init();
-  }
-
-  SimplifiedGemma(int argc, char** argv)
-      : loader_(argc, argv, /*validate=*/true),
-        inference_(argc, argv),
-        app_(argc, argv),
-        topology_(gcpp::CreateTopology(app_)),
-        pools_(gcpp::CreatePools(topology_, app_)),
-        env_(topology_, pools_),
-        model_(gcpp::CreateGemma(loader_, env_)) {
-    Init();
-  }
-
-  void Init() {
     // Instantiate model and KV Cache
     kv_cache_ = gcpp::KVCache::Create(model_.GetModelConfig(),
                                       inference_.prefill_tbatch_size);
@@ -65,6 +48,11 @@ class SimplifiedGemma {
     std::random_device rd;
     gen_.seed(rd());
   }
+
+  SimplifiedGemma(int argc, char** argv)
+      : SimplifiedGemma(gcpp::LoaderArgs(argc, argv, /*validate=*/true),
+                        gcpp::ThreadingArgs(argc, argv),
+                        gcpp::InferenceArgs(argc, argv)) {}
 
   void Generate(std::string& prompt, size_t max_generated_tokens = 1024,
                 float temperature = 0.7,
@@ -107,10 +95,8 @@ class SimplifiedGemma {
 
  private:
   gcpp::LoaderArgs loader_;
+  gcpp::ThreadingArgs threading_;
   gcpp::InferenceArgs inference_;
-  gcpp::AppArgs app_;
-  gcpp::BoundedTopology topology_;
-  gcpp::NestedPools pools_;
   gcpp::MatMulEnv env_;
   gcpp::Gemma model_;
   gcpp::KVCache kv_cache_;

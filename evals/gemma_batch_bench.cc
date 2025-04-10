@@ -51,8 +51,8 @@ class GemmaTest : public ::testing::Test {
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetModel()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetModel()->Info().model == Model::GRIFFIN_2B) {
+    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
+        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
       for (QueryResult result : s_env->BatchQueryModel(inputs)) {
         replies.push_back(result.response);
       }
@@ -76,7 +76,7 @@ class GemmaTest : public ::testing::Test {
   }
 
   void GenerateTokens(std::vector<std::string> &kQA, size_t num_questions) {
-    ASSERT_NE(s_env->GetModel(), nullptr);
+    ASSERT_NE(s_env->GetGemma(), nullptr);
 
     std::vector<std::string> inputs;
     for (size_t i = 0; i < num_questions; ++i) {

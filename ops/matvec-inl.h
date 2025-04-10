@@ -50,8 +50,7 @@ template <class ArrayT, typename VT>
 HWY_INLINE float Dot(const ArrayT& w, size_t w_ofs, const VT* vec_aligned,
                      size_t num) {
   const hn::ScalableTag<VT> d;
-  return w.scale() * Dot(d, MakeConstSpan(w.data(), w.NumElements()), w_ofs,
-                         vec_aligned, num);
+  return w.Scale() * Dot(d, w.Span(), w_ofs, vec_aligned, num);
 }
 
 // Simple version without tiling nor threading, but two offsets/outputs and

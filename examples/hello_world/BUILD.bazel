@@ -10,13 +10,11 @@ cc_binary(
     name = "hello_world",
     srcs = ["run.cc"],
     deps = [
-        # Placeholder for internal dep, do not remove.,
-        "//:app",
         "//:args",
+        "//:gemma_args",
         "//:gemma_lib",
-        "//:threading",
+        "//:threading_context",
         "//:tokenizer",
         "@highway//:hwy",
-        "@highway//:thread_pool",
     ],
 )

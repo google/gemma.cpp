@@ -130,233 +130,6 @@ size_t DetectTotalMiB(size_t page_bytes) {
 
 }  // namespace
 
-static size_t line_bytes_;
-static size_t vector_bytes_;
-static size_t step_bytes_;
-static size_t quantum_bytes_;
-static size_t quantum_steps_;
-static size_t l1_bytes_;
-static size_t l2_bytes_;
-static size_t l3_bytes_;
-static bool should_bind_ = false;
-
-size_t Allocator::LineBytes() { return line_bytes_; }
-size_t Allocator::VectorBytes() { return vector_bytes_; }
-size_t Allocator::StepBytes() { return step_bytes_; }
-size_t Allocator::QuantumBytes() { return quantum_bytes_; }
-size_t Allocator::QuantumSteps() { return quantum_steps_; }
-size_t Allocator::L1Bytes() { return l1_bytes_; }
-size_t Allocator::L2Bytes() { return l2_bytes_; }
-size_t Allocator::L3Bytes() { return l3_bytes_; }
-bool Allocator::ShouldBind() { return should_bind_; }
-
-void Allocator::Init(const BoundedTopology& topology, bool enable_bind) {
-  line_bytes_ = DetectLineBytes();
-  vector_bytes_ = hwy::VectorBytes();
-  step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
-  quantum_bytes_ = step_bytes_;  // may overwrite below
-
-  const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
-  if (const hwy::Cache* caches = hwy::DataCaches()) {
-    l1_bytes_ = caches[1].size_kib << 10;
-    l2_bytes_ = caches[2].size_kib << 10;
-    l3_bytes_ = (caches[3].size_kib << 10) * caches[3].cores_sharing;
-  } else {  // Unknown, make reasonable assumptions.
-    l1_bytes_ = 32 << 10;
-    l2_bytes_ = (cluster.PrivateKiB() ? cluster.PrivateKiB() : 256) << 10;
-  }
-  if (l3_bytes_ == 0) {
-    l3_bytes_ = (cluster.SharedKiB() ? cluster.SharedKiB() : 1024) << 10;
-  }
-
-  // Prerequisites for binding:
-  // - supported by the OS (currently Linux only),
-  // - the page size is known and 'reasonably small', preferably less than
-  //   a fraction of MatMul row/col sizes, which for 27B are up to 144 KiB.
-  // - we successfully detected topology and there are multiple nodes;
-  // - there are multiple packages, because we shard by package_idx.
-  if constexpr (GEMMA_BIND) {
-    const size_t page_bytes = DetectPageSize();
-    if ((page_bytes != 0 && page_bytes <= 16 * 1024) &&
-        topology.NumNodes() > 1 && topology.NumPackages() > 1) {
-      if (enable_bind) {
-        // Ensure pages meet the alignment requirements of `AllocBytes`.
-        HWY_ASSERT(page_bytes >= quantum_bytes_);
-        quantum_bytes_ = page_bytes;
-        // Ensure MaxQuantumBytes() is an upper bound.
-        HWY_ASSERT(MaxQuantumBytes() >= quantum_bytes_);
-        quantum_bytes_ = HWY_MIN(quantum_bytes_, MaxQuantumBytes());
-        should_bind_ = true;
-      } else {
-        HWY_WARN(
-            "Multiple sockets but binding disabled. This reduces speed; "
-            "set or remove enable_bind to avoid this warning.");
-      }
-    }
-  }
-
-  HWY_DASSERT(quantum_bytes_ % step_bytes_ == 0);
-  quantum_steps_ = quantum_bytes_ / step_bytes_;
-}
-
-Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
-  // If we are not binding, the Highway allocator is cheaper than `mmap`, and
-  // defends against 2K aliasing.
-  if (!should_bind_) {
-    // Perf warning if Highway's alignment is less than we want.
-    if (HWY_ALIGNMENT < QuantumBytes()) {
-      HWY_WARN(
-          "HWY_ALIGNMENT %d < QuantumBytes %zu: either vector or cache lines "
-          "are huge, enable GEMMA_BIND to avoid this warning.",
-          HWY_ALIGNMENT, QuantumBytes());
-    }
-    auto p = hwy::AllocateAligned<uint8_t>(bytes);
-    // The `hwy::AlignedFreeUniquePtr` deleter is unfortunately specific to the
-    // alignment scheme in aligned_allocator.cc and does not work for
-    // already-aligned pointers as returned by `mmap`, hence we wrap the Highway
-    // pointer in our own deleter.
-    auto call_free = [](void* ptr, size_t /*bytes*/) {
-      hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
-    };
-    return PtrAndDeleter{p.release(), DeleterFree(call_free, bytes)};
-  }
-
-  // Binding, or large vector/cache line size: use platform-specific allocator.
-
-#if HWY_OS_LINUX && !defined(__ANDROID_API__)
-  // `move_pages` is documented to require an anonymous/private mapping or
-  // `MAP_SHARED`. A normal allocation might not suffice, so we use `mmap`.
-  // `Init` verified that the page size is a multiple of `QuantumBytes()`.
-  const int prot = PROT_READ | PROT_WRITE;
-  const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
-  const int fd = -1;
-  // Encourage transparent hugepages by rounding up to a multiple of 2 MiB.
-  bytes = hwy::RoundUpTo(bytes, 2ull << 20);
-  void* p = mmap(0, bytes, prot, flags, fd, off_t{0});
-  if (p == MAP_FAILED) p = nullptr;
-  const auto call_munmap = [](void* ptr, size_t bytes) {
-    const int ret = munmap(ptr, bytes);
-    HWY_ASSERT(ret == 0);
-  };
-  return PtrAndDeleter{p, DeleterFree(call_munmap, bytes)};
-#elif HWY_OS_WIN
-  const auto call_free = [](void* ptr, size_t) { _aligned_free(ptr); };
-  const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
-  return PtrAndDeleter{_aligned_malloc(bytes, alignment),
-                       DeleterFree(call_free, bytes)};
-#else
-  return PtrAndDeleter{nullptr, DeleterFree(nullptr, 0)};
-#endif
-}
-
-#if GEMMA_BIND && HWY_OS_LINUX
-
-using Ret = long;          // NOLINT(runtime/int)
-using UL = unsigned long;  // NOLINT(runtime/int)
-static constexpr size_t ULBits = sizeof(UL) * 8;
-
-// Calling via syscall avoids a dependency on libnuma.
-struct SyscallWrappers {
-  static Ret mbind(void* ptr, UL bytes, int mode, const UL* nodes, UL max_nodes,
-                   unsigned flags) {
-    MaybeCheckInitialized(nodes, hwy::DivCeil(max_nodes, ULBits) * sizeof(UL));
-    return syscall(__NR_mbind, ptr, bytes, mode, max_nodes, max_nodes, flags);
-  };
-
-  static Ret move_pages(int pid, UL count, void** pages, const int* nodes,
-                        int* status, int flags) {
-    MaybeCheckInitialized(pages, count * sizeof(void*));
-    MaybeCheckInitialized(nodes, count * sizeof(int));
-    MaybeCheckInitialized(status, count * sizeof(int));
-    return syscall(__NR_move_pages, pid, count, pages, nodes, status, flags);
-  }
-
-  static Ret get_mempolicy(int* mode, UL* nodes, UL max_node, void* addr,
-                           unsigned flags) {
-    return syscall(__NR_get_mempolicy, mode, nodes, max_node, addr, flags);
-  }
-};
-
-// Returns the number of pages that are currently busy (hence not yet moved),
-// and warns if there are any other reasons for not moving a page. Note that
-// `move_pages` can return 0 regardless of whether all pages were moved.
-size_t CountBusyPages(size_t num_pages, size_t node, void** pages,
-                      const int* status) {
-  size_t num_busy = 0;
-  for (size_t i = 0; i < num_pages; ++i) {
-    if (status[i] == -EBUSY) {
-      ++num_busy;
-    } else if (status[i] != static_cast<int>(node)) {
-      static std::atomic_flag first = ATOMIC_FLAG_INIT;
-      if (!first.test_and_set()) {
-        HWY_WARN("Error %d moving pages[%zu]=%p to node %zu (errno %d).",
-                 status[i], i, pages[i], node, errno);
-      }
-    }
-  }
-  return num_busy;
-}
-
-bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) {
-  HWY_DASSERT(should_bind_);
-  constexpr size_t kMaxNodes = 1024;  // valid for x86/x64, and "enough"
-
-  if constexpr (HWY_IS_DEBUG_BUILD) {
-    // Ensure the requested `node` is allowed.
-    UL nodes[kMaxNodes / 64] = {0};
-    const unsigned flags = 4;  // MPOL_F_MEMS_ALLOWED
-    HWY_ASSERT(SyscallWrappers::get_mempolicy(nullptr, nodes, kMaxNodes,
-                                              nullptr, flags) == 0);
-    HWY_ASSERT(nodes[node / 64] & (1ull << (node % 64)));
-  }
-
-  // Avoid mbind because it does not report why it failed, which is most likely
-  // because pages are busy, in which case we want to know which.
-
-  // `MPOL_MF_MOVE_ALL` requires cap sys_nice, which is not easy to set.
-  const unsigned flags = 2;  // MPOL_MF_MOVE
-  HWY_ASSERT(bytes % quantum_bytes_ == 0);
-  const size_t num_pages = bytes / quantum_bytes_;
-  std::vector<void*> pages;
-  pages.reserve(num_pages);
-  for (size_t i = 0; i < num_pages; ++i) {
-    pages.push_back(static_cast<uint8_t*>(ptr) + i * quantum_bytes_);
-    // Ensure the page is faulted in to prevent `move_pages` from failing,
-    // because freshly allocated pages may be mapped to a shared 'zero page'.
-    hwy::ZeroBytes(pages.back(), 8);
-  }
-  std::vector<int> nodes(num_pages, node);
-  std::vector<int> status(num_pages, static_cast<int>(kMaxNodes));
-
-  Ret ret = SyscallWrappers::move_pages(
-      /*pid=*/0, num_pages, pages.data(), nodes.data(), status.data(), flags);
-  if (ret < 0) {
-    HWY_WARN("Failed to bind %p %zu to node %zu (errno %d) status %d.", ptr,
-             bytes, node, errno, status[0]);
-    return false;
-  }
-
-  const size_t num_busy =
-      CountBusyPages(num_pages, node, pages.data(), status.data());
-  if (HWY_UNLIKELY(num_busy != 0)) {
-    // Trying again is usually enough to succeed.
-    hwy::NanoSleep(5000);
-    (void)SyscallWrappers::move_pages(
-        /*pid=*/0, num_pages, pages.data(), nodes.data(), status.data(), flags);
-    const size_t still_busy =
-        CountBusyPages(num_pages, node, pages.data(), status.data());
-    if (HWY_UNLIKELY(still_busy != 0)) {
-      HWY_WARN("BindMemory: %zu pages still busy after retrying %zu.",
-               still_busy, num_busy);
-    }
-  }
-  return true;
-}
-
-#else
-bool Allocator::BindMemory(void*, size_t, size_t) { return false; }
-#endif  // GEMMA_BIND && HWY_OS_LINUX
-
 Allocator2::Allocator2(const BoundedTopology& topology, bool enable_bind) {
   line_bytes_ = DetectLineBytes();
   vector_bytes_ = hwy::VectorBytes();
@@ -428,7 +201,7 @@ size_t Allocator2::FreeMiB() const {
 #endif
 }
 
-Allocator2::PtrAndDeleter Allocator2::AllocBytes(size_t bytes) const {
+AlignedPtr2<uint8_t[]> Allocator2::AllocBytes(size_t bytes) const {
   // If we are not binding, the Highway allocator is cheaper than `mmap`, and
   // defends against 2K aliasing.
   if (!should_bind_) {
@@ -444,9 +217,10 @@ Allocator2::PtrAndDeleter Allocator2::AllocBytes(size_t bytes) const {
     // alignment scheme in aligned_allocator.cc and does not work for
     // already-aligned pointers as returned by `mmap`, hence we wrap the Highway
     // pointer in our own deleter.
-    return PtrAndDeleter{p.release(), DeleterFunc2([](void* ptr) {
-                           hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
-                         })};
+    return AlignedPtr2<uint8_t[]>(p.release(), DeleterFunc2([](void* ptr) {
+                                    hwy::FreeAlignedBytes(ptr, nullptr,
+                                                          nullptr);
+                                  }));
   }
 
   // Binding, or large vector/cache line size: use platform-specific allocator.
@@ -460,20 +234,126 @@ Allocator2::PtrAndDeleter Allocator2::AllocBytes(size_t bytes) const {
   const int fd = -1;
   void* p = mmap(0, bytes, prot, flags, fd, off_t{0});
   if (p == MAP_FAILED) p = nullptr;
-  return PtrAndDeleter{p, DeleterFunc2([bytes](void* ptr) {
-                         HWY_ASSERT(munmap(ptr, bytes) == 0);
-                       })};
+  return AlignedPtr2<uint8_t[]>(static_cast<uint8_t*>(p),
+                                DeleterFunc2([bytes](void* ptr) {
+                                  HWY_ASSERT(munmap(ptr, bytes) == 0);
+                                }));
 #elif HWY_OS_WIN
   const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
-  return PtrAndDeleter{_aligned_malloc(bytes, alignment),
-                       DeleterFunc2([](void* ptr) { _aligned_free(ptr); })};
+  return AlignedPtr2<uint8_t[]>(
+      static_cast<uint8_t*>(_aligned_malloc(bytes, alignment)),
+      DeleterFunc2([](void* ptr) { _aligned_free(ptr); }));
 #else
-  return PtrAndDeleter{nullptr, DeleterFunc2()};
+  return AlignedPtr2<uint8_t[]>(nullptr, DeleterFunc2());
 #endif
 }
 
-bool Allocator2::BindMemory(void* ptr, size_t bytes, size_t node) const {
-  return Allocator::BindMemory(ptr, bytes, node);
+#if GEMMA_BIND && HWY_OS_LINUX
+
+using Ret = long;          // NOLINT(runtime/int)
+using UL = unsigned long;  // NOLINT(runtime/int)
+static constexpr size_t ULBits = sizeof(UL) * 8;
+
+// Calling via syscall avoids a dependency on libnuma.
+struct SyscallWrappers {
+  static Ret mbind(void* ptr, UL bytes, int mode, const UL* nodes, UL max_nodes,
+                   unsigned flags) {
+    MaybeCheckInitialized(nodes, hwy::DivCeil(max_nodes, ULBits) * sizeof(UL));
+    return syscall(__NR_mbind, ptr, bytes, mode, max_nodes, max_nodes, flags);
+  };
+
+  static Ret move_pages(int pid, UL count, void** pages, const int* nodes,
+                        int* status, int flags) {
+    MaybeCheckInitialized(pages, count * sizeof(void*));
+    MaybeCheckInitialized(nodes, count * sizeof(int));
+    MaybeCheckInitialized(status, count * sizeof(int));
+    return syscall(__NR_move_pages, pid, count, pages, nodes, status, flags);
+  }
+
+  static Ret get_mempolicy(int* mode, UL* nodes, UL max_node, void* addr,
+                           unsigned flags) {
+    return syscall(__NR_get_mempolicy, mode, nodes, max_node, addr, flags);
+  }
+};
+
+// Returns the number of pages that are currently busy (hence not yet moved),
+// and warns if there are any other reasons for not moving a page. Note that
+// `move_pages` can return 0 regardless of whether all pages were moved.
+size_t CountBusyPages(size_t num_pages, size_t node, void** pages,
+                      const int* status) {
+  size_t num_busy = 0;
+  for (size_t i = 0; i < num_pages; ++i) {
+    if (status[i] == -EBUSY) {
+      ++num_busy;
+    } else if (status[i] != static_cast<int>(node)) {
+      static std::atomic_flag first = ATOMIC_FLAG_INIT;
+      if (!first.test_and_set()) {
+        HWY_WARN("Error %d moving pages[%zu]=%p to node %zu (errno %d).",
+                 status[i], i, pages[i], node, errno);
+      }
+    }
+  }
+  return num_busy;
 }
+
+bool Allocator2::BindMemory(void* ptr, size_t bytes, size_t node) const {
+  HWY_DASSERT(should_bind_);
+  constexpr size_t kMaxNodes = 1024;  // valid for x86/x64, and "enough"
+
+  if constexpr (HWY_IS_DEBUG_BUILD) {
+    // Ensure the requested `node` is allowed.
+    UL nodes[kMaxNodes / 64] = {0};
+    const unsigned flags = 4;  // MPOL_F_MEMS_ALLOWED
+    HWY_ASSERT(SyscallWrappers::get_mempolicy(nullptr, nodes, kMaxNodes,
+                                              nullptr, flags) == 0);
+    HWY_ASSERT(nodes[node / 64] & (1ull << (node % 64)));
+  }
+
+  // Avoid mbind because it does not report why it failed, which is most likely
+  // because pages are busy, in which case we want to know which.
+
+  // `MPOL_MF_MOVE_ALL` requires cap sys_nice, which is not easy to set.
+  const unsigned flags = 2;  // MPOL_MF_MOVE
+  HWY_ASSERT(bytes % quantum_bytes_ == 0);
+  const size_t num_pages = bytes / quantum_bytes_;
+  std::vector<void*> pages;
+  pages.reserve(num_pages);
+  for (size_t i = 0; i < num_pages; ++i) {
+    pages.push_back(static_cast<uint8_t*>(ptr) + i * quantum_bytes_);
+    // Ensure the page is faulted in to prevent `move_pages` from failing,
+    // because freshly allocated pages may be mapped to a shared 'zero page'.
+    hwy::ZeroBytes(pages.back(), 8);
+  }
+  std::vector<int> nodes(num_pages, node);
+  std::vector<int> status(num_pages, static_cast<int>(kMaxNodes));
+
+  Ret ret = SyscallWrappers::move_pages(
+      /*pid=*/0, num_pages, pages.data(), nodes.data(), status.data(), flags);
+  if (ret < 0) {
+    HWY_WARN("Failed to bind %p %zu to node %zu (errno %d) status %d.", ptr,
+             bytes, node, errno, status[0]);
+    return false;
+  }
+
+  const size_t num_busy =
+      CountBusyPages(num_pages, node, pages.data(), status.data());
+  if (HWY_UNLIKELY(num_busy != 0)) {
+    // Trying again is usually enough to succeed.
+    hwy::NanoSleep(5000);
+    (void)SyscallWrappers::move_pages(
+        /*pid=*/0, num_pages, pages.data(), nodes.data(), status.data(), flags);
+    const size_t still_busy =
+        CountBusyPages(num_pages, node, pages.data(), status.data());
+    if (HWY_UNLIKELY(still_busy != 0)) {
+      HWY_WARN("BindMemory: %zu pages still busy after retrying %zu.",
+               still_busy, num_busy);
+    }
+  }
+  return true;
+}
+
+#else
+bool Allocator2::BindMemory(void*, size_t, size_t) const { return false; }
+#endif  // GEMMA_BIND && HWY_OS_LINUX
 
 }  // namespace gcpp

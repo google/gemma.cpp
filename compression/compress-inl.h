@@ -29,6 +29,7 @@
 #include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
 #include "gemma/configs.h"
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -379,7 +380,7 @@ struct CompressTraits<SfpStream> {
   using Packed = SfpStream;
 
   // Callers are responsible for scaling `raw` such that its magnitudes do not
-  // exceed `SfpStream::kMax`. See CompressedArray::scale().
+  // exceed `SfpStream::kMax`. See CompressedArray::Scale().
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
                                   size_t num, CompressPerThread& tls,
@@ -522,8 +523,7 @@ HWY_INLINE void CompressScaled(const float* HWY_RESTRICT raw, size_t num,
                                CompressWorkingSet& work,
                                MatStorageT<Packed>& compressed,
                                hwy::ThreadPool& pool) {
-  Compress(raw, num, work,
-           MakeSpan(compressed.data(), compressed.NumElements()),
+  Compress(raw, num, work, compressed.Span(),
            /*packed_ofs=*/0, pool);
 }
 
@@ -717,11 +717,9 @@ class Compressor {
   template <typename Packed>
   void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
                   const float* HWY_RESTRICT weights) {
-    size_t num_weights = compressed->NumElements();
-    if (num_weights == 0 || weights == nullptr || compressed->Ptr() == nullptr)
-      return;
-    size_t num_compressed = compressed->NumElements();
-    PackedSpan<Packed> packed = MakeSpan(compressed->data(), num_compressed);
+    size_t num_weights = compressed->Extents().Area();
+    if (num_weights == 0 || weights == nullptr || !compressed->HasPtr()) return;
+    PackedSpan<Packed> packed = compressed->Span();
     fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
             num_weights / (1000 * 1000));
     Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0,

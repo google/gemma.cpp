@@ -57,6 +57,6 @@ int main(int argc, char** argv) {
   }
   gcpp::GemmaEnv env(argc, argv);
   hwy::ThreadPool pool(0);
-  env.GetModel()->Save(args.output_weights, pool);
+  env.GetGemma()->Save(args.output_weights, pool);
   return 0;
 }

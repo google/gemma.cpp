@@ -19,12 +19,25 @@ license(
 # Dual-licensed Apache 2 and 3-clause BSD.
 licenses(["notice"])
 
-exports_files(["LICENSE"])
+exports_files([
+    "LICENSE",
+    ".github/workflows/build.yml",
+])
 
 cc_library(
     name = "basics",
     hdrs = ["util/basics.h"],
     deps = [
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
+    name = "args",
+    hdrs = ["util/args.h"],
+    deps = [
+        ":basics",
+        "//compression:io",  # Path
         "@highway//:hwy",
     ],
 )
@@ -59,6 +72,7 @@ cc_library(
     hdrs = ["util/threading.h"],
     deps = [
         ":allocator",
+        ":args",
         ":basics",
         ":topology",
         # Placeholder for container detection, do not remove
@@ -68,14 +82,26 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "threading_context",
+    srcs = ["util/threading_context.cc"],
+    hdrs = ["util/threading_context.h"],
+    deps = [
+        ":allocator",
+        ":args",
+        ":basics",
+        ":threading",
+        ":topology",
+    ],
+)
+
 cc_test(
     name = "threading_test",
     srcs = ["util/threading_test.cc"],
     deps = [
-        ":allocator",
         ":basics",
-        ":threading",
-        "@googletest//:gtest_main",
+        ":threading_context",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:auto_tune",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
@@ -94,6 +120,65 @@ cc_library(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:stats",
+    ],
+)
+
+cc_library(
+    name = "common",
+    srcs = [
+        "gemma/common.cc",
+        "gemma/configs.cc",
+        "gemma/tensor_index.cc",
+    ],
+    hdrs = [
+        "gemma/common.h",
+        "gemma/configs.h",
+        "gemma/tensor_index.h",
+    ],
+    deps = [
+        ":basics",
+        "//compression:fields",
+        "//compression:sfp",
+        "@highway//:hwy",  # base.h
+    ],
+)
+
+cc_test(
+    name = "configs_test",
+    srcs = ["gemma/configs_test.cc"],
+    deps = [
+        ":common",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
+    name = "tensor_index_test",
+    srcs = ["gemma/tensor_index_test.cc"],
+    deps = [
+        ":basics",
+        ":common",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
+    name = "mat",
+    srcs = ["util/mat.cc"],
+    hdrs = ["util/mat.h"],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":common",
+        ":threading_context",
+        "//compression:fields",
+        "//compression:sfp",
+        "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )
 
@@ -123,8 +208,9 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
+        ":mat",
         ":threading",
-        ":topology",
+        ":threading_context",
         "//compression:compress",
         "@highway//:algo",
         "@highway//:bit_set",
@@ -148,10 +234,9 @@ cc_test(
     tags = ["ops_tests"],
     deps = [
         ":allocator",
-        ":app",
         ":ops",
         ":test_util",
-        ":threading",
+        ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "//compression:test_util",
@@ -174,13 +259,13 @@ cc_test(
     tags = ["ops_tests"],
     deps = [
         ":allocator",
-        ":app",
+        ":basics",
         ":common",
+        ":mat",
         ":ops",
         ":test_util",
-        ":threading",
+        ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:compress",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",  #buildcleaner: keep
@@ -196,6 +281,7 @@ cc_test(
     # for test_suite.
     tags = ["ops_tests"],
     deps = [
+        ":mat",
         ":ops",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
@@ -214,12 +300,13 @@ cc_test(
     # for test_suite.
     tags = ["ops_tests"],
     deps = [
-        ":allocator",
         ":basics",
+        ":mat",
         ":ops",
-        ":threading",
+        ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
+        "//compression:test_util",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:thread_pool",
@@ -238,12 +325,12 @@ cc_test(
         "ops_tests",  # for test_suite.
     ],
     deps = [
-        ":allocator",
         ":basics",
         ":ops",
-        ":threading",
+        ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
+        "//compression:test_util",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
@@ -253,54 +340,12 @@ cc_test(
 )
 
 cc_library(
-    name = "common",
-    srcs = [
-        "gemma/common.cc",
-        "gemma/configs.cc",
-        "gemma/tensor_index.cc",
-    ],
-    hdrs = [
-        "gemma/common.h",
-        "gemma/configs.h",
-        "gemma/tensor_index.h",
-    ],
-    deps = [
-        ":basics",
-        "//compression:fields",
-        "//compression:sfp",
-        "@highway//:hwy",  # base.h
-    ],
-)
-
-cc_test(
-    name = "configs_test",
-    srcs = ["gemma/configs_test.cc"],
-    deps = [
-        ":common",
-        "@googletest//:gtest_main",
-        "@highway//:hwy",
-    ],
-)
-
-cc_test(
-    name = "tensor_index_test",
-    srcs = ["gemma/tensor_index_test.cc"],
-    deps = [
-        ":basics",
-        ":common",
-        ":weights",
-        "@googletest//:gtest_main",
-        "//compression:compress",
-        "@highway//:hwy",
-    ],
-)
-
-cc_library(
     name = "weights",
     srcs = ["gemma/weights.cc"],
     hdrs = ["gemma/weights.h"],
     deps = [
         ":common",
+        ":mat",
         "//compression:blob_store",
         "//compression:compress",
         "//compression:io",
@@ -361,16 +406,17 @@ cc_library(
         ":basics",
         ":common",
         ":ops",
+        ":mat",
         ":tokenizer",
         ":kv_cache",
         ":weights",
         ":threading",
-        "//compression:compress",
+        ":threading_context",
+        # Placeholder for internal dep, do not remove.,
         "//compression:io",
         "//compression:sfp",
         "//paligemma:image",
         "@highway//:hwy",
-        "@highway//:bit_set",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
@@ -390,25 +436,14 @@ cc_library(
 )
 
 cc_library(
-    name = "args",
-    hdrs = ["util/args.h"],
-    deps = [
-        ":basics",
-        "//compression:io",
-        "@highway//:hwy",
-    ],
-)
-
-cc_library(
-    name = "app",
-    hdrs = ["util/app.h"],
+    name = "gemma_args",
+    hdrs = ["gemma/gemma_args.h"],
     deps = [
         ":args",
         ":basics",
         ":common",
         ":gemma_lib",
         ":ops",
-        ":threading",
         "//compression:io",
         "//compression:sfp",
         "@highway//:hwy",
@@ -420,20 +455,15 @@ cc_library(
     srcs = ["evals/benchmark_helper.cc"],
     hdrs = ["evals/benchmark_helper.h"],
     deps = [
-        ":app",
-        ":args",
-        ":common",
         ":cross_entropy",
+        ":gemma_args",
         ":gemma_lib",
-        ":kv_cache",
         ":ops",
-        ":threading",
-        # Placeholder for internal dep, do not remove.,
+        ":threading_context",
         "@google_benchmark//:benchmark",
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
-        "@highway//:topology",
     ],
 )
 
@@ -451,7 +481,7 @@ cc_test(
         ":benchmark_helper",
         ":common",
         ":gemma_lib",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
@@ -470,8 +500,7 @@ cc_test(
         ":benchmark_helper",
         ":common",
         ":gemma_lib",
-        ":tokenizer",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
@@ -481,14 +510,13 @@ cc_binary(
     name = "gemma",
     srcs = ["gemma/run.cc"],
     deps = [
-        ":app",
         ":args",
         ":benchmark_helper",
         ":common",
+        ":gemma_args",
         ":gemma_lib",
         ":ops",
-        ":threading",
-        # Placeholder for internal dep, do not remove.,
+        ":threading_context",
         "//compression:sfp",
         "//paligemma:image",
         "@highway//:hwy",
@@ -594,10 +622,10 @@ cc_library(
     deps = [
         ":allocator",
         ":common",
+        ":mat",
         ":ops",
         ":prompt",
         ":weights",
-        "//compression:compress",
         "@highway//:dot",
         "@highway//:hwy",  # base.h
         "@highway//:thread_pool",
@@ -614,9 +642,9 @@ cc_library(
     ],
     deps = [
         ":common",
+        ":mat",
         ":prompt",
         ":weights",
-        "//compression:compress",
         "@highway//:hwy",
     ],
 )
@@ -631,11 +659,11 @@ cc_test(
     deps = [
         ":backprop_scalar",
         ":common",
+        ":mat",
         ":prompt",
         ":sampler",
         ":weights",
-        "@googletest//:gtest_main",
-        "//compression:compress",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:thread_pool",
     ],
 )
@@ -652,17 +680,16 @@ cc_test(
         "mem": "28g",
     },
     deps = [
-        ":allocator",
         ":backprop",
         ":backprop_scalar",
         ":common",
+        ":mat",
         ":ops",
         ":prompt",
         ":sampler",
-        ":threading",
+        ":threading_context",
         ":weights",
-        "@googletest//:gtest_main",
-        "//compression:compress",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:thread_pool",
@@ -676,6 +703,7 @@ cc_library(
     deps = [
         ":allocator",
         ":common",
+        ":mat",
         ":weights",
         "//compression:compress",
         "@highway//:hwy",
@@ -685,9 +713,7 @@ cc_library(
 
 cc_test(
     name = "optimize_test",
-    srcs = [
-        "backprop/optimize_test.cc",
-    ],
+    srcs = ["backprop/optimize_test.cc"],
     exec_properties = {
         # Avoid linker OOMs when building with sanitizer instrumentation.
         "mem": "28g",
@@ -704,7 +730,7 @@ cc_test(
         ":sampler",
         ":threading",
         ":weights",
-        "@googletest//:gtest_main",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:sfp",
         "@highway//:thread_pool",
     ],

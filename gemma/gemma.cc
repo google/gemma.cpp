@@ -27,22 +27,33 @@
 #include <utility>  // std::move
 #include <vector>
 
-#include "compression/io.h"  // Path
+// Placeholder for internal header, do not modify.
 #include "compression/shared.h"
 #include "gemma/common.h"
+#include "gemma/configs.h"
+#include "gemma/tokenizer.h"
 #include "gemma/weights.h"
-#include "ops/ops-inl.h"
+#include "ops/matmul.h"
 #include "paligemma/image.h"
-#include "util/threading.h"
-#include "hwy/highway.h"
+#include "util/threading_context.h"
+#include "hwy/base.h"
 
 namespace gcpp {
+
+// Internal init must run before I/O; calling it from `GemmaEnv()` is too late.
+// This helper function takes care of the internal init plus calling `SetArgs`.
+MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
+  // Placeholder for internal init, do not modify.
+
+  ThreadingContext2::SetArgs(threading_args);
+  return MatMulEnv(ThreadingContext2::Get());
+}
 
 Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
              const ModelInfo& info, MatMulEnv& env)
     : env_(env), tokenizer_(tokenizer_path) {
   model_.Load(weights, info.model, info.weight, info.wrapping,
-              env_.parallel.Pools().Pool(0),
+              env_.ctx.pools.Pool(0),
               /*tokenizer_proto=*/nullptr);
   chat_template_.Init(tokenizer_, model_.Config().model);
 }
@@ -50,7 +61,7 @@ Gemma::Gemma(const Path& tokenizer_path, const Path& weights,
 Gemma::Gemma(const Path& weights, MatMulEnv& env) : env_(env) {
   std::string tokenizer_proto;
   model_.Load(weights, Model::UNKNOWN, Type::kUnknown, PromptWrapping::GEMMA_IT,
-              env_.parallel.Pools().Pool(0), &tokenizer_proto);
+              env_.ctx.pools.Pool(0), &tokenizer_proto);
   tokenizer_.Deserialize(tokenizer_proto);
   chat_template_.Init(tokenizer_, model_.Config().model);
 }
@@ -60,7 +71,7 @@ Gemma::Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env)
       tokenizer_(std::move(tokenizer)),
       chat_template_(tokenizer_, info.model) {
   HWY_ASSERT(info.weight == Type::kF32);
-  model_.Allocate(info.model, info.weight, env_.parallel.Pools().Pool(0));
+  model_.Allocate(info.model, info.weight, env_.ctx.pools.Pool(0));
 }
 
 Gemma::~Gemma() {
@@ -130,12 +141,12 @@ struct GenerateImageTokensT {
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      KVCache& kv_cache, TimingInfo& timing_info) {
-  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateSingleT>(
       runtime_config, prompt, pos, prefix_end, kv_cache, &env_, timing_info);
 
-  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
@@ -152,23 +163,23 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
         QueriesPos(prefix_end_vec.data(), prefix_end_vec.size());
   }
 
-  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateBatchT>(
       runtime_config, queries_prompt, queries_pos, mutable_queries_prefix_end,
       kv_caches, &env_, timing_info);
 
-  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 const Image& image, ImageTokens& image_tokens) {
-  env_.parallel.Pools().MaybeStartSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   model_.CallForModelWeight<GenerateImageTokensT>(runtime_config, image,
                                                   image_tokens, &env_);
 
-  env_.parallel.Pools().MaybeStopSpinning(runtime_config.use_spinning);
+  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 // Non-template functions moved from gemma-inl.h to avoid ODR violations.

@@ -16,7 +16,9 @@ cc_library(
     deps = [
         "@abseil-cpp//absl/types:span",
         "//:common",
+        "//:mat",
         "//:tokenizer",
+        "//:weights",
         "//compression:compress",
         "//compression:io",
         "@highway//:hwy",
@@ -30,7 +32,6 @@ pybind_extension(
     deps = [
         ":compression_clif_aux",
         "@abseil-cpp//absl/types:span",
-        "//:common",
         "//compression:sfp",
     ],
 )

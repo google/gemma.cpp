@@ -15,29 +15,25 @@
 
 // End to end test of MatMul, comparing against a reference implementation.
 
-#include "hwy/detect_compiler_arch.h"
+#include "hwy/detect_compiler_arch.h"  // IWYU pragma: keep
 #ifndef HWY_DISABLED_TARGETS
 // Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
-// double-precision support.
+// double-precision support, and older x86 to speed up builds.
 #if HWY_ARCH_ARM_V7
 #define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
 #else
-#define HWY_DISABLED_TARGETS HWY_SCALAR
+#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_SSSE3 | HWY_SSE4)
 #endif
 #endif
 
 #include <stddef.h>
 #include <stdio.h>
 
-#include <memory>
-
-#include "compression/compress.h"
 #include "compression/shared.h"
 #include "ops/matmul.h"
-#include "util/allocator.h"
 #include "util/basics.h"
-#include "util/threading.h"
-#include "hwy/base.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 // clang-format off
@@ -48,9 +44,9 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "compression/test_util-inl.h"
 #include "ops/dot-inl.h"
 #include "ops/matmul-inl.h"
-#include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -59,57 +55,6 @@ extern int64_t first_target;
 
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
-
-using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
-
-template <typename MatT>
-using MatStoragePtr = std::unique_ptr<MatStorageT<MatT>>;
-
-// Generates inputs: deterministic, within max SfpStream range.
-template <typename MatT>
-MatStoragePtr<MatT> GenerateMat(const Extents2D& extents,
-                                hwy::ThreadPool& pool) {
-  gcpp::CompressWorkingSet ws;
-  auto mat =
-      std::make_unique<MatStorageT<MatT>>("mat", extents.rows, extents.cols);
-  FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
-  HWY_ASSERT(content);
-  const float scale = SfpStream::kMax / (mat->NumElements());
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
-    for (size_t c = 0; c < extents.cols; c++) {
-      float f = static_cast<float>(r * extents.cols + c) * scale;
-      if ((r + c) & 1) f = -f;  // Also generate some negative values.
-      content[r * extents.cols + c] = f;
-    }
-  });
-
-  CompressScaled(content.get(), mat->NumElements(), ws, *mat, pool);
-  mat->set_scale(0.6f);  // Arbitrary value, different from 1.
-  return mat;
-}
-
-// extents describes the transposed matrix.
-template <typename MatT>
-MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
-                                          hwy::ThreadPool& pool) {
-  gcpp::CompressWorkingSet ws;
-  auto mat =
-      std::make_unique<MatStorageT<MatT>>("trans", extents.rows, extents.cols);
-  FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
-  const float scale = SfpStream::kMax / (mat->NumElements());
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
-    for (size_t c = 0; c < extents.cols; c++) {
-      float f = static_cast<float>(c * extents.rows + r) * scale;
-      if ((r + c) & 1) f = -f;  // Also generate some negative values.
-      content[r * extents.cols + c] = f;
-    }
-  });
-
-  CompressScaled(content.get(), mat->NumElements(), ws, *mat, pool);
-  // Arbitrary value, different from 1, must match GenerateMat.
-  mat->set_scale(0.6f);
-  return mat;
-}
 
 // Returns 1-norm, used for estimating tolerable numerical differences.
 double MaxRowAbsSum(const RowVectorBatch<float>& a) {
@@ -141,16 +86,19 @@ float MaxAbs(const RowVectorBatch<float>& a) {
 template <typename TA, typename TB, typename TC>
 void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
                  const RowPtr<TC>& C_slow, const RowPtr<TC>& C, int line) {
+  const Allocator2& allocator = ThreadingContext2::Get().allocator;
   const hn::ScalableTag<float> df;
   const size_t cols = A.extents.cols;
   const size_t B_rows = B.extents.rows;
   // Round up for DecompressAndZeroPad.
-  RowVectorBatch<float> a_batch = AllocateAlignedRows<float>(A.extents);
-  RowVectorBatch<float> b_trans_batch = AllocateAlignedRows<float>(B.extents);
+  RowVectorBatch<float> a_batch =
+      AllocateAlignedRows<float>(allocator, A.extents);
+  RowVectorBatch<float> b_trans_batch =
+      AllocateAlignedRows<float>(allocator, B.extents);
   RowVectorBatch<float> c_batch =
-      AllocateAlignedRows<float>(Extents2D(A.extents.rows, B_rows));
+      AllocateAlignedRows<float>(allocator, Extents2D(A.extents.rows, B_rows));
   RowVectorBatch<float> c_slow_batch =
-      AllocateAlignedRows<float>(Extents2D(A.extents.rows, B_rows));
+      AllocateAlignedRows<float>(allocator, Extents2D(A.extents.rows, B_rows));
   HWY_ASSERT(A.ofs == 0 && B.ofs == 0);
   for (size_t m = 0; m < A.extents.rows; ++m) {
     DecompressAndZeroPad(df, MakeSpan(A.ptr + A.Row(m), cols), 0,
@@ -224,7 +172,7 @@ HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
   const IndexRange all_rows_c(0, A.Extents().rows);
   const IndexRange all_cols_c(0, C.Cols());
 
-  NestedPools& pools = env.parallel.Pools();
+  NestedPools& pools = env.ctx.pools;
   hwy::ThreadPool& all_packages = pools.AllPackages();
   const IndexRangePartition get_row_c =
       StaticPartition(all_rows_c, all_packages.NumWorkers(), 1);
@@ -232,7 +180,7 @@ HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
       get_row_c, all_packages,
       [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
         hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
-        const size_t multiple = Allocator::QuantumBytes() / sizeof(TB);
+        const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
         const IndexRangePartition get_col_c =
             StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
         ParallelizeOneRange(
@@ -262,7 +210,8 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
 template <typename TA, typename TB = TA, typename TC = float>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env, int line) {
-  hwy::ThreadPool& pool = env.parallel.Pools().Pool();
+  const Allocator2& allocator = env.ctx.allocator;
+  hwy::ThreadPool& pool = env.ctx.pools.Pool();
   fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",
           rows_ac, cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>(),
           TypeName<TC>());
@@ -274,24 +223,22 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
-  MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
-  RowVectorBatch<TC> c_slow_batch = AllocateAlignedRows<TC>(C_extents);
-  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(C_extents);
-  HWY_ASSERT(a && b_trans);
+  MatStorageT<TA> a(GenerateMat<TA>(A_extents, pool));
+  MatStorageT<TB> b_trans(GenerateTransposedMat<TB>(B_extents, pool));
+  RowVectorBatch<TC> c_slow_batch =
+      AllocateAlignedRows<TC>(allocator, C_extents);
+  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(allocator, C_extents);
 
-  std::unique_ptr<MatStorageT<float>> add_storage;
-  if (add) {
-    add_storage = GenerateMat<float>(Extents2D(1, cols_bc), pool);
-    HWY_ASSERT(add_storage);
-    add_storage->set_scale(1.0f);
-  }
+  MatStorageT<float> add_storage =
+      add ? GenerateMat<float>(Extents2D(1, cols_bc), pool)
+          : MatStorageT<float>("add", Extents2D(), MatPadding::kPacked);
+  add_storage.SetScale(1.0f);
 
-  const auto A = ConstMatFromWeights(*a);
-  const auto B = ConstMatFromWeights(*b_trans);
-  const float* add_row = add ? add_storage->data_scale1() : nullptr;
-  const RowPtr<TC> C_slow = RowPtrFromBatch(c_slow_batch);
-  const RowPtr<TC> C = RowPtrFromBatch(c_batch);
+  const auto A = ConstMatFromWeights(a);
+  const auto B = ConstMatFromWeights(b_trans);
+  const float* add_row = add ? add_storage.PackedScale1() : nullptr;
+  const RowPtr<TC> C_slow = RowPtrFromBatch(allocator, c_slow_batch);
+  const RowPtr<TC> C = RowPtrFromBatch(allocator, c_batch);
 
   MatMulSlow(A, B, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
@@ -312,22 +259,24 @@ void TestTiny() {
   if (HWY_TARGET != first_target) return;
 
   for (size_t max_packages : {1, 2}) {
-    const BoundedTopology topology(BoundedSlice(0, max_packages));
-    Allocator::Init(topology, /*enable_bind=*/true);
-    const size_t max_threads = 0;  // no limit
-    NestedPools pools(topology, max_threads, Tristate::kDefault);
+    ThreadingContext2::ThreadHostileInvalidate();
+    ThreadingArgs threading_args;
+    threading_args.bind = Tristate::kTrue;
+    threading_args.max_packages = max_packages;
+    ThreadingContext2::SetArgs(threading_args);
+    MatMulEnv env(ThreadingContext2::Get());
+    NestedPools& pools = env.ctx.pools;
+
 #if GEMMA_DISABLE_TOPOLOGY
     if (max_packages == 2) break;  // we only have one package
 #else
     // If less than the limit, we have already tested all num_packages.
-    if (topology.FullTopology().packages.size() < max_packages) break;
+    if (env.ctx.topology.FullTopology().packages.size() < max_packages) break;
 #endif
     fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
-            topology.TopologyString(), pools.PinString());
+            env.ctx.topology.TopologyString(), pools.PinString());
 
-    Tristate use_spinning = Tristate::kDefault;
-    pools.MaybeStartSpinning(use_spinning);
-    MatMulEnv env(topology, pools);
+    pools.MaybeStartSpinning(threading_args.spin);
 
     for (size_t M = 1; M <= 12; ++M) {
       for (size_t K = 1; K <= 64; K *= 2) {
@@ -336,7 +285,7 @@ void TestTiny() {
         }
       }
     }
-    pools.MaybeStopSpinning(use_spinning);
+    pools.MaybeStopSpinning(threading_args.spin);
   }
 }
 
@@ -347,12 +296,13 @@ void TestAllMatMul() {
     return;
   }
 
-  const BoundedTopology topology;
-  Allocator::Init(topology, /*enable_bind=*/true);
-  NestedPools pools(topology);
-  Tristate use_spinning = Tristate::kDefault;
-  pools.MaybeStartSpinning(use_spinning);
-  MatMulEnv env(topology, pools);
+  ThreadingContext2::ThreadHostileInvalidate();
+  ThreadingArgs threading_args;
+  threading_args.bind = Tristate::kTrue;
+  ThreadingContext2::SetArgs(threading_args);
+  MatMulEnv env(ThreadingContext2::Get());
+  NestedPools& pools = env.ctx.pools;
+  pools.MaybeStartSpinning(threading_args.spin);
 
   // Sizes seen in gemma_test 2B. Too slow for CI, enable on-demand.
   TestMatMul<F32>(1, 2048, 512, /*add=*/false, env, __LINE__);
@@ -417,6 +367,8 @@ void TestAllMatMul() {
   TestMatMul<BF16, F32>(1, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, SFP>(1, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(1, 128, 32, /*add=*/true, env, __LINE__);
+
+  pools.MaybeStopSpinning(threading_args.spin);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

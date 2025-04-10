@@ -18,9 +18,12 @@
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_TEST_UTIL_INL_H_
 
 // IWYU pragma: begin_exports
-#include "compression/compress.h"
 #include "compression/distortion.h"
+#include "util/mat.h"
 // IWYU pragma: end_exports
+
+#include "compression/compress.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_TEST_UTIL_INL_H_
 
@@ -60,6 +63,52 @@ void ForeachPackedAndRawType() {
   ForeachRawType<float, TestT>();
   ForeachRawType<SfpStream, TestT>();
   ForeachRawType<NuqStream, TestT>();
+}
+
+// Generates inputs: deterministic, within max SfpStream range.
+template <typename MatT>
+MatStorageT<MatT> GenerateMat(const Extents2D& extents, hwy::ThreadPool& pool) {
+  gcpp::CompressWorkingSet ws;
+  MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("mat", extents, MatPadding::kPacked);
+  const float scale = SfpStream::kMax / extents.Area();
+  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
+    float* HWY_RESTRICT row = raw.Row(r);
+    for (size_t c = 0; c < extents.cols; c++) {
+      float f = static_cast<float>(r * extents.cols + c) * scale;
+      if ((r + c) & 1) f = -f;  // Also generate some negative values.
+      row[c] = f;
+    }
+  });
+
+  Compress(raw.Packed(), raw.Extents().Area(), ws, compressed.Span(),
+           /*packed_ofs=*/0, pool);
+  compressed.SetScale(0.6f);  // Arbitrary value, different from 1.
+  return compressed;
+}
+
+// `extents` describes the transposed matrix.
+template <typename MatT>
+MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
+                                        hwy::ThreadPool& pool) {
+  gcpp::CompressWorkingSet ws;
+  MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("trans", extents, MatPadding::kPacked);
+  const float scale = SfpStream::kMax / extents.Area();
+  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
+    float* HWY_RESTRICT row = raw.Row(r);
+    for (size_t c = 0; c < extents.cols; c++) {
+      float f = static_cast<float>(c * extents.rows + r) * scale;
+      if ((r + c) & 1) f = -f;  // Also generate some negative values.
+      row[c] = f;
+    }
+  });
+
+  Compress(raw.Packed(), raw.Extents().Area(), ws, compressed.Span(),
+           /*packed_ofs=*/0, pool);
+  // Arbitrary value, different from 1, must match `GenerateMat`.
+  compressed.SetScale(0.6f);
+  return compressed;
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

@@ -31,11 +31,31 @@
 #include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/tensor_index.h"
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
+
+static inline std::string CacheName(const MatPtr& mat, int layer = -1,
+                                    char separator = ' ', int index = -1) {
+  // Already used/retired: s, S, n, 1
+  const char prefix = mat.GetType() == Type::kF32    ? 'F'
+                      : mat.GetType() == Type::kBF16 ? 'B'
+                      : mat.GetType() == Type::kSFP  ? '$'
+                      : mat.GetType() == Type::kNUQ  ? '2'
+                                                     : '?';
+  std::string name = std::string(1, prefix) + mat.Name();
+  if (layer >= 0 || index >= 0) {
+    name += '_';
+    if (layer >= 0) name += std::to_string(layer);
+    if (index >= 0) {
+      name += separator + std::to_string(index);
+    }
+  }
+  return name;
+}
 
 // Different tensors need to appear in a ForEachTensor, according to what is
 // happening.
@@ -181,10 +201,10 @@ struct LayerWeightsPtrs {
   // Initializes att_weights from attn_vec_einsum_w, hence this must be called
   // after loading weights via ForEachTensor.
   // TODO: update compression/convert_weights to bake this in.
-  void Reshape(MatStorage* storage) {
+  void Reshape(MatOwner* storage) {
     static_assert(!hwy::IsSame<Weight, NuqStream>());
 
-    if (attn_vec_einsum_w.data() == nullptr) return;
+    if (!attn_vec_einsum_w.HasPtr()) return;
 
     const size_t model_dim = layer_config.model_dim;
     const size_t heads = layer_config.heads;
@@ -192,33 +212,33 @@ struct LayerWeightsPtrs {
 
     // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
     if (storage != nullptr) {
-      storage->Allocate();
-      att_weights.SetPtr(*storage);
+      storage->AllocateFor(att_weights, MatPadding::kPacked);
     }
     for (size_t m = 0; m < model_dim; ++m) {
-      Weight* HWY_RESTRICT out_row = att_weights.data() + m * heads * qkv_dim;
+      Weight* HWY_RESTRICT out_row =
+          att_weights.template RowT<Weight>(0) + m * heads * qkv_dim;
       for (size_t h = 0; h < heads; ++h) {
-        hwy::CopyBytes(
-            attn_vec_einsum_w.data() + h * model_dim * qkv_dim + m * qkv_dim,
-            out_row + h * qkv_dim, qkv_dim * sizeof(Weight));
+        hwy::CopyBytes(attn_vec_einsum_w.template RowT<Weight>(0) +
+                           h * model_dim * qkv_dim + m * qkv_dim,
+                       out_row + h * qkv_dim, qkv_dim * sizeof(Weight));
       }
     }
-    att_weights.set_scale(attn_vec_einsum_w.scale());
+    att_weights.SetScale(attn_vec_einsum_w.Scale());
   }
 
   ArrayT<WeightF32OrBF16> key_norm_scale;
   ArrayT<WeightF32OrBF16> query_norm_scale;
 
 // Used by ForEachTensor for per-layer tensors.
-#define GEMMA_CALL_FUNC(member)                                             \
-  {                                                                         \
-    for (int i = 0; i < ptrs.size(); ++i) {                                 \
-      tensors[i] = &ptrs[i]->member;                                        \
-    }                                                                       \
-    if (tensors[0]->Ptr() != nullptr || fet != ForEachType::kIgnoreNulls) { \
-      func(ptrs[0]->member.CacheName(layer_idx, sep, sep_index).c_str(),    \
-           hwy::Span<MatPtr*>(tensors.data(), ptrs.size()));                \
-    }                                                                       \
+#define GEMMA_CALL_FUNC(member)                                           \
+  {                                                                       \
+    for (int i = 0; i < ptrs.size(); ++i) {                               \
+      tensors[i] = &ptrs[i]->member;                                      \
+    }                                                                     \
+    if (tensors[0]->HasPtr() || fet != ForEachType::kIgnoreNulls) {       \
+      func(CacheName(ptrs[0]->member, layer_idx, sep, sep_index).c_str(), \
+           hwy::Span<MatPtr*>(tensors.data(), ptrs.size()));              \
+    }                                                                     \
   }
 
   template <class Func>
@@ -307,19 +327,18 @@ struct LayerWeightsPtrs {
   void ZeroInit(int layer_idx) {
     ForEachTensor({this}, layer_idx, ForEachType::kIgnoreNulls,
                   [](const char*, hwy::Span<MatPtr*> tensors) {
-                    tensors[0]->ZeroInit();
+                    gcpp::ZeroInit(*tensors[0]);
                   });
   }
 
   // Allocates memory for all the tensors in the layer.
   // Note that this is slow and only used for a stand-alone layer.
-  void Allocate(std::vector<MatStorage>& layer_storage) {
+  void Allocate(std::vector<MatOwner>& layer_storage) {
     ForEachTensor(
         {this}, /*layer_idx=*/0, ForEachType::kInitNoToc,
         [&layer_storage](const char* name, hwy::Span<MatPtr*> tensors) {
-          layer_storage.emplace_back(*tensors[0]);
-          layer_storage.back().Allocate();
-          tensors[0]->SetPtr(layer_storage.back());
+          layer_storage.push_back(MatOwner());
+          layer_storage.back().AllocateFor(*tensors[0], MatPadding::kPacked);
         });
   }
 };
@@ -393,11 +412,9 @@ struct ModelWeightsPtrs {
 
   // Called by weights.cc after Loading, before att_w has been allocated.
   void AllocAndCopyWithTranspose(hwy::ThreadPool& pool,
-                                 std::vector<MatStorage>& model_storage) {
+                                 std::vector<MatOwner>& model_storage) {
     size_t storage_index = model_storage.size();
-    for (auto& layer : c_layers) {
-      model_storage.emplace_back(layer.att_weights);
-    }
+    model_storage.resize(model_storage.size() + c_layers.size());
     pool.Run(0, c_layers.size(),
              [this, &model_storage, storage_index](uint64_t layer,
                                                    size_t /*thread*/) {
@@ -412,8 +429,8 @@ struct ModelWeightsPtrs {
   }
 
   void ZeroInit() {
-    embedder_input_embedding.ZeroInit();
-    final_norm_scale.ZeroInit();
+    gcpp::ZeroInit(embedder_input_embedding);
+    gcpp::ZeroInit(final_norm_scale);
     for (size_t i = 0; i < c_layers.size(); ++i) {
       c_layers[i].ZeroInit(i);
     }
@@ -430,21 +447,21 @@ struct ModelWeightsPtrs {
     return &vit_layers[layer];
   }
 
-  void Allocate(std::vector<MatStorage>& model_storage, hwy::ThreadPool& pool) {
+  void Allocate(std::vector<MatOwner>& model_storage, hwy::ThreadPool& pool) {
     std::vector<MatPtr*> model_toc;
     ForEachTensor(
         {this}, ForEachType::kInitNoToc,
         [&model_toc, &model_storage](const char*, hwy::Span<MatPtr*> tensors) {
           model_toc.push_back(tensors[0]);
-          model_storage.emplace_back(*tensors[0]);
+          model_storage.push_back(MatOwner());
         });
     // Allocate in parallel using the pool.
     pool.Run(0, model_toc.size(),
              [&model_toc, &model_storage](uint64_t task, size_t /*thread*/) {
                // model_storage may have had content before we started.
                size_t idx = task + model_storage.size() - model_toc.size();
-               model_storage[idx].Allocate();
-               model_toc[task]->SetPtr(model_storage[idx]);
+               model_storage[idx].AllocateFor(*model_toc[task],
+                                              MatPadding::kPacked);
              });
   }
 
@@ -453,8 +470,7 @@ struct ModelWeightsPtrs {
     ForEachTensor({this, const_cast<ModelWeightsPtrs<Weight>*>(&other)},
                   ForEachType::kIgnoreNulls,
                   [](const char*, hwy::Span<MatPtr*> tensors) {
-                    hwy::CopyBytes(tensors[1]->Ptr(), tensors[0]->Ptr(),
-                                   tensors[1]->SizeBytes());
+                    CopyMat(*tensors[1], *tensors[0]);
                   });
   }
 
@@ -467,10 +483,10 @@ struct ModelWeightsPtrs {
         [&scales, &scale_pos, this](const char*, hwy::Span<MatPtr*> tensors) {
           if (this->scale_names.count(tensors[0]->Name())) {
             if (scale_pos < scales.size()) {
-              tensors[0]->set_scale(scales[scale_pos]);
+              tensors[0]->SetScale(scales[scale_pos]);
             } else {
-              float scale = ScaleWeights(tensors[0]->data<float>(),
-                                         tensors[0]->NumElements());
+              float scale = ScaleWeights(tensors[0]->RowT<float>(0),
+                                         tensors[0]->Extents().Area());
               scales.push_back(scale);
             }
             ++scale_pos;
@@ -615,7 +631,7 @@ class ModelWeightsStorage {
   std::unique_ptr<ModelWeightsPtrs<SfpStream>> sfp_weights_;
   std::unique_ptr<ModelWeightsPtrs<NuqStream>> nuq_weights_;
   // Storage for all the matrices and vectors.
-  std::vector<MatStorage> model_storage_;
+  std::vector<MatOwner> model_storage_;
 };
 
 }  // namespace gcpp

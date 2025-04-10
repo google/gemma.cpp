@@ -31,14 +31,12 @@
 #include <random>
 #include <vector>
 
-#include "compression/compress.h"  // BF16
 #include "gemma/common.h"
-#include "gemma/configs.h"
 #include "util/allocator.h"
-#include "util/app.h"
+#include "util/basics.h"  // BF16
+#include "util/mat.h"     // RowVectorBatch
 #include "util/test_util.h"
-#include "util/threading.h"
-#include "hwy/base.h"
+#include "util/threading_context.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // clang-format off
@@ -388,13 +386,11 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  AppArgs app;
-  BoundedTopology topology = CreateTopology(app);
-  NestedPools pools = CreatePools(topology, app);
+  const Allocator2& allocator = ThreadingContext2::Get().allocator;
 
   ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
   int dim_qkv = config.layer_configs[0].qkv_dim;
-  RowVectorBatch<float> x(Extents2D(1, dim_qkv));
+  RowVectorBatch<float> x(allocator, Extents2D(1, dim_qkv));
 
   std::mt19937 gen;
   gen.seed(0x12345678);
@@ -412,8 +408,8 @@ void TestRopeAndMulBy() {
   std::vector<float> qactual(dim_qkv);
   std::vector<float> kexpected(dim_qkv);
   std::vector<float> kactual(dim_qkv);
-  RowVectorBatch<float> inv_timescale = gcpp::CreateInvTimescale(
-      config.layer_configs[0].qkv_dim,
+  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+      allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {

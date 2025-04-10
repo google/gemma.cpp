@@ -50,8 +50,8 @@ class GemmaTest : public ::testing::Test {
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetModel()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetModel()->Info().model == Model::GRIFFIN_2B) {
+    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
+        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
       std::string mutable_prompt = prompt;
       QueryResult result = s_env->QueryModel(mutable_prompt);  // Uses turns.
       return result.response;
@@ -71,8 +71,8 @@ class GemmaTest : public ::testing::Test {
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetModel()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetModel()->Info().model == Model::GRIFFIN_2B) {
+    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
+        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
       for (QueryResult result : s_env->BatchQueryModel(inputs)) {
         replies.push_back(result.response);
       }
@@ -96,7 +96,7 @@ class GemmaTest : public ::testing::Test {
   }
 
   void TestQuestions(const char* kQA[][2], size_t num_questions, bool batch) {
-    ASSERT_NE(s_env->GetModel(), nullptr);
+    HWY_ASSERT(s_env->GetGemma() != nullptr);
     if (batch) {
       std::vector<std::string> inputs;
       for (size_t i = 0; i < num_questions; ++i) {
@@ -155,8 +155,8 @@ TEST_F(GemmaTest, Arithmetic) {
 }
 
 TEST_F(GemmaTest, Multiturn) {
-  Gemma* model = s_env->GetModel();
-  ASSERT_NE(model, nullptr);
+  Gemma* model = s_env->GetGemma();
+  HWY_ASSERT(model != nullptr);
   size_t abs_pos = 0;
   std::string response;
   auto stream_token = [&](int token, float) {
@@ -239,12 +239,12 @@ static const char kGettysburg[] = {
     "people, for the people, shall not perish from the earth.\n"};
 
 TEST_F(GemmaTest, CrossEntropySmall) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
+  HWY_ASSERT(s_env->GetGemma() != nullptr);
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetModel()->Info().model) {
+  switch (s_env->GetGemma()->Info().model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 2.6f, 0.2f);
@@ -272,10 +272,10 @@ TEST_F(GemmaTest, CrossEntropySmall) {
 }
 
 TEST_F(GemmaTest, CrossEntropyJingleBells) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
+  HWY_ASSERT(s_env->GetGemma() != nullptr);
   float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetModel()->Info().model) {
+  switch (s_env->GetGemma()->Info().model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.9f, 0.2f);
@@ -303,10 +303,10 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
 }
 
 TEST_F(GemmaTest, CrossEntropyGettysburg) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
+  HWY_ASSERT(s_env->GetGemma() != nullptr);
   float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetModel()->Info().model) {
+  switch (s_env->GetGemma()->Info().model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.1f, 0.1f);

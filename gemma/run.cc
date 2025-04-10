@@ -15,23 +15,23 @@
 
 // Command line text interface to gemma.
 
+#include <stdio.h>
+
 #include <iostream>
 #include <random>
 #include <string>
 #include <string_view>
 #include <vector>
 
-// Placeholder for internal header, do not modify.
 #include "compression/shared.h"  // PromptWrapping
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
-#include "ops/matmul.h"   // MatMulEnv
+#include "gemma/gemma_args.h"  // LoaderArgs
+#include "ops/matmul.h"        // MatMulEnv
 #include "paligemma/image.h"
-#include "util/app.h"
 #include "util/args.h"  // HasHelp
-#include "util/threading.h"
-#include "hwy/base.h"
+#include "util/threading_context.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 
@@ -78,35 +78,37 @@ std::string GetPrompt(std::istream& input, int verbosity,
 }
 
 // The main Read-Eval-Print Loop.
-void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
-               const InferenceArgs& args, const AcceptFunc& accept_token,
-               std::string& eot_line) {
+void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
+               Gemma& model, KVCache& kv_cache) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
   size_t prompt_size = 0;
 
   std::mt19937 gen;
-  InitGenerator(args, gen);
+  InitGenerator(inference, gen);
 
-  const bool have_image = !args.image_file.path.empty();
+  const bool have_image = !inference.image_file.path.empty();
   Image image;
   ImageTokens image_tokens;
   if (have_image) {
     size_t pool_dim = model.GetModelConfig().vit_config.pool_dim;
-    image_tokens = ImageTokens(Extents2D(
-        model.GetModelConfig().vit_config.seq_len / (pool_dim * pool_dim),
-        model.GetModelConfig().model_dim));
+    image_tokens =
+        ImageTokens(model.Env().ctx.allocator,
+                    Extents2D(model.GetModelConfig().vit_config.seq_len /
+                                  (pool_dim * pool_dim),
+                              model.GetModelConfig().model_dim));
     HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA ||
                model.Info().wrapping == PromptWrapping::GEMMA_VLM);
-    HWY_ASSERT(image.ReadPPM(args.image_file.path));
+    HWY_ASSERT(image.ReadPPM(inference.image_file.path));
     const size_t image_size = model.GetModelConfig().vit_config.image_size;
     image.Resize(image_size, image_size);
-    RuntimeConfig runtime_config = {
-        .gen = &gen, .verbosity = app.verbosity, .use_spinning = app.spin};
+    RuntimeConfig runtime_config = {.gen = &gen,
+                                    .verbosity = inference.verbosity,
+                                    .use_spinning = threading.spin};
     double image_tokens_start = hwy::platform::Now();
     model.GenerateImageTokens(runtime_config, image, image_tokens);
-    if (app.verbosity >= 1) {
+    if (inference.verbosity >= 1) {
       double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
       fprintf(stderr,
               "\n\n[ Timing info ] Image token generation took: %d ms\n",
@@ -121,12 +123,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     const bool first_response_token = tokens_generated_this_turn == prompt_size;
     ++tokens_generated_this_turn;
     if (in_prompt) {
-      if (app.verbosity >= 1) {
+      if (inference.verbosity >= 1) {
         std::cerr << "." << std::flush;
       }
       return true;
     } else if (model.GetModelConfig().IsEOS(token)) {
-      if (app.verbosity >= 2) {
+      if (inference.verbosity >= 2) {
         std::cout << "\n[ End ]\n";
       }
       return true;
@@ -135,7 +137,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     HWY_ASSERT(model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     if (first_response_token) {
       token_text.erase(0, token_text.find_first_not_of(" \t\n"));
-      if (app.verbosity >= 1) {
+      if (inference.verbosity >= 1) {
         std::cout << "\n\n";
       }
     }
@@ -147,7 +149,8 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     tokens_generated_this_turn = 0;
 
     // Read prompt and handle special commands.
-    std::string prompt_string = GetPrompt(std::cin, app.verbosity, eot_line);
+    std::string prompt_string =
+        GetPrompt(std::cin, inference.verbosity, inference.eot_line);
     if (!std::cin) return;
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
     if (prompt_string.size() >= 2 && prompt_string[0] == '%') {
@@ -163,13 +166,12 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     }
 
     // Set up runtime config.
-    TimingInfo timing_info = {.verbosity = app.verbosity};
+    TimingInfo timing_info = {.verbosity = inference.verbosity};
     RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = app.verbosity,
+                                    .verbosity = inference.verbosity,
                                     .stream_token = stream_token,
-                                    .accept_token = accept_token,
-                                    .use_spinning = app.spin};
-    args.CopyTo(runtime_config);
+                                    .use_spinning = threading.spin};
+    inference.CopyTo(runtime_config);
     size_t prefix_end = 0;
 
     std::vector<int> prompt;
@@ -197,7 +199,7 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     }
 
     // Generate until EOS or max_generated_tokens.
-    if (app.verbosity >= 1) {
+    if (inference.verbosity >= 1) {
       std::cerr << "\n[ Reading prompt ] " << std::flush;
     }
     model.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache,
@@ -205,9 +207,10 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
     std::cout << "\n\n";
 
     // Prepare for the next turn. Works only for PaliGemma.
-    if (!args.multiturn || model.Info().wrapping == PromptWrapping::PALIGEMMA) {
+    if (!inference.multiturn ||
+        model.Info().wrapping == PromptWrapping::PALIGEMMA) {
       abs_pos = 0;  // Start a new turn at position 0.
-      InitGenerator(args, gen);
+      InitGenerator(inference, gen);
     } else {
       // The last token was either EOS, then it should be ignored because it is
       // never part of the dialog, see Table 5 in the Gemma-2 paper:
@@ -223,20 +226,19 @@ void ReplGemma(Gemma& model, KVCache& kv_cache, const AppArgs& app,
   }
 }
 
-void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
+void Run(ThreadingArgs& threading, LoaderArgs& loader,
+         InferenceArgs& inference) {
   PROFILER_ZONE("Run.misc");
 
   // Note that num_threads is an upper bound; we also limit to the number of
   // detected and enabled cores.
-  const BoundedTopology topology = CreateTopology(app);
-  NestedPools pools = CreatePools(topology, app);
-  MatMulEnv env(topology, pools);
-  if (app.verbosity >= 2) env.print_best = true;
+  MatMulEnv env(MakeMatMulEnv(threading));
+  if (inference.verbosity >= 2) env.print_best = true;
   Gemma model = CreateGemma(loader, env);
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 
-  if (app.verbosity >= 1) {
+  if (inference.verbosity >= 1) {
     std::string instructions =
         "*Usage*\n"
         "  Enter an instruction and press enter (%C resets conversation, "
@@ -259,11 +261,11 @@ void Run(LoaderArgs& loader, InferenceArgs& inference, AppArgs& app) {
 
     std::cout << "\033[2J\033[1;1H"  // clear screen
               << kAsciiArtBanner << "\n\n";
-    ShowConfig(loader, inference, app, topology, pools);
+    ShowConfig(threading, loader, inference);
     std::cout << "\n" << instructions << "\n";
   }
 
-  ReplGemma(model, kv_cache, app, inference, AcceptFunc(), app.eot_line);
+  ReplGemma(threading, inference, model, kv_cache);
 }
 
 }  // namespace gcpp
@@ -272,31 +274,29 @@ int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.misc");
 
-    // Placeholder for internal init, do not modify.
-
+    gcpp::ThreadingArgs threading(argc, argv);
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);
-    gcpp::AppArgs app(argc, argv);
 
     if (gcpp::HasHelp(argc, argv)) {
       std::cerr << gcpp::kAsciiArtBanner;
-      gcpp::ShowHelp(loader, inference, app);
+      gcpp::ShowHelp(threading, loader, inference);
       return 0;
     }
 
     if (const char* error = loader.Validate()) {
       std::cerr << gcpp::kAsciiArtBanner;
-      gcpp::ShowHelp(loader, inference, app);
+      gcpp::ShowHelp(threading, loader, inference);
       HWY_ABORT("\nInvalid args: %s", error);
     }
 
     if (const char* error = inference.Validate()) {
       std::cerr << gcpp::kAsciiArtBanner;
-      gcpp::ShowHelp(loader, inference, app);
+      gcpp::ShowHelp(threading, loader, inference);
       HWY_ABORT("\nInvalid args: %s", error);
     }
 
-    gcpp::Run(loader, inference, app);
+    gcpp::Run(threading, loader, inference);
   }
   PROFILER_PRINT_RESULTS();  // Must call outside the zone above.
   return 0;

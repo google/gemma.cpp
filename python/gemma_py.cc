@@ -32,9 +32,9 @@
 #include "compression/shared.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"
-#include "util/app.h"
+#include "gemma/gemma_args.h"
+#include "util/allocator.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace py = pybind11;
 
@@ -48,8 +48,9 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 class GemmaModel {
  public:
   GemmaModel(const gcpp::LoaderArgs& loader,
-             const gcpp::InferenceArgs& inference, const gcpp::AppArgs& app)
-      : gemma_(loader, inference, app), last_prob_(0.0f) {}
+             const gcpp::InferenceArgs& inference,
+             const gcpp::ThreadingArgs& threading)
+      : gemma_(threading, loader, inference), last_prob_(0.0f) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
@@ -168,7 +169,8 @@ class GemmaModel {
   // Generate* will use this image. Throws an error for other models.
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
-    gcpp::Gemma& model = *(gemma_.GetModel());
+    const gcpp::Allocator2& allocator = gemma_.Env().ctx.allocator;
+    gcpp::Gemma& model = *(gemma_.GetGemma());
     if (model.Info().wrapping != gcpp::PromptWrapping::PALIGEMMA) {
       throw std::invalid_argument("Not a PaliGemma model.");
     }
@@ -183,9 +185,9 @@ class GemmaModel {
     c_image.Set(height, width, ptr);
     const size_t image_size = model.GetModelConfig().vit_config.image_size;
     c_image.Resize(image_size, image_size);
-    image_tokens_ = gcpp::ImageTokens(gcpp::Extents2D(
-        model.GetModelConfig().vit_config.seq_len,
-        model.GetModelConfig().model_dim));
+    image_tokens_ = gcpp::ImageTokens(
+        allocator, gcpp::Extents2D(model.GetModelConfig().vit_config.seq_len,
+                                   model.GetModelConfig().model_dim));
     gcpp::RuntimeConfig runtime_config = {.gen = &gemma_.MutableGen(),
                                           .verbosity = 0};
     model.GenerateImageTokens(runtime_config, c_image, image_tokens_);
@@ -199,7 +201,7 @@ class GemmaModel {
     if (image_tokens_.Cols() == 0) {
       throw std::invalid_argument("No image set.");
     }
-    gcpp::Gemma& model = *(gemma_.GetModel());
+    gcpp::Gemma& model = *(gemma_.GetGemma());
     gemma_.MutableGen().seed(seed);
     gcpp::RuntimeConfig& config = gemma_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
@@ -247,7 +249,7 @@ class GemmaModel {
     return gemma_.StringFromTokens(token_ids);
   }
 
-  bool ModelIsLoaded() const { return gemma_.GetModel() != nullptr; }
+  bool ModelIsLoaded() const { return gemma_.GetGemma() != nullptr; }
 
  private:
   gcpp::GemmaEnv gemma_;
@@ -267,7 +269,7 @@ PYBIND11_MODULE(gemma, mod) {
              loader.weight_type_str = weight_type;
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
-             gcpp::AppArgs app;
+             gcpp::ThreadingArgs app;
              app.max_threads = max_threads;
              auto gemma =
                  std::make_unique<GemmaModel>(loader, inference, app);

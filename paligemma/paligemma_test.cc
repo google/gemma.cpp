@@ -49,8 +49,8 @@ class PaliGemmaTest : public ::testing::Test {
 };
 
 void PaliGemmaTest::InitVit(const std::string& path) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
-  Gemma& model = *(s_env->GetModel());
+  ASSERT_NE(s_env->GetGemma(), nullptr);
+  Gemma& model = *(s_env->GetGemma());
   image_tokens_ =
       ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
                             model.GetModelConfig().model_dim));
@@ -64,7 +64,7 @@ void PaliGemmaTest::InitVit(const std::string& path) {
 }
 
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
-  Gemma& model = *(s_env->GetModel());
+  Gemma& model = *(s_env->GetGemma());
   s_env->MutableGen().seed(0x12345678);
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,
                                   .gen = &s_env->MutableGen(),
@@ -92,7 +92,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
 }
 
 void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
+  ASSERT_NE(s_env->GetGemma(), nullptr);
   std::string path = "paligemma/testdata/image.ppm";
   InitVit(path);
   for (size_t i = 0; i < num_questions; ++i) {
@@ -104,7 +104,7 @@ void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
 }
 
 TEST_F(PaliGemmaTest, General) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
+  ASSERT_NE(s_env->GetGemma(), nullptr);
   static const char* kQA_3B_mix_224[][2] = {
       {"describe this image",
        "A large building with two towers stands tall on the water's edge."},
@@ -124,7 +124,7 @@ TEST_F(PaliGemmaTest, General) {
   };
   const char* (*qa)[2];
   size_t num;
-  switch (s_env->GetModel()->Info().model) {
+  switch (s_env->GetGemma()->Info().model) {
     case Model::PALIGEMMA_224:
       qa = kQA_3B_mix_224;
       num = sizeof(kQA_3B_mix_224) / sizeof(kQA_3B_mix_224[0]);
@@ -135,7 +135,7 @@ TEST_F(PaliGemmaTest, General) {
       break;
     default:
       FAIL() << "Unsupported model: "
-             << s_env->GetModel()->GetModelConfig().model_name;
+             << s_env->GetGemma()->GetModelConfig().model_name;
       break;
   }
   TestQuestions(qa, num);

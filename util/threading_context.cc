@@ -33,6 +33,13 @@ static std::mutex s_ctx_mutex;
   s_ctx_mutex.unlock();
 }
 
+/*static*/ bool ThreadingContext2::IsInitialized() {
+  s_ctx_mutex.lock();
+  const bool initialized = !!s_ctx;
+  s_ctx_mutex.unlock();
+  return initialized;
+}
+
 /*static*/ ThreadingContext2& ThreadingContext2::Get() {
   // We do not bother with double-checked locking because it requires an
   // atomic pointer, but we prefer to use unique_ptr for simplicity. Also,

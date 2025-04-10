@@ -16,6 +16,7 @@
 #include <stddef.h>
 
 #include "compression/compress.h"
+#include "util/mat.h"
 #include "hwy/base.h"
 #include "hwy/profiler.h"
 
@@ -379,10 +380,7 @@ template <typename MatT, typename VT>
 HWY_INLINE float Dot(const MatPtrT<MatT>& w, size_t w_ofs,
                      const VT* vec_aligned, size_t num) {
   const hn::ScalableTag<VT> d;
-  return w.scale() * Dot(d,
-                         MakeConstSpan(reinterpret_cast<const MatT*>(w.Ptr()),
-                                       w.NumElements()),
-                         w_ofs, vec_aligned, num);
+  return w.Scale() * Dot(d, w.Span(), w_ofs, vec_aligned, num);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

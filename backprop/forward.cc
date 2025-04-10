@@ -17,9 +17,7 @@
 
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/common.h"
-#include "gemma/configs.h"
-#include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to

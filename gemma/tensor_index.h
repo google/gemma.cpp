@@ -54,6 +54,28 @@ struct TensorInfo {
   bool cols_take_extra_dims = false;
 };
 
+// Collapses/expands the tensor dims into 2D extents, which may be 0, 0 for
+// not-present tensors such as ViT in a text-only model.
+static inline Extents2D ExtentsFromInfo(const TensorInfo* tensor) {
+  if (tensor == nullptr) return Extents2D(0, 0);
+
+  size_t cols = tensor->shape.back();
+  size_t rows = 1;
+  if (tensor->cols_take_extra_dims) {
+    rows = tensor->shape[0];
+    for (size_t i = 1; i < tensor->shape.size() - 1; ++i) {
+      cols *= tensor->shape[i];
+    }
+  } else {  // rows take extra dims
+    for (size_t i = 0; i < tensor->shape.size() - 1; ++i) {
+      rows *= tensor->shape[i];
+    }
+  }
+  // Sometimes only one of rows or cols is zero; set both for consistency.
+  if (rows == 0 || cols == 0) rows = cols = 0;
+  return Extents2D(rows, cols);
+}
+
 // Universal index of tensor information, which can be built for a specific
 // layer_idx.
 class TensorIndex {
@@ -95,6 +117,16 @@ class TensorIndex {
   // Map from tensor name to index in tensors_.
   std::unordered_map<std::string, size_t> name_map_;
 };
+
+static inline TensorIndex TensorIndexLLM(const ModelConfig& config,
+                                         size_t llm_layer_idx) {
+  return TensorIndex(config, static_cast<int>(llm_layer_idx), -1, false);
+}
+
+static inline TensorIndex TensorIndexImg(const ModelConfig& config,
+                                         size_t img_layer_idx) {
+  return TensorIndex(config, -1, static_cast<int>(img_layer_idx), false);
+}
 
 }  // namespace gcpp
 

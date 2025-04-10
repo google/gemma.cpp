@@ -180,54 +180,59 @@ void ApplyLayer(const LayerWeightsPtrs<T>& weights,
   const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
   static const T query_scale = T(1.0) / std::sqrt(T(qkv_dim));
 
-  RMSNormT(weights.pre_attention_norm_scale.data(), activations.input.data(),
-           activations.pre_att_rms_out.data(), model_dim, num_tokens);
+  RMSNormT(weights.pre_attention_norm_scale.Packed(),
+           activations.input.Packed(), activations.pre_att_rms_out.Packed(),
+           model_dim, num_tokens);
 
-  MatMulT(weights.qkv_einsum_w.data(), activations.pre_att_rms_out.data(),
-          activations.qkv.data(), (heads + 2) * qkv_dim, model_dim, num_tokens);
+  MatMulT(weights.qkv_einsum_w.Packed(), activations.pre_att_rms_out.Packed(),
+          activations.qkv.Packed(), (heads + 2) * qkv_dim, model_dim,
+          num_tokens);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = activations.qkv.data() + pos * (heads + 2) * qkv_dim;
+    T* qkv = activations.qkv.Packed() + pos * (heads + 2) * qkv_dim;
     for (size_t h = 0; h <= heads; ++h) {
       Rope(qkv + h * qkv_dim, qkv_dim, pos);
     }
   }
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    T* qkv = activations.qkv.data() + pos * (heads + 2) * qkv_dim;
+    T* qkv = activations.qkv.Packed() + pos * (heads + 2) * qkv_dim;
     MulByConstT(query_scale, qkv, heads * qkv_dim);
   }
 
-  MaskedAttention(activations.qkv.data(), activations.att.data(), num_tokens,
-                  heads, qkv_dim, seq_len);
+  MaskedAttention(activations.qkv.Packed(), activations.att.Packed(),
+                  num_tokens, heads, qkv_dim, seq_len);
 
-  MaskedSoftmax(activations.att.data(), num_tokens, heads, seq_len);
+  MaskedSoftmax(activations.att.Packed(), num_tokens, heads, seq_len);
 
-  MixByAttention(activations.qkv.data(), activations.att.data(),
-                 activations.att_out.data(), num_tokens, heads, qkv_dim,
+  MixByAttention(activations.qkv.Packed(), activations.att.Packed(),
+                 activations.att_out.Packed(), num_tokens, heads, qkv_dim,
                  seq_len);
 
-  MultiHeadMatMul(weights.attn_vec_einsum_w.data(), activations.att_out.data(),
-                  activations.attention_out.data(), heads, model_dim, qkv_dim,
+  MultiHeadMatMul(weights.attn_vec_einsum_w.Packed(),
+                  activations.att_out.Packed(),
+                  activations.attention_out.Packed(), heads, model_dim, qkv_dim,
                   num_tokens);
 
-  AddFromT(activations.input.data(), activations.attention_out.data(),
+  AddFromT(activations.input.Packed(), activations.attention_out.Packed(),
            num_tokens * model_dim);
 
-  RMSNormT(weights.pre_ffw_norm_scale.data(), activations.attention_out.data(),
-           activations.bf_pre_ffw_rms_out.data(), model_dim, num_tokens);
+  RMSNormT(weights.pre_ffw_norm_scale.Packed(),
+           activations.attention_out.Packed(),
+           activations.bf_pre_ffw_rms_out.Packed(), model_dim, num_tokens);
 
-  MatMulT(weights.gating_einsum_w.data(), activations.bf_pre_ffw_rms_out.data(),
-          activations.ffw_hidden.data(), ff_hidden_dim * 2, model_dim,
+  MatMulT(weights.gating_einsum_w.Packed(),
+          activations.bf_pre_ffw_rms_out.Packed(),
+          activations.ffw_hidden.Packed(), ff_hidden_dim * 2, model_dim,
           num_tokens);
 
-  GatedGelu(activations.ffw_hidden.data(), activations.ffw_hidden_gated.data(),
-            ff_hidden_dim, num_tokens);
+  GatedGelu(activations.ffw_hidden.Packed(),
+            activations.ffw_hidden_gated.Packed(), ff_hidden_dim, num_tokens);
 
-  MatMulT(weights.linear_w.data(), activations.ffw_hidden_gated.data(), output,
-          model_dim, ff_hidden_dim, num_tokens);
+  MatMulT(weights.linear_w.Packed(), activations.ffw_hidden_gated.Packed(),
+          output, model_dim, ff_hidden_dim, num_tokens);
 
-  AddFromT(activations.attention_out.data(), output, num_tokens * model_dim);
+  AddFromT(activations.attention_out.Packed(), output, num_tokens * model_dim);
 }
 
 template<typename T>
@@ -258,35 +263,35 @@ T CrossEntropyLossForwardPass(const Prompt& prompt,
   const size_t num_tokens = tokens.empty() ? 0 : tokens.size() - 1;
 
   const T kEmbScaling = EmbeddingScaling(model_dim);
-  InputEmbedding(weights.embedder_input_embedding.data(), tokens, kEmbScaling,
-                 forward.layers[0].input.data(), model_dim);
+  InputEmbedding(weights.embedder_input_embedding.Packed(), tokens, kEmbScaling,
+                 forward.layers[0].input.Packed(), model_dim);
 
   for (size_t layer = 0; layer < layers; ++layer) {
-    T* output = layer + 1 < layers ? forward.layers[layer + 1].input.data()
-                                   : forward.final_layer_output.data();
+    T* output = layer + 1 < layers ? forward.layers[layer + 1].input.Packed()
+                                   : forward.final_layer_output.Packed();
     ApplyLayer(*weights.GetLayer(layer), forward.layers[layer], num_tokens,
                output);
   }
 
-  RMSNormT(weights.final_norm_scale.data(), forward.final_layer_output.data(),
-           forward.final_norm_output.data(), model_dim, num_tokens);
+  RMSNormT(weights.final_norm_scale.Packed(),
+           forward.final_layer_output.Packed(),
+           forward.final_norm_output.Packed(), model_dim, num_tokens);
 
-  MatMulT(weights.embedder_input_embedding.data(),
-          forward.final_norm_output.data(), forward.logits.data(), vocab_size,
-          model_dim, num_tokens);
+  MatMulT(weights.embedder_input_embedding.Packed(),
+          forward.final_norm_output.Packed(), forward.logits.Packed(),
+          vocab_size, model_dim, num_tokens);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     if (config.final_cap > 0.0f) {
-      Softcap(config.final_cap, forward.logits.data() + pos * vocab_size,
+      Softcap(config.final_cap, forward.logits.Packed() + pos * vocab_size,
               vocab_size);
     }
   }
 
-  memcpy(forward.probs.data(), forward.logits.data(),
-         num_tokens * vocab_size * sizeof(forward.logits.At(0)));
-  Softmax(forward.probs.data(), vocab_size, num_tokens);
+  CopyMat(forward.logits, forward.probs);
+  Softmax(forward.probs.Packed(), vocab_size, num_tokens);
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, vocab_size);
+  return CrossEntropyLoss(forward.probs.Packed(), prompt, vocab_size);
 }
 
 }  // namespace gcpp

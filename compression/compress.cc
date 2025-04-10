@@ -17,6 +17,6 @@
 
 namespace gcpp {
 
-MatPtr::~MatPtr() {}
+// TODO: move ScaleWeights here.
 
 }  // namespace gcpp

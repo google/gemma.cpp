@@ -28,6 +28,7 @@
 #include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -50,16 +51,17 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <typename ArrayT>
-void InputEmbedding(const ArrayT& weights, const std::vector<int>& prompt,
+template <typename T>
+void InputEmbedding(const MatPtrT<T>& weights, const std::vector<int>& prompt,
                     const float scaling, float* HWY_RESTRICT output,
                     size_t model_dim, size_t vocab_size) {
   const hn::ScalableTag<float> df;
   HWY_ASSERT(!prompt.empty());
   for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     int token = prompt[pos];
-    DecompressAndZeroPad(df, MakeSpan(weights.data(), model_dim * vocab_size),
-                         token * model_dim, output + pos * model_dim,
+    const auto span = weights.Span();
+    HWY_ASSERT(span.num == model_dim * vocab_size);
+    DecompressAndZeroPad(df, span, token * model_dim, output + pos * model_dim,
                          model_dim);
     MulByConst(scaling, output + pos * model_dim, model_dim);
   }
@@ -109,27 +111,27 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
       static_cast<float>(1.0 / sqrt(static_cast<double>(kQKVDim)));
   HWY_ASSERT(num_tokens <= kSeqLen);
 
-  ApplyRMSNorm(weights.pre_attention_norm_scale.data(),
-               activations.input.data(), model_dim, num_tokens,
-               activations.pre_att_rms_out.data(), pool);
+  ApplyRMSNorm(weights.pre_attention_norm_scale.Packed(),
+               activations.input.Packed(), model_dim, num_tokens,
+               activations.pre_att_rms_out.Packed(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec(weights.qkv_einsum_w, 0, (kHeads + 2) * kQKVDim, model_dim,
-           activations.pre_att_rms_out.data() + pos * model_dim,
-           activations.qkv.data() + pos * (kHeads + 2) * kQKVDim, pool);
+           activations.pre_att_rms_out.Packed() + pos * model_dim,
+           activations.qkv.Packed() + pos * (kHeads + 2) * kQKVDim, pool);
   }
   const size_t num_tasks = kHeads * num_tokens;
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* HWY_RESTRICT k =
-        activations.qkv.data() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
+        activations.qkv.Packed() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
     Rope(k, kQKVDim, inv_timescale.Const(), pos);
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     float* HWY_RESTRICT q =
-        activations.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
+        activations.qkv.Packed() + (pos * (kHeads + 2) + head) * kQKVDim;
     Rope(q, kQKVDim, inv_timescale.Const(), pos);
     MulByConst(query_scale, q, kQKVDim);
   });
@@ -138,12 +140,12 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     const float* HWY_RESTRICT q =
-        activations.qkv.data() + (pos * (kHeads + 2) + head) * kQKVDim;
+        activations.qkv.Packed() + (pos * (kHeads + 2) + head) * kQKVDim;
     float* HWY_RESTRICT head_att =
-        activations.att.data() + (pos * kHeads + head) * kSeqLen;
+        activations.att.Packed() + (pos * kHeads + head) * kSeqLen;
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
       const float* HWY_RESTRICT k2 =
-          activations.qkv.data() + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
+          activations.qkv.Packed() + (pos2 * (kHeads + 2) + kHeads) * kQKVDim;
       const float score = Dot(q, k2, kQKVDim);
       head_att[pos2] = score;
     }
@@ -153,7 +155,7 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     float* HWY_RESTRICT head_att =
-        activations.att.data() + (pos * kHeads + head) * kSeqLen;
+        activations.att.Packed() + (pos * kHeads + head) * kSeqLen;
     Softmax(head_att, pos + 1);
   });
 
@@ -161,51 +163,51 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     const float* HWY_RESTRICT head_att =
-        activations.att.data() + (pos * kHeads + head) * kSeqLen;
+        activations.att.Packed() + (pos * kHeads + head) * kSeqLen;
     float* HWY_RESTRICT att_out =
-        activations.att_out.data() + (pos * kHeads + head) * kQKVDim;
+        activations.att_out.Packed() + (pos * kHeads + head) * kQKVDim;
     hwy::ZeroBytes(att_out, kQKVDim * sizeof(*att_out));
     for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
-      float* HWY_RESTRICT v2 =
-          activations.qkv.data() + (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
+      float* HWY_RESTRICT v2 = activations.qkv.Packed() +
+                               (pos2 * (kHeads + 2) + kHeads + 1) * kQKVDim;
       MulByConstAndAdd(head_att[pos2], v2, att_out, kQKVDim);
     }
   });
 
-  activations.attention_out.ZeroInit();
+  ZeroInit(activations.attention_out);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     for (size_t head = 0; head < kHeads; ++head) {
-      MatVec(
-          weights.attn_vec_einsum_w, head * model_dim * kQKVDim, model_dim,
-          kQKVDim,
-          activations.att_out.data() + pos * kHeads * kQKVDim + head * kQKVDim,
-          activations.att_post1.data() + pos * model_dim, pool);
-      AddFrom(activations.att_post1.data() + pos * model_dim,
-              activations.attention_out.data() + pos * model_dim, model_dim);
+      MatVec(weights.attn_vec_einsum_w, head * model_dim * kQKVDim, model_dim,
+             kQKVDim,
+             activations.att_out.Packed() + pos * kHeads * kQKVDim +
+                 head * kQKVDim,
+             activations.att_post1.Packed() + pos * model_dim, pool);
+      AddFrom(activations.att_post1.Packed() + pos * model_dim,
+              activations.attention_out.Packed() + pos * model_dim, model_dim);
     }
   }
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    AddFrom(activations.input.data() + pos * model_dim,
-            activations.attention_out.data() + pos * model_dim, model_dim);
+    AddFrom(activations.input.Packed() + pos * model_dim,
+            activations.attention_out.Packed() + pos * model_dim, model_dim);
   }
 
-  ApplyRMSNorm(weights.pre_ffw_norm_scale.data(),
-               activations.attention_out.data(), model_dim, num_tokens,
-               activations.bf_pre_ffw_rms_out.data(), pool);
+  ApplyRMSNorm(weights.pre_ffw_norm_scale.Packed(),
+               activations.attention_out.Packed(), model_dim, num_tokens,
+               activations.bf_pre_ffw_rms_out.Packed(), pool);
   const size_t kFFHiddenDim = config.ff_hidden_dim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec(weights.gating_einsum_w, 0, kFFHiddenDim * 2, model_dim,
-           activations.bf_pre_ffw_rms_out.data() + pos * model_dim,
-           activations.ffw_hidden.data() + pos * kFFHiddenDim * 2, pool);
+           activations.bf_pre_ffw_rms_out.Packed() + pos * model_dim,
+           activations.ffw_hidden.Packed() + pos * kFFHiddenDim * 2, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * kFFHiddenDim * 2;
     const float* HWY_RESTRICT out =
-        activations.ffw_hidden.data() + hidden_offset;
+        activations.ffw_hidden.Packed() + hidden_offset;
     const float* HWY_RESTRICT out_mul = out + kFFHiddenDim;
     float* HWY_RESTRICT out_gated =
-        activations.ffw_hidden_gated.data() + pos * kFFHiddenDim;
+        activations.ffw_hidden_gated.Packed() + pos * kFFHiddenDim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
     DF df;
@@ -217,11 +219,11 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec(weights.linear_w, 0, model_dim, kFFHiddenDim,
-           activations.ffw_hidden_gated.data() + pos * kFFHiddenDim,
+           activations.ffw_hidden_gated.Packed() + pos * kFFHiddenDim,
            output + pos * model_dim, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    AddFrom(activations.attention_out.data() + pos * model_dim,
+    AddFrom(activations.attention_out.Packed() + pos * model_dim,
             output + pos * model_dim, model_dim);
   }
 }
@@ -247,44 +249,43 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
   const size_t num_tokens = prompt.size() - 1;
 
   InputEmbedding(weights.embedder_input_embedding, prompt, emb_scaling,
-                 forward.layers[0].input.data(), model_dim, vocab_size);
+                 forward.layers[0].input.Packed(), model_dim, vocab_size);
 
   for (size_t layer = 0; layer < config.layer_configs.size(); ++layer) {
     auto type = config.layer_configs[layer].type;
     // TODO(szabadka) Implement Griffin layer.
     HWY_ASSERT(type == LayerAttentionType::kGemma);
     float* HWY_RESTRICT output = layer + 1 < layers
-                                     ? forward.layers[layer + 1].input.data()
-                                     : forward.final_layer_output.data();
+                                     ? forward.layers[layer + 1].input.Packed()
+                                     : forward.final_layer_output.Packed();
     ApplyForwardLayer(*weights.GetLayer(layer), forward.layers[layer],
                       num_tokens, output, inv_timescale, pool);
   }
 
-  ApplyRMSNorm(weights.final_norm_scale.data(),
-               forward.final_layer_output.data(), model_dim, num_tokens,
-               forward.final_norm_output.data(), pool);
+  ApplyRMSNorm(weights.final_norm_scale.Packed(),
+               forward.final_layer_output.Packed(), model_dim, num_tokens,
+               forward.final_norm_output.Packed(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec(weights.embedder_input_embedding, 0, vocab_size, model_dim,
-           forward.final_norm_output.data() + pos * model_dim,
-           forward.logits.data() + pos * vocab_size, pool);
+           forward.final_norm_output.Packed() + pos * model_dim,
+           forward.logits.Packed() + pos * vocab_size, pool);
   }
 
   if (config.final_cap > 0.0f) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      LogitsSoftCap(config.final_cap, forward.logits.data() + pos * vocab_size,
-                    vocab_size);
+      LogitsSoftCap(config.final_cap,
+                    forward.logits.Packed() + pos * vocab_size, vocab_size);
     }
   }
 
-  hwy::CopyBytes(forward.logits.data(), forward.probs.data(),
-                 num_tokens * vocab_size * sizeof(forward.logits.At(0)));
+  CopyMat(forward.logits, forward.probs);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    Softmax(forward.probs.data() + pos * vocab_size, vocab_size);
+    Softmax(forward.probs.Packed() + pos * vocab_size, vocab_size);
   }
 
-  return CrossEntropyLoss(forward.probs.data(), prompt, context_size,
+  return CrossEntropyLoss(forward.probs.Packed(), prompt, context_size,
                           vocab_size, pool);
 }
 

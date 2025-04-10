@@ -23,23 +23,17 @@
 #include <string>
 #include <vector>
 
-// Placeholder for internal header, do not modify.
 #include "gemma/gemma.h"
+#include "gemma/gemma_args.h"  // LoaderArgs
 #include "gemma/tokenizer.h"
-#include "util/app.h"  // LoaderArgs
 #include "util/args.h"
-#include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 int main(int argc, char** argv) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
-
+  gcpp::ThreadingArgs threading(argc, argv);
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
-  gcpp::AppArgs app(argc, argv);
   if (gcpp::HasHelp(argc, argv)) {
     loader.Help();
     return 0;
@@ -53,14 +47,14 @@ int main(int argc, char** argv) {
   for (int arg = 0; arg < argc; ++arg) {
     // Find a --reject flag and consume everything after it.
     if (strcmp(argv[arg], "--reject") == 0) {
-      while (++arg < argc) reject_tokens.insert(atoi(argv[arg]));
+      while (++arg < argc) {
+        reject_tokens.insert(atoi(argv[arg]));  // NOLINT
+      }
     }
   }
 
   // Instantiate model and KV Cache
-  gcpp::BoundedTopology topology(gcpp::CreateTopology(app));
-  gcpp::NestedPools pools = gcpp::CreatePools(topology, app);
-  gcpp::MatMulEnv env(topology, pools);
+  gcpp::MatMulEnv env(MakeMatMulEnv(threading));
   gcpp::Gemma model = gcpp::CreateGemma(loader, env);
   gcpp::KVCache kv_cache =
       gcpp::KVCache::Create(model.GetModelConfig(),

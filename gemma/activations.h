@@ -18,14 +18,12 @@
 
 #include <stddef.h>
 
-#include "compression/shared.h"  // BF16
-#include "gemma/configs.h"
-#include "ops/matmul.h"          // MatMulEnv
-#include "ops/ops.h"             // CreateInvTimescale
-#include "util/allocator.h"      // RowVectorBatch
-#include "util/threading.h"
-#include "hwy/base.h"  // HWY_DASSERT
-#include "hwy/contrib/thread_pool/thread_pool.h"
+#include "gemma/configs.h"   // ModelConfig
+#include "ops/matmul.h"      // MatMulEnv
+#include "ops/ops.h"         // CreateInvTimescale
+#include "util/allocator.h"  // Allocator
+#include "util/basics.h"     // BF16
+#include "util/mat.h"        // RowVectorBatch
 
 namespace gcpp {
 
@@ -74,6 +72,8 @@ struct Activations {
   size_t cache_pos_size = 0;
 
   void Allocate(size_t batch_size, MatMulEnv* env) {
+    const Allocator2& allocator = env->ctx.allocator;
+
     post_qk = layer_config.post_qk;
     const size_t model_dim = weights_config.model_dim;
     const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
@@ -81,36 +81,45 @@ struct Activations {
     const size_t qkv_dim = layer_config.qkv_dim;
     const size_t heads = layer_config.heads;
 
-    x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+    x = RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
     q = RowVectorBatch<float>(
-        Extents2D(batch_size, heads * layer_config.QStride()));
+        allocator, Extents2D(batch_size, heads * layer_config.QStride()));
     if (vocab_size > 0) {
-      logits = RowVectorBatch<float>(Extents2D(batch_size, vocab_size));
+      logits =
+          RowVectorBatch<float>(allocator, Extents2D(batch_size, vocab_size));
     }
 
-    pre_att_rms_out = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+    pre_att_rms_out =
+        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
     att = RowVectorBatch<float>(
-        Extents2D(batch_size, heads * weights_config.seq_len));
-    att_out = RowVectorBatch<float>(Extents2D(batch_size, heads * qkv_dim));
-    att_sums = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+        allocator, Extents2D(batch_size, heads * weights_config.seq_len));
+    att_out = RowVectorBatch<float>(allocator,
+                                    Extents2D(batch_size, heads * qkv_dim));
+    att_sums =
+        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
 
-    bf_pre_ffw_rms_out = RowVectorBatch<BF16>(Extents2D(batch_size, model_dim));
-    C1 = RowVectorBatch<float>(Extents2D(batch_size, ff_hidden_dim));
-    C2 = RowVectorBatch<float>(Extents2D(batch_size, ff_hidden_dim));
-    ffw_out = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+    bf_pre_ffw_rms_out =
+        RowVectorBatch<BF16>(allocator, Extents2D(batch_size, model_dim));
+    C1 = RowVectorBatch<float>(allocator, Extents2D(batch_size, ff_hidden_dim));
+    C2 = RowVectorBatch<float>(allocator, Extents2D(batch_size, ff_hidden_dim));
+    ffw_out =
+        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
 
     if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
-      griffin_x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
-      griffin_y = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
-      griffin_gate_x = RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+      griffin_x =
+          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
+      griffin_y =
+          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
+      griffin_gate_x =
+          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
       griffin_multiplier =
-          RowVectorBatch<float>(Extents2D(batch_size, model_dim));
+          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
     }
 
-    inv_timescale = CreateInvTimescale(layer_config.qkv_dim,
+    inv_timescale = CreateInvTimescale(allocator, layer_config.qkv_dim,
                                        post_qk == PostQKType::HalfRope);
-    inv_timescale_global =
-        CreateInvTimescale(qkv_dim, post_qk == PostQKType::HalfRope, 1000000.0);
+    inv_timescale_global = CreateInvTimescale(
+        allocator, qkv_dim, post_qk == PostQKType::HalfRope, 1000000.0);
 
     this->env = env;
   }

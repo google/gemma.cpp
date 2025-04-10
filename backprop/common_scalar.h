@@ -20,7 +20,7 @@
 
 #include <complex>
 
-#include "compression/compress.h"  // MatStorageT
+#include "util/mat.h"
 
 namespace gcpp {
 
@@ -60,7 +60,9 @@ void MulByConstAndAddT(T c, const T* x, T* out, size_t N) {
 
 template <typename T>
 void MulByConstAndAddT(T c, const MatPtrT<T>& x, MatPtrT<T>& out) {
-  MulByConstAndAddT(c, x.data(), out.data(), x.NumElements());
+  for (size_t r = 0; r < x.Rows(); ++r) {
+    MulByConstAndAddT(c, x.Row(r), out.Row(r), x.Cols());
+  }
 }
 
 template<typename T>

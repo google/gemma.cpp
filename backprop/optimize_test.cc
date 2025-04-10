@@ -41,11 +41,14 @@
 namespace gcpp {
 
 TEST(OptimizeTest, GradientDescent) {
-  const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1));
-  Allocator::Init(topology);
-  NestedPools pools(topology, 1, /*pin=*/Tristate::kFalse);
-  MatMulEnv env(topology, pools);
-  hwy::ThreadPool& pool = pools.Pool();
+  gcpp::ThreadingArgs threading_args;
+  threading_args.max_packages = 1;
+  threading_args.max_clusters = 1;
+  threading_args.pin = Tristate::kFalse;
+  ThreadingContext2::SetArgs(threading_args);
+  MatMulEnv env(ThreadingContext2::Get());
+  const Allocator2& allocator = env.ctx.allocator;
+  hwy::ThreadPool& pool = env.ctx.pools.Pool();
   std::mt19937 gen(42);
 
   const ModelInfo info = {
@@ -64,7 +67,7 @@ TEST(OptimizeTest, GradientDescent) {
   KVCache kv_cache = KVCache::Create(config, /*prefill_tbatch_size=*/16);
 
   RowVectorBatch<float> inv_timescale = CreateInvTimescale(
-      config.layer_configs[0].qkv_dim,
+      allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
 
   Gemma gemma(GemmaTokenizer(), info, env);

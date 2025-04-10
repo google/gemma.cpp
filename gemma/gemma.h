@@ -16,6 +16,8 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 
+#include <stdio.h>
+
 #include <functional>
 #include <random>
 #include <string>
@@ -31,8 +33,9 @@
 #include "gemma/weights.h"
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
-#include "util/allocator.h"  // RowVectorBatch
-#include "util/basics.h"     // TokenAndProb
+#include "util/basics.h"  // TokenAndProb
+#include "util/mat.h"     // RowVectorBatch
+#include "util/threading_context.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
 #include "hwy/aligned_allocator.h"  // Span
@@ -193,6 +196,10 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
+// Internal init must run before I/O; calling it from GemmaEnv() is too late.
+// This helper function takes care of the internal init plus calling `SetArgs`.
+MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args);
+
 class Gemma {
  public:
   // Reads old format weights file and tokenizer file.
@@ -206,7 +213,9 @@ class Gemma {
   Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env);
   ~Gemma();
 
+  MatMulEnv& Env() const { return env_; }
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
+  // DEPRECATED
   ModelInfo Info() const {
     return ModelInfo({.model = model_.Config().model,
                       .wrapping = model_.Config().wrapping,

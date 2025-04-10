@@ -27,12 +27,13 @@
 #include <type_traits>  // std::enable_if_t
 #include <vector>
 
-#include "compression/compress.h"
+#include "util/allocator.h"
 #include "util/basics.h"  // TokenAndProb
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/contrib/sort/order.h"
 #include "hwy/contrib/sort/vqsort.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_targets.h"
 #include "hwy/profiler.h"
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_INL_H_
@@ -807,12 +808,13 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
 // Each output row is the average of a 4x4 block of input rows
 template <typename T>
 RowVectorBatch<T> AvgPool4x4(RowVectorBatch<T>& input) {
-  Extents2D extents = input.Extents();
+  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+  const Extents2D extents = input.Extents();
   // Input validation
   HWY_DASSERT(extents.rows == 4096);  // 64 * 64 = 4096 input rows
   // Create output with 256 rows and same number of columns
   const size_t out_rows = 256;  // 16 * 16 = 256 output rows
-  RowVectorBatch<T> result(Extents2D{out_rows, extents.cols});
+  RowVectorBatch<T> result(allocator, Extents2D(out_rows, extents.cols));
   const size_t input_dim = 64;   // Input is 64×64
   const size_t output_dim = 16;  // Output is 16×16
   for (size_t out_row_idx = 0; out_row_idx < output_dim; ++out_row_idx) {

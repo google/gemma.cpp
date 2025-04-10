@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <vector>
 
@@ -22,9 +23,8 @@
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
 #include "util/basics.h"
-#include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
 
@@ -866,6 +866,8 @@ class MMPerPackage {
                const IndexRange& range_np)
       : args_(args),
         pkg_idx_(pkg_idx),
+        // May be overwritten with a view of A, if already BF16.
+        A_(args_.env->storage.A(args.env->ctx.allocator, pkg_idx, A.Extents())),
         range_np_(range_np),
         mr_(config.MR()),
         ranges_mc_(config.RangesOfMC(A.Extents().rows)),
@@ -873,14 +875,11 @@ class MMPerPackage {
         ranges_nc_(config.RangesOfNC(range_np)),
         order_(config.Order()),
         inner_tasks_(config.InnerTasks()),
-        out_(config.Out()) {
-    // May be overwritten with a view of A, if already BF16.
-    A_ = args_.env->storage.A(pkg_idx, A.Extents());
-    {
-      MMZone zone;
-      zone.MaybeEnter("MM.DecompressA", args_);
-      A_ = DecompressA(A);
-    }
+        out_(config.Out()),
+        line_bytes_(args.env->ctx.allocator.LineBytes()) {
+    MMZone zone;
+    zone.MaybeEnter("MM.DecompressA", args_);
+    A_ = DecompressA(A);
   }
 
   // B is decompressed several call layers lower, but not all member functions
@@ -909,14 +908,14 @@ class MMPerPackage {
   // Compute size of per-worker storage for `kNR` row ranges of B. Stack
   // allocation avoids passing a worker index.
   static constexpr size_t B_stride_max_ =
-      StrideForCyclicOffsets<BF16>(MMStorage::kMaxKC);
+      MaxStrideForCyclicOffsets<BF16>(MMStorage::kMaxKC);
   static constexpr size_t B_storage_max_ =
-      kNR * B_stride_max_ + Allocator::MaxQuantumBytes() / sizeof(BF16);
+      kNR * B_stride_max_ + Allocator2::MaxQuantum<BF16>();
 
   // Granularity of `ForNP`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
-  static size_t MultipleNP(size_t sizeof_TC) {
-    return HWY_MAX(kNR, Allocator::LineBytes() / sizeof_TC);
+  size_t MultipleNP(size_t sizeof_TC) const {
+    return HWY_MAX(kNR, line_bytes_ / sizeof_TC);
   }
 
   // Single M and K, parallel N. Fills all of C directly.
@@ -931,14 +930,16 @@ class MMPerPackage {
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
     const RowPtrBF& A_view = A_.View(range_M.begin(), 0, K);
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(K);
+    const size_t B_stride =
+        StrideForCyclicOffsets(K, args_.env->ctx.allocator.Quantum<BF16>());
 
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
         [&](const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, K,
+                                B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
@@ -972,7 +973,9 @@ class MMPerPackage {
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
       const RowPtrBF& A_view = A_.View(range_mc.begin(), range_kc.begin(), kc);
-      const RowPtrBF B_view(B_storage, kc, StrideForCyclicOffsets<BF16>(kc));
+      const RowPtrBF B_view(
+          args_.env->ctx.allocator, B_storage, kc,
+          StrideForCyclicOffsets(kc, args_.env->ctx.allocator.Quantum<BF16>()));
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
@@ -1027,7 +1030,8 @@ class MMPerPackage {
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(K);
+    const size_t B_stride =
+        StrideForCyclicOffsets(K, args_.env->ctx.allocator.Quantum<BF16>());
 
     // Sequential loop over NC/MC/KC, similar to `loop_nc` below
     // except for the profiler strings and `out_tag`.
@@ -1036,7 +1040,8 @@ class MMPerPackage {
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           const RowPtrBF& A_view = A_.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, K,
+                                B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
@@ -1062,7 +1067,8 @@ class MMPerPackage {
     zone.MaybeEnter("MM.NT_MT_K", args_);
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(kc_max);
+    const size_t B_stride = StrideForCyclicOffsets(
+        kc_max, args_.env->ctx.allocator.Quantum<BF16>());
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
     // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
@@ -1088,7 +1094,8 @@ class MMPerPackage {
         ranges_mc_, ranges_nc_, pkg_idx_,
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, kc_max, B_stride);
+          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, kc_max,
+                                B_stride);
 
           // Peel off the first iteration of the kc loop: avoid
           // zero-initializing `partial` by writing into it.
@@ -1151,8 +1158,7 @@ class MMPerPackage {
         // At least one vector, otherwise DecompressAndZeroPad will add
         // padding, which might overwrite neighboring tasks. Also a whole cache
         // line to avoid false sharing.
-        const size_t multiple_K =
-            HWY_MAX(NBF, Allocator::LineBytes() / sizeof(BF16));
+        const size_t multiple_K = HWY_MAX(NBF, line_bytes_ / sizeof(BF16));
 
         args_.env->parallel.ForNP(
             all_K, multiple_K, inner_tasks, pkg_idx_,
@@ -1170,6 +1176,7 @@ class MMPerPackage {
   // Autotuning wrapper for `DoDecompressA`.
   template <typename TA>
   HWY_INLINE RowPtrBF DecompressA(const ConstMat<TA>& A) const {
+    const Allocator2& allocator = args_.env->ctx.allocator;
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
@@ -1177,7 +1184,8 @@ class MMPerPackage {
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
       if (HWY_LIKELY(A.extents.cols % NBF == 0)) {
         const BF16* pos = A.ptr + A.Row(0);
-        return RowPtrBF(const_cast<BF16*>(pos), A.extents.cols, A.Stride());
+        return RowPtrBF(allocator, const_cast<BF16*>(pos), A.extents.cols,
+                        A.Stride());
       }
     }
 
@@ -1251,6 +1259,7 @@ class MMPerPackage {
   const MMOrder order_;
   const size_t inner_tasks_;
   const MMOut out_;
+  const size_t line_bytes_;
 };  // MMPerPackage
 
 // Stateless, wraps member functions.
@@ -1308,6 +1317,7 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               const RowPtr<TC>& C) {
+  const Allocator2& allocator = env.ctx.allocator;
   const size_t M = A.Extents().rows;
   const size_t K = A.Extents().cols;
   const size_t N = B.Extents().rows;
@@ -1315,11 +1325,11 @@ HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
   intptr_t index = MMImpl::IndexOfKey(key, env.keys);
   // First time we see this shape/key.
   if (HWY_UNLIKELY(index < 0)) {
-    env.keys.Append(key);
+    env.keys.Append(key, allocator);
 
     size_t max_packages = MMParallel::kMaxPackages;
     // For low-batch, multiple sockets only help if binding is enabled.
-    if (!Allocator::ShouldBind() && M <= 4) {
+    if (!allocator.ShouldBind() && M <= 4) {
       max_packages = 1;
     }
 
@@ -1351,8 +1361,9 @@ HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
     HWY_ASSERT(N % kNR == 0);
 
     // Negligible CPU time.
-    tuner.SetCandidates(MMCandidates(M, K, N, sizeof(TC), MMKernel::kMaxMR, kNR,
-                                     per_key.ranges_np, env.print_config));
+    tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC),
+                                     MMKernel::kMaxMR, kNR, per_key.ranges_np,
+                                     env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();

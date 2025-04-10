@@ -146,6 +146,7 @@ cc_library(
         ":distortion",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -209,6 +210,7 @@ cc_library(
         "//:allocator",
         "//:basics",
         "//:common",
+        "//:mat",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:stats",
@@ -253,22 +255,6 @@ cc_library(
 )
 
 cc_binary(
-    name = "compress_weights",
-    srcs = ["compress_weights.cc"],
-    deps = [
-        ":compress",
-        ":io",
-        "//:allocator",
-        "//:args",
-        "//:common",
-        "//:tokenizer",
-        "//:weights",
-        "@highway//:hwy",
-        "@highway//:thread_pool",
-    ],
-)
-
-cc_binary(
     name = "blob_compare",
     srcs = ["blob_compare.cc"],
     deps = [
@@ -277,9 +263,11 @@ cc_binary(
         "//:allocator",
         "//:basics",
         "//:threading",
+        "//:threading_context",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -287,7 +275,6 @@ cc_binary(
     name = "migrate_weights",
     srcs = ["migrate_weights.cc"],
     deps = [
-        "//:app",
         "//:args",
         "//:benchmark_helper",
         "//:gemma_lib",

@@ -21,14 +21,16 @@
 #include <cmath>
 
 #include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/base.h"
 
 namespace gcpp {
 
 static inline HWY_MAYBE_UNUSED RowVectorBatch<float> CreateInvTimescale(
-    size_t qkv_dim, bool half_rope, double base_frequency = 10000.0) {
+    const Allocator2& allocator, size_t qkv_dim, bool half_rope,
+    double base_frequency = 10000.0) {
   const size_t rope_dim = half_rope ? qkv_dim / 2 : qkv_dim;
-  RowVectorBatch<float> inv_timescale(Extents2D(1, rope_dim / 2));
+  RowVectorBatch<float> inv_timescale(allocator, Extents2D(1, rope_dim / 2));
   for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
     const double freq_exponents =
         static_cast<double>(2 * dim) / static_cast<double>(rope_dim);

@@ -98,6 +98,10 @@ class ThreadingContext2 {
   // is expected to be called early in the program, before threading starts.
   static void SetArgs(const ThreadingArgs& args);
 
+  // Returns whether `Get()` has already been called, typically used to avoid
+  // calling `SetArgs` after that, because it would assert.
+  static bool IsInitialized();
+
   // Returns a reference to the singleton after initializing it if necessary.
   // When initializing, uses the args passed to `SetArgs`, or defaults.
   //

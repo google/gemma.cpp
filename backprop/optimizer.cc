@@ -18,9 +18,9 @@
 #include <cmath>
 
 #include "compression/compress.h"
-#include "gemma/common.h"
 #include "gemma/weights.h"
 #include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -39,11 +39,11 @@ class AdamUpdater {
 
   void operator()(const char* name, const MatPtr& grad, MatPtr& weights,
                   MatPtr& grad_m, MatPtr& grad_v) {
-    const float* HWY_RESTRICT g = grad.data<float>();
-    float* HWY_RESTRICT w = weights.data<float>();
-    float* HWY_RESTRICT m = grad_m.data<float>();
-    float* HWY_RESTRICT v = grad_v.data<float>();
-    for (size_t i = 0; i < grad.NumElements(); ++i) {
+    const float* HWY_RESTRICT g = grad.RowT<float>(0);
+    float* HWY_RESTRICT w = weights.RowT<float>(0);
+    float* HWY_RESTRICT m = grad_m.RowT<float>(0);
+    float* HWY_RESTRICT v = grad_v.RowT<float>(0);
+    for (size_t i = 0; i < grad.Extents().Area(); ++i) {
       m[i] *= beta1_;
       m[i] += cbeta1_ * g[i];
       v[i] *= beta2_;

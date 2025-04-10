@@ -23,6 +23,7 @@
 
 // IWYU pragma: begin_exports
 #include "util/allocator.h"
+#include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/topology.h"
 #include "hwy/base.h"  // HWY_ASSERT
@@ -37,7 +38,7 @@ namespace gcpp {
 
 // Page-aligned on NUMA systems so we can bind to a NUMA node. This also allows
 // moving because it is a typedef to `std::unique_ptr`.
-using PoolPtr = AlignedClassPtr<hwy::ThreadPool>;
+using PoolPtr = AlignedClassPtr2<hwy::ThreadPool>;
 
 // Creates a hierarchy of thread pools according to `BoundedTopology`: one with
 // a thread per enabled package; for each of those, one with a thread per
@@ -73,10 +74,8 @@ class NestedPools {
   // would cause huge slowdowns when spinning, the `BoundedSlice` arguments
   // only impose upper bounds on the number of detected packages and clusters
   // rather than defining the actual number of threads.
-  //
-  // Caller must have called `Allocator::Init` before this.
-  NestedPools(const BoundedTopology& topology, size_t max_threads = 0,
-              Tristate pin = Tristate::kDefault);
+  NestedPools(const BoundedTopology& topology, const Allocator2& allocator,
+              size_t max_threads = 0, Tristate pin = Tristate::kDefault);
 
   bool AllPinned() const { return all_pinned_; }
 
@@ -103,7 +102,7 @@ class NestedPools {
   }
 
   size_t NumPackages() const { return packages_.size(); }
-  hwy::ThreadPool& AllPackages() { return all_packages_[0]; }
+  hwy::ThreadPool& AllPackages() { return *all_packages_; }
   hwy::ThreadPool& AllClusters(size_t pkg_idx) {
     HWY_DASSERT(pkg_idx < NumPackages());
     return packages_[pkg_idx].AllClusters();
@@ -149,36 +148,36 @@ class NestedPools {
   class Package {
    public:
     Package() = default;  // for vector
-    Package(const BoundedTopology& topology, size_t pkg_idx,
-            size_t max_workers_per_package);
+    Package(const BoundedTopology& topology, const Allocator2& allocator,
+            size_t pkg_idx, size_t max_workers_per_package);
 
     size_t NumClusters() const { return clusters_.size(); }
     size_t MaxWorkersPerCluster() const {
       size_t max_workers_per_cluster = 0;
       for (const PoolPtr& cluster : clusters_) {
         max_workers_per_cluster =
-            HWY_MAX(max_workers_per_cluster, cluster[0].NumWorkers());
+            HWY_MAX(max_workers_per_cluster, cluster->NumWorkers());
       }
       return max_workers_per_cluster;
     }
     size_t TotalWorkers() const {
       size_t total_workers = 0;
       for (const PoolPtr& cluster : clusters_) {
-        total_workers += cluster[0].NumWorkers();
+        total_workers += cluster->NumWorkers();
       }
       return total_workers;
     }
 
-    hwy::ThreadPool& AllClusters() { return all_clusters_[0]; }
+    hwy::ThreadPool& AllClusters() { return *all_clusters_; }
     hwy::ThreadPool& Cluster(size_t cluster_idx) {
       HWY_DASSERT(cluster_idx < clusters_.size());
-      return clusters_[cluster_idx][0];
+      return *clusters_[cluster_idx];
     }
 
     void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-      all_clusters_[0].SetWaitMode(wait_mode);
+      all_clusters_->SetWaitMode(wait_mode);
       for (PoolPtr& cluster : clusters_) {
-        cluster[0].SetWaitMode(wait_mode);
+        cluster->SetWaitMode(wait_mode);
       }
     }
 
@@ -188,7 +187,7 @@ class NestedPools {
   };  // Package
 
   void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-    all_packages_[0].SetWaitMode(wait_mode);
+    all_packages_->SetWaitMode(wait_mode);
     for (Package& package : packages_) {
       package.SetWaitMode(wait_mode);
     }

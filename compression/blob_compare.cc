@@ -25,8 +25,10 @@
 #include "util/allocator.h"
 #include "util/basics.h"  // IndexRange
 #include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -202,15 +204,13 @@ void ReadAndCompareBlobs(const char* path1, const char* path2) {
   if (!CompareKeys(reader1, reader2)) return;
 
   // Single allocation, avoid initializing the memory.
-  BoundedTopology topology;
-  Allocator::Init(topology);
-  NestedPools pools(topology);
   const size_t total_bytes = TotalBytes(reader1) + TotalBytes(reader2);
   BytePtr all_blobs = hwy::AllocateAligned<uint8_t>(total_bytes);
   size_t pos = 0;
   BlobVec blobs1 = ReserveMemory(reader1, all_blobs, pos);
   BlobVec blobs2 = ReserveMemory(reader2, all_blobs, pos);
 
+  NestedPools& pools = ThreadingContext2::Get().pools;
   ReadBothBlobs(reader1, reader2, total_bytes, blobs1, blobs2, pools);
 
   CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, pools);

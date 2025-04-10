@@ -15,8 +15,8 @@
 
 // Shared between various frontends.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
-#define THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_ARGS_H_
+#define THIRD_PARTY_GEMMA_CPP_GEMMA_ARGS_H_
 
 #include <stddef.h>
 #include <stdio.h>
@@ -31,102 +31,9 @@
 #include "ops/matmul.h"
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
-#include "util/threading.h"
-#include "hwy/base.h"  // HWY_IS_ASAN
+#include "hwy/base.h"       // HWY_ABORT
 
 namespace gcpp {
-
-static inline const char* CompiledConfig() {
-  if (HWY_IS_ASAN) {
-    return "asan";
-  } else if (HWY_IS_MSAN) {
-    return "msan";
-  } else if (HWY_IS_TSAN) {
-    return "tsan";
-  } else if (HWY_IS_HWASAN) {
-    return "hwasan";
-  } else if (HWY_IS_UBSAN) {
-    return "ubsan";
-  } else if (HWY_IS_DEBUG_BUILD) {
-    return "dbg";
-  } else {
-    return "opt";
-  }
-}
-
-class AppArgs : public ArgsBase<AppArgs> {
- public:
-  AppArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
-  AppArgs() { Init(); };
-
-  int verbosity;
-
-  size_t max_threads;  // divided among the detected clusters
-  Tristate pin;        // pin threads?
-  Tristate spin;       // use spin waits?
-
-  // For BoundedSlice:
-  size_t skip_packages;
-  size_t max_packages;
-  size_t skip_clusters;
-  size_t max_clusters;
-  size_t skip_lps;
-  size_t max_lps;
-
-  std::string eot_line;
-
-  template <class Visitor>
-  void ForEach(const Visitor& visitor) {
-    visitor(verbosity, "verbosity", 1,
-            "Show verbose developer information\n    0 = only print generation "
-            "output\n    1 = standard user-facing terminal ui\n    2 = show "
-            "developer/debug info).\n    Default = 1.",
-            2);
-
-    // The exact meaning is more subtle: see the comment at NestedPools ctor.
-    visitor(max_threads, "num_threads", size_t{0},
-            "Maximum number of threads to use; default 0 = unlimited.", 2);
-    visitor(pin, "pin", Tristate::kDefault,
-            "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
-    visitor(spin, "spin", Tristate::kDefault,
-            "Use spin waits? -1 = auto, 0 = no, 1 = yes.", 2);
-    // These can be used to partition CPU sockets/packages and their
-    // clusters/CCXs across several program instances. The default is to use
-    // all available resources.
-    visitor(skip_packages, "skip_packages", size_t{0},
-            "Index of the first socket to use; default 0 = unlimited.", 2);
-    visitor(max_packages, "max_packages", size_t{0},
-            "Maximum number of sockets to use; default 0 = unlimited.", 2);
-    visitor(skip_clusters, "skip_clusters", size_t{0},
-            "Index of the first CCX to use; default 0 = unlimited.", 2);
-    visitor(max_clusters, "max_clusters", size_t{0},
-            "Maximum number of CCXs to use; default 0 = unlimited.", 2);
-    // These are only used when CPU topology is unknown.
-    visitor(skip_lps, "skip_lps", size_t{0},
-            "Index of the first LP to use; default 0 = unlimited.", 2);
-    visitor(max_lps, "max_lps", size_t{0},
-            "Maximum number of LPs to use; default 0 = unlimited.", 2);
-
-    visitor(
-        eot_line, "eot_line", std::string(""),
-        "End of turn line. "
-        "When you specify this, the prompt will be all lines "
-        "before the line where only the given string appears.\n    Default = "
-        "When a newline is encountered, that signals the end of the turn.",
-        2);
-  }
-};
-
-static inline BoundedTopology CreateTopology(const AppArgs& app) {
-  return BoundedTopology(BoundedSlice(app.skip_packages, app.max_packages),
-                         BoundedSlice(app.skip_clusters, app.max_clusters),
-                         BoundedSlice(app.skip_lps, app.max_lps));
-}
-static inline NestedPools CreatePools(const BoundedTopology& topology,
-                                      const AppArgs& app) {
-  Allocator::Init(topology);
-  return NestedPools(topology, app.max_threads, app.pin);
-}
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[], bool validate = true) {
@@ -154,15 +61,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
 
   // Returns error string or nullptr if OK.
   const char* Validate() {
-    if (!compressed_weights.path.empty()) {
-      if (weights.path.empty()) {
-        weights = compressed_weights;
-      } else {
-        return "Only one of --weights and --compressed_weights can be "
-               "specified. To create compressed weights use the "
-               "compress_weights tool.";
-      }
-    }
     if (weights.path.empty()) {
       return "Missing --weights flag, a file for the model weights.";
     }
@@ -250,6 +148,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
   InferenceArgs() { Init(); };
 
+  int verbosity;
+
   size_t max_generated_tokens;
 
   size_t prefill_tbatch_size;
@@ -260,6 +160,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool deterministic;
   bool multiturn;
   Path image_file;
+
+  std::string eot_line;
 
   // Returns error string or nullptr if OK.
   const char* Validate() const {
@@ -272,6 +174,12 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
+    visitor(verbosity, "verbosity", 1,
+            "Show verbose developer information\n    0 = only print generation "
+            "output\n    1 = standard user-facing terminal ui\n    2 = show "
+            "developer/debug info).\n    Default = 1.",
+            2);
+
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
 
@@ -291,6 +199,14 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "  Default : 0 (conversation "
             "resets every turn)");
     visitor(image_file, "image_file", Path(), "Image file to load.");
+
+    visitor(
+        eot_line, "eot_line", std::string(""),
+        "End of turn line. "
+        "When you specify this, the prompt will be all lines "
+        "before the line where only the given string appears.\n    Default = "
+        "When a newline is encountered, that signals the end of the turn.",
+        2);
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
@@ -317,4 +233,4 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
 }  // namespace gcpp
 
-#endif  // THIRD_PARTY_GEMMA_CPP_UTIL_APP_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_ARGS_H_

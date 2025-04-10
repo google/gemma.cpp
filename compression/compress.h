@@ -41,329 +41,14 @@
 // IWYU pragma: end_exports
 #include "gemma/configs.h"
 #include "util/allocator.h"
-#include "hwy/per_target.h"
+#include "util/mat.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 #if COMPRESS_STATS
 #include "compression/distortion.h"
 #include "hwy/stats.h"
 #endif
 
 namespace gcpp {
-
-// Base class for rank-1 or 2 tensors (vector or matrix).
-// Supports both dynamic and compile-time sizing.
-// Holds metadata and a non-owning pointer to the data, owned by the derived
-// MatStorageT class.
-// This class also provides easy conversion from/to a table of contents for a
-// BlobStore file, and a templated (compile-time) accessor for a 2-d array of
-// fixed inner dimension and type.
-// It is designed to be put in a vector, and has default copy and operator=, so
-// it is easy to read/write a blob_store file.
-class MatPtr : public IFields {
- public:
-  // Full constructor for dynamic sizing.
-  MatPtr(const std::string& name, Type type, size_t element_size, size_t rows,
-         size_t cols)
-      : name_(name),
-        type_(type),
-        element_size_(element_size),
-        num_elements_(rows * cols),
-        rows_(rows),
-        cols_(cols),
-        ptr_(nullptr) {
-    stride_ = cols;
-  }
-  // Default is to leave all fields default-initialized.
-  MatPtr() = default;
-  virtual ~MatPtr();
-
-  // Compatibility interface for CompressedArray.
-  // TODO: remove.
-  template <typename T>
-  T* data() {
-    return HWY_RCAST_ALIGNED(T*, ptr_);
-  }
-  template <typename T>
-  const T* data() const {
-    return HWY_RCAST_ALIGNED(const T*, ptr_);
-  }
-
-  const void* Ptr() const { return ptr_; }
-  void* Ptr() { return ptr_; }
-  // Sets the pointer from another MatPtr.
-  void SetPtr(const MatPtr& other) { ptr_ = other.ptr_; }
-
-  // Copying allowed as the metadata is small.
-  MatPtr(const MatPtr& other) = default;
-  MatPtr& operator=(const MatPtr& other) = default;
-
-  // Returns the name of the blob.
-  const char* Name() const override { return name_.c_str(); }
-  void SetName(const std::string& name) { name_ = name; }
-
-  // Returns the type of the blob.
-  Type GetType() const { return type_; }
-
-  // Returns the size of each element in bytes.
-  size_t ElementSize() const { return element_size_; }
-
-  // Returns the number of elements in the array.
-  size_t NumElements() const { return num_elements_; }
-
-  // Returns the number of bytes in the array.
-  size_t SizeBytes() const {
-    if (this->GetType() == TypeEnum<NuqStream>()) {
-      return NuqStream::PackedEnd(num_elements_);
-    }
-    return num_elements_ * element_size_;
-  }
-
-  // Returns the number of rows in the 2-d array (outer dimension).
-  size_t Rows() const { return rows_; }
-
-  // Returns the number of columns in the 2-d array (inner dimension).
-  size_t Cols() const { return cols_; }
-
-  Extents2D Extents() const { return Extents2D(rows_, cols_); }
-
-  // Currently same as cols, but may differ in the future. This is the offset by
-  // which to advance pointers to the next row.
-  size_t Stride() const { return stride_; }
-
-  // Decoded elements should be multiplied by this to restore their original
-  // range. This is required because SfpStream can only encode a limited range
-  // of magnitudes.
-  float scale() const { return scale_; }
-  void set_scale(float scale) { scale_ = scale; }
-
-  std::string LayerName(int layer) const {
-    std::string name = name_ + std::to_string(layer);
-    HWY_ASSERT(name.size() <= sizeof(hwy::uint128_t));
-    return name;
-  }
-
-  // Sets all data to zero.
-  void ZeroInit() {
-    if (ptr_ == nullptr)
-      HWY_ABORT("ptr_ is null on tensor %s\n", name_.c_str());
-    hwy::ZeroBytes(ptr_, SizeBytes());
-  }
-
-  void VisitFields(IFieldsVisitor& visitor) override {
-    visitor(name_);
-    visitor(type_);
-    visitor(element_size_);
-    visitor(num_elements_);
-    visitor(rows_);
-    visitor(cols_);
-    visitor(scale_);
-    visitor(stride_);
-  }
-
-  // Calls func on the upcasted type. Since MatPtr by design is not templated,
-  // here we provide a way to get to the derived type, provided that `Type()`
-  // is one of the strings returned by `TypeName()`.
-  template <class FuncT, typename... TArgs>
-  decltype(auto) CallUpcasted(FuncT& func, TArgs&&... args);
-
- protected:
-  // Arbitrary name for the array of preferably <= 16 characters.
-  std::string name_;
-  // Should be the result of TypeEnum<T> for CallUpcasted() to work.
-  Type type_;
-  // sizeof(T)
-  uint32_t element_size_ = 0;
-  // Number of elements in the array.
-  uint32_t num_elements_ = 0;  // In element_size units.
-  // Number of rows in the 2-d array (outer dimension).
-  uint32_t rows_ = 0;
-  // Number of columns in the 2-d array (inner dimension).
-  uint32_t cols_ = 0;
-  // Scaling to apply to each element.
-  float scale_ = 1.0f;
-  // Aligned data array. This is always a borrowed pointer. It should never be
-  // freed. The underlying memory is owned by a subclass or some external class
-  // and must outlive this object.
-  void* ptr_ = nullptr;
-
-  uint32_t stride_;
-};
-
-// MatPtrT adds a single template argument to MatPtr for an explicit type.
-// Use this class as a function argument where the type needs to be known.
-// Use MatPtr where the type does not need to be known.
-template <typename MatT>
-class MatPtrT : public MatPtr {
- public:
-  // Full constructor for dynamic sizing.
-  MatPtrT(const std::string& name, size_t rows, size_t cols)
-      : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), rows, cols) {}
-  // Construction from TensorIndex entry to remove duplication of sizes.
-  MatPtrT(const std::string& name, const TensorIndex& tensor_index)
-      : MatPtrT<MatT>(name, tensor_index.FindName(name)) {}
-  MatPtrT(const std::string& name, const TensorInfo* tensor)
-      : MatPtr(name, TypeEnum<MatT>(), sizeof(MatT), 0, 0) {
-    if (tensor == nullptr) {
-      cols_ = 0;
-      rows_ = 0;
-    } else {
-      cols_ = tensor->shape.back();
-      rows_ = 1;
-      if (tensor->cols_take_extra_dims) {
-        // The columns eat the extra dimensions.
-        rows_ = tensor->shape[0];
-        for (size_t i = 1; i < tensor->shape.size() - 1; ++i) {
-          cols_ *= tensor->shape[i];
-        }
-      } else {
-        // The rows eat the extra dimensions.
-        for (size_t i = 0; i < tensor->shape.size() - 1; ++i) {
-          rows_ *= tensor->shape[i];
-        }
-      }
-    }
-    stride_ = cols_;
-    num_elements_ = rows_ * cols_;
-  }
-
-  // Copying allowed as the metadata is small.
-  MatPtrT(const MatPtr& other) : MatPtr(other) {}
-  MatPtrT& operator=(const MatPtr& other) {
-    MatPtr::operator=(other);
-    return *this;
-  }
-  MatPtrT(const MatPtrT& other) = default;
-  MatPtrT& operator=(const MatPtrT& other) = default;
-
-  std::string CacheName(int layer = -1, char separator = ' ',
-                        int index = -1) const {
-    // Already used/retired: s, S, n, 1
-    const char prefix = hwy::IsSame<MatT, float>()       ? 'F'
-                        : hwy::IsSame<MatT, BF16>()      ? 'B'
-                        : hwy::IsSame<MatT, SfpStream>() ? '$'
-                        : hwy::IsSame<MatT, NuqStream>() ? '2'
-                                                         : '?';
-    std::string name = std::string(1, prefix) + name_;
-    if (layer >= 0 || index >= 0) {
-      name += '_';
-      if (layer >= 0) name += std::to_string(layer);
-      if (index >= 0) {
-        name += separator + std::to_string(index);
-      }
-    }
-    return name;
-  }
-
-  // Sets the number of elements in the array. For use when the number of
-  // elements is != rows * cols ONLY.
-  void SetNumElements(size_t num_elements) {
-    num_elements_ = CompressedArrayElements<MatT>(num_elements);
-  }
-
-  // 2-d Accessor for a specific type but with a dynamic inner dimension.
-  template <typename T = MatT>
-  const T& At(size_t row, size_t col) const {
-    size_t index = row * cols_ + col;
-    HWY_DASSERT(index < num_elements_);
-    return HWY_RCAST_ALIGNED(const T*, ptr_)[index];
-  }
-
-  // 1-d Accessor for a specific type.
-  // TODO: replace this with a Foreach(), or at least a ForEachRow().
-  const MatT& At(size_t index) const {
-    HWY_DASSERT(index < num_elements_);
-    return HWY_RCAST_ALIGNED(const MatT*, ptr_)[index];
-  }
-  MatT& At(size_t index) { return HWY_RCAST_ALIGNED(MatT*, ptr_)[index]; }
-
-  // Compatibility interface for CompressedArray.
-  // TODO: remove
-  template <typename T = MatT>
-  T* data() {
-    return HWY_RCAST_ALIGNED(T*, ptr_);
-  }
-  template <typename T = MatT>
-  const T* data() const {
-    return HWY_RCAST_ALIGNED(const T*, ptr_);
-  }
-  // The const accessor data_scale1() asserts (!) that the scale is 1.0f, so
-  // calling it means "I am sure the scale is 1 and therefore ignore the scale".
-  // A scale of 0 indicates that the scale has likely never been set, so is
-  // "implicitly 1".
-  const MatT* data_scale1() const {
-    HWY_ASSERT(scale() == 1.f);
-    return HWY_RCAST_ALIGNED(const MatT*, ptr_);
-  }
-};
-
-template <class FuncT, typename... TArgs>
-decltype(auto) MatPtr::CallUpcasted(FuncT& func, TArgs&&... args) {
-  if (type_ == TypeEnum<float>()) {
-    return func(dynamic_cast<MatPtrT<float>*>(this),
-                std::forward<TArgs>(args)...);
-  } else if (type_ == TypeEnum<BF16>()) {
-    return func(dynamic_cast<MatPtrT<BF16>*>(this),
-                std::forward<TArgs>(args)...);
-  } else if (type_ == TypeEnum<SfpStream>()) {
-    return func(dynamic_cast<MatPtrT<SfpStream>*>(this),
-                std::forward<TArgs>(args)...);
-  } else if (type_ == TypeEnum<NuqStream>()) {
-    return func(dynamic_cast<MatPtrT<NuqStream>*>(this),
-                std::forward<TArgs>(args)...);
-  } else {
-    HWY_ABORT("Type %d unknown.", type_);
-  }
-}
-
-// MatStorageT adds the actual data storage to MatPtrT.
-// TODO: use Extents2D instead of rows and cols.
-template <typename MatT>
-class MatStorageT : public MatPtrT<MatT> {
- public:
-  // Full constructor for dynamic sizing.
-  MatStorageT(const std::string& name, size_t rows, size_t cols)
-      : MatPtrT<MatT>(name, rows, cols) {
-    Allocate();
-  }
-  // Can copy the metadata, from a MatPtr, and allocate later.
-  MatStorageT(const MatPtr& other) : MatPtrT<MatT>(other) {}
-  ~MatStorageT() = default;
-
-  // Move-only because this contains a unique_ptr.
-  MatStorageT(const MatStorageT& other) = delete;
-  MatStorageT& operator=(const MatStorageT& other) = delete;
-  MatStorageT(MatStorageT&& other) = default;
-  MatStorageT& operator=(MatStorageT&& other) = default;
-
-  // Allocate the memory and copy the pointer to the MatPtr.
-  // num_elements is in elements. In the default (zero) case, it is computed
-  // from the current num_elements_ which was set by the constructor from the
-  // rows and cols.
-  void Allocate(size_t num_elements = 0) {
-    if (num_elements == 0) {
-      num_elements = hwy::DivCeil(this->SizeBytes(), sizeof(MatT));
-    } else {
-      this->num_elements_ = num_elements;
-    }
-    // Pad to allow overrunning the last row by 2 BF16 vectors, hence at most
-    // `2 * VectorBytes / sizeof(BF16)` elements of MatT.
-    const size_t padding = hwy::VectorBytes();
-    data_ = Allocator::Alloc<MatT>(num_elements + padding);
-    hwy::ZeroBytes(&data_[num_elements], padding * sizeof(MatT));
-    this->ptr_ = data_.get();
-  }
-
-  // Zeros the content.
-  void ZeroInit() {
-    HWY_ASSERT(data_ != nullptr);
-    hwy::ZeroBytes(data_.get(), this->SizeBytes());
-  }
-
- private:
-  AlignedPtr<MatT> data_;
-};
-
-// MatStorage allows heterogeneous tensors to be stored in a single vector.
-using MatStorage = MatStorageT<hwy::uint128_t>;
 
 // Table of contents for a blob store file. Full metadata, but not actual data.
 class BlobToc {
@@ -389,7 +74,7 @@ class BlobToc {
             blob.Read(hwy::Span<const uint32_t>(toc), consumed);
         prev_consumed = consumed;
         consumed = result.pos;
-        if (blob.NumElements() > 0) {
+        if (!blob.IsEmpty()) {
           AddToToc(blob);
         }
       }
@@ -503,10 +188,11 @@ class WriteToBlobStore {
   explicit WriteToBlobStore(hwy::ThreadPool& pool) : pool_(pool) {}
 
   template <typename Packed>
-  void operator()(MatPtrT<Packed>* compressed, const char* decorated_name) {
-    if (compressed->Ptr() == nullptr) return;
-    writer_.Add(MakeKey(decorated_name), compressed->Ptr(),
-                compressed->SizeBytes());
+  void operator()(MatPtrT<Packed>* compressed,
+                  const char* decorated_name) const {
+    if (!compressed->HasPtr()) return;
+    writer_.Add(MakeKey(decorated_name), compressed->Packed(),
+                compressed->PackedBytes());
     MatPtr renamed_tensor(*compressed);
     renamed_tensor.SetName(decorated_name);
     renamed_tensor.AppendTo(toc_);
@@ -519,9 +205,8 @@ class WriteToBlobStore {
 
   void AddScales(const float* scales, size_t len) {
     if (len) {
-      MatPtrT<float> scales_ptr("scales", 0, 1);
-      writer_.Add(MakeKey(scales_ptr.CacheName().c_str()), scales,
-                  len * sizeof(scales[0]));
+      MatPtrT<float> scales_ptr("scales", Extents2D(0, 1));
+      writer_.Add(MakeKey(scales_ptr.Name()), scales, len * sizeof(scales[0]));
     }
   }
 
@@ -554,9 +239,9 @@ class WriteToBlobStore {
   hwy::ThreadPool& pool_;
 
  private:
-  std::vector<uint32_t> toc_;
-  BlobWriter writer_;
-  std::vector<uint32_t> config_buffer_;
+  mutable std::vector<uint32_t> toc_;
+  mutable BlobWriter writer_;
+  mutable std::vector<uint32_t> config_buffer_;
 };
 
 // Functor called for each tensor, which loads them and their scaling factors
@@ -613,6 +298,7 @@ class ReadFromBlobStore {
   // Called for each tensor, enqueues read requests.
   void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
     if (file_toc_.Empty() || file_toc_.Contains(name)) {
+      HWY_ASSERT(tensors[0]);
       model_toc_.push_back(tensors[0]);
       file_keys_.push_back(name);
     }
@@ -622,15 +308,15 @@ class ReadFromBlobStore {
     for (size_t i = 0; i < len; ++i) {
       scales[i] = 1.0f;
     }
-    MatPtrT<float> scales_ptr("scales", 0, 1);
-    auto key = MakeKey(scales_ptr.CacheName().c_str());
+    MatPtrT<float> scales_ptr("scales", Extents2D(0, 1));
+    auto key = MakeKey(scales_ptr.Name());
     if (reader_.BlobSize(key) == 0) return 0;
     return reader_.Enqueue(key, scales, len * sizeof(scales[0]));
   }
 
   // Returns whether all tensors are successfully loaded from cache.
   BlobError ReadAll(hwy::ThreadPool& pool,
-                    std::vector<MatStorage>& model_memory) {
+                    std::vector<MatOwner>& model_memory) {
     // reader_ invalid or any Enqueue failed
     if (err_ != 0) return err_;
     // Setup the model_memory.
@@ -650,26 +336,27 @@ class ReadFromBlobStore {
         }
         std::string name = blob->Name();
         *blob = *toc_blob;
-        blob->SetName(name);
+        blob->SetName(name.c_str());
       }
-      model_memory.emplace_back(*blob);
-      model_memory.back().SetName(file_key);
+      model_memory.push_back(MatOwner());
     }
     // Allocate in parallel using the pool.
     pool.Run(0, model_memory.size(),
              [this, &model_memory](uint64_t task, size_t /*thread*/) {
-               model_memory[task].Allocate();
-               model_toc_[task]->SetPtr(model_memory[task]);
+               model_memory[task].AllocateFor(*model_toc_[task],
+                                              MatPadding::kPacked);
              });
     // Enqueue the read requests.
-    for (auto& blob : model_memory) {
-      err_ =
-          reader_.Enqueue(MakeKey(blob.Name()), blob.data(), blob.SizeBytes());
+    for (size_t b = 0; b < model_toc_.size(); ++b) {
+      err_ = reader_.Enqueue(MakeKey(file_keys_[b].c_str()),
+                             model_toc_[b]->RowT<uint8_t>(0),
+                             model_toc_[b]->PackedBytes());
       if (err_ != 0) {
-        fprintf(stderr,
-                "Failed to read blob %s (error %d) of size %zu x %zu x %zu\n",
-                blob.Name(), err_, blob.Rows(), blob.Cols(),
-                blob.ElementSize());
+        fprintf(
+            stderr,
+            "Failed to read blob %s (error %d) of size %zu x %zu, type %d\n",
+            file_keys_[b].c_str(), err_, model_toc_[b]->Rows(),
+            model_toc_[b]->Cols(), static_cast<int>(model_toc_[b]->GetType()));
         return err_;
       }
     }

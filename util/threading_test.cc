@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "util/threading.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
@@ -22,9 +20,9 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "util/allocator.h"
 #include "util/basics.h"
-#include "hwy/aligned_allocator.h"
+#include "util/threading_context.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/auto_tune.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -385,9 +383,7 @@ TEST(ThreadingTest, BenchJoin) {
     }
   };
 
-  BoundedTopology topology;
-  Allocator::Init(topology, true);
-  NestedPools pools(topology);
+  NestedPools& pools = ThreadingContext2::Get().pools;
   // Use last package because the main thread has been pinned to it.
   const size_t pkg_idx = pools.NumPackages() - 1;
 

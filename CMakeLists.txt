@@ -75,6 +75,7 @@ set(SOURCES
   gemma/common.h
   gemma/configs.cc
   gemma/configs.h
+  gemma/gemma_args.h
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
@@ -102,15 +103,17 @@ set(SOURCES
   paligemma/image.h
   util/allocator.cc
   util/allocator.h
-  util/app.h
-  util/args.h
   util/basics.h
+  util/mat.cc
+  util/mat.h
   util/test_util.h
   util/threading.cc
   util/threading.h
+  util/threading_context.cc
+  util/threading_context.h
   util/topology.cc
   util/topology.h
-  )
+)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
@@ -196,9 +199,6 @@ target_link_libraries(gemma_batch_bench libgemma GTest::Main hwy hwy_contrib nlo
 endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
-
-add_executable(compress_weights compression/compress_weights.cc)
-target_link_libraries(compress_weights libgemma hwy hwy_contrib)
 
 add_executable(migrate_weights compression/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)

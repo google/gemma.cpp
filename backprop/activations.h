@@ -20,24 +20,30 @@
 
 #include <vector>
 
-#include "compression/compress.h"  // MatStorageT
-#include "gemma/configs.h"         // ModelConfig
+#include "gemma/configs.h"  // ModelConfig
+#include "util/mat.h"       // MatStorageT
 
 namespace gcpp {
 
 template <typename T>
 struct ForwardLayer {
   ForwardLayer(const LayerConfig& config, size_t seq_len)
-      : input("input", seq_len, config.model_dim),
-        pre_att_rms_out("pre_att_rms_out", seq_len, config.model_dim),
-        qkv("qkv", seq_len * (config.heads + 2), config.qkv_dim),
-        att("att", seq_len * config.heads, seq_len),
-        att_out("att_out", seq_len * config.heads, config.qkv_dim),
-        att_post1("att_post1", seq_len, config.model_dim),
-        attention_out("attention_out", seq_len, config.model_dim),
-        bf_pre_ffw_rms_out("bf_pre_ffw_rms_out", seq_len, config.model_dim),
-        ffw_hidden("ffw_hidden", seq_len, config.ff_hidden_dim * 2),
-        ffw_hidden_gated("ffw_hidden_gated", seq_len, config.ff_hidden_dim),
+      : input(MakePacked<T>("input", seq_len, config.model_dim)),
+        pre_att_rms_out(
+            MakePacked<T>("pre_att_rms_out", seq_len, config.model_dim)),
+        qkv(MakePacked<T>("qkv", seq_len * (config.heads + 2), config.qkv_dim)),
+        att(MakePacked<T>("att", seq_len * config.heads, seq_len)),
+        att_out(
+            MakePacked<T>("att_out", seq_len * config.heads, config.qkv_dim)),
+        att_post1(MakePacked<T>("att_post1", seq_len, config.model_dim)),
+        attention_out(
+            MakePacked<T>("attention_out", seq_len, config.model_dim)),
+        bf_pre_ffw_rms_out(
+            MakePacked<T>("bf_preFF_rms_out", seq_len, config.model_dim)),
+        ffw_hidden(
+            MakePacked<T>("ffw_hidden", seq_len, config.ff_hidden_dim * 2)),
+        ffw_hidden_gated(
+            MakePacked<T>("ffw_hidden_gated", seq_len, config.ff_hidden_dim)),
         layer_config(config) {}
 
   MatStorageT<T> input;
@@ -56,12 +62,12 @@ struct ForwardLayer {
 template <typename T>
 struct ForwardPass {
   ForwardPass(const ModelConfig& config)
-      : final_layer_output("final_layer_output", config.seq_len,
-                           config.model_dim),
-        final_norm_output("final_norm_output", config.seq_len,
-                          config.model_dim),
-        logits("logits", config.seq_len, config.vocab_size),
-        probs("probs", config.seq_len, config.vocab_size),
+      : final_layer_output(
+            MakePacked<T>("fin_layer_out", config.seq_len, config.model_dim)),
+        final_norm_output(
+            MakePacked<T>("fin_norm_out", config.seq_len, config.model_dim)),
+        logits(MakePacked<T>("logits", config.seq_len, config.vocab_size)),
+        probs(MakePacked<T>("probs", config.seq_len, config.vocab_size)),
         weights_config(config) {
     for (const auto& layer_config : config.layer_configs) {
       layers.emplace_back(layer_config, config.seq_len);

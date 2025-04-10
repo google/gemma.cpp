@@ -25,7 +25,7 @@
 #include <cmath>      // std::abs
 #include <memory>
 
-#include "compression/compress.h"
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -37,6 +37,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
+#include "compression/compress-inl.h"
 #include "ops/matvec-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -48,18 +49,18 @@ using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
 
 FloatPtr SimpleMatVecAdd(const MatStorageT<float>& mat, const FloatPtr& vec,
                          const FloatPtr& add) {
-  FloatPtr raw_mat = hwy::AllocateAligned<float>(mat.NumElements());
+  const size_t num = mat.Rows() * mat.Cols();
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(num);
   FloatPtr out = hwy::AllocateAligned<float>(mat.Rows());
   HWY_ASSERT(raw_mat && out);
   const hn::ScalableTag<float> df;
-  DecompressAndZeroPad(df, MakeSpan(mat.data(), mat.NumElements()), 0,
-                       raw_mat.get(), mat.NumElements());
+  DecompressAndZeroPad(df, mat.Span(), 0, raw_mat.get(), num);
   for (size_t idx_row = 0; idx_row < mat.Rows(); idx_row++) {
     out[idx_row] = 0.0f;
     for (size_t idx_col = 0; idx_col < mat.Cols(); idx_col++) {
       out[idx_row] += raw_mat[mat.Cols() * idx_row + idx_col] * vec[idx_col];
     }
-    out[idx_row] *= mat.scale();
+    out[idx_row] *= mat.Scale();
     out[idx_row] += add[idx_row];
   }
   return out;
@@ -69,8 +70,10 @@ template <typename MatT, size_t kOuter, size_t kInner>
 std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
                                                 hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  auto mat = std::make_unique<MatStorageT<float>>("TestMat", kOuter, kInner);
-  FloatPtr raw_mat = hwy::AllocateAligned<float>(mat->NumElements());
+  const Extents2D extents(kOuter, kInner);
+  auto mat = std::make_unique<MatStorageT<float>>("TestMat", extents,
+                                                  MatPadding::kPacked);
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(extents.Area());
   HWY_ASSERT(raw_mat);
   const float scale = 1.0f / kInner;
   pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
@@ -80,8 +83,8 @@ std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
     }
   });
 
-  CompressScaled(raw_mat.get(), mat->NumElements(), ws, *mat, pool);
-  mat->set_scale(1.9f);  // Arbitrary value, different from 1.
+  CompressScaled(raw_mat.get(), extents.Area(), ws, *mat, pool);
+  mat->SetScale(1.9f);  // Arbitrary value, different from 1.
   return mat;
 }
 

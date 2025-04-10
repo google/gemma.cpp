@@ -128,7 +128,7 @@ static HWY_NOINLINE void SoftmaxVJP(const float* HWY_RESTRICT forward,
       HWY_ATTR { return hn::Mul(y, hn::Sub(v, offset)); });
 }
 
-static HWY_NOINLINE void RMSNormVJP(
+static HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormVJP(
     const float* HWY_RESTRICT weights, const float* HWY_RESTRICT x,
     const float* HWY_RESTRICT v, size_t model_dim, size_t num_tokens,
     float* HWY_RESTRICT grad_w, float* HWY_RESTRICT grad_x,
@@ -153,10 +153,9 @@ static HWY_NOINLINE void RMSNormVJP(
   }
 }
 
-static HWY_NOINLINE void InputEmbeddingVJP(
-    const float* weights, const std::vector<int>& prompt,
-    const float scaling, const float* HWY_RESTRICT v,
-    float* HWY_RESTRICT grad, size_t model_dim) {
+static HWY_NOINLINE HWY_MAYBE_UNUSED void InputEmbeddingVJP(
+    const float* weights, const std::vector<int>& prompt, const float scaling,
+    const float* HWY_RESTRICT v, float* HWY_RESTRICT grad, size_t model_dim) {
   HWY_ASSERT(!prompt.empty());
   for (size_t pos = 0; pos < prompt.size() - 1; ++pos) {
     int token = prompt[pos];
@@ -182,17 +181,18 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
       static_cast<float>(1.0 / sqrt(static_cast<double>(qkv_dim)));
   HWY_ASSERT(num_tokens <= seq_len);
 
-  MatMulVJP(weights.linear_w.data(), forward.ffw_hidden_gated.data(),
+  MatMulVJP(weights.linear_w.Packed(), forward.ffw_hidden_gated.Packed(),
             next_layer_grad, ff_hidden_dim, model_dim, num_tokens,
-            grad.linear_w.data(), backward.ffw_hidden_gated.data(), pool);
+            grad.linear_w.Packed(), backward.ffw_hidden_gated.Packed(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t hidden_offset = pos * ff_hidden_dim * 2;
-    const float* HWY_RESTRICT f_out = forward.ffw_hidden.data() + hidden_offset;
+    const float* HWY_RESTRICT f_out =
+        forward.ffw_hidden.Packed() + hidden_offset;
     const float* HWY_RESTRICT f_out_mul = f_out + ff_hidden_dim;
     const float* HWY_RESTRICT b_out_gated =
-        backward.ffw_hidden_gated.data() + pos * ff_hidden_dim;
-    float* HWY_RESTRICT b_out = backward.ffw_hidden.data() + hidden_offset;
+        backward.ffw_hidden_gated.Packed() + pos * ff_hidden_dim;
+    float* HWY_RESTRICT b_out = backward.ffw_hidden.Packed() + hidden_offset;
     float* HWY_RESTRICT b_out_mul = b_out + ff_hidden_dim;
     namespace hn = hwy::HWY_NAMESPACE;
     using DF = hn::ScalableTag<float>;
@@ -206,38 +206,39 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
     }
   }
 
-  MatMulVJP(weights.gating_einsum_w.data(), forward.bf_pre_ffw_rms_out.data(),
-            backward.ffw_hidden.data(), model_dim, ff_hidden_dim * 2,
-            num_tokens, grad.gating_einsum_w.data(),
-            backward.bf_pre_ffw_rms_out.data(), pool);
-  RMSNormVJP(weights.pre_ffw_norm_scale.data(), forward.attention_out.data(),
-             backward.bf_pre_ffw_rms_out.data(), model_dim, num_tokens,
-             grad.pre_ffw_norm_scale.data(), backward.attention_out.data(),
-             pool);
+  MatMulVJP(weights.gating_einsum_w.Packed(),
+            forward.bf_pre_ffw_rms_out.Packed(), backward.ffw_hidden.Packed(),
+            model_dim, ff_hidden_dim * 2, num_tokens,
+            grad.gating_einsum_w.Packed(), backward.bf_pre_ffw_rms_out.Packed(),
+            pool);
+  RMSNormVJP(
+      weights.pre_ffw_norm_scale.Packed(), forward.attention_out.Packed(),
+      backward.bf_pre_ffw_rms_out.Packed(), model_dim, num_tokens,
+      grad.pre_ffw_norm_scale.Packed(), backward.attention_out.Packed(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     AddFrom(next_layer_grad + pos * model_dim,
-            backward.attention_out.data() + pos * model_dim, model_dim);
+            backward.attention_out.Packed() + pos * model_dim, model_dim);
   }
 
-  backward.qkv.ZeroInit();
+  ZeroInit(backward.qkv);
 
-  MultiHeadMatMulVJP(weights.attn_vec_einsum_w.data(), forward.att_out.data(),
-                     backward.attention_out.data(), heads, qkv_dim, model_dim,
-                     num_tokens, grad.attn_vec_einsum_w.data(),
-                     backward.att_out.data(), pool);
+  MultiHeadMatMulVJP(
+      weights.attn_vec_einsum_w.Packed(), forward.att_out.Packed(),
+      backward.attention_out.Packed(), heads, qkv_dim, model_dim, num_tokens,
+      grad.attn_vec_einsum_w.Packed(), backward.att_out.Packed(), pool);
 
   for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       const size_t aoffset = head * seq_len + pos * heads * seq_len;
-      const float* HWY_RESTRICT f_head_att = forward.att.data() + aoffset;
+      const float* HWY_RESTRICT f_head_att = forward.att.Packed() + aoffset;
       const float* HWY_RESTRICT b_att_out =
-          backward.att_out.data() + (pos * heads + head) * qkv_dim;
-      float* HWY_RESTRICT b_head_att = backward.att.data() + aoffset;
+          backward.att_out.Packed() + (pos * heads + head) * qkv_dim;
+      float* HWY_RESTRICT b_head_att = backward.att.Packed() + aoffset;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         const size_t v2offs = (pos2 * (heads + 2) + heads + 1) * qkv_dim;
-        const float* HWY_RESTRICT f_v2 = forward.qkv.data() + v2offs;
-        float* HWY_RESTRICT b_v2 = backward.qkv.data() + v2offs;
+        const float* HWY_RESTRICT f_v2 = forward.qkv.Packed() + v2offs;
+        float* HWY_RESTRICT b_v2 = backward.qkv.Packed() + v2offs;
         b_head_att[pos2] = Dot(b_att_out, f_v2, qkv_dim);
         MulByConstAndAdd(f_head_att[pos2], b_att_out, b_v2, qkv_dim);
       }
@@ -247,8 +248,8 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
   for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       const size_t aoffset = head * seq_len + pos * heads * seq_len;
-      const float* HWY_RESTRICT f_head_att = forward.att.data() + aoffset;
-      float* HWY_RESTRICT b_head_att = backward.att.data() + aoffset;
+      const float* HWY_RESTRICT f_head_att = forward.att.Packed() + aoffset;
+      float* HWY_RESTRICT b_head_att = backward.att.Packed() + aoffset;
       SoftmaxVJP(f_head_att, b_head_att, pos + 1);
     }
   }
@@ -257,13 +258,13 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       const size_t qoffs = (pos * (heads + 2) + head) * qkv_dim;
       const size_t aoffs = head * seq_len + pos * heads * seq_len;
-      const float* HWY_RESTRICT f_q = forward.qkv.data() + qoffs;
-      const float* HWY_RESTRICT b_head_att = backward.att.data() + aoffs;
-      float* HWY_RESTRICT b_q = backward.qkv.data() + qoffs;
+      const float* HWY_RESTRICT f_q = forward.qkv.Packed() + qoffs;
+      const float* HWY_RESTRICT b_head_att = backward.att.Packed() + aoffs;
+      float* HWY_RESTRICT b_q = backward.qkv.Packed() + qoffs;
       for (size_t pos2 = 0; pos2 <= pos; ++pos2) {
         const size_t k2offs = (pos2 * (heads + 2) + heads) * qkv_dim;
-        const float* HWY_RESTRICT f_k2 = forward.qkv.data() + k2offs;
-        float* HWY_RESTRICT b_k2 = backward.qkv.data() + k2offs;
+        const float* HWY_RESTRICT f_k2 = forward.qkv.Packed() + k2offs;
+        float* HWY_RESTRICT b_k2 = backward.qkv.Packed() + k2offs;
         MulByConstAndAdd(b_head_att[pos2], f_k2, b_q, qkv_dim);
         MulByConstAndAdd(b_head_att[pos2], f_q, b_k2, qkv_dim);
       }
@@ -272,28 +273,30 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
 
   for (int pos = 0; pos < static_cast<int>(num_tokens); ++pos) {
     float* HWY_RESTRICT b_kv =
-        backward.qkv.data() + (pos * (heads + 2) + heads) * qkv_dim;
+        backward.qkv.Packed() + (pos * (heads + 2) + heads) * qkv_dim;
     Rope(b_kv, qkv_dim, inv_timescale.Const(), -pos);
   }
 
   for (size_t head = 0; head < heads; ++head) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
       float* HWY_RESTRICT b_q =
-          backward.qkv.data() + (pos * (heads + 2) + head) * qkv_dim;
+          backward.qkv.Packed() + (pos * (heads + 2) + head) * qkv_dim;
       MulByConst(query_scale, b_q, qkv_dim);
       Rope(b_q, qkv_dim, inv_timescale.Const(), -pos);
     }
   }
 
-  MatMulVJP(weights.qkv_einsum_w.data(), forward.pre_att_rms_out.data(),
-            backward.qkv.data(), model_dim, (heads + 2) * qkv_dim, num_tokens,
-            grad.qkv_einsum_w.data(), backward.pre_att_rms_out.data(), pool);
-  RMSNormVJP(weights.pre_attention_norm_scale.data(), forward.input.data(),
-             backward.pre_att_rms_out.data(), model_dim, num_tokens,
-             grad.pre_attention_norm_scale.data(), backward.input.data(), pool);
+  MatMulVJP(weights.qkv_einsum_w.Packed(), forward.pre_att_rms_out.Packed(),
+            backward.qkv.Packed(), model_dim, (heads + 2) * qkv_dim, num_tokens,
+            grad.qkv_einsum_w.Packed(), backward.pre_att_rms_out.Packed(),
+            pool);
+  RMSNormVJP(weights.pre_attention_norm_scale.Packed(), forward.input.Packed(),
+             backward.pre_att_rms_out.Packed(), model_dim, num_tokens,
+             grad.pre_attention_norm_scale.Packed(), backward.input.Packed(),
+             pool);
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    AddFrom(backward.attention_out.data() + pos * model_dim,
-            backward.input.data() + pos * model_dim, model_dim);
+    AddFrom(backward.attention_out.Packed() + pos * model_dim,
+            backward.input.Packed() + pos * model_dim, model_dim);
   }
 }
 
@@ -353,47 +356,48 @@ void CrossEntropyLossBackwardPassInl(const Prompt& prompt,
   HWY_DASSERT(prompt.context_size < prompt.tokens.size());
   const size_t num_tokens = prompt.tokens.size() - 1;
 
-  CrossEntropyLossGrad(forward.probs.data(), backward.logits.data(), prompt,
+  CrossEntropyLossGrad(forward.probs.Packed(), backward.logits.Packed(), prompt,
                        kVocabSize);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
-    SoftmaxVJP(forward.probs.data() + pos * kVocabSize,
-               backward.logits.data() + pos * kVocabSize,
-               kVocabSize);
+    SoftmaxVJP(forward.probs.Packed() + pos * kVocabSize,
+               backward.logits.Packed() + pos * kVocabSize, kVocabSize);
   }
 
   if (config.final_cap > 0.0f) {
     for (size_t pos = 0; pos < num_tokens; ++pos) {
-      SoftcapVJP(config.final_cap, forward.logits.data() + pos * kVocabSize,
-                 backward.logits.data() + pos * kVocabSize, kVocabSize);
+      SoftcapVJP(config.final_cap, forward.logits.Packed() + pos * kVocabSize,
+                 backward.logits.Packed() + pos * kVocabSize, kVocabSize);
     }
   }
 
-  MatMulVJP(weights.embedder_input_embedding.data(),
-            forward.final_norm_output.data(), backward.logits.data(), model_dim,
-            kVocabSize, num_tokens, grad.embedder_input_embedding.data(),
-            backward.final_norm_output.data(), pool);
+  MatMulVJP(weights.embedder_input_embedding.Packed(),
+            forward.final_norm_output.Packed(), backward.logits.Packed(),
+            model_dim, kVocabSize, num_tokens,
+            grad.embedder_input_embedding.Packed(),
+            backward.final_norm_output.Packed(), pool);
 
-  RMSNormVJP(weights.final_norm_scale.data(), forward.final_layer_output.data(),
-             backward.final_norm_output.data(), model_dim, num_tokens,
-             grad.final_norm_scale.data(), backward.final_layer_output.data(),
-             pool);
+  RMSNormVJP(weights.final_norm_scale.Packed(),
+             forward.final_layer_output.Packed(),
+             backward.final_norm_output.Packed(), model_dim, num_tokens,
+             grad.final_norm_scale.Packed(),
+             backward.final_layer_output.Packed(), pool);
 
   for (int layer = static_cast<int>(kLayers) - 1; layer >= 0; --layer) {
     auto layer_config = config.layer_configs[layer];
     // TODO(szabadka) Implement Griffin layer vjp.
     HWY_ASSERT(layer_config.type == LayerAttentionType::kGemma);
     float* next_layer_grad = layer + 1 < kLayers
-                             ? backward.layers[layer + 1].input.data()
-                             : backward.final_layer_output.data();
+                                 ? backward.layers[layer + 1].input.Packed()
+                                 : backward.final_layer_output.Packed();
     LayerVJP(*weights.GetLayer(layer), forward.layers[layer], next_layer_grad,
              num_tokens, *grad.GetLayer(layer), backward.layers[layer],
              inv_timescale, pool);
   }
 
-  InputEmbeddingVJP(weights.embedder_input_embedding.data(), prompt.tokens,
-                    kEmbScaling, backward.layers[0].input.data(),
-                    grad.embedder_input_embedding.data(), model_dim);
+  InputEmbeddingVJP(weights.embedder_input_embedding.Packed(), prompt.tokens,
+                    kEmbScaling, backward.layers[0].input.Packed(),
+                    grad.embedder_input_embedding.Packed(), model_dim);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

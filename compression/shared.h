@@ -201,15 +201,24 @@ inline bool EnumValid(PromptWrapping type) {
 
 // Tensor types for loading weights. Note that not all types are supported as
 // weights for a model, but can be used for other purposes, such as types for
-// ModelWeightsPtrs. When adding a new type that is supported, also
+// `WeightsPtrs`. When adding a new type that is supported, also
 // update gemma.cc, weights.*, and add instantiations/new_one.cc.
 enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64, kU128 };
-constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
-                                        "nuq",     "f64", "c64",  "u128"};
+static constexpr const char* kTypeStrings[] = {
+    "unknown", "f32", "bf16", "sfp", "nuq", "f64", "c64", "u128"};
+static constexpr size_t kNumTypes =
+    sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
+static constexpr size_t kTypeBits[] = {0,
+                                       8 * sizeof(float),
+                                       8 * sizeof(BF16),
+                                       8 * sizeof(SfpStream),
+                                       4 /* NuqStream, actually 4.5 */,
+                                       8 * sizeof(double),
+                                       8 * sizeof(std::complex<double>),
+                                       8 * sizeof(hwy::uint128_t)};
 
-inline bool EnumValid(Type type) {
-  return static_cast<int>(type) >= 0 &&
-         static_cast<int>(type) <= static_cast<int>(Type::kU128);
+static inline bool EnumValid(Type type) {
+  return static_cast<size_t>(type) < kNumTypes;
 }
 
 // Returns a Type enum for the type of the template parameter.
@@ -236,10 +245,16 @@ Type TypeEnum() {
   }
 }
 
-// Returns a string name for the type of the template parameter.
+static inline size_t TypeBits(Type type) {
+  return kTypeBits[static_cast<int>(type)];
+}
+
+static inline const char* TypeName(Type type) {
+  return kTypeStrings[static_cast<int>(type)];
+}
 template <typename PackedT>
 const char* TypeName() {
-  return kTypeStrings[static_cast<int>(TypeEnum<PackedT>())];
+  return TypeName(TypeEnum<PackedT>());
 }
 
 template <typename Packed>
@@ -248,7 +263,9 @@ constexpr bool IsCompressed() {
 }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
-// which must not be zero.
+// which must not be zero. This is only intended to support the extra tables
+// required for NUQ. `capacity` includes any padding and is `rows * stride`.
+// Deprecated, replaced by fixup within `MatPtr`. Only used by tests.
 template <typename Packed>
 constexpr size_t CompressedArrayElements(size_t capacity) {
   if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
