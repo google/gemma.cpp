@@ -115,6 +115,17 @@ set(SOURCES
   util/topology.h
 )
 
+# Add C API sources only when building DLL
+if(BUILD_GEMMA_DLL)
+  list(APPEND SOURCES
+    gemma/context.h
+    gemma/context.cc
+    gemma/c_api.h
+    gemma/c_api.cc
+  )
+  message(STATUS "Including C API files for DLL build")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
 endif()
@@ -133,6 +144,33 @@ target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 install(TARGETS libgemma DESTINATION lib)
+
+# Shared Library Target for C# interop
+if(BUILD_GEMMA_DLL)
+    add_library(gemma_shared SHARED ${SOURCES})
+set_property(TARGET gemma_shared PROPERTY CXX_STANDARD 17)
+set_target_properties(gemma_shared PROPERTIES 
+    PREFIX ""
+    OUTPUT_NAME "gemma"
+)
+set_property(TARGET gemma_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_include_directories(gemma_shared PUBLIC ./)
+target_link_libraries(gemma_shared PRIVATE 
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy_contrib>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece-static>
+)
+target_include_directories(gemma_shared PUBLIC ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(gemma_shared 
+    PRIVATE 
+    GEMMA_EXPORTS
+    $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>
+)
+target_compile_options(gemma_shared PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+install(TARGETS gemma_shared DESTINATION lib)
+install(FILES gemma/c_api.h DESTINATION include/gemma)
+install(FILES gemma/GemmaInterop.cs DESTINATION include/gemma)
+endif()
 
 # Executable Target
 
