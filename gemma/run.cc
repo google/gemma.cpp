@@ -27,13 +27,14 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
-#include "gemma/gemma_args.h"  // LoaderArgs
-#include "ops/matmul.h"        // MatMulEnv
-#include "paligemma/image.h"
-#include "util/args.h"  // HasHelp
-#include "util/threading_context.h"
+#include "gemma/gemma_args.h"
+#include "hwy/base.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
+#include "ops/matmul.h"  // MatMulEnv
+#include "paligemma/image.h"
+#include "util/args.h"  // HasHelp
+#include "util/threading.h"
 
 #if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
 #error "Please update to version 1.2 of github.com/google/highway."
@@ -165,6 +166,16 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       continue;
     }
 
+    // Wrap, tokenize and maybe log prompt tokens.
+    std::vector<int> prompt = WrapAndTokenize(model.Tokenizer(), model.Info(),
+                                              abs_pos, prompt_string);
+    prompt_size = prompt.size();
+    if constexpr (kVerboseLogTokens) {
+      for (int i = 0; i < prompt_size; ++i) {
+        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
+      }
+    }
+
     // Set up runtime config.
     TimingInfo timing_info = {.verbosity = inference.verbosity};
     RuntimeConfig runtime_config = {.gen = &gen,
@@ -238,6 +249,22 @@ void Run(ThreadingArgs& threading, LoaderArgs& loader,
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 
+  if (!threading.prompt.empty()) {
+    std::vector<int> prompt =
+        WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
+                        0, threading.prompt);
+
+    TimingInfo timing_info = {.verbosity = inference.verbosity};
+    RuntimeConfig runtime_config = {.gen = nullptr,  // Use default generator
+                                    .verbosity = inference.verbosity,
+                                    .use_spinning = threading.spin};
+    inference.CopyTo(runtime_config);
+
+    model.Generate(runtime_config, prompt, 0, 0, kv_cache, timing_info);
+    std::cout << "\n";
+    return;  // Exit after generating response
+  }
+
   if (inference.verbosity >= 1) {
     std::string instructions =
         "*Usage*\n"
@@ -280,6 +307,7 @@ int main(int argc, char** argv) {
 
     if (gcpp::HasHelp(argc, argv)) {
       std::cerr << gcpp::kAsciiArtBanner;
+
       gcpp::ShowHelp(threading, loader, inference);
       return 0;
     }
