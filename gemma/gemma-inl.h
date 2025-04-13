@@ -943,7 +943,7 @@ HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
 
 template <typename Weights, typename T>
 HWY_NOINLINE void ResidualConnection(
-    size_t num_interleaved, T* HWY_RESTRICT other, T* HWY_RESTRICT x,
+    size_t num_interleaved, const T* HWY_RESTRICT other, T* HWY_RESTRICT x,
     const LayerWeightsPtrs<Weights>* layer_weights, bool is_attention) {
   // ResidualType::Add
   AddFromBatched(num_interleaved, other, x,
