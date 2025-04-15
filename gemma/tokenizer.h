@@ -81,17 +81,6 @@ class GemmaChatTemplate {
   std::vector<int> vlm_eoi_;
 };
 
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
-                                 const std::string& prompt);
-
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
-                                 const std::string& prompt,
-                                 size_t image_batch_size);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_TOKENIZER_H_

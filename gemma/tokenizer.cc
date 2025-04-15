@@ -179,44 +179,4 @@ std::vector<int> GemmaChatTemplate::WrapVLM(const std::vector<int>& text_part,
   return out;
 }
 
-// Text
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
-                                 const std::string& prompt) {
-  std::vector<int> tokens;
-  HWY_ASSERT(tokenizer.Encode(prompt, &tokens));
-
-  switch (info.wrapping) {
-    case PromptWrapping::GEMMA_IT:
-    case PromptWrapping::GEMMA_VLM:
-      return chat_template.Apply(pos, tokens);
-    default:
-      if (pos == 0) {
-        tokens.insert(tokens.cbegin(), BOS_ID);
-      }
-      return tokens;
-  }
-}
-
-// Vision
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
-                                 const std::string& prompt,
-                                 size_t image_batch_size) {
-  std::vector<int> text_part;
-  HWY_ASSERT(tokenizer.Encode(prompt, &text_part));
-  switch (info.wrapping) {
-    case PromptWrapping::PALIGEMMA:
-      HWY_ASSERT(pos == 0);
-      return chat_template.WrapPali(text_part, image_batch_size);
-    case PromptWrapping::GEMMA_VLM:
-      return chat_template.Apply(
-          pos, chat_template.WrapVLM(text_part, image_batch_size));
-    default:
-      HWY_ASSERT_M(false, "Current variant does not support vision prompt.");
-  }
-}
-
 }  // namespace gcpp

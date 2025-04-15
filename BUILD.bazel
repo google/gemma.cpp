@@ -389,10 +389,12 @@ cc_library(
         "gemma/instantiations/f32.cc",
         "gemma/instantiations/nuq.cc",
         "gemma/instantiations/sfp.cc",
+        "gemma/prompt_utils.cc",
     ],
     hdrs = [
         "gemma/activations.h",
         "gemma/gemma.h",
+        "gemma/prompt_utils.h",
     ],
     exec_properties = {
         # Avoid linker OOMs when building with sanitizer instrumentation.
@@ -422,6 +424,40 @@ cc_library(
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "gemma_shared_lib",
+    srcs = [
+        "gemma/c_api.cc",
+        "gemma/context.cc",
+    ],
+    hdrs = [
+        "gemma/c_api.h",
+        "gemma/context.h",
+    ],
+    exec_properties = {
+        # Avoid linker OOMs when building with sanitizer instrumentation.
+        "mem": "28g",
+    },
+    deps = [
+        ":allocator",
+        ":basics",
+        ":benchmark_helper",
+        ":common",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":ops",
+        ":threading",
+        ":threading_context",
+        ":tokenizer",
+        ":weights",
+        "//compression:shared",
+        "//paligemma:image",
+        "@highway//:hwy",
     ],
 )
 

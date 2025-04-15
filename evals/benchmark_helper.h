@@ -25,6 +25,7 @@
 
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
+#include "gemma/prompt_utils.h"
 #include "ops/matmul.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
