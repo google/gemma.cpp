@@ -2,3 +2,6 @@
 bazel-*/
 build-*/
 python/*/__pycache__
+build/
+*.sbs
+*.spm
