@@ -20,7 +20,9 @@
 #include "compression/shared.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
+#include "gemma/configs.h"
 #include "gemma/gemma.h"
+#include "util/allocator.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -50,17 +52,18 @@ class PaliGemmaTest : public ::testing::Test {
 
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
-  Gemma& model = *(s_env->GetGemma());
-  image_tokens_ =
-      ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
-                            model.GetModelConfig().model_dim));
+  const Allocator2& allocator = s_env->Env().ctx.allocator;
+  Gemma& gemma = *(s_env->GetGemma());
+  image_tokens_ = ImageTokens(
+      allocator, Extents2D(gemma.GetModelConfig().vit_config.seq_len,
+                           gemma.GetModelConfig().model_dim));
   Image image;
-  HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
+  HWY_ASSERT(gemma.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
-  const size_t image_size = model.GetModelConfig().vit_config.image_size;
+  const size_t image_size = gemma.GetModelConfig().vit_config.image_size;
   image.Resize(image_size, image_size);
   RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
-  model.GenerateImageTokens(runtime_config, image, image_tokens_);
+  gemma.GenerateImageTokens(runtime_config, image, image_tokens_);
 }
 
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
@@ -124,7 +127,7 @@ TEST_F(PaliGemmaTest, General) {
   };
   const char* (*qa)[2];
   size_t num;
-  switch (s_env->GetGemma()->Info().model) {
+  switch (s_env->GetGemma()->GetModelConfig().model) {
     case Model::PALIGEMMA_224:
       qa = kQA_3B_mix_224;
       num = sizeof(kQA_3B_mix_224) / sizeof(kQA_3B_mix_224[0]);

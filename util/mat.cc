@@ -18,8 +18,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <random>
+#include <vector>
+
 #include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/per_target.h"  // VectorBytes
 #include "hwy/profiler.h"
 
@@ -27,8 +31,11 @@ namespace gcpp {
 
 void CopyMat(const MatPtr& from, MatPtr& to) {
   PROFILER_FUNC;
+  HWY_ASSERT_M(from.HasPtr() && to.HasPtr(), to.Name());
   HWY_ASSERT(to.Rows() == from.Rows() && to.Cols() == from.Cols());
   HWY_ASSERT(to.GetType() == from.GetType());
+  to.SetScale(from.Scale());
+
   if (to.IsPacked() && from.IsPacked()) {
     HWY_ASSERT(to.PackedBytes() == from.PackedBytes());
     hwy::CopyBytes(from.Packed(), to.Packed(), to.PackedBytes());
@@ -45,6 +52,8 @@ void CopyMat(const MatPtr& from, MatPtr& to) {
 void ZeroInit(MatPtr& mat) {
   PROFILER_FUNC;
   HWY_ASSERT_M(mat.HasPtr(), mat.Name());
+  mat.SetScale(1.0f);
+
   if (mat.IsPacked()) {
     hwy::ZeroBytes(mat.Packed(), mat.PackedBytes());
     return;
@@ -52,6 +61,31 @@ void ZeroInit(MatPtr& mat) {
   const size_t row_bytes = mat.Cols() * mat.ElementBytes();
   for (size_t r = 0; r < mat.Rows(); ++r) {
     hwy::ZeroBytes(mat.RowT<uint8_t>(r), row_bytes);
+  }
+}
+
+void RandInit(MatPtr& mat, float stddev, std::mt19937& gen) {
+  PROFILER_FUNC;
+  HWY_ASSERT_M(mat.HasPtr(), mat.Name());
+  // Only generates float/double for use by backprop/.
+  HWY_ASSERT(mat.GetType() == Type::kF32 || mat.GetType() == Type::kF64);
+  mat.SetScale(1.0f);
+
+  std::normal_distribution<float> dist(0.0, stddev);
+  if (mat.GetType() == Type::kF32) {
+    for (size_t r = 0; r < mat.Rows(); ++r) {
+      float* HWY_RESTRICT row = mat.RowT<float>(r);
+      for (size_t c = 0; c < mat.Cols(); ++c) {
+        row[c] = dist(gen);
+      }
+    }
+  } else {
+    for (size_t r = 0; r < mat.Rows(); ++r) {
+      double* HWY_RESTRICT row = mat.RowT<double>(r);
+      for (size_t c = 0; c < mat.Cols(); ++c) {
+        row[c] = dist(gen);
+      }
+    }
   }
 }
 
@@ -84,6 +118,7 @@ static size_t Stride(const Allocator2& allocator, const MatPtr& mat,
 }
 
 void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
+  if (mat.GetType() == Type::kNUQ) padding = MatPadding::kPacked;
   const Allocator2& allocator = ThreadingContext2::Get().allocator;
   const size_t stride = Stride(allocator, mat, padding);
   const size_t num = mat.Rows() * stride;
@@ -97,4 +132,16 @@ void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
   storage_ = allocator.AllocBytes(padded_bytes);
   mat.SetPtr(storage_.get(), stride);
 }
+
+void MatOwners::AllocateFor(const std::vector<MatPtr*>& mats,
+                            MatPadding padding, hwy::ThreadPool& pool) {
+  const size_t start = owners_.size();
+  owners_.resize(start + mats.size());
+
+  // Allocate in parallel because faulting in large tensors is slow.
+  pool.Run(0, mats.size(), [&](uint64_t task, size_t /*thread*/) {
+    owners_[start + task].AllocateFor(*mats[task], padding);
+  });
+}
+
 }  // namespace gcpp

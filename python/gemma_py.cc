@@ -22,18 +22,16 @@
 
 #include <algorithm>
 #include <memory>
-#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "compression/shared.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
-#include "util/allocator.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
 
 namespace py = pybind11;
@@ -169,9 +167,10 @@ class GemmaModel {
   // Generate* will use this image. Throws an error for other models.
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
+    gcpp::Gemma& gemma = *(gemma_.GetGemma());
     const gcpp::Allocator2& allocator = gemma_.Env().ctx.allocator;
-    gcpp::Gemma& model = *(gemma_.GetGemma());
-    if (model.Info().wrapping != gcpp::PromptWrapping::PALIGEMMA) {
+    if (gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::PALIGEMMA &&
+        gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
       throw std::invalid_argument("Not a PaliGemma model.");
     }
     py::buffer_info buffer = image.request();
@@ -183,14 +182,14 @@ class GemmaModel {
     float* ptr = static_cast<float*>(buffer.ptr);
     gcpp::Image c_image;
     c_image.Set(height, width, ptr);
-    const size_t image_size = model.GetModelConfig().vit_config.image_size;
+    const size_t image_size = gemma.GetModelConfig().vit_config.image_size;
     c_image.Resize(image_size, image_size);
     image_tokens_ = gcpp::ImageTokens(
-        allocator, gcpp::Extents2D(model.GetModelConfig().vit_config.seq_len,
-                                   model.GetModelConfig().model_dim));
+        allocator, gcpp::Extents2D(gemma.GetModelConfig().vit_config.seq_len,
+                                   gemma.GetModelConfig().model_dim));
     gcpp::RuntimeConfig runtime_config = {.gen = &gemma_.MutableGen(),
                                           .verbosity = 0};
-    model.GenerateImageTokens(runtime_config, c_image, image_tokens_);
+    gemma.GenerateImageTokens(runtime_config, c_image, image_tokens_);
   }
 
   // Generates a response to the given prompt, using the last set image.
@@ -267,12 +266,12 @@ PYBIND11_MODULE(gemma, mod) {
                throw std::invalid_argument(err);
              }
              loader.weight_type_str = weight_type;
+             gcpp::ThreadingArgs threading;
+             threading.max_lps = max_threads;
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
-             gcpp::ThreadingArgs app;
-             app.max_threads = max_threads;
              auto gemma =
-                 std::make_unique<GemmaModel>(loader, inference, app);
+                 std::make_unique<GemmaModel>(loader, inference, threading);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }

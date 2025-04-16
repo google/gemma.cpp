@@ -92,6 +92,8 @@ cc_library(
         ":basics",
         ":threading",
         ":topology",
+        "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )
 
@@ -180,6 +182,7 @@ cc_library(
         "//compression:shared",
         "@highway//:hwy",
         "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -664,6 +667,7 @@ cc_test(
         ":mat",
         ":prompt",
         ":sampler",
+        ":threading_context",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:thread_pool",
