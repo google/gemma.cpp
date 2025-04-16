@@ -78,6 +78,18 @@ std::string GetPrompt(std::istream& input, int verbosity,
   return prompt_string;
 }
 
+// New GetPrompt function that accepts InferenceArgs
+std::string GetPrompt(const InferenceArgs& inference, int verbosity,
+                      size_t turn) {
+  // Check for command-line prompt first
+  if (!inference.prompt.empty()) {
+    return inference.prompt;
+  }
+
+  // Use the existing function for interactive mode
+  return GetPrompt(std::cin, verbosity, inference.eot_line);
+}
+
 // The main Read-Eval-Print Loop.
 void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                Gemma& model, KVCache& kv_cache) {
@@ -88,6 +100,9 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
 
   std::mt19937 gen;
   InitGenerator(inference, gen);
+
+  // Add flag to track non-interactive mode
+  bool non_interactive_mode = !inference.prompt.empty();
 
   const bool have_image = !inference.image_file.path.empty();
   Image image;
@@ -151,47 +166,30 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
 
     // Read prompt and handle special commands.
     std::string prompt_string =
-        GetPrompt(std::cin, inference.verbosity, inference.eot_line);
-    if (!std::cin) return;
+        GetPrompt(inference, inference.verbosity, abs_pos);
+
+    if (!std::cin && !non_interactive_mode) return;
+
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
-    if (prompt_string.size() >= 2 && prompt_string[0] == '%') {
+    if (!non_interactive_mode && prompt_string.size() >= 2 &&
+        prompt_string[0] == '%') {
       if (prompt_string[1] == 'q' || prompt_string[1] == 'Q') return;
       if (prompt_string[1] == 'c' || prompt_string[1] == 'C') {
         abs_pos = 0;
         continue;
       }
     }
-    if (prompt_string.empty()) {
+
+    if (!non_interactive_mode && prompt_string.empty()) {
       std::cout << "Use '%q' to quit.\n";
       continue;
     }
-
-    // Wrap, tokenize and maybe log prompt tokens.
-    std::vector<int> prompt = WrapAndTokenize(model.Tokenizer(), model.Info(),
-                                              abs_pos, prompt_string);
-    prompt_size = prompt.size();
-    if constexpr (kVerboseLogTokens) {
-      for (int i = 0; i < prompt_size; ++i) {
-        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
-      }
-    }
-
-    // Set up runtime config.
-    TimingInfo timing_info = {.verbosity = inference.verbosity};
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
-                                    .stream_token = stream_token,
-                                    .use_spinning = threading.spin};
-    inference.CopyTo(runtime_config);
-    size_t prefix_end = 0;
 
     std::vector<int> prompt;
     if (have_image) {
       prompt =
           WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
                           abs_pos, prompt_string, image_tokens.BatchSize());
-      runtime_config.image_tokens = &image_tokens;
-      prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.
       prefix_end = prompt_size;
@@ -209,6 +207,24 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       }
     }
 
+    // Set up runtime config.
+    TimingInfo timing_info = {.verbosity = inference.verbosity};
+    RuntimeConfig runtime_config = {.gen = &gen,
+                                    .verbosity = inference.verbosity,
+                                    .stream_token = stream_token,
+                                    .use_spinning = threading.spin};
+    inference.CopyTo(runtime_config);
+    size_t prefix_end = 0;
+
+    if (have_image) {
+      runtime_config.image_tokens = &image_tokens;
+      prompt_size = prompt.size();
+      // The end of the prefix for prefix-LM style attention in Paligemma.
+      prefix_end = prompt_size;
+      // We need to look at all the tokens for the prefix.
+      runtime_config.prefill_tbatch_size = prompt_size;
+    }
+
     // Generate until EOS or max_generated_tokens.
     if (inference.verbosity >= 1) {
       std::cerr << "\n[ Reading prompt ] " << std::flush;
@@ -216,6 +232,11 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     model.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache,
                    timing_info);
     std::cout << "\n\n";
+
+    // Break the loop if in non-interactive mode
+    if (non_interactive_mode) {
+      break;
+    }
 
     // Prepare for the next turn. Works only for PaliGemma.
     if (!inference.multiturn ||
@@ -249,22 +270,6 @@ void Run(ThreadingArgs& threading, LoaderArgs& loader,
   KVCache kv_cache =
       KVCache::Create(model.GetModelConfig(), inference.prefill_tbatch_size);
 
-  if (!threading.prompt.empty()) {
-    std::vector<int> prompt =
-        WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
-                        0, threading.prompt);
-
-    TimingInfo timing_info = {.verbosity = inference.verbosity};
-    RuntimeConfig runtime_config = {.gen = nullptr,  // Use default generator
-                                    .verbosity = inference.verbosity,
-                                    .use_spinning = threading.spin};
-    inference.CopyTo(runtime_config);
-
-    model.Generate(runtime_config, prompt, 0, 0, kv_cache, timing_info);
-    std::cout << "\n";
-    return;  // Exit after generating response
-  }
-
   if (inference.verbosity >= 1) {
     std::string instructions =
         "*Usage*\n"
@@ -286,10 +291,13 @@ void Run(ThreadingArgs& threading, LoaderArgs& loader,
     instructions += multiturn;
     instructions += examples;
 
-    std::cout << "\033[2J\033[1;1H"  // clear screen
-              << kAsciiArtBanner << "\n\n";
-    ShowConfig(threading, loader, inference);
-    std::cout << "\n" << instructions << "\n";
+    // Skip the banner and instructions in non-interactive mode
+    if (inference.prompt.empty()) {
+      std::cout << "\033[2J\033[1;1H"  // clear screen
+                << kAsciiArtBanner << "\n\n";
+      ShowConfig(threading, loader, inference);
+      std::cout << "\n" << instructions << "\n";
+    }
   }
 
   ReplGemma(threading, inference, model, kv_cache);
