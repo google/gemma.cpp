@@ -78,16 +78,15 @@ std::string GetPrompt(std::istream& input, int verbosity,
   return prompt_string;
 }
 
-// New GetPrompt function that accepts InferenceArgs
-std::string GetPrompt(const InferenceArgs& inference, int verbosity,
-                      size_t turn) {
-  // Check for command-line prompt first
+// Get prompt either from interactive input or command line
+std::string GetPrompt(const InferenceArgs& inference) {
+  // If prompt is provided via command line, use that
   if (!inference.prompt.empty()) {
     return inference.prompt;
   }
 
-  // Use the existing function for interactive mode
-  return GetPrompt(std::cin, verbosity, inference.eot_line);
+  // Otherwise get interactive prompt
+  return GetPrompt(std::cin, inference.verbosity, inference.eot_line);
 }
 
 // The main Read-Eval-Print Loop.
@@ -100,9 +99,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
 
   std::mt19937 gen;
   InitGenerator(inference, gen);
-
-  // Add flag to track non-interactive mode
-  bool non_interactive_mode = !inference.prompt.empty();
 
   const bool have_image = !inference.image_file.path.empty();
   Image image;
@@ -165,13 +161,12 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     tokens_generated_this_turn = 0;
 
     // Read prompt and handle special commands.
-    std::string prompt_string =
-        GetPrompt(inference, inference.verbosity, abs_pos);
+    std::string prompt_string = GetPrompt(inference);
 
-    if (!std::cin && !non_interactive_mode) return;
+    if (!std::cin && inference.prompt.empty()) return;
 
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
-    if (!non_interactive_mode && prompt_string.size() >= 2 &&
+    if (inference.prompt.empty() && prompt_string.size() >= 2 &&
         prompt_string[0] == '%') {
       if (prompt_string[1] == 'q' || prompt_string[1] == 'Q') return;
       if (prompt_string[1] == 'c' || prompt_string[1] == 'C') {
@@ -180,12 +175,27 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       }
     }
 
-    if (!non_interactive_mode && prompt_string.empty()) {
+    if (inference.prompt.empty() && prompt_string.empty()) {
       std::cout << "Use '%q' to quit.\n";
       continue;
     }
-
     std::vector<int> prompt;
+    size_t prompt_size = 0;
+    size_t prefix_end = 0;
+    if constexpr (kVerboseLogTokens) {
+      for (int i = 0; i < prompt_size; ++i) {
+        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
+      }
+    }
+
+    // Set up runtime config.
+    TimingInfo timing_info = {.verbosity = inference.verbosity};
+    RuntimeConfig runtime_config = {.gen = &gen,
+                                    .verbosity = inference.verbosity,
+                                    .stream_token = stream_token,
+                                    .use_spinning = threading.spin};
+    inference.CopyTo(runtime_config);
+
     if (have_image) {
       prompt =
           WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
@@ -200,21 +210,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                model.Info(), abs_pos, prompt_string);
       prompt_size = prompt.size();
     }
-
-    if constexpr (kVerboseLogTokens) {
-      for (int i = 0; i < prompt_size; ++i) {
-        fprintf(stderr, "DDD TOKEN %3d: %6d\n", i, prompt[i]);
-      }
-    }
-
-    // Set up runtime config.
-    TimingInfo timing_info = {.verbosity = inference.verbosity};
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
-                                    .stream_token = stream_token,
-                                    .use_spinning = threading.spin};
-    inference.CopyTo(runtime_config);
-    size_t prefix_end = 0;
 
     if (have_image) {
       runtime_config.image_tokens = &image_tokens;
@@ -234,7 +229,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     std::cout << "\n\n";
 
     // Break the loop if in non-interactive mode
-    if (non_interactive_mode) {
+    if (inference.prompt.empty()) {
       break;
     }
 
