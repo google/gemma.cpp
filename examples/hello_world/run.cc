@@ -25,6 +25,7 @@
 
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"  // LoaderArgs
+#include "gemma/prompt_utils.h"  // WrapAndTokenize
 #include "gemma/tokenizer.h"
 #include "util/args.h"
 #include "util/threading_context.h"

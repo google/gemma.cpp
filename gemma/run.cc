@@ -28,6 +28,7 @@
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
 #include "gemma/gemma_args.h"  // LoaderArgs
+#include "gemma/prompt_utils.h"  // WrapAndTokenize
 #include "ops/matmul.h"        // MatMulEnv
 #include "paligemma/image.h"
 #include "util/args.h"  // HasHelp
