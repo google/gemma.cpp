@@ -34,7 +34,6 @@
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
 #include "util/args.h"  // HasHelp
-#include "util/threading.h"
 
 #if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
 #error "Please update to version 1.2 of github.com/google/highway."
