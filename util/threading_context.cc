@@ -18,6 +18,9 @@
 #include <memory>
 #include <mutex>  // NOLINT
 
+#include "hwy/base.h"  // HWY_ASSERT, HWY_UNLIKELY
+#include "hwy/profiler.h"
+
 namespace gcpp {
 
 static ThreadingArgs s_args;
@@ -41,6 +44,7 @@ static std::mutex s_ctx_mutex;
 }
 
 /*static*/ ThreadingContext2& ThreadingContext2::Get() {
+  PROFILER_FUNC;
   // We do not bother with double-checked locking because it requires an
   // atomic pointer, but we prefer to use unique_ptr for simplicity. Also,
   // callers can cache the result and call less often.

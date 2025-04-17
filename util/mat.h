@@ -22,6 +22,7 @@
 
 #include <random>
 #include <string>
+#include <vector>
 
 // IWYU pragma: begin_exports
 #include "compression/fields.h"
@@ -31,6 +32,7 @@
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports
 #include "hwy/base.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
@@ -71,7 +73,8 @@ class MatPtr : public IFields {
 
   bool HasPtr() const { return ptr_ != nullptr; }
 
-  bool IsPacked() const { return stride_ == cols_; }
+  // A single row counts as packed because there is no padding between rows.
+  bool IsPacked() const { return (stride_ == cols_) || (rows_ == 1); }
 
   const void* Packed() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
@@ -132,11 +135,10 @@ class MatPtr : public IFields {
   float Scale() const { return scale_; }
   void SetScale(float scale) { scale_ = scale; }
 
-  // Name is a terse identifier. `MakeKey` in `blob_store.cc` requires that it
-  // be <= 16 bytes including prefixes/suffixes. The initial name set by the
-  // ctor is for the tensor, but `ForEachTensor` in `weights.h` adds a per-layer
-  // suffix, and when loading, we call `SetName` with that.
+  // A terse identifier unique across all tensors of the model.
   const char* Name() const override { return name_.c_str(); }
+  // `MakeKey` in `blob_store.cc` requires that this be <= 16 bytes, including
+  // the `LayerSuffix` for per-layer tensors.
   void SetName(const char* name) {
     name_ = name;
     HWY_ASSERT_M(name_.size() <= sizeof(hwy::uint128_t), name);
@@ -194,11 +196,13 @@ class MatPtr : public IFields {
   uint32_t stride_;
 };
 
-// Non-type erased version of `MatPtr`. Use this when operating on the values.
+// Non-type erased version of `MatPtr`. Although `MatPtr` also provides
+// type-aware accessors (`RowT`), this class is more convenient when accessing
+// elements, and ensures the template argument and `Type` are consistent.
 template <typename MatT>
 class MatPtrT : public MatPtr {
  public:
-  // Runtime-specified shape.
+  // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}
   // Take shape from `TensorInfo` to avoid duplicating it in the caller.
@@ -246,6 +250,15 @@ class MatPtrT : public MatPtr {
   PackedSpan<MatT> Span() {
     HWY_ASSERT(IsPacked());
     return MakeSpan(Row(0), num_elements_);
+  }
+
+  // For when a span of a single row is required. This also works if padded,
+  // but does not support `GetType() == kNUQ`, because that requires the use of
+  // offsets instead of a row pointer. Used by `gemma-inl.h` to decompress
+  // embeddings.
+  PackedSpan<const MatT> RowSpan(size_t row) const {
+    HWY_DASSERT(GetType() != Type::kNUQ);
+    return MakeConstSpan(Row(row), Cols());
   }
 };
 
@@ -338,6 +351,25 @@ class MatOwner {
 
  private:
   AlignedPtr2<uint8_t[]> storage_;
+};
+
+// Multiple `MatOwner`, with support for parallel allocation.
+class MatOwners {
+ public:
+  // Ignores `padding` for NUQ tensors, which are always packed.
+  void AllocateFor(MatPtr& mat, MatPadding padding) {
+    if (mat.GetType() == Type::kNUQ) padding = MatPadding::kPacked;
+    owners_.push_back(MatOwner());
+    owners_.back().AllocateFor(mat, padding);
+  }
+
+  // Allocates multiple in parallel. Ignores `padding` for NUQ tensors,
+  // which are always packed.
+  void AllocateFor(const std::vector<MatPtr*>& mats, MatPadding padding,
+                   hwy::ThreadPool& pool);
+
+ private:
+  std::vector<MatOwner> owners_;
 };
 
 // `MatStorageT` IS-A `MatPtrT` and HAS-A `MatOwner`. Used by `backprop/` and

@@ -49,6 +49,20 @@ static constexpr size_t kMaxConv1DWidth = 4;
 
 using EmbedderInputT = BF16;
 
+// Instruction-tuned models require extra 'turn structure' tokens in prompts.
+enum class PromptWrapping {
+  GEMMA_IT,
+  GEMMA_PT,
+  GEMMA_VLM,
+  PALIGEMMA,
+  kSentinel  // must be last
+};
+
+static inline bool EnumValid(PromptWrapping wrapping) {
+  return static_cast<size_t>(wrapping) <
+         static_cast<size_t>(PromptWrapping::kSentinel);
+}
+
 enum class LayerAttentionType {
   kGemma,
   kGriffinRecurrentBlock,

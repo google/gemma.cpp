@@ -43,6 +43,7 @@ PYBIND11_MODULE(configs, py_module) {
   enum_<PromptWrapping>(py_module, "PromptWrapping")
       .value("GEMMA_IT", PromptWrapping::GEMMA_IT)
       .value("GEMMA_PT", PromptWrapping::GEMMA_PT)
+      .value("GEMMA_VLM", PromptWrapping::GEMMA_VLM)
       .value("PALIGEMMA", PromptWrapping::PALIGEMMA);
 
   enum_<Type>(py_module, "Type")

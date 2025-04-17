@@ -17,26 +17,19 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_H_
 
-#include "hwy/base.h"
 #define COMPRESS_STATS 0
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
-#include <cstdio>
-#include <cstring>
-#include <string>
-#include <unordered_map>
-#include <utility>
+#include <memory>
 #include <vector>
 
-// IWYU pragma: begin_exports
 #include "compression/blob_store.h"
 #include "compression/fields.h"
 #include "compression/io.h"
-#include "compression/shared.h"
-#include "gemma/tensor_index.h"
+#include "compression/shared.h"  // NuqStream::ClusterBuf
 #include "util/basics.h"
 // IWYU pragma: end_exports
 #include "gemma/configs.h"
@@ -174,7 +167,8 @@ struct CompressStats {
 #endif  // COMPRESS_STATS
 
 struct CompressPerThread {
-  NuqStream::ClusterBuf buf;
+  // Allocated the first time NUQ is used.
+  std::unique_ptr<NuqStream::ClusterBuf> buf;
   CompressStats stats;
 };
 
@@ -374,6 +368,12 @@ class ReadFromBlobStore {
   // Mangled names of the tensors in model_toc_ for reading from the file.
   std::vector<std::string> file_keys_;
 };
+
+// Returns 1.0f if all magnitudes are <= `SfpStream::kMax`, otherwise scales
+// them such that the largest magnitude is `SfpStream::kMax`, and returns the
+// multiplier with which to restore the original values. This is only necessary
+// before compressing to `SfpStream` and `NuqStream`.
+float ScaleWeights(float* HWY_RESTRICT raw, size_t num);
 
 }  // namespace gcpp
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_H_

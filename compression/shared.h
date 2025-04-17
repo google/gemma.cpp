@@ -13,8 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Definitions shared between the public compress-inl.h interface and the
-// sfp-inl.h and nuq-inl.h implementation details.
+// Types shared between tensor definitions and `compress-inl.h`.
 
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
@@ -62,30 +61,6 @@ struct SfpStream {
   uint8_t byte;
 };
 #pragma pack(pop)
-
-// Returns 1.0f if all magnitudes are <= SfpStream::kMax, otherwise scales them
-// such that the largest magnitude is SfpStream::kMax, and returns the
-// multiplier with which to restore the original values. This is only necessary
-// before compressing to SfpStream.
-// TODO: vectorize
-static inline float ScaleWeights(float* HWY_RESTRICT raw, size_t num) {
-  float maxabs = 0.0;
-  for (size_t i = 0; i < num; ++i) {
-    maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
-  }
-  if (maxabs <= SfpStream::kMax) {
-    return 1.0f;
-  }
-  const float scale = maxabs / SfpStream::kMax;
-  const float inv_scale = static_cast<float>(1.0 / static_cast<double>(scale));
-  for (size_t i = 0; i < num; ++i) {
-    // Clamp because kMax may still be exceeded.
-    const float magn =
-        HWY_MIN(SfpStream::kMax, hwy::ScalarAbs(raw[i] * inv_scale));
-    raw[i] = hwy::ScalarCopySign(magn, raw[i]);
-  }
-  return scale;
-}
 
 // Non-uniform quantization: a compressed representation of f32 inputs that
 // supports seeking at a granularity of 1 (for `DecompressAndZeroPad`) or
@@ -183,20 +158,6 @@ constexpr bool IsSfpStream() {
 template <typename Packed>
 constexpr bool IsNuqStream() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>();
-}
-
-// Instruction-tuned models require extra 'turn structure' tokens in prompts.
-enum class PromptWrapping {
-  GEMMA_IT,
-  GEMMA_PT,
-  GEMMA_VLM,
-  PALIGEMMA,
-  kSentinel  // must be last
-};
-
-inline bool EnumValid(PromptWrapping type) {
-  return static_cast<int>(type) >= 0 &&
-         static_cast<int>(type) < static_cast<int>(PromptWrapping::kSentinel);
 }
 
 // Tensor types for loading weights. Note that not all types are supported as

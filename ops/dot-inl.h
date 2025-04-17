@@ -15,9 +15,6 @@
 
 #include <stddef.h>
 
-#include "compression/compress.h"
-#include "util/mat.h"
-#include "hwy/base.h"
 #include "hwy/profiler.h"
 
 // Include guard for (potentially) SIMD code.
