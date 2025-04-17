@@ -70,6 +70,7 @@ cc_library(
     hdrs = ["blob_store.h"],
     deps = [
         ":io",
+        "//:basics",
         "//:threading_context",
         "@highway//:hwy",
         "@highway//:thread_pool",
@@ -130,7 +131,6 @@ cc_library(
     textual_hdrs = ["sfp-inl.h"],
     deps = [
         ":shared",
-        "//:basics",
         "@highway//:hwy",
     ],
 )
@@ -195,7 +195,6 @@ cc_test(
     deps = [
         ":distortion",
         ":nuq",
-        ":sfp",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@highway//:hwy",
@@ -225,6 +224,7 @@ cc_library(
         "//:mat",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
+        "@highway//:profiler",
         "@highway//:stats",
         "@highway//:thread_pool",
     ],
@@ -259,6 +259,7 @@ cc_library(
     deps = [
         ":nuq",
         ":sfp",
+        ":shared",
         "@highway//:hwy",
         "@highway//:stats",
         "@highway//:thread_pool",

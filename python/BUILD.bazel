@@ -21,10 +21,10 @@ pybind_extension(
     name = "gemma",
     srcs = ["gemma_py.cc"],
     deps = [
-        "//:allocator",
         "//:benchmark_helper",
         "//:gemma_args",
         "//:gemma_lib",
+        "//:threading_context",
         "//compression:shared",
         "@highway//:hwy",
     ],

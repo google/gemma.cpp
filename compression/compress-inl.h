@@ -21,8 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <cmath>  // lroundf, only if COMPRESS_STATS
-#include <string>
+#include <memory>
 #include <vector>
 
 #include "compression/blob_store.h"
@@ -34,6 +33,10 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
+
+#if COMPRESS_STATS
+#include <cmath>  // lroundf
+#endif
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_INL_H_
 
@@ -388,7 +391,7 @@ struct CompressTraits<SfpStream> {
                                   const size_t packed_ofs) {
     SfpCodec::Enc(df, raw, num, packed.ptr + packed_ofs);
 
-    if (COMPRESS_STATS) {
+    if constexpr (COMPRESS_STATS) {
       const hn::Repartition<BF16, DF> dbf;
       auto distorted =
           hwy::AllocateAligned<BF16>(hwy::RoundUpTo(num, hn::Lanes(dbf)));
@@ -432,9 +435,10 @@ struct CompressTraits<NuqStream> {
                                   size_t num, CompressPerThread& tls,
                                   const PackedSpan<Packed>& packed,
                                   const size_t packed_ofs) {
-    NuqCodec::Enc(df, raw, num, tls.buf, packed, packed_ofs);
+    if (!tls.buf) tls.buf = std::make_unique<NuqStream::ClusterBuf>();
+    NuqCodec::Enc(df, raw, num, *tls.buf, packed, packed_ofs);
 
-    if (COMPRESS_STATS) {
+    if constexpr (COMPRESS_STATS) {
       for (size_t i = 0; i < num; ++i) {
         tls.stats.NotifyIn(static_cast<int>(lroundf(raw[i] * 100.0f + 500.0f)));
       }
@@ -478,7 +482,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
                            const size_t packed_ofs, hwy::ThreadPool& pool) {
   packed.BoundsCheck(packed_ofs, num);
   work.tls.resize(pool.NumWorkers());
-  if (COMPRESS_STATS) {
+  if constexpr (COMPRESS_STATS) {
     for (auto& tls : work.tls) {
       tls.stats.Reset();
     }
@@ -487,7 +491,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   const bool want_bench = COMPRESS_STATS || !kIsTest;
   const double t0 = want_bench ? hwy::platform::Now() : 0.0;
 
-  using Traits = CompressTraits<Packed>;
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   constexpr size_t kBatch = 8192;
   const size_t num_batches = hwy::DivCeil(num, kBatch);
   pool.Run(0, num_batches,
@@ -508,7 +512,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     fprintf(stderr, "Compress %.1f MB/s\n", mbps);
   }
 
-  if (COMPRESS_STATS) {
+  if constexpr (COMPRESS_STATS) {
     for (size_t i = 1; i < work.tls.size(); ++i) {
       work.tls[0].stats.Assimilate(work.tls[i].stats);
     }
@@ -534,7 +538,7 @@ void Compress2(DF df, VF raw0, VF raw1, const PackedSpan<Packed>& packed,
                const size_t packed_ofs) {
   static_assert(hwy::IsSameEither<Packed, float, BF16>());
   packed.BoundsCheck(packed_ofs, 2 * hn::Lanes(df));
-  using Traits = CompressTraits<Packed>;
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   Traits::Store2(df, raw0, raw1, packed, packed_ofs);
 }
 
