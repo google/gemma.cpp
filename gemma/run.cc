@@ -156,8 +156,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     std::cout << token_text << std::flush;
     return true;
   };
-  // Flag to check if we should exit after processing non-interactive prompt
-  bool exit_after_generation = !inference.prompt.empty();
+
   while (true) {  // Loop until user quits.
     tokens_generated_this_turn = 0;
 
@@ -224,7 +223,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     std::cout << "\n\n";
 
     // Break the loop if in non-interactive mode
-    if (exit_after_generation) {
+    if (!inference.prompt.empty()) {
       break;
     }
 
