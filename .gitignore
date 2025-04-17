@@ -1,4 +1,25 @@
+# Build directories
 .cache/
 bazel-*/
 build-*/
+build/
+
+# Python cache
 python/*/__pycache__
+
+# Model files
+*.sbs
+*.spm
+*.data
+*.bin
+*.weights
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local development
+.env
+.env.local
