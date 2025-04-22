@@ -28,6 +28,7 @@
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
 #include "gemma/gemma_args.h"
+#include "gemma/tokenizer.h"   // WrapAndTokenize
 #include "hwy/base.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"

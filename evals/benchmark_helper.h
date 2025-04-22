@@ -25,6 +25,7 @@
 
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
+#include "gemma/tokenizer.h"  // WrapAndTokenize
 #include "ops/matmul.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -54,8 +55,9 @@ class GemmaEnv {
   size_t MaxGeneratedTokens() const {
     return runtime_config_.max_generated_tokens;
   }
-  void SetMaxGeneratedTokens(size_t max_generated_tokens) {
-    runtime_config_.max_generated_tokens = max_generated_tokens;
+  void SetMaxGeneratedTokens(int max_generated_tokens) {
+    runtime_config_.max_generated_tokens =
+        static_cast<size_t>(max_generated_tokens);
   }
 
   std::vector<int> Tokenize(const std::string& input) const {

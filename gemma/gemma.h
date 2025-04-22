@@ -271,12 +271,6 @@ class Gemma {
   ModelWeightsStorage model_;
 };
 
-// Adds BOS token and possibly 'turn' annotations, which depend on `info`
-// and `pos`, the number of tokens decoded so far; returns the corresponding
-// tokens. Asserts that tokenization is successful.
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelInfo& info, size_t pos,
-                                 std::string& prompt);
 void RangeChecks(const ModelConfig& weights_config,
                  size_t& max_generated_tokens, size_t prompt_size);
 

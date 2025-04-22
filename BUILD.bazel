@@ -429,6 +429,40 @@ cc_library(
 )
 
 cc_library(
+    name = "gemma_shared_lib",
+    srcs = [
+        "gemma/bindings/c_api.cc",
+        "gemma/bindings/context.cc",
+    ],
+    hdrs = [
+        "gemma/bindings/c_api.h",
+        "gemma/bindings/context.h",
+    ],
+    exec_properties = {
+        # Avoid linker OOMs when building with sanitizer instrumentation.
+        "mem": "28g",
+    },
+    deps = [
+        ":allocator",
+        ":basics",
+        ":benchmark_helper",
+        ":common",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":ops",
+        ":threading",
+        ":threading_context",
+        ":tokenizer",
+        ":weights",
+        "//compression:shared",
+        "//paligemma:image",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
     name = "cross_entropy",
     srcs = ["evals/cross_entropy.cc"],
     hdrs = ["evals/cross_entropy.h"],
@@ -465,6 +499,7 @@ cc_library(
         ":gemma_lib",
         ":ops",
         ":threading_context",
+        ":tokenizer",
         "@google_benchmark//:benchmark",
         "//compression:compress",
         "@highway//:hwy",
@@ -522,6 +557,7 @@ cc_binary(
         ":gemma_lib",
         ":ops",
         ":threading_context",
+        ":tokenizer",
         "//compression:shared",
         "//paligemma:image",
         "@highway//:hwy",
