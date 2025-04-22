@@ -28,10 +28,10 @@
 #include "compression/shared.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // For CreateGemma
+#include "hwy/base.h"     // HWY_ABORT
 #include "ops/matmul.h"
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
-#include "hwy/base.h"       // HWY_ABORT
 
 namespace gcpp {
 
@@ -106,9 +106,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "Path name of model weights (.sbs) file.\n  Required argument.\n");
     visitor(compressed_weights, "compressed_weights", Path(),
             "Deprecated alias for --weights.");
-    visitor(
-        model_type_str, "model", std::string(),
-        "Model type, see common.cc for valid values.\n");
+    visitor(model_type_str, "model", std::string(),
+            "Model type, see common.cc for valid values.\n");
     visitor(weight_type_str, "weight_type", std::string("sfp"),
             "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit SFP.");
   }
@@ -117,8 +116,6 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   const ModelInfo& Info() const { return info_; }
 
  private:
-  // TODO(rays): remove this. Eventually ModelConfig will be loaded from the
-  // weights file, so we can remove the need for this struct entirely.
   ModelInfo info_;
 };
 
@@ -161,6 +158,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool multiturn;
   Path image_file;
 
+  std::string prompt;  // Added prompt flag for non-interactive mode
   std::string eot_line;
 
   // Returns error string or nullptr if OK.
@@ -178,7 +176,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Show verbose developer information\n    0 = only print generation "
             "output\n    1 = standard user-facing terminal ui\n    2 = show "
             "developer/debug info).\n    Default = 1.",
-            2);
+            1);  // Changed verbosity level to 1 since it's user-facing
 
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
@@ -199,6 +197,12 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "  Default : 0 (conversation "
             "resets every turn)");
     visitor(image_file, "image_file", Path(), "Image file to load.");
+
+    visitor(prompt, "prompt", std::string(""),
+            "Initial prompt for non-interactive mode. When specified, "
+            "generates a response"
+            " and exits.",
+            1);  // Added as user-facing option
 
     visitor(
         eot_line, "eot_line", std::string(""),

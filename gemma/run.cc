@@ -27,13 +27,13 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/common.h"
 #include "gemma/gemma.h"  // Gemma
-#include "gemma/gemma_args.h"  // LoaderArgs
-#include "ops/matmul.h"        // MatMulEnv
-#include "paligemma/image.h"
-#include "util/args.h"  // HasHelp
-#include "util/threading_context.h"
+#include "gemma/gemma_args.h"
+#include "hwy/base.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
+#include "ops/matmul.h"  // MatMulEnv
+#include "paligemma/image.h"
+#include "util/args.h"  // HasHelp
 
 #if (!defined(HWY_VERSION_LT) || HWY_VERSION_LT(1, 2)) && !HWY_IDE
 #error "Please update to version 1.2 of github.com/google/highway."
@@ -75,6 +75,17 @@ std::string GetPrompt(std::istream& input, int verbosity,
     }
   }
   return prompt_string;
+}
+
+// Get prompt either from interactive input or command line
+std::string GetPrompt(const InferenceArgs& inference) {
+  // If prompt is provided via command line, use that
+  if (!inference.prompt.empty()) {
+    return inference.prompt;
+  }
+
+  // Otherwise get interactive prompt
+  return GetPrompt(std::cin, inference.verbosity, inference.eot_line);
 }
 
 // The main Read-Eval-Print Loop.
@@ -149,18 +160,21 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     tokens_generated_this_turn = 0;
 
     // Read prompt and handle special commands.
-    std::string prompt_string =
-        GetPrompt(std::cin, inference.verbosity, inference.eot_line);
-    if (!std::cin) return;
+    std::string prompt_string = GetPrompt(inference);
+
+    if (!std::cin && inference.prompt.empty()) return;
+
     // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
-    if (prompt_string.size() >= 2 && prompt_string[0] == '%') {
+    if (inference.prompt.empty() && prompt_string.size() >= 2 &&
+        prompt_string[0] == '%') {
       if (prompt_string[1] == 'q' || prompt_string[1] == 'Q') return;
       if (prompt_string[1] == 'c' || prompt_string[1] == 'C') {
         abs_pos = 0;
         continue;
       }
     }
-    if (prompt_string.empty()) {
+
+    if (inference.prompt.empty() && prompt_string.empty()) {
       std::cout << "Use '%q' to quit.\n";
       continue;
     }
@@ -172,9 +186,9 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                     .stream_token = stream_token,
                                     .use_spinning = threading.spin};
     inference.CopyTo(runtime_config);
-    size_t prefix_end = 0;
-
     std::vector<int> prompt;
+    size_t prompt_size = 0;
+    size_t prefix_end = 0;
     if (have_image) {
       prompt =
           WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
@@ -184,8 +198,9 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       // The end of the prefix for prefix-LM style attention in Paligemma.
       // See Figure 2 of https://arxiv.org/abs/2407.07726.
       prefix_end = prompt_size;
-      // We need to look at all the tokens for the prefix.
-      runtime_config.prefill_tbatch_size = prompt_size;
+
+      // REMOVED: Don't change prefill_tbatch_size for image handling
+      // runtime_config.prefill_tbatch_size = prompt_size;
     } else {
       prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
                                model.Info(), abs_pos, prompt_string);
@@ -205,6 +220,11 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     model.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache,
                    timing_info);
     std::cout << "\n\n";
+
+    // Break the loop if in non-interactive mode
+    if (!inference.prompt.empty()) {
+      break;
+    }
 
     // Prepare for the next turn. Works only for PaliGemma.
     if (!inference.multiturn ||
@@ -259,10 +279,13 @@ void Run(ThreadingArgs& threading, LoaderArgs& loader,
     instructions += multiturn;
     instructions += examples;
 
-    std::cout << "\033[2J\033[1;1H"  // clear screen
-              << kAsciiArtBanner << "\n\n";
-    ShowConfig(threading, loader, inference);
-    std::cout << "\n" << instructions << "\n";
+    // Skip the banner and instructions in non-interactive mode
+    if (inference.prompt.empty()) {
+      std::cout << "\033[2J\033[1;1H"  // clear screen
+                << kAsciiArtBanner << "\n\n";
+      ShowConfig(threading, loader, inference);
+      std::cout << "\n" << instructions << "\n";
+    }
   }
 
   ReplGemma(threading, inference, model, kv_cache);
@@ -280,6 +303,7 @@ int main(int argc, char** argv) {
 
     if (gcpp::HasHelp(argc, argv)) {
       std::cerr << gcpp::kAsciiArtBanner;
+
       gcpp::ShowHelp(threading, loader, inference);
       return 0;
     }
