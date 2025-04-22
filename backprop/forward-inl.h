@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "backprop/activations.h"
-#include "gemma/common.h"
+#include "gemma/common.h"  // EmbeddingScaling
 #include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "util/allocator.h"

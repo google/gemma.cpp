@@ -251,19 +251,11 @@ class MatPtrT : public MatPtr {
     HWY_ASSERT(IsPacked());
     return MakeSpan(Row(0), num_elements_);
   }
-
-  // For when a span of a single row is required. This also works if padded,
-  // but does not support `GetType() == kNUQ`, because that requires the use of
-  // offsets instead of a row pointer. Used by `gemma-inl.h` to decompress
-  // embeddings.
-  PackedSpan<const MatT> RowSpan(size_t row) const {
-    HWY_DASSERT(GetType() != Type::kNUQ);
-    return MakeConstSpan(Row(row), Cols());
-  }
 };
 
 // Calls `func` with a dynamic_cast of `MatPtr` to `MatPtrT<T>`, plus the
-// optional `args`.
+// optional `args`. Currently unused but may be used after we move toward
+// type-erased `WeightsPtrs`.
 template <class Func, typename... Args>
 decltype(auto) CallUpcasted(Type type, MatPtr* base, const Func& func,
                             Args&&... args) {

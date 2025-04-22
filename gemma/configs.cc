@@ -187,6 +187,7 @@ static ModelConfig ConfigGemmaTiny() {
   ModelConfig config = ConfigNoSSM();
   config.model_name = "GemmaTiny";
   config.model = Model::GEMMA_TINY;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 128;
   config.vocab_size = 64;
   config.seq_len = 32;
@@ -277,6 +278,7 @@ static ModelConfig ConfigPaliGemma_224() {
   ModelConfig config = ConfigGemma2B();
   config.model_name = "PaliGemma_224";
   config.model = Model::PALIGEMMA_224;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config);
   return config;
 }
@@ -285,6 +287,7 @@ static ModelConfig ConfigPaliGemma_448() {
   ModelConfig config = ConfigGemma2B();
   config.model_name = "PaliGemma_448";
   config.model = Model::PALIGEMMA_448;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config, /*image_size=*/448);
   return config;
 }
@@ -305,6 +308,7 @@ static ModelConfig ConfigPaliGemma2_3B_224() {
   ModelConfig config = ConfigGemma2_2B();
   config.model_name = "PaliGemma2_3B_224";
   config.model = Model::PALIGEMMA2_3B_224;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config);
   return config;
 }
@@ -313,6 +317,7 @@ static ModelConfig ConfigPaliGemma2_3B_448() {
   ModelConfig config = ConfigGemma2_2B();
   config.model_name = "PaliGemma2_3B_448";
   config.model = Model::PALIGEMMA2_3B_448;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config, /*image_size=*/448);
   return config;
 }
@@ -321,6 +326,7 @@ static ModelConfig ConfigPaliGemma2_10B_224() {
   ModelConfig config = ConfigGemma2_9B();
   config.model_name = "PaliGemma2_10B_224";
   config.model = Model::PALIGEMMA2_10B_224;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config);
   return config;
 }
@@ -329,6 +335,7 @@ static ModelConfig ConfigPaliGemma2_10B_448() {
   ModelConfig config = ConfigGemma2_9B();
   config.model_name = "PaliGemma2_10B_448";
   config.model = Model::PALIGEMMA2_10B_448;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config, /*image_size=*/448);
   return config;
 }
@@ -360,6 +367,7 @@ static ModelConfig ConfigGemma3_1B() {
   ModelConfig config = ConfigBaseGemmaV3();
   config.model_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 1152;
   config.vocab_size = 262144;  // new vocab size / tokenizer
   config.seq_len = 32 * 1024;
@@ -391,6 +399,7 @@ static ModelConfig ConfigGemma3_4B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
   config.model_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 2560;
   config.vocab_size = 262144;  // new vocab size / tokenizer
   config.seq_len = 32 * 1024;
@@ -408,6 +417,7 @@ static ModelConfig ConfigGemma3_4B() {
   ModelConfig config = ConfigGemma3_4B_LM();
   config.model_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = 262144;
   config.vit_config.pool_dim = 4;
@@ -438,6 +448,7 @@ static ModelConfig ConfigGemma3_12B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
   config.model_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 3840;
   config.vocab_size = 262144;  // new vocab size / tokenizer
   config.seq_len = 32 * 1024;
@@ -455,6 +466,7 @@ static ModelConfig ConfigGemma3_12B() {
   ModelConfig config = ConfigGemma3_12B_LM();
   config.model_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = 262144;
   config.vit_config.pool_dim = 4;
@@ -485,6 +497,7 @@ static ModelConfig ConfigGemma3_27B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
   config.model_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 5376;
   config.vocab_size = 262144;  // new vocab size / tokenizer
   config.seq_len = 32 * 1024;
@@ -502,6 +515,7 @@ static ModelConfig ConfigGemma3_27B() {
   ModelConfig config = ConfigGemma3_27B_LM();
   config.model_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = 262144;
   config.vit_config.pool_dim = 4;

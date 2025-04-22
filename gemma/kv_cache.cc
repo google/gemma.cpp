@@ -17,7 +17,7 @@
 
 #include <algorithm>
 
-#include "gemma/common.h"  // CallForModel
+#include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // ZeroBytes
 

@@ -19,10 +19,9 @@
 // Model configurations
 
 #include <stddef.h>
+#include <stdint.h>
 
-#include <algorithm>
 #include <array>
-#include <cstdint>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -53,10 +52,26 @@ using EmbedderInputT = BF16;
 enum class PromptWrapping {
   GEMMA_IT,
   GEMMA_PT,
-  GEMMA_VLM,
+  GEMMA_VLM,  // for >1B Gemma3
   PALIGEMMA,
   kSentinel  // must be last
 };
+
+// Defined as the suffix for use with `ModelString`.
+static inline const char* ToString(PromptWrapping wrapping) {
+  switch (wrapping) {
+    case PromptWrapping::GEMMA_IT:
+      return "-it";
+    case PromptWrapping::GEMMA_PT:
+      return "-pt";
+    case PromptWrapping::GEMMA_VLM:
+      return "-vlm";
+    case PromptWrapping::PALIGEMMA:
+      return "-pg";
+    default:
+      return "-?";
+  }
+}
 
 static inline bool EnumValid(PromptWrapping wrapping) {
   return static_cast<size_t>(wrapping) <
@@ -69,63 +84,68 @@ enum class LayerAttentionType {
   kVit,
 };
 
-inline bool EnumValid(LayerAttentionType type) {
-  return static_cast<int>(type) >= 0 &&
-         static_cast<int>(type) <= static_cast<int>(LayerAttentionType::kVit);
+static inline bool EnumValid(LayerAttentionType type) {
+  return type == LayerAttentionType::kGemma ||
+         type == LayerAttentionType::kGriffinRecurrentBlock ||
+         type == LayerAttentionType::kVit;
 }
 
 // Post attention and ffw normalization type.
 enum class PostNormType {
   None,
   Scale,
+  kSentinel  // must be last
 };
 
-inline bool EnumValid(PostNormType type) {
-  return static_cast<int>(type) >= 0 &&
-      static_cast<int>(type) <= static_cast<int>(PostNormType::Scale);
+static inline bool EnumValid(PostNormType type) {
+  return static_cast<size_t>(type) <
+         static_cast<size_t>(PostNormType::kSentinel);
 }
 
 // Post qk projection operation type.
 enum class PostQKType {
   Rope,
   HalfRope,
+  kSentinel  // must be last
 };
 
-inline bool EnumValid(PostQKType type) {
-  return static_cast<int>(type) >= 0 &&
-      static_cast<int>(type) <= static_cast<int>(PostQKType::HalfRope);
+static inline bool EnumValid(PostQKType type) {
+  return static_cast<size_t>(type) <
+         static_cast<size_t>(PostNormType::kSentinel);
 }
 
 // FFW activation function.
 enum class ActivationType {
   Gelu,
+  kSentinel  // must be last
 };
 
-inline bool EnumValid(ActivationType type) {
-  return static_cast<int>(type) >= 0 &&
-      static_cast<int>(type) <= static_cast<int>(ActivationType::Gelu);
+static inline bool EnumValid(ActivationType type) {
+  return static_cast<size_t>(type) <
+         static_cast<size_t>(ActivationType::kSentinel);
 }
 
 // Attention query scale.
 enum class QueryScaleType {
   SqrtKeySize,
   SqrtModelDimDivNumHeads,
+  kSentinel  // must be last
 };
 
-inline bool EnumValid(QueryScaleType type) {
-  return static_cast<int>(type) >= 0 &&
-      static_cast<int>(type) <=
-      static_cast<int>(QueryScaleType::SqrtModelDimDivNumHeads);
+static inline bool EnumValid(QueryScaleType type) {
+  return static_cast<size_t>(type) <
+         static_cast<size_t>(QueryScaleType::kSentinel);
 }
 
 // Residual connection type.
 enum class ResidualType {
   Add,
+  kSentinel  // must be last
 };
 
-inline bool EnumValid(ResidualType type) {
-  return static_cast<int>(type) >= 0 &&
-      static_cast<int>(type) <= static_cast<int>(ResidualType::Add);
+static inline bool EnumValid(ResidualType type) {
+  return static_cast<size_t>(type) <
+         static_cast<size_t>(ResidualType::kSentinel);
 }
 
 template <size_t kNum>
@@ -169,6 +189,7 @@ enum class Model {
   GEMMA3_1B,
   GEMMA3_12B,
   GEMMA3_27B,
+  kSentinel,
 };
 
 // Allows the Model enum to be iterated over.
@@ -181,9 +202,18 @@ static constexpr Model kAllModels[] = {
     Model::GEMMA3_12B, Model::GEMMA3_27B,
 };
 
-inline bool EnumValid(Model model) {
-  for (Model m : kAllModels) {
-    if (m == model) return true;
+template <class Func>
+void ForEachModel(const Func& func) {
+  for (size_t i = static_cast<size_t>(Model::UNKNOWN) + 1;
+       i < static_cast<size_t>(Model::kSentinel); ++i) {
+    func(static_cast<Model>(i));
+  }
+}
+
+static inline bool EnumValid(Model model) {
+  const size_t i = static_cast<size_t>(model);
+  if (i < static_cast<size_t>(Model::kSentinel)) {
+    return true;
   }
   return false;
 }
@@ -301,7 +331,7 @@ struct ModelConfig : public IFields {
   size_t NumHeads() const {
     uint32_t num_heads = 0;
     for (const auto& layer_config : layer_configs) {
-      num_heads = std::max(num_heads, layer_config.heads);
+      num_heads = HWY_MAX(num_heads, layer_config.heads);
     }
     return num_heads;
   }

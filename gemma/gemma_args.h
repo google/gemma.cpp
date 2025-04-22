@@ -26,12 +26,12 @@
 
 #include "compression/io.h"  // Path
 #include "compression/shared.h"
-#include "gemma/common.h"
+#include "gemma/configs.h"
 #include "gemma/gemma.h"  // For CreateGemma
-#include "hwy/base.h"     // HWY_ABORT
 #include "ops/matmul.h"
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
+#include "hwy/base.h"       // HWY_ABORT
 
 namespace gcpp {
 

@@ -38,7 +38,6 @@
 #include <vector>
 
 #include "evals/cross_entropy.h"
-#include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "hwy/base.h"
 

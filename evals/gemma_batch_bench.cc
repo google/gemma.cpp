@@ -13,15 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "gemma/gemma.h"
-
 #include <stdio.h>
 
 #include <string>
 #include <vector>
 
 #include "evals/benchmark_helper.h"
-#include "gemma/common.h"
+#include "gemma/configs.h"
+#include "gemma/gemma.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -65,6 +64,7 @@ class GemmaTest : public ::testing::Test {
       prompts_vector.push_back(s_env->TokenizeAndPrependBOS(input_string));
     }
     std::vector<PromptTokens> prompt_spans;
+    prompt_spans.reserve(prompts_vector.size());
     for (const auto& prompt : prompts_vector) {
       prompt_spans.push_back(PromptTokens(prompt.data(), prompt.size()));
     }
@@ -79,6 +79,7 @@ class GemmaTest : public ::testing::Test {
     ASSERT_NE(s_env->GetGemma(), nullptr);
 
     std::vector<std::string> inputs;
+    inputs.reserve(num_questions);
     for (size_t i = 0; i < num_questions; ++i) {
       inputs.push_back(kQA[i]);
     }

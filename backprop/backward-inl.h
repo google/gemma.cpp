@@ -27,7 +27,8 @@
 
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
-#include "gemma/common.h"
+#include "gemma/common.h"   // EmbeddingScaling
+#include "gemma/configs.h"  // LayerConfig, ModelConfig
 #include "gemma/weights.h"
 #include "util/allocator.h"
 #include "hwy/base.h"

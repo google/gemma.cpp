@@ -118,6 +118,7 @@ class ThreadingContext2 {
   // changing the arguments between tests. Callers must again call `Get`
   // afterwards to obtain an instance. WARNING: must not be called concurrently
   // with other calls to `Get` and usages of its return value.
+  // Also useful to suppress memory leak warnings in tests.
   static void ThreadHostileInvalidate();
 
   explicit ThreadingContext2(PrivateToken);  // only called via `Get`.

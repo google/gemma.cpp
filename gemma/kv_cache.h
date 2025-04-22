@@ -18,7 +18,7 @@
 
 #include <stddef.h>
 
-#include "gemma/common.h"  // Model
+#include "gemma/configs.h"  // ModelConfig
 #include "hwy/aligned_allocator.h"
 
 namespace gcpp {

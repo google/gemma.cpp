@@ -31,7 +31,7 @@
 #include <random>
 #include <vector>
 
-#include "gemma/common.h"
+#include "gemma/common.h"  // ChooseQueryScale
 #include "util/allocator.h"
 #include "util/basics.h"  // BF16
 #include "util/mat.h"     // RowVectorBatch

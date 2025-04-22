@@ -19,7 +19,6 @@
 
 #include "compression/shared.h"
 #include "evals/benchmark_helper.h"
-#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "util/allocator.h"
@@ -27,11 +26,7 @@
 #include "hwy/tests/hwy_gtest.h"
 
 // This test can be run manually with the downloaded PaliGemma weights.
-// To run the test, pass the following flags:
-// --model paligemma-224 --tokenizer <tokenizer_path> --weights <weights_path>
-// or just use the single-file weights file with --weights <weights_path>.
-// It should pass for the following models:
-// paligemma-3b-mix-224, paligemma2-3b-pt-448
+// It should pass for `paligemma-3b-mix-224` and `paligemma2-3b-pt-448`.
 
 namespace gcpp {
 namespace {

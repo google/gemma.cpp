@@ -49,6 +49,8 @@ class GemmaEnv {
   GemmaEnv(int argc, char** argv);
   GemmaEnv(const ThreadingArgs& threading, const LoaderArgs& loader,
            const InferenceArgs& inference);
+  // Avoid memory leaks in test.
+  ~GemmaEnv() { ThreadingContext2::ThreadHostileInvalidate(); }
 
   MatMulEnv& Env() { return env_; }
 
