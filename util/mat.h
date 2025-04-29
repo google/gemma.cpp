@@ -281,7 +281,7 @@ void CopyMat(const MatPtr& from, MatPtr& to);
 void ZeroInit(MatPtr& mat);
 
 template <typename T>
-void RandInit(MatPtrT<T>& x, T stddev, std::mt19937& gen) {
+void RandInit(MatPtrT<T>& x, float stddev, std::mt19937& gen) {
   std::normal_distribution<T> dist(0.0, stddev);
   for (size_t r = 0; r < x.Rows(); ++r) {
     T* row = x.Row(r);
@@ -401,8 +401,9 @@ class RowPtr {
          size_t stride)
       : row0_(row0),
         stride_(stride),
-        row_mask_(
-            static_cast<uint32_t>(allocator.QuantumStepMask() & 0xFFFFFFFFu)),
+        // TODO: disabled because otherwise we see non-deterministic results.
+        row_mask_(0),
+        // static_cast<uint32_t>(allocator.QuantumStepMask() & 0xFFFFFFFFu)),
         cols_(static_cast<uint32_t>(cols)),
         step_bytes_(static_cast<uint32_t>(allocator.StepBytes())),
         quantum_bytes_(allocator.QuantumBytes()) {

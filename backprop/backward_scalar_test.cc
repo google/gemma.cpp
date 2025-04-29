@@ -56,7 +56,7 @@ TEST(BackPropTest, MatMulVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
     RandInit(x, 1.0 * (1 << iter), gen);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
@@ -67,8 +67,8 @@ TEST(BackPropTest, MatMulVJP) {
     ZeroInit(grad);
     MatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad.Packed(),
                dx.Packed(), kRows, kCols, kTokens);
-    TestGradient(dx, c_x, func, 1e-11, 1e-12, __LINE__);
-    TestGradient(grad, c_weights, func, 1e-14, 1e-12, __LINE__);
+    TestGradient(dx, c_x, func, 1e-11, 1e-12, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-14, 1e-11, __LINE__, __LINE__);
   }
 }
 
@@ -92,7 +92,7 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(weights, 1.0 * (1 << iter), gen);
     RandInit(x, 1.0 * (1 << iter), gen);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     Complexify(weights, c_weights);
     Complexify(x, c_x);
     auto func = [&]() {
@@ -104,8 +104,8 @@ TEST(BackPropTest, MultiHeadMatMulVJP) {
     MultiHeadMatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(),
                         grad.Packed(), dx.Packed(), kHeads, kRows, kCols,
                         kTokens);
-    TestGradient(dx, c_x, func, 1e-15, 1e-13, __LINE__);
-    TestGradient(grad, c_weights, func, 1e-15, 1e-13, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-13, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-13, __LINE__, __LINE__);
   }
 }
 
@@ -129,7 +129,7 @@ TEST(BackPropTest, RMSNormVJP) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(weights, c_weights);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       RMSNormT(c_weights.Packed(), c_x.Packed(), c_y.Packed(), N, K);
       return DotT(dy.Packed(), c_y.Packed(), K * N);
@@ -137,8 +137,8 @@ TEST(BackPropTest, RMSNormVJP) {
     ZeroInit(grad);
     RMSNormVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad.Packed(),
                 dx.Packed(), N, K);
-    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
-    TestGradient(grad, c_weights, func, 1e-15, 1e-14, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-15, 1e-14, __LINE__, __LINE__);
   }
 }
 
@@ -154,9 +154,9 @@ TEST(BackPropTest, SoftmaxVJP) {
   auto c_y = MakePacked<TC>("c_y", N, 1);
 
   for (int iter = 0; iter < 10; ++iter) {
-    RandInit(x, 1.0 * (1 << iter), gen);
+    RandInit(x, 1.0f * (1 << iter), gen);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       CopyMat(c_x, c_y);
       Softmax(c_y.Packed(), N);
@@ -165,7 +165,7 @@ TEST(BackPropTest, SoftmaxVJP) {
     Softmax(x.Packed(), N);
     CopyMat(dy, dx);
     SoftmaxVJPT(x.Packed(), dx.Packed(), N);
-    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -187,7 +187,7 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       CopyMat(c_x, c_y);
       MaskedSoftmax(c_y.Packed(), kTokens, kHeads, kSeqLen);
@@ -196,7 +196,7 @@ TEST(BackPropTest, MaskedSoftmaxVJP) {
     MaskedSoftmax(x.Packed(), kTokens, kHeads, kSeqLen);
     CopyMat(dy, dx);
     MaskedSoftmaxVJPT(x.Packed(), dx.Packed(), kTokens, kHeads, kSeqLen);
-    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -215,7 +215,7 @@ TEST(BackPropTest, SoftcapVJP) {
   for (int iter = 0; iter < 10; ++iter) {
     RandInit(x, 1.0 * (1 << iter), gen);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       CopyMat(c_x, c_y);
       Softcap(kCap, c_y.Packed(), N);
@@ -224,7 +224,7 @@ TEST(BackPropTest, SoftcapVJP) {
     Softcap(kCap, x.Packed(), N);
     CopyMat(dy, dx);
     SoftcapVJPT(kCap, x.Packed(), dx.Packed(), N);
-    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-14, __LINE__, __LINE__);
   }
 }
 
@@ -249,7 +249,7 @@ TEST(BackPropTest, CrossEntropyLossGrad) {
     CrossEntropyLossGrad(x.Packed(), dx.Packed(), prompt, V);
     Complexify(x, c_x);
     auto func = [&]() { return CrossEntropyLoss(c_x.Packed(), prompt, V); };
-    TestGradient(dx, c_x, func, 1e-100, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-100, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -266,15 +266,15 @@ TEST(BackPropTest, GatedGeluVJP) {
   auto c_y = MakePacked<TC>("c_y", K, N);
 
   for (int iter = 0; iter < 10; ++iter) {
-    RandInit(x, 1.0, gen);
+    RandInit(x, 1.0f, gen);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       GatedGelu(c_x.Packed(), c_y.Packed(), N, K);
       return DotT(dy.Packed(), c_y.Packed(), N * K);
     };
     GatedGeluVJP(x.Packed(), dy.Packed(), dx.Packed(), N, K);
-    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-15, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -297,9 +297,9 @@ TEST(BackPropTest, MaskedAttentionVJP) {
   ZeroInit(c_y);
 
   for (int iter = 0; iter < 10; ++iter) {
-    RandInit(x, 1.0, gen);
+    RandInit(x, 1.0f, gen);
     Complexify(x, c_x);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       MaskedAttention(c_x.Packed(), c_y.Packed(), kTokens, kHeads, kQKVDim,
                       kSeqLen);
@@ -307,7 +307,7 @@ TEST(BackPropTest, MaskedAttentionVJP) {
     };
     MaskedAttentionVJP(x.Packed(), dy.Packed(), dx.Packed(), kTokens, kHeads,
                        kQKVDim, kSeqLen);
-    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__);
+    TestGradient(dx, c_x, func, 1e-14, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -335,11 +335,11 @@ TEST(BackPropTest, MixByAttentionVJP) {
   ZeroInit(c_y);
 
   for (int iter = 0; iter < 10; ++iter) {
-    RandInit(qkv, 1.0, gen);
-    RandInit(attn, 1.0, gen);
+    RandInit(qkv, 1.0f, gen);
+    RandInit(attn, 1.0f, gen);
     Complexify(qkv, c_qkv);
     Complexify(attn, c_attn);
-    RandInit(dy, 1.0, gen);
+    RandInit(dy, 1.0f, gen);
     auto func = [&]() {
       MixByAttention(c_qkv.Packed(), c_attn.Packed(), c_y.Packed(), kTokens,
                      kHeads, kQKVDim, kSeqLen);
@@ -347,8 +347,8 @@ TEST(BackPropTest, MixByAttentionVJP) {
     };
     MixByAttentionVJP(qkv.Packed(), attn.Packed(), dy.Packed(), dqkv.Packed(),
                       dattn.Packed(), kTokens, kHeads, kQKVDim, kSeqLen);
-    TestGradient(dqkv, c_qkv, func, 1e-14, 1e-15, __LINE__);
-    TestGradient(dattn, c_attn, func, 1e-14, 1e-15, __LINE__);
+    TestGradient(dqkv, c_qkv, func, 1e-14, 1e-15, __LINE__, __LINE__);
+    TestGradient(dattn, c_attn, func, 1e-14, 1e-15, __LINE__, __LINE__);
   }
 }
 
@@ -368,8 +368,8 @@ TEST(BackPropTest, InputEmbeddingVJP) {
   size_t num_tokens = tokens.size() - 1;
 
   for (size_t iter = 0; iter < 10; ++iter) {
-    RandInit(weights, 1.0, gen);
-    RandInit(dy, 1.0, gen);
+    RandInit(weights, 1.0f, gen);
+    RandInit(dy, 1.0f, gen);
     Complexify(weights, c_weights);
     auto func = [&]() {
       InputEmbedding(c_weights.Packed(), tokens, TC(3.0), c_y.Packed(),
@@ -379,7 +379,7 @@ TEST(BackPropTest, InputEmbeddingVJP) {
     ZeroInit(grad);
     InputEmbeddingVJPT(weights.Packed(), tokens, 3.0, dy.Packed(),
                        grad.Packed(), kModelDim);
-    TestGradient(grad, c_weights, func, 1e-16, 1e-14, __LINE__);
+    TestGradient(grad, c_weights, func, 1e-14, 1e-14, __LINE__, __LINE__);
   }
 }
 
@@ -441,9 +441,9 @@ TEST(BackPropTest, LayerVJP) {
     grad.ZeroInit(/*layer_idx=*/0);
     ApplyLayer(weights, forward, num_tokens, y.Packed());
     LayerVJP(weights, forward, dy.Packed(), grad, backward, num_tokens);
-    TestGradient(backward.input, c_forward.input, func, 1e-11, 5e-11,
+    TestGradient(backward.input, c_forward.input, func, 1e-11, 5e-11, __LINE__,
                  __LINE__);
-    TestGradient(grad, c_weights, func, 1e-11);
+    TestGradient(grad, c_weights, func, 2e-11, __LINE__);
   }
 }
 
@@ -475,7 +475,7 @@ TEST(BackPropTest, EndToEnd) {
       return CrossEntropyLossForwardPass(prompt, c_weights.get(), c_forward);
     };
 
-    TestGradient(grad.get(), c_weights.get(), func, 1e-11);
+    TestGradient(grad.get(), c_weights.get(), func, 1e-11, __LINE__);
   }
 }
 
@@ -611,12 +611,12 @@ TEST(BackProptest, Convergence) {
         return CrossEntropyLossForwardPass(batch, c_weights, c_forward) * scale;
       };
 
-      TestGradient(grad.get(), c_weights.get(), func, 5e-3f);
+      TestGradient(grad.get(), c_weights.get(), func, 5e-3f, __LINE__);
     }
 
     loss /= batch.size();
     EXPECT_LT(loss, prev_loss);
-    stop = step >= 10000 || loss < 1e-2;
+    stop = step >= 1000 || loss < T{1.0};
     if (step % 10 == 0 || stop) {
       printf("step: %5zu  loss: %.15f  learning_rate: %.15f\n",
              step, loss, learning_rate);

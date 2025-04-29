@@ -85,7 +85,6 @@ class Allocator2 {
  public:
   // Must be called at least once before any other function. Not thread-safe,
   // hence only call this from the main thread.
-  // TODO: remove enable_bind once Gemma tensors support binding.
   Allocator2(const BoundedTopology& topology, bool enable_bind);
 
   // Bytes per cache line, or a reasonable guess if unknown. Used to choose

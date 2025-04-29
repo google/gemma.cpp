@@ -613,10 +613,6 @@ struct MatMulEnv {
   ThreadingContext2& ctx;
   bool have_timer_stop = false;
 
-  // Enable binding: disabled in Gemma until tensors support it, enabled in
-  // bench_matmul.cc.
-  bool enable_bind = false;
-
   // Whether `MMCandidates()` should print the set of parameters.
   bool print_config = false;
   // Whether to print each config's speed during autotuning.

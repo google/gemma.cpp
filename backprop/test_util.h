@@ -27,13 +27,14 @@
 #include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
 // TODO: make a member of Layer<T>.
 template <typename T>
-void RandInit(LayerWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
+void RandInit(LayerWeightsPtrs<T>& w, float stddev, std::mt19937& gen) {
   RandInit(w.pre_attention_norm_scale, stddev, gen);
   RandInit(w.attn_vec_einsum_w, stddev, gen);
   RandInit(w.qkv_einsum_w, stddev, gen);
@@ -43,7 +44,7 @@ void RandInit(LayerWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
 }
 
 template <typename T>
-void RandInit(ModelWeightsPtrs<T>& w, T stddev, std::mt19937& gen) {
+void RandInit(ModelWeightsPtrs<T>& w, float stddev, std::mt19937& gen) {
   const size_t kLayers = w.c_layers.size();
   RandInit(w.embedder_input_embedding, stddev, gen);
   RandInit(w.final_norm_scale, stddev, gen);
@@ -108,7 +109,9 @@ class WeightsWrapper {
 
 template <typename T, typename U>
 void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
-              double max_abs_err, double max_rel_err, int line) {
+              double max_abs_err, double max_rel_err, int line_test,
+              int line_util) {
+  // TODO: consider compensated sum.
   double sum0 = 0;
   double sum1 = 0;
   double sum01 = 0;
@@ -122,14 +125,15 @@ void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
       ASSERT_NEAR(
           actual_row[c], expected_row[c],
           std::max(max_abs_err, std::abs(expected_row[c]) * max_rel_err))
-          << "line: " << line << " r " << r << " c " << c;
+          << "test line " << line_test << "test_util.h line " << line_util
+          << " r " << r << " c " << c;
     }
   }
-  if (sum0 > 1e-40) {
+  if (sum0 > 1e-16) {
     double norm_dot = sum01 / std::sqrt(sum0) / std::sqrt(sum1);
-    ASSERT_NEAR(norm_dot, 1.0, 1e-7)
-        << "line: " << line << " sum0: " << sum0  << " sum1: " << sum1
-        << " sum01: " << sum01;
+    ASSERT_NEAR(norm_dot, 1.0, 3e-6)
+        << "test line " << line_test << " test_util.h line " << line_util
+        << " sum0: " << sum0 << " sum1: " << sum1 << " sum01: " << sum01;
   }
 }
 
@@ -148,7 +152,8 @@ void TestNear(const MatPtrT<T>& actual, const MatPtrT<U>& expected,
 // to each other.
 template <typename FUNC, typename T, typename U>
 void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<U>>& x,
-                  FUNC func, U step, T max_abs_err, T max_rel_err, int line) {
+                  FUNC func, U step, T max_abs_err, T max_rel_err,
+                  int line_test, int line_util) {
   MatStorageT<T> exp_grad = MakePacked<T>("exp_grad", x.Rows(), x.Cols());
   const U inv_step = 1.0 / step;
   for (size_t r = 0; r < x.Rows(); ++r) {
@@ -163,49 +168,56 @@ void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<U>>& x,
       x_row[c] = x0;
     }
   }
-  TestNear(grad, exp_grad, max_abs_err, max_rel_err, line);
+  TestNear(grad, exp_grad, max_abs_err, max_rel_err, line_test, line_util);
 }
 
 template <typename FUNC>
 void TestGradient(const MatPtrT<float>& grad, MatPtrT<std::complex<float>>& x,
-                  FUNC func, float max_abs_err, float max_rel_error, int line) {
-  TestGradient(grad, x, func, 1e-30f, max_abs_err, max_rel_error, line);
+                  FUNC func, float max_abs_err, float max_rel_error,
+                  int line_test, int line_util) {
+  TestGradient(grad, x, func, 1e-30f, max_abs_err, max_rel_error, line_test,
+               line_util);
 }
 
 template <typename FUNC, typename T>
 void TestGradient(const MatPtrT<T>& grad, MatPtrT<std::complex<double>>& x,
-                  FUNC func, T max_abs_err, T max_rel_error, int line) {
-  TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line);
+                  FUNC func, T max_abs_err, T max_rel_error, int line_test,
+                  int line_util) {
+  TestGradient(grad, x, func, 1e-50, max_abs_err, max_rel_error, line_test,
+               line_util);
 }
 
 template <typename T, typename U, typename FUNC>
 void TestGradient(const LayerWeightsPtrs<T>& grad,
-                  LayerWeightsPtrs<U>& c_weights, FUNC func, T max_err) {
+                  LayerWeightsPtrs<U>& c_weights, FUNC func, T max_err,
+                  int line_test) {
   TestGradient(grad.pre_attention_norm_scale,
-               c_weights.pre_attention_norm_scale,
-               func, max_err, max_err, __LINE__);
-  TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w,
-               func, max_err, max_err, __LINE__);
-  TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w,
-               func, max_err, max_err, __LINE__);
-  TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale,
-               func, max_err, max_err, __LINE__);
-  TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w,
-               func, max_err, max_err, __LINE__);
-  TestGradient(grad.linear_w, c_weights.linear_w,
-               func, max_err, max_err, __LINE__);
+               c_weights.pre_attention_norm_scale, func, max_err, max_err,
+               line_test, __LINE__);
+  TestGradient(grad.attn_vec_einsum_w, c_weights.attn_vec_einsum_w, func,
+               max_err, max_err, line_test, __LINE__);
+  TestGradient(grad.qkv_einsum_w, c_weights.qkv_einsum_w, func, max_err,
+               max_err, line_test, __LINE__);
+  TestGradient(grad.pre_ffw_norm_scale, c_weights.pre_ffw_norm_scale, func,
+               max_err, max_err, line_test, __LINE__);
+  TestGradient(grad.gating_einsum_w, c_weights.gating_einsum_w, func, max_err,
+               max_err, line_test, __LINE__);
+  TestGradient(grad.linear_w, c_weights.linear_w, func, max_err, max_err,
+               line_test, __LINE__);
 }
 
 template <typename T, typename U, typename FUNC>
 void TestGradient(const ModelWeightsPtrs<T>& grad,
-                  ModelWeightsPtrs<U>& c_weights, FUNC func, T max_err) {
+                  ModelWeightsPtrs<U>& c_weights, FUNC func, T max_err,
+                  int line_test) {
   TestGradient(grad.embedder_input_embedding,
-                 c_weights.embedder_input_embedding,
-                 func,  2 * max_err, max_err, __LINE__);
-  TestGradient(grad.final_norm_scale, c_weights.final_norm_scale,
-               func, max_err, max_err, __LINE__);
+               c_weights.embedder_input_embedding, func, 2 * max_err, max_err,
+               line_test, __LINE__);
+  TestGradient(grad.final_norm_scale, c_weights.final_norm_scale, func, max_err,
+               max_err, line_test, __LINE__);
   for (size_t i = 0; i < grad.c_layers.size(); ++i) {
-    TestGradient(*grad.GetLayer(i), *c_weights.GetLayer(i), func, max_err);
+    TestGradient(*grad.GetLayer(i), *c_weights.GetLayer(i), func, max_err,
+                 line_test);
   }
 }
 

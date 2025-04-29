@@ -103,14 +103,14 @@ void TestMatMulVJP() {
     ZeroInit(grad);
     MatMulVJP(weights.Packed(), x.Packed(), dy.Packed(), kCols, kRows, kTokens,
               grad.Packed(), dx.Packed(), pool);
-    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
 
     ZeroInit(grad_scalar);
     MatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
                dx_scalar.Packed(), kRows, kCols, kTokens);
-    TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__);
-    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
+    TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__, __LINE__);
+    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
   }
 }
 
@@ -148,15 +148,15 @@ void TestMultiHeadMatMulVJP() {
     ZeroInit(grad);
     MultiHeadMatMulVJP(weights.Packed(), x.Packed(), dy.Packed(), kHeads, kCols,
                        kRows, kTokens, grad.Packed(), dx.Packed(), pool);
-    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
 
     ZeroInit(grad_scalar);
     MultiHeadMatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(),
                         grad_scalar.Packed(), dx_scalar.Packed(), kHeads, kRows,
                         kCols, kTokens);
-    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__);
-    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__);
+    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
+    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
   }
 }
 
@@ -191,14 +191,14 @@ void TestRMSNormVJP() {
     ZeroInit(grad);
     RMSNormVJP(weights.Packed(), x.Packed(), dy.Packed(), N, K, grad.Packed(),
                dx.Packed(), pool);
-    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__);
-    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__);
+    TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
+    TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
 
     ZeroInit(grad_scalar);
     RMSNormVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
                 dx_scalar.Packed(), N, K);
-    TestNear(dx, dx_scalar, 0, 2e-5, __LINE__);
-    TestNear(grad, grad_scalar, 0, 2e-5, __LINE__);
+    TestNear(dx, dx_scalar, 0, 2e-5, __LINE__, __LINE__);
+    TestNear(grad, grad_scalar, 0, 2e-5, __LINE__, __LINE__);
   }
 }
 
@@ -265,7 +265,7 @@ void TestEndToEnd() {
       return CrossEntropyLossForwardPass(prompt, c_weights.get(), c_forward);
     };
 
-    TestGradient(grad.get(), c_weights.get(), func, 2e-3f);
+    TestGradient(grad.get(), c_weights.get(), func, 2e-3f, __LINE__);
   }
 }
 

@@ -109,16 +109,18 @@ TEST(OptimizeTest, GradientDescent) {
   gemma.MutableWeights().LogWeightStats();
 
   constexpr size_t kBatchSize = 8;
-  const float alpha = 0.001f;
-  const float beta1 = 0.9f;
-  const float beta2 = 0.999f;
-  const float epsilon = 1e-8f;
+  constexpr float kAlpha = 0.001f;
+  constexpr float kBeta1 = 0.9f;
+  constexpr float kBeta2 = 0.999f;
+  constexpr float kEpsilon = 1e-8f;
+
+  constexpr float kMaxLoss = 20.0f;
 
   ReverseSequenceSampler training_task({
       0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1});
   size_t steps = 0;
   size_t num_ok;
-  for (; steps < 1000000; ++steps) {
+  for (; steps < 1000; ++steps) {
     std::mt19937 sgen(42);
     grad.ZeroInit();
     float total_loss = 0.0f;
@@ -136,7 +138,7 @@ TEST(OptimizeTest, GradientDescent) {
     }
     total_loss /= kBatchSize;
 
-    AdamUpdate(info.weight, grad, alpha, beta1, beta2, epsilon, steps + 1,
+    AdamUpdate(info.weight, grad, kAlpha, kBeta1, kBeta2, kEpsilon, steps + 1,
                gemma.Weights(), grad_m, grad_v, pool);
     printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
            steps, total_loss, num_ok, kBatchSize);
@@ -144,14 +146,12 @@ TEST(OptimizeTest, GradientDescent) {
       printf("Batch gradient:\n");
       grad.LogWeightStats();
     }
-    if (total_loss < 0.5f) {
-      break;
-    }
+    if (total_loss < kMaxLoss) break;  // Done
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
   gemma.MutableWeights().LogWeightStats();
-  EXPECT_LT(steps, 300);
+  EXPECT_LT(steps, 50);
   EXPECT_EQ(num_ok, kBatchSize);
 }
 

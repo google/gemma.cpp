@@ -171,7 +171,7 @@ Allocator2::Allocator2(const BoundedTopology& topology, bool enable_bind) {
       } else {
         HWY_WARN(
             "Multiple sockets but binding disabled. This reduces speed; "
-            "set or remove enable_bind to avoid this warning.");
+            "set --bind 1 to avoid this warning.");
       }
     }
   }
@@ -209,7 +209,7 @@ AlignedPtr2<uint8_t[]> Allocator2::AllocBytes(size_t bytes) const {
     if (HWY_ALIGNMENT < QuantumBytes()) {
       HWY_WARN(
           "HWY_ALIGNMENT %d < QuantumBytes %zu: either vector or cache lines "
-          "are huge, enable GEMMA_BIND to avoid this warning.",
+          "are huge, enable GEMMA_BIND and set --bind 1 to avoid this warning.",
           HWY_ALIGNMENT, QuantumBytes());
     }
     auto p = hwy::AllocateAligned<uint8_t>(bytes);
