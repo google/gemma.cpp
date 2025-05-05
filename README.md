@@ -45,9 +45,41 @@ this invite link](https://discord.gg/H5jCBAWxAe). This project follows
 [Google's Open Source Community
 Guidelines](https://opensource.google.com/conduct/).
 
-*Active development is currently done on the `dev` branch. Please open pull
-requests targeting `dev` branch instead of `main`, which is intended to be more
-stable.*
+> [!NOTE] Active development is currently done on the `dev` branch. Please open
+> pull requests targeting `dev` branch instead of `main`, which is intended to
+> be more stable.
+
+## What's inside?
+
+-   LLM
+
+    -   CPU-only inference for: Gemma 1-3, Griffin(SSM), PaliGemma 1-2.
+    -   Sampling with TopK and temperature.
+    -   Backward pass (VJP) and Adam optimizer for Gemma research.
+
+-   Optimizations
+
+    -   Mixed-precision (fp8, bf16, fp32, fp64 bit) GEMM:
+        -   Designed for BF16 instructions, can efficiently emulate them.
+        -   Automatic runtime autotuning 7 parameters per matrix shape.
+    -   Weight compression integrated directly into GEMM:
+        -   Custom fp8 format with 2..3 mantissa bits; tensor scaling.
+        -   Also bf16, f32 and non-uniform 4-bit (NUQ); easy to add new formats.
+
+-   Infrastructure
+
+    -   SIMD: single implementation via Highway. Chooses ISA at runtime.
+    -   Tensor parallelism: CCX-aware, multi-socket thread pool.
+    -   Disk I/O: memory map or parallel read (heuristic with user override).
+    -   Custom format with forward/backward-compatible metadata serialization.
+    -   Model conversion from Safetensors, not yet open sourced.
+    -   Portability: Linux, Windows/OS X supported. CMake/Bazel. 'Any' CPU.
+
+-   Frontends
+
+    -   C++ APIs with streaming for single query and batched inference.
+    -   Basic interactive command-line app.
+    -   Basic Python bindings (pybind11).
 
 ## Quick Start
 
@@ -411,7 +443,7 @@ newline input.
 By default, verbosity is set to 1, bringing up a terminal-based interactive
 interface when `gemma` is invoked:
 
-```console
+```sh
 $ ./gemma [...]
   __ _  ___ _ __ ___  _ __ ___   __ _   ___ _ __  _ __
  / _` |/ _ \ '_ ` _ \| '_ ` _ \ / _` | / __| '_ \| '_ \
@@ -481,7 +513,7 @@ cat configs.h | tail -n 35 | tr '\n' ' ' | xargs -0 echo "What does this C++ cod
 
 The output of the above command should look like:
 
-```console
+```sh
 [ Reading prompt ] [...]
 This C++ code snippet defines a set of **constants** used in a large language model (LLM) implementation, likely related to the **attention mechanism**.
 
