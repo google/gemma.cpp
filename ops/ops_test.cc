@@ -388,7 +388,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 void TestRopeAndMulBy() {
   const Allocator2& allocator = ThreadingContext2::Get().allocator;
 
-  ModelConfig config = ConfigFromModel(Model::GEMMA2_9B);
+  ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
+                     ChooseWrapping(Model::GEMMA2_9B));
   int dim_qkv = config.layer_configs[0].qkv_dim;
   RowVectorBatch<float> x(allocator, Extents2D(1, dim_qkv));
 

@@ -22,8 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"  // Path
-#include "gemma/common.h"    // ModelInfo
+#include "gemma/configs.h"  // PromptWrapping
 
 namespace gcpp {
 
@@ -32,19 +31,24 @@ constexpr int EOS_ID = 1;
 constexpr int SECONDARY_EOS_ID = 106;  // for Gemma 3
 constexpr int BOS_ID = 2;
 
-class GemmaTokenizer {
- public:
-  GemmaTokenizer();
-  explicit GemmaTokenizer(const Path& tokenizer_path);
+// To avoid the complexity of storing the tokenizer into testdata/ or
+// downloading from gs://, while still always writing a blob for the tokenizer,
+// but also avoiding empty blobs, we store this placeholder string.
+constexpr const char* kMockTokenizer = "unavailable";
 
-  // must come after definition of Impl
+class GemmaTokenizer {
+  // These must be defined after the definition of `Impl`.
+ public:
+  // If unavailable, pass `kMockTokenizer`.
+  explicit GemmaTokenizer(const std::string& tokenizer_proto);
   ~GemmaTokenizer();
   GemmaTokenizer(GemmaTokenizer&& other);
   GemmaTokenizer& operator=(GemmaTokenizer&& other);
 
+  // Returns `kMockTokenizer` if unavailable.
   std::string Serialize() const;
-  void Deserialize(const std::string& tokenizer_proto);
 
+  // Returns false on failure or if unavailable.
   bool Encode(const std::string& input, std::vector<std::string>* pieces) const;
   bool Encode(const std::string& input, std::vector<int>* ids) const;
   bool Decode(const std::vector<int>& ids, std::string* detokenized) const;
@@ -56,13 +60,9 @@ class GemmaTokenizer {
 
 class GemmaChatTemplate {
  public:
-  GemmaChatTemplate() = default;
-  explicit GemmaChatTemplate(const GemmaTokenizer& tokenizer, Model model) {
-    (void)Init(tokenizer, model);
-  }
-
-  // Returns false if the tokenizer is not available (as in optimize_test.cc).
-  bool Init(const GemmaTokenizer& tokenizer, Model model);
+  // No effect if `tokenizer` is unavailable (as happens in optimize_test.cc),
+  // but then any other method may abort.
+  GemmaChatTemplate(const GemmaTokenizer& tokenizer, Model model);
 
   // Given prompt tokens, this returns the wrapped prompt including BOS and
   // any "start_of_turn" structure required by the model.
@@ -83,12 +83,12 @@ class GemmaChatTemplate {
 
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
+                                 PromptWrapping wrapping, size_t pos,
                                  const std::string& prompt);
 
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
+                                 PromptWrapping wrapping, size_t pos,
                                  const std::string& prompt,
                                  size_t image_batch_size);
 

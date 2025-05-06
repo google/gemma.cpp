@@ -165,6 +165,8 @@ constexpr bool IsNuqStream() {
 // `WeightsPtrs`. When adding a new type that is supported, also
 // update gemma.cc, weights.*, and add instantiations/new_one.cc.
 enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64, kU128 };
+// These are used in `ModelConfig.Specifier`, hence the strings will not
+// change, though new ones may be added.
 static constexpr const char* kTypeStrings[] = {
     "unknown", "f32", "bf16", "sfp", "nuq", "f64", "c64", "u128"};
 static constexpr size_t kNumTypes =

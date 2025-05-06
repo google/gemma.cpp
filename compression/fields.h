@@ -56,8 +56,7 @@ struct IFields;  // breaks circular dependency
 // because their `IFields::VisitFields` calls `visitor.operator()`.
 //
 // Supported field types `T`: `uint32_t`, `int32_t`, `uint64_t`, `float`,
-// `std::string`,
-// classes derived from `IFields`, `bool`, `enum`, `std::vector<T>`.
+// `std::string`, `IFields` subclasses, `bool`, `enum`, `std::vector<T>`.
 class IFieldsVisitor {
  public:
   virtual ~IFieldsVisitor();

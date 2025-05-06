@@ -229,7 +229,7 @@ static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, char* argv[]) {
 }
 
 template <class TArgs>
-static inline HWY_MAYBE_UNUSED void AbortIfInvalidArgs(TArgs& args) {
+static inline HWY_MAYBE_UNUSED void AbortIfInvalidArgs(const TArgs& args) {
   if (const char* err = args.Validate()) {
     args.Help();
     HWY_ABORT("Problem with args: %s\n", err);

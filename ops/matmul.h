@@ -700,6 +700,10 @@ struct ConstMat {
 
   const Extents2D& Extents() const { return extents; }
   size_t Stride() const { return stride; }
+  float Scale() const { return scale; }
+  // So that matvec-inl.h can use the same interface as MatPtrT:
+  size_t Rows() const { return extents.rows; }
+  size_t Cols() const { return extents.cols; }
 
   // Shrinks the row-extent of this matrix view, i.e. reduces the view to a
   // subrange of the original rows starting at row 0.

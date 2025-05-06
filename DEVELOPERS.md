@@ -96,9 +96,10 @@ https://github.com/keras-team/keras-nlp/blob/master/tools/gemma/export_gemma_to_
 From Pytorch, use the following script to generate uncompressed weights:
 https://github.com/google/gemma.cpp/blob/dev/compression/convert_weights.py
 
-Then run `compression/compress_weights.cc` (Bazel target
-`compression:compress_weights`), specifying the resulting file as `--weights`
-and the desired .sbs name as the `--compressed_weights`.
+For PaliGemma, use `python/convert_from_safetensors` to create an SBS file
+directly.
+
+For other models, `gemma_export_main.py` is not yet open sourced.
 
 ## Compile-Time Flags (Advanced)
 

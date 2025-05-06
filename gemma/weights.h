@@ -17,112 +17,123 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <complex>
-#include <cstdio>
 #include <memory>
 #include <random>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
-#include "compression/compress.h"
-#include "compression/shared.h"
-#include "gemma/common.h"
-#include "gemma/configs.h"
-#include "gemma/tensor_index.h"
-#include "util/mat.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
+#include "compression/blob_store.h"  // BlobWriter2
+#include "compression/shared.h"      // IsF32
+#include "gemma/configs.h"           // ModelConfig
+#include "gemma/model_store.h"       // ModelStore
+#include "gemma/tensor_info.h"       // TensorInfoRegistry
+#include "util/mat.h"                // MatPtr
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-static inline std::string CacheName(const MatPtr& mat, int layer = -1,
-                                    char separator = ' ', int index = -1) {
-  // Already used/retired: s, S, n, 1
-  const char prefix = mat.GetType() == Type::kF32    ? 'F'
-                      : mat.GetType() == Type::kBF16 ? 'B'
-                      : mat.GetType() == Type::kSFP  ? '$'
-                      : mat.GetType() == Type::kNUQ  ? '2'
-                                                     : '?';
-  std::string name = std::string(1, prefix) + mat.Name();
-  if (layer >= 0 || index >= 0) {
-    name += '_';
-    if (layer >= 0) name += std::to_string(layer);
-    if (index >= 0) {
-      name += separator + std::to_string(index);
-    }
+// Argument passed to the `ForEachTensor` callback.
+struct TensorArgs {
+  // `other_mat1` and `other_mat2` can be nullptr, or tensor(s) of the same
+  // name/type from another `LayerWeightsPtrs` for iterating over tensor pairs
+  // (for copying) or triples (for `AdamUpdateMV`). Set by `TENSOR_ARGS`.
+  // `flags` is a combination of zero or more `Flags`.
+  TensorArgs(MatPtr& mat, const MatPtr* other_mat1, const MatPtr* other_mat2,
+             int flags)
+      : mat(mat), other_mat1(other_mat1), other_mat2(other_mat2), flags(flags) {
+    // Does not make sense to combine both flags.
+    HWY_ASSERT(flags != (kMaybeRead | kOnlyAllocate));
   }
-  return name;
-}
 
-// Different tensors need to appear in a ForEachTensor, according to what is
-// happening.
-enum class ForEachType {
-  // Under normal circumstances, when not initializing or loading, we can
-  // include all tensors and ignore the null ones.
-  kIgnoreNulls,
-  // If there is a table of contents, we can include all tensors.
-  kLoadWithToc,
-  // There is no table of contents, so we have to be careful to only include
-  // tensors that are actually present.
-  kLoadNoToc,
-  // We need to initialize all tensors needed when there is no table of
-  // contents. This differs from kLoadNoToc in that we need to include any
-  // tensor that is allocated but not loaded directly from file.
-  kInitNoToc,
+  MatPtr& mat;
+  const MatPtr* other_mat1;  // either/both can be nullptr.
+  const MatPtr* other_mat2;
+
+  // TODO: freestanding enum class instead? These are mutually exclusive.
+  enum Flags {
+    // Read the tensor from the file and abort if it is not found.
+    kMustRead = 0,
+    // Not an error if the tensor is not present in the file. For example,
+    // the _w1/_w2 tensors are not always present.
+    kMaybeRead = 1,
+    // Do not attempt to read, just allocate the tensor. Used for `Reshape`.
+    kOnlyAllocate = 2,
+  };
+  const int flags;
 };
 
+// Shorthand for creating the argument to the `ForEachTensor` callback. A macro
+// seems less bad than member pointer syntax.
+#define TENSOR_ARGS(mat, flag)                     \
+  TensorArgs(mat, other1 ? &other1->mat : nullptr, \
+             other2 ? &other2->mat : nullptr, TensorArgs::flag)
+
+// Per-layer weight metadata and pointers. The tensor data is owned by
+// `WeightsOwner`. Note that this class could be type-erased: member functions
+// do not actually use the `Weight` template argument. See `WeightsPtrs`.
+// `TensorInfoRegistry` (constructed from `ModelConfig`) is the source of truth
+// for all tensor shapes.
 template <class Weight>
 struct LayerWeightsPtrs {
-  // Large data is constructed separately.
-  explicit LayerWeightsPtrs(const LayerConfig& config,
-                            const TensorIndex& tensor_index)
-      : attn_vec_einsum_w("att_ein", tensor_index),
-        qkv_einsum_w("qkv_ein", tensor_index),
-        qkv_einsum_w1("qkv1_w", tensor_index),
-        qkv_einsum_w2("qkv2_w", tensor_index),
-        attention_output_biases("attn_ob", tensor_index),
-        griffin({.linear_x_w = {"gr_lin_x_w", tensor_index},
-                 .linear_x_biases = {"gr_lin_x_b", tensor_index},
-                 .linear_y_w = {"gr_lin_y_w", tensor_index},
-                 .linear_y_biases = {"gr_lin_y_b", tensor_index},
-                 .linear_out_w = {"gr_lin_out_w", tensor_index},
-                 .linear_out_biases = {"gr_lin_out_b", tensor_index},
-                 .conv_w = {"gr_conv_w", tensor_index},
-                 .conv_biases = {"gr_conv_b", tensor_index},
-                 .gate_w = {"gr_gate_w", tensor_index},
-                 .gate_biases = {"gr_gate_b", tensor_index},
-                 .a = {"gr_a", tensor_index}}),
+  static inline std::string Concat(const char* base_name,
+                                   const std::string& suffix) {
+    return std::string(base_name) + suffix;
+  }
+
+  // Initializes tensor metadata without allocating.
+  LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
+                   const TensorInfoRegistry& tensors)
+      : suffix_(LayerSuffix(layer_idx)),
+        attn_vec_einsum_w(Concat("att_ein", suffix_), tensors),
+        qkv_einsum_w(Concat("qkv_ein", suffix_), tensors),
+        qkv_einsum_w1(Concat("qkv1_w", suffix_), tensors),
+        qkv_einsum_w2(Concat("qkv2_w", suffix_), tensors),
+        attention_output_biases(Concat("attn_ob", suffix_), tensors),
+        griffin(
+            {.linear_x_w = {Concat("gr_lin_x_w", suffix_), tensors},
+             .linear_x_biases = {Concat("gr_lin_x_b", suffix_), tensors},
+             .linear_y_w = {Concat("gr_lin_y_w", suffix_), tensors},
+             .linear_y_biases = {Concat("gr_lin_y_b", suffix_), tensors},
+             .linear_out_w = {Concat("gr_lin_out_w", suffix_), tensors},
+             .linear_out_biases = {Concat("gr_lin_out_b", suffix_), tensors},
+             .conv_w = {Concat("gr_conv_w", suffix_), tensors},
+             .conv_biases = {Concat("gr_conv_b", suffix_), tensors},
+             .gate_w = {Concat("gr_gate_w", suffix_), tensors},
+             .gate_biases = {Concat("gr_gate_b", suffix_), tensors},
+             .a = {Concat("gr_a", suffix_), tensors}}),
         // MultiHeadDotProductAttention.
-        vit({.attn_out_w = {"attn_out_w", tensor_index},
-             .attn_out_b = {"attn_out_b", tensor_index},
-             .qkv_einsum_w = {"qkv_ein_w", tensor_index},
-             .qkv_einsum_b = {"qkv_ein_b", tensor_index},
-             .linear_0_w = {"linear_0_w", tensor_index},
-             .linear_0_b = {"linear_0_b", tensor_index},
-             .linear_1_w = {"linear_1_w", tensor_index},
-             .linear_1_b = {"linear_1_b", tensor_index},
-             .layer_norm_0_bias = {"ln_0_bias", tensor_index},
-             .layer_norm_0_scale = {"ln_0_scale", tensor_index},
-             .layer_norm_1_bias = {"ln_1_bias", tensor_index},
-             .layer_norm_1_scale = {"ln_1_scale", tensor_index}}),
-        gating_einsum_w("gating_ein", tensor_index),
-        gating_einsum_w1("gating1_w", tensor_index),
-        gating_einsum_w2("gating2_w", tensor_index),
-        linear_w("linear_w", tensor_index),
-        pre_attention_norm_scale("pre_att_ns", tensor_index),
-        pre_ffw_norm_scale("pre_ff_ns", tensor_index),
-        post_attention_norm_scale("post_att_ns", tensor_index),
-        post_ffw_norm_scale("post_ff_ns", tensor_index),
-        ffw_gating_biases("ffw_gat_b", tensor_index),
-        ffw_output_biases("ffw_out_b", tensor_index),
-        att_weights("att_w", tensor_index),
-        key_norm_scale("key_norm", tensor_index),
-        query_norm_scale("query_norm", tensor_index),
+        vit({.attn_out_w = {Concat("attn_out_w", suffix_), tensors},
+             .attn_out_b = {Concat("attn_out_b", suffix_), tensors},
+             .qkv_einsum_w = {Concat("qkv_ein_w", suffix_), tensors},
+             .qkv_einsum_b = {Concat("qkv_ein_b", suffix_), tensors},
+             .linear_0_w = {Concat("linear_0_w", suffix_), tensors},
+             .linear_0_b = {Concat("linear_0_b", suffix_), tensors},
+             .linear_1_w = {Concat("linear_1_w", suffix_), tensors},
+             .linear_1_b = {Concat("linear_1_b", suffix_), tensors},
+             .layer_norm_0_bias = {Concat("ln_0_bias", suffix_), tensors},
+             .layer_norm_0_scale = {Concat("ln_0_scale", suffix_), tensors},
+             .layer_norm_1_bias = {Concat("ln_1_bias", suffix_), tensors},
+             .layer_norm_1_scale = {Concat("ln_1_scale", suffix_), tensors}}),
+        gating_einsum_w(Concat("gating_ein", suffix_), tensors),
+        gating_einsum_w1(Concat("gating1_w", suffix_), tensors),
+        gating_einsum_w2(Concat("gating2_w", suffix_), tensors),
+        linear_w(Concat("linear_w", suffix_), tensors),
+        pre_attention_norm_scale(Concat("pre_att_ns", suffix_), tensors),
+        pre_ffw_norm_scale(Concat("pre_ff_ns", suffix_), tensors),
+        post_attention_norm_scale(Concat("post_att_ns", suffix_), tensors),
+        post_ffw_norm_scale(Concat("post_ff_ns", suffix_), tensors),
+        ffw_gating_biases(Concat("ffw_gat_b", suffix_), tensors),
+        ffw_output_biases(Concat("ffw_out_b", suffix_), tensors),
+        att_weights(Concat("att_w", suffix_), tensors),
+        key_norm_scale(Concat("key_norm", suffix_), tensors),
+        query_norm_scale(Concat("query_norm", suffix_), tensors),
         layer_config(config) {}
   ~LayerWeightsPtrs() = default;
+
+  const std::string suffix_;
 
   // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
   // do not yet support smaller compressed types, or require at least bf16. When
@@ -133,261 +144,246 @@ struct LayerWeightsPtrs {
               hwy::If<hwy::IsSame<Weight, double>(), double,
                       hwy::If<IsF32<Weight>(), float, BF16>>>;
 
-  template <class T>
-  using ArrayT = MatPtrT<T>;
-
-  ArrayT<Weight> attn_vec_einsum_w;
+  MatPtrT<Weight> attn_vec_einsum_w;
   // qkv_einsum_w holds 2 different matrices, which may be separated out.
-  // On loading, which is used depends on what is in the file.
+  // On reading, which is used depends on what is in the file.
   // At inference, the one with a non-null ptr is used.
-  ArrayT<Weight> qkv_einsum_w;
-  ArrayT<Weight> qkv_einsum_w1;
-  ArrayT<Weight> qkv_einsum_w2;
-  ArrayT<float> attention_output_biases;
+  MatPtrT<Weight> qkv_einsum_w;
+  MatPtrT<Weight> qkv_einsum_w1;
+  MatPtrT<Weight> qkv_einsum_w2;
+  MatPtrT<float> attention_output_biases;
 
   struct {
-    ArrayT<Weight> linear_x_w;
-    ArrayT<float> linear_x_biases;
-    ArrayT<Weight> linear_y_w;
-    ArrayT<float> linear_y_biases;
-    ArrayT<Weight> linear_out_w;
-    ArrayT<float> linear_out_biases;
-    ArrayT<float> conv_w;
-    ArrayT<float> conv_biases;
-    ArrayT<Weight> gate_w;
-    ArrayT<float> gate_biases;
-    ArrayT<float> a;
+    MatPtrT<Weight> linear_x_w;
+    MatPtrT<float> linear_x_biases;
+    MatPtrT<Weight> linear_y_w;
+    MatPtrT<float> linear_y_biases;
+    MatPtrT<Weight> linear_out_w;
+    MatPtrT<float> linear_out_biases;
+    MatPtrT<float> conv_w;
+    MatPtrT<float> conv_biases;
+    MatPtrT<Weight> gate_w;
+    MatPtrT<float> gate_biases;
+    MatPtrT<float> a;
   } griffin;
 
   struct {
     // MultiHeadDotProductAttention.
-    ArrayT<WeightF32OrBF16> attn_out_w;
-    ArrayT<float> attn_out_b;
-    ArrayT<WeightF32OrBF16> qkv_einsum_w;
-    ArrayT<float> qkv_einsum_b;
+    MatPtrT<WeightF32OrBF16> attn_out_w;
+    MatPtrT<float> attn_out_b;
+    MatPtrT<WeightF32OrBF16> qkv_einsum_w;
+    MatPtrT<float> qkv_einsum_b;
     // MlpBlock.
-    ArrayT<WeightF32OrBF16> linear_0_w;
-    ArrayT<float> linear_0_b;
-    ArrayT<WeightF32OrBF16> linear_1_w;
-    ArrayT<float> linear_1_b;
+    MatPtrT<WeightF32OrBF16> linear_0_w;
+    MatPtrT<float> linear_0_b;
+    MatPtrT<WeightF32OrBF16> linear_1_w;
+    MatPtrT<float> linear_1_b;
     // LayerNorm.
-    ArrayT<WeightF32OrBF16> layer_norm_0_bias;
-    ArrayT<WeightF32OrBF16> layer_norm_0_scale;
-    ArrayT<WeightF32OrBF16> layer_norm_1_bias;
-    ArrayT<WeightF32OrBF16> layer_norm_1_scale;
+    MatPtrT<WeightF32OrBF16> layer_norm_0_bias;
+    MatPtrT<WeightF32OrBF16> layer_norm_0_scale;
+    MatPtrT<WeightF32OrBF16> layer_norm_1_bias;
+    MatPtrT<WeightF32OrBF16> layer_norm_1_scale;
   } vit;
 
   // gating_einsum_w holds 2 different matrices, which may be separated out.
-  // On loading, which is used depends on what is in the file.
+  // On reading, which is used depends on what is in the file.
   // At inference, the one with a non-null ptr is used.
-  ArrayT<Weight> gating_einsum_w;
-  ArrayT<Weight> gating_einsum_w1;
-  ArrayT<Weight> gating_einsum_w2;
-  ArrayT<Weight> linear_w;
+  MatPtrT<Weight> gating_einsum_w;
+  MatPtrT<Weight> gating_einsum_w1;
+  MatPtrT<Weight> gating_einsum_w2;
+  MatPtrT<Weight> linear_w;
   // We don't yet have an RMSNorm that accepts all Weight.
-  ArrayT<WeightF32OrBF16> pre_attention_norm_scale;
-  ArrayT<WeightF32OrBF16> pre_ffw_norm_scale;
-  ArrayT<WeightF32OrBF16> post_attention_norm_scale;
-  ArrayT<WeightF32OrBF16> post_ffw_norm_scale;
+  MatPtrT<WeightF32OrBF16> pre_attention_norm_scale;
+  MatPtrT<WeightF32OrBF16> pre_ffw_norm_scale;
+  MatPtrT<WeightF32OrBF16> post_attention_norm_scale;
+  MatPtrT<WeightF32OrBF16> post_ffw_norm_scale;
 
-  ArrayT<float> ffw_gating_biases;
-  ArrayT<float> ffw_output_biases;
+  MatPtrT<float> ffw_gating_biases;
+  MatPtrT<float> ffw_output_biases;
 
-  // Reshaped attention; not loaded from disk via ForEachTensor.
-  ArrayT<Weight> att_weights;
+  MatPtrT<Weight> att_weights;  // For Reshape(); kOnlyAllocate.
+
+  MatPtrT<WeightF32OrBF16> key_norm_scale;
+  MatPtrT<WeightF32OrBF16> query_norm_scale;
 
   const LayerConfig& layer_config;
 
-  // Initializes att_weights from attn_vec_einsum_w, hence this must be called
-  // after loading weights via ForEachTensor.
-  // TODO: update compression/convert_weights to bake this in.
-  void Reshape(MatOwner* storage) {
-    static_assert(!hwy::IsSame<Weight, NuqStream>());
+  // Calls `func(TensorArgs)` for each tensor which is in use for the
+  // current `layer_config`. `other1` and `other2` are optional arguments so we
+  // can also iterate over pairs or triples of tensors for `AdamUpdateMV`.
+  // Public because also called by `WeightsPtrs`.
+  template <class Func>
+  void ForEachTensor(const LayerWeightsPtrs<Weight>* other1,
+                     const LayerWeightsPtrs<Weight>* other2, Func func) {
+    if (layer_config.type == LayerAttentionType::kVit) {
+      // MHA.
+      func(TENSOR_ARGS(vit.attn_out_w, kMustRead));
+      func(TENSOR_ARGS(vit.attn_out_b, kMustRead));
+      func(TENSOR_ARGS(vit.qkv_einsum_w, kMustRead));
+      func(TENSOR_ARGS(vit.qkv_einsum_b, kMustRead));
+      // MlpBlock.
+      func(TENSOR_ARGS(vit.linear_0_w, kMustRead));
+      func(TENSOR_ARGS(vit.linear_0_b, kMustRead));
+      func(TENSOR_ARGS(vit.linear_1_w, kMustRead));
+      func(TENSOR_ARGS(vit.linear_1_b, kMustRead));
+      // LayerNorm.
+      func(TENSOR_ARGS(vit.layer_norm_0_bias, kMustRead));
+      func(TENSOR_ARGS(vit.layer_norm_0_scale, kMustRead));
+      func(TENSOR_ARGS(vit.layer_norm_1_bias, kMustRead));
+      func(TENSOR_ARGS(vit.layer_norm_1_scale, kMustRead));
+      return;
+    }
+    if (layer_config.type == LayerAttentionType::kGemma) {
+      // Not read, will be filled by Reshape() from `attn_vec_einsum_w`.
+      func(TENSOR_ARGS(att_weights, kOnlyAllocate));
+      func(TENSOR_ARGS(attn_vec_einsum_w, kMustRead));
+      func(TENSOR_ARGS(qkv_einsum_w, kMustRead));
+      func(TENSOR_ARGS(qkv_einsum_w1, kMaybeRead));
+      func(TENSOR_ARGS(qkv_einsum_w2, kMaybeRead));
+    } else {
+      func(TENSOR_ARGS(griffin.linear_x_w, kMustRead));
+      func(TENSOR_ARGS(griffin.linear_x_biases, kMustRead));
+      func(TENSOR_ARGS(griffin.linear_y_w, kMustRead));
+      func(TENSOR_ARGS(griffin.linear_y_biases, kMustRead));
+      func(TENSOR_ARGS(griffin.linear_out_w, kMustRead));
+      func(TENSOR_ARGS(griffin.linear_out_biases, kMustRead));
+      func(TENSOR_ARGS(griffin.conv_w, kMustRead));
+      func(TENSOR_ARGS(griffin.conv_biases, kMustRead));
+      func(TENSOR_ARGS(griffin.gate_w, kMustRead));
+      func(TENSOR_ARGS(griffin.gate_biases, kMustRead));
+      func(TENSOR_ARGS(griffin.a, kMustRead));
+    }
+    {
+      func(TENSOR_ARGS(gating_einsum_w, kMustRead));
+      func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
+      func(TENSOR_ARGS(gating_einsum_w2, kMaybeRead));
+      func(TENSOR_ARGS(linear_w, kMustRead));
+      func(TENSOR_ARGS(pre_attention_norm_scale, kMustRead));
+      func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
+    }
 
-    if (!attn_vec_einsum_w.HasPtr()) return;
+    if (layer_config.post_norm == PostNormType::Scale) {
+      func(TENSOR_ARGS(post_attention_norm_scale, kMustRead));
+      func(TENSOR_ARGS(post_ffw_norm_scale, kMustRead));
+    }
+    if (layer_config.use_qk_norm) {
+      func(TENSOR_ARGS(key_norm_scale, kMustRead));
+      func(TENSOR_ARGS(query_norm_scale, kMustRead));
+    }
+
+    if (layer_config.ff_biases) {
+      func(TENSOR_ARGS(ffw_gating_biases, kMustRead));
+      func(TENSOR_ARGS(ffw_output_biases, kMustRead));
+    }
+
+    if (layer_config.softmax_attn_output_biases &&
+        layer_config.type == LayerAttentionType::kGemma) {
+      func(TENSOR_ARGS(attention_output_biases, kMustRead));
+    }
+  }  // `ForEachTensor`
+
+  // Zero-initializes all allocated tensors in the layer.
+  void ZeroInit() {
+    ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
+      if (!t.mat.HasPtr()) return;
+      gcpp::ZeroInit(t.mat);
+    });
+  }
+
+  void RandInit(float stddev, std::mt19937& gen) {
+    ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+      if (!t.mat.HasPtr()) return;
+      gcpp::RandInit(t.mat, stddev, gen);
+    });
+  }
+
+  // Allocates memory for all the tensors in the layer. Note that this is slow
+  // (non-parallel) and only used for a stand-alone layer.
+  void AllocateForTest(MatOwners& mat_owners) {
+    ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+      // `backprop/` does not use row accessors and hence requires kPacked.
+      mat_owners.AllocateFor(t.mat, MatPadding::kPacked);
+    });
+  }
+
+  // Initializes att_weights from `attn_vec_einsum_w`, hence this must be called
+  // after reading weights via `ForEachTensor`.
+  // TODO: update compression/convert_weights to bake this in.
+  void Reshape() {
+    // NUQ is handled by a specialization in weights.cc.
+    HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
 
     const size_t model_dim = layer_config.model_dim;
     const size_t heads = layer_config.heads;
     const size_t qkv_dim = layer_config.qkv_dim;
 
-    // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
-    if (storage != nullptr) {
-      storage->AllocateFor(att_weights, MatPadding::kPacked);
-    }
+    // Reshape [heads, model_dim, qkv_dim] to [model_dim, heads * qkv_dim].
+    HWY_ASSERT(att_weights.HasPtr());
+    HWY_ASSERT(att_weights.GetType() == attn_vec_einsum_w.GetType());
+    HWY_ASSERT(att_weights.Rows() == model_dim);
+    HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
+    HWY_ASSERT(attn_vec_einsum_w.HasPtr());
+    HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
+    HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
+    const size_t T_bytes = att_weights.ElementBytes();
     for (size_t m = 0; m < model_dim; ++m) {
-      Weight* HWY_RESTRICT out_row =
-          att_weights.template RowT<Weight>(0) + m * heads * qkv_dim;
+      uint8_t* HWY_RESTRICT out_row =
+          reinterpret_cast<uint8_t*>(att_weights.Row(m));
       for (size_t h = 0; h < heads; ++h) {
-        hwy::CopyBytes(attn_vec_einsum_w.template RowT<Weight>(0) +
-                           h * model_dim * qkv_dim + m * qkv_dim,
-                       out_row + h * qkv_dim, qkv_dim * sizeof(Weight));
+        hwy::CopyBytes(attn_vec_einsum_w.Row(h * model_dim + m),
+                       out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
       }
     }
     att_weights.SetScale(attn_vec_einsum_w.Scale());
   }
-
-  ArrayT<WeightF32OrBF16> key_norm_scale;
-  ArrayT<WeightF32OrBF16> query_norm_scale;
-
-// Used by ForEachTensor for per-layer tensors.
-#define GEMMA_CALL_FUNC(member)                                           \
-  {                                                                       \
-    for (int i = 0; i < ptrs.size(); ++i) {                               \
-      tensors[i] = &ptrs[i]->member;                                      \
-    }                                                                     \
-    if (tensors[0]->HasPtr() || fet != ForEachType::kIgnoreNulls) {       \
-      func(CacheName(ptrs[0]->member, layer_idx, sep, sep_index).c_str(), \
-           hwy::Span<MatPtr*>(tensors.data(), ptrs.size()));              \
-    }                                                                     \
-  }
-
-  template <class Func>
-  static void ForEachTensor(const std::vector<LayerWeightsPtrs<Weight>*>& ptrs,
-                            int layer_idx, ForEachType fet, Func func,
-                            char sep = ' ', int sep_index = -1) {
-    std::vector<MatPtr*> tensors(ptrs.size(), nullptr);
-    auto type = ptrs[0]->layer_config.type;
-    if (type == LayerAttentionType::kVit) {
-      // MHA.
-      GEMMA_CALL_FUNC(vit.attn_out_w);
-      GEMMA_CALL_FUNC(vit.attn_out_b);
-      GEMMA_CALL_FUNC(vit.qkv_einsum_w);
-      GEMMA_CALL_FUNC(vit.qkv_einsum_b);
-      // MlpBlock.
-      GEMMA_CALL_FUNC(vit.linear_0_w);
-      GEMMA_CALL_FUNC(vit.linear_0_b);
-      GEMMA_CALL_FUNC(vit.linear_1_w);
-      GEMMA_CALL_FUNC(vit.linear_1_b);
-      // LayerNorm.
-      GEMMA_CALL_FUNC(vit.layer_norm_0_bias);
-      GEMMA_CALL_FUNC(vit.layer_norm_0_scale);
-      GEMMA_CALL_FUNC(vit.layer_norm_1_bias);
-      GEMMA_CALL_FUNC(vit.layer_norm_1_scale);
-      return;
-    }
-    if (type == LayerAttentionType::kGemma) {
-      if (fet != ForEachType::kLoadNoToc) {
-        GEMMA_CALL_FUNC(att_weights);
-      }
-      if (fet == ForEachType::kInitNoToc || fet == ForEachType::kLoadNoToc ||
-          fet == ForEachType::kIgnoreNulls) {
-        GEMMA_CALL_FUNC(attn_vec_einsum_w);
-      }
-      GEMMA_CALL_FUNC(qkv_einsum_w);
-      if (fet == ForEachType::kIgnoreNulls ||
-          fet == ForEachType::kLoadWithToc) {
-        // The unwanted ones will be null or not in the toc.
-        GEMMA_CALL_FUNC(qkv_einsum_w1);
-        GEMMA_CALL_FUNC(qkv_einsum_w2);
-      }
-    } else {
-      GEMMA_CALL_FUNC(griffin.linear_x_w);
-      GEMMA_CALL_FUNC(griffin.linear_x_biases);
-      GEMMA_CALL_FUNC(griffin.linear_y_w);
-      GEMMA_CALL_FUNC(griffin.linear_y_biases);
-      GEMMA_CALL_FUNC(griffin.linear_out_w);
-      GEMMA_CALL_FUNC(griffin.linear_out_biases);
-      GEMMA_CALL_FUNC(griffin.conv_w);
-      GEMMA_CALL_FUNC(griffin.conv_biases);
-      GEMMA_CALL_FUNC(griffin.gate_w);
-      GEMMA_CALL_FUNC(griffin.gate_biases);
-      GEMMA_CALL_FUNC(griffin.a);
-    }
-    GEMMA_CALL_FUNC(gating_einsum_w);
-    if (fet == ForEachType::kIgnoreNulls || fet == ForEachType::kLoadWithToc) {
-      // The unwanted ones will be null or not in the toc.
-      GEMMA_CALL_FUNC(gating_einsum_w1);
-      GEMMA_CALL_FUNC(gating_einsum_w2);
-    }
-    GEMMA_CALL_FUNC(linear_w);
-    GEMMA_CALL_FUNC(pre_attention_norm_scale);
-    GEMMA_CALL_FUNC(pre_ffw_norm_scale);
-
-    if (ptrs[0]->layer_config.post_norm == PostNormType::Scale) {
-      GEMMA_CALL_FUNC(post_attention_norm_scale);
-      GEMMA_CALL_FUNC(post_ffw_norm_scale);
-    }
-    if (ptrs[0]->layer_config.use_qk_norm) {
-      GEMMA_CALL_FUNC(key_norm_scale);
-      GEMMA_CALL_FUNC(query_norm_scale);
-    }
-
-    if (ptrs[0]->layer_config.ff_biases) {
-      GEMMA_CALL_FUNC(ffw_gating_biases);
-      GEMMA_CALL_FUNC(ffw_output_biases);
-    }
-
-    if (ptrs[0]->layer_config.softmax_attn_output_biases &&
-        type == LayerAttentionType::kGemma) {
-      GEMMA_CALL_FUNC(attention_output_biases);
-    }
-  }
-
-  // Sets all the tensors in the layer to zero. Memory must have been allocated.
-  void ZeroInit(int layer_idx) {
-    ForEachTensor({this}, layer_idx, ForEachType::kIgnoreNulls,
-                  [](const char*, hwy::Span<MatPtr*> tensors) {
-                    gcpp::ZeroInit(*tensors[0]);
-                  });
-  }
-
-  // Allocates memory for all the tensors in the layer.
-  // Note that this is slow and only used for a stand-alone layer.
-  void Allocate(std::vector<MatOwner>& layer_storage) {
-    ForEachTensor(
-        {this}, /*layer_idx=*/0, ForEachType::kInitNoToc,
-        [&layer_storage](const char* name, hwy::Span<MatPtr*> tensors) {
-          layer_storage.push_back(MatOwner());
-          layer_storage.back().AllocateFor(*tensors[0], MatPadding::kPacked);
-        });
-  }
 };
 
+// Holds layer-independent weight metadata and pointers plus per-layer
+// `LayerWeightsPtrs`. The tensor data is owned by `WeightsOwner`. As with
+// `LayerWeightsPtrs`, this class could be type-erased: member functions do not
+// actually use the `Weight` template argument. The template does allow user
+// code to dispatch only once. However, most tensors are large enough that
+// dispatch at each usage would be feasible.
+// TODO: move `gemma-inl.h` toward dispatch at each usage.
+// TODO: rename to WeightsPtrs.
 template <class Weight>
 struct ModelWeightsPtrs {
+  using WeightT = Weight;
+
   explicit ModelWeightsPtrs(const ModelConfig& config)
-      : ModelWeightsPtrs(
-            config,
-            TensorIndex(config, /*llm_layer_idx=*/-1, /*vit_layer_idx=*/-1,
-                        /*reshape_att=*/false)) {}
-  ModelWeightsPtrs(const ModelConfig& config, const TensorIndex& tensor_index)
-      : embedder_input_embedding("c_embedding", tensor_index),
-        final_norm_scale("c_final_norm", tensor_index),
-        vit_encoder_norm_bias("enc_norm_bias", tensor_index),
-        vit_encoder_norm_scale("enc_norm_scale", tensor_index),
-        vit_img_embedding_bias("img_emb_bias", tensor_index),
-        vit_img_embedding_kernel("img_emb_kernel", tensor_index),
-        vit_img_pos_embedding("img_pos_emb", tensor_index),
-        vit_img_head_bias("img_head_bias", tensor_index),
-        vit_img_head_kernel("img_head_kernel", tensor_index),
-        mm_embed_norm("mm_embed_norm", tensor_index),
-        scale_names(config.scale_names),
+      : tensors_(config),
+        // No suffix, these are per-model.
+        embedder_input_embedding("c_embedding", tensors_),
+        final_norm_scale("c_final_norm", tensors_),
+        vit_encoder_norm_bias("enc_norm_bias", tensors_),
+        vit_encoder_norm_scale("enc_norm_scale", tensors_),
+        vit_img_embedding_bias("img_emb_bias", tensors_),
+        vit_img_embedding_kernel("img_emb_kernel", tensors_),
+        vit_img_pos_embedding("img_pos_emb", tensors_),
+        vit_img_head_bias("img_head_bias", tensors_),
+        vit_img_head_kernel("img_head_kernel", tensors_),
+        mm_embed_norm("mm_embed_norm", tensors_),
         weights_config(config) {
     c_layers.reserve(config.layer_configs.size());
-    for (int index = 0; index < static_cast<int>(config.layer_configs.size());
-         ++index) {
-      const auto& layer_config = config.layer_configs[index];
-      TensorIndex tensor_index(config, index, /*vit_layer_idx=*/-1,
-                               /*reshape_att=*/false);
-      c_layers.push_back(LayerWeightsPtrs<Weight>(layer_config, tensor_index));
+    for (size_t idx = 0; idx < config.layer_configs.size(); ++idx) {
+      const LayerConfig& layer_config = config.layer_configs[idx];
+      c_layers.emplace_back(idx, layer_config, tensors_);
     }
-    for (int index = 0;
-         index < static_cast<int>(config.vit_config.layer_configs.size());
-         ++index) {
-      const auto& layer_config = config.vit_config.layer_configs[index];
-      TensorIndex tensor_index(config, /*llm_layer_idx=*/-1, index,
-                               /*reshape_att=*/false);
-      vit_layers.push_back(
-          LayerWeightsPtrs<Weight>(layer_config, tensor_index));
+    for (size_t idx = 0; idx < config.vit_config.layer_configs.size(); ++idx) {
+      const LayerConfig& layer_config = config.vit_config.layer_configs[idx];
+      vit_layers.emplace_back(idx, layer_config, tensors_);
     }
   }
 
   ~ModelWeightsPtrs() = default;
+  // = F32 if weights are F32, else BF16.
   using WeightF32OrBF16 = typename LayerWeightsPtrs<Weight>::WeightF32OrBF16;
-  using WeightF32OrInputT = hwy::If<hwy::IsSame<WeightF32OrBF16, BF16>(),
-                                    EmbedderInputT, WeightF32OrBF16>;
 
-  MatPtrT<WeightF32OrInputT> embedder_input_embedding;
+  // Passed to all  `MatPtrT` initializers, hence must be initialized first.
+  const TensorInfoRegistry tensors_;
+
+  // TODO: switch to SFP?
+  MatPtrT<WeightF32OrBF16> embedder_input_embedding;
   MatPtrT<WeightF32OrBF16> final_norm_scale;
 
   // Vit parts.
@@ -396,242 +392,189 @@ struct ModelWeightsPtrs {
   MatPtrT<float> vit_img_embedding_bias;
   MatPtrT<WeightF32OrBF16> vit_img_embedding_kernel;
   MatPtrT<float> vit_img_pos_embedding;
-  // The head maps from VitConfig::kModelDim (Vit final layer) to
-  // kModelDim (LLM input).
+  // The head maps from VitConfig::model_dim (Vit final layer) to
+  // model_dim (LLM input).
   MatPtrT<float> vit_img_head_bias;
   MatPtrT<WeightF32OrBF16> vit_img_head_kernel;
 
   MatPtrT<WeightF32OrBF16> mm_embed_norm;
-
-  std::unordered_set<std::string> scale_names;
 
   const ModelConfig& weights_config;
 
   std::vector<LayerWeightsPtrs<Weight>> c_layers;
   std::vector<LayerWeightsPtrs<Weight>> vit_layers;
 
-  // Called by weights.cc after Loading, before att_w has been allocated.
-  void AllocAndCopyWithTranspose(hwy::ThreadPool& pool,
-                                 std::vector<MatOwner>& model_storage) {
-    size_t storage_index = model_storage.size();
-    model_storage.resize(model_storage.size() + c_layers.size());
-    pool.Run(0, c_layers.size(),
-             [this, &model_storage, storage_index](uint64_t layer,
-                                                   size_t /*thread*/) {
-               GetLayer(layer)->Reshape(&model_storage[storage_index + layer]);
-             });
-  }
-  // For when the storage has already been allocated.
-  void CopyWithTranspose(hwy::ThreadPool& pool) {
-    pool.Run(0, c_layers.size(), [this](uint64_t layer, size_t /*thread*/) {
-      GetLayer(layer)->Reshape(nullptr);
-    });
-  }
-
-  void ZeroInit() {
-    gcpp::ZeroInit(embedder_input_embedding);
-    gcpp::ZeroInit(final_norm_scale);
-    for (size_t i = 0; i < c_layers.size(); ++i) {
-      c_layers[i].ZeroInit(i);
-    }
-  }
-
   const LayerWeightsPtrs<Weight>* GetLayer(size_t layer) const {
     return &c_layers[layer];
   }
   LayerWeightsPtrs<Weight>* GetLayer(size_t layer) { return &c_layers[layer]; }
-  const LayerWeightsPtrs<Weight>* GetVitLayer(size_t layer) const {
+  const LayerWeightsPtrs<Weight>* VitLayer(size_t layer) const {
     return &vit_layers[layer];
   }
-  LayerWeightsPtrs<Weight>* GetVitLayer(size_t layer) {
+  LayerWeightsPtrs<Weight>* VitLayer(size_t layer) {
     return &vit_layers[layer];
   }
 
-  void Allocate(std::vector<MatOwner>& model_storage, hwy::ThreadPool& pool) {
-    std::vector<MatPtr*> model_toc;
-    ForEachTensor(
-        {this}, ForEachType::kInitNoToc,
-        [&model_toc, &model_storage](const char*, hwy::Span<MatPtr*> tensors) {
-          model_toc.push_back(tensors[0]);
-          model_storage.push_back(MatOwner());
-        });
-    // Allocate in parallel using the pool.
-    pool.Run(0, model_toc.size(),
-             [&model_toc, &model_storage](uint64_t task, size_t /*thread*/) {
-               // model_storage may have had content before we started.
-               size_t idx = task + model_storage.size() - model_toc.size();
-               model_storage[idx].AllocateFor(*model_toc[task],
-                                              MatPadding::kPacked);
-             });
-  }
-
-  // Copies the data from other to *this.
-  void CopyFrom(const ModelWeightsPtrs<Weight>& other) {
-    ForEachTensor({this, const_cast<ModelWeightsPtrs<Weight>*>(&other)},
-                  ForEachType::kIgnoreNulls,
-                  [](const char*, hwy::Span<MatPtr*> tensors) {
-                    CopyMat(*tensors[1], *tensors[0]);
-                  });
-  }
-
-  // If scales is empty, computes and returns the scale factors for the tensors,
-  // otherwise applies the scale factors to the tensors.
-  void GetOrApplyScales(std::vector<float>& scales) {
-    int scale_pos = 0;
-    ForEachTensor(
-        {this}, ForEachType::kIgnoreNulls,
-        [&scales, &scale_pos, this](const char*, hwy::Span<MatPtr*> tensors) {
-          if (this->scale_names.count(tensors[0]->Name())) {
-            if (scale_pos < scales.size()) {
-              tensors[0]->SetScale(scales[scale_pos]);
-            } else {
-              float scale = ScaleWeights(tensors[0]->RowT<float>(0),
-                                         tensors[0]->Extents().Area());
-              scales.push_back(scale);
-            }
-            ++scale_pos;
-          }
-        });
-    HWY_ASSERT(scale_pos == weights_config.num_tensor_scales);
-  }
-
+  // Called via `CallT`. `other1` and `other2` are usually null, but can be
+  // used to copy from another set of weights. Public because called by tests
+  // and `WeightsOwner`.
   template <class Func>
-  static void ForEachTensor(const std::vector<ModelWeightsPtrs<Weight>*>& ptrs,
-                            ForEachType fet, Func func) {
-    std::vector<LayerWeightsPtrs<Weight>*> layers(ptrs.size());
-    std::vector<LayerWeightsPtrs<Weight>*> vit_layers(ptrs.size());
-    std::vector<MatPtr*> tensors(ptrs.size(), nullptr);
-    // Variables used by GEMMA_CALL_FUNC.
-    int layer_idx = -1;
-    char sep = ' ';
-    int sep_index = -1;
-    GEMMA_CALL_FUNC(embedder_input_embedding);
-    GEMMA_CALL_FUNC(final_norm_scale);
-    if (ptrs[0]->weights_config.vit_config.layer_configs.size() > 0) {
-      // Vit parts.
-      GEMMA_CALL_FUNC(vit_encoder_norm_bias);
-      GEMMA_CALL_FUNC(vit_encoder_norm_scale);
-      GEMMA_CALL_FUNC(vit_img_embedding_bias);
-      GEMMA_CALL_FUNC(vit_img_embedding_kernel);
-      GEMMA_CALL_FUNC(vit_img_pos_embedding);
-      GEMMA_CALL_FUNC(vit_img_head_bias);
-      GEMMA_CALL_FUNC(vit_img_head_kernel);
+  void ForEachTensor(const ModelWeightsPtrs<Weight>* other1,
+                     const ModelWeightsPtrs<Weight>* other2, Func func) {
+    const LayerWeightsPtrs<Weight>* other_layer1 = nullptr;
+    const LayerWeightsPtrs<Weight>* other_layer2 = nullptr;
+    func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
+    func(TENSOR_ARGS(final_norm_scale, kMustRead));
 
-      if (ptrs[0]->weights_config.wrapping == PromptWrapping::GEMMA_VLM)
-        GEMMA_CALL_FUNC(mm_embed_norm);
-    }
+    if (!weights_config.vit_config.layer_configs.empty()) {  // Vit parts.
+      func(TENSOR_ARGS(vit_encoder_norm_bias, kMustRead));
+      func(TENSOR_ARGS(vit_encoder_norm_scale, kMustRead));
+      func(TENSOR_ARGS(vit_img_embedding_bias, kMustRead));
+      func(TENSOR_ARGS(vit_img_embedding_kernel, kMustRead));
+      func(TENSOR_ARGS(vit_img_pos_embedding, kMustRead));
+      func(TENSOR_ARGS(vit_img_head_bias, kMustRead));
+      func(TENSOR_ARGS(vit_img_head_kernel, kMustRead));
 
-    for (int layer_idx = 0; layer_idx < ptrs[0]->c_layers.size(); ++layer_idx) {
-      for (int i = 0; i < ptrs.size(); ++i) {
-        layers[i] = ptrs[i]->GetLayer(layer_idx);
-      }
-      LayerWeightsPtrs<Weight>::ForEachTensor(layers, layer_idx, fet, func);
-    }
-
-    // Vit layers. Not supported for compress_weights.
-    if (ptrs[0]->weights_config.vit_config.layer_configs.size() > 0) {
-      for (int layer_idx = 0; layer_idx < ptrs[0]->vit_layers.size();
-           ++layer_idx) {
-        auto type = ptrs[0]->vit_layers[layer_idx].layer_config.type;
-        HWY_ASSERT(type == LayerAttentionType::kVit);
-        for (int i = 0; i < ptrs.size(); ++i) {
-          vit_layers[i] = ptrs[i]->GetVitLayer(layer_idx);
-        }
-        LayerWeightsPtrs<Weight>::ForEachTensor(vit_layers, layer_idx, fet,
-                                                func);
+      if (weights_config.wrapping == PromptWrapping::GEMMA_VLM) {
+        func(TENSOR_ARGS(mm_embed_norm, kMustRead));
       }
     }
+
+    for (size_t layer_idx = 0; layer_idx < c_layers.size(); ++layer_idx) {
+      if (other1) other_layer1 = other1->GetLayer(layer_idx);
+      if (other2) other_layer2 = other2->GetLayer(layer_idx);
+      GetLayer(layer_idx)->ForEachTensor(other_layer1, other_layer2, func);
+    }
+
+    HWY_ASSERT(weights_config.vit_config.layer_configs.empty() ==
+               vit_layers.empty());
+    for (size_t layer_idx = 0; layer_idx < vit_layers.size(); ++layer_idx) {
+      HWY_ASSERT(vit_layers[layer_idx].layer_config.type ==
+                 LayerAttentionType::kVit);
+      other_layer1 = other1 ? other1->VitLayer(layer_idx) : nullptr;
+      other_layer2 = other2 ? other2->VitLayer(layer_idx) : nullptr;
+      VitLayer(layer_idx)->ForEachTensor(other_layer1, other_layer2, func);
+    }
+  }  // `ForEachTensor`
+
+  // Zero-initializes only the allocated tensors in `*this`.
+  void ZeroInit() {
+    ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
+      if (!t.mat.HasPtr()) return;
+      gcpp::ZeroInit(t.mat);
+    });
   }
-};
-#undef GEMMA_CALL_FUNC
 
-// ----------------------------------------------------------------------------
-// Interface
+  void RandInit(float stddev, std::mt19937& gen) {
+    ForEachTensor(nullptr, nullptr, [stddev, &gen](const TensorArgs& t) {
+      if (!t.mat.HasPtr()) return;
+      gcpp::RandInit(t.mat, stddev, gen);
+    });
+  }
 
-class ModelWeightsStorage {
+  // Copies only the allocated tensors in `*this` from tensors in `other`.
+  void CopyFrom(const ModelWeightsPtrs<Weight>& other) {
+    ForEachTensor(&other, nullptr, [](const TensorArgs& t) {
+      if (!t.mat.HasPtr()) return;
+      HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
+      CopyMat(*t.other_mat1, t.mat);
+    });
+  }
+
+  // Instead of reading, only allocates memory for all tensors. Used by
+  // `optimizer.cc` via the `Gemma` constructor without weights.
+  void AllocateForTest(MatOwners& mat_owners, hwy::ThreadPool& pool) {
+    // First get a list of all the tensors.
+    std::vector<MatPtr*> all_mat;
+    all_mat.reserve(10 * c_layers.size());
+    ForEachTensor(nullptr, nullptr, [&all_mat](const TensorArgs& t) {
+      all_mat.push_back(&t.mat);
+    });
+
+    // `backprop/` does not use row accessors and hence requires kPacked.
+    mat_owners.AllocateFor(all_mat, MatPadding::kPacked, pool);
+  }
+
+  // For reshaping file tensors to the shape expected by the code. This would
+  // ideally already happen in the importer. Must be called after reading and
+  // updating the attention weights.
+  void Reshape(hwy::ThreadPool& pool) {
+    pool.Run(0, c_layers.size(), [this](uint64_t layer, size_t /*thread*/) {
+      GetLayer(layer)->Reshape();
+    });
+
+    pool.Run(0, vit_layers.size(), [this](uint64_t layer, size_t /*thread*/) {
+      VitLayer(layer)->Reshape();
+    });
+  }
+};  // `WeightsPtrs`
+#undef TENSOR_ARGS
+
+// Type-erased facade for `WeightsPtrs<T>`, stored inside the non-template
+// `Gemma`. Also owns the underlying memory.
+class WeightsOwner {
  public:
-  ModelWeightsStorage() = default;
-  ~ModelWeightsStorage() = default;
+  // `weight_type` is obtained from `ModelConfig` in `ModelStore`.
+  WeightsOwner(Type weight_type) : weight_type_(weight_type) {}
 
-  // Loads the weights from a blob store file. Supports multi-file or
-  // single-file format. If the weights file contains a TOC, then it is in
-  // single-file format, and model_type, weight_type, wrapping are ignored,
-  // and tokenizer_proto is required and written to.
-  // With a multi-file format, file, model_type, weight_type, wrapping are
-  // required and tokenizer_proto is ignored.
-  BlobError Load(const Path& weights, Model model_type, Type weight_type,
-                 PromptWrapping wrapping, hwy::ThreadPool& pool,
-                 std::string* tokenizer_proto);
-  // Writes the weights to a blob store file, using the single-file format with
-  // a TOC and config included.
-  BlobError Save(const std::string& tokenizer, const Path& weights,
-                 hwy::ThreadPool& pool);
-  void Allocate(Model model_type, Type weight_type, hwy::ThreadPool& pool) {
-    Allocate(ConfigFromModel(model_type), weight_type, pool);
-  }
-  void Allocate(const ModelConfig& config, Type weight_type,
-                hwy::ThreadPool& pool);
-  void RandInit(std::mt19937& gen);
-  void ZeroInit();
-  void GetOrApplyScales(std::vector<float>& scales);
-  void AllocAndCopyWithTranspose(hwy::ThreadPool& pool);
-  void CopyWithTranspose(hwy::ThreadPool& pool);
-  void LogWeightStats();
-  const ModelConfig& Config() const { return config_; }
+  // Reads tensor data from `BlobStore`, or for tensors marked `kOnlyAllocate`,
+  // allocates memory and reshapes. Aborts on error.
+  void ReadOrAllocate(const ModelStore2& model, BlobReader2& reader,
+                      hwy::ThreadPool& pool);
 
-  template <typename T>
-  ModelWeightsPtrs<T>* GetWeightsOfType() const {
-    if constexpr (IsSfpStream<T>()) {
-      return sfp_weights_.get();
-    } else if constexpr (IsF32<T>()) {
-      return float_weights_.get();
-    } else if constexpr (IsBF16<T>()) {
-      return bf16_weights_.get();
-    } else if constexpr (IsNuqStream<T>()) {
-      return nuq_weights_.get();
-    } else {
-      return HWY_ABORT("Unsupported type.");
+  // Calls `func(std::unique_ptr<WeightsPtrs<T>>&, args)`. `func` typically
+  // calls `ForEachTensor`.
+  template <class Func, typename... TArgs>
+  decltype(auto) CallT(const Func& func, TArgs&&... args) const {
+    if (HWY_LIKELY(weight_type_ == Type::kSFP)) {
+      return func(sfp_weights_, std::forward<TArgs>(args)...);
+    } else if (weight_type_ == Type::kNUQ) {
+      return func(nuq_weights_, std::forward<TArgs>(args)...);
+    } else if (weight_type_ == Type::kF32) {
+      return func(float_weights_, std::forward<TArgs>(args)...);
+    } else if (weight_type_ == Type::kBF16) {
+      return func(bf16_weights_, std::forward<TArgs>(args)...);
     }
+    return HWY_ABORT("Unsupported weight type %s.", TypeName(weight_type_));
   }
 
-  template <template <typename T> class FuncT, typename... TArgs>
-  decltype(auto) CallForModelWeightT(TArgs&&... args) {
-    if (HWY_LIKELY(sfp_weights_))
-      return FuncT<SfpStream>()(*sfp_weights_, std::forward<TArgs>(args)...);
-    if (bf16_weights_)
-      return FuncT<BF16>()(*bf16_weights_, std::forward<TArgs>(args)...);
-    if (nuq_weights_)
-      return FuncT<NuqStream>()(*nuq_weights_, std::forward<TArgs>(args)...);
-    if (float_weights_)
-      return FuncT<float>()(*float_weights_, std::forward<TArgs>(args)...);
-    return HWY_ABORT("No weights loaded.");
+  // For writers:
+
+  // Adds one blob for each tensor's data and returns all serialized MatPtr.
+  std::vector<uint32_t> AddTensorDataToWriter(BlobWriter2& writer) const;
+
+  // For backprop/:
+
+  // Only allocates; must subsequently call `ZeroInit` or `RandInit`.
+  void AllocateForTest(const ModelConfig& config, hwy::ThreadPool& pool);
+  void ZeroInit();
+  void RandInit(float stddev, std::mt19937& gen);  // F32 or F64 only.
+  void LogWeightStatsF32();
+
+  ModelWeightsPtrs<float>* GetF32() const {
+    HWY_ASSERT(weight_type_ == Type::kF32);
+    return float_weights_.get();
   }
 
-  template <template <typename T> class FuncT, typename... TArgs>
-  decltype(auto) CallForModelWeight(TArgs&&... args) {
-    if (HWY_LIKELY(sfp_weights_))
-      return FuncT<SfpStream>()(*this, std::forward<TArgs>(args)...);
-    if (bf16_weights_)
-      return FuncT<BF16>()(*this, std::forward<TArgs>(args)...);
-    if (nuq_weights_)
-      return FuncT<NuqStream>()(*this, std::forward<TArgs>(args)...);
-    if (float_weights_)
-      return FuncT<float>()(*this, std::forward<TArgs>(args)...);
-    return HWY_ABORT("No weights loaded.");
-  }
+  // Usually taken care of by `ReadOrAllocate`, but must also be called by
+  // `optimize_test, which updates the attention weights from which this copies.
+  void Reshape(hwy::ThreadPool& pool);
 
  private:
-  void CreateForType(Type weight_type, hwy::ThreadPool& pool);
+  Type weight_type_;
 
-  ModelConfig config_;
-  // To eliminate type templates, we hold a pointer to one of each weight type
-  // and dispatch to whichever is non-null.
+  // Allocates `*_weights_`, but not yet the tensors inside. This is split out
+  // of `CallT` so that can be const.
+  void AllocatePointer(const ModelConfig& config);
+
+  // Only one is non-null, determined by `weight_type_`.
   std::unique_ptr<ModelWeightsPtrs<float>> float_weights_;
   std::unique_ptr<ModelWeightsPtrs<BF16>> bf16_weights_;
   std::unique_ptr<ModelWeightsPtrs<SfpStream>> sfp_weights_;
   std::unique_ptr<ModelWeightsPtrs<NuqStream>> nuq_weights_;
-  // Storage for all the matrices and vectors.
-  std::vector<MatOwner> model_storage_;
+
+  // Owns the memory referenced by all `MatPtr`.
+  MatOwners mat_owners_;
 };
 
 }  // namespace gcpp

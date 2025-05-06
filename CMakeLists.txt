@@ -86,8 +86,10 @@ set(SOURCES
   gemma/instantiations/sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
-  gemma/tensor_index.cc
-  gemma/tensor_index.h
+  gemma/model_store.cc
+  gemma/model_store.h
+  gemma/tensor_info.cc
+  gemma/tensor_info.h
   gemma/tokenizer.cc
   gemma/tokenizer.h
   gemma/weights.cc
@@ -196,7 +198,6 @@ enable_testing()
 include(GoogleTest)
 
 set(GEMMA_TEST_FILES
-  backprop/backward_scalar_test.cc
   backprop/backward_test.cc
   backprop/optimize_test.cc
   compression/blob_store_test.cc
@@ -206,7 +207,7 @@ set(GEMMA_TEST_FILES
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
-  gemma/tensor_index_test.cc
+  gemma/tensor_info_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
   ops/gemma_matvec_test.cc

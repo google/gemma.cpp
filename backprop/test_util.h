@@ -20,8 +20,6 @@
 
 #include <cmath>
 #include <complex>
-#include <random>
-#include <vector>
 
 #include "gtest/gtest.h"
 #include "gemma/configs.h"
@@ -31,27 +29,6 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
-
-// TODO: make a member of Layer<T>.
-template <typename T>
-void RandInit(LayerWeightsPtrs<T>& w, float stddev, std::mt19937& gen) {
-  RandInit(w.pre_attention_norm_scale, stddev, gen);
-  RandInit(w.attn_vec_einsum_w, stddev, gen);
-  RandInit(w.qkv_einsum_w, stddev, gen);
-  RandInit(w.pre_ffw_norm_scale, stddev, gen);
-  RandInit(w.gating_einsum_w, stddev, gen);
-  RandInit(w.linear_w, stddev, gen);
-}
-
-template <typename T>
-void RandInit(ModelWeightsPtrs<T>& w, float stddev, std::mt19937& gen) {
-  const size_t kLayers = w.c_layers.size();
-  RandInit(w.embedder_input_embedding, stddev, gen);
-  RandInit(w.final_norm_scale, stddev, gen);
-  for (size_t i = 0; i < kLayers; ++i) {
-    RandInit(*w.GetLayer(i), stddev, gen);
-  }
-}
 
 template <typename T, typename U>
 void Complexify(const MatPtrT<T>& x, MatPtrT<std::complex<U>>& c_x) {
@@ -84,26 +61,21 @@ void Complexify(const ModelWeightsPtrs<T>& w, ModelWeightsPtrs<U>& c_w) {
   }
 }
 
-// Somewhat duplicates WeightsOwner, but that has neither double nor
+// Somewhat duplicates `WeightsOwner`, but that has neither double nor
 // complex types allowed and it would cause code bloat to add them there.
 template <typename T>
 class WeightsWrapper {
  public:
-  explicit WeightsWrapper(const ModelConfig& config)
-      : pool_(0), weights_(config) {
-    weights_.Allocate(owners_, pool_);
+  explicit WeightsWrapper(const ModelConfig& config) : weights_(config) {
+    hwy::ThreadPool& pool = ThreadingContext2::Get().pools.Pool();
+    weights_.AllocateForTest(owners_, pool);
   }
 
   const ModelWeightsPtrs<T>& get() const { return weights_; }
   ModelWeightsPtrs<T>& get() { return weights_; }
-  void ZeroInit() { weights_.ZeroInit(); }
-  void CopyFrom(const WeightsWrapper<T>& other) {
-    weights_.CopyFrom(other.weights_);
-  }
 
  private:
-  hwy::ThreadPool pool_;
-  std::vector<MatOwner> owners_;
+  MatOwners owners_;
   ModelWeightsPtrs<T> weights_;
 };
 

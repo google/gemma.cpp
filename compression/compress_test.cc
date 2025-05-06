@@ -80,7 +80,7 @@ struct TestDecompress2T {
       stats.Notify(raw[i], hwy::ConvertScalarTo<float>(dec[i]));
     }
 
-    if constexpr (false) {
+    if constexpr (true) {  // leave enabled due to sporadic failures
       fprintf(stderr,
               "TypeName<Packed>() %s TypeName<T>() %s: num %zu: stats.SumL1() "
               "%f stats.GeomeanValueDivL1() %f stats.WeightedAverageL1() %f "

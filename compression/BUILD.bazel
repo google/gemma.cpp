@@ -73,6 +73,7 @@ cc_library(
         "//:basics",
         "//:threading_context",
         "@highway//:hwy",
+        "@highway//:profiler",
         "@highway//:thread_pool",
     ],
 )
@@ -84,9 +85,9 @@ cc_test(
         ":blob_store",
         ":io",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:basics",
         "//:threading_context",
         "@highway//:hwy_test_util",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -212,15 +213,10 @@ cc_library(
     ],
     textual_hdrs = ["compress-inl.h"],
     deps = [
-        ":blob_store",
         ":distortion",
-        ":fields",
-        ":io",
         ":nuq",
         ":sfp",
-        "//:allocator",
         "//:basics",
-        "//:common",
         "//:mat",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
@@ -283,7 +279,6 @@ cc_binary(
     deps = [
         ":blob_store",
         ":io",
-        "//:allocator",
         "//:basics",
         "//:threading",
         "//:threading_context",

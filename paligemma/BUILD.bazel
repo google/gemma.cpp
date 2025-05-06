@@ -42,7 +42,7 @@ cc_test(
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:allocator",
         "//:benchmark_helper",
-        "//:common",
+        "//:configs",
         "//:gemma_lib",
         "//compression:shared",
         "@highway//:hwy",

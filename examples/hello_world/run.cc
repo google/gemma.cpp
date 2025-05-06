@@ -31,15 +31,12 @@
 #include "hwy/base.h"
 
 int main(int argc, char** argv) {
-  gcpp::ThreadingArgs threading(argc, argv);
   gcpp::LoaderArgs loader(argc, argv);
+  gcpp::ThreadingArgs threading(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
   if (gcpp::HasHelp(argc, argv)) {
     loader.Help();
     return 0;
-  } else if (const char* error = loader.Validate()) {
-    loader.Help();
-    HWY_ABORT("\nInvalid args: %s", error);
   }
 
   // Demonstrate constrained decoding by never outputting certain tokens.
@@ -55,32 +52,31 @@ int main(int argc, char** argv) {
 
   // Instantiate model and KV Cache
   gcpp::MatMulEnv env(MakeMatMulEnv(threading));
-  gcpp::Gemma model = gcpp::CreateGemma(loader, env);
-  gcpp::KVCache kv_cache =
-      gcpp::KVCache::Create(model.GetModelConfig(),
-                            inference.prefill_tbatch_size);
+  gcpp::Gemma gemma(loader, env);
+  gcpp::KVCache kv_cache = gcpp::KVCache::Create(gemma.GetModelConfig(),
+                                                 inference.prefill_tbatch_size);
   size_t generated = 0;
 
   // Initialize random number generator
   std::mt19937 gen;
-  std::random_device rd;
+  std::random_device rd;  // NOLINT
   gen.seed(rd());
 
   // Tokenize instructions.
   std::string prompt = "Write a greeting to the world.";
   const std::vector<int> tokens =
-      gcpp::WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
-                            loader.Info(), generated, prompt);
+      gcpp::WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
+                            gemma.GetModelConfig().wrapping, generated, prompt);
   const size_t prompt_size = tokens.size();
 
   // This callback function gets invoked every time a token is generated
-  auto stream_token = [&generated, &prompt_size, &model](int token, float) {
+  auto stream_token = [&generated, &prompt_size, &gemma](int token, float) {
     ++generated;
     if (generated < prompt_size) {
       // print feedback
-    } else if (!model.GetModelConfig().IsEOS(token)) {
+    } else if (!gemma.GetModelConfig().IsEOS(token)) {
       std::string token_text;
-      HWY_ASSERT(model.Tokenizer().Decode({token}, &token_text));
+      HWY_ASSERT(gemma.Tokenizer().Decode({token}, &token_text));
       std::cout << token_text << std::flush;
     }
     return true;
@@ -98,5 +94,5 @@ int main(int argc, char** argv) {
             return !reject_tokens.contains(token);
           },
   };
-  model.Generate(runtime_config, tokens, 0, kv_cache, timing_info);
+  gemma.Generate(runtime_config, tokens, 0, kv_cache, timing_info);
 }

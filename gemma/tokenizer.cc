@@ -21,9 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"      // Path
-#include "compression/shared.h"  // PromptWrapping
-#include "gemma/common.h"        // Wrap
+#include "gemma/configs.h"       // PromptWrapping
 #include "hwy/base.h"              // HWY_ASSERT
 #include "hwy/profiler.h"
 // copybara:import_next_line:sentencepiece
@@ -37,24 +35,20 @@ constexpr bool kShowTokenization = false;
 class GemmaTokenizer::Impl {
  public:
   Impl() = default;
-  explicit Impl(const Path& tokenizer_path) {
-    PROFILER_ZONE("Startup.tokenizer");
-    spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
-    if (!spp_->Load(tokenizer_path.path).ok()) {
-      HWY_ABORT("Failed to load the tokenizer file.");
-    }
-  }
   // Loads the tokenizer from a serialized proto.
   explicit Impl(const std::string& tokenizer_proto) {
+    if (tokenizer_proto == kMockTokenizer) return;
     PROFILER_ZONE("Startup.tokenizer");
     spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
     if (!spp_->LoadFromSerializedProto(tokenizer_proto).ok()) {
-      fprintf(stderr, "serialized proto size=%zu.\n", tokenizer_proto.size());
-      HWY_ABORT("Failed to load the tokenizer from serialized proto.");
+      HWY_ABORT("Failed to load tokenizer from %zu byte serialized proto.",
+                tokenizer_proto.size());
     }
   }
 
-  std::string Serialize() const { return spp_->serialized_model_proto(); }
+  std::string Serialize() const {
+    return spp_ ? spp_->serialized_model_proto() : kMockTokenizer;
+  }
 
   bool Encode(const std::string& input,
               std::vector<std::string>* pieces) const {
@@ -82,41 +76,38 @@ class GemmaTokenizer::Impl {
   std::unique_ptr<sentencepiece::SentencePieceProcessor> spp_;
 };
 
-GemmaTokenizer::GemmaTokenizer(const Path& tokenizer_path) {
-  impl_ = std::make_unique<Impl>(tokenizer_path);
+GemmaTokenizer::GemmaTokenizer(const std::string& tokenizer_proto)
+    : impl_(std::make_unique<Impl>(tokenizer_proto)) {
+  HWY_ASSERT(impl_);
 }
 
 // Default suffices, but they must be defined after GemmaTokenizer::Impl.
-GemmaTokenizer::GemmaTokenizer() = default;
 GemmaTokenizer::~GemmaTokenizer() = default;
 GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
 GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;
 
 std::string GemmaTokenizer::Serialize() const { return impl_->Serialize(); }
 
-void GemmaTokenizer::Deserialize(const std::string& tokenizer_proto) {
-  impl_ = std::make_unique<Impl>(tokenizer_proto);
-}
-
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<std::string>* pieces) const {
-  return impl_ && impl_->Encode(input, pieces);
+  return impl_->Encode(input, pieces);
 }
 
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<int>* ids) const {
-  return impl_ && impl_->Encode(input, ids);
+  return impl_->Encode(input, ids);
 }
 
 // Given a sequence of ids, decodes it into a detokenized output.
 bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
-  return impl_ && impl_->Decode(ids, detokenized);
+  return impl_->Decode(ids, detokenized);
 }
 
-bool GemmaChatTemplate::Init(const GemmaTokenizer& tokenizer, Model model) {
+GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
+                                     Model model) {
   sot_user_.reserve(3);
-  if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return false;
+  if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return;
   sot_model_.reserve(3);
   HWY_ASSERT(tokenizer.Encode("<start_of_turn>model\n", &sot_model_));
   eot_.reserve(2);
@@ -127,7 +118,6 @@ bool GemmaChatTemplate::Init(const GemmaTokenizer& tokenizer, Model model) {
   HWY_ASSERT(tokenizer.Encode("\n\n<start_of_image>", &vlm_soi_));
   vlm_eoi_.reserve(2);
   HWY_ASSERT(tokenizer.Encode("<end_of_image>\n\n", &vlm_eoi_));
-  return true;
 }
 
 std::vector<int> GemmaChatTemplate::Apply(size_t pos,
@@ -182,12 +172,12 @@ std::vector<int> GemmaChatTemplate::WrapVLM(const std::vector<int>& text_part,
 // Text
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
+                                 const PromptWrapping wrapping, size_t pos,
                                  const std::string& prompt) {
   std::vector<int> tokens;
   HWY_ASSERT(tokenizer.Encode(prompt, &tokens));
 
-  switch (info.wrapping) {
+  switch (wrapping) {
     case PromptWrapping::GEMMA_IT:
     case PromptWrapping::GEMMA_VLM:
       return chat_template.Apply(pos, tokens);
@@ -202,12 +192,12 @@ std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
 // Vision
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
                                  const GemmaChatTemplate& chat_template,
-                                 const ModelInfo& info, size_t pos,
+                                 const PromptWrapping wrapping, size_t pos,
                                  const std::string& prompt,
                                  size_t image_batch_size) {
   std::vector<int> text_part;
   HWY_ASSERT(tokenizer.Encode(prompt, &text_part));
-  switch (info.wrapping) {
+  switch (wrapping) {
     case PromptWrapping::PALIGEMMA:
       HWY_ASSERT(pos == 0);
       return chat_template.WrapPali(text_part, image_batch_size);

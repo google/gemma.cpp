@@ -25,46 +25,132 @@ from python import configs
 class CompressionTest(absltest.TestCase):
 
   def test_sbs_writer(self):
-    temp_file = self.create_tempfile("test.sbs")
-    tensor_info = configs.TensorInfo()
-    tensor_info.name = "foo"
-    tensor_info.axes = [0]
-    tensor_info.shape = [192]
+    info_192 = configs.TensorInfo()
+    info_192.name = "ignored_192"
+    info_192.axes = [0]
+    info_192.shape = [192]
 
-    writer = compression.SbsWriter(compression.CompressorMode.NO_TOC)
+    writer = compression.SbsWriter()
     writer.insert(
-        "foo",
-        np.array([0.0012] * 128 + [0.001] * 64, dtype=np.float32),
+        "tensor0",
+        # Large enough to require scaling.
+        np.array([3.0012] * 128 + [4.001] * 64, dtype=np.float32),
         configs.Type.kSFP,
-        tensor_info,
-        1.0,
+        info_192,
     )
 
-    tensor_info_nuq = configs.TensorInfo()
-    tensor_info_nuq.name = "fooNUQ"
-    tensor_info_nuq.axes = [0]
-    tensor_info_nuq.shape = [256]
+    # 2D tensor.
+    info_2d = configs.TensorInfo()
+    info_2d.name = "ignored_2d"
+    info_2d.axes = [0, 1]
+    info_2d.shape = [96, 192]
     writer.insert(
-        "fooNUQ",
+        "tensor_2d",
+        np.array([i / 1e3 for i in range(96 * 192)], dtype=np.float32),
+        configs.Type.kBF16,
+        info_2d,
+    )
+
+    # 3D collapsed into rows.
+    info_3d = configs.TensorInfo()
+    info_3d.name = "ignored_3d"
+    info_3d.axes = [0, 1, 2]
+    info_3d.shape = [10, 12, 192]
+    info_3d.cols_take_extra_dims = False
+    writer.insert(
+        "tensor_3d",
+        # Verification of scale below depends on the shape and multiplier here.
+        np.array([i / 1e3 for i in range(10 * 12 * 192)], dtype=np.float32),
+        configs.Type.kSFP,
+        info_3d,
+    )
+
+    # Exercise all types supported by Compress.
+    info_256 = configs.TensorInfo()
+    info_256.name = "ignored_256"
+    info_256.axes = [0]
+    info_256.shape = [256]
+    writer.insert(
+        "tensor_nuq",
         np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32),
         configs.Type.kNUQ,
-        tensor_info_nuq,
-        1.0,
+        info_256,
     )
-    writer.insert_sfp(
-        "bar", np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32)
+    writer.insert(
+        "tensor_sfp",
+        np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32),
+        configs.Type.kSFP,
+        info_256,
     )
-    writer.insert_nuq(
-        "baz", np.array([0.000125] * 128 + [0.00008] * 128, dtype=np.float32)
+    writer.insert(
+        "tensor_bf",
+        np.array([0.000375] * 128 + [0.00007] * 128, dtype=np.float32),
+        configs.Type.kBF16,
+        info_256,
     )
-    writer.insert_bf16(
-        "qux", np.array([0.000375] * 128 + [0.00007] * 128, dtype=np.float32)
+    writer.insert(
+        "tensor_f32",
+        np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32),
+        configs.Type.kF32,
+        info_256,
     )
-    writer.insert_float(
-        "quux", np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32)
+
+    config = configs.ModelConfig(
+        configs.Model.GEMMA_TINY,
+        configs.Type.kNUQ,
+        configs.PromptWrapping.GEMMA_IT,
     )
-    self.assertEqual(writer.debug_num_blobs_added(), 6)
-    self.assertEqual(writer.write(temp_file.full_path), 0)
+    tokenizer_path = ""  # no tokenizer required for testing
+    temp_file = self.create_tempfile("test.sbs")
+    writer.write(config, tokenizer_path, temp_file.full_path)
+
+    print("Ignore next two warnings; test does not enable model deduction.")
+    reader = compression.SbsReader(temp_file.full_path)
+
+    self.assertEqual(reader.config.model, configs.Model.GEMMA_TINY)
+    self.assertEqual(reader.config.weight, configs.Type.kNUQ)
+
+    mat = reader.find_mat("tensor0")
+    self.assertEqual(mat.cols, 192)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kSFP)
+    self.assertAlmostEqual(mat.scale, 4.001 / 1.875, places=5)
+
+    mat = reader.find_mat("tensor_2d")
+    self.assertEqual(mat.cols, 192)
+    self.assertEqual(mat.rows, 96)
+    self.assertEqual(mat.type, configs.Type.kBF16)
+    self.assertAlmostEqual(mat.scale, 1.0)
+
+    mat = reader.find_mat("tensor_3d")
+    self.assertEqual(mat.cols, 192)
+    self.assertEqual(mat.rows, 10 * 12)
+    self.assertEqual(mat.type, configs.Type.kSFP)
+    self.assertAlmostEqual(mat.scale, 192 * 120 / 1e3 / 1.875, places=2)
+
+    mat = reader.find_mat("tensor_nuq")
+    self.assertEqual(mat.cols, 256)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kNUQ)
+    self.assertAlmostEqual(mat.scale, 1.0)
+
+    mat = reader.find_mat("tensor_sfp")
+    self.assertEqual(mat.cols, 256)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kSFP)
+    self.assertAlmostEqual(mat.scale, 1.0)
+
+    mat = reader.find_mat("tensor_bf")
+    self.assertEqual(mat.cols, 256)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kBF16)
+    self.assertAlmostEqual(mat.scale, 1.0)
+
+    mat = reader.find_mat("tensor_f32")
+    self.assertEqual(mat.cols, 256)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kF32)
+    self.assertAlmostEqual(mat.scale, 1.0)
 
 
 if __name__ == "__main__":

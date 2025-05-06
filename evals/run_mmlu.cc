@@ -24,7 +24,6 @@
 #include "gemma/gemma.h"  // Gemma
 #include "util/args.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "nlohmann/json.hpp"

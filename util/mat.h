@@ -27,7 +27,7 @@
 // IWYU pragma: begin_exports
 #include "compression/fields.h"
 #include "compression/shared.h"  // Type
-#include "gemma/tensor_index.h"
+#include "gemma/tensor_info.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports
@@ -205,12 +205,11 @@ class MatPtrT : public MatPtr {
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}
-  // Take shape from `TensorInfo` to avoid duplicating it in the caller.
-  MatPtrT(const char* name, const TensorInfo* tensor)
-      : MatPtrT<MatT>(name, ExtentsFromInfo(tensor)) {}
-  // Find `TensorInfo` by name in `TensorIndex`.
-  MatPtrT(const char* name, const TensorIndex& tensor_index)
-      : MatPtrT<MatT>(name, tensor_index.FindName(name)) {}
+  // Retrieves shape by name via `TensorInfo` from `TensorInfoRegistry`. This is
+  // not a factory function because `weights.h` initializes members of type
+  // `MatPtrT<T>`, and `T` cannot be inferred at compile time from arguments.
+  MatPtrT(const std::string& name, const TensorInfoRegistry& info)
+      : MatPtrT<MatT>(name.c_str(), ExtentsFromInfo(info.Find(name))) {}
 
   // Copying allowed because the metadata is small.
   MatPtrT(const MatPtr& other) : MatPtr(other) {}
@@ -279,17 +278,8 @@ decltype(auto) CallUpcasted(Type type, MatPtr* base, const Func& func,
 
 void CopyMat(const MatPtr& from, MatPtr& to);
 void ZeroInit(MatPtr& mat);
-
-template <typename T>
-void RandInit(MatPtrT<T>& x, float stddev, std::mt19937& gen) {
-  std::normal_distribution<T> dist(0.0, stddev);
-  for (size_t r = 0; r < x.Rows(); ++r) {
-    T* row = x.Row(r);
-    for (size_t c = 0; c < x.Cols(); ++c) {
-      row[c] = dist(gen);
-    }
-  }
-}
+// F32/F64 only.
+void RandInit(MatPtr& mat, float stddev, std::mt19937& gen);
 
 // Sufficient value of `stride` to enable the "cyclic offsets" optimization. If
 // `Allocator2::ShouldBind()`, `Allocator2::QuantumBytes()` is typically 4KiB.

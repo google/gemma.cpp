@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "evals/benchmark_helper.h"
-#include "gemma/common.h"
+#include "gemma/configs.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -36,22 +36,30 @@
 namespace gcpp {
 namespace {
 
-// Shared state. Requires argc/argv, so construct in main and use the same raw
-// pointer approach as in benchmarks.cc. Note that the style guide forbids
-// non-local static variables with dtors.
-GemmaEnv* s_env = nullptr;
-
 class GemmaTest : public ::testing::Test {
+ public:
+  // Requires argc/argv, hence do not use `SetUpTestSuite`.
+  static void InitEnv(int argc, char** argv) {
+    HWY_ASSERT(s_env == nullptr);  // Should only be called once.
+    s_env = new GemmaEnv(argc, argv);
+    const gcpp::ModelConfig& config = s_env->GetGemma()->GetModelConfig();
+    fprintf(stderr, "Using %s)\n", config.Specifier().c_str());
+  }
+
+  static void DeleteEnv() { delete s_env; }
+
  protected:
   std::string GemmaReply(const std::string& prompt) {
+    HWY_ASSERT(s_env);  // must have called InitEnv()
     s_env->SetMaxGeneratedTokens(2048);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 0;
+    const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
+    if (config.model == Model::GEMMA2_27B ||
+        config.model == Model::GRIFFIN_2B) {
       std::string mutable_prompt = prompt;
       QueryResult result = s_env->QueryModel(mutable_prompt);  // Uses turns.
       return result.response;
@@ -64,15 +72,17 @@ class GemmaTest : public ::testing::Test {
 
   std::vector<std::string> BatchGemmaReply(
       const std::vector<std::string>& inputs) {
+    HWY_ASSERT(s_env);  // must have called InitEnv()
     s_env->SetMaxGeneratedTokens(64);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 0;
+    const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
     std::vector<std::string> replies;
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
+    if (config.model == Model::GEMMA2_27B ||
+        config.model == Model::GRIFFIN_2B) {
       for (QueryResult result : s_env->BatchQueryModel(inputs)) {
         replies.push_back(result.response);
       }
@@ -118,7 +128,13 @@ class GemmaTest : public ::testing::Test {
       }
     }
   }
+
+  // Shared state. Requires argc/argv, so construct in main via InitEnv.
+  // Note that the style guide forbids non-local static variables with dtors.
+  static GemmaEnv* s_env;
 };
+
+GemmaEnv* GemmaTest::s_env = nullptr;
 
 TEST_F(GemmaTest, GeographyBatched) {
   s_env->MutableConfig().decode_qbatch_size = 3;
@@ -155,7 +171,8 @@ TEST_F(GemmaTest, Arithmetic) {
 }
 
 TEST_F(GemmaTest, Multiturn) {
-  Gemma* model = s_env->GetGemma();
+  const Gemma* model = s_env->GetGemma();
+  const ModelConfig& config = model->GetModelConfig();
   HWY_ASSERT(model != nullptr);
   size_t abs_pos = 0;
   std::string response;
@@ -179,8 +196,8 @@ TEST_F(GemmaTest, Multiturn) {
   // First "say" something slightly unusual.
   std::string mutable_prompt = "I have a car and its color is turquoise.";
   std::vector<int> tokens =
-      WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(), model->Info(),
-                      abs_pos, mutable_prompt);
+      WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(),
+                      config.wrapping, abs_pos, mutable_prompt);
 
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   timing_info);
@@ -189,7 +206,7 @@ TEST_F(GemmaTest, Multiturn) {
   // duplicated.
   mutable_prompt = "Please repeat all prior statements.";
   tokens = WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(),
-                           model->Info(), abs_pos, mutable_prompt);
+                           config.wrapping, abs_pos, mutable_prompt);
 
   // Reset the `response` string here, then check that the model actually has
   // access to the previous turn by asking to reproduce.
@@ -240,11 +257,12 @@ static const char kGettysburg[] = {
 
 TEST_F(GemmaTest, CrossEntropySmall) {
   HWY_ASSERT(s_env->GetGemma() != nullptr);
+  const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetGemma()->Info().model) {
+  switch (config.model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 2.6f, 0.2f);
@@ -273,9 +291,10 @@ TEST_F(GemmaTest, CrossEntropySmall) {
 
 TEST_F(GemmaTest, CrossEntropyJingleBells) {
   HWY_ASSERT(s_env->GetGemma() != nullptr);
+  const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
   float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetGemma()->Info().model) {
+  switch (config.model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.9f, 0.2f);
@@ -304,9 +323,10 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
 
 TEST_F(GemmaTest, CrossEntropyGettysburg) {
   HWY_ASSERT(s_env->GetGemma() != nullptr);
+  const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
   float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
-  switch (s_env->GetGemma()->Info().model) {
+  switch (config.model) {
     case gcpp::Model::GEMMA_2B:
       // 2B v.1 and v.1.1 produce slightly different results.
       EXPECT_NEAR(entropy, 1.1f, 0.1f);
@@ -337,10 +357,9 @@ TEST_F(GemmaTest, CrossEntropyGettysburg) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  gcpp::GemmaEnv env(argc, argv);
-  gcpp::s_env = &env;
-
   testing::InitGoogleTest(&argc, argv);
-
-  return RUN_ALL_TESTS();
+  gcpp::GemmaTest::InitEnv(argc, argv);
+  int ret = RUN_ALL_TESTS();
+  gcpp::GemmaTest::DeleteEnv();
+  return ret;
 }

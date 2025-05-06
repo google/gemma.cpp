@@ -18,11 +18,11 @@
 
 #include <stddef.h>
 
-#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
+#include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
 #include "gemma/tokenizer.h"  // WrapAndTokenize
@@ -47,7 +47,7 @@ class GemmaEnv {
  public:
   // Calls the other constructor with *Args arguments initialized from argv.
   GemmaEnv(int argc, char** argv);
-  GemmaEnv(const ThreadingArgs& threading, const LoaderArgs& loader,
+  GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
            const InferenceArgs& inference);
   // Avoid memory leaks in test.
   ~GemmaEnv() { ThreadingContext2::ThreadHostileInvalidate(); }
@@ -64,7 +64,7 @@ class GemmaEnv {
 
   std::vector<int> Tokenize(const std::string& input) const {
     std::vector<int> tokens;
-    HWY_ASSERT(gemma_->Tokenizer().Encode(input, &tokens));
+    HWY_ASSERT(gemma_.Tokenizer().Encode(input, &tokens));
     return tokens;
   }
 
@@ -75,13 +75,13 @@ class GemmaEnv {
   }
 
   std::vector<int> WrapAndTokenize(std::string& input) const {
-    return gcpp::WrapAndTokenize(gemma_->Tokenizer(), gemma_->ChatTemplate(),
-                                 gemma_->Info(), 0, input);
+    return gcpp::WrapAndTokenize(gemma_.Tokenizer(), gemma_.ChatTemplate(),
+                                 gemma_.GetModelConfig().wrapping, 0, input);
   }
 
   std::string StringFromTokens(const std::vector<int>& tokens) const {
     std::string string;
-    HWY_ASSERT(gemma_->Tokenizer().Decode(tokens, &string));
+    HWY_ASSERT(gemma_.Tokenizer().Decode(tokens, &string));
     return string;
   }
 
@@ -104,8 +104,7 @@ class GemmaEnv {
   // number of bits per token.
   float CrossEntropy(const std::string& input);
 
-  // Returns nullptr if the model failed to load.
-  Gemma* GetGemma() const { return gemma_.get(); }
+  const Gemma* GetGemma() const { return &gemma_; }
 
   int Verbosity() const { return runtime_config_.verbosity; }
   RuntimeConfig& MutableConfig() { return runtime_config_; }
@@ -114,8 +113,8 @@ class GemmaEnv {
 
  private:
   MatMulEnv env_;
-  std::mt19937 gen_;  // Random number generator.
-  std::unique_ptr<Gemma> gemma_;
+  Gemma gemma_;
+  std::mt19937 gen_;                // Random number generator.
   std::vector<KVCache> kv_caches_;  // Same number as query batch.
   RuntimeConfig runtime_config_;
 };
@@ -123,10 +122,10 @@ class GemmaEnv {
 // Logs the inference speed in tokens/sec.
 void LogSpeedStats(double time_start, size_t total_tokens);
 
-void ShowConfig(ThreadingArgs& threading, LoaderArgs& loader,
-                InferenceArgs& inference);
-void ShowHelp(ThreadingArgs& threading, LoaderArgs& loader,
-              InferenceArgs& inference);
+void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
+                const InferenceArgs& inference, const ModelConfig& config);
+void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
+              const InferenceArgs& inference);
 
 }  // namespace gcpp
 

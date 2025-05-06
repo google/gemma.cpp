@@ -16,52 +16,69 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_PYTHON_COMPRESSION_CLIF_AUX_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_PYTHON_COMPRESSION_CLIF_AUX_H_
 
-#include <cstddef>
+#include <stddef.h>
+
 #include <memory>
 #include <string>
-#include <vector>
 
-#include "absl/types/span.h"
-#include "compression/shared.h"
+#include "compression/blob_store.h"
+#include "compression/shared.h"  // Type
 #include "gemma/configs.h"
-#include "gemma/tensor_index.h"
+#include "gemma/model_store.h"
+#include "gemma/tensor_info.h"
+#include "util/mat.h"
+#include "hwy/aligned_allocator.h"  // Span
 
 namespace gcpp {
 
-// How to process the data.
-enum class CompressorMode {
-  // No compression, no write to file, just for testing.
-  kTEST_ONLY,
-  // Old-style compression, no table of contents.
-  kNO_TOC,
-  // New-style compression, with table of contents.
-  kWITH_TOC,
+// Can be modified in place by ScaleWeights.
+using F32Span = hwy::Span<float>;
+
+// Interface because we compile one derived implementation per SIMD target,
+// because Compress() uses SIMD.
+class ISbsWriter {
+ public:
+  virtual ~ISbsWriter() = default;
+
+  virtual void Insert(const char* name, F32Span weights, Type type,
+                      const TensorInfo& tensor_info) = 0;
+
+  virtual void Write(const ModelConfig& config,
+                     const std::string& tokenizer_path,
+                     const std::string& path) = 0;
 };
 
-class WriterInterface;
-
+// Non-virtual class used by pybind that calls the interface's virtual methods.
+// This avoids having to register the derived types with pybind.
 class SbsWriter {
  public:
-  explicit SbsWriter(CompressorMode mode);
-  ~SbsWriter();
+  SbsWriter();
 
-  void Insert(std::string name, absl::Span<const float> weights, Type type,
-              const TensorInfo& tensor_info, float scale);
-  void InsertSfp(std::string name, absl::Span<const float> weights);
-  void InsertNUQ(std::string name, absl::Span<const float> weights);
-  void InsertBfloat16(std::string name, absl::Span<const float> weights);
-  void InsertFloat(std::string name, absl::Span<const float> weights);
-  void AddScales(const std::vector<float>& scales);
-  void AddTokenizer(const std::string& tokenizer_path);
+  void Insert(const char* name, F32Span weights, Type type,
+              const TensorInfo& tensor_info) {
+    impl_->Insert(name, weights, type, tensor_info);
+  }
 
-  size_t DebugNumBlobsAdded() const;
-
-  int Write(std::string path) { return WriteWithConfig(path, nullptr); }
-  int WriteWithConfig(std::string path, const ModelConfig* config);
+  void Write(const ModelConfig& config, const std::string& tokenizer_path,
+             const std::string& path) {
+    impl_->Write(config, tokenizer_path, path);
+  }
 
  private:
-  // Isolates Highway-dispatched types and other internals from CLIF.
-  std::unique_ptr<WriterInterface> impl_;
+  std::unique_ptr<ISbsWriter> impl_;
+};
+
+// Limited metadata-only reader for tests.
+class SbsReader {
+ public:
+  SbsReader(const std::string& path);
+
+  const ModelConfig& Config() const { return model_.Config(); }
+  const MatPtr* FindMat(const char* name) const { return model_.FindMat(name); }
+
+ private:
+  std::unique_ptr<gcpp::BlobReader2> reader_;
+  gcpp::ModelStore2 model_;
 };
 
 }  // namespace gcpp

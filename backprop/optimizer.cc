@@ -17,11 +17,9 @@
 
 #include <cmath>
 
-#include "compression/compress.h"
 #include "gemma/weights.h"
 #include "util/allocator.h"
 #include "util/mat.h"
-#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -29,37 +27,67 @@ namespace gcpp {
 
 namespace {
 
-class AdamUpdater {
+// Split into two classes so that ForEachTensor only requires two "other"
+// arguments. This is anyway useful for locality, because `grad` only feeds
+// into `grad_m` and `grad_v` here.
+class AdamUpdateMV {
  public:
-  explicit AdamUpdater(float alpha, float beta1, float beta2, float epsilon,
-                       size_t t)
-      : alpha_(alpha), beta1_(beta1), beta2_(beta2), cbeta1_(1.0f - beta1),
-        cbeta2_(1.0f - beta2), norm1_(1.0 / (1.0 - std::pow(beta1, t))),
-        norm2_(1.0 / (1.0 - std::pow(beta2, t))), epsilon_(epsilon) {}
+  AdamUpdateMV(float beta1, float beta2, size_t t)
+      : beta1_(beta1),
+        beta2_(beta2),
+        cbeta1_(1.0f - beta1),
+        cbeta2_(1.0f - beta2),
+        norm1_(1.0 / (1.0 - std::pow(beta1, t))),
+        norm2_(1.0 / (1.0 - std::pow(beta2, t))) {}
 
-  void operator()(const char* name, const MatPtr& grad, MatPtr& weights,
-                  MatPtr& grad_m, MatPtr& grad_v) {
-    const float* HWY_RESTRICT g = grad.RowT<float>(0);
-    float* HWY_RESTRICT w = weights.RowT<float>(0);
-    float* HWY_RESTRICT m = grad_m.RowT<float>(0);
-    float* HWY_RESTRICT v = grad_v.RowT<float>(0);
-    for (size_t i = 0; i < grad.Extents().Area(); ++i) {
-      m[i] *= beta1_;
-      m[i] += cbeta1_ * g[i];
-      v[i] *= beta2_;
-      v[i] += cbeta2_ * g[i] * g[i];
-      const float mhat = m[i] * norm1_;
-      const float vhat = v[i] * norm2_;
-      w[i] -= alpha_ * mhat / (std::sqrt(vhat) + epsilon_);
+  void operator()(const MatPtr& grad, const MatPtr& grad_m,
+                  const MatPtr& grad_v) {
+    for (size_t r = 0; r < grad.Rows(); ++r) {
+      const float* HWY_RESTRICT g = grad.RowT<float>(r);
+      float* HWY_RESTRICT m = grad_m.MutableRowT<float>(r);
+      float* HWY_RESTRICT v = grad_v.MutableRowT<float>(r);
+      for (size_t c = 0; c < grad.Cols(); ++c) {
+        m[c] *= beta1_;
+        m[c] += cbeta1_ * g[c];
+        v[c] *= beta2_;
+        v[c] += cbeta2_ * g[c] * g[c];
+      }
+    }
+  }
+
+ private:
+  float beta1_;
+  float beta2_;
+  float cbeta1_;
+  float cbeta2_;
+  float norm1_;
+  float norm2_;
+};
+
+// Updates `weights` based on the updated `grad_m` and `grad_v` from above.
+class AdamUpdateW {
+ public:
+  AdamUpdateW(float alpha, float beta1, float beta2, float epsilon, size_t t)
+      : alpha_(alpha),
+        norm1_(1.0 / (1.0 - std::pow(beta1, t))),
+        norm2_(1.0 / (1.0 - std::pow(beta2, t))),
+        epsilon_(epsilon) {}
+
+  void operator()(MatPtr& weights, const MatPtr& grad_m, const MatPtr& grad_v) {
+    for (size_t r = 0; r < weights.Rows(); ++r) {
+      float* HWY_RESTRICT w = weights.RowT<float>(r);
+      const float* HWY_RESTRICT m = grad_m.RowT<float>(r);
+      const float* HWY_RESTRICT v = grad_v.RowT<float>(r);
+      for (size_t c = 0; c < weights.Cols(); ++c) {
+        const float mhat = m[c] * norm1_;
+        const float vhat = v[c] * norm2_;
+        w[c] -= alpha_ * mhat / (std::sqrt(vhat) + epsilon_);
+      }
     }
   }
 
  private:
   float alpha_;
-  float beta1_;
-  float beta2_;
-  float cbeta1_;
-  float cbeta2_;
   float norm1_;
   float norm2_;
   float epsilon_;
@@ -70,26 +98,25 @@ void AdamUpdate(ModelWeightsPtrs<float>* grad, float alpha, float beta1,
                 ModelWeightsPtrs<float>* weights,
                 ModelWeightsPtrs<float>* grad_m,
                 ModelWeightsPtrs<float>* grad_v, hwy::ThreadPool& pool) {
-  AdamUpdater updater(alpha, beta1, beta2, epsilon, t);
-  ModelWeightsPtrs<float>::ForEachTensor(
-      {grad, weights, grad_m, grad_v}, ForEachType::kLoadNoToc,
-      [&updater](const char* name, hwy::Span<MatPtr*> tensors) {
-        updater(name, *tensors[0], *tensors[1], *tensors[2], *tensors[3]);
-      });
+  AdamUpdateMV update_mv(beta1, beta2, t);
+  grad->ForEachTensor(grad_m, grad_v, [&update_mv](const TensorArgs& t) {
+    update_mv(t.mat, *t.other_mat1, *t.other_mat2);
+  });
+
+  AdamUpdateW update_w(alpha, beta1, beta2, epsilon, t);
+  weights->ForEachTensor(grad_m, grad_v, [&update_w](const TensorArgs& t) {
+    update_w(t.mat, *t.other_mat1, *t.other_mat2);
+  });
 }
 
 }  // namespace
 
-void AdamUpdate(Type weight_type, const ModelWeightsStorage& grad, float alpha,
-                float beta1, float beta2, float epsilon, size_t t,
-                const ModelWeightsStorage& weights,
-                const ModelWeightsStorage& grad_m,
-                const ModelWeightsStorage& grad_v, hwy::ThreadPool& pool) {
-  HWY_ASSERT(weight_type == Type::kF32);
-  AdamUpdate(grad.GetWeightsOfType<float>(), alpha, beta1, beta2, epsilon, t,
-             weights.GetWeightsOfType<float>(),
-             grad_m.GetWeightsOfType<float>(), grad_v.GetWeightsOfType<float>(),
-             pool);
+void AdamUpdate(const WeightsOwner& grad, float alpha, float beta1, float beta2,
+                float epsilon, size_t t, const WeightsOwner& weights,
+                const WeightsOwner& grad_m, const WeightsOwner& grad_v,
+                hwy::ThreadPool& pool) {
+  AdamUpdate(grad.GetF32(), alpha, beta1, beta2, epsilon, t, weights.GetF32(),
+             grad_m.GetF32(), grad_v.GetF32(), pool);
 }
 
 }  // namespace gcpp

@@ -39,9 +39,9 @@ class SimplifiedGemma {
         threading_(threading),
         inference_(inference),
         env_(MakeMatMulEnv(threading_)),
-        model_(gcpp::CreateGemma(loader_, env_)) {
+        gemma_(loader_, env_) {
     // Instantiate model and KV Cache
-    kv_cache_ = gcpp::KVCache::Create(model_.GetModelConfig(),
+    kv_cache_ = gcpp::KVCache::Create(gemma_.GetModelConfig(),
                                       inference_.prefill_tbatch_size);
 
     // Initialize random number generator
@@ -50,7 +50,7 @@ class SimplifiedGemma {
   }
 
   SimplifiedGemma(int argc, char** argv)
-      : SimplifiedGemma(gcpp::LoaderArgs(argc, argv, /*validate=*/true),
+      : SimplifiedGemma(gcpp::LoaderArgs(argc, argv),
                         gcpp::ThreadingArgs(argc, argv),
                         gcpp::InferenceArgs(argc, argv)) {}
 
@@ -60,8 +60,8 @@ class SimplifiedGemma {
     size_t generated = 0;
 
     const std::vector<int> tokens = gcpp::WrapAndTokenize(
-        model_.Tokenizer(), model_.ChatTemplate(), loader_.Info(),
-        generated, prompt);
+        gemma_.Tokenizer(), gemma_.ChatTemplate(),
+        gemma_.GetModelConfig().wrapping, generated, prompt);
     const size_t prompt_size = tokens.size();
 
     // This callback function gets invoked every time a token is generated
@@ -69,9 +69,9 @@ class SimplifiedGemma {
       ++generated;
       if (generated < prompt_size) {
         // print feedback
-      } else if (!this->model_.GetModelConfig().IsEOS(token)) {
+      } else if (!gemma_.GetModelConfig().IsEOS(token)) {
         std::string token_text;
-        HWY_ASSERT(this->model_.Tokenizer().Decode({token}, &token_text));
+        HWY_ASSERT(gemma_.Tokenizer().Decode({token}, &token_text));
         std::cout << token_text << std::flush;
       }
       return true;
@@ -89,7 +89,7 @@ class SimplifiedGemma {
               return !reject_tokens.contains(token);
             },
     };
-    model_.Generate(runtime_config, tokens, 0, kv_cache_, timing_info);
+    gemma_.Generate(runtime_config, tokens, 0, kv_cache_, timing_info);
   }
   ~SimplifiedGemma() = default;
 
@@ -98,7 +98,7 @@ class SimplifiedGemma {
   gcpp::ThreadingArgs threading_;
   gcpp::InferenceArgs inference_;
   gcpp::MatMulEnv env_;
-  gcpp::Gemma model_;
+  gcpp::Gemma gemma_;
   gcpp::KVCache kv_cache_;
   std::mt19937 gen_;
   std::string validation_error_;

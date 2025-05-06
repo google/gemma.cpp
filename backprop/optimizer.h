@@ -16,17 +16,17 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_OPTIMIZER_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_OPTIMIZER_H_
 
-#include "gemma/common.h"
+#include <stddef.h>
+
 #include "gemma/weights.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-void AdamUpdate(Type weight_type, const ModelWeightsStorage& grad, float alpha,
-                float beta1, float beta2, float epsilon, size_t t,
-                const ModelWeightsStorage& weights,
-                const ModelWeightsStorage& grad_m,
-                const ModelWeightsStorage& grad_v, hwy::ThreadPool& pool);
+void AdamUpdate(const WeightsOwner& grad, float alpha, float beta1, float beta2,
+                float epsilon, size_t t, const WeightsOwner& weights,
+                const WeightsOwner& grad_m, const WeightsOwner& grad_v,
+                hwy::ThreadPool& pool);
 
 }  // namespace gcpp
 

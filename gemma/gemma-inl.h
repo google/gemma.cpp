@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "gemma/activations.h"
-#include "gemma/common.h"
+#include "gemma/common.h"  // EmbeddingScaling
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/kv_cache.h"
@@ -305,13 +305,7 @@ class GemmaAttention {
           const size_t kv_offset =
               cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-          if (layer_weights_.qkv_einsum_w.HasPtr()) {
-            MatVec(layer_weights_.qkv_einsum_w, heads * qkv_dim * model_dim,
-                   w_rows_kv_cols, model_dim, x, kv, pool_);
-          } else {
-            MatVec(layer_weights_.qkv_einsum_w2, 0,  //
-                   w_rows_kv_cols, model_dim, x, kv, pool_);
-          }
+          MatVec(w_q2, w_q2.ofs, w_rows_kv_cols, model_dim, x, kv, pool_);
         }
       }
     }  // !is_mha_
@@ -781,7 +775,6 @@ template <typename T>
 HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
                            const LayerWeightsPtrs<T>* layer_weights) {
   PROFILER_ZONE("Gen.FFW");
-  const size_t model_dim = layer_weights->layer_config.model_dim;
   const size_t ffh_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
   HWY_DASSERT(num_interleaved <= activations.bf_pre_ffw_rms_out.BatchSize());
 
@@ -917,8 +910,16 @@ HWY_NOINLINE void EmbedMMToken(int token, size_t batch_idx, size_t pos,
   HWY_DASSERT(token < static_cast<int>(vocab_size));
 
   const hn::ScalableTag<float> df;
-  DecompressAndZeroPad(df, weights.embedder_input_embedding.Span(),
-                       token * model_dim, x.Batch(batch_idx), model_dim);
+  // Using `Stride` to compute the offset works for both NUQ (because we use an
+  // offset and NUQ is never padded) and padded, because non-NUQ types are
+  // seekable, hence the offset can also skip any padding.
+  const size_t embedding_ofs =
+      token * weights.embedder_input_embedding.Stride();
+  HWY_ASSERT(weights.embedder_input_embedding.Cols() == model_dim);
+  const auto embedding_span = MakeSpan(weights.embedder_input_embedding.Row(0),
+                                       embedding_ofs + model_dim);
+  DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Batch(batch_idx),
+                       model_dim);
   MulByConst(emb_scaling * weights.embedder_input_embedding.Scale(),
              x.Batch(batch_idx), model_dim);
   if (weights.weights_config.absolute_pe) {
@@ -1128,7 +1129,7 @@ HWY_NOINLINE void Prefill(
       // Transformer with one batch of tokens from a single query.
       for (size_t layer = 0;
            layer < weights.weights_config.layer_configs.size(); ++layer) {
-        const auto* layer_weights = weights.GetLayer(layer);
+        const LayerWeightsPtrs<T>* layer_weights = weights.GetLayer(layer);
         TransformerLayer(single_query_pos, single_query_prefix_end, tbatch_size,
                          layer, layer_weights, activations, div_seq_len,
                          single_kv_cache);
@@ -1222,7 +1223,7 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
   for (size_t layer = 0;
        layer < weights.weights_config.vit_config.layer_configs.size();
        ++layer) {
-    const auto* layer_weights = weights.GetVitLayer(layer);
+    const LayerWeightsPtrs<T>* layer_weights = weights.VitLayer(layer);
     VitTransformerLayer(num_tokens, layer, layer_weights, activations);
   }
   // Final Layernorm.
@@ -1359,7 +1360,7 @@ HWY_INLINE SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
 template <typename T>
 // Runs one decode step for all the queries in the batch. Returns true if all
 // queries are at <end_of_sentence>.
-bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
+bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
                  const RuntimeConfig& runtime_config,
                  const QueriesPromptTokens& queries_prompt,
                  const size_t query_idx_start, const KVCaches& kv_caches,
@@ -1398,7 +1399,7 @@ bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
         token_streamer(query_idx_start + query_idx,
                        queries_mutable_pos[query_idx], tp.token, tp.prob);
     all_queries_eos &= is_eos;
-    gen_tokens[query_idx] = is_eos ? runtime_config.eos_id : tp.token;
+    gen_tokens[query_idx] = is_eos ? config.eos_id : tp.token;
   }
   return all_queries_eos;
 }
@@ -1415,8 +1416,8 @@ bool DecodeStepT(const ModelWeightsPtrs<T>& weights,
 //
 // `kv_caches` is for the batch, size must match `queries_prompt`.
 template <typename T>
-void GenerateT(const ModelWeightsStorage& model, Activations& activations,
-               const RuntimeConfig& runtime_config,
+void GenerateT(const ModelStore2& model, const ModelWeightsPtrs<T>& weights,
+               Activations& activations, const RuntimeConfig& runtime_config,
                const QueriesPromptTokens& queries_prompt,
                const QueriesPos& queries_pos_in,
                const QueriesPos& queries_prefix_end,
@@ -1438,7 +1439,7 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   // Sanity check: prompts should not be empty, nor start with EOS.
   for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
     const PromptTokens& prompt = queries_prompt[query_idx];
-    HWY_ASSERT(prompt.size() != 0 && prompt[0] != runtime_config.eos_id);
+    HWY_ASSERT(prompt.size() != 0 && prompt[0] != model.Config().eos_id);
   }
 
   const size_t num_queries = queries_prompt.size();
@@ -1447,7 +1448,6 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
   HWY_ASSERT(queries_pos_in.size() == num_queries);
   HWY_ASSERT(kv_caches.size() == num_queries);
   const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
-  const ModelWeightsPtrs<T>& weights = *model.GetWeightsOfType<T>();
   size_t max_prompt_size = MaxQueryLength(queries_prompt);
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
   RangeChecks(weights.weights_config, max_generated_tokens, max_prompt_size);
@@ -1497,9 +1497,9 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
     timing_info.generate_start = hwy::platform::Now();
     for (size_t gen = 0; gen < max_generated_tokens; ++gen) {
       bool all_queries_eos = DecodeStepT<T>(
-          weights, runtime_config, queries_prompt, query_idx_start, kv_caches,
-          queries_prefix_end, div_seq_len, vocab_size, sample_token,
-          activations, token_streamer, gen_tokens,
+          model.Config(), weights, runtime_config, queries_prompt,
+          query_idx_start, kv_caches, queries_prefix_end, div_seq_len,
+          vocab_size, sample_token, activations, token_streamer, gen_tokens,
           timing_info, queries_mutable_pos);
       if (all_queries_eos) break;
     }  // foreach token to generate
@@ -1508,7 +1508,8 @@ void GenerateT(const ModelWeightsStorage& model, Activations& activations,
 }
 
 template <typename T>
-void GenerateSingleT(const ModelWeightsStorage& model,
+void GenerateSingleT(const ModelStore2& model,
+                     const ModelWeightsPtrs<T>& weights,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      KVCache& kv_cache, MatMulEnv* env,
@@ -1525,12 +1526,14 @@ void GenerateSingleT(const ModelWeightsStorage& model,
   const QueriesPos queries_prefix_end(&prefix_end, kNumQueries);
   const KVCaches kv_caches{&kv_cache, kNumQueries};
 
-  GenerateT<T>(model, activations, runtime_config, queries_prompt, queries_pos,
-               queries_prefix_end, qbatch_start, kv_caches, timing_info);
+  GenerateT<T>(model, weights, activations, runtime_config, queries_prompt,
+               queries_pos, queries_prefix_end, qbatch_start, kv_caches,
+               timing_info);
 }
 
 template <typename T>
-void GenerateBatchT(const ModelWeightsStorage& model,
+void GenerateBatchT(const ModelStore2& model,
+                    const ModelWeightsPtrs<T>& weights,
                     const RuntimeConfig& runtime_config,
                     const QueriesPromptTokens& queries_prompt,
                     const QueriesPos& queries_pos,
@@ -1542,7 +1545,7 @@ void GenerateBatchT(const ModelWeightsStorage& model,
   HWY_ASSERT(kv_caches.size() == num_queries);
   // Griffin does not support query batching.
   size_t max_qbatch_size = runtime_config.decode_qbatch_size;
-  for (const auto& layer_config : model.Config().layer_configs) {
+  for (const LayerConfig& layer_config : model.Config().layer_configs) {
     if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
       max_qbatch_size = 1;
       break;
@@ -1563,13 +1566,15 @@ void GenerateBatchT(const ModelWeightsStorage& model,
     const QueriesPos qbatch_prefix_end(&queries_prefix_end[qbatch_start],
                                              qbatch_size);
     const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
-    GenerateT<T>(model, activations, runtime_config, qbatch_prompts, qbatch_pos,
-                 qbatch_prefix_end, qbatch_start, qbatch_kv, timing_info);
+    GenerateT<T>(model, weights, activations, runtime_config, qbatch_prompts,
+                 qbatch_pos, qbatch_prefix_end, qbatch_start, qbatch_kv,
+                 timing_info);
   }
 }
 
 template <typename T>
-void GenerateImageTokensT(const ModelWeightsStorage& model,
+void GenerateImageTokensT(const ModelStore2& model,
+                          const ModelWeightsPtrs<T>& weights,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
                           MatMulEnv* env) {
@@ -1583,8 +1588,8 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
   Activations prefill_activations(vit_config);
   prefill_activations.Allocate(vit_config.seq_len, env);
   // Weights are for the full PaliGemma model, not just the ViT part.
-  PrefillVit(*model.GetWeightsOfType<T>(), prefill_runtime_config, image,
-             image_tokens, prefill_activations);
+  PrefillVit(weights, prefill_runtime_config, image, image_tokens,
+             prefill_activations);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -1592,33 +1597,34 @@ void GenerateImageTokensT(const ModelWeightsStorage& model,
 #if HWY_ONCE
 
 // These are extern functions defined by instantiations/*.cc, which include this
-// 'header' after defining GEMMA_CONFIG, which is for function overloading.
+// 'header' after defining `GEMMA_TYPE`.
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
-    GEMMA_TYPE, const ModelWeightsStorage& model,
+    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
     size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,
     TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_TYPE>)
-  (model, runtime_config, prompt, pos, prefix_end, kv_cache, env, timing_info);
+  (model, weights, runtime_config, prompt, pos, prefix_end, kv_cache, env,
+   timing_info);
 }
 
 void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
-    GEMMA_TYPE, const ModelWeightsStorage& model,
+    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config,
     const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
     MatMulEnv* env, TimingInfo& timing_info) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_TYPE>)
-  (model, runtime_config, queries_prompt, queries_pos, queries_prefix_end,
-   kv_caches, env, timing_info);
+  (model, weights, runtime_config, queries_prompt, queries_pos,
+   queries_prefix_end, kv_caches, env, timing_info);
 }
 
 void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
-    GEMMA_TYPE, const ModelWeightsStorage& model,
+    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config, const Image& image,
     ImageTokens& image_tokens, MatMulEnv* env) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_TYPE>)
-  (model, runtime_config, image, image_tokens, env);
+  (model, weights, runtime_config, image, image_tokens, env);
 }
 
 #endif  // HWY_ONCE

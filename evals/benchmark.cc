@@ -6,7 +6,6 @@
 #include <iostream>
 #include <ostream>
 #include <string>
-#include <utility>  // std::pair
 #include <vector>
 
 #include "compression/io.h"  // Path
@@ -26,7 +25,6 @@ class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
  public:
   BenchmarkArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
 
-  Path goldens;
   Path summarize_text;
   Path cross_entropy;
   Path trivia_qa;
@@ -35,8 +33,6 @@ class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
-    visitor(goldens.path, "goldens_dir", std::string(""),
-            "Directory containing golden files", 2);
     visitor(summarize_text.path, "summarize_text", std::string(""),
             "Path to text file to summarize", 2);
     visitor(cross_entropy.path, "cross_entropy", std::string(""),
@@ -51,56 +47,6 @@ class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
             2);
   }
 };
-
-std::vector<std::pair<std::string, std::string>> load_goldens(
-    const std::string& path) {
-  std::ifstream goldens_file(path);
-  if (!goldens_file) {
-    std::cout << "Could not load goldens file: " << path << "\n" << std::flush;
-    return {};
-  }
-  std::vector<std::pair<std::string, std::string>> res;
-  std::string query_separator;
-  std::string query;
-  std::string answer_separator;
-  std::string answer;
-  while (std::getline(goldens_file, query_separator) &&
-         std::getline(goldens_file, query) &&
-         std::getline(goldens_file, answer_separator) &&
-         std::getline(goldens_file, answer)) {
-    res.push_back({query, answer});
-  }
-  return res;
-}
-
-int BenchmarkGoldens(GemmaEnv& env, const std::string& golden_path) {
-  std::vector<std::pair<std::string, std::string>> queries_answers =
-      load_goldens(golden_path);
-  size_t correct_answers = 0;
-  size_t total_tokens = 0;
-  const double time_start = hwy::platform::Now();
-  for (auto& [question, expected_answer] : queries_answers) {
-    QueryResult result = env.QueryModel(question);
-    total_tokens += result.tokens_generated;
-    if (result.response.find(expected_answer) != std::string::npos) {
-      correct_answers++;
-    } else {
-      std::cout << "Wrong!\n";
-      std::cout << "Input: " << question << "\n";
-      std::cout << "Expected: " << expected_answer << "\n";
-      std::cout << "Output: " << result.response << "\n\n" << std::flush;
-    }
-  }
-  LogSpeedStats(time_start, total_tokens);
-
-  std::cout << "Correct: " << correct_answers << " out of "
-            << queries_answers.size() << "\n"
-            << std::flush;
-  if (correct_answers != queries_answers.size()) {
-    return EXIT_FAILURE;
-  }
-  return EXIT_SUCCESS;
-}
 
 int BenchmarkSummary(GemmaEnv& env, const Path& text) {
   std::string prompt("Here is some text to summarize:\n");
@@ -182,14 +128,7 @@ int main(int argc, char** argv) {
   gcpp::GemmaEnv env(argc, argv);
   gcpp::BenchmarkArgs benchmark_args(argc, argv);
 
-  if (!benchmark_args.goldens.Empty()) {
-    const std::string golden_path =
-        benchmark_args.goldens.path + "/" +
-        gcpp::ModelString(env.GetGemma()->Info().model,
-                          env.GetGemma()->Info().wrapping) +
-        ".txt";
-    return BenchmarkGoldens(env, golden_path);
-  } else if (!benchmark_args.summarize_text.Empty()) {
+  if (!benchmark_args.summarize_text.Empty()) {
     return BenchmarkSummary(env, benchmark_args.summarize_text);
   } else if (!benchmark_args.cross_entropy.Empty()) {
     return BenchmarkCrossEntropy(env, benchmark_args.cross_entropy,

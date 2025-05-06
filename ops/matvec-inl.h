@@ -37,6 +37,8 @@
 
 #include "compression/compress-inl.h"
 #include "ops/dot-inl.h"
+#include "ops/matmul.h"
+#include "util/mat.h"  // MatPtrT
 #include "hwy/contrib/math/math-inl.h"
 #include "hwy/contrib/matvec/matvec-inl.h"
 
@@ -45,13 +47,25 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-// Adapter for use by matvec-inl.h. TODO: remove when that is no longer used.
-template <class ArrayT, typename VT>
-HWY_INLINE float Dot(const ArrayT& w, size_t w_ofs, const VT* vec_aligned,
+// Adapter so that gemma-inl.h can pass ConstMat.
+// TODO: remove after changing ComputeQKV to MatMul.
+template <typename WT, typename VT>
+HWY_INLINE float Dot(const ConstMat<WT>& w, size_t w_ofs, const VT* vec_aligned,
+                     size_t num) {
+  const hn::ScalableTag<VT> d;
+  HWY_DASSERT(num <= w.Stride());  // Single row, else padding is an issue.
+  const auto span = MakeSpan(w.ptr, w_ofs + w.extents.rows * w.Stride());
+  return w.Scale() * Dot(d, span, w_ofs, vec_aligned, num);
+}
+// For callers that pass `MatPtrT`.
+template <typename WT, typename VT>
+HWY_INLINE float Dot(const MatPtrT<WT>& w, size_t w_ofs, const VT* vec_aligned,
                      size_t num) {
   const hn::ScalableTag<VT> d;
   return w.Scale() * Dot(d, w.Span(), w_ofs, vec_aligned, num);
 }
+
+// ArrayT is either MatPtrT or ConstMat.
 
 // Simple version without tiling nor threading, but two offsets/outputs and
 // always with addition.
@@ -67,8 +81,8 @@ HWY_INLINE void TwoOfsMatVecAddLoop(const ArrayT& mat, const size_t mat_ofs0,
   PROFILER_ZONE("TwoOfsMatVecAddLoop");
 
   for (size_t idx_row = 0; idx_row < outer; ++idx_row) {
-    const size_t row_ofs0 = mat_ofs0 + (idx_row)*inner;
-    const size_t row_ofs1 = mat_ofs1 + (idx_row)*inner;
+    const size_t row_ofs0 = mat_ofs0 + idx_row * mat.Stride();
+    const size_t row_ofs1 = mat_ofs1 + idx_row * mat.Stride();
     out0[idx_row] = hwy::ConvertScalarTo<float>(add0[idx_row]) +
                     Dot(mat, row_ofs0, vec_aligned, inner);
     out1[idx_row] = hwy::ConvertScalarTo<float>(add1[idx_row]) +
@@ -107,11 +121,11 @@ namespace detail {
 // coordinate of the tile is r0, c0.
 template <class DF, typename ArrayT, typename VecT>
 HWY_INLINE void AccumulatePartialDotProducts(
-    DF df, const ArrayT& mat, size_t mat_ofs, size_t mat_stride, size_t r0,
-    size_t c0, size_t num_rows, size_t num_cols,
-    const VecT* HWY_RESTRICT vec_aligned, float* HWY_RESTRICT out) {
+    DF df, const ArrayT& mat, size_t mat_ofs, size_t r0, size_t c0,
+    size_t num_rows, size_t num_cols, const VecT* HWY_RESTRICT vec_aligned,
+    float* HWY_RESTRICT out) {
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
-    const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
+    const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat.Stride();
     out[idx_row] += Dot(mat, row_ofs + c0, vec_aligned + c0, num_cols);
   }
 }
@@ -121,14 +135,13 @@ HWY_INLINE void AccumulatePartialDotProducts(
 // accumulate.
 template <bool kInit, class DF, typename ArrayT, typename VecT, typename InitT>
 HWY_INLINE void SetFirstPartialDotProducts(DF df, const ArrayT& mat,
-                                           size_t mat_ofs, size_t mat_stride,
-                                           size_t r0, size_t c0,
+                                           size_t mat_ofs, size_t r0, size_t c0,
                                            size_t num_rows, size_t num_cols,
                                            const VecT* HWY_RESTRICT vec_aligned,
                                            const InitT* HWY_RESTRICT init,
                                            float* HWY_RESTRICT out) {
   for (size_t idx_row = 0; idx_row < num_rows; ++idx_row) {
-    const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat_stride;
+    const size_t row_ofs = mat_ofs + (r0 + idx_row) * mat.Stride();
     if constexpr (kInit) {
       out[idx_row] = hwy::ConvertScalarTo<float>(init[idx_row + r0]) +
                      Dot(mat, row_ofs + c0, vec_aligned + c0, num_cols);
@@ -144,32 +157,32 @@ HWY_INLINE void SetFirstPartialDotProducts(DF df, const ArrayT& mat,
 // store into in out[r - r0].
 template <bool kAdd, class DF, typename ArrayT, typename VecT, typename AddT>
 HWY_INLINE void FullDotProductsForStrip(DF df, const ArrayT& mat,
-                                        size_t mat_ofs, size_t mat_stride,
-                                        size_t r0, size_t num_rows,
+                                        size_t mat_ofs, size_t r0,
+                                        size_t num_rows, size_t num_cols,
                                         const VecT* HWY_RESTRICT vec_aligned,
                                         const AddT* HWY_RESTRICT add,
                                         float* HWY_RESTRICT out) {
+  HWY_DASSERT(num_cols <= mat.Cols());
   // Tall and skinny: set `out` to the single dot product.
-  if (mat_stride < MaxCols()) {
-    SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, mat_stride, r0, 0,
-                                     num_rows, mat_stride, vec_aligned, add,
-                                     out);
+  if (num_cols < MaxCols()) {
+    SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, r0, 0, num_rows,
+                                     num_cols, vec_aligned, add, out);
     return;
   }
 
   // We have at least MaxCols, so start by setting `out` to that:
-  SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, mat_stride, r0, 0,
-                                   num_rows, MaxCols(), vec_aligned, add, out);
+  SetFirstPartialDotProducts<kAdd>(df, mat, mat_ofs, r0, 0, num_rows, MaxCols(),
+                                   vec_aligned, add, out);
   // For further multiples of MaxCols, accumulate. Remainders handled below.
   size_t c0 = MaxCols();
-  for (; c0 <= mat_stride - MaxCols(); c0 += MaxCols()) {
-    AccumulatePartialDotProducts(df, mat, mat_ofs, mat_stride, r0, c0, num_rows,
-                                 MaxCols(), vec_aligned, out);
+  for (; c0 <= num_cols - MaxCols(); c0 += MaxCols()) {
+    AccumulatePartialDotProducts(df, mat, mat_ofs, r0, c0, num_rows, MaxCols(),
+                                 vec_aligned, out);
   }
 
-  if (c0 < mat_stride) {  // Final cols
-    AccumulatePartialDotProducts(df, mat, mat_ofs, mat_stride, r0, c0, num_rows,
-                                 mat_stride - c0, vec_aligned, out);
+  if (c0 < num_cols) {  // Final cols
+    AccumulatePartialDotProducts(df, mat, mat_ofs, r0, c0, num_rows,
+                                 num_cols - c0, vec_aligned, out);
   }
 }
 
@@ -193,9 +206,8 @@ HWY_INLINE void MatVecT(const ArrayT& mat, const size_t mat_ofs,
   pool.Run(0, num_strips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
     PROFILER_ZONE("MatVec.lambda");
     const size_t r0 = strip * rows_per_strip;
-    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, inner, r0,
-                                          rows_per_strip, vec_aligned, add,
-                                          out + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, r0, rows_per_strip,
+                                          inner, vec_aligned, add, out + r0);
   });
 
   // Remaining rows
@@ -203,7 +215,7 @@ HWY_INLINE void MatVecT(const ArrayT& mat, const size_t mat_ofs,
   if (r0 < outer) {
     PROFILER_ZONE("MatVec remainder");
     const size_t num_rows = outer - r0;
-    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, inner, r0, num_rows,
+    detail::FullDotProductsForStrip<kAdd>(df, mat, mat_ofs, r0, num_rows, inner,
                                           vec_aligned, add, out + r0);
   }
 }
@@ -249,12 +261,10 @@ HWY_NOINLINE void TwoMatVecT(const ArrayT1& mat0, const ArrayT2& mat1,
   pool.Run(0, num_strips, [&](const uint64_t strip, size_t thread) HWY_ATTR {
     PROFILER_ZONE("TwoMatVec.lambda");
     const size_t r0 = strip * rows_per_strip;
-    detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, inner, r0,
-                                          rows_per_strip, vec_aligned, add0,
-                                          out0 + r0);
-    detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, inner, r0,
-                                          rows_per_strip, vec_aligned, add1,
-                                          out1 + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, r0, rows_per_strip,
+                                          inner, vec_aligned, add0, out0 + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, r0, rows_per_strip,
+                                          inner, vec_aligned, add1, out1 + r0);
   });
 
   // Remaining rows
@@ -262,10 +272,10 @@ HWY_NOINLINE void TwoMatVecT(const ArrayT1& mat0, const ArrayT2& mat1,
   if (r0 < outer) {
     PROFILER_ZONE("TwoMatVec remainder");
     const size_t num_rows = outer - r0;
-    detail::FullDotProductsForStrip<kAdd>(
-        df, mat0, mat_ofs, inner, r0, num_rows, vec_aligned, add0, out0 + r0);
-    detail::FullDotProductsForStrip<kAdd>(
-        df, mat1, mat_ofs, inner, r0, num_rows, vec_aligned, add1, out1 + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat0, mat_ofs, r0, num_rows,
+                                          inner, vec_aligned, add0, out0 + r0);
+    detail::FullDotProductsForStrip<kAdd>(df, mat1, mat_ofs, r0, num_rows,
+                                          inner, vec_aligned, add1, out1 + r0);
   }
 }
 

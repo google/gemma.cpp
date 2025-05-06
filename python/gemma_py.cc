@@ -46,9 +46,9 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 class GemmaModel {
  public:
   GemmaModel(const gcpp::LoaderArgs& loader,
-             const gcpp::InferenceArgs& inference,
-             const gcpp::ThreadingArgs& threading)
-      : gemma_(threading, loader, inference), last_prob_(0.0f) {}
+             const gcpp::ThreadingArgs& threading,
+             const gcpp::InferenceArgs& inference)
+      : gemma_(loader, threading, inference), last_prob_(0.0f) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
@@ -167,7 +167,7 @@ class GemmaModel {
   // Generate* will use this image. Throws an error for other models.
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
-    gcpp::Gemma& gemma = *(gemma_.GetGemma());
+    const gcpp::Gemma& gemma = *gemma_.GetGemma();
     const gcpp::Allocator2& allocator = gemma_.Env().ctx.allocator;
     if (gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::PALIGEMMA &&
         gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
@@ -200,7 +200,7 @@ class GemmaModel {
     if (image_tokens_.Cols() == 0) {
       throw std::invalid_argument("No image set.");
     }
-    gcpp::Gemma& model = *(gemma_.GetGemma());
+    const gcpp::Gemma& model = *gemma_.GetGemma();
     gemma_.MutableGen().seed(seed);
     gcpp::RuntimeConfig& config = gemma_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
@@ -258,27 +258,21 @@ class GemmaModel {
 
 PYBIND11_MODULE(gemma, mod) {
   py::class_<GemmaModel>(mod, "GemmaModel")
-      .def(py::init([](std::string tokenizer, std::string weights,
-                       std::string model, std::string weight_type,
+      .def(py::init([](const std::string& tokenizer, const std::string& weights,
                        size_t max_threads) {
-             gcpp::LoaderArgs loader(tokenizer, weights, model);
-             if (const char* err = loader.Validate()) {
-               throw std::invalid_argument(err);
-             }
-             loader.weight_type_str = weight_type;
+             const gcpp::LoaderArgs loader(tokenizer, weights);
              gcpp::ThreadingArgs threading;
              threading.max_lps = max_threads;
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
              auto gemma =
-                 std::make_unique<GemmaModel>(loader, inference, threading);
+                 std::make_unique<GemmaModel>(loader, threading, inference);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }
              return gemma;
            }),
            py::arg("tokenizer_path"), py::arg("weights_path"),
-           py::arg("model_flag"), py::arg("weight_type") = "sfp",
            py::arg("max_threads") = 0)
       .def("generate_ex", &GemmaModel::GenerateEx, py::arg("prompt"),
            py::arg("stream"), py::arg("max_generated_tokens") = 1024,

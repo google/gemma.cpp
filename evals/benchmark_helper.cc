@@ -42,39 +42,33 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
     gen.seed(0x12345678);
   } else {
     // Depending on the library implementation, this may still be deterministic.
-    std::random_device rd;
+    std::random_device rd;  // NOLINT
     gen.seed(rd());
   }
 }
 
-GemmaEnv::GemmaEnv(const ThreadingArgs& threading_args,
-                   const LoaderArgs& loader, const InferenceArgs& inference)
-    : env_(MakeMatMulEnv(threading_args)) {
-  InferenceArgs mutable_inference = inference;
-  AbortIfInvalidArgs(mutable_inference);
-  LoaderArgs mutable_loader = loader;
-  if (const char* err = mutable_loader.Validate()) {
-    mutable_loader.Help();
-    fprintf(stderr, "Skipping model load because: %s\n", err);
-  } else {
-    fprintf(stderr, "Loading model...\n");
-    gemma_ = AllocateGemma(mutable_loader, env_);
-    // Only allocate one for starters because GenerateBatch might not be called.
-    kv_caches_.resize(1);
-    kv_caches_[0] = KVCache::Create(gemma_->GetModelConfig(),
-                                    inference.prefill_tbatch_size);
-  }
+GemmaEnv::GemmaEnv(const LoaderArgs& loader,
+                   const ThreadingArgs& threading_args,
+                   const InferenceArgs& inference)
+    : env_(MakeMatMulEnv(threading_args)), gemma_(loader, env_) {
+  // Only allocate one for starters because GenerateBatch might not be called.
+  kv_caches_.resize(1);
+  kv_caches_[0] =
+      KVCache::Create(gemma_.GetModelConfig(), inference.prefill_tbatch_size);
+
   InitGenerator(inference, gen_);
+
   runtime_config_ = {
       .max_generated_tokens = inference.max_generated_tokens,
       .temperature = inference.temperature,
       .gen = &gen_,
       .verbosity = inference.verbosity,
   };
+  inference.CopyTo(runtime_config_);
 }
 
 GemmaEnv::GemmaEnv(int argc, char** argv)
-    : GemmaEnv(ThreadingArgs(argc, argv), LoaderArgs(argc, argv),
+    : GemmaEnv(LoaderArgs(argc, argv), ThreadingArgs(argc, argv),
                InferenceArgs(argc, argv)) {}
 
 QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
@@ -97,8 +91,8 @@ QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
   }
   gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
   runtime_config_.batch_stream_token = batch_stream_token;
-  gemma_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
-                   timing_info);
+  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
+                  timing_info);
   return result;
 }
 
@@ -107,8 +101,8 @@ void GemmaEnv::QueryModel(
   gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
   const StreamFunc previous_stream_token = runtime_config_.stream_token;
   runtime_config_.stream_token = stream_token;
-  gemma_->Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
-                   timing_info);
+  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
+                  timing_info);
   runtime_config_.stream_token = previous_stream_token;
 }
 
@@ -121,8 +115,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
                                                  size_t query_index, size_t pos,
                                                  int token, float) {
     std::string token_text;
-    HWY_ASSERT(
-        gemma_->Tokenizer().Decode(std::vector<int>{token}, &token_text));
+    HWY_ASSERT(gemma_.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     res[query_index].response.append(token_text);
     res[query_index].tokens_generated += 1;
     if (res[query_index].tokens_generated ==
@@ -144,7 +137,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   }
   for (size_t i = 1; i < num_queries; ++i) {
     if (kv_caches_[i].seq_len == 0) {
-      kv_caches_[i] = KVCache::Create(gemma_->GetModelConfig(),
+      kv_caches_[i] = KVCache::Create(gemma_.GetModelConfig(),
                                       runtime_config_.prefill_tbatch_size);
     }
   }
@@ -152,9 +145,9 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   std::vector<size_t> queries_pos(num_queries, 0);
-  gemma_->GenerateBatch(runtime_config_, queries_prompt,
-                        QueriesPos(queries_pos.data(), num_queries),
-                        KVCaches(&kv_caches_[0], num_queries), timing_info);
+  gemma_.GenerateBatch(runtime_config_, queries_prompt,
+                       QueriesPos(queries_pos.data(), num_queries),
+                       KVCaches(&kv_caches_[0], num_queries), timing_info);
   return res;
 }
 
@@ -234,11 +227,13 @@ static constexpr const char* CompiledConfig() {
   }
 }
 
-void ShowConfig(ThreadingArgs& threading, LoaderArgs& loader,
-                InferenceArgs& inference) {
+void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
+                const InferenceArgs& inference, const ModelConfig& config) {
   threading.Print(inference.verbosity);
   loader.Print(inference.verbosity);
   inference.Print(inference.verbosity);
+  fprintf(stderr, "Model                         : %s, mmap %d\n",
+          config.Specifier().c_str(), static_cast<int>(loader.map));
 
   if (inference.verbosity >= 2) {
     time_t now = time(nullptr);
@@ -249,38 +244,32 @@ void ShowConfig(ThreadingArgs& threading, LoaderArgs& loader,
 
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n
-            "CPU                           : %s\n"
+            "CPU                           : %s, bind %d\n"
             "CPU topology                  : %s, %s, %s\n"
             "Instruction set               : %s (%zu bits)\n"
             "Compiled config               : %s\n"
-            "Memory MiB                    : %4zu, %4zu free\n"
-            "Weight Type                   : %s\n",
-            dt, cpu100, ctx.topology.TopologyString(), ctx.pools.PinString(),
+            "Memory MiB                    : %4zu, %4zu free\n",
+            dt, cpu100, static_cast<int>(threading.bind),
+            ctx.topology.TopologyString(), ctx.pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
             ctx.allocator.VectorBytes() * 8, CompiledConfig(),
-            ctx.allocator.TotalMiB(), ctx.allocator.FreeMiB(),
-            StringFromType(loader.Info().weight));
+            ctx.allocator.TotalMiB(), ctx.allocator.FreeMiB());
   }
 }
 
-void ShowHelp(ThreadingArgs& threading, LoaderArgs& loader,
-              InferenceArgs& inference) {
+void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
+              const InferenceArgs& inference) {
   std::cerr
       << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
          "==========================================================\n\n"
-         "To run gemma.cpp, you need to "
-         "specify 3 required model loading arguments:\n"
-         "    --tokenizer\n"
-         "    --weights\n"
-         "    --model,\n"
-         " or with the single-file weights format, specify just:\n"
-         "    --weights\n";
+         "To run with pre-2025 weights, specify --tokenizer and --weights.\n"
+         "With the single-file weights format, specify just --weights.\n";
   std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
-               "--weights 2b-it-sfp.sbs --model 2b-it\n";
-  std::cerr << "\n*Threading Arguments*\n\n";
-  threading.Help();
+               "--weights gemma2-2b-it-sfp.sbs\n";
   std::cerr << "\n*Model Loading Arguments*\n\n";
   loader.Help();
+  std::cerr << "\n*Threading Arguments*\n\n";
+  threading.Help();
   std::cerr << "\n*Inference Arguments*\n\n";
   inference.Help();
   std::cerr << "\n";

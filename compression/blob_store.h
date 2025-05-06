@@ -16,96 +16,160 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_BLOB_STORE_H_
 #define THIRD_PARTY_GEMMA_CPP_COMPRESSION_BLOB_STORE_H_
 
+// Reads/writes arrays of bytes from/to file.
+
 #include <stddef.h>
 #include <stdint.h>
 
-#include <memory>
+#include <memory>  // std::unique_ptr
 #include <string>
+#include <unordered_map>
 #include <vector>
 
-#include "compression/io.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"  // hwy::uint128_t
+#include "compression/io.h"       // File, Path, MapPtr
+#include "util/basics.h"          // Tristate
+#include "hwy/aligned_allocator.h"  // Span
+#include "hwy/base.h"               // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
-// Convenient way to construct a key from a string (<= 16 chars).
-hwy::uint128_t MakeKey(const char* string);
+// One blob's extents within the file.
+struct BlobRange2 {
+  uint64_t End() const { return offset + bytes; }
 
-// Returns a string from a key.
-std::string StringFromKey(hwy::uint128_t key);
+  uint64_t offset = 0;
+  size_t bytes = 0;  // We check blobs are not zero-sized.
+  // Index within `BlobReader2::Keys()` for error reporting.
+  size_t key_idx;
+};
 
-// Ordered list of opaque blobs (~hundreds), identified by unique opaque
-// 128-bit keys.
+// A read or write I/O request, each serviced by one thread in a pool.
+struct BlobIO2 {
+  BlobIO2(BlobRange2 range, void* data) : range(range), data(data) {}
+
+  BlobRange2 range;
+  void* data;  // Modified only if a read request. Read-only for writes.
+};
+
 class BlobStore;
 
-// Incomplete type, so dtor will not be called.
-using BlobStorePtr = hwy::AlignedFreeUniquePtr<BlobStore>;
-
-// 0 if successful, otherwise the line number of the failing check.
-using BlobError = int;
-
-// Blob offsets on disk and memory addresses are a multiple of this, because
-// we pad the header and each blob's size. This matches CUDA alignment and the
-// maximum SVE vector size, and exceeds typical x86 cache line sizes (64 or
-// 128), which can help performance.
-static constexpr size_t kBlobAlign = 256;
-
-// One I/O request, serviced by threads in a pool.
-struct BlobIO {
-  BlobIO(uint64_t offset, size_t size, void* data, uint64_t padding)
-      : offset(offset), size(size), data(data), padding(padding) {}
-
-  uint64_t offset;
-  size_t size;  // bytes
-  void* data;
-  uint64_t padding;
-};
-
-class BlobReader {
+// Reads `BlobStore` header, converts keys to strings and creates a hash map for
+// faster lookups, and reads or maps blob data.
+// Thread-safe: it is safe to concurrently call all methods except `Enqueue`,
+// because they are const.
+// TODO(janwas): split into header and reader/mapper classes.
+class BlobReader2 {
  public:
-  BlobReader() { requests_.reserve(500); }
-  ~BlobReader() = default;
+  // Parallel I/O into allocated memory, or mapped view of file. The latter is
+  // better when the file is huge, but page faults add noise to measurements.
+  enum class Mode { kRead, kMap };
 
-  // Opens `filename` and reads its header.
-  BlobError Open(const Path& filename);
+  // Acquires ownership of `file` (which must be non-null) and reads its header.
+  // Factory function instead of ctor because this can fail (return null).
+  static std::unique_ptr<BlobReader2> Make(const Path& blob_path,
+                                           Tristate map = Tristate::kDefault);
 
-  // Returns the size of the blob identified by `key`, or 0 if not found.
-  size_t BlobSize(hwy::uint128_t key) const;
+  ~BlobReader2() = default;
 
-  // Enqueues read requests if `key` is found and its size matches `size`, which
-  // is in units of bytes.
-  BlobError Enqueue(hwy::uint128_t key, void* data, size_t size);
+  // Returns true if the mode passed to ctor was `kMap` and mapping succeeded.
+  bool IsMapped() const { return mode_ == Mode::kMap; }
 
-  // Reads all enqueued requests.
-  BlobError ReadAll(hwy::ThreadPool& pool);
+  const std::vector<std::string>& Keys() const { return keys_; }
 
-  // Reads one blob directly.
-  BlobError ReadOne(hwy::uint128_t key, void* data, size_t size) const;
-
-  // Returns all available blob keys.
-  hwy::Span<const hwy::uint128_t> Keys() const;
-
- private:
-  BlobStorePtr blob_store_;  // holds header, not the entire file
-  std::vector<BlobIO> requests_;
-  std::unique_ptr<File> file_;
-};
-
-class BlobWriter {
- public:
-  // `size` is in bytes.
-  void Add(hwy::uint128_t key, const void* data, size_t size) {
-    keys_.push_back(key);
-    blobs_.emplace_back(static_cast<const uint8_t*>(data), size);
+  const BlobRange2& Range(size_t key_idx) const {
+    HWY_ASSERT(key_idx < keys_.size());
+    return ranges_[key_idx];
   }
 
-  // Stores all blobs to disk in the given order with padding for alignment.
-  BlobError WriteAll(hwy::ThreadPool& pool, const Path& filename);
+  // Returns nullptr if not found. O(1).
+  const BlobRange2* Find(const std::string& key) const {
+    auto it = key_idx_for_key_.find(key);
+    if (it == key_idx_for_key_.end()) return nullptr;
+    const BlobRange2& range = Range(it->second);
+    HWY_ASSERT(range.offset != 0 && range.bytes != 0);
+    HWY_ASSERT(range.End() <= file_bytes_);
+    return &range;
+  }
 
-  // Returns the number of blobs added.
-  size_t DebugNumBlobsAdded() const { return keys_.size(); }
+  // Only if `IsMapped()`: returns blob as a read-only span of `T`. Note that
+  // everything else except `CallWithSpan` is in units of bytes.
+  template <typename T>
+  hwy::Span<const T> MappedSpan(const BlobRange2& range) const {
+    HWY_ASSERT(IsMapped());
+    HWY_ASSERT(range.bytes % sizeof(T) == 0);
+    return hwy::Span<const T>(
+        HWY_RCAST_ALIGNED(const T*, mapped_.get() + range.offset),
+        range.bytes / sizeof(T));
+  }
+
+  // Returns error, or calls `func(span)` with the blob identified by `key`.
+  // This may allocate memory for the blob, and is intended for small blobs for
+  // which an aligned allocation is unnecessary.
+  template <typename T, class Func>
+  bool CallWithSpan(const std::string& key, const Func& func) const {
+    const BlobRange2* range = Find(key);
+    if (!range) {
+      HWY_WARN("Blob %s not found, sizeof T=%zu", key.c_str(), sizeof(T));
+      return false;
+    }
+
+    if (mode_ == Mode::kMap) {
+      func(MappedSpan<T>(*range));
+      return true;
+    }
+
+    HWY_ASSERT(range->bytes % sizeof(T) == 0);
+    std::vector<T> storage(range->bytes / sizeof(T));
+    if (!file_->Read(range->offset, range->bytes, storage.data())) {
+      HWY_WARN("Read failed for blob %s from %zu, size %zu; file %zu\n",
+               key.c_str(), static_cast<size_t>(range->offset), range->bytes,
+               static_cast<size_t>(file_bytes_));
+      return false;
+    }
+    func(hwy::Span<const T>(storage.data(), storage.size()));
+    return true;
+  }
+
+  // The following methods must only be called if `!IsMapped()`.
+
+  // Enqueues a BlobIO2 for `ReadAll` to execute.
+  void Enqueue(const BlobRange2& range, void* data);
+
+  // Reads in parallel all enqueued requests to the specified destinations.
+  // Aborts on error.
+  void ReadAll(hwy::ThreadPool& pool) const;
+
+ private:
+  // Only for use by `Make`.
+  BlobReader2(std::unique_ptr<File> file, uint64_t file_bytes,
+              const BlobStore& bs, Mode mode);
+
+  const std::unique_ptr<File> file_;
+  const uint64_t file_bytes_;
+  Mode mode_;
+
+  std::vector<std::string> keys_;
+  std::vector<BlobRange2> ranges_;
+  std::unordered_map<std::string, size_t> key_idx_for_key_;
+
+  MapPtr mapped_;                  // only if `kMap`
+  std::vector<BlobIO2> requests_;  // only if `kRead`
+};
+
+// Collects references to blobs and writes them all at once with parallel I/O.
+// Thread-compatible: independent instances can be used concurrently, but it
+// does not make sense to call the methods concurrently.
+class BlobWriter2 {
+ public:
+  void Add(const std::string& key, const void* data, size_t bytes);
+
+  // For `ModelStore`: this is the `key_idx` of the next blob to be added.
+  size_t NumAdded() const { return keys_.size(); }
+
+  // Stores all blobs to disk in the given order with padding for alignment.
+  // Aborts on error.
+  void WriteAll(hwy::ThreadPool& pool, const Path& filename);
 
  private:
   std::vector<hwy::uint128_t> keys_;

@@ -804,7 +804,6 @@ class MMScaleDemoteAdd {
     // We manually unroll 2x for higher IPC in batch=1.
     size_t col_c = range_nc.begin();
     if (HWY_LIKELY(range_nc.Num() >= 2 * ND)) {
-      HWY_UNROLL(1)
       for (; col_c <= range_nc.end() - 2 * ND; col_c += 2 * ND) {
         VD a0, a1;  // unused if !kAdd
         if constexpr (kAdd) {

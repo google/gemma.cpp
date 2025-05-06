@@ -21,125 +21,144 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include <memory>
+#include <functional>
+#include <random>
 #include <string>
 
 #include "compression/io.h"  // Path
-#include "compression/shared.h"
-#include "gemma/configs.h"
-#include "gemma/gemma.h"  // For CreateGemma
-#include "ops/matmul.h"
+#include "ops/matmul.h"      // MMStorage::kMax*
 #include "util/args.h"
-#include "util/basics.h"  // Tristate
-#include "hwy/base.h"       // HWY_ABORT
+#include "util/basics.h"          // Tristate
+#include "hwy/aligned_allocator.h"  // Span
+#include "hwy/base.h"               // HWY_ABORT
 
 namespace gcpp {
 
-struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, char* argv[], bool validate = true) {
-    InitAndParse(argc, argv);
+// Allow changing k parameter of `SampleTopK` as a compiler flag
+#ifndef GEMMA_TOPK
+#define GEMMA_TOPK 1
+#endif  // !GEMMA_TOPK
 
-    if (validate) {
-      if (const char* error = Validate()) {
-        HWY_ABORT("Invalid args: %s", error);
-      }
-    }
-  }
-  LoaderArgs(const std::string& tokenizer_path, const std::string& weights_path,
-             const std::string& model, bool validate = true) {
+struct LoaderArgs : public ArgsBase<LoaderArgs> {
+  LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  LoaderArgs(const std::string& tokenizer_path,
+             const std::string& weights_path) {
     Init();  // Init sets to defaults, so assignments must come after Init().
     tokenizer.path = tokenizer_path;
     weights.path = weights_path;
-    model_type_str = model;
-
-    if (validate) {
-      if (const char* error = Validate()) {
-        HWY_ABORT("Invalid args: %s", error);
-      }
-    }
   };
-
-  // Returns error string or nullptr if OK.
-  const char* Validate() {
-    if (weights.path.empty()) {
-      return "Missing --weights flag, a file for the model weights.";
-    }
-    if (!weights.Exists()) {
-      return "Can't open file specified with --weights flag.";
-    }
-    info_.model = Model::UNKNOWN;
-    info_.wrapping = PromptWrapping::GEMMA_PT;
-    info_.weight = Type::kUnknown;
-    if (!model_type_str.empty()) {
-      const char* err = ParseModelTypeAndWrapping(model_type_str, info_.model,
-                                                  info_.wrapping);
-      if (err != nullptr) return err;
-    }
-    if (!weight_type_str.empty()) {
-      const char* err = ParseType(weight_type_str, info_.weight);
-      if (err != nullptr) return err;
-    }
-    if (!tokenizer.path.empty()) {
-      if (!tokenizer.Exists()) {
-        return "Can't open file specified with --tokenizer flag.";
-      }
-    }
-    // model_type and tokenizer must be either both present or both absent.
-    // Further checks happen on weight loading.
-    if (model_type_str.empty() != tokenizer.path.empty()) {
-      return "Missing or extra flags for model_type or tokenizer.";
-    }
-    return nullptr;
-  }
 
   Path tokenizer;
   Path weights;  // weights file location
-  Path compressed_weights;
-  std::string model_type_str;
-  std::string weight_type_str;
+  Tristate map;
+  Tristate wrapping;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(tokenizer, "tokenizer", Path(),
-            "Path name of tokenizer model file.");
+            "Path name of tokenizer model; only required for pre-2025 format.");
     visitor(weights, "weights", Path(),
             "Path name of model weights (.sbs) file.\n  Required argument.\n");
-    visitor(compressed_weights, "compressed_weights", Path(),
-            "Deprecated alias for --weights.");
-    visitor(model_type_str, "model", std::string(),
-            "Model type, see common.cc for valid values.\n");
-    visitor(weight_type_str, "weight_type", std::string("sfp"),
-            "Weight type\n    f32 = float, bf16 = bfloat16, sfp = 8-bit SFP.");
+    visitor(map, "map", Tristate::kDefault,
+            "Enable memory-mapping? -1 = auto, 0 = no, 1 = yes.");
+    visitor(wrapping, "wrapping", Tristate::kDefault,
+            "Enable prompt wrapping? Specify 0 for pre-2025 format PT models.");
   }
-
-  // Uninitialized before Validate, must call after that.
-  const ModelInfo& Info() const { return info_; }
-
- private:
-  ModelInfo info_;
 };
 
-// `env` must remain valid for the lifetime of the Gemma.
-static inline Gemma CreateGemma(const LoaderArgs& loader, MatMulEnv& env) {
-  if (Type::kUnknown == loader.Info().weight ||
-      Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
-    // New weights file format doesn't need tokenizer path or model/weightinfo.
-    return Gemma(loader.weights, env);
-  }
-  return Gemma(loader.tokenizer, loader.weights, loader.Info(), env);
-}
+using PromptTokens = hwy::Span<const int>;
 
-// `env` must remain valid for the lifetime of the Gemma.
-static inline std::unique_ptr<Gemma> AllocateGemma(const LoaderArgs& loader,
-                                                   MatMulEnv& env) {
-  if (Type::kUnknown == loader.Info().weight ||
-      Model::UNKNOWN == loader.Info().model || loader.tokenizer.path.empty()) {
-    // New weights file format doesn't need tokenizer path or model/weight info.
-    return std::make_unique<Gemma>(loader.weights, env);
+// Batches of independent queries have their own prompt, previous token,
+// position in the sequence, and KVCache.
+using QueriesPromptTokens = hwy::Span<const PromptTokens>;
+using QueriesToken = hwy::Span<const int>;
+using QueriesPos = hwy::Span<const size_t>;
+
+// ImageTokens are represented as a RowVectorBatch, where each "batch" index
+// corresponds to a token for an image patch as computed by the image encoder.
+using ImageTokens = RowVectorBatch<float>;
+
+// StreamFunc is called with (token, probability). For prompt tokens,
+// probability is 0.0f. StreamFunc should return false to stop generation and
+// true to continue generation.
+using StreamFunc = std::function<bool(int, float)>;
+// BatchStreamFunc is called with (query_idx, pos, token, probability).
+// For prompt tokens, probability is 0.0f.
+// StreamFunc should return false to stop generation and true to continue.
+using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
+// If not empty, AcceptFunc is called with token. It should return false for
+// tokens you don't want to generate and true for tokens you want to generate.
+using AcceptFunc = std::function<bool(int, float)>;
+// If not empty, SampleFunc is called with the logits for the next token, which
+// it may modify/overwrite, and its return value is the next generated token
+// together with its probability.
+using SampleFunc = std::function<TokenAndProb(float*, size_t)>;
+// If not empty, LayersOutputFunc is called for layer outputs, specified with:
+// - index of query within containing batch (if any); zero otherwise.
+// - position in the tokens sequence
+// - name of the data, e.g. "tokens" for token IDs
+// - layer index (or -1 for global outputs)
+// - pointer to the data array
+// - size of the data array
+using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
+                                            int, const float*, size_t)>;
+// If not empty, ActivationsObserverFunc is invoked after each layer with:
+// - per-query position within the tokens sequence
+// - layer index (or -1 for post-norm output)
+// - activations
+class Activations;
+using ActivationsObserverFunc =
+    std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
+
+// RuntimeConfig holds configuration for a single generation run.
+struct RuntimeConfig {
+  // If not empty, batch_stream_token is called for each token in the batch,
+  // instead of stream_token.
+  bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
+    if (batch_stream_token) {
+      return batch_stream_token(query_idx, pos, token, prob);
+    }
+    return stream_token(token, prob);
   }
-  return std::make_unique<Gemma>(loader.tokenizer, loader.weights,
-                                 loader.Info(), env);
-}
+
+  // Limit on the number of tokens generated.
+  size_t max_generated_tokens;
+
+  // These defaults are overridden by InferenceArgs::CopyTo(*this):
+  // Max tokens per batch during prefill.
+  size_t prefill_tbatch_size = 256;
+  // Max queries per batch (one token from each) during decode.
+  size_t decode_qbatch_size = 16;
+
+  // Sampling-related parameters.
+  float temperature;  // Temperature for sampling.
+
+  size_t top_k = GEMMA_TOPK;  // Top-k for sampling.
+  std::mt19937* gen;          // Random number generator used for sampling.
+
+  int verbosity;  // Controls verbosity of printed messages.
+
+  // Functions operating on the generated tokens.
+  StreamFunc stream_token;
+  BatchStreamFunc batch_stream_token;
+  AcceptFunc accept_token;  // if empty, accepts all tokens.
+  SampleFunc sample_func;   // if empty, uses SampleTopK.
+
+  // Observer callbacks for intermediate data.
+  LayersOutputFunc layers_output;  // if not empty, called after each layer.
+  ActivationsObserverFunc activations_observer;  // if set, called per-layer.
+
+  // If not empty, these point to the image tokens and are used in the
+  // PaliGemma prefix-LM style attention.
+  const ImageTokens* image_tokens = nullptr;
+
+  // Whether to use thread spinning to reduce barrier synchronization latency.
+  // Mutable so we can change kDefault to kTrue/kFalse during Generate, because
+  // RuntimeConfig is const there and is not passed to the Gemma ctor. This
+  // default decision is likely sufficient because it is based on whether
+  // threads are successfully pinned.
+  mutable Tristate use_spinning = Tristate::kDefault;
+};
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
@@ -160,15 +179,6 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
   std::string prompt;  // Added prompt flag for non-interactive mode
   std::string eot_line;
-
-  // Returns error string or nullptr if OK.
-  const char* Validate() const {
-    if (max_generated_tokens > gcpp::kSeqLen) {
-      return "max_generated_tokens is larger than the maximum sequence length "
-             "(see configs.h).";
-    }
-    return nullptr;
-  }
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {

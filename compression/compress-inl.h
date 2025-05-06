@@ -24,11 +24,8 @@
 #include <memory>
 #include <vector>
 
-#include "compression/blob_store.h"
 #include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
-#include "gemma/configs.h"
-#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -520,17 +517,6 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   }
 }
 
-// Adapter that compresses into `MatStorageT`. `raw` must already be scaled
-// to fit the value range, if `Packed` is `SfpStream`.
-template <typename Packed>
-HWY_INLINE void CompressScaled(const float* HWY_RESTRICT raw, size_t num,
-                               CompressWorkingSet& work,
-                               MatStorageT<Packed>& compressed,
-                               hwy::ThreadPool& pool) {
-  Compress(raw, num, work, compressed.Span(),
-           /*packed_ofs=*/0, pool);
-}
-
 // Stores two f32 vectors to f32 or bf16; avoids duplicating RMSNorm and
 // RMSNormInplace for the two output types.
 template <class DF, typename Packed, HWY_IF_F32_D(DF), class VF = hn::Vec<DF>>
@@ -711,49 +697,6 @@ HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
   return kernel.Reduce(d_state, sum0, sum1, sum2, sum3, comp0, comp1, comp2,
                        comp3);
 }
-
-// Functor called for each tensor, which compresses and stores them along with
-// their scaling factors to BlobStore.
-class Compressor {
- public:
-  explicit Compressor(hwy::ThreadPool& pool) : writer_(pool) {}
-
-  template <typename Packed>
-  void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
-                  const float* HWY_RESTRICT weights) {
-    size_t num_weights = compressed->Extents().Area();
-    if (num_weights == 0 || weights == nullptr || !compressed->HasPtr()) return;
-    PackedSpan<Packed> packed = compressed->Span();
-    fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
-            num_weights / (1000 * 1000));
-    Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0,
-             writer_.pool());
-    writer_(compressed, decorated_name);
-  }
-
-  void AddTokenizer(const std::string& tokenizer) {
-    writer_.AddTokenizer(tokenizer);
-  }
-
-  void AddScales(const float* scales, size_t len) {
-    writer_.AddScales(scales, len);
-  }
-
-  // Writes all blobs to disk in the given order. The config is optional and
-  // if given, it is written to the file, along with the TOC, making it
-  // single-file format. Otherwise, the file is written in the multi-file format
-  // without a TOC.
-  BlobError WriteAll(const Path& blob_filename, const ModelConfig* config) {
-    return writer_.WriteAll(blob_filename, config);
-  }
-
-  // Returns the number of blobs added.
-  size_t DebugNumBlobsAdded() const { return writer_.DebugNumBlobsAdded(); }
-
- private:
-  CompressWorkingSet work_;
-  WriteToBlobStore writer_;
-};
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE

@@ -60,9 +60,9 @@ class GemmaContext {
                const ThreadingArgs& threading_args, int max_length);
 
  public:
-  static GemmaContext* Create(const char* tokenizer_path,
-                              const char* model_type, const char* weights_path,
-                              const char* weight_type, int max_length);
+  static GemmaContext* Create(const char* tokenizer_path, const char* ignored1,
+                              const char* weights_path, const char* ignored2,
+                              int max_length);
 
   // Returns length of generated text, or -1 on error
   int Generate(const char* prompt_string, char* output, int max_length,

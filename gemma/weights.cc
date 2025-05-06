@@ -15,7 +15,10 @@
 
 #include "gemma/weights.h"
 
-#include <cstdio>
+#include <stddef.h>
+#include <stdio.h>
+
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
 #include <random>
@@ -23,264 +26,44 @@
 #include <vector>
 
 #include "compression/blob_store.h"
-#include "compression/compress-inl.h"
 #include "compression/compress.h"
-#include "compression/io.h"  // Path
 #include "compression/shared.h"
-#include "gemma/common.h"
 #include "gemma/configs.h"
+#include "gemma/model_store.h"
 #include "util/mat.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"  // HWY_ABORT
+#include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "hwy/stats.h"
 
+// TODO: move into foreach_target; this is only used for NUQ Reshape.
+#include "compression/compress-inl.h"
+
 namespace gcpp {
 
-template <typename T>
-struct TensorLoader {
-  void operator()(ModelWeightsPtrs<T>& weights, ForEachType fet,
-                  ReadFromBlobStore& loader) {
-    weights.ForEachTensor(
-        {&weights}, fet,
-        [&loader](const char* name, hwy::Span<MatPtr*> tensors) {
-          loader(name, tensors);
-        });
-  }
-};
-
-BlobError ModelWeightsStorage::Load(const Path& weights, Model model_type,
-                                    Type weight_type, PromptWrapping wrapping,
-                                    hwy::ThreadPool& pool,
-                                    std::string* tokenizer_proto) {
-  PROFILER_ZONE("Startup.LoadModelWeightsPtrs");
-  if (!weights.Exists()) {
-    HWY_ABORT("The model weights file '%s' does not exist.",
-              weights.path.c_str());
-  }
-  ReadFromBlobStore loader(weights);
-  ForEachType fet =
-      loader.HaveToc() ? ForEachType::kLoadWithToc : ForEachType::kLoadNoToc;
-  std::vector<float> scales;
-  if (fet == ForEachType::kLoadWithToc) {
-    BlobError err = loader.LoadConfig(config_);
-    if (err != 0 || config_.model_dim == 0) {
-      fprintf(stderr, "Failed to load model config: %d\n", err);
-      return err;
-    }
-    if (tokenizer_proto != nullptr) {
-      err = loader.LoadTokenizer(*tokenizer_proto);
-      if (err != 0) {
-        fprintf(stderr, "Failed to load tokenizer: %d\n", err);
-        return err;
-      }
-    }
-  } else {
-    if (weight_type == Type::kUnknown || model_type == Model::UNKNOWN) {
-      fprintf(stderr,
-              "weight type (%d) and model type (%d) must be specified when "
-              "no config is present in weights file\n",
-              static_cast<int>(weight_type), static_cast<int>(model_type));
-      return __LINE__;
-    }
-    // No Toc-> no config.
-    config_ = ConfigFromModel(model_type);
-    config_.weight = weight_type;
-    config_.wrapping = wrapping;
-    scales.resize(config_.num_tensor_scales + config_.vit_config.num_scales);
-  }
-  CreateForType(config_.weight, pool);
-  CallForModelWeightT<TensorLoader>(fet, loader);
-  if (!scales.empty()) {
-    loader.LoadScales(scales.data(), scales.size());
-  }
-  BlobError err = loader.ReadAll(pool, model_storage_);
-  if (err != 0) {
-    fprintf(stderr, "Failed to load model weights: %d\n", err);
-    return err;
-  }
-  if (!scales.empty()) {
-    GetOrApplyScales(scales);
-  }
-  if (fet == ForEachType::kLoadNoToc) {
-    PROFILER_ZONE("Startup.Reshape");
-    AllocAndCopyWithTranspose(pool);
-  }
-  return 0;
-}
-
-template <typename T>
-struct TensorSaver {
-  // Adds all the tensors to the blob writer.
-  void operator()(ModelWeightsPtrs<T>& weights, ForEachType fet,
-                  WriteToBlobStore& writer) {
-    weights.ForEachTensor(
-        {&weights}, fet,
-        [&writer](const char* name, hwy::Span<MatPtr*> tensors) {
-          CallUpcasted(tensors[0]->GetType(), tensors[0], writer, name);
-        });
-  }
-};
-
-BlobError ModelWeightsStorage::Save(const std::string& tokenizer,
-                                    const Path& weights,
-                                    hwy::ThreadPool& pool) {
-  WriteToBlobStore writer(pool);
-  ForEachType fet = ForEachType::kLoadWithToc;
-  CallForModelWeightT<TensorSaver>(fet, writer);
-  writer.AddTokenizer(tokenizer);
-  int err = writer.WriteAll(weights, &config_);
-  if (err != 0) {
-    fprintf(stderr, "Failed to write model weights: %d\n", err);
-    return err;
-  }
-  return 0;
-}
-
-void ModelWeightsStorage::Allocate(const ModelConfig& config, Type weight_type,
-                                   hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.AllocateModelWeightsPtrs");
-  config_ = config;
-  config_.weight = weight_type;
-  CreateForType(weight_type, pool);
-  if (float_weights_) float_weights_->Allocate(model_storage_, pool);
-  if (bf16_weights_) bf16_weights_->Allocate(model_storage_, pool);
-  if (sfp_weights_) sfp_weights_->Allocate(model_storage_, pool);
-  if (nuq_weights_) nuq_weights_->Allocate(model_storage_, pool);
-}
-
-class WeightInitializer {
- public:
-  WeightInitializer(std::mt19937& gen) : dist_(0.0f, 1.0f), gen_(gen) {}
-
-  void operator()(const char* name, hwy::Span<MatPtr*> tensors) {
-    float* data = tensors[0]->RowT<float>(0);
-    for (size_t i = 0; i < tensors[0]->Extents().Area(); ++i) {
-      data[i] = dist_(gen_);
-    }
-    tensors[0]->SetScale(1.0f);
-  }
-
- private:
-  std::normal_distribution<float> dist_;
-  std::mt19937& gen_;
-};
-
-void ModelWeightsStorage::RandInit(std::mt19937& gen) {
-  HWY_ASSERT(float_weights_);
-  WeightInitializer init(gen);
-  ModelWeightsPtrs<float>::ForEachTensor({float_weights_.get()},
-                                         ForEachType::kLoadNoToc, init);
-}
-
-void ModelWeightsStorage::ZeroInit() {
-  if (float_weights_) float_weights_->ZeroInit();
-  if (bf16_weights_) bf16_weights_->ZeroInit();
-  if (sfp_weights_) sfp_weights_->ZeroInit();
-  if (nuq_weights_) nuq_weights_->ZeroInit();
-}
-
-void ModelWeightsStorage::GetOrApplyScales(std::vector<float>& scales) {
-  if (float_weights_) float_weights_->GetOrApplyScales(scales);
-  if (bf16_weights_) bf16_weights_->GetOrApplyScales(scales);
-  if (sfp_weights_) sfp_weights_->GetOrApplyScales(scales);
-  if (nuq_weights_) nuq_weights_->GetOrApplyScales(scales);
-}
-
-void ModelWeightsStorage::AllocAndCopyWithTranspose(hwy::ThreadPool& pool) {
-  if (float_weights_)
-    float_weights_->AllocAndCopyWithTranspose(pool, model_storage_);
-  if (bf16_weights_)
-    bf16_weights_->AllocAndCopyWithTranspose(pool, model_storage_);
-  if (sfp_weights_)
-    sfp_weights_->AllocAndCopyWithTranspose(pool, model_storage_);
-  if (nuq_weights_)
-    nuq_weights_->AllocAndCopyWithTranspose(pool, model_storage_);
-}
-
-void ModelWeightsStorage::CopyWithTranspose(hwy::ThreadPool& pool) {
-  if (float_weights_) float_weights_->CopyWithTranspose(pool);
-  if (bf16_weights_) bf16_weights_->CopyWithTranspose(pool);
-  if (sfp_weights_) sfp_weights_->CopyWithTranspose(pool);
-  if (nuq_weights_) nuq_weights_->CopyWithTranspose(pool);
-}
-
-namespace {
-
-void LogVec(const char* name, const float* data, size_t len) {
-  hwy::Stats stats;
-  for (size_t i = 0; i < len; ++i) {
-    stats.Notify(data[i]);
-  }
-  printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n",
-         name, len, stats.Min(), stats.Mean(), stats.Max());
-}
-
-}  // namespace
-
-void ModelWeightsStorage::LogWeightStats() {
-  size_t total_weights = 0;
-  // Only for float weights.
-  ModelWeightsPtrs<float>::ForEachTensor(
-      {float_weights_.get()}, ForEachType::kInitNoToc,
-      [&total_weights](const char* name, hwy::Span<MatPtr*> tensors) {
-        const MatPtr& tensor = *tensors[0];
-        if (tensor.Scale() != 1.0f) {
-          printf("[scale=%f] ", tensor.Scale());
-        }
-        LogVec(name, tensor.RowT<float>(0), tensor.Extents().Area());
-        total_weights += tensor.Extents().Area();
-      });
-  printf("%-20s  %12zu\n", "Total", total_weights);
-}
-
-void ModelWeightsStorage::CreateForType(Type weight_type,
-                                        hwy::ThreadPool& pool) {
-  switch (weight_type) {
-    case Type::kF32:
-      float_weights_ = std::make_unique<ModelWeightsPtrs<float>>(config_);
-      break;
-    case Type::kBF16:
-      bf16_weights_ = std::make_unique<ModelWeightsPtrs<BF16>>(config_);
-      break;
-    case Type::kSFP:
-      sfp_weights_ =
-          std::make_unique<ModelWeightsPtrs<SfpStream>>(config_);
-      break;
-    case Type::kNUQ:
-      nuq_weights_ =
-          std::make_unique<ModelWeightsPtrs<NuqStream>>(config_);
-      break;
-    default:
-      HWY_ABORT("Weight type %d unsupported.", static_cast<int>(weight_type));
-  }
-}
-
 template <>
-void LayerWeightsPtrs<NuqStream>::Reshape(MatOwner* storage) {
+void LayerWeightsPtrs<NuqStream>::Reshape() {
   if (!attn_vec_einsum_w.HasPtr()) return;
+  HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
+
+  HWY_ASSERT(att_weights.HasPtr());
+  HWY_ASSERT(att_weights.GetType() == Type::kNUQ);
 
   const size_t model_dim = layer_config.model_dim;
   const size_t heads = layer_config.heads;
   const size_t qkv_dim = layer_config.qkv_dim;
 
   // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
-  if (storage != nullptr) {
-    storage->AllocateFor(att_weights, MatPadding::kPacked);
-  }
-
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
-
   hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
       hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
   hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
       hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
 
-  HWY_NAMESPACE::DecompressAndZeroPad(
-      df, MakeSpan(attn_vec_einsum_w.Packed(), model_dim * heads * qkv_dim), 0,
-      attn_vec_einsum_w_tmp.get(), model_dim * heads * qkv_dim);
+  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  HWY_NAMESPACE::DecompressAndZeroPad(df, attn_vec_einsum_w.Span(), 0,
+                                      attn_vec_einsum_w_tmp.get(),
+                                      model_dim * heads * qkv_dim);
 
   for (size_t m = 0; m < model_dim; ++m) {
     float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
@@ -293,13 +76,186 @@ void LayerWeightsPtrs<NuqStream>::Reshape(MatOwner* storage) {
 
   CompressWorkingSet work;
   hwy::ThreadPool pool(0);
-
-  HWY_NAMESPACE::Compress(
-      att_weights_tmp.get(), model_dim * heads * qkv_dim, work,
-      MakeSpan(att_weights.Packed(), model_dim * heads * qkv_dim),
-      /*packed_ofs=*/0, pool);
+  HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
+                          work, att_weights.Span(),
+                          /*packed_ofs=*/0, pool);
 
   att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+// Aborts on error.
+static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader2& reader,
+                      const std::vector<BlobRange2>& ranges,
+                      MatOwners& mat_owners, const MatPadding padding,
+                      hwy::ThreadPool& pool) {
+  HWY_ASSERT(mats.size() == ranges.size());
+
+  if (reader.IsMapped()) {
+    PROFILER_ZONE("Startup.Weights.Map");
+    for (size_t i = 0; i < mats.size(); ++i) {
+      // SetPtr does not change the stride, but it is expected to be packed
+      // because that is what Compress() writes to the file.
+      const size_t mat_bytes = mats[i]->PackedBytes();
+      // Ensure blob size matches that computed from metadata.
+      HWY_ASSERT_M(mat_bytes == ranges[i].bytes, mats[i]->Name());
+
+      hwy::Span<const uint8_t> span = reader.MappedSpan<uint8_t>(ranges[i]);
+      HWY_ASSERT(span.size() == mat_bytes);
+      mats[i]->SetPtr(const_cast<uint8_t*>(span.data()), mats[i]->Stride());
+    }
+    return;
+  }
+
+  PROFILER_ZONE("Startup.Weights.AllocateAndEnqueue");
+
+  // NOTE: this changes the stride of `mats`!
+  mat_owners.AllocateFor(mats, padding, pool);
+
+  // Enqueue the read requests, one per row in each tensor.
+  for (size_t i = 0; i < mats.size(); ++i) {
+    uint64_t offset = ranges[i].offset;
+    const size_t file_bytes_per_row = mats[i]->Cols() * mats[i]->ElementBytes();
+    // Caution, `RowT` requires knowledge of the actual type. We instead use
+    // the first row, which is the same for any type, and advance the *byte*
+    // pointer by the *byte* stride.
+    const size_t mem_stride_bytes = mats[i]->Stride() * mats[i]->ElementBytes();
+    uint8_t* row = mats[i]->RowT<uint8_t>(0);
+    for (size_t r = 0; r < mats[i]->Rows(); ++r) {
+      reader.Enqueue(BlobRange2{.offset = offset,
+                                .bytes = file_bytes_per_row,
+                                .key_idx = ranges[i].key_idx},
+                     row);
+      offset += file_bytes_per_row;
+      row += mem_stride_bytes;
+      // Keep the in-memory row padding uninitialized so msan detects any use.
+    }
+  }
+
+  reader.ReadAll(pool);
+}
+
+void WeightsOwner::ReadOrAllocate(const ModelStore2& model, BlobReader2& reader,
+                                  hwy::ThreadPool& pool) {
+  // List of tensors to read/map, and where from.
+  std::vector<MatPtr*> mats;
+  std::vector<BlobRange2> ranges;
+
+  // Padding is inserted when reading row by row, except for NUQ tensors.
+  const MatPadding padding = MatPadding::kOdd;
+
+  AllocatePointer(model.Config());
+
+  // Enumerate all weights (negligible cost).
+  CallT([&](const auto& weights) {
+    weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+      if (t.flags & TensorArgs::kOnlyAllocate) {
+        mat_owners_.AllocateFor(t.mat, padding);
+        return;
+      }
+      size_t key_idx;
+      if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
+        mats.push_back(&t.mat);
+        ranges.push_back(reader.Range(key_idx));
+        return;
+      }
+      if (t.flags & TensorArgs::kMaybeRead) return;  // optional and not found.
+      HWY_ABORT("Tensor %s is required but not found in file.", t.mat.Name());
+    });
+  });
+
+  MapOrRead(mats, reader, ranges, mat_owners_, padding, pool);
+
+  Reshape(pool);
+}
+
+// Allocates `*_weights_`, but not yet the tensors inside. This is split out
+// of `CallT` because that is const, hence it would pass a const& of the
+// `unique_ptr` to its lambda, but we want to reset the pointer.
+void WeightsOwner::AllocatePointer(const ModelConfig& config) {
+  switch (weight_type_) {
+    case Type::kSFP:
+      sfp_weights_.reset(new ModelWeightsPtrs<SfpStream>(config));
+      break;
+    case Type::kNUQ:
+      nuq_weights_.reset(new ModelWeightsPtrs<NuqStream>(config));
+      break;
+    case Type::kF32:
+      float_weights_.reset(new ModelWeightsPtrs<float>(config));
+      break;
+    case Type::kBF16:
+      bf16_weights_.reset(new ModelWeightsPtrs<BF16>(config));
+      break;
+    default:
+      HWY_ABORT("Unsupported weight type %s.", TypeName(weight_type_));
+  }
+}
+
+// Gemma calls `WeightsOwner::ReadOrAllocate`, but test code instead calls
+// `WeightsPtrs::AllocateForTest`, so the implementation is there, and here
+// we only type-dispatch.
+void WeightsOwner::AllocateForTest(const ModelConfig& config,
+                                   hwy::ThreadPool& pool) {
+  PROFILER_ZONE("Startup.AllocateWeights");
+
+  AllocatePointer(config);
+  CallT([&](const auto& weights) {
+    weights->AllocateForTest(mat_owners_, pool);
+  });
+}
+
+void WeightsOwner::ZeroInit() {
+  PROFILER_FUNC;
+  CallT([](const auto& weights) { weights->ZeroInit(); });
+}
+
+void WeightsOwner::RandInit(float stddev, std::mt19937& gen) {
+  PROFILER_FUNC;
+  float_weights_->RandInit(stddev, gen);
+}
+
+void WeightsOwner::LogWeightStatsF32() {
+  size_t total_weights = 0;
+  HWY_ASSERT(weight_type_ == Type::kF32);  // Only for float weights.
+  float_weights_->ForEachTensor(
+      nullptr, nullptr, [&total_weights](const TensorArgs& t) {
+        if (t.mat.Scale() != 1.0f) {
+          printf("[scale=%f] ", t.mat.Scale());
+        }
+        hwy::Stats stats;
+        HWY_ASSERT(t.mat.GetType() == Type::kF32);
+        for (size_t r = 0; r < t.mat.Rows(); ++r) {
+          const float* HWY_RESTRICT row = t.mat.RowT<float>(r);
+          for (size_t c = 0; c < t.mat.Cols(); ++c) {
+            stats.Notify(row[c]);
+          }
+        }
+        printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n", t.mat.Name(),
+               t.mat.Rows() * t.mat.Cols(), stats.Min(), stats.Mean(),
+               stats.Max());
+
+        total_weights += t.mat.Rows() * t.mat.Cols();
+      });
+  printf("%-20s  %12zu\n", "Total", total_weights);
+}
+
+void WeightsOwner::Reshape(hwy::ThreadPool& pool) {
+  PROFILER_ZONE("Startup.Reshape");
+  CallT([&pool](const auto& weights) { weights->Reshape(pool); });
+}
+
+std::vector<uint32_t> WeightsOwner::AddTensorDataToWriter(
+    BlobWriter2& writer) const {
+  std::vector<uint32_t> serialized_mat_ptrs;
+  CallT([&](const auto& weights) {
+    weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+      if (t.flags & TensorArgs::kOnlyAllocate) return;
+      if (t.flags & TensorArgs::kMaybeRead && !t.mat.HasPtr()) return;
+      HWY_ASSERT_M(t.mat.HasPtr(), t.mat.Name());
+      writer.Add(t.mat.Name(), t.mat.Packed(), t.mat.PackedBytes());
+      t.mat.AppendTo(serialized_mat_ptrs);
+    });
+  });
+  return serialized_mat_ptrs;
 }
 
 }  // namespace gcpp

@@ -20,38 +20,23 @@
 
 #include <string>
 
-#include "compression/shared.h"  // Type
-#include "gemma/configs.h"       // IWYU pragma: export
-#include "hwy/base.h"              // ConvertScalarTo
+#include "gemma/configs.h"  // IWYU pragma: export
 
 namespace gcpp {
 
-// Struct to bundle model information.
-struct ModelInfo {
-  Model model;
-  PromptWrapping wrapping;
-  Type weight;
-};
-
-// Returns error string or nullptr if OK.
-// Thread-hostile.
-const char* ParseModelTypeAndWrapping(const std::string& model_flag,
-                                      Model& model, PromptWrapping& wrapping);
-const char* ParseType(const std::string& type_string, Type& type);
-
-// Inverse of ParseModelTypeAndWrapping.
-const char* ModelString(Model model, PromptWrapping wrapping);
-const char* StringFromType(Type type);
-
 // Wraps the given prompt using the expected control tokens for IT models.
-// `GemmaChatTemplate` is preferred if a tokenized return value is fine.
-void Wrap(const ModelInfo& info, size_t pos, std::string& prompt);
+// DEPRECATED, use WrapAndTokenize instead if a tokenized return value is fine.
+void Wrap(const ModelConfig& config, size_t pos, std::string& prompt);
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).
+// Also used by backprop/.
 float EmbeddingScaling(size_t model_dim);
 
 // Returns the scale value to use for the query in the attention computation.
 float ChooseQueryScale(const ModelConfig& config);
+
+void RangeChecks(const ModelConfig& weights_config,
+                 size_t& max_generated_tokens, size_t prompt_size);
 
 }  // namespace gcpp
 

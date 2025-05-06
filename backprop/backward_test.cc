@@ -25,9 +25,8 @@
 #include <vector>
 
 #include "backprop/activations.h"
-#include "backprop/backward_scalar.h"
-#include "backprop/common_scalar.h"
-#include "backprop/forward_scalar.h"
+#include "backprop/common_scalar.h"   // DotT
+#include "backprop/forward_scalar.h"  // MatMulT
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "backprop/test_util.h"
@@ -49,6 +48,14 @@
 #include "backprop/backward-inl.h"
 #include "backprop/forward-inl.h"
 #include "ops/ops-inl.h"
+
+// 'include guard' so we only define this once. Note that HWY_ONCE is only
+// defined during the last pass, but this is used in each pass.
+#ifndef BACKWARD_TEST_ONCE
+#define BACKWARD_TEST_ONCE
+// TestEndToEnd is slow, so only run it for the best-available target.
+static int run_once;
+#endif
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -81,8 +88,6 @@ void TestMatMulVJP() {
   auto dy = MakePacked<float>("dy", kTokens, kRows);
   auto grad = MakePacked<float>("grad", kRows, kCols);
   auto dx = MakePacked<float>("dx", kTokens, kCols);
-  auto grad_scalar = MakePacked<float>("grad_scalar", kRows, kCols);
-  auto dx_scalar = MakePacked<float>("dx_scalar", kTokens, kCols);
   using TC = std::complex<double>;
   auto c_weights = MakePacked<TC>("c_weights", kRows, kCols);
   auto c_x = MakePacked<TC>("c_x", kTokens, kCols);
@@ -105,12 +110,6 @@ void TestMatMulVJP() {
               grad.Packed(), dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
-
-    ZeroInit(grad_scalar);
-    MatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
-               dx_scalar.Packed(), kRows, kCols, kTokens);
-    TestNear(dx, dx_scalar, 5e-5, 1e-4, __LINE__, __LINE__);
-    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
   }
 }
 
@@ -126,8 +125,6 @@ void TestMultiHeadMatMulVJP() {
   auto grad = MakePacked<float>("grad", kRows, kCols * kHeads);
   auto dx = MakePacked<float>("dx", kTokens, kCols * kHeads);
   auto dy = MakePacked<float>("dy", kTokens, kRows);
-  auto grad_scalar = MakePacked<float>("grad_scalar", kRows, kCols * kHeads);
-  auto dx_scalar = MakePacked<float>("dx_scalar", kTokens, kCols * kHeads);
   using TC = std::complex<double>;
   auto c_weights = MakePacked<TC>("c_weights", kRows, kCols * kHeads);
   auto c_x = MakePacked<TC>("c_x", kTokens, kCols * kHeads);
@@ -150,13 +147,6 @@ void TestMultiHeadMatMulVJP() {
                        kRows, kTokens, grad.Packed(), dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
-
-    ZeroInit(grad_scalar);
-    MultiHeadMatMulVJPT(weights.Packed(), x.Packed(), dy.Packed(),
-                        grad_scalar.Packed(), dx_scalar.Packed(), kHeads, kRows,
-                        kCols, kTokens);
-    TestNear(dx, dx_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
-    TestNear(grad, grad_scalar, 5e-5, 5e-5, __LINE__, __LINE__);
   }
 }
 
@@ -170,8 +160,6 @@ void TestRMSNormVJP() {
   auto grad = MakePacked<float>("grad", N, 1);
   auto dx = MakePacked<float>("dx", K, N);
   auto dy = MakePacked<float>("dy", K, N);
-  auto grad_scalar = MakePacked<float>("grad_scalar", N, 1);
-  auto dx_scalar = MakePacked<float>("dx_scalar", K, N);
   using TC = std::complex<double>;
   auto c_weights = MakePacked<TC>("c_weights", N, 1);
   auto c_x = MakePacked<TC>("c_x", K, N);
@@ -193,42 +181,15 @@ void TestRMSNormVJP() {
                dx.Packed(), pool);
     TestGradient(dx, c_x, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
     TestGradient(grad, c_weights, func, 5e-5f, 5e-5f, __LINE__, __LINE__);
-
-    ZeroInit(grad_scalar);
-    RMSNormVJPT(weights.Packed(), x.Packed(), dy.Packed(), grad_scalar.Packed(),
-                dx_scalar.Packed(), N, K);
-    TestNear(dx, dx_scalar, 0, 2e-5, __LINE__, __LINE__);
-    TestNear(grad, grad_scalar, 0, 2e-5, __LINE__, __LINE__);
   }
 }
 
-static ModelConfig TestConfig() {
-  ModelConfig config;
-  config.scale_names = {"att_ein",      "qkv_ein",   "gr_lin_x_w", "gr_lin_y_w",
-                        "gr_lin_out_w", "gr_gate_w", "gating_ein", "linear_w"};
-  config.model_dim = 32;
-  config.vocab_size = 16;
-  config.seq_len = 24;
-  LayerConfig layer_config;
-  layer_config.model_dim = config.model_dim;
-  layer_config.ff_hidden_dim = 64;
-  layer_config.heads = 3;
-  layer_config.kv_heads = 1;
-  layer_config.qkv_dim = 16;
-  config.layer_configs = {2, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
-  config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
-  // This is required for optimize_test to pass.
-  config.att_cap = 50.0f;
-  config.final_cap = 30.0f;
-  return config;
-}
-
 void TestEndToEnd() {
+  if (++run_once > 1) return;  // ~3 min on SKX, only run best available target
+
   std::mt19937 gen(42);
   hwy::ThreadPool& pool = ThreadHostileGetPool();
-  ModelConfig config = TestConfig();
+  ModelConfig config(Model::GEMMA_TINY, Type::kF32, PromptWrapping::GEMMA_IT);
   WeightsWrapper<float> weights(config);
   WeightsWrapper<float> grad(config);
   ForwardPass<float> forward0(config);
@@ -246,7 +207,7 @@ void TestEndToEnd() {
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);
-    RandInit(weights.get(), 1.0f, gen);
+    weights.get().RandInit(1.0f, gen);
 
     float loss0 = CrossEntropyLossForwardPass(prompt, weights.get(), forward0);
 
@@ -256,7 +217,7 @@ void TestEndToEnd() {
 
     EXPECT_NEAR(loss1, loss0, std::abs(loss0) * 2e-5);
 
-    grad.ZeroInit();
+    grad.get().ZeroInit();
     CrossEntropyLossBackwardPassInl(prompt, weights.get(), forward1, grad.get(),
                                     backward, inv_timescale, pool);
 

@@ -44,10 +44,6 @@
 namespace gcpp {
 
 namespace {
-template <typename TConfig>
-struct GetVocabSize {
-  int operator()() const { return TConfig::kVocabSize; }
-};
 
 static std::string TokenString(const GemmaTokenizer& tokenizer, int token) {
   std::string token_str;
@@ -96,7 +92,7 @@ namespace gcpp {
 
 HWY_EXPORT(CallSoftmax);
 
-float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
+float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           int verbosity) {
   const StreamFunc stream_token = [](int, float) { return true; };

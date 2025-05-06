@@ -133,7 +133,7 @@ TEST_F(PaliGemmaTest, General) {
       break;
     default:
       FAIL() << "Unsupported model: "
-             << s_env->GetGemma()->GetModelConfig().model_name;
+             << s_env->GetGemma()->GetModelConfig().display_name;
       break;
   }
   TestQuestions(qa, num);

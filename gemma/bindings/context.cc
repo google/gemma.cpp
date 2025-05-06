@@ -15,10 +15,12 @@
 
 #include "gemma/bindings/context.h"
 
-#include <cstddef>
-#include <cstring>
+#include <stddef.h>
+#include <string.h>  // strncpy
+
 #include <memory>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include "evals/benchmark_helper.h"  // InitGenerator
@@ -51,32 +53,21 @@ GemmaLogCallback GemmaContext::s_log_callback = nullptr;
 void* GemmaContext::s_log_user_data = nullptr;
 
 GemmaContext* GemmaContext::Create(const char* tokenizer_path,
-                                   const char* model_type,
+                                   const char* ignored1,
                                    const char* weights_path,
-                                   const char* weight_type, int max_length) {
+                                   const char* ignored2, int max_length) {
   std::stringstream ss;
   ss << "Creating GemmaContext with tokenizer_path: "
      << (tokenizer_path ? tokenizer_path : "null")
-     << ", model_type: " << (model_type ? model_type : "null")
      << ", weights_path: " << (weights_path ? weights_path : "null")
-     << ", weight_type: " << (weight_type ? weight_type : "null")
      << ", max_length: " << max_length;
   LogDebug(ss.str().c_str());
 
   ThreadingArgs threading_args;
   threading_args.spin = gcpp::Tristate::kFalse;
 
-  LoaderArgs loader(tokenizer_path, weights_path, model_type);
-  loader.weight_type_str = weight_type;
+  LoaderArgs loader(tokenizer_path, weights_path);
   LogDebug("LoaderArgs created");
-
-  if (const char* error = loader.Validate()) {
-    ss.str("");
-    ss << "Invalid loader configuration: " << error;
-    LogDebug(ss.str().c_str());
-    HWY_ABORT("Invalid loader configuration: %s", error);
-  }
-  LogDebug("Loader validated successfully");
 
   // Initialize cached args
   LogDebug("Initializing inference args");
@@ -103,7 +94,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
     : inference_args(inference_args),
       threading_args(threading_args),
       matmul_env(MakeMatMulEnv(threading_args)),
-      model(CreateGemma(loader, matmul_env)) {
+      model(loader, matmul_env) {
   std::stringstream ss;
 
   LogDebug("Creating initial ConversationData");
@@ -186,8 +177,8 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
                     Extents2D(model.GetModelConfig().vit_config.seq_len /
                                   (pool_dim * pool_dim),
                               model.GetModelConfig().model_dim));
-    HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA ||
-               model.Info().wrapping == PromptWrapping::GEMMA_VLM);
+    HWY_ASSERT(model.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA ||
+               model.GetModelConfig().wrapping == PromptWrapping::GEMMA_VLM);
 
     Image image;
     image.Set(image_width, image_height, static_cast<const float*>(image_data));
@@ -210,8 +201,9 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
         LogDebug(ss.str().c_str());
 
     prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
-                             model.Info(), active_conversation->abs_pos,
-                             prompt_string, image_tokens.BatchSize());
+                             model.GetModelConfig().wrapping,
+                             active_conversation->abs_pos, prompt_string,
+                             image_tokens.BatchSize());
     runtime_config.image_tokens = &image_tokens;
     prompt_size = prompt.size();
     // The end of the prefix for prefix-LM style attention in Paligemma.
@@ -220,9 +212,9 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
   } else {
     // Text-only case (original logic)
     // Use abs_pos from the active conversation
-    prompt =
-        WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(), model.Info(),
-                        active_conversation->abs_pos, prompt_string);
+    prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
+                             model.GetModelConfig().wrapping,
+                             active_conversation->abs_pos, prompt_string);
     prompt_size = prompt.size();
   }
 
@@ -238,7 +230,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
 
   // prepare for next turn
   if (!inference_args.multiturn ||
-      model.Info().wrapping == PromptWrapping::PALIGEMMA) {
+      model.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA) {
     // If not multiturn, or Paligemma (which handles turns differently),
     // reset the *active* conversation's position.
     active_conversation->abs_pos = 0;

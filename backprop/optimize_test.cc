@@ -28,9 +28,9 @@
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
 #include "compression/shared.h"
-#include "gemma/common.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
+#include "gemma/tokenizer.h"
 #include "gemma/weights.h"
 #include "ops/ops.h"
 #include "util/allocator.h"
@@ -51,16 +51,14 @@ TEST(OptimizeTest, GradientDescent) {
   hwy::ThreadPool& pool = env.ctx.pools.Pool();
   std::mt19937 gen(42);
 
-  const ModelInfo info = {
-      .model = Model::GEMMA_TINY,
-      .wrapping = PromptWrapping::GEMMA_IT,
-      .weight = Type::kF32,
-  };
-  ModelConfig config = ConfigFromModel(info.model);
-  ModelWeightsStorage grad, grad_m, grad_v;
-  grad.Allocate(info.model, info.weight, pool);
-  grad_m.Allocate(info.model, info.weight, pool);
-  grad_v.Allocate(info.model, info.weight, pool);
+  ModelConfig config(Model::GEMMA_TINY, Type::kF32,
+                     ChooseWrapping(Model::GEMMA_TINY));
+  config.eos_id = ReverseSequenceSampler::kEndToken;
+
+  WeightsOwner grad(Type::kF32), grad_m(Type::kF32), grad_v(Type::kF32);
+  grad.AllocateForTest(config, pool);
+  grad_m.AllocateForTest(config, pool);
+  grad_v.AllocateForTest(config, pool);
   grad_m.ZeroInit();
   grad_v.ZeroInit();
   ForwardPass<float> forward(config), backward(config);
@@ -70,7 +68,7 @@ TEST(OptimizeTest, GradientDescent) {
       allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
 
-  Gemma gemma(GemmaTokenizer(), info, env);
+  Gemma gemma(config, GemmaTokenizer(kMockTokenizer), env);
 
   const auto generate = [&](const std::vector<int>& prompt) {
     std::vector<int> reply;
@@ -84,7 +82,6 @@ TEST(OptimizeTest, GradientDescent) {
         .gen = &gen,
         .verbosity = 0,
         .stream_token = stream_token,
-        .eos_id = ReverseSequenceSampler::kEndToken,
     };
     TimingInfo timing_info;
     gemma.Generate(runtime, prompt, 0, kv_cache, timing_info);
@@ -102,11 +99,11 @@ TEST(OptimizeTest, GradientDescent) {
                       reply.begin() + context.size());
   };
 
-  gemma.MutableWeights().RandInit(gen);
-  gemma.MutableWeights().AllocAndCopyWithTranspose(pool);
+  gemma.MutableWeights().RandInit(1.0f, gen);
+  gemma.MutableWeights().Reshape(pool);
 
   printf("Initial weights:\n");
-  gemma.MutableWeights().LogWeightStats();
+  gemma.MutableWeights().LogWeightStatsF32();
 
   constexpr size_t kBatchSize = 8;
   constexpr float kAlpha = 0.001f;
@@ -128,29 +125,28 @@ TEST(OptimizeTest, GradientDescent) {
     for (size_t i = 0; i < kBatchSize; ++i) {
       Prompt prompt = training_task.Sample(sgen);
       total_loss += CrossEntropyLossForwardPass(
-          prompt, *gemma.Weights().GetWeightsOfType<float>(), forward,
-          inv_timescale, pool);
-      CrossEntropyLossBackwardPass(
-          prompt, *gemma.Weights().GetWeightsOfType<float>(), forward,
-          *grad.GetWeightsOfType<float>(), backward, inv_timescale, pool);
-      gemma.MutableWeights().CopyWithTranspose(pool);
+          prompt, *gemma.Weights().GetF32(), forward, inv_timescale, pool);
+      CrossEntropyLossBackwardPass(prompt, *gemma.Weights().GetF32(), forward,
+                                   *grad.GetF32(), backward, inv_timescale,
+                                   pool);
+      gemma.MutableWeights().Reshape(pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;
 
-    AdamUpdate(info.weight, grad, kAlpha, kBeta1, kBeta2, kEpsilon, steps + 1,
+    AdamUpdate(grad, kAlpha, kBeta1, kBeta2, kEpsilon, steps + 1,
                gemma.Weights(), grad_m, grad_v, pool);
     printf("step: %zu  total_loss: %.15f   num_ok: %zu/%zu\n",
            steps, total_loss, num_ok, kBatchSize);
     if (steps % 100 == 0) {
       printf("Batch gradient:\n");
-      grad.LogWeightStats();
+      grad.LogWeightStatsF32();
     }
     if (total_loss < kMaxLoss) break;  // Done
   }
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
-  gemma.MutableWeights().LogWeightStats();
+  gemma.MutableWeights().LogWeightStatsF32();
   EXPECT_LT(steps, 50);
   EXPECT_EQ(num_ok, kBatchSize);
 }

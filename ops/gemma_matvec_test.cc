@@ -83,7 +83,7 @@ std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
     }
   });
 
-  CompressScaled(raw_mat.get(), extents.Area(), ws, *mat, pool);
+  Compress(raw_mat.get(), extents.Area(), ws, mat->Span(), 0, pool);
   mat->SetScale(1.9f);  // Arbitrary value, different from 1.
   return mat;
 }

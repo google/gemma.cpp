@@ -46,13 +46,14 @@ class GemmaTest : public ::testing::Test {
     s_env->SetMaxGeneratedTokens(64);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 5;
+    const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
     std::vector<std::string> replies;
     // Using the turn structure worsens results sometimes.
     // However, some models need the turn structure to work.
     // It would be good to make these tests more consistent.
-    if (s_env->GetGemma()->Info().model == Model::GEMMA2_27B ||
-        s_env->GetGemma()->Info().model == Model::GRIFFIN_2B) {
-      for (QueryResult result : s_env->BatchQueryModel(inputs)) {
+    if (config.model == Model::GEMMA2_27B ||
+        config.model == Model::GRIFFIN_2B) {
+      for (const QueryResult& result : s_env->BatchQueryModel(inputs)) {
         replies.push_back(result.response);
       }
       return replies;

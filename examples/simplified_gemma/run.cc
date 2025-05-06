@@ -23,7 +23,7 @@
 int main(int argc, char** argv) {
   // Standard usage: LoaderArgs takes argc and argv as input, then parses
   // necessary flags.
-  gcpp::LoaderArgs loader(argc, argv, /*validate=*/true);
+  gcpp::LoaderArgs loader(argc, argv);
 
   // Optional: LoaderArgs can also take tokenizer and weights paths directly.
   //

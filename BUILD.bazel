@@ -126,17 +126,9 @@ cc_library(
 )
 
 cc_library(
-    name = "common",
-    srcs = [
-        "gemma/common.cc",
-        "gemma/configs.cc",
-        "gemma/tensor_index.cc",
-    ],
-    hdrs = [
-        "gemma/common.h",
-        "gemma/configs.h",
-        "gemma/tensor_index.h",
-    ],
+    name = "configs",
+    srcs = ["gemma/configs.cc"],
+    hdrs = ["gemma/configs.h"],
     deps = [
         ":basics",
         "//compression:fields",
@@ -149,23 +141,21 @@ cc_test(
     name = "configs_test",
     srcs = ["gemma/configs_test.cc"],
     deps = [
-        ":common",
+        ":configs",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "@highway//:hwy",
+        "//compression:fields",
+        "//compression:shared",
     ],
 )
 
-cc_test(
-    name = "tensor_index_test",
-    srcs = ["gemma/tensor_index_test.cc"],
+cc_library(
+    name = "tensor_info",
+    srcs = ["gemma/tensor_info.cc"],
+    hdrs = ["gemma/tensor_info.h"],
     deps = [
         ":basics",
-        ":common",
-        ":mat",
-        ":weights",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:compress",
-        "@highway//:hwy",  # aligned_allocator.h
+        ":configs",
+        "//compression:shared",
     ],
 )
 
@@ -176,13 +166,89 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
-        ":common",
+        ":tensor_info",
         ":threading_context",
         "//compression:fields",
         "//compression:shared",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "tokenizer",
+    srcs = ["gemma/tokenizer.cc"],
+    hdrs = ["gemma/tokenizer.h"],
+    deps = [
+        ":configs",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@com_google_sentencepiece//:sentencepiece_processor",
+    ],
+)
+
+cc_library(
+    name = "model_store",
+    srcs = ["gemma/model_store.cc"],
+    hdrs = ["gemma/model_store.h"],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":configs",
+        ":mat",
+        ":tensor_info",
+        ":threading_context",
+        ":tokenizer",
+        "//compression:blob_store",
+        "//compression:fields",
+        "//compression:io",
+        "//compression:shared",
+        "@highway//:hwy",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "weights",
+    srcs = ["gemma/weights.cc"],
+    hdrs = ["gemma/weights.h"],
+    deps = [
+        ":configs",
+        ":mat",
+        ":model_store",
+        ":tensor_info",
+        "//compression:blob_store",
+        "//compression:compress",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:stats",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_test(
+    name = "tensor_info_test",
+    srcs = ["gemma/tensor_info_test.cc"],
+    deps = [
+        ":configs",
+        ":mat",
+        ":tensor_info",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "@highway//:hwy",  # aligned_allocator.h
+    ],
+)
+
+cc_library(
+    name = "common",
+    srcs = ["gemma/common.cc"],
+    hdrs = ["gemma/common.h"],
+    deps = [
+        ":basics",
+        ":configs",
+        "@highway//:hwy",  # base.h
     ],
 )
 
@@ -344,42 +410,23 @@ cc_test(
 )
 
 cc_library(
-    name = "weights",
-    srcs = ["gemma/weights.cc"],
-    hdrs = ["gemma/weights.h"],
-    deps = [
-        ":common",
-        ":mat",
-        "//compression:blob_store",
-        "//compression:compress",
-        "//compression:io",  # Path
-        "@highway//:hwy",
-        "@highway//:profiler",
-        "@highway//:stats",
-        "@highway//:thread_pool",
-    ],
-)
-
-cc_library(
-    name = "tokenizer",
-    srcs = ["gemma/tokenizer.cc"],
-    hdrs = ["gemma/tokenizer.h"],
-    deps = [
-        ":common",
-        "//compression:io",  # Path
-        "//compression:shared",
-        "@highway//:hwy",
-        "@highway//:profiler",
-        "@com_google_sentencepiece//:sentencepiece_processor",
-    ],
-)
-
-cc_library(
     name = "kv_cache",
     srcs = ["gemma/kv_cache.cc"],
     hdrs = ["gemma/kv_cache.h"],
     deps = [
-        ":common",
+        ":configs",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
+    name = "gemma_args",
+    hdrs = ["gemma/gemma_args.h"],
+    deps = [
+        ":args",
+        ":basics",
+        ":ops",  # matmul.h
+        "//compression:io",
         "@highway//:hwy",
     ],
 )
@@ -409,8 +456,11 @@ cc_library(
         ":allocator",
         ":basics",
         ":common",
+        ":configs",
+        ":gemma_args",
         ":kv_cache",
         ":mat",
+        ":model_store",
         ":ops",
         ":tokenizer",
         ":threading",
@@ -425,6 +475,36 @@ cc_library(
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "cross_entropy",
+    srcs = ["evals/cross_entropy.cc"],
+    hdrs = ["evals/cross_entropy.h"],
+    deps = [
+        ":gemma_lib",
+        ":ops",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
+    name = "benchmark_helper",
+    srcs = ["evals/benchmark_helper.cc"],
+    hdrs = ["evals/benchmark_helper.h"],
+    deps = [
+        ":configs",
+        ":cross_entropy",
+        ":gemma_args",
+        ":gemma_lib",
+        ":ops",
+        ":threading_context",
+        ":tokenizer",
+        "@google_benchmark//:benchmark",
+        "//compression:compress",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",
     ],
 )
 
@@ -459,51 +539,6 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "cross_entropy",
-    srcs = ["evals/cross_entropy.cc"],
-    hdrs = ["evals/cross_entropy.h"],
-    deps = [
-        ":common",
-        ":gemma_lib",
-        ":ops",
-        "@highway//:hwy",
-    ],
-)
-
-cc_library(
-    name = "gemma_args",
-    hdrs = ["gemma/gemma_args.h"],
-    deps = [
-        ":args",
-        ":basics",
-        ":common",
-        ":gemma_lib",
-        ":ops",
-        "//compression:io",
-        "//compression:shared",
-        "@highway//:hwy",
-    ],
-)
-
-cc_library(
-    name = "benchmark_helper",
-    srcs = ["evals/benchmark_helper.cc"],
-    hdrs = ["evals/benchmark_helper.h"],
-    deps = [
-        ":cross_entropy",
-        ":gemma_args",
-        ":gemma_lib",
-        ":ops",
-        ":threading_context",
-        ":tokenizer",
-        "@google_benchmark//:benchmark",
-        "//compression:compress",
-        "@highway//:hwy",
-        "@highway//:nanobenchmark",
-    ],
-)
-
 cc_test(
     name = "gemma_test",
     srcs = ["evals/gemma_test.cc"],
@@ -516,7 +551,7 @@ cc_test(
     ],
     deps = [
         ":benchmark_helper",
-        ":common",
+        ":configs",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
@@ -535,7 +570,7 @@ cc_test(
     ],
     deps = [
         ":benchmark_helper",
-        ":common",
+        ":configs",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
@@ -549,11 +584,9 @@ cc_binary(
     deps = [
         ":args",
         ":benchmark_helper",
-        ":common",
         ":gemma_args",
         ":gemma_lib",
         ":ops",
-        ":threading_context",
         ":tokenizer",
         "//compression:shared",
         "//paligemma:image",
@@ -568,7 +601,6 @@ cc_binary(
     deps = [
         ":args",
         ":benchmark_helper",
-        ":common",
         ":cross_entropy",
         ":gemma_lib",
         "//compression:io",
@@ -576,12 +608,6 @@ cc_binary(
         "@highway//:nanobenchmark",
         "@nlohmann_json//:json",
     ],
-)
-
-cc_library(
-    name = "benchmark_prompts",
-    hdrs = ["evals/prompts.h"],
-    deps = ["@highway//:hwy"],
 )
 
 cc_binary(
@@ -592,7 +618,6 @@ cc_binary(
     ],
     deps = [
         ":benchmark_helper",
-        ":benchmark_prompts",
         "@google_benchmark//:benchmark",
         "@highway//:hwy",  # base.h
     ],
@@ -600,9 +625,7 @@ cc_binary(
 
 cc_binary(
     name = "debug_prompt",
-    srcs = [
-        "evals/debug_prompt.cc",
-    ],
+    srcs = ["evals/debug_prompt.cc"],
     deps = [
         ":args",
         ":benchmark_helper",
@@ -623,7 +646,6 @@ cc_binary(
         "//compression:io",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:thread_pool",
         "@nlohmann_json//:json",
     ],
 )
@@ -660,6 +682,7 @@ cc_library(
     deps = [
         ":allocator",
         ":common",
+        ":configs",
         ":mat",
         ":ops",
         ":prompt",
@@ -680,30 +703,11 @@ cc_library(
     ],
     deps = [
         ":common",
+        ":configs",
         ":mat",
         ":prompt",
         ":weights",
         "@highway//:hwy",
-    ],
-)
-
-cc_test(
-    name = "backward_scalar_test",
-    size = "large",
-    srcs = [
-        "backprop/backward_scalar_test.cc",
-        "backprop/test_util.h",
-    ],
-    deps = [
-        ":backprop_scalar",
-        ":common",
-        ":mat",
-        ":prompt",
-        ":sampler",
-        ":threading_context",
-        ":weights",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "@highway//:thread_pool",
     ],
 )
 
@@ -721,7 +725,7 @@ cc_test(
     deps = [
         ":backprop",
         ":backprop_scalar",
-        ":common",
+        ":configs",
         ":mat",
         ":ops",
         ":prompt",
@@ -741,11 +745,8 @@ cc_library(
     hdrs = ["backprop/optimizer.h"],
     deps = [
         ":allocator",
-        ":common",
         ":mat",
         ":weights",
-        "//compression:compress",
-        "//compression:shared",
         "@highway//:hwy",
         "@highway//:thread_pool",
     ],
@@ -762,13 +763,14 @@ cc_test(
         ":allocator",
         ":backprop",
         ":basics",
-        ":common",
+        ":configs",
         ":gemma_lib",
         ":ops",
         ":optimizer",
         ":prompt",
         ":sampler",
         ":threading",
+        ":tokenizer",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:shared",
