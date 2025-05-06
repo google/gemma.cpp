@@ -22,13 +22,13 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"  // BlobWriter
-#include "compression/compress.h"    // ScaleWeights
-#include "compression/io.h"          // Path
-#include "gemma/configs.h"           // ModelConfig
-#include "gemma/model_store.h"       // ModelStore
-#include "gemma/tensor_info.h"       // TensorInfo
+#include "compression/compress.h"  // ScaleWeights
+#include "gemma/configs.h"         // ModelConfig
+#include "gemma/model_store.h"     // ModelStore
+#include "gemma/tensor_info.h"     // TensorInfo
 #include "gemma/tokenizer.h"
+#include "io/blob_store.h"  // BlobWriter
+#include "io/io.h"          // Path
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"

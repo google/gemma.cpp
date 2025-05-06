@@ -19,9 +19,9 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"  // Path
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // Gemma
+#include "io/io.h"        // Path
 #include "util/args.h"
 #include "hwy/base.h"
 #include "hwy/highway.h"

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "compression/blob_store.h"
+#include "io/blob_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +24,7 @@
 #include <utility>  // std::move
 #include <vector>
 
-#include "compression/io.h"
+#include "io/io.h"
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"

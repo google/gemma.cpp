@@ -27,10 +27,10 @@
 #include <vector>
 
 // IWYU pragma: begin_exports
-#include "compression/blob_store.h"
-#include "compression/io.h"  // Path
-#include "gemma/configs.h"   // ModelConfig
+#include "gemma/configs.h"  // ModelConfig
 #include "gemma/tokenizer.h"
+#include "io/blob_store.h"
+#include "io/io.h"        // Path
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"     // MatPtr
 // IWYU pragma: end_exports

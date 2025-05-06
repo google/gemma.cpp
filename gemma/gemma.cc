@@ -28,13 +28,13 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "compression/blob_store.h"
-#include "compression/io.h"  // Path
 #include "compression/shared.h"
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tokenizer.h"
 #include "gemma/weights.h"
+#include "io/blob_store.h"
+#include "io/io.h"  // Path
 #include "ops/matmul.h"
 #include "paligemma/image.h"
 #include "util/threading_context.h"

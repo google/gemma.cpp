@@ -13,7 +13,7 @@ cc_library(
     srcs = ["image.cc"],
     hdrs = ["image.h"],
     deps = [
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
         "@highway//:profiler",
     ],

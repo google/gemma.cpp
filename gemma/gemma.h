@@ -21,14 +21,14 @@
 #include <memory>
 
 // IWYU pragma: begin_exports
-#include "compression/blob_store.h"
-#include "compression/io.h"  // Path
 #include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
 #include "gemma/kv_cache.h"
 #include "gemma/model_store.h"
 #include "gemma/weights.h"
+#include "io/blob_store.h"
+#include "io/io.h"       // Path
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
 #include "util/basics.h"  // TokenAndProb

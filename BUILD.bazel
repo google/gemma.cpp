@@ -37,7 +37,7 @@ cc_library(
     hdrs = ["util/args.h"],
     deps = [
         ":basics",
-        "//compression:io",  # Path
+        "//io",  # Path
         "@highway//:hwy",
     ],
 )
@@ -131,8 +131,8 @@ cc_library(
     hdrs = ["gemma/configs.h"],
     deps = [
         ":basics",
-        "//compression:fields",
         "//compression:shared",
+        "//io:fields",
         "@highway//:hwy",  # base.h
     ],
 )
@@ -143,8 +143,8 @@ cc_test(
     deps = [
         ":configs",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:fields",
         "//compression:shared",
+        "//io:fields",
     ],
 )
 
@@ -168,8 +168,8 @@ cc_library(
         ":basics",
         ":tensor_info",
         ":threading_context",
-        "//compression:fields",
         "//compression:shared",
+        "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:thread_pool",
@@ -200,10 +200,10 @@ cc_library(
         ":tensor_info",
         ":threading_context",
         ":tokenizer",
-        "//compression:blob_store",
-        "//compression:fields",
-        "//compression:io",
         "//compression:shared",
+        "//io",
+        "//io:blob_store",
+        "//io:fields",
         "@highway//:hwy",
         "@highway//:thread_pool",
     ],
@@ -218,8 +218,8 @@ cc_library(
         ":mat",
         ":model_store",
         ":tensor_info",
-        "//compression:blob_store",
         "//compression:compress",
+        "//io:blob_store",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:stats",
@@ -426,7 +426,7 @@ cc_library(
         ":args",
         ":basics",
         ":ops",  # matmul.h
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
     ],
 )
@@ -467,8 +467,8 @@ cc_library(
         ":threading_context",
         ":weights",
         # Placeholder for internal dep, do not remove.,
-        "//compression:blob_store",
-        "//compression:io",
+        "//io:blob_store",
+        "//io",
         "//compression:shared",
         "//paligemma:image",
         "@highway//:hwy",
@@ -603,7 +603,7 @@ cc_binary(
         ":benchmark_helper",
         ":cross_entropy",
         ":gemma_lib",
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@nlohmann_json//:json",
@@ -630,7 +630,7 @@ cc_binary(
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
         "@nlohmann_json//:json",
     ],
@@ -643,7 +643,7 @@ cc_binary(
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
         "@highway//:profiler",
         "@nlohmann_json//:json",

@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "compression/blob_store.h"
+#include "io/blob_store.h"
 
 #include <stdio.h>
 
@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"
+#include "io/io.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/tests/hwy_gtest.h"

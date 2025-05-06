@@ -1,4 +1,4 @@
-# Weight compression, I/O and analysis
+# Weight compression and analysis.
 
 package(
     default_applicable_licenses = [
@@ -18,77 +18,6 @@ config_setting(
         "@platforms//os:android",
     ],
     visibility = ["//visibility:private"],
-)
-
-FILE_DEPS = select({
-    "//conditions:default": [
-        # Placeholder for io deps, do not remove
-    ],
-    ":android": [],
-    # Placeholder for internal build rules, do not remove
-})
-
-cc_library(
-    name = "io",
-    srcs = [
-        "io.cc",
-        # Placeholder for io backend, do not remove
-    ],
-    hdrs = ["io.h"],
-    local_defines = select({
-        # Placeholder for internal build rules, do not remove
-        "//conditions:default": [],
-    }),
-    deps = [
-        "//:allocator",
-        "@highway//:hwy",
-    ] + FILE_DEPS,
-)
-
-cc_library(
-    name = "fields",
-    srcs = ["fields.cc"],
-    hdrs = ["fields.h"],
-    deps = [
-        "@highway//:hwy",
-    ],
-)
-
-cc_test(
-    name = "fields_test",
-    srcs = ["fields_test.cc"],
-    deps = [
-        ":fields",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "@highway//:hwy_test_util",
-    ],
-)
-
-cc_library(
-    name = "blob_store",
-    srcs = ["blob_store.cc"],
-    hdrs = ["blob_store.h"],
-    deps = [
-        ":io",
-        "//:basics",
-        "//:threading_context",
-        "@highway//:hwy",
-        "@highway//:profiler",
-        "@highway//:thread_pool",
-    ],
-)
-
-cc_test(
-    name = "blob_store_test",
-    srcs = ["blob_store_test.cc"],
-    deps = [
-        ":blob_store",
-        ":io",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "//:basics",
-        "//:threading_context",
-        "@highway//:hwy_test_util",
-    ],
 )
 
 cc_library(
@@ -260,41 +189,5 @@ cc_library(
         "@highway//:stats",
         "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
-    ],
-)
-
-cc_library(
-    name = "io_win",
-    srcs = ["io_win.cc"],
-    deps = [
-        ":io",
-        "//:allocator",
-        "@highway//:hwy",
-    ],
-)
-
-cc_binary(
-    name = "blob_compare",
-    srcs = ["blob_compare.cc"],
-    deps = [
-        ":blob_store",
-        ":io",
-        "//:basics",
-        "//:threading",
-        "//:threading_context",
-        "@highway//:hwy",
-        "@highway//:hwy_test_util",
-        "@highway//:nanobenchmark",
-        "@highway//:thread_pool",
-    ],
-)
-
-cc_binary(
-    name = "migrate_weights",
-    srcs = ["migrate_weights.cc"],
-    deps = [
-        "//:args",
-        "//:benchmark_helper",
-        "//:gemma_lib",
     ],
 )

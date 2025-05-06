@@ -24,13 +24,13 @@
 #include <cstring>  // strcmp
 #include <string>
 
-#include "compression/blob_store.h"
-#include "compression/fields.h"
-#include "compression/io.h"  // Path
 #include "compression/shared.h"
 #include "gemma/configs.h"  // ModelConfig
 #include "gemma/tensor_info.h"
 #include "gemma/tokenizer.h"
+#include "io/blob_store.h"
+#include "io/fields.h"
+#include "io/io.h"  // Path
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"

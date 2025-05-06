@@ -41,32 +41,25 @@ FetchContent_MakeAvailable(benchmark)
 
 # Base source files
 set(SOURCES
-  compression/blob_store.cc
-  compression/blob_store.h
+  backprop/activations.h
+  backprop/backward_scalar.h
+  backprop/backward-inl.h
+  backprop/backward.cc
+  backprop/backward.h
+  backprop/common_scalar.h
+  backprop/forward_scalar.h
+  backprop/forward-inl.h
+  backprop/forward.cc
+  backprop/forward.h
+  backprop/optimizer.cc
+  backprop/optimizer.h
+  compression/compress-inl.h
   compression/compress.cc
   compression/compress.h
-  compression/compress-inl.h
-  compression/fields.cc
-  compression/fields.h
-  compression/io_win.cc
-  compression/io.cc
-  compression/io.h
   compression/nuq-inl.h
   compression/sfp-inl.h
   compression/shared.h
   compression/test_util-inl.h
-  backprop/activations.h
-  backprop/backward.cc
-  backprop/backward.h
-  backprop/backward-inl.h
-  backprop/backward_scalar.h
-  backprop/common_scalar.h
-  backprop/forward.cc
-  backprop/forward.h
-  backprop/forward-inl.h
-  backprop/forward_scalar.h
-  backprop/optimizer.cc
-  backprop/optimizer.h
   evals/benchmark_helper.cc
   evals/benchmark_helper.h
   evals/cross_entropy.cc
@@ -94,6 +87,13 @@ set(SOURCES
   gemma/tokenizer.h
   gemma/weights.cc
   gemma/weights.h
+  io/blob_store.cc
+  io/blob_store.h
+  io/fields.cc
+  io/fields.h
+  io/io_win.cc
+  io/io.cc
+  io/io.h
   ops/dot-inl.h
   ops/matmul-inl.h
   ops/matmul.cc
@@ -110,10 +110,10 @@ set(SOURCES
   util/mat.cc
   util/mat.h
   util/test_util.h
-  util/threading.cc
-  util/threading.h
   util/threading_context.cc
   util/threading_context.h
+  util/threading.cc
+  util/threading.h
   util/topology.cc
   util/topology.h
 )
@@ -200,14 +200,14 @@ include(GoogleTest)
 set(GEMMA_TEST_FILES
   backprop/backward_test.cc
   backprop/optimize_test.cc
-  compression/blob_store_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
-  compression/fields_test.cc
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
   gemma/tensor_info_test.cc
+  io/blob_store_test.cc
+  io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
   ops/gemma_matvec_test.cc
@@ -240,5 +240,5 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
-add_executable(migrate_weights compression/migrate_weights.cc)
+add_executable(migrate_weights io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)

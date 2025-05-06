@@ -44,7 +44,7 @@
 
 #include <memory>
 
-#include "compression/io.h"
+#include "io/io.h"
 #include "util/allocator.h"
 #include "hwy/base.h"  // HWY_ASSERT
 

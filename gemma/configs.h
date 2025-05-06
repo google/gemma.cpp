@@ -25,8 +25,8 @@
 #include <string>
 #include <vector>
 
-#include "compression/fields.h"  // IFieldsVisitor
 #include "compression/shared.h"  // Type
+#include "io/fields.h"           // IFieldsVisitor
 #include "util/basics.h"
 
 namespace gcpp {

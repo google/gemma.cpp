@@ -25,7 +25,7 @@
 #include <random>
 #include <string>
 
-#include "compression/io.h"  // Path
+#include "io/io.h"           // Path
 #include "ops/matmul.h"      // MMStorage::kMax*
 #include "util/args.h"
 #include "util/basics.h"          // Tristate

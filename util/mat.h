@@ -25,9 +25,9 @@
 #include <vector>
 
 // IWYU pragma: begin_exports
-#include "compression/fields.h"
 #include "compression/shared.h"  // Type
 #include "gemma/tensor_info.h"
+#include "io/fields.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports

@@ -29,7 +29,7 @@
 #include <utility>
 #include <vector>
 
-#include "compression/io.h"
+#include "io/io.h"
 #include "hwy/aligned_allocator.h"  // hwy::Span
 #include "hwy/base.h"
 #include "hwy/profiler.h"

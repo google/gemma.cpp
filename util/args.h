@@ -23,7 +23,7 @@
 #include <algorithm>  // std::transform
 #include <string>
 
-#include "compression/io.h"  // Path
+#include "io/io.h"        // Path
 #include "util/basics.h"  // Tristate
 #include "hwy/base.h"  // HWY_ABORT
 

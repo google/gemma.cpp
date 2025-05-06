@@ -22,8 +22,8 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"
-#include "compression/io.h"  // Path
+#include "io/blob_store.h"
+#include "io/io.h"        // Path
 #include "util/basics.h"  // IndexRange
 #include "util/threading.h"
 #include "util/threading_context.h"

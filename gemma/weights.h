@@ -25,12 +25,12 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"  // BlobWriter
-#include "compression/shared.h"      // IsF32
-#include "gemma/configs.h"           // ModelConfig
-#include "gemma/model_store.h"       // ModelStore
-#include "gemma/tensor_info.h"       // TensorInfoRegistry
-#include "util/mat.h"                // MatPtr
+#include "compression/shared.h"  // IsF32
+#include "gemma/configs.h"       // ModelConfig
+#include "gemma/model_store.h"   // ModelStore
+#include "gemma/tensor_info.h"   // TensorInfoRegistry
+#include "io/blob_store.h"       // BlobWriter
+#include "util/mat.h"            // MatPtr
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {

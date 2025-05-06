@@ -21,11 +21,11 @@
 #include <memory>
 #include <string>
 
-#include "compression/blob_store.h"
 #include "compression/shared.h"  // Type
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tensor_info.h"
+#include "io/blob_store.h"
 #include "util/mat.h"
 #include "hwy/aligned_allocator.h"  // Span
 

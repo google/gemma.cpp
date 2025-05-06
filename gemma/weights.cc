@@ -25,11 +25,11 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"
 #include "compression/compress.h"
 #include "compression/shared.h"
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
+#include "io/blob_store.h"
 #include "util/mat.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"

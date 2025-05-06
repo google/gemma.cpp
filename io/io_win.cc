@@ -21,7 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "compression/io.h"
+#include "io/io.h"
 #include "util/allocator.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #ifndef WIN32_LEAN_AND_MEAN
