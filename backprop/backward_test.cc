@@ -66,14 +66,14 @@ hwy::ThreadPool& ThreadHostileGetPool() {
   // can safely call `SetArgs` only once, because it would assert otherwise.
   // This is preferable to calling `ThreadHostileInvalidate`, because we would
   // repeat the topology initialization for every test.
-  if (!ThreadingContext2::IsInitialized()) {
+  if (!ThreadingContext::IsInitialized()) {
     gcpp::ThreadingArgs threading_args;
     threading_args.max_packages = 1;
     threading_args.max_clusters = 8;
     threading_args.pin = Tristate::kFalse;
-    ThreadingContext2::SetArgs(threading_args);
+    ThreadingContext::SetArgs(threading_args);
   }
-  return ThreadingContext2::Get().pools.Pool();
+  return ThreadingContext::Get().pools.Pool();
 }
 
 void TestMatMulVJP() {
@@ -203,7 +203,7 @@ void TestEndToEnd() {
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
   RowVectorBatch<float> inv_timescale = CreateInvTimescale(
-      ThreadingContext2::Get().allocator, config.layer_configs[0].qkv_dim,
+      ThreadingContext::Get().allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   for (const Prompt& prompt : batch) {
     ReverseSequenceSampler::LogPrompt(prompt);

@@ -27,7 +27,7 @@
 namespace gcpp {
 
 static inline HWY_MAYBE_UNUSED RowVectorBatch<float> CreateInvTimescale(
-    const Allocator2& allocator, size_t qkv_dim, bool half_rope,
+    const Allocator& allocator, size_t qkv_dim, bool half_rope,
     double base_frequency = 10000.0) {
   const size_t rope_dim = half_rope ? qkv_dim / 2 : qkv_dim;
   RowVectorBatch<float> inv_timescale(allocator, Extents2D(1, rope_dim / 2));

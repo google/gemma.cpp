@@ -50,7 +50,7 @@ class GemmaEnv {
   GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
            const InferenceArgs& inference);
   // Avoid memory leaks in test.
-  ~GemmaEnv() { ThreadingContext2::ThreadHostileInvalidate(); }
+  ~GemmaEnv() { ThreadingContext::ThreadHostileInvalidate(); }
 
   MatMulEnv& Env() { return env_; }
 

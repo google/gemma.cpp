@@ -47,7 +47,7 @@ class PaliGemmaTest : public ::testing::Test {
 
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
-  const Allocator2& allocator = s_env->Env().ctx.allocator;
+  const Allocator& allocator = s_env->Env().ctx.allocator;
   Gemma& gemma = *(s_env->GetGemma());
   image_tokens_ = ImageTokens(
       allocator, Extents2D(gemma.GetModelConfig().vit_config.seq_len,

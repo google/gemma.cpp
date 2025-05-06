@@ -561,7 +561,7 @@ class GemmaAttention {
   const LayerWeightsPtrs<T>& layer_weights_;
   const hwy::Divisor& div_seq_len_;
   const KVCaches& kv_caches_;
-  const Allocator2& allocator_;
+  const Allocator& allocator_;
   hwy::ThreadPool& pool_;
 };
 
@@ -749,7 +749,7 @@ class VitAttention {
   Activations& activations_;
   const LayerWeightsPtrs<T>& layer_weights_;
   const LayerConfig& layer_config_;
-  const Allocator2& allocator_;
+  const Allocator& allocator_;
   hwy::ThreadPool& pool_;
 };
 
@@ -789,7 +789,7 @@ HWY_NOINLINE void FFWNoVit(Activations& activations, size_t num_interleaved,
   const auto x =
       ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
 
-  const Allocator2& allocator = activations.env->ctx.allocator;
+  const Allocator& allocator = activations.env->ctx.allocator;
   auto hidden_activations = RowPtrFromBatch(allocator, activations.C1);
   auto multiplier = RowPtrFromBatch(allocator, activations.C2);
   auto ffw_out = RowPtrFromBatch(allocator, activations.ffw_out);
@@ -847,7 +847,7 @@ HWY_NOINLINE void FFWVit(Activations& activations, size_t num_interleaved,
   const auto x =
       ConstMatFromBatch(num_interleaved, activations.bf_pre_ffw_rms_out);
 
-  const Allocator2& allocator = activations.env->ctx.allocator;
+  const Allocator& allocator = activations.env->ctx.allocator;
   auto hidden_activations = RowPtrFromBatch(allocator, activations.C1);
   auto ffw_out = RowPtrFromBatch(allocator, activations.ffw_out);
 
@@ -1416,7 +1416,7 @@ bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
 //
 // `kv_caches` is for the batch, size must match `queries_prompt`.
 template <typename T>
-void GenerateT(const ModelStore2& model, const ModelWeightsPtrs<T>& weights,
+void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
                Activations& activations, const RuntimeConfig& runtime_config,
                const QueriesPromptTokens& queries_prompt,
                const QueriesPos& queries_pos_in,
@@ -1508,7 +1508,7 @@ void GenerateT(const ModelStore2& model, const ModelWeightsPtrs<T>& weights,
 }
 
 template <typename T>
-void GenerateSingleT(const ModelStore2& model,
+void GenerateSingleT(const ModelStore& model,
                      const ModelWeightsPtrs<T>& weights,
                      const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
@@ -1532,7 +1532,7 @@ void GenerateSingleT(const ModelStore2& model,
 }
 
 template <typename T>
-void GenerateBatchT(const ModelStore2& model,
+void GenerateBatchT(const ModelStore& model,
                     const ModelWeightsPtrs<T>& weights,
                     const RuntimeConfig& runtime_config,
                     const QueriesPromptTokens& queries_prompt,
@@ -1573,7 +1573,7 @@ void GenerateBatchT(const ModelStore2& model,
 }
 
 template <typename T>
-void GenerateImageTokensT(const ModelStore2& model,
+void GenerateImageTokensT(const ModelStore& model,
                           const ModelWeightsPtrs<T>& weights,
                           const RuntimeConfig& runtime_config,
                           const Image& image, ImageTokens& image_tokens,
@@ -1599,7 +1599,7 @@ void GenerateImageTokensT(const ModelStore2& model,
 // These are extern functions defined by instantiations/*.cc, which include this
 // 'header' after defining `GEMMA_TYPE`.
 void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
+    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
     size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,
     TimingInfo& timing_info) {
@@ -1609,7 +1609,7 @@ void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
 }
 
 void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
+    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config,
     const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
@@ -1620,7 +1620,7 @@ void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
 }
 
 void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore2& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
+    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
     const RuntimeConfig& runtime_config, const Image& image,
     ImageTokens& image_tokens, MatMulEnv* env) {
   HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_TYPE>)

@@ -50,7 +50,7 @@ class MMParallel {
   static constexpr size_t kMaxPackages = 4;
 
   // `ctx` must outlive this object.
-  MMParallel(ThreadingContext2& ctx) : ctx_(ctx) {
+  MMParallel(ThreadingContext& ctx) : ctx_(ctx) {
     HWY_DASSERT(ctx_.pools.NumPackages() <= kMaxPackages);
   }
 
@@ -164,11 +164,11 @@ class MMParallel {
   }
 
  private:
-  ThreadingContext2& ctx_;
+  ThreadingContext& ctx_;
 };
 
 template <typename TC>  // BF16/float for C, double for partial
-void BindC(const Allocator2& allocator, size_t M, const RowPtr<TC>& C,
+void BindC(const Allocator& allocator, size_t M, const RowPtr<TC>& C,
            MMParallel& parallel) {
   if (!allocator.ShouldBind()) return;
 
@@ -207,7 +207,7 @@ class MMStorage {
   // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
   static constexpr size_t kMaxKC = 8 * 1024;
 
-  MMStorage(const Allocator2& allocator, MMParallel& parallel)
+  MMStorage(const Allocator& allocator, MMParallel& parallel)
       // Per-worker copies of `partial` would be wasteful. We instead allocate
       // one instance of the maximum matrix extents because threads write at
       // false-sharing-free granularity.
@@ -236,7 +236,7 @@ class MMStorage {
 
   // Returns per-package matrix view. Non-const so that `RowVectorBatch` is
   // non-const, because `RowPtr` requires a non-const pointer.
-  RowPtrBF A(const Allocator2& allocator, size_t pkg_idx,
+  RowPtrBF A(const Allocator& allocator, size_t pkg_idx,
              const Extents2D& extents) {
     HWY_DASSERT(extents.rows <= kMaxM);
     HWY_DASSERT(extents.cols <= kMaxK);
@@ -430,7 +430,7 @@ class MMConfig {
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
-std::vector<MMConfig> MMCandidates(const Allocator2& allocator, size_t M,
+std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
                                    size_t K, size_t N, size_t sizeof_TC,
                                    size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
@@ -561,7 +561,7 @@ class MMKeys {
   }
 
   // Must only be called if not already present in `Keys()`.
-  void Append(Key key, const Allocator2& allocator) {
+  void Append(Key key, const Allocator& allocator) {
     // Dynamic allocation because the test checks many more dimensions than
     // would be reasonable to pre-allocate. DIY for alignment and padding.
     if (HWY_UNLIKELY(num_unique_ >= capacity_)) {
@@ -608,9 +608,9 @@ struct MMPerKey {
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive
 // `MatMulEnv`.
 struct MatMulEnv {
-  explicit MatMulEnv(ThreadingContext2& ctx);
+  explicit MatMulEnv(ThreadingContext& ctx);
 
-  ThreadingContext2& ctx;
+  ThreadingContext& ctx;
   bool have_timer_stop = false;
 
   // Whether `MMCandidates()` should print the set of parameters.
@@ -753,7 +753,7 @@ ConstMat<T> ConstMatFromWeights(const MatPtrT<T>& m) {
 }
 
 template <typename TB>
-void BindB(const Allocator2& allocator, size_t N, size_t sizeof_TC,
+void BindB(const Allocator& allocator, size_t N, size_t sizeof_TC,
            const ConstMat<TB>& B, MMParallel& parallel) {
   if (!allocator.ShouldBind()) return;
 

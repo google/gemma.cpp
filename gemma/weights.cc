@@ -84,8 +84,8 @@ void LayerWeightsPtrs<NuqStream>::Reshape() {
 }
 
 // Aborts on error.
-static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader2& reader,
-                      const std::vector<BlobRange2>& ranges,
+static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
+                      const std::vector<BlobRange>& ranges,
                       MatOwners& mat_owners, const MatPadding padding,
                       hwy::ThreadPool& pool) {
   HWY_ASSERT(mats.size() == ranges.size());
@@ -121,9 +121,9 @@ static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader2& reader,
     const size_t mem_stride_bytes = mats[i]->Stride() * mats[i]->ElementBytes();
     uint8_t* row = mats[i]->RowT<uint8_t>(0);
     for (size_t r = 0; r < mats[i]->Rows(); ++r) {
-      reader.Enqueue(BlobRange2{.offset = offset,
-                                .bytes = file_bytes_per_row,
-                                .key_idx = ranges[i].key_idx},
+      reader.Enqueue(BlobRange{.offset = offset,
+                               .bytes = file_bytes_per_row,
+                               .key_idx = ranges[i].key_idx},
                      row);
       offset += file_bytes_per_row;
       row += mem_stride_bytes;
@@ -134,11 +134,11 @@ static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader2& reader,
   reader.ReadAll(pool);
 }
 
-void WeightsOwner::ReadOrAllocate(const ModelStore2& model, BlobReader2& reader,
+void WeightsOwner::ReadOrAllocate(const ModelStore& model, BlobReader& reader,
                                   hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
   std::vector<MatPtr*> mats;
-  std::vector<BlobRange2> ranges;
+  std::vector<BlobRange> ranges;
 
   // Padding is inserted when reading row by row, except for NUQ tensors.
   const MatPadding padding = MatPadding::kOdd;
@@ -244,7 +244,7 @@ void WeightsOwner::Reshape(hwy::ThreadPool& pool) {
 }
 
 std::vector<uint32_t> WeightsOwner::AddTensorDataToWriter(
-    BlobWriter2& writer) const {
+    BlobWriter& writer) const {
   std::vector<uint32_t> serialized_mat_ptrs;
   CallT([&](const auto& weights) {
     weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {

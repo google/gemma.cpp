@@ -168,7 +168,7 @@ class GemmaModel {
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
     const gcpp::Gemma& gemma = *gemma_.GetGemma();
-    const gcpp::Allocator2& allocator = gemma_.Env().ctx.allocator;
+    const gcpp::Allocator& allocator = gemma_.Env().ctx.allocator;
     if (gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::PALIGEMMA &&
         gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
       throw std::invalid_argument("Not a PaliGemma model.");

@@ -87,7 +87,7 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
 
 // Lazily-initialized singleton with support for passing in arguments from
 // `ThreadingArgs` and re-initializing with different arguments.
-class ThreadingContext2 {
+class ThreadingContext {
   struct PrivateToken {};  // avoids constructing directly
 
  public:
@@ -112,7 +112,7 @@ class ThreadingContext2 {
   // hence we prefer not to pull `std::shared_ptr` into the interface.
   //
   // To reduce overhead, callers should cache the result and call less often.
-  static ThreadingContext2& Get();
+  static ThreadingContext& Get();
 
   // Invalidates the singleton before or after a call to `Get`. This allows
   // changing the arguments between tests. Callers must again call `Get`
@@ -121,10 +121,10 @@ class ThreadingContext2 {
   // Also useful to suppress memory leak warnings in tests.
   static void ThreadHostileInvalidate();
 
-  explicit ThreadingContext2(PrivateToken);  // only called via `Get`.
+  explicit ThreadingContext(PrivateToken);  // only called via `Get`.
 
   BoundedTopology topology;
-  Allocator2 allocator;
+  Allocator allocator;
   NestedPools pools;
 };
 

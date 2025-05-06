@@ -48,16 +48,16 @@ namespace gcpp {
 // tokenizer in a separate file, encoded tensor type in a prefix of the blob
 // name, and had a blob for tensor scaling factors. We still support reading
 // both, but only write single-file format.
-class ModelStore2 {
+class ModelStore {
  public:
   // Reads from file(s) or aborts on error. The latter two arguments are only
   // used for pre-2025 files.
-  ModelStore2(BlobReader2& reader, const Path& tokenizer_path = Path(),
+  ModelStore(BlobReader& reader, const Path& tokenizer_path = Path(),
               Tristate wrapping = Tristate::kDefault);
   // For optimize_test.cc.
-  ModelStore2(const ModelConfig& config, GemmaTokenizer&& tokenizer)
+  ModelStore(const ModelConfig& config, GemmaTokenizer&& tokenizer)
       : config_(config), tokenizer_(std::move(tokenizer)) {}
-  ~ModelStore2();
+  ~ModelStore();
 
   const ModelConfig& Config() const {
     HWY_ASSERT(config_.model != Model::UNKNOWN);
@@ -72,7 +72,7 @@ class ModelStore2 {
 
   // Returns false if `mat` is not available for loading, otherwise updates
   // `mat` with metadata from the file and sets `key_idx` for use by
-  // `BlobReader2`. Called via `ReadOrAllocate` in `weights.cc`.
+  // `BlobReader`. Called via `ReadOrAllocate` in `weights.cc`.
   bool FindAndUpdateMatPtr(MatPtr& mat, size_t& key_idx) const;
 
  private:
@@ -83,15 +83,15 @@ class ModelStore2 {
     key_idx_.push_back(key_idx);
   }
 
-  bool ReadMatPtrs(BlobReader2& reader);
-  void CreateMatPtrs(BlobReader2& reader);  // Aborts on error.
+  bool ReadMatPtrs(BlobReader& reader);
+  void CreateMatPtrs(BlobReader& reader);  // Aborts on error.
 
   ModelConfig config_;
   GemmaTokenizer tokenizer_;
 
   // All `MatPtr` present in the `BlobStore`, see `ReadMatPtrs`/`CreateMatPtrs`.
   std::vector<MatPtr> mat_ptrs_;
-  // For each of `mat_ptrs_`, the index within `BlobReader2::Keys()`. This is
+  // For each of `mat_ptrs_`, the index within `BlobReader::Keys()`. This is
   // not necessarily iota because some blobs are not tensors, and callers may
   // have added blobs before ours.
   std::vector<size_t> key_idx_;
@@ -108,7 +108,7 @@ class ModelStore2 {
 // produces a single BlobStore file holding everything required for inference.
 void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
                      const std::vector<uint32_t>& serialized_mat_ptrs,
-                     BlobWriter2& writer, hwy::ThreadPool& pool,
+                     BlobWriter& writer, hwy::ThreadPool& pool,
                      const Path& path);
 
 }  // namespace gcpp

@@ -999,7 +999,7 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
-    const Allocator2& allocator = gcpp::ThreadingContext2::Get().allocator;
+    const Allocator& allocator = gcpp::ThreadingContext::Get().allocator;
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);
@@ -1099,14 +1099,14 @@ void TestAllDot() {
   constexpr size_t kMaxWorkers = 15;
 
   // Reset with cap on workers because we only support `kMaxWorkers`.
-  ThreadingContext2::ThreadHostileInvalidate();
+  ThreadingContext::ThreadHostileInvalidate();
   ThreadingArgs threading_args;
   threading_args.max_packages = 1;
   threading_args.max_clusters = 1;
   threading_args.max_lps = kMaxWorkers - 1;
-  ThreadingContext2::SetArgs(threading_args);
-  ThreadingContext2& ctx = ThreadingContext2::Get();
-  const Allocator2& allocator = ctx.allocator;
+  ThreadingContext::SetArgs(threading_args);
+  ThreadingContext& ctx = ThreadingContext::Get();
+  const Allocator& allocator = ctx.allocator;
 
   {  // ensure no profiler zones are active
     const hn::ScalableTag<float> df;

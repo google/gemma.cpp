@@ -130,7 +130,7 @@ size_t DetectTotalMiB(size_t page_bytes) {
 
 }  // namespace
 
-Allocator2::Allocator2(const BoundedTopology& topology, bool enable_bind) {
+Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   line_bytes_ = DetectLineBytes();
   vector_bytes_ = hwy::VectorBytes();
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
@@ -180,7 +180,7 @@ Allocator2::Allocator2(const BoundedTopology& topology, bool enable_bind) {
   quantum_step_mask_ = quantum_bytes_ / step_bytes_ - 1;
 }
 
-size_t Allocator2::FreeMiB() const {
+size_t Allocator::FreeMiB() const {
 #if HWY_OS_LINUX
   const long ret = sysconf(_SC_AVPHYS_PAGES);  // NOLINT(runtime/int)
   HWY_ASSERT(ret != -1);
@@ -201,7 +201,7 @@ size_t Allocator2::FreeMiB() const {
 #endif
 }
 
-AlignedPtr2<uint8_t[]> Allocator2::AllocBytes(size_t bytes) const {
+AlignedPtr2<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
   // If we are not binding, the Highway allocator is cheaper than `mmap`, and
   // defends against 2K aliasing.
   if (!should_bind_) {
@@ -296,7 +296,7 @@ size_t CountBusyPages(size_t num_pages, size_t node, void** pages,
   return num_busy;
 }
 
-bool Allocator2::BindMemory(void* ptr, size_t bytes, size_t node) const {
+bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) const {
   HWY_DASSERT(should_bind_);
   constexpr size_t kMaxNodes = 1024;  // valid for x86/x64, and "enough"
 
@@ -353,7 +353,7 @@ bool Allocator2::BindMemory(void* ptr, size_t bytes, size_t node) const {
 }
 
 #else
-bool Allocator2::BindMemory(void*, size_t, size_t) const { return false; }
+bool Allocator::BindMemory(void*, size_t, size_t) const { return false; }
 #endif  // GEMMA_BIND && HWY_OS_LINUX
 
 }  // namespace gcpp

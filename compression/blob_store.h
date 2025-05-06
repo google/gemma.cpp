@@ -35,20 +35,20 @@
 namespace gcpp {
 
 // One blob's extents within the file.
-struct BlobRange2 {
+struct BlobRange {
   uint64_t End() const { return offset + bytes; }
 
   uint64_t offset = 0;
   size_t bytes = 0;  // We check blobs are not zero-sized.
-  // Index within `BlobReader2::Keys()` for error reporting.
+  // Index within `BlobReader::Keys()` for error reporting.
   size_t key_idx;
 };
 
 // A read or write I/O request, each serviced by one thread in a pool.
 struct BlobIO2 {
-  BlobIO2(BlobRange2 range, void* data) : range(range), data(data) {}
+  BlobIO2(BlobRange range, void* data) : range(range), data(data) {}
 
-  BlobRange2 range;
+  BlobRange range;
   void* data;  // Modified only if a read request. Read-only for writes.
 };
 
@@ -59,7 +59,7 @@ class BlobStore;
 // Thread-safe: it is safe to concurrently call all methods except `Enqueue`,
 // because they are const.
 // TODO(janwas): split into header and reader/mapper classes.
-class BlobReader2 {
+class BlobReader {
  public:
   // Parallel I/O into allocated memory, or mapped view of file. The latter is
   // better when the file is huge, but page faults add noise to measurements.
@@ -67,26 +67,26 @@ class BlobReader2 {
 
   // Acquires ownership of `file` (which must be non-null) and reads its header.
   // Factory function instead of ctor because this can fail (return null).
-  static std::unique_ptr<BlobReader2> Make(const Path& blob_path,
-                                           Tristate map = Tristate::kDefault);
+  static std::unique_ptr<BlobReader> Make(const Path& blob_path,
+                                          Tristate map = Tristate::kDefault);
 
-  ~BlobReader2() = default;
+  ~BlobReader() = default;
 
   // Returns true if the mode passed to ctor was `kMap` and mapping succeeded.
   bool IsMapped() const { return mode_ == Mode::kMap; }
 
   const std::vector<std::string>& Keys() const { return keys_; }
 
-  const BlobRange2& Range(size_t key_idx) const {
+  const BlobRange& Range(size_t key_idx) const {
     HWY_ASSERT(key_idx < keys_.size());
     return ranges_[key_idx];
   }
 
   // Returns nullptr if not found. O(1).
-  const BlobRange2* Find(const std::string& key) const {
+  const BlobRange* Find(const std::string& key) const {
     auto it = key_idx_for_key_.find(key);
     if (it == key_idx_for_key_.end()) return nullptr;
-    const BlobRange2& range = Range(it->second);
+    const BlobRange& range = Range(it->second);
     HWY_ASSERT(range.offset != 0 && range.bytes != 0);
     HWY_ASSERT(range.End() <= file_bytes_);
     return &range;
@@ -95,7 +95,7 @@ class BlobReader2 {
   // Only if `IsMapped()`: returns blob as a read-only span of `T`. Note that
   // everything else except `CallWithSpan` is in units of bytes.
   template <typename T>
-  hwy::Span<const T> MappedSpan(const BlobRange2& range) const {
+  hwy::Span<const T> MappedSpan(const BlobRange& range) const {
     HWY_ASSERT(IsMapped());
     HWY_ASSERT(range.bytes % sizeof(T) == 0);
     return hwy::Span<const T>(
@@ -108,7 +108,7 @@ class BlobReader2 {
   // which an aligned allocation is unnecessary.
   template <typename T, class Func>
   bool CallWithSpan(const std::string& key, const Func& func) const {
-    const BlobRange2* range = Find(key);
+    const BlobRange* range = Find(key);
     if (!range) {
       HWY_WARN("Blob %s not found, sizeof T=%zu", key.c_str(), sizeof(T));
       return false;
@@ -134,7 +134,7 @@ class BlobReader2 {
   // The following methods must only be called if `!IsMapped()`.
 
   // Enqueues a BlobIO2 for `ReadAll` to execute.
-  void Enqueue(const BlobRange2& range, void* data);
+  void Enqueue(const BlobRange& range, void* data);
 
   // Reads in parallel all enqueued requests to the specified destinations.
   // Aborts on error.
@@ -142,15 +142,15 @@ class BlobReader2 {
 
  private:
   // Only for use by `Make`.
-  BlobReader2(std::unique_ptr<File> file, uint64_t file_bytes,
-              const BlobStore& bs, Mode mode);
+  BlobReader(std::unique_ptr<File> file, uint64_t file_bytes,
+             const BlobStore& bs, Mode mode);
 
   const std::unique_ptr<File> file_;
   const uint64_t file_bytes_;
   Mode mode_;
 
   std::vector<std::string> keys_;
-  std::vector<BlobRange2> ranges_;
+  std::vector<BlobRange> ranges_;
   std::unordered_map<std::string, size_t> key_idx_for_key_;
 
   MapPtr mapped_;                  // only if `kMap`
@@ -160,7 +160,7 @@ class BlobReader2 {
 // Collects references to blobs and writes them all at once with parallel I/O.
 // Thread-compatible: independent instances can be used concurrently, but it
 // does not make sense to call the methods concurrently.
-class BlobWriter2 {
+class BlobWriter {
  public:
   void Add(const std::string& key, const void* data, size_t bytes);
 

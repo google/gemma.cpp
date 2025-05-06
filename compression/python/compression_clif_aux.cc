@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"  // BlobWriter2
+#include "compression/blob_store.h"  // BlobWriter
 #include "compression/compress.h"    // ScaleWeights
 #include "compression/io.h"          // Path
 #include "gemma/configs.h"           // ModelConfig
@@ -88,7 +88,7 @@ class SbsWriterImpl : public ISbsWriter {
   }
 
  public:
-  SbsWriterImpl() : pool_(ThreadingContext2::Get().pools.Pool()) {}
+  SbsWriterImpl() : pool_(ThreadingContext::Get().pools.Pool()) {}
 
   void Insert(const char* name, F32Span weights, Type type,
               const TensorInfo& tensor_info) override {
@@ -123,7 +123,7 @@ class SbsWriterImpl : public ISbsWriter {
   hwy::ThreadPool& pool_;
   MatOwners mat_owners_;
   CompressWorkingSet working_set_;
-  BlobWriter2 writer_;
+  BlobWriter writer_;
   std::vector<uint32_t> serialized_mat_ptrs_;
 };
 
@@ -141,7 +141,7 @@ HWY_EXPORT(NewSbsWriter);
 SbsWriter::SbsWriter() : impl_(HWY_DYNAMIC_DISPATCH(NewSbsWriter)()) {}
 
 SbsReader::SbsReader(const std::string& path)
-    : reader_(gcpp::BlobReader2::Make(Path(path))), model_(*reader_) {}
+    : reader_(gcpp::BlobReader::Make(Path(path))), model_(*reader_) {}
 
 }  // namespace gcpp
 #endif  // HWY_ONCE

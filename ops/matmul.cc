@@ -60,7 +60,7 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 // and holds most of their arguments in member variables.
 class GenerateCandidates {
  public:
-  GenerateCandidates(const Allocator2& allocator, size_t M, size_t K, size_t N,
+  GenerateCandidates(const Allocator& allocator, size_t M, size_t K, size_t N,
                      size_t sizeof_TC, size_t max_mr, size_t nr,
                      const IndexRangePartition& ranges_np, bool print_config)
       : allocator_(allocator),
@@ -352,7 +352,7 @@ class GenerateCandidates {
     }
   }
 
-  const Allocator2& allocator_;
+  const Allocator& allocator_;
   const size_t M_;
   const size_t K_;
   const size_t N_;
@@ -372,7 +372,7 @@ class GenerateCandidates {
 }  // namespace
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
-std::vector<MMConfig> MMCandidates(const Allocator2& allocator, size_t M,
+std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
                                    size_t K, size_t N, size_t sizeof_TC,
                                    size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
@@ -384,7 +384,7 @@ std::vector<MMConfig> MMCandidates(const Allocator2& allocator, size_t M,
 // Returns the granularity of B rows for `RangesOfNP`. Aims to avoid remote
 // memory accesses or false sharing, unless there are insufficient per-package
 // rows for that.
-static size_t NPMultiple(const Allocator2& allocator, size_t N,
+static size_t NPMultiple(const Allocator& allocator, size_t N,
                          size_t sizeof_TC, size_t nr, size_t num_packages) {
   size_t np_multiple = allocator.QuantumBytes() / sizeof_TC;
   // If binding, `np_multiple` is typically 1024 and `num_packages` > 1. For
@@ -417,7 +417,7 @@ IndexRangePartition MMParallel::RangesOfNP(size_t max_packages, size_t N,
       NPMultiple(ctx_.allocator, N, sizeof_TC, nr, num_packages));
 }
 
-MatMulEnv::MatMulEnv(ThreadingContext2& ctx)
+MatMulEnv::MatMulEnv(ThreadingContext& ctx)
     : ctx(ctx), parallel(ctx), storage(ctx.allocator, parallel) {
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);

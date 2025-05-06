@@ -74,7 +74,7 @@ class NestedPools {
   // would cause huge slowdowns when spinning, the `BoundedSlice` arguments
   // only impose upper bounds on the number of detected packages and clusters
   // rather than defining the actual number of threads.
-  NestedPools(const BoundedTopology& topology, const Allocator2& allocator,
+  NestedPools(const BoundedTopology& topology, const Allocator& allocator,
               size_t max_threads = 0, Tristate pin = Tristate::kDefault);
 
   bool AllPinned() const { return all_pinned_; }
@@ -148,7 +148,7 @@ class NestedPools {
   class Package {
    public:
     Package() = default;  // for vector
-    Package(const BoundedTopology& topology, const Allocator2& allocator,
+    Package(const BoundedTopology& topology, const Allocator& allocator,
             size_t pkg_idx, size_t max_workers_per_package);
 
     size_t NumClusters() const { return clusters_.size(); }

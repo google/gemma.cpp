@@ -86,7 +86,7 @@ float MaxAbs(const RowVectorBatch<float>& a) {
 template <typename TA, typename TB, typename TC>
 void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
                  const RowPtr<TC>& C_slow, const RowPtr<TC>& C, int line) {
-  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+  const Allocator& allocator = ThreadingContext::Get().allocator;
   const hn::ScalableTag<float> df;
   const size_t cols = A.extents.cols;
   const size_t B_rows = B.extents.rows;
@@ -210,7 +210,7 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
 template <typename TA, typename TB = TA, typename TC = float>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env, int line) {
-  const Allocator2& allocator = env.ctx.allocator;
+  const Allocator& allocator = env.ctx.allocator;
   hwy::ThreadPool& pool = env.ctx.pools.Pool();
   fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",
           rows_ac, cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>(),
@@ -259,12 +259,12 @@ void TestTiny() {
   if (HWY_TARGET != first_target) return;
 
   for (size_t max_packages : {1, 2}) {
-    ThreadingContext2::ThreadHostileInvalidate();
+    ThreadingContext::ThreadHostileInvalidate();
     ThreadingArgs threading_args;
     threading_args.bind = Tristate::kTrue;
     threading_args.max_packages = max_packages;
-    ThreadingContext2::SetArgs(threading_args);
-    MatMulEnv env(ThreadingContext2::Get());
+    ThreadingContext::SetArgs(threading_args);
+    MatMulEnv env(ThreadingContext::Get());
     NestedPools& pools = env.ctx.pools;
 
 #if GEMMA_DISABLE_TOPOLOGY
@@ -296,11 +296,11 @@ void TestAllMatMul() {
     return;
   }
 
-  ThreadingContext2::ThreadHostileInvalidate();
+  ThreadingContext::ThreadHostileInvalidate();
   ThreadingArgs threading_args;
   threading_args.bind = Tristate::kTrue;
-  ThreadingContext2::SetArgs(threading_args);
-  MatMulEnv env(ThreadingContext2::Get());
+  ThreadingContext::SetArgs(threading_args);
+  MatMulEnv env(ThreadingContext::Get());
   NestedPools& pools = env.ctx.pools;
   pools.MaybeStartSpinning(threading_args.spin);
 

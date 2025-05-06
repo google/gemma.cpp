@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/blob_store.h"  // BlobWriter2
+#include "compression/blob_store.h"  // BlobWriter
 #include "compression/shared.h"      // IsF32
 #include "gemma/configs.h"           // ModelConfig
 #include "gemma/model_store.h"       // ModelStore
@@ -519,7 +519,7 @@ class WeightsOwner {
 
   // Reads tensor data from `BlobStore`, or for tensors marked `kOnlyAllocate`,
   // allocates memory and reshapes. Aborts on error.
-  void ReadOrAllocate(const ModelStore2& model, BlobReader2& reader,
+  void ReadOrAllocate(const ModelStore& model, BlobReader& reader,
                       hwy::ThreadPool& pool);
 
   // Calls `func(std::unique_ptr<WeightsPtrs<T>>&, args)`. `func` typically
@@ -541,7 +541,7 @@ class WeightsOwner {
   // For writers:
 
   // Adds one blob for each tensor's data and returns all serialized MatPtr.
-  std::vector<uint32_t> AddTensorDataToWriter(BlobWriter2& writer) const;
+  std::vector<uint32_t> AddTensorDataToWriter(BlobWriter& writer) const;
 
   // For backprop/:
 

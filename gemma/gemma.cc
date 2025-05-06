@@ -47,13 +47,13 @@ namespace gcpp {
 MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
   // Placeholder for internal init, do not modify.
 
-  ThreadingContext2::SetArgs(threading_args);
-  return MatMulEnv(ThreadingContext2::Get());
+  ThreadingContext::SetArgs(threading_args);
+  return MatMulEnv(ThreadingContext::Get());
 }
 
 Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
     : env_(env),
-      reader_(BlobReader2::Make(loader.weights, loader.map)),
+      reader_(BlobReader::Make(loader.weights, loader.map)),
       model_(*reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config().weight),
       chat_template_(model_.Tokenizer(), model_.Config().model) {
@@ -74,7 +74,7 @@ Gemma::Gemma(const ModelConfig& config, GemmaTokenizer&& tokenizer,
 Gemma::~Gemma() = default;
 
 void Gemma::Save(const Path& weights_path, hwy::ThreadPool& pool) const {
-  BlobWriter2 writer;
+  BlobWriter writer;
   const std::vector<uint32_t> serialized_mat_ptrs =
       weights_.AddTensorDataToWriter(writer);
   WriteSingleFile(model_.Config(), model_.Tokenizer(), serialized_mat_ptrs,
@@ -90,17 +90,17 @@ void Gemma::Save(const Path& weights_path, hwy::ThreadPool& pool) const {
 // instead of `WeightsPtrs<T>`.
 #define GEMMA_DECLARE(WEIGHT_TYPE)                                             \
   extern void GenerateSingle(                                                  \
-      const ModelStore2& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
+      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
       const RuntimeConfig& runtime_config, const PromptTokens& prompt,         \
       size_t pos, size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,        \
       TimingInfo& timing_info);                                                \
   extern void GenerateBatch(                                                   \
-      const ModelStore2& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
+      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
       const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
       const QueriesPos& queries_pos, const QueriesPos& queries_prefix_end,     \
       const KVCaches& kv_caches, MatMulEnv* env, TimingInfo& timing_info);     \
   extern void GenerateImageTokens(                                             \
-      const ModelStore2& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
+      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
       const RuntimeConfig& runtime_config, const Image& image,                 \
       ImageTokens& image_tokens, MatMulEnv* env);
 GEMMA_DECLARE(float)

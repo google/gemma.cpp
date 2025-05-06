@@ -383,7 +383,7 @@ TEST(ThreadingTest, BenchJoin) {
     }
   };
 
-  NestedPools& pools = ThreadingContext2::Get().pools;
+  NestedPools& pools = ThreadingContext::Get().pools;
   // Use last package because the main thread has been pinned to it.
   const size_t pkg_idx = pools.NumPackages() - 1;
 

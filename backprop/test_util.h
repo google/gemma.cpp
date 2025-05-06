@@ -67,7 +67,7 @@ template <typename T>
 class WeightsWrapper {
  public:
   explicit WeightsWrapper(const ModelConfig& config) : weights_(config) {
-    hwy::ThreadPool& pool = ThreadingContext2::Get().pools.Pool();
+    hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
     weights_.AllocateForTest(owners_, pool);
   }
 

@@ -102,7 +102,7 @@ static size_t RoundUpToOddLines(size_t num, size_t line_bytes,
   return padded_num;
 }
 
-static size_t Stride(const Allocator2& allocator, const MatPtr& mat,
+static size_t Stride(const Allocator& allocator, const MatPtr& mat,
                      MatPadding padding) {
   switch (padding) {
     case MatPadding::kPacked:
@@ -119,7 +119,7 @@ static size_t Stride(const Allocator2& allocator, const MatPtr& mat,
 
 void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
   if (mat.GetType() == Type::kNUQ) padding = MatPadding::kPacked;
-  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+  const Allocator& allocator = ThreadingContext::Get().allocator;
   const size_t stride = Stride(allocator, mat, padding);
   const size_t num = mat.Rows() * stride;
   // `compress-inl` requires up to 2 BF16 vectors of padding. `MatPadding`

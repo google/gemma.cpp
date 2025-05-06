@@ -78,14 +78,14 @@ template <typename T>
 using AlignedClassPtr2 = std::unique_ptr<T, DeleterDtor2>;
 
 // Both allocation, binding, and row accessors depend on the sizes of memory
-// pages and cache lines. To avoid having to pass `Allocator2&` everywhere, we
+// pages and cache lines. To avoid having to pass `Allocator&` everywhere, we
 // wrap this in a singleton. A monostate requires explicit initialization,
 // which we prefer to avoid because there are many main() functions.
-class Allocator2 {
+class Allocator {
  public:
   // Must be called at least once before any other function. Not thread-safe,
   // hence only call this from the main thread.
-  Allocator2(const BoundedTopology& topology, bool enable_bind);
+  Allocator(const BoundedTopology& topology, bool enable_bind);
 
   // Bytes per cache line, or a reasonable guess if unknown. Used to choose
   // ranges such that there will be no false sharing.

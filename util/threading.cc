@@ -109,7 +109,7 @@ static Pinning& GetPinning() {
   return pinning;
 }
 
-static PoolPtr MakePool(const Allocator2& allocator, size_t num_workers,
+static PoolPtr MakePool(const Allocator& allocator, size_t num_workers,
                         std::optional<size_t> node = std::nullopt) {
   // `ThreadPool` expects the number of threads to create, which is one less
   // than the number of workers, but avoid underflow if zero.
@@ -136,7 +136,7 @@ static size_t DivideMaxAcross(const size_t max, const size_t instances) {
 }
 
 NestedPools::NestedPools(const BoundedTopology& topology,
-                         const Allocator2& allocator, size_t max_threads,
+                         const Allocator& allocator, size_t max_threads,
                          Tristate pin) {
   GetPinning().SetPolicy(pin);
   packages_.resize(topology.NumPackages());
@@ -175,7 +175,7 @@ static inline size_t CapIfNonZero(size_t num, size_t max_or_zero) {
 }
 
 NestedPools::Package::Package(const BoundedTopology& topology,
-                              const Allocator2& allocator, size_t pkg_idx,
+                              const Allocator& allocator, size_t pkg_idx,
                               size_t max_workers_per_package) {
   // Pre-allocate because elements are set concurrently.
   clusters_.resize(topology.NumClusters(pkg_idx));

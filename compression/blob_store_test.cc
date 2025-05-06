@@ -37,7 +37,7 @@ class BlobStoreTest : public testing::Test {};
 #endif
 
 void TestWithMapped(Tristate map) {
-  hwy::ThreadPool& pool = ThreadingContext2::Get().pools.Pool();
+  hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
 
   static const std::array<float, 4> kOriginalData = {-1, 0, 3.14159, 2.71828};
 
@@ -51,7 +51,7 @@ void TestWithMapped(Tristate map) {
 
   const std::string keyA("0123456789abcdef");  // max 16 characters
   const std::string keyB("q");
-  BlobWriter2 writer;
+  BlobWriter writer;
   writer.Add(keyA, "DATA", 5);
   writer.Add(keyB, buffer.data(), sizeof(buffer));
   writer.WriteAll(pool, path);
@@ -59,14 +59,14 @@ void TestWithMapped(Tristate map) {
 
   std::fill(buffer.begin(), buffer.end(), 0);
 
-  std::unique_ptr<BlobReader2> reader = BlobReader2::Make(path, map);
+  std::unique_ptr<BlobReader> reader = BlobReader::Make(path, map);
   HWY_ASSERT(reader);
 
   HWY_ASSERT_EQ(reader->Keys().size(), 2);
   HWY_ASSERT_STRING_EQ(reader->Keys()[0].c_str(), keyA.c_str());
   HWY_ASSERT_STRING_EQ(reader->Keys()[1].c_str(), keyB.c_str());
 
-  const BlobRange2* range = reader->Find(keyA);
+  const BlobRange* range = reader->Find(keyA);
   HWY_ASSERT(range);
   const uint64_t offsetA = range->offset;
   HWY_ASSERT_EQ(offsetA, 256);  // kBlobAlign
@@ -80,9 +80,9 @@ void TestWithMapped(Tristate map) {
   if (!reader->IsMapped()) {
     char str[5];
     reader->Enqueue(
-        BlobRange2{.offset = offsetA, .bytes = sizeof(str), .key_idx = 0}, str);
+        BlobRange{.offset = offsetA, .bytes = sizeof(str), .key_idx = 0}, str);
     reader->Enqueue(
-        BlobRange2{.offset = offsetB, .bytes = sizeof(buffer), .key_idx = 1},
+        BlobRange{.offset = offsetB, .bytes = sizeof(buffer), .key_idx = 1},
         buffer.data());
     reader->ReadAll(pool);
     HWY_ASSERT_STRING_EQ("DATA", str);
@@ -111,7 +111,7 @@ TEST(BlobStoreTest, TestReadWrite) {
 
 // Ensures padding works for any number of random-sized blobs.
 TEST(BlobStoreTest, TestNumBlobs) {
-  hwy::ThreadPool& pool = ThreadingContext2::Get().pools.Pool();
+  hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
   hwy::RandomState rng;
 
   for (size_t num_blobs = 1; num_blobs <= 512; ++num_blobs) {
@@ -121,7 +121,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT(fd > 0);
     const Path path(path_str);
 
-    BlobWriter2 writer;
+    BlobWriter writer;
     std::vector<std::string> keys;
     keys.reserve(num_blobs);
     std::vector<std::vector<uint8_t>> blobs;
@@ -144,13 +144,13 @@ TEST(BlobStoreTest, TestNumBlobs) {
     writer.WriteAll(pool, path);
 
     const Tristate map = Tristate::kFalse;
-    std::unique_ptr<BlobReader2> reader = BlobReader2::Make(path, map);
+    std::unique_ptr<BlobReader> reader = BlobReader::Make(path, map);
     HWY_ASSERT(reader);
     HWY_ASSERT_EQ(reader->Keys().size(), num_blobs);
     pool.Run(0, num_blobs, [&](uint64_t i, size_t /*thread*/) {
       HWY_ASSERT_STRING_EQ(reader->Keys()[i].c_str(),
                            std::to_string(i).c_str());
-      const BlobRange2* range = reader->Find(keys[i]);
+      const BlobRange* range = reader->Find(keys[i]);
       HWY_ASSERT(range);
       HWY_ASSERT_EQ(blobs[i].size(), range->bytes);
       HWY_ASSERT(reader->CallWithSpan<uint8_t>(

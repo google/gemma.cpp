@@ -386,7 +386,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+  const Allocator& allocator = ThreadingContext::Get().allocator;
 
   ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
                      ChooseWrapping(Model::GEMMA2_9B));

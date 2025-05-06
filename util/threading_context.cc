@@ -26,37 +26,37 @@ namespace gcpp {
 static ThreadingArgs s_args;
 // Cannot use magic static because that does not support `Invalidate`, hence
 // allocate manually.
-static std::unique_ptr<ThreadingContext2> s_ctx;
+static std::unique_ptr<ThreadingContext> s_ctx;
 static std::mutex s_ctx_mutex;
 
-/*static*/ void ThreadingContext2::SetArgs(const ThreadingArgs& args) {
+/*static*/ void ThreadingContext::SetArgs(const ThreadingArgs& args) {
   s_ctx_mutex.lock();
   HWY_ASSERT(!s_ctx);  // Ensure not already initialized, else this is too late.
   s_args = args;
   s_ctx_mutex.unlock();
 }
 
-/*static*/ bool ThreadingContext2::IsInitialized() {
+/*static*/ bool ThreadingContext::IsInitialized() {
   s_ctx_mutex.lock();
   const bool initialized = !!s_ctx;
   s_ctx_mutex.unlock();
   return initialized;
 }
 
-/*static*/ ThreadingContext2& ThreadingContext2::Get() {
+/*static*/ ThreadingContext& ThreadingContext::Get() {
   PROFILER_FUNC;
   // We do not bother with double-checked locking because it requires an
   // atomic pointer, but we prefer to use unique_ptr for simplicity. Also,
   // callers can cache the result and call less often.
   s_ctx_mutex.lock();
   if (HWY_UNLIKELY(!s_ctx)) {
-    s_ctx = std::make_unique<ThreadingContext2>(PrivateToken());
+    s_ctx = std::make_unique<ThreadingContext>(PrivateToken());
   }
   s_ctx_mutex.unlock();
   return *s_ctx;
 }
 
-/*static*/ void ThreadingContext2::ThreadHostileInvalidate() {
+/*static*/ void ThreadingContext::ThreadHostileInvalidate() {
   // Deliberately avoid taking the lock so that tsan can warn if this is
   // called concurrently with other calls to `Get`.
   s_ctx.reset();
@@ -64,7 +64,7 @@ static std::mutex s_ctx_mutex;
 
 // WARNING: called with `s_ctx_mutex` held. Calling `SetArgs` or `Get` would
 // deadlock.
-ThreadingContext2::ThreadingContext2(ThreadingContext2::PrivateToken)
+ThreadingContext::ThreadingContext(ThreadingContext::PrivateToken)
     : topology(BoundedSlice(s_args.skip_packages, s_args.max_packages),
                BoundedSlice(s_args.skip_clusters, s_args.max_clusters),
                BoundedSlice(s_args.skip_lps, s_args.max_lps)),

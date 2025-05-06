@@ -240,7 +240,7 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
     char* dt = ctime(&now);  // NOLINT
     char cpu100[100] = "unknown";
     (void)hwy::platform::GetCpuString(cpu100);
-    const ThreadingContext2& ctx = ThreadingContext2::Get();
+    const ThreadingContext& ctx = ThreadingContext::Get();
 
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n

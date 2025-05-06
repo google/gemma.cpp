@@ -808,7 +808,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
 // Each output row is the average of a 4x4 block of input rows
 template <typename T>
 RowVectorBatch<T> AvgPool4x4(RowVectorBatch<T>& input) {
-  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+  const Allocator& allocator = ThreadingContext::Get().allocator;
   const Extents2D extents = input.Extents();
   // Input validation
   HWY_DASSERT(extents.rows == 4096);  // 64 * 64 = 4096 input rows

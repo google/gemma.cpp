@@ -35,7 +35,7 @@
 namespace gcpp {
 
 // Aborts if any keys differ, because then blobs are not comparable.
-void CompareKeys(const BlobReader2& reader1, const BlobReader2& reader2) {
+void CompareKeys(const BlobReader& reader1, const BlobReader& reader2) {
   if (reader1.Keys().size() != reader2.Keys().size()) {
     HWY_ABORT("#keys mismatch: %zu vs %zu\n", reader1.Keys().size(),
               reader2.Keys().size());
@@ -49,13 +49,13 @@ void CompareKeys(const BlobReader2& reader1, const BlobReader2& reader2) {
 }
 
 using KeyVec = std::vector<std::string>;
-using RangeVec = std::vector<BlobRange2>;
+using RangeVec = std::vector<BlobRange>;
 
-RangeVec AllRanges(const KeyVec& keys, const BlobReader2& reader) {
+RangeVec AllRanges(const KeyVec& keys, const BlobReader& reader) {
   RangeVec ranges;
   ranges.reserve(keys.size());
   for (const std::string& key : keys) {
-    const BlobRange2* range = reader.Find(key);
+    const BlobRange* range = reader.Find(key);
     if (!range) {
       HWY_ABORT("Key %s not found, but was in KeyVec\n", key.c_str());
     }
@@ -82,7 +82,7 @@ void CompareRangeSizes(const KeyVec& keys, const RangeVec& ranges1,
 // Total amount to allocate for all blobs.
 size_t TotalBytes(const RangeVec& ranges) {
   size_t total_bytes = 0;
-  for (const BlobRange2& range : ranges) {
+  for (const BlobRange& range : ranges) {
     total_bytes += range.bytes;
   }
   return total_bytes;
@@ -95,7 +95,7 @@ using BlobVec = std::vector<ByteSpan>;  // in order of keys
 // Assigns pointers within the single allocation and updates `pos`.
 BlobVec ReserveMemory(const RangeVec& ranges, BytePtr& all_blobs, size_t& pos) {
   BlobVec blobs;
-  for (const BlobRange2& range : ranges) {
+  for (const BlobRange& range : ranges) {
     blobs.push_back(ByteSpan(all_blobs.get() + pos, range.bytes));
     pos += range.bytes;
   }
@@ -104,7 +104,7 @@ BlobVec ReserveMemory(const RangeVec& ranges, BytePtr& all_blobs, size_t& pos) {
 
 // Reads one set of blobs in parallel (helpful if in disk cache).
 // Aborts on error.
-void ReadBlobs(BlobReader2& reader, const RangeVec& ranges, BlobVec& blobs,
+void ReadBlobs(BlobReader& reader, const RangeVec& ranges, BlobVec& blobs,
                hwy::ThreadPool& pool) {
   HWY_ASSERT(reader.Keys().size() == blobs.size());
   HWY_ASSERT(ranges.size() == blobs.size());
@@ -116,7 +116,7 @@ void ReadBlobs(BlobReader2& reader, const RangeVec& ranges, BlobVec& blobs,
 }
 
 // Parallelizes ReadBlobs across (two) packages, if available.
-void ReadBothBlobs(BlobReader2& reader1, BlobReader2& reader2,
+void ReadBothBlobs(BlobReader& reader1, BlobReader& reader2,
                    const RangeVec& ranges1, const RangeVec& ranges2,
                    size_t total_bytes, BlobVec& blobs1, BlobVec& blobs2,
                    NestedPools& pools) {
@@ -215,8 +215,8 @@ void CompareBlobs(const KeyVec& keys, BlobVec& blobs1, BlobVec& blobs2,
 // Compares two sbs files, including blob order.
 void ReadAndCompareBlobs(const char* path1, const char* path2) {
   const Tristate map = Tristate::kFalse;
-  std::unique_ptr<BlobReader2> reader1 = BlobReader2::Make(Path(path1), map);
-  std::unique_ptr<BlobReader2> reader2 = BlobReader2::Make(Path(path2), map);
+  std::unique_ptr<BlobReader> reader1 = BlobReader::Make(Path(path1), map);
+  std::unique_ptr<BlobReader> reader2 = BlobReader::Make(Path(path2), map);
   if (!reader1 || !reader2) {
     HWY_ABORT(
         "Failed to create readers for files %s %s, see error messages above.\n",
@@ -235,7 +235,7 @@ void ReadAndCompareBlobs(const char* path1, const char* path2) {
   BlobVec blobs1 = ReserveMemory(ranges1, all_blobs, pos);
   BlobVec blobs2 = ReserveMemory(ranges2, all_blobs, pos);
 
-  NestedPools& pools = ThreadingContext2::Get().pools;
+  NestedPools& pools = ThreadingContext::Get().pools;
   ReadBothBlobs(*reader1, *reader2, ranges1, ranges2, total_bytes, blobs1,
                 blobs2, pools);
 

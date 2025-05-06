@@ -72,7 +72,7 @@ struct Activations {
   size_t cache_pos_size = 0;
 
   void Allocate(size_t batch_size, MatMulEnv* env) {
-    const Allocator2& allocator = env->ctx.allocator;
+    const Allocator& allocator = env->ctx.allocator;
 
     post_qk = layer_config.post_qk;
     const size_t model_dim = weights_config.model_dim;

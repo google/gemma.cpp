@@ -56,7 +56,7 @@ static void WarnIfExtra(const IFields::ReadResult& result, const char* name) {
 
 // Returns the serialized tokenizer (std::string is required for proto).
 // Reads it from a blob or from a separate file if pre-2025.
-static std::string ReadTokenizer(BlobReader2& reader,
+static std::string ReadTokenizer(BlobReader& reader,
                                  const Path& tokenizer_path) {
   std::string tokenizer;
   // Check prevents `CallWithSpan` from printing a warning.
@@ -107,7 +107,7 @@ class TypePrefix {
     }
   }
 
-  TypePrefix(const KeyVec& keys, const BlobReader2& reader) {
+  TypePrefix(const KeyVec& keys, const BlobReader& reader) {
     for (size_t key_idx = 0; key_idx < keys.size(); ++key_idx) {
       const std::string& key = keys[key_idx];
       const Type type = TypeFromChar(key[0]);
@@ -200,7 +200,7 @@ static int DeduceLayerTypes(const KeyVec& keys) {
 
 // `wrapping_override` is forwarded from the command line. For pre-2025 files
 // without `ModelConfig`, it is the only way to force PT.
-static ModelConfig ReadOrDeduceConfig(BlobReader2& reader,
+static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
                                       Tristate wrapping_override) {
   const TypePrefix type_prefix(reader.Keys(), reader);
   Type deduced_weight = Type::kUnknown;
@@ -244,7 +244,7 @@ static ModelConfig ReadOrDeduceConfig(BlobReader2& reader,
                      ChooseWrapping(config.model, wrapping_override));
 }
 
-static std::vector<float> ReadScales(BlobReader2& reader,
+static std::vector<float> ReadScales(BlobReader& reader,
                                      const ModelConfig& config) {
   std::vector<float> scales;
   // Check first to prevent `CallWithSpan` from printing a warning. This blob is
@@ -260,7 +260,7 @@ static std::vector<float> ReadScales(BlobReader2& reader,
 }
 
 // Single-file format: reads `MatPtr` from the blob; returns false if not found.
-bool ModelStore2::ReadMatPtrs(BlobReader2& reader) {
+bool ModelStore::ReadMatPtrs(BlobReader& reader) {
   // Check first to prevent `CallWithSpan` from printing a warning.
   if (!reader.Find(kMatPtrsName)) return false;
 
@@ -282,7 +282,7 @@ bool ModelStore2::ReadMatPtrs(BlobReader2& reader) {
 
           // Retrieve actual key index because a writer may have written other
           // blobs before the tensor data.
-          const BlobRange2* range = reader.Find(mat.Name());
+          const BlobRange* range = reader.Find(mat.Name());
           HWY_ASSERT(range);
           const size_t key_idx = range->key_idx;
           AddMatPtr(key_idx, mat);
@@ -302,7 +302,7 @@ bool ModelStore2::ReadMatPtrs(BlobReader2& reader) {
 }
 
 // Pre-2025 format: synthesizes `MatPtr` from the blob names if `!ReadMatPtrs`.
-void ModelStore2::CreateMatPtrs(BlobReader2& reader) {
+void ModelStore::CreateMatPtrs(BlobReader& reader) {
   const TensorInfoRegistry tensors(config_);
 
   const KeyVec& keys = reader.Keys();
@@ -329,7 +329,7 @@ void ModelStore2::CreateMatPtrs(BlobReader2& reader) {
   HWY_ASSERT(mat_ptrs_.size() == key_idx_.size());
 }
 
-ModelStore2::ModelStore2(BlobReader2& reader, const Path& tokenizer_path,
+ModelStore::ModelStore(BlobReader& reader, const Path& tokenizer_path,
                          Tristate wrapping)
     : config_(ReadOrDeduceConfig(reader, wrapping)),
       tokenizer_(ReadTokenizer(reader, tokenizer_path)) {
@@ -348,12 +348,12 @@ ModelStore2::ModelStore2(BlobReader2& reader, const Path& tokenizer_path,
   HWY_ASSERT(key_idx_.size() == mat_ptrs_.size());
 }
 
-ModelStore2::~ModelStore2() {
+ModelStore::~ModelStore() {
   // Sanity check: ensure all scales were consumed.
   HWY_ASSERT(scales_consumed_ == scales_.size());
 }
 
-const MatPtr* ModelStore2::FindMat(const char* name) const {
+const MatPtr* ModelStore::FindMat(const char* name) const {
   auto it = mat_idx_for_name_.find(name);
   if (it == mat_idx_for_name_.end()) return nullptr;
   const size_t mat_idx = it->second;
@@ -362,7 +362,7 @@ const MatPtr* ModelStore2::FindMat(const char* name) const {
   return file_mat;
 }
 
-bool ModelStore2::FindAndUpdateMatPtr(MatPtr& mat, size_t& key_idx) const {
+bool ModelStore::FindAndUpdateMatPtr(MatPtr& mat, size_t& key_idx) const {
   const MatPtr* file_mat = FindMat(mat.Name());
   if (!file_mat) return false;
   if (file_mat->Rows() != mat.Rows() || file_mat->Cols() != mat.Cols()) {
@@ -390,14 +390,14 @@ bool ModelStore2::FindAndUpdateMatPtr(MatPtr& mat, size_t& key_idx) const {
 }
 
 static void AddBlob(const char* name, const std::vector<uint32_t>& data,
-                    BlobWriter2& writer) {
+                    BlobWriter& writer) {
   HWY_ASSERT(!data.empty());
   writer.Add(name, data.data(), data.size() * sizeof(data[0]));
 }
 
 void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
                      const std::vector<uint32_t>& serialized_mat_ptrs,
-                     BlobWriter2& writer, hwy::ThreadPool& pool,
+                     BlobWriter& writer, hwy::ThreadPool& pool,
                      const Path& path) {
   HWY_ASSERT(config.model != Model::UNKNOWN);
   HWY_ASSERT(config.weight != Type::kUnknown);

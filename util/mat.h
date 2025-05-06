@@ -282,11 +282,11 @@ void ZeroInit(MatPtr& mat);
 void RandInit(MatPtr& mat, float stddev, std::mt19937& gen);
 
 // Sufficient value of `stride` to enable the "cyclic offsets" optimization. If
-// `Allocator2::ShouldBind()`, `Allocator2::QuantumBytes()` is typically 4KiB.
+// `Allocator::ShouldBind()`, `Allocator::QuantumBytes()` is typically 4KiB.
 // To avoid remote accesses, we would thus pad each row to that, which results
 // in 4K aliasing and/or cache conflict misses. `RowPtr` is able to prevent that
 // by pulling rows forward by a cyclic offset, which is still a multiple of the
-// cache line size. This requires an additional `Allocator2::QuantumBytes()` of
+// cache line size. This requires an additional `Allocator::QuantumBytes()` of
 // padding after also rounding up to that, which considerably increases size for
 // tall and skinny tensors.
 static inline size_t StrideForCyclicOffsets(size_t cols, size_t quantum) {
@@ -295,7 +295,7 @@ static inline size_t StrideForCyclicOffsets(size_t cols, size_t quantum) {
 // Constexpr version (upper bound) for allocating storage in MatMul.
 template <typename T>
 constexpr size_t MaxStrideForCyclicOffsets(size_t cols) {
-  constexpr size_t quantum = Allocator2::MaxQuantum<T>();
+  constexpr size_t quantum = Allocator::MaxQuantum<T>();
   return hwy::RoundUpTo(cols, quantum) + quantum;
 }
 
@@ -387,7 +387,7 @@ MatStorageT<T> MakePacked(const char* name, size_t rows, size_t cols) {
 template <typename T>
 class RowPtr {
  public:
-  RowPtr(const Allocator2& allocator, T* HWY_RESTRICT row0, size_t cols,
+  RowPtr(const Allocator& allocator, T* HWY_RESTRICT row0, size_t cols,
          size_t stride)
       : row0_(row0),
         stride_(stride),
@@ -414,7 +414,7 @@ class RowPtr {
     }
   }
 
-  RowPtr(const Allocator2& allocator, T* HWY_RESTRICT row0, size_t cols)
+  RowPtr(const Allocator& allocator, T* HWY_RESTRICT row0, size_t cols)
       : RowPtr(allocator, row0, cols, cols) {}
 
   T* HWY_RESTRICT Row(size_t r) const {
@@ -480,7 +480,7 @@ class RowVectorBatch {
   // we default to tightly packed rows (`stride = cols`).
   // WARNING: not all call sites support `stride` != cols.
   // TODO: once they do, remove stride and behave like AllocateAlignedRows here.
-  RowVectorBatch(const Allocator2& allocator, Extents2D extents,
+  RowVectorBatch(const Allocator& allocator, Extents2D extents,
                  size_t stride = 0)
       : extents_(extents) {
     if (stride == 0) {
@@ -529,14 +529,14 @@ class RowVectorBatch {
 };
 
 template <typename T>
-RowPtr<T> RowPtrFromBatch(const Allocator2& allocator,
+RowPtr<T> RowPtrFromBatch(const Allocator& allocator,
                           RowVectorBatch<T>& row_vectors) {
   return RowPtr<T>(allocator, row_vectors.All(), row_vectors.Cols(),
                    row_vectors.Stride());
 }
 
 template <typename T>
-RowVectorBatch<T> AllocateAlignedRows(const Allocator2& allocator,
+RowVectorBatch<T> AllocateAlignedRows(const Allocator& allocator,
                                       Extents2D extents) {
   return RowVectorBatch<T>(
       allocator, extents,

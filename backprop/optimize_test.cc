@@ -45,9 +45,9 @@ TEST(OptimizeTest, GradientDescent) {
   threading_args.max_packages = 1;
   threading_args.max_clusters = 1;
   threading_args.pin = Tristate::kFalse;
-  ThreadingContext2::SetArgs(threading_args);
-  MatMulEnv env(ThreadingContext2::Get());
-  const Allocator2& allocator = env.ctx.allocator;
+  ThreadingContext::SetArgs(threading_args);
+  MatMulEnv env(ThreadingContext::Get());
+  const Allocator& allocator = env.ctx.allocator;
   hwy::ThreadPool& pool = env.ctx.pools.Pool();
   std::mt19937 gen(42);
 

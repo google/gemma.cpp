@@ -909,7 +909,7 @@ class MMPerPackage {
   static constexpr size_t B_stride_max_ =
       MaxStrideForCyclicOffsets<BF16>(MMStorage::kMaxKC);
   static constexpr size_t B_storage_max_ =
-      kNR * B_stride_max_ + Allocator2::MaxQuantum<BF16>();
+      kNR * B_stride_max_ + Allocator::MaxQuantum<BF16>();
 
   // Granularity of `ForNP`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
@@ -1175,7 +1175,7 @@ class MMPerPackage {
   // Autotuning wrapper for `DoDecompressA`.
   template <typename TA>
   HWY_INLINE RowPtrBF DecompressA(const ConstMat<TA>& A) const {
-    const Allocator2& allocator = args_.env->ctx.allocator;
+    const Allocator& allocator = args_.env->ctx.allocator;
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
@@ -1316,7 +1316,7 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               const RowPtr<TC>& C) {
-  const Allocator2& allocator = env.ctx.allocator;
+  const Allocator& allocator = env.ctx.allocator;
   const size_t M = A.Extents().rows;
   const size_t K = A.Extents().cols;
   const size_t N = B.Extents().rows;

@@ -160,8 +160,8 @@ class Gemma {
 
  private:
   MatMulEnv& env_;
-  std::unique_ptr<BlobReader2> reader_;  // null for second ctor
-  ModelStore2 model_;
+  std::unique_ptr<BlobReader> reader_;  // null for second ctor
+  ModelStore model_;
   WeightsOwner weights_;
   GemmaChatTemplate chat_template_;
 };

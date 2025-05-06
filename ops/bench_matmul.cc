@@ -79,7 +79,7 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 // M = A rows, K = A cols, N = C cols.
 template <typename TA, typename TB = TA, typename TC = float>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
-  const Allocator2& allocator = env.ctx.allocator;
+  const Allocator& allocator = env.ctx.allocator;
   hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   if (env.print_config || env.print_measurement) {
     fprintf(stderr, "\n");
@@ -160,7 +160,7 @@ void BenchAllMatMul() {
     return;
   }
 
-  ThreadingContext2& ctx = ThreadingContext2::Get();
+  ThreadingContext& ctx = ThreadingContext::Get();
   fprintf(stderr, "BenchAllMatMul %s %s\n", ctx.topology.TopologyString(),
           ctx.pools.PinString());
 

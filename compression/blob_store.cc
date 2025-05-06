@@ -94,7 +94,7 @@ static_assert(sizeof(Header) == 16);
 // Additional data may be added only inside new blobs. Changes to the blob
 // contents or type should be handled by renaming keys.
 //
-// This class is for internal use by `BlobReader2` and `BlobWriter2`. Its
+// This class is for internal use by `BlobReader` and `BlobWriter`. Its
 // interface is more low-level: fixed-size keys instead of strings.
 class BlobStore {
   static constexpr uint32_t kMagic = 0x0A534253;  // SBS\n
@@ -182,7 +182,7 @@ class BlobStore {
                    padded_dir_bytes - 2 * num_blobs * kU128Bytes);
 
     // We already zero-initialized the directory padding;
-    // `BlobWriter2::WriteAll` takes care of padding after each blob via an
+    // `BlobWriter::WriteAll` takes care of padding after each blob via an
     // additional I/O.
     for (size_t i = 0; i < num_blobs; ++i) {
       HWY_ASSERT(blobs[i].data() != nullptr);
@@ -242,14 +242,14 @@ class BlobStore {
   void EnqueueWriteForHeaderAndDirectory(std::vector<BlobIO2>& writes) const {
     const size_t key_idx = 0;  // not actually associated with a key/blob
     writes.emplace_back(
-        BlobRange2{.offset = 0, .bytes = sizeof(header_), .key_idx = key_idx},
+        BlobRange{.offset = 0, .bytes = sizeof(header_), .key_idx = key_idx},
         // members are const and BlobIO2 requires non-const pointers, and they
         // are not modified by file writes.
         const_cast<Header*>(&header_));
     writes.emplace_back(
-        BlobRange2{.offset = sizeof(header_),
-                   .bytes = PaddedDirEnd(NumBlobs()) - sizeof(header_),
-                   .key_idx = key_idx},
+        BlobRange{.offset = sizeof(header_),
+                  .bytes = PaddedDirEnd(NumBlobs()) - sizeof(header_),
+                  .key_idx = key_idx},
         const_cast<hwy::uint128_t*>(directory_.data()));
   }
 
@@ -289,8 +289,8 @@ class BlobStore {
   std::vector<hwy::uint128_t> directory_;  // two per blob, see `SetRange`.
 };  // BlobStore
 
-BlobReader2::BlobReader2(std::unique_ptr<File> file, uint64_t file_bytes,
-                         const BlobStore& bs, BlobReader2::Mode mode)
+BlobReader::BlobReader(std::unique_ptr<File> file, uint64_t file_bytes,
+                       const BlobStore& bs, BlobReader::Mode mode)
     : file_(std::move(file)), file_bytes_(file_bytes), mode_(mode) {
   HWY_ASSERT(file_ && file_bytes_ != 0);
 
@@ -306,12 +306,12 @@ BlobReader2::BlobReader2(std::unique_ptr<File> file, uint64_t file_bytes,
     size_t bytes;
     bs.GetRange(key_idx, offset, bytes);
     ranges_.emplace_back(
-        BlobRange2{.offset = offset, .bytes = bytes, .key_idx = key_idx});
+        BlobRange{.offset = offset, .bytes = bytes, .key_idx = key_idx});
     key_idx_for_key_[keys_[key_idx]] = key_idx;
   }
 
   if (mode_ == Mode::kMap) {
-    const Allocator2& allocator = ThreadingContext2::Get().allocator;
+    const Allocator& allocator = ThreadingContext::Get().allocator;
     // Verify `kEndAlign` is an upper bound on the page size.
     if (kEndAlign % allocator.BasePageBytes() != 0) {
       HWY_ABORT("Please raise an issue about kEndAlign %zu %% page size %zu.",
@@ -338,12 +338,12 @@ BlobReader2::BlobReader2(std::unique_ptr<File> file, uint64_t file_bytes,
   }
 }
 
-void BlobReader2::Enqueue(const BlobRange2& range, void* data) {
+void BlobReader::Enqueue(const BlobRange& range, void* data) {
   // Debug-only because there may be many I/O requests (per row).
   if constexpr (HWY_IS_DEBUG_BUILD) {
     HWY_DASSERT(!IsMapped());
     HWY_DASSERT(range.offset != 0 && range.bytes != 0 && data != nullptr);
-    const BlobRange2& blob_range = Range(range.key_idx);
+    const BlobRange& blob_range = Range(range.key_idx);
     HWY_DASSERT(blob_range.End() <= file_bytes_);
     if (range.End() > blob_range.End()) {
       HWY_ABORT(
@@ -362,15 +362,15 @@ void BlobReader2::Enqueue(const BlobRange2& range, void* data) {
 //   TODO: use preadv for per-tensor batches of sysconf(_SC_IOV_MAX) / IOV_MAX.
 // - O_DIRECT seems undesirable because we do want to use the OS cache
 //   between consecutive runs.
-void BlobReader2::ReadAll(hwy::ThreadPool& pool) const {
+void BlobReader::ReadAll(hwy::ThreadPool& pool) const {
   PROFILER_ZONE("Startup.ReadAll");
   HWY_ASSERT(!IsMapped());
   // >5x speedup from parallel reads when cached.
   pool.Run(0, requests_.size(), [this](uint64_t i, size_t /*thread*/) {
-    const BlobRange2& range = requests_[i].range;
+    const BlobRange& range = requests_[i].range;
     const uint64_t end = range.End();
     const std::string& key = keys_[range.key_idx];
-    const BlobRange2& blob_range = Range(range.key_idx);
+    const BlobRange& blob_range = Range(range.key_idx);
     HWY_ASSERT(blob_range.End() <= file_bytes_);
     if (end > blob_range.End()) {
       HWY_ABORT(
@@ -387,11 +387,11 @@ void BlobReader2::ReadAll(hwy::ThreadPool& pool) const {
 }
 
 // Decides whether to read or map the file.
-static BlobReader2::Mode ChooseMode(uint64_t file_mib, Tristate map) {
-  const Allocator2& allocator = ThreadingContext2::Get().allocator;
+static BlobReader::Mode ChooseMode(uint64_t file_mib, Tristate map) {
+  const Allocator& allocator = ThreadingContext::Get().allocator;
   // User has explicitly requested a map or read via args.
-  if (map == Tristate::kTrue) return BlobReader2::Mode::kMap;
-  if (map == Tristate::kFalse) return BlobReader2::Mode::kRead;
+  if (map == Tristate::kTrue) return BlobReader::Mode::kMap;
+  if (map == Tristate::kFalse) return BlobReader::Mode::kRead;
   // Else: use heuristics to choose. Note that `FreeMiB` is generally low
   // because idle memory is used as cache, so do not use it to decide.
   const size_t total_mib = allocator.TotalMiB();
@@ -400,14 +400,14 @@ static BlobReader2::Mode ChooseMode(uint64_t file_mib, Tristate map) {
              static_cast<size_t>(file_mib), total_mib);
   }
   // Large fraction of total.
-  if (file_mib >= total_mib / 3) return BlobReader2::Mode::kMap;
+  if (file_mib >= total_mib / 3) return BlobReader::Mode::kMap;
   // Big enough that even parallel loading wouldn't be quick.
-  if (file_mib > 50 * 1024) return BlobReader2::Mode::kMap;
-  return BlobReader2::Mode::kRead;
+  if (file_mib > 50 * 1024) return BlobReader::Mode::kMap;
+  return BlobReader::Mode::kRead;
 }
 
-std::unique_ptr<BlobReader2> BlobReader2::Make(const Path& blob_path,
-                                               const Tristate map) {
+std::unique_ptr<BlobReader> BlobReader::Make(const Path& blob_path,
+                                             const Tristate map) {
   if (blob_path.Empty()) HWY_ABORT("No --weights specified.");
   std::unique_ptr<File> file = OpenFileOrNull(blob_path, "r");
   if (!file) HWY_ABORT("Failed to open file %s", blob_path.path.c_str());
@@ -417,10 +417,10 @@ std::unique_ptr<BlobReader2> BlobReader2::Make(const Path& blob_path,
   // Even if `kMap`, read the directory via the `kRead` mode for simplicity.
   BlobStore bs(*file);
   if (!bs.IsValid(file_bytes)) {
-    return std::unique_ptr<BlobReader2>();  // IsValid already printed a warning
+    return std::unique_ptr<BlobReader>();  // IsValid already printed a warning
   }
 
-  return std::unique_ptr<BlobReader2>(new BlobReader2(
+  return std::unique_ptr<BlobReader>(new BlobReader(
       std::move(file), file_bytes, bs, ChooseMode(file_bytes >> 20, map)));
 }
 
@@ -434,14 +434,13 @@ static void EnqueueChunks(size_t key_idx, uint64_t offset, uint64_t bytes,
     for (; offset <= end - kChunkBytes;
          offset += kChunkBytes, data += kChunkBytes) {
       writes.emplace_back(
-          BlobRange2{
-              .offset = offset, .bytes = kChunkBytes, .key_idx = key_idx},
+          BlobRange{.offset = offset, .bytes = kChunkBytes, .key_idx = key_idx},
           data);
     }
   }
   if (offset != end) {
     writes.emplace_back(
-        BlobRange2{.offset = offset, .bytes = end - offset, .key_idx = key_idx},
+        BlobRange{.offset = offset, .bytes = end - offset, .key_idx = key_idx},
         data);
   }
 }
@@ -472,7 +471,7 @@ static void EnqueueWritesForBlobs(const BlobStore& bs,
     if (padding != 0) {
       HWY_ASSERT(padding <= kBlobAlign);
       writes.emplace_back(
-          BlobRange2{
+          BlobRange{
               .offset = offset + bytes, .bytes = padding, .key_idx = key_idx},
           const_cast<uint8_t*>(kZeros));
     }
@@ -484,19 +483,19 @@ static void EnqueueWritesForBlobs(const BlobStore& bs,
     // remain alive until the last I/O is done.
     zeros.resize(padding);
     writes.emplace_back(
-        BlobRange2{.offset = file_end, .bytes = padding, .key_idx = 0},
+        BlobRange{.offset = file_end, .bytes = padding, .key_idx = 0},
         zeros.data());
   }
 }
 
-void BlobWriter2::Add(const std::string& key, const void* data, size_t bytes) {
+void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
   HWY_ASSERT(data != nullptr);
   HWY_ASSERT(bytes != 0);
   keys_.push_back(KeyFromString(key.c_str()));
   blobs_.emplace_back(static_cast<const uint8_t*>(data), bytes);
 }
 
-void BlobWriter2::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
+void BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
   const size_t num_blobs = keys_.size();
   HWY_ASSERT(num_blobs != 0);
   HWY_ASSERT(num_blobs == blobs_.size());
@@ -516,7 +515,7 @@ void BlobWriter2::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
 
   pool.Run(0, writes.size(),
            [this, &file, &writes](uint64_t i, size_t /*thread*/) {
-             const BlobRange2& range = writes[i].range;
+             const BlobRange& range = writes[i].range;
 
              if (!file->Write(writes[i].data, range.bytes, range.offset)) {
                const std::string& key = StringFromKey(keys_[range.key_idx]);
