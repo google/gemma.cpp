@@ -105,7 +105,7 @@ class BlobStore {
   // Returns the end of the directory, including padding, which is also the
   // start of the first payload. `num_blobs` is `NumBlobs()` if the header is
   // already available, otherwise the number of blobs to be written.
-  static constexpr size_t PaddedDirEnd(size_t num_blobs) {
+  static HWY_CXX17_CONSTEXPR size_t PaddedDirEnd(size_t num_blobs) {
     HWY_ASSERT(num_blobs < kMaxBlobs);
     // Per blob, a key and offset/size.
     return RoundUpToAlign(sizeof(Header) + 2 * kU128Bytes * num_blobs);

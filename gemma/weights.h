@@ -310,6 +310,11 @@ struct LayerWeightsPtrs {
   // after reading weights via `ForEachTensor`.
   // TODO: update compression/convert_weights to bake this in.
   void Reshape() {
+    // We only have/allocate this tensor for Gemma layers.
+    HWY_ASSERT(att_weights.HasPtr() ==
+               (layer_config.type == LayerAttentionType::kGemma));
+    if (!att_weights.HasPtr()) return;
+
     // NUQ is handled by a specialization in weights.cc.
     HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
 
@@ -318,7 +323,6 @@ struct LayerWeightsPtrs {
     const size_t qkv_dim = layer_config.qkv_dim;
 
     // Reshape [heads, model_dim, qkv_dim] to [model_dim, heads * qkv_dim].
-    HWY_ASSERT(att_weights.HasPtr());
     HWY_ASSERT(att_weights.GetType() == attn_vec_einsum_w.GetType());
     HWY_ASSERT(att_weights.Rows() == model_dim);
     HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
