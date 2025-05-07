@@ -22,37 +22,38 @@
 extern "C" {
 
 GEMMA_API GemmaContext* GemmaCreate(const char* tokenizer_path,
-                                    const char* model_type,
                                     const char* weights_path,
-                                    const char* weight_type, int max_length) {
+                                    int max_generated_tokens) {
   try {
-    GemmaContext* ctx = GemmaContext::Create(
-        tokenizer_path, model_type, weights_path, weight_type, max_length);
+    GemmaContext* ctx = GemmaContext::Create(tokenizer_path, weights_path,
+                                             max_generated_tokens);
     return ctx;
   } catch (...) {
     return nullptr;
   }
 }
 
-GEMMA_API void GemmaDestroy(GemmaContext* ctx) { delete ctx; }
+GEMMA_API void GemmaDestroy(GemmaContext* ctx) {
+  delete ctx;
+}
 
 GEMMA_API int GemmaGenerate(GemmaContext* ctx, const char* prompt, char* output,
-                            int max_length, GemmaTokenCallback callback,
+                            int max_output_chars, GemmaTokenCallback callback,
                             void* user_data) {
   if (!ctx) return -1;
-  return ctx->Generate(prompt, output, max_length, callback, user_data);
+  return ctx->Generate(prompt, output, max_output_chars, callback, user_data);
 }
 
 GEMMA_API int GemmaGenerateMultimodal(GemmaContext* ctx, const char* prompt,
                                       const void* image_data, int image_width,
                                       int image_height, char* output,
-                                      int max_length,
+                                      int max_output_chars,
                                       GemmaTokenCallback callback,
                                       void* user_data) {
   if (!ctx) return -1;
 
   return ctx->GenerateMultimodal(prompt, image_data, image_width, image_height,
-                                 output, max_length, callback, user_data);
+                                 output, max_output_chars, callback, user_data);
 }
 
 GEMMA_API int GemmaCountTokens(GemmaContext* ctx, const char* text) {
@@ -124,5 +125,15 @@ GEMMA_API int GemmaHasConversation(GemmaContext* ctx,
                                    const char* conversation_name) {
   if (!ctx || !conversation_name) return 0;
   return ctx->HasConversation(conversation_name) ? 1 : 0;
+}
+
+GEMMA_API const char* GemmaGetCurrentConversation(GemmaContext* ctx) {
+  if (!ctx) return nullptr;
+  return ctx->GetCurrentConversation();
+}
+
+GEMMA_API void GemmaSaveConversation(GemmaContext* ctx) {
+  if (!ctx) return;
+  ctx->SaveConversation();
 }
 }

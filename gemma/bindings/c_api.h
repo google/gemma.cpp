@@ -42,18 +42,16 @@ typedef bool (*GemmaTokenCallback)(const char* text, void* user_data);
 typedef void (*GemmaLogCallback)(const char* message, void* user_data);
 
 GEMMA_API GemmaContext* GemmaCreate(const char* tokenizer_path,
-                                    const char* model_type,
                                     const char* weights_path,
-                                    const char* weight_type, int max_length);
+                                    int max_generated_tokens);
 GEMMA_API void GemmaDestroy(GemmaContext* ctx);
 GEMMA_API int GemmaGenerate(GemmaContext* ctx, const char* prompt, char* output,
-                            int max_length, GemmaTokenCallback callback,
+                            int max_output_chars, GemmaTokenCallback callback,
                             void* user_data);
 GEMMA_API int GemmaGenerateMultimodal(GemmaContext* ctx, const char* prompt,
-                                      const void* image_data,  // Renamed param
-                                      int image_width,   // Added dimension
-                                      int image_height,  // Added dimension
-                                      char* output, int max_length,
+                                      const void* image_data, int image_width,
+                                      int image_height, char* output,
+                                      int max_output_chars,
                                       GemmaTokenCallback callback,
                                       void* user_data);
 
@@ -67,17 +65,19 @@ GEMMA_API void GemmaSetMultiturn(GemmaContext* ctx, int value);
 GEMMA_API void GemmaSetTemperature(GemmaContext* ctx, float value);
 GEMMA_API void GemmaSetTopK(GemmaContext* ctx, int value);
 GEMMA_API void GemmaSetDeterministic(GemmaContext* ctx, int value);
-GEMMA_API void GemmaResetConversation(GemmaContext* ctx);  // Renamed
+GEMMA_API void GemmaResetConversation(GemmaContext* ctx);
 
 // Conversation management functions (renamed)
-GEMMA_API int GemmaCreateConversation(
-    GemmaContext* ctx, const char* conversation_name);  // Renamed
-GEMMA_API int GemmaSwitchConversation(
-    GemmaContext* ctx, const char* conversation_name);  // Renamed
-GEMMA_API int GemmaDeleteConversation(
-    GemmaContext* ctx, const char* conversation_name);  // Renamed
+GEMMA_API int GemmaCreateConversation(GemmaContext* ctx,
+                                      const char* conversation_name);
+GEMMA_API int GemmaSwitchConversation(GemmaContext* ctx,
+                                      const char* conversation_name);
+GEMMA_API int GemmaDeleteConversation(GemmaContext* ctx,
+                                      const char* conversation_name);
 GEMMA_API int GemmaHasConversation(GemmaContext* ctx,
-                                   const char* conversation_name);  // Renamed
+                                   const char* conversation_name);
+GEMMA_API const char* GemmaGetCurrentConversation(GemmaContext* ctx);
+GEMMA_API void GemmaSaveConversation(GemmaContext* ctx);
 
 #ifdef __cplusplus
 }
