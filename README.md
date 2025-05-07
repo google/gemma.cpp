@@ -344,7 +344,7 @@ allows to contain the tokenizer (and the model type) directly. A tool to migrate
 from the multi-file format to the single-file format is available.
 
 ```sh
-compression/migrate_weights \
+io/migrate_weights \
   --tokenizer .../tokenizer.spm --weights .../gemma2-2b-it-sfp.sbs \
   --model gemma2-2b-it --output_weights .../gemma2-2b-it-sfp-single.sbs
 ```
