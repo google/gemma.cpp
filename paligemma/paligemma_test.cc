@@ -48,7 +48,7 @@ class PaliGemmaTest : public ::testing::Test {
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
   const Allocator& allocator = s_env->Env().ctx.allocator;
-  Gemma& gemma = *(s_env->GetGemma());
+  const Gemma& gemma = *(s_env->GetGemma());
   image_tokens_ = ImageTokens(
       allocator, Extents2D(gemma.GetModelConfig().vit_config.seq_len,
                            gemma.GetModelConfig().model_dim));
@@ -62,7 +62,7 @@ void PaliGemmaTest::InitVit(const std::string& path) {
 }
 
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
-  Gemma& model = *(s_env->GetGemma());
+  const Gemma& model = *(s_env->GetGemma());
   s_env->MutableGen().seed(0x12345678);
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,
                                   .gen = &s_env->MutableGen(),
@@ -103,17 +103,6 @@ void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
 
 TEST_F(PaliGemmaTest, General) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
-  static const char* kQA_3B_mix_224[][2] = {
-      {"describe this image",
-       "A large building with two towers stands tall on the water's edge."},
-      {"describe image briefly",
-       "A large building with two towers in the middle of a city."},
-      {"What kind of building is it?", "church"},
-      {"How many towers does the church have?", "2"},
-      {"detect water", "<loc1022> water"},
-      {"segment water", "<seg010> water"},
-      {"Which city is this more likely? Tokio or Zurich?", "zurich"},
-  };
   static const char* kQA_2_3B_pt_448[][2] = {
       {"describe this image", "The Grossmünster in Zürich"},
       {"describe image briefly", "The Grossmünster"},
@@ -123,10 +112,6 @@ TEST_F(PaliGemmaTest, General) {
   const char* (*qa)[2];
   size_t num;
   switch (s_env->GetGemma()->GetModelConfig().model) {
-    case Model::PALIGEMMA_224:
-      qa = kQA_3B_mix_224;
-      num = sizeof(kQA_3B_mix_224) / sizeof(kQA_3B_mix_224[0]);
-      break;
     case Model::PALIGEMMA2_3B_448:
       qa = kQA_2_3B_pt_448;
       num = sizeof(kQA_2_3B_pt_448) / sizeof(kQA_2_3B_pt_448[0]);

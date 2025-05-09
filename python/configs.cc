@@ -85,8 +85,6 @@ PYBIND11_MODULE(configs, py_module) {
 
   enum_<Model>(py_module, "Model")
       .value("UNKNOWN", Model::UNKNOWN)
-      .value("GEMMA_2B", Model::GEMMA_2B)
-      .value("GEMMA_7B", Model::GEMMA_7B)
       .value("GEMMA2_9B", Model::GEMMA2_9B)
       .value("GEMMA2_27B", Model::GEMMA2_27B)
       .value("GRIFFIN_2B", Model::GRIFFIN_2B)
@@ -96,7 +94,6 @@ PYBIND11_MODULE(configs, py_module) {
       .value("PALIGEMMA2_10B_224", Model::PALIGEMMA2_10B_224)
       .value("PALIGEMMA2_3B_448", Model::PALIGEMMA2_3B_448)
       .value("PALIGEMMA2_10B_448", Model::PALIGEMMA2_10B_448)
-      .value("PALIGEMMA_224", Model::PALIGEMMA_224)
   .value("PALIGEMMA_448", Model::PALIGEMMA_448);
 
   class_<TensorInfo>(py_module, "TensorInfo")

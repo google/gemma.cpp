@@ -157,17 +157,15 @@ std::vector<uint32_t> RepeatedAttentionWindowSizes(
 
 // Model variants: see configs.cc for details.
 enum class Model {
-  UNKNOWN,
-  GEMMA_2B,
-  GEMMA_7B,
-  GEMMA2_9B,
+  UNKNOWN = 0,
+  // 1 and 2 are obsolete.
+  GEMMA2_9B = 3,
   GEMMA2_27B,
   GRIFFIN_2B,
   GEMMA_TINY,  // for backprop/ only
   GEMMA2_2B,
-  PALIGEMMA_224,
-  PALIGEMMA_448,
-  PALIGEMMA2_3B_224,
+  // 8 and 9 are obsolete.
+  PALIGEMMA2_3B_224 = 10,
   PALIGEMMA2_3B_448,
   PALIGEMMA2_10B_224,
   PALIGEMMA2_10B_448,
@@ -190,8 +188,7 @@ static inline bool IsVLM(Model model) {
 }
 
 static inline bool IsPaliGemma(Model model) {
-  if (model == Model::PALIGEMMA_224 || model == Model::PALIGEMMA_448 ||
-      model == Model::PALIGEMMA2_3B_224 || model == Model::PALIGEMMA2_3B_448 ||
+  if (model == Model::PALIGEMMA2_3B_224 || model == Model::PALIGEMMA2_3B_448 ||
       model == Model::PALIGEMMA2_10B_224 ||
       model == Model::PALIGEMMA2_10B_448) {
     return true;
@@ -202,15 +199,19 @@ static inline bool IsPaliGemma(Model model) {
 // Visits every valid model enum, skipping `UNKNOWN` and `kSentinel`.
 template <class Func>
 void ForEachModel(const Func& func) {
-  for (size_t i = static_cast<size_t>(Model::UNKNOWN) + 1;
+  for (size_t i = static_cast<size_t>(Model::GEMMA2_9B);
        i < static_cast<size_t>(Model::kSentinel); ++i) {
+    if (i == 8 || i == 9) continue;
     func(static_cast<Model>(i));
   }
 }
 
 static inline bool EnumValid(Model model) {
+  // Valid for purposes of serialization, even if unknown.
+  if (model == Model::UNKNOWN) return true;
   const size_t i = static_cast<size_t>(model);
-  if (i < static_cast<size_t>(Model::kSentinel)) {
+  if (i >= static_cast<size_t>(Model::GEMMA2_9B) &&
+      i < static_cast<size_t>(Model::kSentinel) && i != 8 && i != 9) {
     return true;
   }
   return false;

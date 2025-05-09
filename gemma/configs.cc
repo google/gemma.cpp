@@ -137,57 +137,6 @@ static ModelConfig ConfigGemma2_2B() {
   return config;
 }
 
-static LayerConfig LayerConfigGemma7B(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.ff_hidden_dim = 16 * 3072 / 2;  // = 24576
-  config.heads = 16;
-  config.kv_heads = 16;
-  config.qkv_dim = 256;
-  return config;
-}
-
-static ModelConfig ConfigGemma7B() {
-  ModelConfig config = ConfigBaseGemmaV1();
-  config.display_name = "Gemma7B";
-  config.model = Model::GEMMA_7B;
-  config.model_dim = 3072;
-  config.vocab_size = kVocabSize;
-  config.seq_len = GEMMA_MAX_SEQLEN;
-  LayerConfig layer_config = LayerConfigGemma7B(config.model_dim);
-  config.num_layers = 28;
-  config.layer_configs = {config.num_layers, layer_config};
-  config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes =
-      FixedAttentionWindowSizes<28>(GEMMA_MAX_SEQLEN);
-  return config;
-}
-
-static LayerConfig LayerConfigGemma2B(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.ff_hidden_dim = 16 * 2048 / 2;  // = 16384
-  config.heads = 8;
-  config.kv_heads = 1;
-  config.qkv_dim = 256;
-  return config;
-}
-
-static ModelConfig ConfigGemma2B() {
-  ModelConfig config = ConfigBaseGemmaV1();
-  config.display_name = "Gemma2B";
-  config.model = Model::GEMMA_2B;
-  config.model_dim = 2048;
-  config.vocab_size = kVocabSize;
-  config.seq_len = GEMMA_MAX_SEQLEN;
-  LayerConfig layer_config = LayerConfigGemma2B(config.model_dim);
-  config.num_layers = 18;
-  config.layer_configs = {config.num_layers, layer_config};
-  config.attention_window_sizes =
-      FixedAttentionWindowSizes<18>(GEMMA_MAX_SEQLEN);
-  return config;
-}
-
 static LayerConfig LayerConfigGemmaTiny(size_t model_dim) {
   LayerConfig config;
   config.model_dim = model_dim;
@@ -204,7 +153,7 @@ static ModelConfig ConfigGemmaTiny() {
   config.model = Model::GEMMA_TINY;
   config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 32;
-  config.vocab_size = 16;
+  config.vocab_size = 32;  // at least two f32 vectors
   config.seq_len = 32;  // optimize_test requires more than 24
   LayerConfig layer_config = LayerConfigGemmaTiny(config.model_dim);
   config.num_layers = 2;
@@ -288,24 +237,6 @@ static void AddVitConfig(ModelConfig& config, size_t image_size = 224) {
   LayerConfig vit_layer_config = LayerConfigVit(config.vit_config.model_dim);
   config.vit_config.layer_configs = {27, vit_layer_config};
   config.vit_config.num_scales = 4 * config.vit_config.layer_configs.size();
-}
-
-static ModelConfig ConfigPaliGemma_224() {
-  ModelConfig config = ConfigGemma2B();
-  config.display_name = "PaliGemma_224";
-  config.model = Model::PALIGEMMA_224;
-  config.wrapping = PromptWrapping::PALIGEMMA;
-  AddVitConfig(config);
-  return config;
-}
-
-static ModelConfig ConfigPaliGemma_448() {
-  ModelConfig config = ConfigGemma2B();
-  config.display_name = "PaliGemma_448";
-  config.model = Model::PALIGEMMA_448;
-  config.wrapping = PromptWrapping::PALIGEMMA;
-  AddVitConfig(config, /*image_size=*/448);
-  return config;
 }
 
 ModelConfig GetVitConfig(const ModelConfig& config) {
@@ -547,10 +478,6 @@ static ModelConfig ConfigGemma3_27B() {
 
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
-    case Model::GEMMA_2B:
-      return ConfigGemma2B();
-    case Model::GEMMA_7B:
-      return ConfigGemma7B();
     case Model::GEMMA2_2B:
       return ConfigGemma2_2B();
     case Model::GEMMA2_9B:
@@ -561,10 +488,6 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGriffin2B();
     case Model::GEMMA_TINY:
       return ConfigGemmaTiny();
-    case Model::PALIGEMMA_224:
-      return ConfigPaliGemma_224();
-    case Model::PALIGEMMA_448:
-      return ConfigPaliGemma_448();
     case Model::PALIGEMMA2_3B_224:
       return ConfigPaliGemma2_3B_224();
     case Model::PALIGEMMA2_3B_448:
@@ -590,10 +513,6 @@ const char* ModelPrefix(Model model) {
   switch (model) {
     case Model::UNKNOWN:
       return "unknown";
-    case Model::GEMMA_2B:
-      return "2b";
-    case Model::GEMMA_7B:
-      return "7b";
     case Model::GEMMA2_2B:
       return "gemma2-2b";
     case Model::GEMMA2_9B:
@@ -604,10 +523,6 @@ const char* ModelPrefix(Model model) {
       return "gr2b";
     case Model::GEMMA_TINY:
       return "tiny";
-    case Model::PALIGEMMA_224:
-      return "paligemma-224";
-    case Model::PALIGEMMA_448:
-      return "paligemma-448";
     case Model::PALIGEMMA2_3B_224:
       return "paligemma2-3b-224";
     case Model::PALIGEMMA2_3B_448:
@@ -802,16 +717,12 @@ bool ModelConfig::OverwriteWithCanonical() {
 
 Model DeduceModel(size_t layers, int layer_types) {
   switch (layers) {
-    case 3:
+    case 2:
       return Model::GEMMA_TINY;
-    case 18:
-      return Model::GEMMA_2B;
     case 26:
       if (layer_types & kDeducedGriffin) return Model::GRIFFIN_2B;
       if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
       return Model::GEMMA2_2B;
-    case 28:
-      return Model::GEMMA_7B;
     case 34:
       return Model::GEMMA3_4B;
     case 42:
