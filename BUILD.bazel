@@ -415,6 +415,7 @@ cc_library(
     hdrs = ["gemma/kv_cache.h"],
     deps = [
         ":configs",
+        ":mat",
         "@highway//:hwy",
     ],
 )
@@ -425,6 +426,7 @@ cc_library(
     deps = [
         ":args",
         ":basics",
+        ":mat",
         ":ops",  # matmul.h
         "//io",
         "@highway//:hwy",

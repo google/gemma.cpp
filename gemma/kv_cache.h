@@ -19,33 +19,31 @@
 #include <stddef.h>
 
 #include "gemma/configs.h"  // ModelConfig
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"
 
 namespace gcpp {
 
 struct KVCache {
-  size_t seq_len = 0;  // = kSeqLen + prefill_tbatch_size
+  KVCache() = default;  // for std::vector.
+  KVCache(const ModelConfig& weights_config, size_t prefill_tbatch_size);
 
-  // seq_len * kGemmaLayers * kKVHeads * kQKVDim * 2
-  hwy::AlignedFreeUniquePtr<float[]> kv_cache;
+  // Returns a deep copy of the KVCache.
+  KVCache Copy(const ModelConfig& weights_config, size_t prefill_tbatch_size);
 
-  // (kConv1dWidth - 1) * kModelDim * kGriffinLayers
-  hwy::AlignedFreeUniquePtr<float[]> conv1d_cache;
-  size_t conv1d_cache_size = 0;
-
-  // kModelDim * kGriffinLayers
-  hwy::AlignedFreeUniquePtr<float[]> rglru_cache;
-  size_t rglru_cache_size = 0;
-
+  size_t griffin_layers = 0;
+  size_t griffin_conv1d_cols = 0;
+  // griffin_layers, griffin_conv1d_cols * config.model_dim
+  MatStorageT<float> conv1d_cache;
+  MatStorageT<float> rglru_cache;  // griffin_layers, config.model_dim
   // Zero-initialize the Griffin recurrent block cache, i.e. the conv1d_cache
   // and rglru_cache.
   void ZeroGriffinCache();
 
-  static KVCache Create(const ModelConfig& weights_config,
-                        size_t prefill_tbatch_size);
+  size_t seq_len = 0;  // = kSeqLen + prefill_tbatch_size
 
-  // Returns a deep copy of the KVCache.
-  KVCache Copy(const ModelConfig& weights_config, size_t prefill_tbatch_size);
+  // seq_len * kGemmaLayers * kKVHeads * kQKVDim * 2
+  hwy::AlignedFreeUniquePtr<float[]> kv_cache;
 };
 
 }  // namespace gcpp

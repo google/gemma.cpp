@@ -32,7 +32,6 @@
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
 #include "util/basics.h"  // TokenAndProb
-#include "util/mat.h"     // RowVectorBatch
 #include "util/threading_context.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports

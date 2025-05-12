@@ -164,11 +164,11 @@ constexpr bool IsNuqStream() {
 // weights for a model, but can be used for other purposes, such as types for
 // `WeightsPtrs`. When adding a new type that is supported, also
 // update gemma.cc, weights.*, and add instantiations/new_one.cc.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64, kU128 };
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
-static constexpr const char* kTypeStrings[] = {
-    "unknown", "f32", "bf16", "sfp", "nuq", "f64", "c64", "u128"};
+static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
+                                               "nuq",     "f64", "c64"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {0,
@@ -177,8 +177,7 @@ static constexpr size_t kTypeBits[] = {0,
                                        8 * sizeof(SfpStream),
                                        4 /* NuqStream, actually 4.5 */,
                                        8 * sizeof(double),
-                                       8 * sizeof(std::complex<double>),
-                                       8 * sizeof(hwy::uint128_t)};
+                                       8 * sizeof(std::complex<double>)};
 
 static inline bool EnumValid(Type type) {
   return static_cast<size_t>(type) < kNumTypes;
@@ -200,8 +199,6 @@ Type TypeEnum() {
     return Type::kF64;
   } else if constexpr (hwy::IsSame<Packed, std::complex<double>>()) {
     return Type::kC64;
-  } else if constexpr (hwy::IsSame<Packed, hwy::uint128_t>()) {
-    return Type::kU128;
   } else {
     HWY_DASSERT(false);
     return Type::kUnknown;

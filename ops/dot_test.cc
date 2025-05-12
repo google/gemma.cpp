@@ -26,6 +26,7 @@
 #include <cmath>
 #include <random>
 
+#include "compression/compress.h"
 #include "compression/shared.h"
 #include "util/allocator.h"
 #include "util/test_util.h"
@@ -999,7 +1000,6 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
-    const Allocator& allocator = gcpp::ThreadingContext::Get().allocator;
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);
@@ -1010,22 +1010,22 @@ struct TestShortDotsT {
       // GenerateWellConditionedInputs calls DecompressAndZeroPad to `raw*`,
       // hence they require padding to one vector.
       const size_t padded_num = hwy::RoundUpTo(num, N);
-      const size_t packed_num = CompressedArrayElements<Packed>(num);
-      RowVectorBatch<float> raw_w(allocator, Extents2D(1, padded_num));
-      RowVectorBatch<float> raw_v(allocator, Extents2D(1, padded_num));
-      RowVectorBatch<Packed> weights(allocator, Extents2D(1, packed_num));
-      const PackedSpan<Packed> w(weights.Batch(0), packed_num);
-      RowVectorBatch<T> vectors(allocator, Extents2D(1, num));
-      const PackedSpan<T> v(vectors.Batch(0), num);
+      MatStorageT<float> raw_w("raw_w", padded_num);
+      MatStorageT<float> raw_v("raw_v", padded_num);
+      MatStorageT<Packed> weights("weights", padded_num);
+      const PackedSpan<Packed> w = weights.Span();
+      MatStorageT<T> vectors("vectors", padded_num);
+      const PackedSpan<T> v = vectors.Span();
 
-      RowVectorBatch<double> bufs(allocator, Extents2D(1, num));
-      double* HWY_RESTRICT buf = bufs.Batch(0);
+      MatStorageT<double> bufs("bufs", num);
+      double* HWY_RESTRICT buf = bufs.Packed();
 
       for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
-        GenerateWellConditionedInputs(num, raw_w.All(), rng, w, work);
-        GenerateWellConditionedInputs(num, raw_v.All(), rng, v, work);
+        GenerateWellConditionedInputs(num, raw_w.Packed(), rng, w, work);
+        GenerateWellConditionedInputs(num, raw_v.Packed(), rng, v, work);
 
-        const float dot_exact = ExactDot(raw_w.All(), raw_v.All(), num, buf);
+        const float dot_exact =
+            ExactDot(raw_w.Packed(), raw_v.Packed(), num, buf);
         float dots[kVariants];
         for (size_t variant = 0; variant < kVariants; ++variant) {
           // Here Packed is not always float, so we must not call kDouble.
@@ -1106,7 +1106,6 @@ void TestAllDot() {
   threading_args.max_lps = kMaxWorkers - 1;
   ThreadingContext::SetArgs(threading_args);
   ThreadingContext& ctx = ThreadingContext::Get();
-  const Allocator& allocator = ctx.allocator;
 
   {  // ensure no profiler zones are active
     const hn::ScalableTag<float> df;
@@ -1118,16 +1117,17 @@ void TestAllDot() {
 
     constexpr size_t kReps = hn::AdjustedReps(40);
     const size_t num = 24 * 1024;
-    RowVectorBatch<float> a(allocator, Extents2D(kMaxWorkers, num));
-    RowVectorBatch<float> b(allocator, Extents2D(kMaxWorkers, num));
-    RowVectorBatch<double> bufs(allocator, Extents2D(kMaxWorkers, num));
+    MatStorageT<float> a("a", Extents2D(kMaxWorkers, num), MatPadding::kOdd);
+    MatStorageT<float> b("b", Extents2D(kMaxWorkers, num), MatPadding::kOdd);
+    MatStorageT<double> bufs("bufs", Extents2D(kMaxWorkers, num),
+                             MatPadding::kOdd);
     std::array<DotStats, kMaxWorkers> all_stats;
 
     ctx.pools.Cluster(0, 0).Run(
         0, kReps, [&](const uint32_t rep, size_t thread) {
-          float* HWY_RESTRICT pa = a.Batch(thread);
-          float* HWY_RESTRICT pb = b.Batch(thread);
-          double* HWY_RESTRICT buf = bufs.Batch(thread);
+          float* HWY_RESTRICT pa = a.Row(thread);
+          float* HWY_RESTRICT pb = b.Row(thread);
+          double* HWY_RESTRICT buf = bufs.Row(thread);
           const PackedSpan<const float> a_span(pa, num);
           DotStats& stats = all_stats[thread];
           const double cond =

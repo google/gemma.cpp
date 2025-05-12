@@ -23,106 +23,127 @@
 #include "ops/ops.h"         // CreateInvTimescale
 #include "util/allocator.h"  // Allocator
 #include "util/basics.h"     // BF16
-#include "util/mat.h"        // RowVectorBatch
+#include "util/mat.h"        // MatStorageT
 
 namespace gcpp {
 
 struct Activations {
-  explicit Activations(const ModelConfig& config)
+  Activations(const ModelConfig& config, size_t batch_size, MatMulEnv* env)
       : weights_config(config),
         layer_config(config.layer_configs[0]),
         seq_len(config.seq_len),
-        cache_pos_size(config.CachePosSize()) {}
+        cache_pos_size(config.CachePosSize()),
+        is_griffin(layer_config.type ==
+                   LayerAttentionType::kGriffinRecurrentBlock),
 
-  RowVectorBatch<float> x;  // input
-  RowVectorBatch<float> q;  // query, also KV if MHA.
-  RowVectorBatch<float> logits;
+        x("x", Extents2D(batch_size, config.model_dim), pad_),
+        q("q",
+          Extents2D(batch_size, layer_config.heads * layer_config.QStride()),
+          pad_),
+        logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
 
-  // Attention
-  RowVectorBatch<float> pre_att_rms_out;
-  RowVectorBatch<float> att;      // attention vector
-  RowVectorBatch<float> att_out;  // attention output
-  // Accumulation of attention outputs over heads
-  RowVectorBatch<float> att_sums;
+        pre_att_rms_out("pre_att_rms_out",
+                        Extents2D(batch_size, config.model_dim), pad_),
+        att("att", Extents2D(batch_size, layer_config.heads * config.seq_len),
+            pad_),
+        att_out(
+            "att_out",
+            Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim),
+            pad_),
+        att_sums("att_sums", Extents2D(batch_size, config.model_dim), pad_),
 
-  // Gated FFW
-  RowVectorBatch<BF16> bf_pre_ffw_rms_out;
-  RowVectorBatch<float> C1;
-  RowVectorBatch<float> C2;
-  RowVectorBatch<float> ffw_out;
+        pre_ffw_rms_out("pre_ffw_rms_out",
+                        Extents2D(batch_size, config.model_dim), pad_),
+        C1("C1", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
+        C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
+        ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
 
-  // Griffin
-  RowVectorBatch<float> griffin_x;
-  RowVectorBatch<float> griffin_y;
-  RowVectorBatch<float> griffin_gate_x;
-  RowVectorBatch<float> griffin_multiplier;
+        // No padding for Griffin because it does not always use Row().
+        griffin_x("griffin_x",
+                  is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
+                  MatPadding::kPacked),
+        griffin_y("griffin_y",
+                  is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
+                  MatPadding::kPacked),
+        griffin_gate_x(
+            "griffin_gate_x",
+            is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
+            MatPadding::kPacked),
+        griffin_multiplier(
+            "griffin_mul",
+            is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
+            MatPadding::kPacked),
 
-  // Rope
-  RowVectorBatch<float> inv_timescale;
-  RowVectorBatch<float> inv_timescale_global;
+        inv_timescale(
+            CreateInvTimescale(env->ctx.allocator, layer_config.qkv_dim,
+                               layer_config.post_qk == PostQKType::HalfRope)),
+        inv_timescale_global(CreateInvTimescale(
+            env->ctx.allocator, layer_config.qkv_dim,
+            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
 
-  // Dynamic because no default ctor and only initialized in `Allocate`.
-  MatMulEnv* env;
+        env(env) {
+    HWY_ASSERT(batch_size != 0);
+  }
 
-  PostQKType post_qk = PostQKType::Rope;
-  // And the config.
+  void SetBatchSize(size_t batch_size) {
+    x.OverrideRows(batch_size);
+    q.OverrideRows(batch_size);
+    logits.OverrideRows(batch_size);
+
+    pre_att_rms_out.OverrideRows(batch_size);
+    att.OverrideRows(batch_size);
+    att_out.OverrideRows(batch_size);
+    att_sums.OverrideRows(batch_size);
+
+    pre_ffw_rms_out.OverrideRows(batch_size);
+    C1.OverrideRows(batch_size);
+    C2.OverrideRows(batch_size);
+    ffw_out.OverrideRows(batch_size);
+
+    if (is_griffin) {
+      griffin_x.OverrideRows(batch_size);
+      griffin_y.OverrideRows(batch_size);
+      griffin_gate_x.OverrideRows(batch_size);
+      griffin_multiplier.OverrideRows(batch_size);
+    }
+  }
+
   const ModelConfig& weights_config;
   const LayerConfig& layer_config;
   size_t seq_len;
-  size_t cache_pos_size = 0;
+  size_t cache_pos_size = 0;  // TODO: after moving KVCache to MatStorageT.
+  bool is_griffin = false;
+  const Extents2D none_ = Extents2D();
+  const MatPadding pad_ = MatPadding::kOdd;
 
-  void Allocate(size_t batch_size, MatMulEnv* env) {
-    const Allocator& allocator = env->ctx.allocator;
+  MatStorageT<float> x;  // input
+  MatStorageT<float> q;  // query, also KV if MHA.
+  MatStorageT<float> logits;
 
-    post_qk = layer_config.post_qk;
-    const size_t model_dim = weights_config.model_dim;
-    const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
-    const size_t vocab_size = weights_config.vocab_size;
-    const size_t qkv_dim = layer_config.qkv_dim;
-    const size_t heads = layer_config.heads;
+  // Attention
+  MatStorageT<float> pre_att_rms_out;
+  MatStorageT<float> att;      // attention vector
+  MatStorageT<float> att_out;  // attention output
+  // Accumulation of attention outputs over heads
+  MatStorageT<float> att_sums;
 
-    x = RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-    q = RowVectorBatch<float>(
-        allocator, Extents2D(batch_size, heads * layer_config.QStride()));
-    if (vocab_size > 0) {
-      logits =
-          RowVectorBatch<float>(allocator, Extents2D(batch_size, vocab_size));
-    }
+  // Gated FFW
+  MatStorageT<BF16> pre_ffw_rms_out;
+  MatStorageT<float> C1;
+  MatStorageT<float> C2;
+  MatStorageT<float> ffw_out;
 
-    pre_att_rms_out =
-        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-    att = RowVectorBatch<float>(
-        allocator, Extents2D(batch_size, heads * weights_config.seq_len));
-    att_out = RowVectorBatch<float>(allocator,
-                                    Extents2D(batch_size, heads * qkv_dim));
-    att_sums =
-        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
+  // Griffin
+  MatStorageT<float> griffin_x;
+  MatStorageT<float> griffin_y;
+  MatStorageT<float> griffin_gate_x;
+  MatStorageT<float> griffin_multiplier;
 
-    bf_pre_ffw_rms_out =
-        RowVectorBatch<BF16>(allocator, Extents2D(batch_size, model_dim));
-    C1 = RowVectorBatch<float>(allocator, Extents2D(batch_size, ff_hidden_dim));
-    C2 = RowVectorBatch<float>(allocator, Extents2D(batch_size, ff_hidden_dim));
-    ffw_out =
-        RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
+  // Rope
+  MatStorageT<float> inv_timescale;
+  MatStorageT<float> inv_timescale_global;
 
-    if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
-      griffin_x =
-          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-      griffin_y =
-          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-      griffin_gate_x =
-          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-      griffin_multiplier =
-          RowVectorBatch<float>(allocator, Extents2D(batch_size, model_dim));
-    }
-
-    inv_timescale = CreateInvTimescale(allocator, layer_config.qkv_dim,
-                                       post_qk == PostQKType::HalfRope);
-    inv_timescale_global = CreateInvTimescale(
-        allocator, qkv_dim, post_qk == PostQKType::HalfRope, 1000000.0);
-
-    this->env = env;
-  }
+  MatMulEnv* env;
 };
 
 }  // namespace gcpp

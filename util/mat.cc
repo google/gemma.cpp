@@ -117,11 +117,11 @@ static size_t Stride(const Allocator& allocator, const MatPtr& mat,
   }
 }
 
-void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
-  if (mat.GetType() == Type::kNUQ) padding = MatPadding::kPacked;
+void MatOwner::AllocateFor(MatPtr& mat, const MatPadding padding) {
+  const bool is_nuq = mat.GetType() == Type::kNUQ;
   const Allocator& allocator = ThreadingContext::Get().allocator;
-  const size_t stride = Stride(allocator, mat, padding);
-  const size_t num = mat.Rows() * stride;
+  const size_t stride = is_nuq ? mat.Cols() : Stride(allocator, mat, padding);
+  const size_t num = is_nuq ? mat.PackedBytes() : mat.Rows() * stride;
   // `compress-inl` requires up to 2 BF16 vectors of padding. `MatPadding`
   // might not be enough, hence add extra. `MatT` is at least one byte, which
   // is half of BF16, hence adding `VectorBytes` *elements* is enough.

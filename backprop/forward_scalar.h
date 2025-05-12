@@ -219,12 +219,11 @@ void ApplyLayer(const LayerWeightsPtrs<T>& weights,
 
   RMSNormT(weights.pre_ffw_norm_scale.Packed(),
            activations.attention_out.Packed(),
-           activations.bf_pre_ffw_rms_out.Packed(), model_dim, num_tokens);
+           activations.pre_ffw_rms_out.Packed(), model_dim, num_tokens);
 
   MatMulT(weights.gating_einsum_w.Packed(),
-          activations.bf_pre_ffw_rms_out.Packed(),
-          activations.ffw_hidden.Packed(), ff_hidden_dim * 2, model_dim,
-          num_tokens);
+          activations.pre_ffw_rms_out.Packed(), activations.ffw_hidden.Packed(),
+          ff_hidden_dim * 2, model_dim, num_tokens);
 
   GatedGelu(activations.ffw_hidden.Packed(),
             activations.ffw_hidden_gated.Packed(), ff_hidden_dim, num_tokens);

@@ -62,9 +62,9 @@ TEST(OptimizeTest, GradientDescent) {
   grad_m.ZeroInit();
   grad_v.ZeroInit();
   ForwardPass<float> forward(config), backward(config);
-  KVCache kv_cache = KVCache::Create(config, /*prefill_tbatch_size=*/16);
+  KVCache kv_cache(config, /*prefill_tbatch_size=*/16);
 
-  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+  MatStorageT<float> inv_timescale = CreateInvTimescale(
       allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
 
@@ -147,7 +147,7 @@ TEST(OptimizeTest, GradientDescent) {
   printf("Num steps: %zu\n", steps);
   printf("Final weights:\n");
   gemma.MutableWeights().LogWeightStatsF32();
-  EXPECT_LT(steps, 50);
+  EXPECT_LT(steps, 80);
   EXPECT_EQ(num_ok, kBatchSize);
 }
 

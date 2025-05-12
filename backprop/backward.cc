@@ -42,7 +42,7 @@ void CrossEntropyLossBackwardPassT(const Prompt& prompt,
                                    const ForwardPass<float>& forward,
                                    ModelWeightsPtrs<float>& grad,
                                    ForwardPass<float>& backward,
-                                   RowVectorBatch<float>& inv_timescale,
+                                   MatStorageT<float>& inv_timescale,
                                    hwy::ThreadPool& pool) {
   CrossEntropyLossBackwardPassInl(prompt, weights, forward, grad, backward,
                                   inv_timescale, pool);
@@ -62,7 +62,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const ForwardPass<float>& forward,
                                   ModelWeightsPtrs<float>& grad,
                                   ForwardPass<float>& backward,
-                                  RowVectorBatch<float>& inv_timescale,
+                                  MatStorageT<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossBackwardPassT)(
       prompt, weights, forward, grad, backward, inv_timescale, pool);

@@ -38,8 +38,8 @@ struct ForwardLayer {
         att_post1(MakePacked<T>("att_post1", seq_len, config.model_dim)),
         attention_out(
             MakePacked<T>("attention_out", seq_len, config.model_dim)),
-        bf_pre_ffw_rms_out(
-            MakePacked<T>("bf_preFF_rms_out", seq_len, config.model_dim)),
+        pre_ffw_rms_out(
+            MakePacked<T>("preFF_rms_out", seq_len, config.model_dim)),
         ffw_hidden(
             MakePacked<T>("ffw_hidden", seq_len, config.ff_hidden_dim * 2)),
         ffw_hidden_gated(
@@ -53,7 +53,7 @@ struct ForwardLayer {
   MatStorageT<T> att_out;
   MatStorageT<T> att_post1;
   MatStorageT<T> attention_out;
-  MatStorageT<T> bf_pre_ffw_rms_out;
+  MatStorageT<T> pre_ffw_rms_out;
   MatStorageT<T> ffw_hidden;
   MatStorageT<T> ffw_hidden_gated;
   const LayerConfig& layer_config;

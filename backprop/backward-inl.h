@@ -170,8 +170,7 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
               const ForwardLayer<float>& forward,
               const float* HWY_RESTRICT next_layer_grad, size_t num_tokens,
               LayerWeightsPtrs<T>& grad, ForwardLayer<float>& backward,
-              const RowVectorBatch<float>& inv_timescale,
-              hwy::ThreadPool& pool) {
+              const MatStorageT<float>& inv_timescale, hwy::ThreadPool& pool) {
   const LayerConfig& config = weights.layer_config;
   const size_t model_dim = config.model_dim;
   const size_t qkv_dim = config.qkv_dim;
@@ -207,15 +206,14 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
     }
   }
 
-  MatMulVJP(weights.gating_einsum_w.Packed(),
-            forward.bf_pre_ffw_rms_out.Packed(), backward.ffw_hidden.Packed(),
-            model_dim, ff_hidden_dim * 2, num_tokens,
-            grad.gating_einsum_w.Packed(), backward.bf_pre_ffw_rms_out.Packed(),
-            pool);
-  RMSNormVJP(
-      weights.pre_ffw_norm_scale.Packed(), forward.attention_out.Packed(),
-      backward.bf_pre_ffw_rms_out.Packed(), model_dim, num_tokens,
-      grad.pre_ffw_norm_scale.Packed(), backward.attention_out.Packed(), pool);
+  MatMulVJP(weights.gating_einsum_w.Packed(), forward.pre_ffw_rms_out.Packed(),
+            backward.ffw_hidden.Packed(), model_dim, ff_hidden_dim * 2,
+            num_tokens, grad.gating_einsum_w.Packed(),
+            backward.pre_ffw_rms_out.Packed(), pool);
+  RMSNormVJP(weights.pre_ffw_norm_scale.Packed(),
+             forward.attention_out.Packed(), backward.pre_ffw_rms_out.Packed(),
+             model_dim, num_tokens, grad.pre_ffw_norm_scale.Packed(),
+             backward.attention_out.Packed(), pool);
 
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     AddFrom(next_layer_grad + pos * model_dim,
@@ -275,7 +273,7 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
   for (int pos = 0; pos < static_cast<int>(num_tokens); ++pos) {
     float* HWY_RESTRICT b_kv =
         backward.qkv.Packed() + (pos * (heads + 2) + heads) * qkv_dim;
-    Rope(b_kv, qkv_dim, inv_timescale.Const(), -pos);
+    Rope(b_kv, qkv_dim, inv_timescale.PackedScale1(), -pos);
   }
 
   for (size_t head = 0; head < heads; ++head) {
@@ -283,7 +281,7 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
       float* HWY_RESTRICT b_q =
           backward.qkv.Packed() + (pos * (heads + 2) + head) * qkv_dim;
       MulByConst(query_scale, b_q, qkv_dim);
-      Rope(b_q, qkv_dim, inv_timescale.Const(), -pos);
+      Rope(b_q, qkv_dim, inv_timescale.PackedScale1(), -pos);
     }
   }
 
@@ -342,7 +340,7 @@ void CrossEntropyLossBackwardPassInl(const Prompt& prompt,
                                      const ForwardPass<float>& forward,
                                      ModelWeightsPtrs<T>& grad,
                                      ForwardPass<float>& backward,
-                                     RowVectorBatch<float>& inv_timescale,
+                                     MatStorageT<float>& inv_timescale,
                                      hwy::ThreadPool& pool) {
   const ModelConfig& config = weights.weights_config;
   const size_t kVocabSize = config.vocab_size;

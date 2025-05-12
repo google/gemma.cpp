@@ -92,9 +92,8 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  RowVectorBatch<TC> c_slow_batch =
-      AllocateAlignedRows<TC>(allocator, C_extents);
-  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(allocator, C_extents);
+  MatStorageT<TC> c_slow_batch("c_slow_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> c_batch("c_batch", C_extents, MatPadding::kOdd);
 
   MatStorageT<float> add_storage("add", Extents2D(), MatPadding::kPacked);
   if (add) {
@@ -104,11 +103,9 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
   MatStorageT<TA> a = GenerateMat<TA>(A_extents, pool);
   MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
-  const auto A = ConstMatFromWeights(a);
-  const auto B = ConstMatFromWeights(b_trans);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C = RowPtrFromBatch(allocator, c_batch);
+  const RowPtr<TC> C = RowPtrFromMat(allocator, c_batch);
 
   // Fewer reps for large batch sizes, which take longer.
   const size_t num_samples = M < 32 ? 20 : 12;
@@ -118,7 +115,8 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(allocator, B_extents.rows, sizeof(TC), B, env.parallel);
+  BindB(allocator, B_extents.rows, sizeof(TC), ConstMat<TB>(b_trans),
+        env.parallel);
   BindC(allocator, A_extents.rows, C, env.parallel);
 
   Tristate use_spinning = Tristate::kDefault;
@@ -133,7 +131,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Until enough samples collected *after* autotuning finished:
   while (times.size() < num_samples) {
     const double t0 = hwy::platform::Now();
-    per_key = MatMul(A, B, add_row, env, C);
+    per_key = MatMul(a, b_trans, add_row, env, C);
     const double t1 = hwy::platform::Now();
     double elapsed = t1 - t0;
     keep += hwy::ConvertScalarTo<double>(C.Row(0)[hwy::Unpredictable1()]);

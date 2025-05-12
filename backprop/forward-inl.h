@@ -74,7 +74,7 @@ void ApplyRMSNorm(const WT* HWY_RESTRICT weights, const XT* HWY_RESTRICT x,
                   hwy::ThreadPool& pool) {
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     const size_t offset = pos * model_dim;
-    RMSNorm(x + offset, weights, output + offset, model_dim);
+    RMSNorm(x + offset, weights, 0, output + offset, model_dim);
   }
 }
 
@@ -100,7 +100,7 @@ template <typename T>
 void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
                        ForwardLayer<float>& activations, size_t num_tokens,
                        float* HWY_RESTRICT output,
-                       const RowVectorBatch<float>& inv_timescale,
+                       const MatStorageT<float>& inv_timescale,
                        hwy::ThreadPool& pool) {
   const LayerConfig& config = weights.layer_config;
   const size_t model_dim = config.model_dim;
@@ -125,14 +125,14 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     float* HWY_RESTRICT k =
         activations.qkv.Packed() + (pos * (kHeads + 2) + kHeads) * kQKVDim;
-    Rope(k, kQKVDim, inv_timescale.Const(), pos);
+    Rope(k, kQKVDim, inv_timescale.PackedScale1(), pos);
   }
   pool.Run(0, num_tasks, [&](const uint64_t task, size_t thread) HWY_ATTR {
     const size_t head = task % kHeads;
     const size_t pos = task / kHeads;
     float* HWY_RESTRICT q =
         activations.qkv.Packed() + (pos * (kHeads + 2) + head) * kQKVDim;
-    Rope(q, kQKVDim, inv_timescale.Const(), pos);
+    Rope(q, kQKVDim, inv_timescale.PackedScale1(), pos);
     MulByConst(query_scale, q, kQKVDim);
   });
 
@@ -194,11 +194,11 @@ void ApplyForwardLayer(const LayerWeightsPtrs<T>& weights,
 
   ApplyRMSNorm(weights.pre_ffw_norm_scale.Packed(),
                activations.attention_out.Packed(), model_dim, num_tokens,
-               activations.bf_pre_ffw_rms_out.Packed(), pool);
+               activations.pre_ffw_rms_out.Packed(), pool);
   const size_t kFFHiddenDim = config.ff_hidden_dim;
   for (size_t pos = 0; pos < num_tokens; ++pos) {
     MatVec(weights.gating_einsum_w, 0, kFFHiddenDim * 2, model_dim,
-           activations.bf_pre_ffw_rms_out.Packed() + pos * model_dim,
+           activations.pre_ffw_rms_out.Packed() + pos * model_dim,
            activations.ffw_hidden.Packed() + pos * kFFHiddenDim * 2, pool);
   }
   for (size_t pos = 0; pos < num_tokens; ++pos) {
@@ -233,7 +233,7 @@ float CrossEntropyLossForwardPass(const std::vector<int>& prompt,
                                   size_t context_size,
                                   const ModelWeightsPtrs<T>& weights,
                                   ForwardPass<float>& forward,
-                                  const RowVectorBatch<float>& inv_timescale,
+                                  const MatStorageT<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
   const ModelConfig& config = weights.weights_config;
   const size_t vocab_size = config.vocab_size;

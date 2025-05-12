@@ -28,7 +28,7 @@
 #include "compression/shared.h"  // Type
 #include "gemma/tensor_info.h"
 #include "io/fields.h"
-#include "util/allocator.h"
+#include "util/allocator.h"  // AlignedPtr2
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports
 #include "hwy/base.h"
@@ -47,7 +47,7 @@ class MatPtr : public IFields {
   // `name`: see `SetName`. Note that `stride` is initially `cols` and only
   // differs after deserializing, or calling `SetPtr`.
   MatPtr(const char* name, Type type, Extents2D extents)
-      : rows_(static_cast<uint32_t>(extents.rows)),
+      : private_rows_(static_cast<uint32_t>(extents.rows)),
         cols_(static_cast<uint32_t>(extents.cols)) {
     SetName(name);
     SetType(type);
@@ -74,7 +74,7 @@ class MatPtr : public IFields {
   bool HasPtr() const { return ptr_ != nullptr; }
 
   // A single row counts as packed because there is no padding between rows.
-  bool IsPacked() const { return (stride_ == cols_) || (rows_ == 1); }
+  bool IsPacked() const { return (stride_ == cols_) || (Rows() == 1); }
 
   const void* Packed() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
@@ -96,17 +96,17 @@ class MatPtr : public IFields {
   // Works for any kind of padding.
   template <typename T>
   T* MutableRowT(size_t row) const {
-    HWY_DASSERT(row < rows_);
+    HWY_DASSERT(row < Rows());
     return HWY_RCAST_ALIGNED(T*, ptr_) + row * stride_;
   }
   template <typename T>
   T* RowT(size_t row) {
-    HWY_DASSERT(row < rows_);
+    HWY_DASSERT(row < Rows());
     return HWY_RCAST_ALIGNED(T*, ptr_) + row * stride_;
   }
   template <typename T>
   const T* RowT(size_t row) const {
-    HWY_DASSERT(row < rows_);
+    HWY_DASSERT(row < Rows());
     return HWY_RCAST_ALIGNED(const T*, ptr_) + row * stride_;
   }
 
@@ -118,10 +118,22 @@ class MatPtr : public IFields {
     HWY_DASSERT(0 != element_bytes_ && element_bytes_ <= 16);
   }
 
-  bool IsEmpty() const { return rows_ == 0 || cols_ == 0; }
-  size_t Rows() const { return rows_; }
+  size_t Rows() const {
+    return override_rows_ == 0 ? private_rows_ : override_rows_;
+  }
   size_t Cols() const { return cols_; }
-  Extents2D Extents() const { return Extents2D(rows_, cols_); }
+  Extents2D Extents() const { return Extents2D(Rows(), cols_); }
+  bool IsEmpty() const { return Rows() == 0 || cols_ == 0; }
+  bool SameShape(const MatPtr& other) const {
+    return Rows() == other.Rows() && cols_ == other.cols_;
+  }
+  // Future calls to `Rows()` during this class' lifetime (not serialized)
+  // will return this value. Used to set the actual number of rows for
+  // activations preallocated according to the batch size.
+  void OverrideRows(size_t rows) {
+    HWY_ASSERT(rows <= private_rows_);
+    override_rows_ = static_cast<uint32_t>(rows);
+  }
 
   // Offset by which to advance pointers to the next row.
   size_t Stride() const { return stride_; }
@@ -150,7 +162,7 @@ class MatPtr : public IFields {
     visitor(type_);
     visitor(element_bytes_);
     visitor(num_elements_);
-    visitor(rows_);
+    visitor(private_rows_);
     visitor(cols_);
     visitor(scale_);
     visitor(stride_);
@@ -164,11 +176,11 @@ class MatPtr : public IFields {
   // padding, which is anyway not supported for NUQ because `compress-inl.h`
   // assumes a contiguous stream for its group indexing.
   static size_t ComputeNumElements(Type type, Extents2D extents) {
-    const size_t num_elements = extents.Area();
+    size_t num_elements = extents.Area();
     if (type == Type::kNUQ) {
       // `CompressedArrayElements` is a wrapper function that has the same
       // effect, but that requires a template argument, not `type`.
-      return NuqStream::PackedEnd(num_elements);
+      num_elements = NuqStream::PackedEnd(num_elements);
     }
     return num_elements;
   }
@@ -184,9 +196,10 @@ class MatPtr : public IFields {
   // Number of elements to store (including NUQ tables but not padding).
   // This a function of `type_` and `Extents()` and stored for compatibility.
   uint32_t num_elements_ = 0;
-  uint32_t rows_ = 0;
+  uint32_t private_rows_ = 0;  // Only access via Rows()! See OverrideRows().
   uint32_t cols_ = 0;
-  float scale_ = 1.0f;  // multiplier for each value, for MatMul.
+
+  uint32_t override_rows_ = 0;  // not serialized
 
   // Non-owning pointer, must not be freed. The underlying memory must outlive
   // this object.
@@ -194,6 +207,8 @@ class MatPtr : public IFields {
 
   // Offset by which to advance pointers to the next row, >= `cols_`.
   uint32_t stride_;
+
+  float scale_ = 1.0f;  // multiplier for each value, for MatMul.
 };
 
 // Non-type erased version of `MatPtr`. Although `MatPtr` also provides
@@ -202,6 +217,8 @@ class MatPtr : public IFields {
 template <typename MatT>
 class MatPtrT : public MatPtr {
  public:
+  using T = MatT;
+
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}
@@ -253,26 +270,67 @@ class MatPtrT : public MatPtr {
 };
 
 // Calls `func` with a dynamic_cast of `MatPtr` to `MatPtrT<T>`, plus the
-// optional `args`. Currently unused but may be used after we move toward
-// type-erased `WeightsPtrs`.
+// optional `args`. This supports all types used as weights, which excludes
+// `kC64` and `kF64` (used only in `backprop/`).
 template <class Func, typename... Args>
-decltype(auto) CallUpcasted(Type type, MatPtr* base, const Func& func,
+decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                             Args&&... args) {
-  HWY_ASSERT(base != nullptr);
-  if (type == Type::kF32) {
-    return func(dynamic_cast<MatPtrT<float>*>(base),
+  if (base->GetType() == Type::kF32) {
+    return func(dynamic_cast<const MatPtrT<float>*>(base),
                 std::forward<Args>(args)...);
-  } else if (type == Type::kBF16) {
-    return func(dynamic_cast<MatPtrT<BF16>*>(base),
+  } else if (base->GetType() == Type::kBF16) {
+    return func(dynamic_cast<const MatPtrT<BF16>*>(base),
                 std::forward<Args>(args)...);
-  } else if (type == Type::kSFP) {
-    return func(dynamic_cast<MatPtrT<SfpStream>*>(base),
+  } else if (base->GetType() == Type::kSFP) {
+    return func(dynamic_cast<const MatPtrT<SfpStream>*>(base),
                 std::forward<Args>(args)...);
-  } else if (type == Type::kNUQ) {
-    return func(dynamic_cast<MatPtrT<NuqStream>*>(base),
+  } else if (base->GetType() == Type::kNUQ) {
+    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base),
                 std::forward<Args>(args)...);
   } else {
-    HWY_ABORT("Type %d unknown.", static_cast<int>(type));
+    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+  }
+}
+
+// Calls `func(base1, base2, args...)`.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
+                                const Func& func, Args&&... args) {
+  HWY_ASSERT(base1->GetType() == base2->GetType());
+  if (base1->GetType() == Type::kF32) {
+    return func(dynamic_cast<const MatPtrT<float>*>(base1),
+                dynamic_cast<const MatPtrT<float>*>(base2),
+                std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kBF16) {
+    return func(dynamic_cast<const MatPtrT<BF16>*>(base1),
+                dynamic_cast<const MatPtrT<BF16>*>(base2),
+                std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kSFP) {
+    return func(dynamic_cast<const MatPtrT<SfpStream>*>(base1),
+                dynamic_cast<const MatPtrT<SfpStream>*>(base2),
+                std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kNUQ) {
+    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base1),
+                dynamic_cast<const MatPtrT<NuqStream>*>(base2),
+                std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));
+  }
+}
+
+// Like CallUpcasted, but only for activation types: kBF16 and kF32.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
+                                      Args&&... args) {
+  HWY_ASSERT(base != nullptr);
+  if (base->GetType() == Type::kF32) {
+    return func(dynamic_cast<const MatPtrT<float>*>(base),
+                std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kBF16) {
+    return func(dynamic_cast<const MatPtrT<BF16>*>(base),
+                std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
   }
 }
 
@@ -362,8 +420,11 @@ class MatStorageT : public MatPtrT<MatT> {
  public:
   MatStorageT(const char* name, Extents2D extents, MatPadding padding)
       : MatPtrT<MatT>(name, extents) {
-    owner_.AllocateFor(*this, padding);
+    if (extents.Area() != 0) owner_.AllocateFor(*this, padding);
   }
+  // Shorthand for 1D tensors: packing does not help, hence `kPacked`.
+  MatStorageT(const char* name, size_t cols)
+      : MatStorageT(name, Extents2D(1, cols), MatPadding::kPacked) {}
   ~MatStorageT() = default;
 
   // Allow move for backprop/activations.
@@ -467,81 +528,14 @@ using RowPtrBF = RowPtr<BF16>;
 using RowPtrF = RowPtr<float>;
 using RowPtrD = RowPtr<double>;
 
-// Owns dynamically-allocated aligned memory for a batch of row vectors.
-// This can be seen as a (batch_size x cols) matrix. Unlike `RowPtr`, this owns
-// the memory. Unlike `MatPtr`, this lacks metadata.
-// TODO: replace with `MatStorageT`.
+// TODO: remove allocator arg once kCyclic is removed.
 template <typename T>
-class RowVectorBatch {
- public:
-  // Default ctor for Activations ctor.
-  RowVectorBatch() = default;
-  // Main ctor, called from Activations::Allocate. If `stride` = 0, the default,
-  // we default to tightly packed rows (`stride = cols`).
-  // WARNING: not all call sites support `stride` != cols.
-  // TODO: once they do, remove stride and behave like AllocateAlignedRows here.
-  RowVectorBatch(const Allocator& allocator, Extents2D extents,
-                 size_t stride = 0)
-      : extents_(extents) {
-    if (stride == 0) {
-      stride_ = extents_.cols;
-    } else {
-      HWY_ASSERT(stride >= extents_.cols);
-      stride_ = stride;
-    }
-    // Allow binding the entire matrix.
-    const size_t padded = hwy::RoundUpTo(extents_.rows * stride_,
-                                         allocator.QuantumBytes() / sizeof(T));
-    mem_ = allocator.Alloc<T>(padded);
-  }
-
-  // Move-only
-  RowVectorBatch(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch& operator=(RowVectorBatch&) noexcept = delete;
-  RowVectorBatch(RowVectorBatch&&) noexcept = default;
-  RowVectorBatch& operator=(RowVectorBatch&&) noexcept = default;
-
-  size_t BatchSize() const { return extents_.rows; }
-  size_t Cols() const { return extents_.cols; }
-  size_t Stride() const { return stride_; }
-  Extents2D Extents() const { return extents_; }
-
-  // Returns the given row vector of length `Cols()`.
-  T* Batch(size_t batch_idx) {
-    HWY_DASSERT(batch_idx < BatchSize());
-    return mem_.get() + batch_idx * stride_;
-  }
-  const T* Batch(size_t batch_idx) const {
-    HWY_DASSERT(batch_idx < BatchSize());
-    return mem_.get() + batch_idx * stride_;
-  }
-
-  // For MatMul or other operations that process the entire batch at once.
-  // TODO: remove once we only use Mat.
-  T* All() { return mem_.get(); }
-  const T* Const() const { return mem_.get(); }
-  size_t NumBytes() const { return BatchSize() * stride_ * sizeof(T); }
-
- private:
-  AlignedPtr2<T[]> mem_;
-  Extents2D extents_;
-  size_t stride_;
-};
-
-template <typename T>
-RowPtr<T> RowPtrFromBatch(const Allocator& allocator,
-                          RowVectorBatch<T>& row_vectors) {
-  return RowPtr<T>(allocator, row_vectors.All(), row_vectors.Cols(),
-                   row_vectors.Stride());
-}
-
-template <typename T>
-RowVectorBatch<T> AllocateAlignedRows(const Allocator& allocator,
-                                      Extents2D extents) {
-  return RowVectorBatch<T>(
-      allocator, extents,
-      StrideForCyclicOffsets(extents.cols,
-                             allocator.QuantumBytes() / sizeof(T)));
+RowPtr<T> RowPtrFromMat(const Allocator& allocator,
+                        const MatPtrT<T>& row_vectors) {
+  // RowPtr is non-const for MatMul C, but is also used for A which is const.
+  // Callers are responsible for checking their usage of RowPtr.
+  return RowPtr<T>(allocator, const_cast<T*>(row_vectors.Row(0)),
+                   row_vectors.Cols(), row_vectors.Stride());
 }
 
 }  // namespace gcpp

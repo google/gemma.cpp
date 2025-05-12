@@ -693,7 +693,6 @@ class MMScaleDemoteAdd {
     // We manually unroll 2x for higher IPC in batch=1.
     size_t col_c = range_nc.begin();
     if (HWY_LIKELY(range_nc.Num() >= 2 * ND)) {
-      HWY_UNROLL(1)
       for (; col_c <= range_nc.end() - 2 * ND; col_c += 2 * ND) {
         VD a0, a1;  // unused if !kAdd
         if constexpr (kAdd) {
@@ -860,9 +859,8 @@ class MMScaleDemoteAdd {
 class MMPerPackage {
  public:
   template <typename TA>
-  MMPerPackage(const ConstMat<TA>& A, const MMArgs& args,
-               const MMConfig& config, size_t pkg_idx,
-               const IndexRange& range_np)
+  MMPerPackage(const MatPtrT<TA>& A, const MMArgs& args, const MMConfig& config,
+               size_t pkg_idx, const IndexRange& range_np)
       : args_(args),
         pkg_idx_(pkg_idx),
         // May be overwritten with a view of A, if already BF16.
@@ -1114,12 +1112,12 @@ class MMPerPackage {
         });
   }
 
-  // Decompresses all `M x K` from `A` into `pkg_A`. Assumes `TA` is a seekable
+  // Decompresses all `M x K` from `A` into `A_`. Assumes `TA` is a seekable
   // type (i.e., not NUQ) so we can use pointer arithmetic.
   template <typename TA>
-  HWY_NOINLINE void DoDecompressA(const ConstMat<TA>& A, MMParA par_a) const {
-    const IndexRange all_M(0, A.extents.rows);
-    const IndexRange all_K(0, A.extents.cols);
+  HWY_NOINLINE void DoDecompressA(const MatPtrT<TA>& A, MMParA par_a) const {
+    const IndexRange all_M(0, A.Rows());
+    const IndexRange all_K(0, A.Cols());
     HWY_DASSERT(all_K.Num() == A_.Cols());
 
     const hn::ScalableTag<BF16> dbf;
@@ -1131,10 +1129,9 @@ class MMPerPackage {
       const size_t col0 = range_K.begin();
       const size_t cols = range_K.Num();
       // otherwise, padding overwrites neighbors
-      HWY_DASSERT(cols % NBF == 0 || cols == A.extents.cols);
+      HWY_DASSERT(cols % NBF == 0 || cols == A.Cols());
       for (size_t row_a : range_M) {
-        const PackedSpan<const TA> from =
-            MakeSpan(A.ptr + A.Row(row_a) + col0, cols);
+        const PackedSpan<const TA> from = MakeSpan(A.Row(row_a) + col0, cols);
         BF16* HWY_RESTRICT to = A_.Row(row_a) + col0;
         DecompressAndZeroPad(dbf, from, 0, to, cols);
         // Verify that we zero-padded.
@@ -1174,18 +1171,14 @@ class MMPerPackage {
 
   // Autotuning wrapper for `DoDecompressA`.
   template <typename TA>
-  HWY_INLINE RowPtrBF DecompressA(const ConstMat<TA>& A) const {
+  HWY_INLINE RowPtrBF DecompressA(const MatPtrT<TA>& A) const {
     const Allocator& allocator = args_.env->ctx.allocator;
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
       // Only if no zero-padding required.
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
-      if (HWY_LIKELY(A.extents.cols % NBF == 0)) {
-        const BF16* pos = A.ptr + A.Row(0);
-        return RowPtrBF(allocator, const_cast<BF16*>(pos), A.extents.cols,
-                        A.Stride());
-      }
+      if (HWY_LIKELY(A.Cols() % NBF == 0)) return RowPtrFromMat(allocator, A);
     }
 
     if (HWY_LIKELY(autotune.Best())) {
@@ -1196,7 +1189,7 @@ class MMPerPackage {
     // First call: generate candidates.
     if (HWY_UNLIKELY(!autotune.HasCandidates())) {
       std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4};
-      if (A.extents.rows == 1) {
+      if (A.Rows() == 1) {
         candidates.push_back(MMParA::kNone);
       } else {
         candidates.push_back(MMParA::kM);
@@ -1247,7 +1240,7 @@ class MMPerPackage {
 
   const MMArgs args_;  // copy for locality
   const size_t pkg_idx_;
-  RowPtrBF A_;  // points into A or storage.
+  RowPtrBF A_;  // points into A or pkg_A.
 
   const IndexRange range_np_;
   // From MMConfig:
@@ -1276,9 +1269,8 @@ struct MMImpl {
   // Called from `MatMul` from two places: either with the next autotune config,
   // or with the best config.
   template <typename TA, typename TB, typename TC>
-  static HWY_NOINLINE void DoMatMul(const ConstMat<TA>& A,
-                                    const ConstMat<TB>& B, const RowPtr<TC>& C,
-                                    const MMArgs& args,
+  static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
+                                    const RowPtr<TC>& C, const MMArgs& args,
                                     const MMConfig& config) {
     MMZone matmul_zone;
     matmul_zone.MaybeEnter("MM.DoMatMul", args);
@@ -1313,7 +1305,7 @@ struct MMImpl {
 //
 // Uses considerable stack space: at least 40 KiB per thread.
 template <typename TA, typename TB, typename TC>
-HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
+HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               const RowPtr<TC>& C) {
   const Allocator& allocator = env.ctx.allocator;
@@ -1340,7 +1332,7 @@ HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
   MMPerKey& per_key = env.per_key[index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
-  const MMArgs args(env, per_key, static_cast<double>(A.scale) * B.scale, add,
+  const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.scale, add,
                     env.storage.Partial());
   if (HWY_LIKELY(tuner.Best())) {
     MMImpl::DoMatMul(A, B, C, args, *tuner.Best());
@@ -1394,6 +1386,13 @@ HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
   }
 
   return &per_key;
+}
+
+template <typename TA, typename TB, typename TC>
+HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
+                              const float* HWY_RESTRICT add, MatMulEnv& env,
+                              const RowPtr<TC>& C) {
+  return MatMul(A, ConstMat<TB>(B), add, env, C);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

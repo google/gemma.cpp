@@ -38,7 +38,7 @@ namespace HWY_NAMESPACE {
 float CrossEntropyLossForwardPassT(const Prompt& prompt,
                                    const ModelWeightsPtrs<float>& weights,
                                    ForwardPass<float>& forward,
-                                   RowVectorBatch<float>& inv_timescale,
+                                   MatStorageT<float>& inv_timescale,
                                    hwy::ThreadPool& pool) {
   return CrossEntropyLossForwardPass(prompt.tokens, prompt.context_size,
                                      weights, forward, inv_timescale, pool);
@@ -56,7 +56,7 @@ HWY_EXPORT(CrossEntropyLossForwardPassT);
 float CrossEntropyLossForwardPass(const Prompt& prompt,
                                   const ModelWeightsPtrs<float>& weights,
                                   ForwardPass<float>& forward,
-                                  RowVectorBatch<float>& inv_timescale,
+                                  MatStorageT<float>& inv_timescale,
                                   hwy::ThreadPool& pool) {
   return HWY_DYNAMIC_DISPATCH(CrossEntropyLossForwardPassT)(
       prompt, weights, forward, inv_timescale, pool);

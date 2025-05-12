@@ -202,7 +202,7 @@ void TestEndToEnd() {
   ReverseSequenceSampler training_task({0, 0, 1, 1});
   std::vector<Prompt> batch = training_task.SampleBatch(3, gen);
 
-  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+  MatStorageT<float> inv_timescale = CreateInvTimescale(
       ThreadingContext::Get().allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   for (const Prompt& prompt : batch) {

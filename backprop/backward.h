@@ -29,7 +29,7 @@ void CrossEntropyLossBackwardPass(const Prompt& prompt,
                                   const ForwardPass<float>& forward,
                                   ModelWeightsPtrs<float>& grad,
                                   ForwardPass<float>& backward,
-                                  RowVectorBatch<float>& inv_timescale,
+                                  MatStorageT<float>& inv_timescale,
                                   hwy::ThreadPool& pool);
 
 }  // namespace gcpp

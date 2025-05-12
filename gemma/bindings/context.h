@@ -188,8 +188,8 @@ class GemmaContext {
       // rewind to initial state.
       active_conversation->abs_pos = 0;
       // Replace the cache within the current ConversationData object
-      active_conversation->kv_cache = std::make_unique<KVCache>(KVCache::Create(
-          model.GetModelConfig(), inference_args.prefill_tbatch_size));
+      active_conversation->kv_cache = std::make_unique<KVCache>(
+          model.GetModelConfig(), inference_args.prefill_tbatch_size);
 
       LogDebug((log_prefix + "Successfully rewound to initial state.").c_str());
     } else {

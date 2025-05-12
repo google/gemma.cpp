@@ -95,24 +95,25 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
   size_t prompt_size = 0;
+  const ModelConfig& config = gemma.GetModelConfig();
 
   std::mt19937 gen;
   InitGenerator(inference, gen);
 
   const bool have_image = !inference.image_file.path.empty();
   Image image;
-  ImageTokens image_tokens;
+  const size_t pool_dim = config.vit_config.pool_dim;
+  ImageTokens image_tokens(
+      "image_tokens",
+      have_image ? Extents2D(config.vit_config.seq_len / (pool_dim * pool_dim),
+                             config.model_dim)
+                 : Extents2D(0, 0),
+      MatPadding::kOdd);
   if (have_image) {
-    size_t pool_dim = gemma.GetModelConfig().vit_config.pool_dim;
-    image_tokens =
-        ImageTokens(gemma.Env().ctx.allocator,
-                    Extents2D(gemma.GetModelConfig().vit_config.seq_len /
-                                  (pool_dim * pool_dim),
-                              gemma.GetModelConfig().model_dim));
-    HWY_ASSERT(gemma.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA ||
-               gemma.GetModelConfig().wrapping == PromptWrapping::GEMMA_VLM);
+    HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA ||
+               config.wrapping == PromptWrapping::GEMMA_VLM);
     HWY_ASSERT(image.ReadPPM(inference.image_file.path));
-    const size_t image_size = gemma.GetModelConfig().vit_config.image_size;
+    const size_t image_size = config.vit_config.image_size;
     image.Resize(image_size, image_size);
     RuntimeConfig runtime_config = {.gen = &gen,
                                     .verbosity = inference.verbosity,
@@ -138,7 +139,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
         std::cerr << "." << std::flush;
       }
       return true;
-    } else if (gemma.GetModelConfig().IsEOS(token)) {
+    } else if (config.IsEOS(token)) {
       if (inference.verbosity >= 2) {
         std::cout << "\n[ End ]\n";
       }
@@ -191,8 +192,8 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     size_t prefix_end = 0;
     if (have_image) {
       prompt = WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
-                               gemma.GetModelConfig().wrapping, abs_pos,
-                               prompt_string, image_tokens.BatchSize());
+                               config.wrapping, abs_pos, prompt_string,
+                               image_tokens.Rows());
       runtime_config.image_tokens = &image_tokens;
       prompt_size = prompt.size();
       // The end of the prefix for prefix-LM style attention in Paligemma.
@@ -203,8 +204,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       // runtime_config.prefill_tbatch_size = prompt_size;
     } else {
       prompt = WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
-                               gemma.GetModelConfig().wrapping, abs_pos,
-                               prompt_string);
+                               config.wrapping, abs_pos, prompt_string);
       prompt_size = prompt.size();
     }
 
@@ -228,8 +228,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     }
 
     // Prepare for the next turn. Works only for PaliGemma.
-    if (!inference.multiturn ||
-        gemma.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA) {
+    if (!inference.multiturn || config.wrapping == PromptWrapping::PALIGEMMA) {
       abs_pos = 0;  // Start a new turn at position 0.
       InitGenerator(inference, gen);
     } else {
@@ -254,8 +253,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
   MatMulEnv env(MakeMatMulEnv(threading));
   if (inference.verbosity >= 2) env.print_best = true;
   const Gemma gemma(loader, env);
-  KVCache kv_cache =
-      KVCache::Create(gemma.GetModelConfig(), inference.prefill_tbatch_size);
+  KVCache kv_cache(gemma.GetModelConfig(), inference.prefill_tbatch_size);
 
   if (inference.verbosity >= 1) {
     std::string instructions =

@@ -46,8 +46,7 @@ ConversationData::ConversationData(const ModelConfig& model_config,
                                    size_t prefill_tbatch_size)
     : model_config_ref_(model_config),
       prefill_tbatch_size_(prefill_tbatch_size),
-      kv_cache(std::make_unique<KVCache>(
-          KVCache::Create(model_config, prefill_tbatch_size))),
+      kv_cache(std::make_unique<KVCache>(model_config, prefill_tbatch_size)),
       abs_pos(0) {}
 
 // ConversationData copy constructor implementation
@@ -184,25 +183,28 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
   inference_args.CopyTo(runtime_config);
   size_t prefix_end = 0;
 
+  const ModelConfig& model_config = model.GetModelConfig();
+
   // generate
   std::vector<int> prompt;
-  ImageTokens image_tokens;
+  const size_t pool_dim = model_config.vit_config.pool_dim;
+  ImageTokens image_tokens(
+      "image_tokens",
+      image_data
+          ? Extents2D(model_config.vit_config.seq_len / (pool_dim * pool_dim),
+                      model_config.model_dim)
+          : Extents2D(0, 0),
+      MatPadding::kOdd);
   if (image_data != nullptr) {
-    size_t pool_dim = model.GetModelConfig().vit_config.pool_dim;
-    image_tokens =
-        ImageTokens(model.Env().ctx.allocator,
-                    Extents2D(model.GetModelConfig().vit_config.seq_len /
-                                  (pool_dim * pool_dim),
-                              model.GetModelConfig().model_dim));
-    HWY_ASSERT(model.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA ||
-               model.GetModelConfig().wrapping == PromptWrapping::GEMMA_VLM);
+    HWY_ASSERT(model_config.wrapping == PromptWrapping::PALIGEMMA ||
+               model_config.wrapping == PromptWrapping::GEMMA_VLM);
 
     Image image;
     image.Set(image_width, image_height, static_cast<const float*>(image_data));
 
     // We may need to resize the supplied image depending on whether we're using
     // PaliGemma or Gemma 3.
-    const size_t image_size = model.GetModelConfig().vit_config.image_size;
+    const size_t image_size = model_config.vit_config.image_size;
     image.Resize(image_size, image_size);
 
     // Use the existing runtime_config defined earlier in the function.
@@ -217,10 +219,9 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     ss << static_cast<int>(image_tokens_duration * 1000) << " ms\n",
         LogDebug(ss.str().c_str());
 
-    prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
-                             model.GetModelConfig().wrapping,
-                             active_conversation->abs_pos, prompt_string,
-                             image_tokens.BatchSize());
+    prompt = WrapAndTokenize(
+        model.Tokenizer(), model.ChatTemplate(), model_config.wrapping,
+        active_conversation->abs_pos, prompt_string, image_tokens.Rows());
     runtime_config.image_tokens = &image_tokens;
     prompt_size = prompt.size();
     // The end of the prefix for prefix-LM style attention in Paligemma.
@@ -230,7 +231,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     // Text-only case (original logic)
     // Use abs_pos from the active conversation
     prompt = WrapAndTokenize(model.Tokenizer(), model.ChatTemplate(),
-                             model.GetModelConfig().wrapping,
+                             model_config.wrapping,
                              active_conversation->abs_pos, prompt_string);
     prompt_size = prompt.size();
   }
@@ -251,7 +252,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
 
   // prepare for next turn
   if (!inference_args.multiturn ||
-      model.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA) {
+      model_config.wrapping == PromptWrapping::PALIGEMMA) {
     // If not multiturn, or Paligemma (which handles turns differently),
     // reset the *active* conversation's position.
     active_conversation->abs_pos = 0;

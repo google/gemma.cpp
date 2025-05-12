@@ -34,7 +34,7 @@
 #include "gemma/common.h"  // ChooseQueryScale
 #include "util/allocator.h"
 #include "util/basics.h"  // BF16
-#include "util/mat.h"     // RowVectorBatch
+#include "util/mat.h"     // MatStorageT
 #include "util/test_util.h"
 #include "util/threading_context.h"
 #include "hwy/tests/hwy_gtest.h"
@@ -391,7 +391,7 @@ void TestRopeAndMulBy() {
   ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
                      ChooseWrapping(Model::GEMMA2_9B));
   int dim_qkv = config.layer_configs[0].qkv_dim;
-  RowVectorBatch<float> x(allocator, Extents2D(1, dim_qkv));
+  MatStorageT<float> x("x", dim_qkv);
 
   std::mt19937 gen;
   gen.seed(0x12345678);
@@ -399,43 +399,43 @@ void TestRopeAndMulBy() {
   auto random_float = [&r, &gen] { return r(gen); };
 
   for (int i = 0; i < dim_qkv; ++i) {
-    x.All()[i] = random_float();
+    x.Packed()[i] = random_float();
   }
 
   const float qmul = ChooseQueryScale(config);
   const float kmul = 1.0;
 
-  std::vector<float> qexpected(dim_qkv);
-  std::vector<float> qactual(dim_qkv);
-  std::vector<float> kexpected(dim_qkv);
-  std::vector<float> kactual(dim_qkv);
-  RowVectorBatch<float> inv_timescale = CreateInvTimescale(
+  MatStorageT<float> qexpected("qexpected", dim_qkv);
+  MatStorageT<float> qactual("qactual", dim_qkv);
+  MatStorageT<float> kexpected("kexpected", dim_qkv);
+  MatStorageT<float> kactual("kactual", dim_qkv);
+  MatStorageT<float> inv_timescale = CreateInvTimescale(
       allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings
-    hwy::CopyBytes(x.Const(), qactual.data(), dim_qkv);
-    hwy::CopyBytes(x.Const(), qexpected.data(), dim_qkv);
-    ScalarRopeAndMulBy(qmul, qexpected.data(), dim_qkv, inv_timescale.Const(),
-                       pos);
-    RopeAndMulBy(qmul, qactual.data(), dim_qkv, inv_timescale.Const(), pos);
+    CopyMat(x, qactual);
+    CopyMat(x, qexpected);
+    ScalarRopeAndMulBy(qmul, qexpected.Packed(), dim_qkv,
+                       inv_timescale.Packed(), pos);
+    RopeAndMulBy(qmul, qactual.Packed(), dim_qkv, inv_timescale.Packed(), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(qactual[i], qexpected[i], 1e-4)
-          << "qIndex:" << i << "qInput:" << qactual[i];
+      EXPECT_NEAR(qactual.Packed()[i], qexpected.Packed()[i], 1e-4)
+          << "qIndex:" << i << "qInput:" << qactual.Packed()[i];
     }
 
     // Rope'd K embeddings
-    hwy::CopyBytes(x.Const(), kactual.data(), dim_qkv);
-    hwy::CopyBytes(x.Const(), kexpected.data(), dim_qkv);
-    ScalarRopeAndMulBy(kmul, kexpected.data(), dim_qkv, inv_timescale.Const(),
-                       pos);
-    RopeAndMulBy(kmul, kactual.data(), dim_qkv, inv_timescale.Const(), pos);
+    CopyMat(x, kactual);
+    CopyMat(x, kexpected);
+    ScalarRopeAndMulBy(kmul, kexpected.Packed(), dim_qkv,
+                       inv_timescale.Packed(), pos);
+    RopeAndMulBy(kmul, kactual.Packed(), dim_qkv, inv_timescale.Packed(), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(kactual[i], kexpected[i], 1e-4)
-          << "kIndex:" << i << "kInput:" << kactual[i];
+      EXPECT_NEAR(kactual.Packed()[i], kexpected.Packed()[i], 1e-4)
+          << "kIndex:" << i << "kInput:" << kactual.Packed()[i];
     }
   }
 }
@@ -451,10 +451,9 @@ HWY_NOINLINE float ScalarSquaredL2(const T* HWY_RESTRICT a, size_t size) {
 }
 
 // Supports bf16 and f32 inputs/outputs, which can be in-place.
-template <typename VecT, typename WeightT, typename OutT>
-HWY_NOINLINE void ScalarRMSNorm(const VecT* x,
-                                const WeightT* HWY_RESTRICT weight, OutT* out,
-                                size_t size) {
+template <typename XT, typename WT, typename OT>
+HWY_NOINLINE void ScalarRMSNorm(const XT* x, const WT* HWY_RESTRICT weight,
+                                OT* out, size_t size) {
   constexpr float kEps = 1e-6f;
   float ss = ScalarSquaredL2(x, size);
   ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
@@ -462,32 +461,32 @@ HWY_NOINLINE void ScalarRMSNorm(const VecT* x,
     const float v = hwy::ConvertScalarTo<float>(x[j]);
     const float w = hwy::ConvertScalarTo<float>(weight[j]);
     // Note 1.0f centering here
-    out[j] = hwy::ConvertScalarTo<OutT>((1.0f + w) * (ss * v));
+    out[j] = hwy::ConvertScalarTo<OT>((1.0f + w) * (ss * v));
   }
 }
 
-template <typename VecT, typename WeightT, typename OutT>
+template <typename XT, typename WT, typename OT>
 void TestRMSNorm(hwy::RandomState& rng) {
   constexpr size_t kSize = 128;
-  HWY_ALIGN VecT vec[kSize];
-  HWY_ALIGN WeightT weight[kSize];
-  HWY_ALIGN OutT expected[kSize];
-  HWY_ALIGN OutT actual[kSize];
+  HWY_ALIGN XT vec[kSize];
+  HWY_ALIGN WT weight[kSize];
+  HWY_ALIGN OT expected[kSize];
+  HWY_ALIGN OT actual[kSize];
 
   for (size_t i = 0; i < kSize; ++i) {
-    vec[i] = hwy::ConvertScalarTo<VecT>(RandomGaussian(rng));
-    weight[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
+    vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
+    weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
   }
 
   ScalarRMSNorm(vec, weight, expected, kSize);
-  RMSNorm(vec, weight, actual, kSize);
+  RMSNorm(vec, weight, 0, actual, kSize);
 
   for (size_t i = 0; i < kSize; i++) {
     const float e = hwy::ConvertScalarTo<float>(expected[i]);
     const float a = hwy::ConvertScalarTo<float>(actual[i]);
     if (!IsNear(e, a, 1e-5f)) {
-      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<VecT>(),
-                TypeName<WeightT>(), TypeName<OutT>(), i, e, a);
+      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
+                TypeName<WT>(), TypeName<OT>(), i, e, a);
     }
   }
 }
@@ -526,23 +525,63 @@ void TestLayerNormSimple() {
   }
 }
 
-// Note: there is no vectorized implementation of LayerNorm yet. So this test
-// currently only checks that the scalar version can be called for the below
-// combinations of float/BF16 inputs and outputs.
-template <typename VecT, typename WeightT, typename OutT>
+// Computes mean mu and mean of squares mu2 of a vector. Used in
+// ScalarLayerNorm.
+template <typename T>
+HWY_NOINLINE void ScalarMus(const T* HWY_RESTRICT a, size_t size, double& mu,
+                            double& mu2) {
+  HWY_ASSERT(size > 0);
+  double sum = 0.0;
+  double sum2 = 0.0;
+  for (size_t i = 0; i < size; ++i) {
+    const float f = hwy::ConvertScalarTo<float>(a[i]);
+    sum += f;
+    sum2 += f * f;
+  }
+  mu = sum / size;
+  mu2 = sum2 / size;
+}
+
+// Compare py/flax/linen/normalization.py.
+// out = (x - mean) * scale * rsqrt(var + epsilon) + bias
+template <typename XT, typename WT, typename OT>
+HWY_NOINLINE void ScalarLayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
+                                  const WT* HWY_RESTRICT bias, OT* out,
+                                  size_t size) {
+  constexpr double kEps = 1e-6;
+  double mu, mu2;
+  ScalarMus(x, size, mu, mu2);
+  double var = mu2 - mu * mu;
+  constexpr double kZero = 0.0;
+  var = HWY_MAX(var, kZero);
+  var = 1.0 / sqrt(var + kEps);
+  for (size_t j = 0; j < size; j++) {
+    const float v = hwy::ConvertScalarTo<float>(x[j]);
+    const float s = hwy::ConvertScalarTo<float>(scale[j]);
+    const float b = hwy::ConvertScalarTo<float>(bias[j]);
+    out[j] = hwy::ConvertScalarTo<OT>((v - mu) * s * var + b);
+  }
+}
+
+template <typename XT, typename WT, typename OT>
 void TestLayerNorm(hwy::RandomState& rng) {
   constexpr size_t kSize = 128;
-  VecT vec[kSize];
-  WeightT weight[kSize];
-  WeightT bias[kSize];
-  OutT expected[kSize];
-  OutT actual[kSize];
+  XT vec[kSize];
+  WT weight[kSize];
+  WT bias[kSize];
+  OT expected[kSize];
+  OT actual[kSize];
 
   for (size_t i = 0; i < kSize; ++i) {
-    vec[i] = hwy::ConvertScalarTo<VecT>(RandomGaussian(rng));
-    weight[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
-    bias[i] = hwy::ConvertScalarTo<WeightT>(RandomGaussian(rng));
+    vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
+    weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
+    bias[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
   }
+
+  double expected_mu, expected_mu2;
+  ScalarMus(vec, kSize, expected_mu, expected_mu2);
+  double actual_mu, actual_mu2;
+  ComputeMoments(vec, kSize, actual_mu, actual_mu2);
 
   ScalarLayerNorm(vec, weight, bias, expected, kSize);
   LayerNorm(vec, weight, bias, actual, kSize);
@@ -551,8 +590,8 @@ void TestLayerNorm(hwy::RandomState& rng) {
     const float e = hwy::ConvertScalarTo<float>(expected[i]);
     const float a = hwy::ConvertScalarTo<float>(actual[i]);
     if (!IsNear(e, a, 1e-5f)) {
-      HWY_ABORT("LayerNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<VecT>(),
-                TypeName<WeightT>(), TypeName<OutT>(), i, e, a);
+      HWY_ABORT("LayerNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
+                TypeName<WT>(), TypeName<OT>(), i, e, a);
     }
   }
 }

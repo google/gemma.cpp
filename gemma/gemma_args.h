@@ -25,10 +25,11 @@
 #include <random>
 #include <string>
 
-#include "io/io.h"           // Path
-#include "ops/matmul.h"      // MMStorage::kMax*
+#include "io/io.h"       // Path
+#include "ops/matmul.h"  // MMStorage::kMax*
 #include "util/args.h"
-#include "util/basics.h"          // Tristate
+#include "util/basics.h"  // Tristate
+#include "util/mat.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"               // HWY_ABORT
 
@@ -74,9 +75,9 @@ using QueriesPromptTokens = hwy::Span<const PromptTokens>;
 using QueriesToken = hwy::Span<const int>;
 using QueriesPos = hwy::Span<const size_t>;
 
-// ImageTokens are represented as a RowVectorBatch, where each "batch" index
-// corresponds to a token for an image patch as computed by the image encoder.
-using ImageTokens = RowVectorBatch<float>;
+// ImageTokens are represented as a matrix, where each row corresponds
+// to a token for an image patch as computed by the image encoder.
+using ImageTokens = MatStorageT<float>;
 
 // StreamFunc is called with (token, probability). For prompt tokens,
 // probability is 0.0f. StreamFunc should return false to stop generation and

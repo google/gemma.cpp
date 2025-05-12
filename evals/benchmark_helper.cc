@@ -52,9 +52,8 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader,
                    const InferenceArgs& inference)
     : env_(MakeMatMulEnv(threading_args)), gemma_(loader, env_) {
   // Only allocate one for starters because GenerateBatch might not be called.
-  kv_caches_.resize(1);
-  kv_caches_[0] =
-      KVCache::Create(gemma_.GetModelConfig(), inference.prefill_tbatch_size);
+  kv_caches_.push_back(
+      KVCache(gemma_.GetModelConfig(), inference.prefill_tbatch_size));
 
   InitGenerator(inference, gen_);
 
@@ -131,15 +130,10 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
             runtime_config_.decode_qbatch_size);
   }
 
-  // Ensure we have one KVCache per query.
-  if (kv_caches_.size() < num_queries) {
-    kv_caches_.resize(num_queries);
-  }
-  for (size_t i = 1; i < num_queries; ++i) {
-    if (kv_caches_[i].seq_len == 0) {
-      kv_caches_[i] = KVCache::Create(gemma_.GetModelConfig(),
-                                      runtime_config_.prefill_tbatch_size);
-    }
+  // Ensure we have at least one KVCache per query.
+  while (kv_caches_.size() < num_queries) {
+    kv_caches_.push_back(
+        KVCache(gemma_.GetModelConfig(), runtime_config_.prefill_tbatch_size));
   }
 
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};

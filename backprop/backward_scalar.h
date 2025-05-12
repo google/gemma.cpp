@@ -218,16 +218,15 @@ void LayerVJP(const LayerWeightsPtrs<T>& weights,
   GatedGeluVJP(forward.ffw_hidden.Packed(), backward.ffw_hidden_gated.Packed(),
                backward.ffw_hidden.Packed(), kFFHiddenDim, num_tokens);
 
-  MatMulVJPT(weights.gating_einsum_w.Packed(),
-             forward.bf_pre_ffw_rms_out.Packed(), backward.ffw_hidden.Packed(),
-             grad.gating_einsum_w.Packed(),
-             backward.bf_pre_ffw_rms_out.Packed(), kFFHiddenDim * 2, model_dim,
+  MatMulVJPT(weights.gating_einsum_w.Packed(), forward.pre_ffw_rms_out.Packed(),
+             backward.ffw_hidden.Packed(), grad.gating_einsum_w.Packed(),
+             backward.pre_ffw_rms_out.Packed(), kFFHiddenDim * 2, model_dim,
              num_tokens);
 
-  RMSNormVJPT(
-      weights.pre_ffw_norm_scale.Packed(), forward.attention_out.Packed(),
-      backward.bf_pre_ffw_rms_out.Packed(), grad.pre_ffw_norm_scale.Packed(),
-      backward.attention_out.Packed(), model_dim, num_tokens);
+  RMSNormVJPT(weights.pre_ffw_norm_scale.Packed(),
+              forward.attention_out.Packed(), backward.pre_ffw_rms_out.Packed(),
+              grad.pre_ffw_norm_scale.Packed(), backward.attention_out.Packed(),
+              model_dim, num_tokens);
 
   AddFromT(dy, backward.attention_out.Packed(), num_tokens * model_dim);
 

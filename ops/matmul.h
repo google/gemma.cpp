@@ -21,6 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>  // std::unique_ptr
 #include <vector>
 
 // IWYU pragma: begin_exports
@@ -207,24 +208,28 @@ class MMStorage {
   // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
   static constexpr size_t kMaxKC = 8 * 1024;
 
+  // Internally threaded; must not be called concurrently with the same
+  // `ThreadingContext` (used via `parallel`).
   MMStorage(const Allocator& allocator, MMParallel& parallel)
       // Per-worker copies of `partial` would be wasteful. We instead allocate
       // one instance of the maximum matrix extents because threads write at
       // false-sharing-free granularity.
-      : partial_storage_(
-            AllocateAlignedRows<double>(allocator, Extents2D(kMaxM, kMaxN))),
+      : partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN),
+                         MatPadding::kOdd),
         // Same stride independent of the actual C.Cols() so we can pre-bind.
-        partial_(allocator, partial_storage_.All(), kMaxN,
-                 StrideForCyclicOffsets(kMaxN, allocator.Quantum<double>())) {
+        partial_(allocator, partial_storage_.Row(0), kMaxN,
+                 partial_storage_.Stride()) {
     // Per-package allocation so each can decompress A into its own copy.
     parallel.ForPkg(MMParallel::kMaxPackages, [&](size_t pkg_idx) {
-      pkg_A_[pkg_idx] =
-          AllocateAlignedRows<BF16>(allocator, Extents2D(kMaxM, kMaxK));
+      pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
+          "pkg_A", Extents2D(kMaxM, kMaxK), MatPadding::kOdd));
 
       if (allocator.ShouldBind()) {
         const size_t node = parallel.Node(pkg_idx);
-        if (!allocator.BindMemory(pkg_A_[pkg_idx].All(),
-                                  pkg_A_[pkg_idx].NumBytes(), node)) {
+        size_t bytes = pkg_A_[pkg_idx]->Rows() * pkg_A_[pkg_idx]->Stride() *
+                       pkg_A_[pkg_idx]->ElementBytes();
+        bytes = hwy::RoundDownTo(bytes, allocator.QuantumBytes());
+        if (!allocator.BindMemory(pkg_A_[pkg_idx]->Row(0), bytes, node)) {
           HWY_WARN("Failed to bind memory for package %zu", pkg_idx);
         }
       }
@@ -234,22 +239,20 @@ class MMStorage {
     BindC(allocator, kMaxM, partial_, parallel);
   }
 
-  // Returns per-package matrix view. Non-const so that `RowVectorBatch` is
-  // non-const, because `RowPtr` requires a non-const pointer.
+  // Returns per-package matrix view.
   RowPtrBF A(const Allocator& allocator, size_t pkg_idx,
-             const Extents2D& extents) {
+             const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxM);
     HWY_DASSERT(extents.cols <= kMaxK);
-    const size_t stride =
-        StrideForCyclicOffsets(extents.cols, allocator.Quantum<BF16>());
-    return RowPtrBF(allocator, pkg_A_[pkg_idx].All(), extents.cols, stride);
+    return RowPtrBF(allocator, const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
+                    extents.cols, pkg_A_[pkg_idx]->Stride());
   }
 
   RowPtrD Partial() const { return partial_; }
 
  private:
-  RowVectorBatch<BF16> pkg_A_[MMParallel::kMaxPackages];
-  RowVectorBatch<double> partial_storage_;
+  std::unique_ptr<MatStorageT<BF16>> pkg_A_[MMParallel::kMaxPackages];
+  MatStorageT<double> partial_storage_;
   RowPtrD partial_;
 };
 
@@ -608,6 +611,8 @@ struct MMPerKey {
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive
 // `MatMulEnv`.
 struct MatMulEnv {
+  // Internally threaded; must not be called concurrently with the same
+  // `ThreadingContext`.
   explicit MatMulEnv(ThreadingContext& ctx);
 
   ThreadingContext& ctx;
@@ -679,8 +684,8 @@ struct MMZone {
 #endif  // PROFILER_ENABLED
 
 // Used for the A and B arguments of `MatMul`, which are always const.
-// Create via MakeConstMat. This differs from `RowPtr` in that it supports the
-// `ofs` required for compressed T.
+// This differs from `RowPtr` in supporting the `ofs` required for compressed T.
+// TODO: remove after splitting W1/W2 and updating QDotK to RowPtr.
 template <typename T>
 struct ConstMat {
   ConstMat() = default;
@@ -689,6 +694,12 @@ struct ConstMat {
     HWY_DASSERT(ptr != nullptr);
     HWY_DASSERT(stride >= extents.cols);
   }
+  // Non-explicit so that we can pass `MatPtr` directly to MatMul.
+  ConstMat(const MatPtrT<T>& m)
+      : ConstMat(const_cast<T*>(m.Row(0)), m.Extents(), m.Stride()) {
+    scale = m.Scale();
+  }
+
   size_t Row(size_t r) const {
     if constexpr (HWY_IS_DEBUG_BUILD) {
       if (r >= extents.rows) {
@@ -726,31 +737,6 @@ struct ConstMat {
   // to take into account the stride.
   size_t ofs;
 };
-
-// For deducing T.
-template <typename T>
-ConstMat<T> MakeConstMat(T* HWY_RESTRICT ptr, Extents2D extents,
-                         size_t stride) {
-  return ConstMat<T>(ptr, extents, stride);
-}
-
-// For A argument to MatMul (activations).
-template <typename T>
-ConstMat<T> ConstMatFromBatch(size_t batch_size,
-                              const RowVectorBatch<T>& row_vectors) {
-  HWY_DASSERT(batch_size <= row_vectors.BatchSize());
-  return MakeConstMat(const_cast<T*>(row_vectors.Const()),
-                      Extents2D(batch_size, row_vectors.Cols()),
-                      row_vectors.Stride());
-}
-
-template <typename T>
-ConstMat<T> ConstMatFromWeights(const MatPtrT<T>& m) {
-  ConstMat<T> mat =
-      MakeConstMat(const_cast<T*>(m.Row(0)), m.Extents(), m.Stride());
-  mat.scale = m.Scale();
-  return mat;
-}
 
 template <typename TB>
 void BindB(const Allocator& allocator, size_t N, size_t sizeof_TC,

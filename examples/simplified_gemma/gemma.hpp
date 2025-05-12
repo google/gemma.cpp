@@ -39,11 +39,8 @@ class SimplifiedGemma {
         threading_(threading),
         inference_(inference),
         env_(MakeMatMulEnv(threading_)),
-        gemma_(loader_, env_) {
-    // Instantiate model and KV Cache
-    kv_cache_ = gcpp::KVCache::Create(gemma_.GetModelConfig(),
-                                      inference_.prefill_tbatch_size);
-
+        gemma_(loader_, env_),
+        kv_cache_(gemma_.GetModelConfig(), inference_.prefill_tbatch_size) {
     // Initialize random number generator
     std::random_device rd;
     gen_.seed(rd());

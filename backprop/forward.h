@@ -19,7 +19,7 @@
 #include "backprop/activations.h"
 #include "backprop/prompt.h"
 #include "gemma/weights.h"
-#include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
@@ -27,7 +27,7 @@ namespace gcpp {
 float CrossEntropyLossForwardPass(const Prompt& prompt,
                                   const ModelWeightsPtrs<float>& weights,
                                   ForwardPass<float>& forward,
-                                  RowVectorBatch<float>& inv_timescale,
+                                  MatStorageT<float>& inv_timescale,
                                   hwy::ThreadPool& pool);
 
 }  // namespace gcpp

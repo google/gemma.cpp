@@ -23,6 +23,7 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::shuffle
+#include <array>
 #include <random>
 
 #include "compression/distortion.h"
@@ -104,7 +105,7 @@ struct TestPlateaus {
       HWY_ASSERT(-0.5f <= in[i] && in[i] < 0.5f);
     }
 
-    std::random_device rd;
+    std::random_device rd;  // NOLINT
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
@@ -151,7 +152,7 @@ struct TestRamp {
       HWY_ASSERT(-0.45f <= in[i] && in[i] < 0.55f);
     }
 
-    std::random_device rd;
+    std::random_device rd;  // NOLINT
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
@@ -246,7 +247,8 @@ struct TestOffset {
     auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
     auto dec1 = hwy::AllocateAligned<T>(total);
     auto dec2 = hwy::AllocateAligned<T>(kMidLen);
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
     HWY_ASSERT(in && dec1 && dec2 && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), total);
 
@@ -296,7 +298,8 @@ struct TestUnalignedOffset {
 
       auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
       auto dec1 = hwy::AllocateAligned<T>(total);
-      auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+      auto nuq = hwy::AllocateAligned<NuqStream>(
+          hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
       auto dec2 = hwy::AllocateAligned<T>(num_decompressed);
       HWY_ASSERT(in && dec1 && dec2 && nuq);
       const auto nuq_span = MakeSpan(nuq.get(), total);
@@ -347,7 +350,8 @@ struct TestDec2 {
     auto dec0 = hwy::AllocateAligned<T>(total);
     auto dec1 = hwy::AllocateAligned<T>(total);
     auto dec2 = hwy::AllocateAligned<T>(kMidLen);
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
     HWY_ASSERT(in && dec0 && dec1 && dec2 && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), total);
 
@@ -449,7 +453,8 @@ struct TestEncDec {
     const size_t num = 4 * kGroupSize;
     auto in = hwy::AllocateAligned<float>(num);  // Enc() requires f32
     auto out = hwy::AllocateAligned<T>(num);     // already padded
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(num), hwy::VectorBytes()));
     HWY_ASSERT(in && out && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), num);
 

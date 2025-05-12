@@ -168,9 +168,9 @@ class GemmaModel {
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
     const gcpp::Gemma& gemma = *gemma_.GetGemma();
-    const gcpp::Allocator& allocator = gemma_.Env().ctx.allocator;
-    if (gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::PALIGEMMA &&
-        gemma.GetModelConfig().wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
+    const gcpp::ModelConfig& config = gemma.GetModelConfig();
+    if (config.wrapping != gcpp::PromptWrapping::PALIGEMMA &&
+        config.wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
       throw std::invalid_argument("Not a PaliGemma model.");
     }
     py::buffer_info buffer = image.request();
@@ -182,14 +182,15 @@ class GemmaModel {
     float* ptr = static_cast<float*>(buffer.ptr);
     gcpp::Image c_image;
     c_image.Set(height, width, ptr);
-    const size_t image_size = gemma.GetModelConfig().vit_config.image_size;
+    const size_t image_size = config.vit_config.image_size;
     c_image.Resize(image_size, image_size);
-    image_tokens_ = gcpp::ImageTokens(
-        allocator, gcpp::Extents2D(gemma.GetModelConfig().vit_config.seq_len,
-                                   gemma.GetModelConfig().model_dim));
+    image_tokens_.reset(new gcpp::ImageTokens(
+        "image_tokens",
+        gcpp::Extents2D(config.vit_config.seq_len, config.model_dim),
+        gcpp::MatPadding::kOdd));
     gcpp::RuntimeConfig runtime_config = {.gen = &gemma_.MutableGen(),
                                           .verbosity = 0};
-    gemma.GenerateImageTokens(runtime_config, c_image, image_tokens_);
+    gemma.GenerateImageTokens(runtime_config, c_image, *image_tokens_);
   }
 
   // Generates a response to the given prompt, using the last set image.
@@ -197,9 +198,7 @@ class GemmaModel {
   std::pair<std::string, std::vector<int>> GenerateWithImage(
       std::string prompt, size_t max_generated_tokens, float temperature,
       float seed, gcpp::AcceptFunc accept, std::vector<int> prompt_tokens) {
-    if (image_tokens_.Cols() == 0) {
-      throw std::invalid_argument("No image set.");
-    }
+    if (!image_tokens_) throw std::invalid_argument("No image set.");
     const gcpp::Gemma& model = *gemma_.GetGemma();
     gemma_.MutableGen().seed(seed);
     gcpp::RuntimeConfig& config = gemma_.MutableConfig();
@@ -207,7 +206,7 @@ class GemmaModel {
     config.temperature = temperature;
     config.verbosity = 0;
     config.accept_token = accept;
-    config.image_tokens = &image_tokens_;
+    config.image_tokens = image_tokens_.get();
     std::vector<int> tokens;
     if (!prompt_tokens.empty()) {
       if (!prompt.empty()) {
@@ -219,7 +218,7 @@ class GemmaModel {
     } else {
       tokens = gemma_.WrapAndTokenize(prompt);
     }
-    tokens.insert(tokens.begin(), image_tokens_.BatchSize(), 0);
+    tokens.insert(tokens.begin(), image_tokens_->Rows(), 0);
     size_t num_tokens = tokens.size();
     size_t prefix_end = num_tokens;
     config.prefill_tbatch_size = num_tokens;
@@ -252,7 +251,7 @@ class GemmaModel {
 
  private:
   gcpp::GemmaEnv gemma_;
-  gcpp::ImageTokens image_tokens_;
+  std::unique_ptr<gcpp::ImageTokens> image_tokens_;
   float last_prob_;
 };
 

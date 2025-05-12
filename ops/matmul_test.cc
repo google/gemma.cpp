@@ -57,10 +57,10 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
 // Returns 1-norm, used for estimating tolerable numerical differences.
-double MaxRowAbsSum(const RowVectorBatch<float>& a) {
+double MaxRowAbsSum(const MatStorageT<float>& a) {
   double max_row_abs_sum = 0.0;
-  for (size_t r = 0; r < a.BatchSize(); r++) {
-    const float* row = a.Batch(r);
+  for (size_t r = 0; r < a.Rows(); r++) {
+    const float* row = a.Row(r);
     double row_abs_sum = 0.0;
     for (size_t c = 0; c < a.Cols(); c++) {
       row_abs_sum += hwy::ScalarAbs(row[c]);
@@ -71,11 +71,11 @@ double MaxRowAbsSum(const RowVectorBatch<float>& a) {
 }
 
 // Returns the maximum absolute value of `a`.
-float MaxAbs(const RowVectorBatch<float>& a) {
+float MaxAbs(const MatStorageT<float>& a) {
   float max_abs = 0.0f;
   for (size_t c = 0; c < a.Cols(); c++) {
-    for (size_t r = 0; r < a.BatchSize(); r++) {
-      const float* row = a.Batch(r);
+    for (size_t r = 0; r < a.Rows(); r++) {
+      const float* row = a.Row(r);
       max_abs = HWY_MAX(max_abs, hwy::ScalarAbs(row[c]));
     }
   }
@@ -84,33 +84,29 @@ float MaxAbs(const RowVectorBatch<float>& a) {
 
 // B is already transposed.
 template <typename TA, typename TB, typename TC>
-void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
+void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                  const RowPtr<TC>& C_slow, const RowPtr<TC>& C, int line) {
-  const Allocator& allocator = ThreadingContext::Get().allocator;
   const hn::ScalableTag<float> df;
-  const size_t cols = A.extents.cols;
-  const size_t B_rows = B.extents.rows;
+  const size_t cols = A.Cols();
+  const size_t B_rows = B.Rows();
   // Round up for DecompressAndZeroPad.
-  RowVectorBatch<float> a_batch =
-      AllocateAlignedRows<float>(allocator, A.extents);
-  RowVectorBatch<float> b_trans_batch =
-      AllocateAlignedRows<float>(allocator, B.extents);
-  RowVectorBatch<float> c_batch =
-      AllocateAlignedRows<float>(allocator, Extents2D(A.extents.rows, B_rows));
-  RowVectorBatch<float> c_slow_batch =
-      AllocateAlignedRows<float>(allocator, Extents2D(A.extents.rows, B_rows));
-  HWY_ASSERT(A.ofs == 0 && B.ofs == 0);
-  for (size_t m = 0; m < A.extents.rows; ++m) {
-    DecompressAndZeroPad(df, MakeSpan(A.ptr + A.Row(m), cols), 0,
-                         a_batch.Batch(m), cols);
-    DecompressAndZeroPad(df, MakeSpan(C.Row(m), B_rows), 0, c_batch.Batch(m),
+  MatStorageT<float> a_batch("a_batch", A.Extents(), MatPadding::kOdd);
+  MatStorageT<float> b_trans_batch("b_trans_batch", B.Extents(),
+                                   MatPadding::kOdd);
+  MatStorageT<float> c_batch("c_batch", Extents2D(A.Rows(), B_rows),
+                             MatPadding::kOdd);
+  MatStorageT<float> c_slow_batch("c_slow_batch", Extents2D(A.Rows(), B_rows),
+                                  MatPadding::kOdd);
+  for (size_t m = 0; m < A.Rows(); ++m) {
+    DecompressAndZeroPad(df, MakeSpan(A.Row(m), cols), 0, a_batch.Row(m), cols);
+    DecompressAndZeroPad(df, MakeSpan(C.Row(m), B_rows), 0, c_batch.Row(m),
                          B_rows);
     DecompressAndZeroPad(df, MakeSpan(C_slow.Row(m), B_rows), 0,
-                         c_slow_batch.Batch(m), B_rows);
+                         c_slow_batch.Row(m), B_rows);
   }
   for (size_t n = 0; n < B_rows; ++n) {
-    DecompressAndZeroPad(df, MakeSpan(B.ptr + B.Row(n), cols), 0,
-                         b_trans_batch.Batch(n), cols);
+    DecompressAndZeroPad(df, MakeSpan(B.Row(n), cols), 0, b_trans_batch.Row(n),
+                         cols);
   }
 
   // MatMul rounds inputs to BF16, so error is proportional to the max input
@@ -130,10 +126,10 @@ void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
   }
   const double max_rel = 1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
 
-  for (size_t r = 0; r < A.extents.rows; r++) {
-    const float* expected_row = c_slow_batch.Batch(r);
-    const float* actual_row = c_batch.Batch(r);
-    for (size_t c = 0; c < B.extents.rows; c++) {
+  for (size_t r = 0; r < A.Rows(); r++) {
+    const float* expected_row = c_slow_batch.Row(r);
+    const float* actual_row = c_batch.Row(r);
+    for (size_t c = 0; c < B.Rows(); c++) {
       const double expected_value = static_cast<double>(expected_row[c]);
       const double actual_value = static_cast<double>(actual_row[c]);
       const bool in_range = expected_value - tolerance <= actual_value &&
@@ -157,18 +153,17 @@ void AssertClose(const ConstMat<TA>& A, const ConstMat<TB>& B,
 
 // B is already transposed.
 template <typename TA, typename TB, typename TC>
-HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
+HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
                            const float* HWY_RESTRICT add_row, MatMulEnv& env,
                            const RowPtr<TC>& C) {
   // TA can be any Packed except NuqStream because it uses pointer
   // arithmetic, because it is the second argument to Dot, which does not
   // support a v_ofs.
   static_assert(sizeof(TA) >= sizeof(BF16), "A matrix must be BF16/f32");
-  const float scale = A.scale * B.scale;
+  const float scale = A.Scale() * B.Scale();
 
   const hn::ScalableTag<float> df;  // lane type is ignored
-  const PackedSpan<const TB> b_span =
-      MakeSpan(B.ptr, B.ofs + B.Stride() * B.Extents().rows);
+  const PackedSpan<const TB> b_span = B.Span();
   const IndexRange all_rows_c(0, A.Extents().rows);
   const IndexRange all_cols_c(0, C.Cols());
 
@@ -191,8 +186,8 @@ HWY_INLINE void MatMulSlow(const ConstMat<TA> A, const ConstMat<TB> B,
                 for (size_t c : cols_c) {
                   const float add = add_row ? add_row[c] : 0.0f;
                   C_row[c] = hwy::ConvertScalarTo<TC>(
-                      add + scale * Dot(df, b_span, c * B.Stride(),
-                                        A.ptr + A.Row(r), A.extents.cols));
+                      add + scale * Dot(df, b_span, c * B.Stride(), A.Row(r),
+                                        A.Cols()));
                 }
               }
             });
@@ -225,26 +220,23 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatStorageT<TA> a(GenerateMat<TA>(A_extents, pool));
   MatStorageT<TB> b_trans(GenerateTransposedMat<TB>(B_extents, pool));
-  RowVectorBatch<TC> c_slow_batch =
-      AllocateAlignedRows<TC>(allocator, C_extents);
-  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(allocator, C_extents);
+  MatStorageT<TC> c_slow_batch("c_slow_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> c_batch("c_batch", C_extents, MatPadding::kOdd);
 
   MatStorageT<float> add_storage =
       add ? GenerateMat<float>(Extents2D(1, cols_bc), pool)
           : MatStorageT<float>("add", Extents2D(), MatPadding::kPacked);
   add_storage.SetScale(1.0f);
 
-  const auto A = ConstMatFromWeights(a);
-  const auto B = ConstMatFromWeights(b_trans);
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C_slow = RowPtrFromBatch(allocator, c_slow_batch);
-  const RowPtr<TC> C = RowPtrFromBatch(allocator, c_batch);
+  const RowPtr<TC> C_slow = RowPtrFromMat(allocator, c_slow_batch);
+  const RowPtr<TC> C = RowPtrFromMat(allocator, c_batch);
 
-  MatMulSlow(A, B, add_row, env, C_slow);
+  MatMulSlow(a, b_trans, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
   for (size_t rep = 0; rep < 16; ++rep) {
-    MMPerKey* per_key = MatMul(A, B, add_row, env, C);
-    AssertClose(A, B, C_slow, C, line);
+    MMPerKey* per_key = MatMul(a, b_trans, add_row, env, C);
+    AssertClose(a, b_trans, C_slow, C, line);
     if (per_key->autotune.Best()) break;
   }
 }

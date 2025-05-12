@@ -189,10 +189,11 @@ float RMSNormMul(const VT* HWY_RESTRICT x, size_t size) {
 
 }  // namespace detail
 
-template <typename VecT, typename WeightT, typename OutT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
-                                           const WeightT* HWY_RESTRICT weight,
-                                           OutT* HWY_RESTRICT out,
+// `x_ofs` is the offset within `x`, required for NuqStream.
+template <typename XT, typename WT, typename OT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
+                                           const WT* HWY_RESTRICT weight,
+                                           size_t w_ofs, OT* HWY_RESTRICT out,
                                            const size_t size) {
   PROFILER_FUNC;
 
@@ -203,17 +204,17 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
 
   const VF mul = hn::Set(df, detail::RMSNormMul(x, size));
 
-  const auto packed_w = MakeSpan(weight, size);
-  const auto packed_v = MakeSpan(x, size);
+  const auto packed_x = MakeSpan(x, size);
+  const auto packed_w = MakeSpan(weight, w_ofs + size);
   const auto packed_out = MakeSpan(out, size);
 
-  HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
+  HWY_DASSERT(size % (2 * NF) == 0);
   for (size_t i = 0; i < size; i += 2 * NF) {
-    VF v0, v1, w0, w1;
-    Decompress2(df, packed_v, i, v0, v1);
-    Decompress2(df, packed_w, i, w0, w1);
-    const VF m0 = hn::Mul(mul, v0);
-    const VF m1 = hn::Mul(mul, v1);
+    VF x0, x1, w0, w1;
+    Decompress2(df, packed_x, i, x0, x1);
+    Decompress2(df, packed_w, w_ofs + i, w0, w1);
+    const VF m0 = hn::Mul(mul, x0);
+    const VF m1 = hn::Mul(mul, x1);
     // (1+weight) * m = m + weight*m = one FMA.
     const VF out0 = hn::MulAdd(m0, w0, m0);
     const VF out1 = hn::MulAdd(m1, w1, m1);
@@ -222,10 +223,11 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const VecT* HWY_RESTRICT x,
 }
 
 // Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
-template <typename WeightT, typename VecT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
-    const WeightT* HWY_RESTRICT weight, VecT* HWY_RESTRICT inout,
-    const size_t size) {
+template <typename WT, typename XT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(const WT* HWY_RESTRICT weight,
+                                                  size_t w_ofs,
+                                                  XT* HWY_RESTRICT inout,
+                                                  const size_t size) {
   PROFILER_FUNC;
 
   namespace hn = hwy::HWY_NAMESPACE;
@@ -235,72 +237,112 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
 
   const VF mul = hn::Set(df, detail::RMSNormMul(inout, size));
 
-  const auto packed_w = MakeSpan(weight, size);
-  const auto packed_v = MakeSpan(inout, size);
+  const auto packed_w = MakeSpan(weight, w_ofs + size);
+  const auto packed_x = MakeSpan(inout, size);
 
-  HWY_DASSERT(size % (2 * MaxLanes(df)) == 0);
+  HWY_DASSERT(size % (2 * NF) == 0);
   for (size_t i = 0; i < size; i += 2 * NF) {
-    VF v0, v1, w0, w1;
-    Decompress2(df, MakeConst(packed_v), i, v0, v1);
-    Decompress2(df, packed_w, i, w0, w1);
-    const VF m0 = hn::Mul(mul, v0);
-    const VF m1 = hn::Mul(mul, v1);
+    VF x0, x1, w0, w1;
+    Decompress2(df, packed_x, i, x0, x1);
+    Decompress2(df, packed_w, w_ofs + i, w0, w1);
+    const VF m0 = hn::Mul(mul, x0);
+    const VF m1 = hn::Mul(mul, x1);
     // (1+weight) * m = m + weight*m = one FMA.
     const VF out0 = hn::MulAdd(m0, w0, m0);
     const VF out1 = hn::MulAdd(m1, w1, m1);
-    Compress2(df, out0, out1, packed_v, i);
+    Compress2(df, out0, out1, packed_x, i);
   }
 }
 
 // Computes mean mu and mean of squares mu2 of a vector. Used in LayerNorm.
-template <typename T>
-HWY_NOINLINE void ScalarMus(const T* HWY_RESTRICT a, size_t size, T& mu,
-                            T& mu2) {
+template <typename XT>
+HWY_NOINLINE void ComputeMoments(const XT* HWY_RESTRICT x, size_t size,
+                                 double& mu, double& mu2) {
   HWY_ASSERT(size > 0);
-  double sum = 0.0;
-  double sum2 = 0.0;
-  for (size_t i = 0; i < size; ++i) {
-    const float f = hwy::ConvertScalarTo<float>(a[i]);
-    sum += f;
-    sum2 += f * f;
-  }
-  mu = sum / size;
-  mu2 = sum2 / size;
+  const hn::ScalableTag<float> df;
+
+  // Use the existing Sum and Dot kernels for simplicity. The second pass
+  // is likely not too expensive because it will be in L1.
+  const double sum = Sum(df, x, size);
+  // We only have one array, so calling `DecompressAndCall` instead of `Dot``
+  // avoids loading the 'second' vector again.
+  const double sum2 =
+      DecompressAndCall(df, MakeSpan(x, size), DotKernelDouble());
+
+  const double inv_size = 1.0 / static_cast<double>(size);
+  mu = sum * inv_size;
+  mu2 = sum2 * inv_size;
 }
 
 // Compare py/flax/linen/normalization.py.
 // out = (x - mean) * scale * rsqrt(var + epsilon) + bias
-template <typename VecT, typename WeightT, typename OutT>
-HWY_NOINLINE void ScalarLayerNorm(const VecT* x,
-                                  const WeightT* HWY_RESTRICT scale,
-                                  const WeightT* HWY_RESTRICT bias,
-                                  OutT* out,
-                                  size_t size) {
-  constexpr float kEps = 1e-6f;
-  VecT mu, mu2;
-  ScalarMus(x, size, mu, mu2);
-  VecT var = mu2 - mu * mu;
-  VecT zero = 0.0f;
-  var = HWY_MAX(var, zero);
-  var = 1.0f / sqrtf(var + kEps);
-  for (size_t j = 0; j < size; j++) {
-    const float v = hwy::ConvertScalarTo<float>(x[j]);
-    const float s = hwy::ConvertScalarTo<float>(scale[j]);
-    const float b = hwy::ConvertScalarTo<float>(bias[j]);
-    out[j] = hwy::ConvertScalarTo<OutT>((v - mu) * s * var + b);
-  }
-}
-
-template <typename VecT, typename WeightT, typename OutT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void LayerNorm(const VecT* x,
-                                             const WeightT* HWY_RESTRICT weight,
-                                             const WeightT* HWY_RESTRICT bias,
-                                             OutT* out,
-                                             const size_t size) {
+// x and out may be the same.
+template <typename XT, typename WT, typename OT>
+HWY_NOINLINE void LayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
+                            const WT* HWY_RESTRICT bias, OT* out, size_t size) {
   PROFILER_FUNC;
-  // For now we only delegate to the scalar version.
-  // TODO: implement vectorized version.
-  ScalarLayerNorm(x, weight, bias, out, size);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t NF = hn::Lanes(df);
+
+  double mu, mu2;
+  ComputeMoments(x, size, mu, mu2);
+  double var = mu2 - mu * mu;
+  var = HWY_MAX(var, 0.0);
+  var = 1.0 / sqrt(var + 1E-6);
+  const VF vmu = hn::Set(df, static_cast<float>(mu));
+  const VF vvar = hn::Set(df, static_cast<float>(var));
+  const VF* HWY_RESTRICT pmu = &vmu;
+  const VF* HWY_RESTRICT pvar = &vvar;
+
+  const auto packed_x = MakeSpan(x, size);
+  const auto packed_scale = MakeSpan(scale, size);
+  const auto packed_bias = MakeSpan(bias, size);
+  const auto packed_out = MakeSpan(out, size);
+
+  // Loop body for one vector, called from main loop and remainder loop.
+  const auto norm = [pmu, pvar](VF x, VF s, VF add) HWY_ATTR -> VF {
+    const VF centered = hn::Sub(x, *pmu);
+    const VF mul = hn::Mul(s, *pvar);
+    return hn::MulAdd(centered, mul, add);
+  };
+
+  size_t i = 0;
+  if (size >= 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
+      VF x0, x1, s0, s1, add0, add1;
+      Decompress2(df, packed_x, i, x0, x1);
+      Decompress2(df, packed_scale, i, s0, s1);
+      Decompress2(df, packed_bias, i, add0, add1);
+      const VF n0 = norm(x0, s0, add0);
+      const VF n1 = norm(x1, s1, add1);
+      Compress2(df, n0, n1, packed_out, i);
+    }
+  }
+
+  const size_t remaining = size - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_scale[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_bias[2 * hn::MaxLanes(df)];
+    HWY_ALIGN OT buf_out[2 * hn::MaxLanes(df)];
+    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
+    DecompressAndZeroPad(df, packed_scale, i, buf_scale, remaining);
+    DecompressAndZeroPad(df, packed_bias, i, buf_bias, remaining);
+    const VF x0 = hn::Load(df, buf_x);
+    const VF x1 = hn::Load(df, buf_x + NF);
+    const VF s0 = hn::Load(df, buf_scale);
+    const VF s1 = hn::Load(df, buf_scale + NF);
+    const VF add0 = hn::Load(df, buf_bias);
+    const VF add1 = hn::Load(df, buf_bias + NF);
+    const VF n0 = norm(x0, s0, add0);
+    const VF n1 = norm(x1, s1, add1);
+    Compress2(df, n0, n1, MakeSpan(buf_out, 2 * NF), 0);
+    hwy::CopyBytes(buf_out, out + i, remaining * sizeof(OT));
+  }
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
@@ -447,39 +489,56 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
 }
 
 // Simple loops unless/until batch sizes are large enough to parallelize.
-template <typename WeightT, typename OutT>
-void RMSNormBatched(size_t num_tokens, const float* activations,
-                    const WeightT* weights, OutT* out, const size_t model_dim) {
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    RMSNorm(activations + token_idx * model_dim, weights,
-            out + token_idx * model_dim, model_dim);
-  }
+template <typename XT, typename OT>
+void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
+                    MatPtrT<OT>& out) {
+  HWY_DASSERT(weights.Rows() == 1);
+  HWY_DASSERT(weights.Cols() == activations.Cols());
+  HWY_DASSERT(activations.SameShape(out));
+
+  CallUpcasted(&weights, [&](const auto* weights_t) {
+    for (size_t token_idx = 0; token_idx < activations.Rows(); ++token_idx) {
+      RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(), 0,
+              out.Row(token_idx), activations.Cols());
+    }
+  });
 }
 
-// TODO: pass RowVectorBatch argument.
-template <typename WeightT, typename InOutT>
-void RMSNormInplaceBatched(size_t num_tokens, const WeightT* weights,
-                           InOutT* inout, const size_t model_dim) {
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    RMSNormInplace(weights, inout + token_idx * model_dim, model_dim);
-  }
+template <typename XT>
+void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout) {
+  HWY_DASSERT(weights.Rows() == 1);
+  HWY_DASSERT(weights.Cols() == inout.Cols());
+
+  CallUpcasted(&weights, [&](const auto* weights_t) {
+    for (size_t token_idx = 0; token_idx < inout.Rows(); ++token_idx) {
+      RMSNormInplace(weights_t->PackedScale1(), 0, inout.Row(token_idx),
+                     inout.Cols());
+    }
+  });
 }
 
-template <typename VecT, typename WeightT, typename OutT>
-void LayerNormBatched(size_t num_tokens, const VecT* x,
-                      const WeightT* HWY_RESTRICT weight,
-                      const WeightT* HWY_RESTRICT bias, OutT* out,
-                      const size_t size) {
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    LayerNorm(x + token_idx * size, weight, bias, out + token_idx * size, size);
-  }
+// x and out may be the same.
+template <typename XT, typename OT>
+void LayerNormBatched(const MatPtrT<XT>& x, const MatPtr& weight,
+                      const MatPtr& bias, MatPtrT<OT>& out) {
+  HWY_DASSERT(weight.Cols() == bias.Cols());
+  HWY_DASSERT(weight.Cols() == x.Cols());
+  HWY_DASSERT(x.SameShape(out));
+
+  CallUpcastedSame(
+      &weight, &bias, [&](const auto* weight_t, const auto* bias_t) {
+        for (size_t token_idx = 0; token_idx < x.Rows(); ++token_idx) {
+          LayerNorm(x.Row(token_idx), weight_t->PackedScale1(),
+                    bias_t->PackedScale1(), out.Row(token_idx), x.Cols());
+        }
+      });
 }
 
-static HWY_INLINE void AddFromBatched(size_t num_tokens, const float* other,
-                                      float* x, const size_t model_dim) {
-  for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-    AddFrom(other + token_idx * model_dim, x + token_idx * model_dim,
-            model_dim);
+static HWY_INLINE void AddFromBatched(const MatPtrT<float>& other,
+                                      MatPtrT<float>& x) {
+  HWY_DASSERT(x.SameShape(other));
+  for (size_t token_idx = 0; token_idx < x.Rows(); ++token_idx) {
+    AddFrom(other.Row(token_idx), x.Row(token_idx), x.Cols());
   }
 }
 
@@ -743,8 +802,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
   HWY_ASSERT(k != 0);
   HWY_ASSERT(k <= vocab_size);
   std::vector<double> packed_token_probs;
-  for (int32_t i = 0; i < vocab_size; ++i) {
-    if (accept_token && !accept_token(StaticCast<int>(i), probabilities[i])) {
+  for (int32_t i = 0; i < static_cast<int32_t>(vocab_size); ++i) {
+    if (accept_token && !accept_token(i, probabilities[i])) {
       continue;
     }
     packed_token_probs.push_back(PackTokenAndProb(i, probabilities[i]));
@@ -756,7 +815,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
 
   std::vector<TokenAndProb> token_probs;
   token_probs.reserve(k);
-  for (int32_t i = 0; i < k; ++i) {
+  for (int32_t i = 0; i < static_cast<int32_t>(k); ++i) {
     token_probs.push_back(UnpackTokenAndProb(packed_token_probs[i]));
   }
   return token_probs;
@@ -770,7 +829,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
       TopK(probabilities, vocab_size, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_probs(k);
-  for (int i = 0; i < k; ++i) {
+  for (size_t i = 0; i < k; ++i) {
     topk_indices[i] = token_probs[i].token;
     topk_probs[i] = token_probs[i].prob;
   }
@@ -788,7 +847,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
       TopK(logits, vocab_size, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_logits(k);
-  for (int i = 0; i < token_logits.size(); ++i) {
+  for (size_t i = 0; i < token_logits.size(); ++i) {
     topk_indices[i] = token_logits[i].token;
     topk_logits[i] = token_logits[i].prob;
   }
@@ -807,20 +866,20 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
 // Input has 4096 (64*64) rows, output has 256 (16*16) rows
 // Each output row is the average of a 4x4 block of input rows
 template <typename T>
-RowVectorBatch<T> AvgPool4x4(RowVectorBatch<T>& input) {
-  const Allocator& allocator = ThreadingContext::Get().allocator;
+MatStorageT<T> AvgPool4x4(MatStorageT<T>& input) {
   const Extents2D extents = input.Extents();
   // Input validation
   HWY_DASSERT(extents.rows == 4096);  // 64 * 64 = 4096 input rows
   // Create output with 256 rows and same number of columns
   const size_t out_rows = 256;  // 16 * 16 = 256 output rows
-  RowVectorBatch<T> result(allocator, Extents2D(out_rows, extents.cols));
+  MatStorageT<T> result("pool4x4", Extents2D(out_rows, extents.cols),
+                        MatPadding::kOdd);
   const size_t input_dim = 64;   // Input is 64×64
   const size_t output_dim = 16;  // Output is 16×16
   for (size_t out_row_idx = 0; out_row_idx < output_dim; ++out_row_idx) {
     for (size_t out_col_idx = 0; out_col_idx < output_dim; ++out_col_idx) {
       size_t out_idx = out_row_idx * output_dim + out_col_idx;
-      T* output_row = result.Batch(out_idx);
+      T* output_row = result.Row(out_idx);
       // Initialize output row to zeros
       std::fill(output_row, output_row + extents.cols, 0);
       // Average 16 row vectors from a 4x4 block
@@ -829,9 +888,9 @@ RowVectorBatch<T> AvgPool4x4(RowVectorBatch<T>& input) {
           size_t in_row_idx = out_row_idx * 4 + i;
           size_t in_col_idx = out_col_idx * 4 + j;
           size_t in_idx = in_row_idx * input_dim + in_col_idx;
-          const T* input_row = input.Batch(in_idx);
+          const T* input_row = input.Row(in_idx);
           // Add each input row to the output
-          // TODO(philculliton): use AddFrom in ops-inl for a vectorized loop.
+          // TODO(philculliton): use AddFrom in `ops-inl` for a vectorized loop.
           for (size_t col = 0; col < extents.cols; ++col) {
             output_row[col] += input_row[col];
           }

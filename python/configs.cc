@@ -55,8 +55,7 @@ PYBIND11_MODULE(configs, py_module) {
       .value("kSFP", Type::kSFP)
       .value("kNUQ", Type::kNUQ)
       .value("kF64", Type::kF64)
-      .value("kC64", Type::kC64)
-      .value("kU128", Type::kU128);
+      .value("kC64", Type::kC64);
 
   enum_<LayerAttentionType>(py_module, "LayerAttentionType")
       .value("kGemma", LayerAttentionType::kGemma)
