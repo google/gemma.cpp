@@ -74,11 +74,11 @@ struct Activations {
             is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
             MatPadding::kPacked),
 
-        inv_timescale(
-            CreateInvTimescale(env->ctx.allocator, layer_config.qkv_dim,
-                               layer_config.post_qk == PostQKType::HalfRope)),
+        inv_timescale(CreateInvTimescale(
+            ThreadingContext::Get().allocator, layer_config.qkv_dim,
+            layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
-            env->ctx.allocator, layer_config.qkv_dim,
+            ThreadingContext::Get().allocator, layer_config.qkv_dim,
             layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
 
         env(env) {
