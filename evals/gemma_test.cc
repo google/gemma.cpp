@@ -263,14 +263,6 @@ TEST_F(GemmaTest, CrossEntropySmall) {
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
   switch (config.model) {
-    case gcpp::Model::GEMMA_2B:
-      // 2B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 2.6f, 0.2f);
-      break;
-    case gcpp::Model::GEMMA_7B:
-      // 7B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 2.8f, 0.2f);
-      break;
     case gcpp::Model::GRIFFIN_2B:
       EXPECT_NEAR(entropy, 2.61f, 0.02f);
       break;
@@ -295,14 +287,6 @@ TEST_F(GemmaTest, CrossEntropyJingleBells) {
   float entropy = s_env->CrossEntropy(kJingleBells);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
   switch (config.model) {
-    case gcpp::Model::GEMMA_2B:
-      // 2B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 1.9f, 0.2f);
-      break;
-    case gcpp::Model::GEMMA_7B:
-      // 7B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 1.07f, 0.05f);
-      break;
     case gcpp::Model::GRIFFIN_2B:
       EXPECT_NEAR(entropy, 1.62f, 0.02f);
       break;
@@ -327,14 +311,6 @@ TEST_F(GemmaTest, CrossEntropyGettysburg) {
   float entropy = s_env->CrossEntropy(kGettysburg);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
   switch (config.model) {
-    case gcpp::Model::GEMMA_2B:
-      // 2B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 1.1f, 0.1f);
-      break;
-    case gcpp::Model::GEMMA_7B:
-      // 7B v.1 and v.1.1 produce slightly different results.
-      EXPECT_NEAR(entropy, 0.75f, 0.1f);
-      break;
     case gcpp::Model::GRIFFIN_2B:
       EXPECT_NEAR(entropy, 0.71f, 0.02f);
       break;

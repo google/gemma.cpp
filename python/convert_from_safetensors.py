@@ -520,14 +520,16 @@ def export_paligemma_sbs(
 
 _MODEL_SPECIFIER = flags.DEFINE_string(
     "model_specifier",
-    "",
+    None,
     "String specifying model, size, weight, wrapping (ModelConfig.Specifier)",
+    required=True,
 )
 
 _LOAD_PATH = flags.DEFINE_string(
     "load_path",
-    "",
+    None,
     "Path to the safetensors index.json file to read",
+    required=True,
 )
 _TOKENIZER_FILE = flags.DEFINE_string(
     "tokenizer_file",
