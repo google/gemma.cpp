@@ -241,7 +241,7 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
 
   // Pre-2025 format: no config, rely on deduction plus `wrapping_override`.
   return ModelConfig(deduced_model, deduced_weight,
-                     ChooseWrapping(config.model, wrapping_override));
+                     ChooseWrapping(deduced_model, wrapping_override));
 }
 
 static std::vector<float> ReadScales(BlobReader& reader,
