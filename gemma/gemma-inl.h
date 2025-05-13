@@ -328,20 +328,20 @@ class GemmaAttention {
   // Computes Q.K scores, which are "logits" (or scores) stored to att.
   // `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
   HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
-                        const float* HWY_RESTRICT q, const ConstMat<float>& k,
+                        const float* HWY_RESTRICT q, const MatPtrT<float>& k,
                         float* HWY_RESTRICT att) {
     const size_t qkv_dim = layer_config_.qkv_dim;
     if (HWY_LIKELY(last_pos < activations_.seq_len)) {
       // Slightly faster: no wraparound.
       for (size_t pos = start_pos; pos <= last_pos; ++pos) {
-        const float* HWY_RESTRICT k_ptr = k.ptr + k.Row(pos);
+        const float* HWY_RESTRICT k_ptr = k.Row(pos);
         const float score = Dot(q, k_ptr, qkv_dim);
         att[pos] = score;
       }
     } else {
       for (size_t pos = start_pos; pos <= last_pos; ++pos) {
         const size_t cache_pos = div_seq_len_.Remainder(pos);
-        const float* HWY_RESTRICT k_ptr = k.ptr + k.Row(cache_pos);
+        const float* HWY_RESTRICT k_ptr = k.Row(cache_pos);
         const float score = Dot(q, k_ptr, qkv_dim);
         att[pos % activations_.seq_len] = score;
       }
@@ -354,7 +354,7 @@ class GemmaAttention {
   // `v` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
   HWY_INLINE void WeightedSumV(const size_t start_pos, const size_t last_pos,
                                const float* HWY_RESTRICT att,
-                               const ConstMat<float>& v,
+                               const MatPtrT<float>& v,
                                float* HWY_RESTRICT att_out) const {
     const size_t qkv_dim = layer_config_.qkv_dim;
     hwy::ZeroBytes(att_out, qkv_dim * sizeof(*att_out));
@@ -362,13 +362,13 @@ class GemmaAttention {
     if (HWY_LIKELY(last_pos < activations_.seq_len)) {
       // Slightly faster: no wraparound.
       for (size_t pos = start_pos; pos <= last_pos; ++pos) {
-        const float* HWY_RESTRICT v_ptr = v.ptr + v.Row(pos);
+        const float* HWY_RESTRICT v_ptr = v.Row(pos);
         MulByConstAndAdd(att[pos], v_ptr, att_out, qkv_dim);
       }
     } else {
       for (size_t pos = start_pos; pos <= last_pos; ++pos) {
         const size_t cache_pos = div_seq_len_.Remainder(pos);
-        const float* HWY_RESTRICT v_ptr = v.ptr + v.Row(cache_pos);
+        const float* HWY_RESTRICT v_ptr = v.Row(cache_pos);
         MulByConstAndAdd(att[pos % activations_.seq_len], v_ptr, att_out,
                          qkv_dim);
       }
@@ -378,7 +378,7 @@ class GemmaAttention {
  public:
   // Calculates the attention outputs for a single q.
   HWY_INLINE void SingleDotSoftmaxWeightedSum(
-      float* HWY_RESTRICT q, const ConstMat<float>& k, const ConstMat<float>& v,
+      float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v,
       float* HWY_RESTRICT att, float* HWY_RESTRICT att_out,
       const float query_scale, const size_t pos, const size_t start_pos,
       const size_t last_pos) {
@@ -432,13 +432,14 @@ class GemmaAttention {
                 KVCache& kv_cache = kv_caches_[query_idx];
                 const size_t kv_head_offset =
                     layer_ * cache_layer_size_ + head_offset;
-                ConstMat<float> k(kv_cache.kv_cache.get() + kv_head_offset,
-                                  Extents2D(kv_cache.seq_len, qkv_dim),
-                                  /*stride=*/cache_pos_size_);
-                ConstMat<float> v(
-                    kv_cache.kv_cache.get() + kv_head_offset + qkv_dim,
-                    Extents2D(kv_cache.seq_len, qkv_dim),
-                    /*stride=*/cache_pos_size_);
+                MatPtrT<float> k("k_view",
+                                 Extents2D(kv_cache.seq_len, qkv_dim));
+                k.SetPtr(kv_cache.kv_cache.get() + kv_head_offset,
+                         /*stride=*/cache_pos_size_);
+                MatPtrT<float> v("v_view",
+                                 Extents2D(kv_cache.seq_len, qkv_dim));
+                v.SetPtr(kv_cache.kv_cache.get() + kv_head_offset + qkv_dim,
+                         /*stride=*/cache_pos_size_);
 
                 // Find the token position in the query and calculate the range
                 // of cache positions to attend to.

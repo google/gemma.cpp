@@ -47,16 +47,6 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-// Adapter so that gemma-inl.h can pass ConstMat.
-// TODO: remove after changing ComputeQKV to MatMul.
-template <typename WT, typename VT>
-HWY_INLINE float Dot(const ConstMat<WT>& w, size_t w_ofs, const VT* vec_aligned,
-                     size_t num) {
-  const hn::ScalableTag<VT> d;
-  HWY_DASSERT(num <= w.Stride());  // Single row, else padding is an issue.
-  const auto span = MakeSpan(w.ptr, w_ofs + w.extents.rows * w.Stride());
-  return w.Scale() * Dot(d, span, w_ofs, vec_aligned, num);
-}
 // For callers that pass `MatPtrT`, which is not necessarily packed - callers
 // should use Stride() to compute `w_ofs`.
 template <typename WT, typename VT>
@@ -66,7 +56,7 @@ HWY_INLINE float Dot(const MatPtrT<WT>& w, size_t w_ofs, const VT* vec_aligned,
   return w.Scale() * Dot(d, w.PaddedSpan(), w_ofs, vec_aligned, num);
 }
 
-// ArrayT is either MatPtrT or ConstMat.
+// ArrayT is MatPtrT.
 
 // Simple version without tiling nor threading, but two offsets/outputs and
 // always with addition.

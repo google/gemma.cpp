@@ -115,8 +115,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(allocator, B_extents.rows, sizeof(TC), ConstMat<TB>(b_trans),
-        env.parallel);
+  BindB(allocator, sizeof(TC), b_trans, env.parallel);
   BindC(allocator, A_extents.rows, C, env.parallel);
 
   Tristate use_spinning = Tristate::kDefault;

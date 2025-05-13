@@ -882,20 +882,17 @@ class MMPerPackage {
   // B is decompressed several call layers lower, but not all member functions
   // depend on TB, so pass it as an argument instead of templating the class.
   template <typename TB, typename TC>
-  HWY_NOINLINE void operator()(const ConstMat<TB>& B,
+  HWY_NOINLINE void operator()(const MatPtrT<TB>& B,
                                const RowPtr<TC>& C) const {
-    // TODO: include NUQ tables? NumPacked in ConstMat?
-    const size_t num_packed_B = B.ofs + B.Stride() * B.Extents().rows;
-
     switch (order_) {
       case MMOrder::kNT:
-        return DoNT(B, num_packed_B, C);
+        return DoNT(B, C);
       case MMOrder::kNT_K:
-        return DoNT_K(B, num_packed_B, C);
+        return DoNT_K(B, C);
       case MMOrder::kNT_MT:
-        return DoNT_MT(B, num_packed_B, C);
+        return DoNT_MT(B, C);
       case MMOrder::kNT_MT_K:
-        return DoNT_MT_K(B, num_packed_B, C);
+        return DoNT_MT_K(B, C);
       default:
         HWY_UNREACHABLE;
     }
@@ -916,8 +913,7 @@ class MMPerPackage {
 
   // Single M and K, parallel N. Fills all of C directly.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT(const ConstMat<TB>& B, size_t num_packed_B,
-                       const RowPtr<TC>& C) const {
+  HWY_INLINE void DoNT(const MatPtrT<TB>& B, const RowPtr<TC>& C) const {
     MMZone zone;
     zone.MaybeEnter("MM.NT", args_);
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
@@ -941,7 +937,7 @@ class MMPerPackage {
             {
               MMZone zone;
               zone.MaybeEnter("MM.NT.DecB", args_);
-              DecompressB(B, num_packed_B, row_b, range_K, B_view);
+              DecompressB(B, row_b, range_K, B_view);
             }
             MMKernel::A2C0(A_view, B_view, mr_, range_M, row_b, K, MMSetC(),
                            args_, C);
@@ -953,8 +949,7 @@ class MMPerPackage {
 
   // Single M, parallel N, sequential K. Fills all of partial.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_K(const ConstMat<TB>& B, size_t num_packed_B,
-                         const RowPtr<TC>& C) const {
+  HWY_INLINE void DoNT_K(const MatPtrT<TB>& B, const RowPtr<TC>& C) const {
     MMZone zone;
     zone.MaybeEnter("MM.NT_K", args_);
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
@@ -977,7 +972,7 @@ class MMPerPackage {
         {
           MMZone zone;
           zone.MaybeEnter("MM.NT_K.DecB", args_);
-          DecompressB(B, num_packed_B, row_b, range_kc, B_view);
+          DecompressB(B, row_b, range_kc, B_view);
         }
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
                        C);
@@ -1018,8 +1013,7 @@ class MMPerPackage {
   // Parallel loops over mc/nc blocks of M/range_np, single K.
   // Fills `mc x nc` sections of C directly, in parallel.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_MT(const ConstMat<TB>& B, size_t num_packed_B,
-                          const RowPtr<TC>& C) const {
+  HWY_INLINE void DoNT_MT(const MatPtrT<TB>& B, const RowPtr<TC>& C) const {
     MMZone zone;
     zone.MaybeEnter("MM.NT_MT", args_);
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
@@ -1042,7 +1036,7 @@ class MMPerPackage {
             {
               MMZone zone;
               zone.MaybeEnter("MM.NT_MT.DecB", args_);
-              DecompressB(B, num_packed_B, row_b, range_K, B_view);
+              DecompressB(B, row_b, range_K, B_view);
             }
             MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, K, MMSetC(),
                            args_, C);
@@ -1055,8 +1049,7 @@ class MMPerPackage {
   // Parallel loops over mc/nc blocks of M/range_np, sequential K.
   // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_MT_K(const ConstMat<TB>& B, size_t num_packed_B,
-                            const RowPtr<TC>& C) const {
+  HWY_INLINE void DoNT_MT_K(const MatPtrT<TB>& B, const RowPtr<TC>& C) const {
     MMZone zone;
     zone.MaybeEnter("MM.NT_MT_K", args_);
     const size_t kc_max = ranges_kc_.TaskSize();
@@ -1078,7 +1071,7 @@ class MMPerPackage {
         {
           MMZone zone;
           zone.MaybeEnter("MM.NT_MT_K.DecB", args_);
-          DecompressB(B, num_packed_B, row_b, range_kc, B_view);
+          DecompressB(B, row_b, range_kc, B_view);
         }
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
                        C);
@@ -1210,18 +1203,18 @@ class MMPerPackage {
   // col 0 of `B_view`. Decompressing SFP is relatively cheap on `AVX3_DL`
   // thanks to its large table lookups, and less so on other targets.
   template <typename TB>
-  HWY_INLINE void DecompressB(const ConstMat<TB>& B, size_t num_packed_B,
-                              const size_t row_b, const IndexRange& range_kc,
+  HWY_INLINE void DecompressB(const MatPtrT<TB>& B, const size_t row_b,
+                              const IndexRange& range_kc,
                               const RowPtrBF& B_view) const {
     const hn::ScalableTag<BF16> dbf;
 
-    const PackedSpan<const TB> B_span = MakeSpan(B.ptr, num_packed_B);
+    const PackedSpan<const TB> B_span = B.PaddedSpan();
 
     const size_t kc = range_kc.Num();
     const size_t col0 = range_kc.begin();
 
     for (size_t r = 0; r < kNR; ++r) {
-      const size_t packed_ofs = B.Row(row_b + r) + col0;
+      const size_t packed_ofs = (row_b + r) * B.Stride() + col0;
       BF16* HWY_RESTRICT to = B_view.Row(r);
       DecompressAndZeroPad(dbf, B_span, packed_ofs, to, kc);
       // Verify that we zero-padded.
@@ -1264,7 +1257,7 @@ struct MMImpl {
   // Called from `MatMul` from two places: either with the next autotune config,
   // or with the best config.
   template <typename TA, typename TB, typename TC>
-  static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
+  static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                                     const RowPtr<TC>& C, const MMArgs& args,
                                     const MMConfig& config) {
     MMZone matmul_zone;
@@ -1300,7 +1293,7 @@ struct MMImpl {
 //
 // Uses considerable stack space: at least 40 KiB per thread.
 template <typename TA, typename TB, typename TC>
-HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
+HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               const RowPtr<TC>& C) {
   const Allocator& allocator = env.ctx.allocator;
@@ -1327,8 +1320,8 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
   MMPerKey& per_key = env.per_key[index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
-  const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.scale, add,
-                    env.storage.Partial());
+  const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
+                    add, env.storage.Partial());
   if (HWY_LIKELY(tuner.Best())) {
     MMImpl::DoMatMul(A, B, C, args, *tuner.Best());
     return &per_key;
@@ -1381,13 +1374,6 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const ConstMat<TB>& B,
   }
 
   return &per_key;
-}
-
-template <typename TA, typename TB, typename TC>
-HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                              const float* HWY_RESTRICT add, MatMulEnv& env,
-                              const RowPtr<TC>& C) {
-  return MatMul(A, ConstMat<TB>(B), add, env, C);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

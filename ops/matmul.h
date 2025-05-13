@@ -681,67 +681,18 @@ struct MMZone {
 };
 #endif  // PROFILER_ENABLED
 
-// Used for the A and B arguments of `MatMul`, which are always const.
-// This differs from `RowPtr` in supporting the `ofs` required for compressed T.
-// TODO: remove after splitting W1/W2 and updating QDotK to RowPtr.
-template <typename T>
-struct ConstMat {
-  ConstMat() = default;
-  ConstMat(const T* ptr, Extents2D extents, size_t stride)
-      : ptr(ptr), extents(extents), stride(stride), ofs(0) {
-    HWY_DASSERT(ptr != nullptr);
-    HWY_DASSERT(stride >= extents.cols);
-  }
-  // Non-explicit so that we can pass `MatPtr` directly to MatMul.
-  ConstMat(const MatPtrT<T>& m)
-      : ConstMat(const_cast<T*>(m.Row(0)), m.Extents(), m.Stride()) {
-    scale = m.Scale();
-  }
-
-  size_t Row(size_t r) const {
-    if constexpr (HWY_IS_DEBUG_BUILD) {
-      if (r >= extents.rows) {
-        HWY_ABORT("ConstMat::Row %zu out of bounds %zu", r, extents.rows);
-      }
-    }
-    return ofs + r * stride;
-  }
-
-  const Extents2D& Extents() const { return extents; }
-  size_t Stride() const { return stride; }
-  float Scale() const { return scale; }
-  // So that matvec-inl.h can use the same interface as MatPtrT:
-  size_t Rows() const { return extents.rows; }
-  size_t Cols() const { return extents.cols; }
-
-  const T* HWY_RESTRICT ptr;
-  Extents2D extents;
-  size_t stride;
-
-  // `scale` allows expanding the smaller range of `SfpStream` to the original
-  // values. MatFromWeights sets this from `MatPtr`.
-  float scale = 1.0f;
-
-  // Offset to add to `ptr`; separate because T=NuqStream does not support
-  // pointer arithmetic. This is in units of weights, and does not have anything
-  // to do with the interleaved NUQ tables. It should be computed via `Row()`
-  // to take into account the stride.
-  size_t ofs;
-};
-
 template <typename TB>
-void BindB(const Allocator& allocator, size_t N, size_t sizeof_TC,
-           const ConstMat<TB>& B, MMParallel& parallel) {
+void BindB(const Allocator& allocator, size_t sizeof_TC, const MatPtrT<TB>& B,
+           MMParallel& parallel) {
   if (!allocator.ShouldBind()) return;
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, N, sizeof_TC, kNR);
+      parallel.RangesOfNP(MMParallel::kMaxPackages, B.Rows(), sizeof_TC, kNR);
   const size_t quantum = allocator.Quantum<TB>();
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& rows_b = ranges_np.Range(pkg_idx);
     const size_t node = parallel.Node(pkg_idx);
-    uintptr_t begin =
-        reinterpret_cast<uintptr_t>(B.ptr + B.Row(rows_b.begin()));
+    uintptr_t begin = reinterpret_cast<uintptr_t>(B.Row(rows_b.begin()));
     uintptr_t end = begin + rows_b.Num() * B.Stride() * sizeof(TB);
     // B is not yet guaranteed to have padded rows, so only bind the
     // subset that is page-aligned.
