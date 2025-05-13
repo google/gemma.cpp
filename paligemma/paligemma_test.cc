@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"

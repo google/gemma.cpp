@@ -29,7 +29,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"

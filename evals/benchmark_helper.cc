@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"  // TypeName
+#include "compression/types.h"  // TypeName
 #include "evals/cross_entropy.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"

@@ -19,7 +19,7 @@
 
 #include <vector>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
 #include "util/basics.h"

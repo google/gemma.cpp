@@ -19,7 +19,7 @@
 #include <string>
 
 #include "compression/python/compression_clif_aux.h"
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "gemma/tensor_info.h"
 #include "util/mat.h"
 

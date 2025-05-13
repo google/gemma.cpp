@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-#include "compression/shared.h"  // PromptWrapping
+#include "compression/types.h"  // PromptWrapping
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // Gemma
 #include "gemma/gemma_args.h"

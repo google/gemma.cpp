@@ -24,7 +24,7 @@ cc_library(
     name = "distortion",
     hdrs = [
         "distortion.h",
-        "shared.h",
+        "types.h",
     ],
     deps = [
         "//:basics",
@@ -48,8 +48,8 @@ cc_test(
 )
 
 cc_library(
-    name = "shared",
-    hdrs = ["shared.h"],
+    name = "types",
+    hdrs = ["types.h"],
     deps = [
         "//:basics",
         "@highway//:hwy",
@@ -60,7 +60,7 @@ cc_library(
     name = "sfp",
     textual_hdrs = ["sfp-inl.h"],
     deps = [
-        ":shared",
+        ":types",
         "@highway//:hwy",
     ],
 )
@@ -70,7 +70,7 @@ cc_library(
     textual_hdrs = ["nuq-inl.h"],
     deps = [
         ":sfp",
-        ":shared",
+        ":types",
         "//:basics",
         "@highway//:hwy",
         "@highway//hwy/contrib/sort:vqsort",
@@ -138,7 +138,7 @@ cc_library(
     srcs = ["compress.cc"],
     hdrs = [
         "compress.h",
-        "shared.h",
+        "types.h",
     ],
     textual_hdrs = ["compress-inl.h"],
     deps = [
@@ -184,7 +184,7 @@ cc_library(
     deps = [
         ":nuq",
         ":sfp",
-        ":shared",
+        ":types",
         "@highway//:hwy",
         "@highway//:stats",
         "@highway//:thread_pool",

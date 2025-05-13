@@ -26,7 +26,7 @@
 #include <vector>
 
 #include "compression/compress.h"
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "io/blob_store.h"

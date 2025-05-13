@@ -28,7 +28,7 @@
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tokenizer.h"

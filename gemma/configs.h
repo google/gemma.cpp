@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "io/fields.h"           // IFieldsVisitor
 #include "util/basics.h"
 

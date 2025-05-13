@@ -3,7 +3,7 @@
 #include <stdio.h>
 
 #include "gtest/gtest.h"
-#include "compression/shared.h"  // SfpStream
+#include "compression/types.h"  // SfpStream
 #include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "util/mat.h"

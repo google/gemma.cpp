@@ -21,7 +21,7 @@
 #include <memory>
 #include <string>
 
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tensor_info.h"

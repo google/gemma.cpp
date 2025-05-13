@@ -27,7 +27,7 @@
 #include <random>
 
 #include "compression/distortion.h"
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"

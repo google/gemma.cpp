@@ -58,7 +58,7 @@ set(SOURCES
   compression/compress.h
   compression/nuq-inl.h
   compression/sfp-inl.h
-  compression/shared.h
+  compression/types.h
   compression/test_util-inl.h
   evals/benchmark_helper.cc
   evals/benchmark_helper.h

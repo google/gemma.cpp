@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "gemma/configs.h"
 #include "util/basics.h"  // Extents2D
 

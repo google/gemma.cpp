@@ -29,7 +29,7 @@
 #include <memory>
 #include <vector>
 
-#include "compression/shared.h"  // IWYU pragma: export
+#include "compression/types.h"  // IWYU pragma: export
 #if COMPRESS_STATS
 #include "compression/distortion.h"
 #include "hwy/stats.h"

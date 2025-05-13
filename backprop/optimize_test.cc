@@ -27,7 +27,7 @@
 #include "backprop/optimizer.h"
 #include "backprop/prompt.h"
 #include "backprop/sampler.h"
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/tokenizer.h"

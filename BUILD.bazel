@@ -131,7 +131,7 @@ cc_library(
     hdrs = ["gemma/configs.h"],
     deps = [
         ":basics",
-        "//compression:shared",
+        "//compression:types",
         "//io:fields",
         "@highway//:hwy",  # base.h
     ],
@@ -143,7 +143,7 @@ cc_test(
     deps = [
         ":configs",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:shared",
+        "//compression:types",
         "//io:fields",
     ],
 )
@@ -155,7 +155,7 @@ cc_library(
     deps = [
         ":basics",
         ":configs",
-        "//compression:shared",
+        "//compression:types",
     ],
 )
 
@@ -168,7 +168,7 @@ cc_library(
         ":basics",
         ":tensor_info",
         ":threading_context",
-        "//compression:shared",
+        "//compression:types",
         "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
@@ -200,7 +200,7 @@ cc_library(
         ":tensor_info",
         ":threading_context",
         ":tokenizer",
-        "//compression:shared",
+        "//compression:types",
         "//io",
         "//io:blob_store",
         "//io:fields",
@@ -471,7 +471,7 @@ cc_library(
         # Placeholder for internal dep, do not remove.,
         "//io:blob_store",
         "//io",
-        "//compression:shared",
+        "//compression:types",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
@@ -590,7 +590,7 @@ cc_binary(
         ":gemma_lib",
         ":ops",
         ":tokenizer",
-        "//compression:shared",
+        "//compression:types",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:profiler",
@@ -775,7 +775,7 @@ cc_test(
         ":tokenizer",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:shared",
+        "//compression:types",
         "@highway//:thread_pool",
     ],
 )

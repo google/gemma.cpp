@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "io/fields.h"           // Type
 
 namespace gcpp {

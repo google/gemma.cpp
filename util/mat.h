@@ -25,7 +25,7 @@
 #include <vector>
 
 // IWYU pragma: begin_exports
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "gemma/tensor_info.h"
 #include "io/fields.h"
 #include "util/allocator.h"  // AlignedPtr

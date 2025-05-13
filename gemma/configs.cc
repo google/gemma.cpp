@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"  // Type
+#include "compression/types.h"  // Type
 #include "io/fields.h"           // IFields
 #include "hwy/base.h"
 

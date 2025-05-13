@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "compression/shared.h"  // IsF32
+#include "compression/types.h"  // IsF32
 #include "gemma/configs.h"       // ModelConfig
 #include "gemma/model_store.h"   // ModelStore
 #include "gemma/tensor_info.h"   // TensorInfoRegistry

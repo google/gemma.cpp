@@ -27,7 +27,7 @@
 #include <random>
 
 #include "compression/compress.h"
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "util/allocator.h"
 #include "util/test_util.h"
 #include "util/threading_context.h"

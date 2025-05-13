@@ -19,7 +19,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/tensor_info.h"
 
 using gcpp::ActivationType;

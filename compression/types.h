@@ -15,8 +15,8 @@
 
 // Types shared between tensor definitions and `compress-inl.h`.
 
-#ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
-#define THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
+#ifndef THIRD_PARTY_GEMMA_CPP_COMPRESSION_TYPES_H_
+#define THIRD_PARTY_GEMMA_CPP_COMPRESSION_TYPES_H_
 
 #include <stddef.h>
 #include <stdint.h>
@@ -281,4 +281,4 @@ HWY_INLINE PackedSpan<const Packed> MakeConst(PackedSpan<Packed> packed) {
 }
 
 }  // namespace gcpp
-#endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_SHARED_H_
+#endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_TYPES_H_

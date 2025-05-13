@@ -33,7 +33,7 @@
 #include <algorithm>
 #include <vector>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/threading_context.h"

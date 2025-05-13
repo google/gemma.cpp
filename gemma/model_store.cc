@@ -24,7 +24,7 @@
 #include <cstring>  // strcmp
 #include <string>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/configs.h"  // ModelConfig
 #include "gemma/tensor_info.h"
 #include "gemma/tokenizer.h"

@@ -4,7 +4,7 @@
 
 #include <string>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "gemma/configs.h"
 
 namespace gcpp {
