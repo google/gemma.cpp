@@ -33,7 +33,7 @@ namespace gcpp {
 // prefer to define Exists inline because there are multiple io*.cc files.
 struct Path;
 
-using MapPtr = AlignedPtr2<const uint8_t[]>;
+using MapPtr = AlignedPtr<const uint8_t[]>;
 
 // Abstract base class enables multiple I/O backends in the same binary.
 class File {

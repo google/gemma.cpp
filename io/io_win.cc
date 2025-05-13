@@ -108,7 +108,7 @@ class FileWin : public File {
     void* ptr = MapViewOfFile(hMapping, FILE_MAP_READ, 0, 0, 0);
     if (!ptr) return MapPtr();
     return MapPtr(static_cast<const uint8_t*>(ptr),
-                  DeleterFunc2([hMapping](void* ptr) {
+                  DeleterFunc([hMapping](void* ptr) {
                     HWY_ASSERT(UnmapViewOfFile(ptr));
                     HWY_ASSERT(CloseHandle(hMapping));
                   }));

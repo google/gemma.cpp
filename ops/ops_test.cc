@@ -507,7 +507,7 @@ void TestLayerNormSimple() {
   const size_t kSize = 52;
   std::vector<float> values(kSize);
   // Alternating 1.0/-1.0, so mean=0.0, var=1.0, rsqrt(var+epsilon)=0.9999995
-  for (int i = 0; i < kSize; ++i) {
+  for (size_t i = 0; i < kSize; ++i) {
     values[i] = (i % 2 == 0) ? 1.0f : -1.0f;
   }
   std::vector<float> scale(kSize, 1.2f);

@@ -25,7 +25,6 @@
 namespace gcpp {
 
 struct KVCache {
-  KVCache() = default;  // for std::vector.
   KVCache(const ModelConfig& weights_config, size_t prefill_tbatch_size);
 
   // Returns a deep copy of the KVCache.

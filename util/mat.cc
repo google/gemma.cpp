@@ -89,38 +89,31 @@ void RandInit(MatPtr& mat, float stddev, std::mt19937& gen) {
   }
 }
 
-// Returns `num` rounded up to an odd number of cache lines. This would also
-// prevent 4K aliasing and is coprime with the cache associativity, which
-// might reduce conflict misses, but we instead use `StrideForCyclicOffsets`.
-static size_t RoundUpToOddLines(size_t num, size_t line_bytes,
-                                size_t element_bytes) {
-  HWY_DASSERT(line_bytes >= 32);
-  HWY_DASSERT(line_bytes % element_bytes == 0);
-  const size_t lines = hwy::DivCeil(num * element_bytes, line_bytes);
-  const size_t padded_num = (lines | 1) * line_bytes / element_bytes;
-  HWY_DASSERT(padded_num >= num);
-  return padded_num;
-}
-
-static size_t Stride(const Allocator& allocator, const MatPtr& mat,
-                     MatPadding padding) {
+size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,
+              size_t line_bytes) {
   switch (padding) {
     case MatPadding::kPacked:
     default:
-      return mat.Cols();
-    case MatPadding::kOdd:
-      return RoundUpToOddLines(mat.Cols(), allocator.LineBytes(),
-                               mat.ElementBytes());
-    case MatPadding::kCyclic:
-      return StrideForCyclicOffsets(
-          mat.Cols(), allocator.QuantumBytes() / mat.ElementBytes());
+      return cols;
+    case MatPadding::kOdd: {
+      // Round up to an odd number of cache lines to prevent 4K aliasing and
+      // reduce conflict misses (coprime with the cache associativity).
+      HWY_DASSERT(line_bytes >= 32);
+      HWY_DASSERT(line_bytes % element_bytes == 0);
+      const size_t lines = hwy::DivCeil(cols * element_bytes, line_bytes);
+      const size_t padded_cols = (lines | 1) * line_bytes / element_bytes;
+      HWY_DASSERT(padded_cols >= cols);
+      return padded_cols;
+    }
   }
 }
 
-void MatOwner::AllocateFor(MatPtr& mat, const MatPadding padding) {
+void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
   const bool is_nuq = mat.GetType() == Type::kNUQ;
+  if (is_nuq) padding = MatPadding::kPacked;
   const Allocator& allocator = ThreadingContext::Get().allocator;
-  const size_t stride = is_nuq ? mat.Cols() : Stride(allocator, mat, padding);
+  const size_t stride =
+      Stride(padding, mat.Cols(), mat.ElementBytes(), allocator.LineBytes());
   const size_t num = is_nuq ? mat.PackedBytes() : mat.Rows() * stride;
   // `compress-inl` requires up to 2 BF16 vectors of padding. `MatPadding`
   // might not be enough, hence add extra. `MatT` is at least one byte, which

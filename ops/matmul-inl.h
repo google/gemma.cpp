@@ -864,7 +864,7 @@ class MMPerPackage {
       : args_(args),
         pkg_idx_(pkg_idx),
         // May be overwritten with a view of A, if already BF16.
-        A_(args_.env->storage.A(args.env->ctx.allocator, pkg_idx, A.Extents())),
+        A_(args_.env->storage.A(pkg_idx, A.Extents())),
         range_np_(range_np),
         mr_(config.MR()),
         ranges_mc_(config.RangesOfMC(A.Extents().rows)),
@@ -905,9 +905,8 @@ class MMPerPackage {
   // Compute size of per-worker storage for `kNR` row ranges of B. Stack
   // allocation avoids passing a worker index.
   static constexpr size_t B_stride_max_ =
-      MaxStrideForCyclicOffsets<BF16>(MMStorage::kMaxKC);
-  static constexpr size_t B_storage_max_ =
-      kNR * B_stride_max_ + Allocator::MaxQuantum<BF16>();
+      MMStorage::kMaxKC + 2 * Allocator::MaxLineBytes() / sizeof(BF16);
+  static constexpr size_t B_storage_max_ = kNR * B_stride_max_;
 
   // Granularity of `ForNP`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
@@ -928,15 +927,14 @@ class MMPerPackage {
     const size_t K = range_K.Num();
     const RowPtrBF& A_view = A_.View(range_M.begin(), 0, K);
     const size_t B_stride =
-        StrideForCyclicOffsets(K, args_.env->ctx.allocator.Quantum<BF16>());
+        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
 
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
         [&](const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, K,
-                                B_stride);
+          const RowPtrBF B_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
@@ -971,8 +969,8 @@ class MMPerPackage {
       const size_t kc = range_kc.Num();
       const RowPtrBF& A_view = A_.View(range_mc.begin(), range_kc.begin(), kc);
       const RowPtrBF B_view(
-          args_.env->ctx.allocator, B_storage, kc,
-          StrideForCyclicOffsets(kc, args_.env->ctx.allocator.Quantum<BF16>()));
+          B_storage, kc,
+          Stride(MatPadding::kOdd, kc, sizeof(BF16), line_bytes_));
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
@@ -1028,7 +1026,7 @@ class MMPerPackage {
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
     const size_t B_stride =
-        StrideForCyclicOffsets(K, args_.env->ctx.allocator.Quantum<BF16>());
+        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
 
     // Sequential loop over NC/MC/KC, similar to `loop_nc` below
     // except for the profiler strings and `out_tag`.
@@ -1037,8 +1035,7 @@ class MMPerPackage {
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           const RowPtrBF& A_view = A_.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, K,
-                                B_stride);
+          const RowPtrBF B_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
@@ -1064,8 +1061,8 @@ class MMPerPackage {
     zone.MaybeEnter("MM.NT_MT_K", args_);
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
-    const size_t B_stride = StrideForCyclicOffsets(
-        kc_max, args_.env->ctx.allocator.Quantum<BF16>());
+    const size_t B_stride =
+        Stride(MatPadding::kOdd, kc_max, sizeof(BF16), line_bytes_);
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
     // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
@@ -1091,8 +1088,7 @@ class MMPerPackage {
         ranges_mc_, ranges_nc_, pkg_idx_,
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(args_.env->ctx.allocator, B_storage, kc_max,
-                                B_stride);
+          const RowPtrBF B_view(B_storage, kc_max, B_stride);
 
           // Peel off the first iteration of the kc loop: avoid
           // zero-initializing `partial` by writing into it.
@@ -1172,13 +1168,12 @@ class MMPerPackage {
   // Autotuning wrapper for `DoDecompressA`.
   template <typename TA>
   HWY_INLINE RowPtrBF DecompressA(const MatPtrT<TA>& A) const {
-    const Allocator& allocator = args_.env->ctx.allocator;
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
       // Only if no zero-padding required.
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
-      if (HWY_LIKELY(A.Cols() % NBF == 0)) return RowPtrFromMat(allocator, A);
+      if (HWY_LIKELY(A.Cols() % NBF == 0)) return RowPtrFromMat(A);
     }
 
     if (HWY_LIKELY(autotune.Best())) {

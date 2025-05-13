@@ -42,8 +42,6 @@ static ModelConfig ConfigNoSSM() {
   return config;
 }
 
-static ModelConfig ConfigBaseGemmaV1() { return ConfigNoSSM(); }
-
 static ModelConfig ConfigBaseGemmaV2() {
   ModelConfig config = ConfigNoSSM();
   config.att_cap = 50.0f;

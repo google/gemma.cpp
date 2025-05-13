@@ -28,7 +28,7 @@
 #include "compression/shared.h"  // Type
 #include "gemma/tensor_info.h"
 #include "io/fields.h"
-#include "util/allocator.h"  // AlignedPtr2
+#include "util/allocator.h"  // AlignedPtr
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports
 #include "hwy/base.h"
@@ -339,24 +339,6 @@ void ZeroInit(MatPtr& mat);
 // F32/F64 only.
 void RandInit(MatPtr& mat, float stddev, std::mt19937& gen);
 
-// Sufficient value of `stride` to enable the "cyclic offsets" optimization. If
-// `Allocator::ShouldBind()`, `Allocator::QuantumBytes()` is typically 4KiB.
-// To avoid remote accesses, we would thus pad each row to that, which results
-// in 4K aliasing and/or cache conflict misses. `RowPtr` is able to prevent that
-// by pulling rows forward by a cyclic offset, which is still a multiple of the
-// cache line size. This requires an additional `Allocator::QuantumBytes()` of
-// padding after also rounding up to that, which considerably increases size for
-// tall and skinny tensors.
-static inline size_t StrideForCyclicOffsets(size_t cols, size_t quantum) {
-  return hwy::RoundUpTo(cols, quantum) + quantum;
-}
-// Constexpr version (upper bound) for allocating storage in MatMul.
-template <typename T>
-constexpr size_t MaxStrideForCyclicOffsets(size_t cols) {
-  constexpr size_t quantum = Allocator::MaxQuantum<T>();
-  return hwy::RoundUpTo(cols, quantum) + quantum;
-}
-
 // Our tensors are always row-major. This enum indicates how much (if any)
 // padding comes after each row.
 enum class MatPadding {
@@ -373,11 +355,14 @@ enum class MatPadding {
   // Enough to round up to an odd number of cache lines, which can reduce
   // cache conflict misses or 4K aliasing.
   kOdd,
-  // Enough to enable the "cyclic offsets" optimization for `MatMul`.
-  kCyclic,
 };
 
-// Type-erased, allows storing `AlignedPtr2<T[]>` for various T in the same
+// The stride (offset in elements between rows) that `MatOwner/MatStorageT`
+// will use.
+size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,
+              size_t line_bytes);
+
+// Type-erased, allows storing `AlignedPtr<T[]>` for various T in the same
 // vector.
 class MatOwner {
  public:
@@ -390,7 +375,7 @@ class MatOwner {
   void AllocateFor(MatPtr& mat, MatPadding padding);
 
  private:
-  AlignedPtr2<uint8_t[]> storage_;
+  AlignedPtr<uint8_t[]> storage_;
 };
 
 // Multiple `MatOwner`, with support for parallel allocation.
@@ -443,84 +428,40 @@ MatStorageT<T> MakePacked(const char* name, size_t rows, size_t cols) {
 }
 
 // Lightweight version of `MatPtr` used by matmul-inl.h for padded tensors with
-// seekable (non-NUQ) T. This has less metadata, but support for cyclic offsets.
+// seekable (non-NUQ) T.
 #pragma pack(push, 1)  // power of two size
 template <typename T>
 class RowPtr {
  public:
-  RowPtr(const Allocator& allocator, T* HWY_RESTRICT row0, size_t cols,
-         size_t stride)
+  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
       : row0_(row0),
-        stride_(stride),
-        // TODO: disabled because otherwise we see non-deterministic results.
-        row_mask_(0),
-        // static_cast<uint32_t>(allocator.QuantumStepMask() & 0xFFFFFFFFu)),
         cols_(static_cast<uint32_t>(cols)),
-        step_bytes_(static_cast<uint32_t>(allocator.StepBytes())),
-        quantum_bytes_(allocator.QuantumBytes()) {
+        stride_(static_cast<uint32_t>(stride)) {
     HWY_DASSERT(stride >= cols);
-    HWY_DASSERT(row_mask_ != ~uint32_t{0});
-    if (stride < StrideForCyclicOffsets(cols, quantum_bytes_ / sizeof(T))) {
-      row_mask_ = 0;
-      if constexpr (HWY_IS_DEBUG_BUILD) {
-        static bool once;
-        if (stride != cols && !once) {
-          once = true;
-          HWY_WARN(
-              "Check why RowPtr stride=%zu < StrideForCyclicOffsets(cols=%zu), "
-              "T=%zu; this forces us to disable cyclic offsets.",
-              stride, cols, sizeof(T));
-        }
-      }
-    }
   }
 
-  RowPtr(const Allocator& allocator, T* HWY_RESTRICT row0, size_t cols)
-      : RowPtr(allocator, row0, cols, cols) {}
+  RowPtr(T* HWY_RESTRICT row0, size_t cols) : RowPtr(row0, cols, cols) {}
 
-  T* HWY_RESTRICT Row(size_t r) const {
-    // How much of the previous row's padding to consume.
-    const size_t pad_bytes = (r & row_mask_) * step_bytes_;
-    HWY_DASSERT(pad_bytes < static_cast<size_t>(quantum_bytes_));
-    return row0_ + stride_ * r - pad_bytes;
-  }
+  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
   size_t Cols() const { return static_cast<size_t>(cols_); }
 
-  size_t Stride() const { return stride_; }
+  size_t Stride() const { return static_cast<size_t>(stride_); }
   void SetStride(size_t stride) {
     HWY_DASSERT(stride >= Cols());
     stride_ = stride;
-    // The caller might not have padded enough, so disable the padding in Row().
-    // Rows will now be exactly `stride` elements apart. This is used when
-    // writing to the KV cache via MatMul.
-    row_mask_ = 0;
   }
 
   // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
   RowPtr<T> View(size_t r, size_t c, size_t cols) const {
     HWY_DASSERT(c < Cols());
     HWY_DASSERT(cols <= Cols() - c);
-    return RowPtr<T>(Row(r) + c, cols, stride_, row_mask_, step_bytes_,
-                     quantum_bytes_);
+    return RowPtr<T>(Row(r) + c, cols, stride_);
   }
 
  private:
-  // For `View()`.
-  RowPtr(T* new_row0, size_t new_cols, size_t stride, uint32_t row_mask,
-         uint32_t step_bytes, uint32_t quantum_bytes)
-      : row0_(new_row0),
-        stride_(stride),
-        row_mask_(row_mask),
-        cols_(new_cols),
-        step_bytes_(step_bytes),
-        quantum_bytes_(quantum_bytes) {}
-
   T* HWY_RESTRICT row0_;
-  size_t stride_;
-  uint32_t row_mask_;
   uint32_t cols_;
-  uint32_t step_bytes_;
-  uint32_t quantum_bytes_;
+  uint32_t stride_;
 };
 #pragma pack(pop)
 
@@ -528,14 +469,12 @@ using RowPtrBF = RowPtr<BF16>;
 using RowPtrF = RowPtr<float>;
 using RowPtrD = RowPtr<double>;
 
-// TODO: remove allocator arg once kCyclic is removed.
 template <typename T>
-RowPtr<T> RowPtrFromMat(const Allocator& allocator,
-                        const MatPtrT<T>& row_vectors) {
+RowPtr<T> RowPtrFromMat(const MatPtrT<T>& row_vectors) {
   // RowPtr is non-const for MatMul C, but is also used for A which is const.
   // Callers are responsible for checking their usage of RowPtr.
-  return RowPtr<T>(allocator, const_cast<T*>(row_vectors.Row(0)),
-                   row_vectors.Cols(), row_vectors.Stride());
+  return RowPtr<T>(const_cast<T*>(row_vectors.Row(0)), row_vectors.Cols(),
+                   row_vectors.Stride());
 }
 
 }  // namespace gcpp

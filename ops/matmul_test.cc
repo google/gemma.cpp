@@ -205,7 +205,6 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
 template <typename TA, typename TB = TA, typename TC = float>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env, int line) {
-  const Allocator& allocator = env.ctx.allocator;
   hwy::ThreadPool& pool = env.ctx.pools.Pool();
   fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",
           rows_ac, cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>(),
@@ -229,8 +228,8 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   add_storage.SetScale(1.0f);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C_slow = RowPtrFromMat(allocator, c_slow_batch);
-  const RowPtr<TC> C = RowPtrFromMat(allocator, c_batch);
+  const RowPtr<TC> C_slow = RowPtrFromMat(c_slow_batch);
+  const RowPtr<TC> C = RowPtrFromMat(c_batch);
 
   MatMulSlow(a, b_trans, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.

@@ -1140,7 +1140,7 @@ void TestAllDot() {
           for (size_t variant = 0; variant < kVariants; ++variant) {
             constexpr size_t kTimeReps = hn::AdjustedReps(10);
             std::array<double, kTimeReps> elapsed;
-            for (int time_rep = 0; time_rep < kTimeReps; ++time_rep) {
+            for (size_t time_rep = 0; time_rep < kTimeReps; ++time_rep) {
               const double start = hwy::platform::Now();
               dots[variant] +=
                   CallDot(df, variant, a_span, /*w_ofs=*/0, pb, num);

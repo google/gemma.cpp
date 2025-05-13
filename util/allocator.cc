@@ -132,7 +132,11 @@ size_t DetectTotalMiB(size_t page_bytes) {
 
 Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   line_bytes_ = DetectLineBytes();
+  // Ensure MaxLineBytes() is an upper bound.
+  HWY_ASSERT(MaxLineBytes() >= LineBytes());
+
   vector_bytes_ = hwy::VectorBytes();
+
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
   base_page_bytes_ = DetectPageSize();
   quantum_bytes_ = step_bytes_;  // may overwrite below
@@ -165,8 +169,6 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
         // Ensure pages meet the alignment requirements of `AllocBytes`.
         HWY_ASSERT(base_page_bytes_ >= quantum_bytes_);
         quantum_bytes_ = base_page_bytes_;
-        // Ensure MaxQuantum() is an upper bound.
-        HWY_ASSERT(MaxQuantum<uint8_t>() >= Quantum<uint8_t>());
         should_bind_ = true;
       } else {
         HWY_WARN(
@@ -175,9 +177,6 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
       }
     }
   }
-
-  HWY_DASSERT(quantum_bytes_ % step_bytes_ == 0);
-  quantum_step_mask_ = quantum_bytes_ / step_bytes_ - 1;
 }
 
 size_t Allocator::FreeMiB() const {
@@ -201,7 +200,7 @@ size_t Allocator::FreeMiB() const {
 #endif
 }
 
-AlignedPtr2<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
+AlignedPtr<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
   // If we are not binding, the Highway allocator is cheaper than `mmap`, and
   // defends against 2K aliasing.
   if (!should_bind_) {
@@ -217,10 +216,9 @@ AlignedPtr2<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
     // alignment scheme in aligned_allocator.cc and does not work for
     // already-aligned pointers as returned by `mmap`, hence we wrap the Highway
     // pointer in our own deleter.
-    return AlignedPtr2<uint8_t[]>(p.release(), DeleterFunc2([](void* ptr) {
-                                    hwy::FreeAlignedBytes(ptr, nullptr,
-                                                          nullptr);
-                                  }));
+    return AlignedPtr<uint8_t[]>(p.release(), DeleterFunc([](void* ptr) {
+                                   hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
+                                 }));
   }
 
   // Binding, or large vector/cache line size: use platform-specific allocator.
@@ -234,17 +232,16 @@ AlignedPtr2<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
   const int fd = -1;
   void* p = mmap(0, bytes, prot, flags, fd, off_t{0});
   if (p == MAP_FAILED) p = nullptr;
-  return AlignedPtr2<uint8_t[]>(static_cast<uint8_t*>(p),
-                                DeleterFunc2([bytes](void* ptr) {
-                                  HWY_ASSERT(munmap(ptr, bytes) == 0);
-                                }));
+  return AlignedPtr<uint8_t[]>(
+      static_cast<uint8_t*>(p),
+      DeleterFunc([bytes](void* ptr) { HWY_ASSERT(munmap(ptr, bytes) == 0); }));
 #elif HWY_OS_WIN
   const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
-  return AlignedPtr2<uint8_t[]>(
+  return AlignedPtr<uint8_t[]>(
       static_cast<uint8_t*>(_aligned_malloc(bytes, alignment)),
-      DeleterFunc2([](void* ptr) { _aligned_free(ptr); }));
+      DeleterFunc([](void* ptr) { _aligned_free(ptr); }));
 #else
-  return AlignedPtr2<uint8_t[]>(nullptr, DeleterFunc2());
+  return AlignedPtr<uint8_t[]>(nullptr, DeleterFunc());
 #endif
 }
 

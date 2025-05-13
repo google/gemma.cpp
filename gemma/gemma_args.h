@@ -107,7 +107,7 @@ using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
 // - per-query position within the tokens sequence
 // - layer index (or -1 for post-norm output)
 // - activations
-class Activations;
+struct Activations;
 using ActivationsObserverFunc =
     std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
 

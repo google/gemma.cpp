@@ -115,7 +115,7 @@ class FilePosix : public File {
 #endif
 
     return MapPtr(static_cast<const uint8_t*>(mapping),
-                  DeleterFunc2([mapping_size](void* ptr) {
+                  DeleterFunc([mapping_size](void* ptr) {
                     HWY_ASSERT(munmap(ptr, mapping_size) == 0);
                   }));
   }

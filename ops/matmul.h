@@ -217,8 +217,7 @@ class MMStorage {
       : partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN),
                          MatPadding::kOdd),
         // Same stride independent of the actual C.Cols() so we can pre-bind.
-        partial_(allocator, partial_storage_.Row(0), kMaxN,
-                 partial_storage_.Stride()) {
+        partial_(partial_storage_.Row(0), kMaxN, partial_storage_.Stride()) {
     // Per-package allocation so each can decompress A into its own copy.
     parallel.ForPkg(MMParallel::kMaxPackages, [&](size_t pkg_idx) {
       pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
@@ -240,12 +239,11 @@ class MMStorage {
   }
 
   // Returns per-package matrix view.
-  RowPtrBF A(const Allocator& allocator, size_t pkg_idx,
-             const Extents2D& extents) const {
+  RowPtrBF A(size_t pkg_idx, const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxM);
     HWY_DASSERT(extents.cols <= kMaxK);
-    return RowPtrBF(allocator, const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
-                    extents.cols, pkg_A_[pkg_idx]->Stride());
+    return RowPtrBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)), extents.cols,
+                    pkg_A_[pkg_idx]->Stride());
   }
 
   RowPtrD Partial() const { return partial_; }

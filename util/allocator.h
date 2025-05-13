@@ -34,13 +34,13 @@ namespace gcpp {
 
 // Custom deleter for types without a dtor, but where the deallocation requires
 // state, e.g. a lambda with *by-value* capture.
-class DeleterFunc2 {
+class DeleterFunc {
  public:
   // `MatOwnerT` requires this to be default-constructible.
-  DeleterFunc2() = default;
+  DeleterFunc() = default;
 
   template <class Closure>
-  DeleterFunc2(const Closure& free_closure) : free_func_(free_closure) {}
+  DeleterFunc(const Closure& free_closure) : free_func_(free_closure) {}
 
   template <typename T>
   void operator()(T* p) const {
@@ -52,10 +52,10 @@ class DeleterFunc2 {
 };
 
 // Wrapper that also calls the destructor for each element being deallocated.
-class DeleterDtor2 {
+class DeleterDtor {
  public:
-  DeleterDtor2() {}
-  DeleterDtor2(size_t num, DeleterFunc2 free) : num_(num), free_(free) {}
+  DeleterDtor() {}
+  DeleterDtor(size_t num, DeleterFunc free) : num_(num), free_(free) {}
 
   template <typename T>
   void operator()(T* p) const {
@@ -67,15 +67,15 @@ class DeleterDtor2 {
 
  private:
   size_t num_;
-  DeleterFunc2 free_;
+  DeleterFunc free_;
 };
 
 // Unique (move-only) pointer to aligned POD T, which can be an array or class.
 template <typename T>
-using AlignedPtr2 = std::unique_ptr<T, DeleterFunc2>;
+using AlignedPtr = std::unique_ptr<T, DeleterFunc>;
 // Unique (move-only) pointer to an aligned array of non-POD T.
 template <typename T>
-using AlignedClassPtr2 = std::unique_ptr<T, DeleterDtor2>;
+using AlignedClassPtr = std::unique_ptr<T, DeleterDtor>;
 
 // Both allocation, binding, and row accessors depend on the sizes of memory
 // pages and cache lines. To avoid having to pass `Allocator&` everywhere, we
@@ -90,26 +90,24 @@ class Allocator {
   // Bytes per cache line, or a reasonable guess if unknown. Used to choose
   // ranges such that there will be no false sharing.
   size_t LineBytes() const { return line_bytes_; }
+  // Upper bound on `LineBytes()`, for stack allocations.
+  static constexpr size_t MaxLineBytes() { return 256; }
   // Bytes per full vector. Used to compute loop steps.
   size_t VectorBytes() const { return vector_bytes_; }
   // Work granularity that avoids false sharing and partial vectors.
   // = HWY_MAX(LineBytes(), VectorBytes())
   size_t StepBytes() const { return step_bytes_; }
+
   // File size multiple required for memory mapping.
   size_t BasePageBytes() const { return base_page_bytes_; }
+
   // Either StepBytes or BasePageBytes if NUMA.
   size_t QuantumBytes() const { return quantum_bytes_; }
   template <typename T>
+  // For rounding down elements to the page size in `BindB/BindC`.
   size_t Quantum() const {
     return QuantumBytes() / sizeof(T);
   }
-  // Upper bound on `Quantum()`, for stack allocations.
-  template <typename T>
-  static constexpr size_t MaxQuantum() {
-    return 4096 / sizeof(T);
-  }
-  // = QuantumBytes() / StepBytes() - 1
-  size_t QuantumStepMask() const { return quantum_step_mask_; }
 
   // L1 and L2 are typically per core.
   size_t L1Bytes() const { return l1_bytes_; }
@@ -123,35 +121,35 @@ class Allocator {
   // Returns byte pointer aligned to `QuantumBytes()`, without calling
   // constructors nor destructors on deletion. Type-erased so this can be
   // implemented in `allocator.cc` and called by `MatOwner`.
-  AlignedPtr2<uint8_t[]> AllocBytes(size_t bytes) const;
+  AlignedPtr<uint8_t[]> AllocBytes(size_t bytes) const;
 
   // Returns pointer aligned to `QuantumBytes()`, without calling constructors
   // nor destructors on deletion.
   template <typename T>
-  AlignedPtr2<T[]> Alloc(size_t num) const {
+  AlignedPtr<T[]> Alloc(size_t num) const {
     const size_t bytes = num * sizeof(T);
     // Fail if the `bytes = num * sizeof(T)` computation overflowed.
     HWY_ASSERT(bytes / sizeof(T) == num);
 
-    AlignedPtr2<uint8_t[]> p8 = AllocBytes(bytes);
-    return AlignedPtr2<T[]>(HWY_RCAST_ALIGNED(T*, p8.release()),
-                            p8.get_deleter());
+    AlignedPtr<uint8_t[]> p8 = AllocBytes(bytes);
+    return AlignedPtr<T[]>(HWY_RCAST_ALIGNED(T*, p8.release()),
+                           p8.get_deleter());
   }
 
   // Same as Alloc, but calls constructor(s) with `args` and the deleter will
   // call destructor(s).
   template <typename T, class... Args>
-  AlignedClassPtr2<T> AllocClasses(size_t num, Args&&... args) const {
+  AlignedClassPtr<T> AllocClasses(size_t num, Args&&... args) const {
     const size_t bytes = num * sizeof(T);
     // Fail if the `bytes = num * sizeof(T)` computation overflowed.
     HWY_ASSERT(bytes / sizeof(T) == num);
 
-    AlignedPtr2<uint8_t[]> p8 = AllocBytes(bytes);
+    AlignedPtr<uint8_t[]> p8 = AllocBytes(bytes);
     T* p = HWY_RCAST_ALIGNED(T*, p8.release());
     for (size_t i = 0; i < num; ++i) {
       new (p + i) T(std::forward<Args>(args)...);
     }
-    return AlignedClassPtr2<T>(p, DeleterDtor2(num, p8.get_deleter()));
+    return AlignedClassPtr<T>(p, DeleterDtor(num, p8.get_deleter()));
   }
 
   // Returns whether `BindMemory` can/should be called, i.e. we have page-level
@@ -170,7 +168,6 @@ class Allocator {
   size_t step_bytes_;
   size_t base_page_bytes_;
   size_t quantum_bytes_;
-  size_t quantum_step_mask_;
 
   size_t l1_bytes_ = 0;
   size_t l2_bytes_ = 0;

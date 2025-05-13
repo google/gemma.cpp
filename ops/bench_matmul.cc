@@ -105,7 +105,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C = RowPtrFromMat(allocator, c_batch);
+  const RowPtr<TC> C = RowPtrFromMat(c_batch);
 
   // Fewer reps for large batch sizes, which take longer.
   const size_t num_samples = M < 32 ? 20 : 12;

@@ -38,7 +38,7 @@ namespace gcpp {
 
 // Page-aligned on NUMA systems so we can bind to a NUMA node. This also allows
 // moving because it is a typedef to `std::unique_ptr`.
-using PoolPtr = AlignedClassPtr2<hwy::ThreadPool>;
+using PoolPtr = AlignedClassPtr<hwy::ThreadPool>;
 
 // Creates a hierarchy of thread pools according to `BoundedTopology`: one with
 // a thread per enabled package; for each of those, one with a thread per
