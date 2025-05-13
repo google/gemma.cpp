@@ -57,7 +57,7 @@ Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
       model_(*reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config().weight),
       chat_template_(model_.Tokenizer(), model_.Config().model) {
-  weights_.ReadOrAllocate(model_, *reader_, env_.ctx.pools.Pool());
+  weights_.ReadFromBlobs(model_, *reader_, env_.ctx.pools.Pool());
   reader_.reset();
 }
 

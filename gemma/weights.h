@@ -21,6 +21,7 @@
 
 #include <complex>
 #include <memory>
+#include <mutex>  // NOLINT
 #include <random>
 #include <string>
 #include <vector>
@@ -43,10 +44,10 @@ struct TensorArgs {
   // `flags` is a combination of zero or more `Flags`.
   TensorArgs(MatPtr& mat, const MatPtr* other_mat1, const MatPtr* other_mat2,
              int flags)
-      : mat(mat), other_mat1(other_mat1), other_mat2(other_mat2), flags(flags) {
-    // Does not make sense to combine both flags.
-    HWY_ASSERT(flags != (kMaybeRead | kOnlyAllocate));
-  }
+      : mat(mat),
+        other_mat1(other_mat1),
+        other_mat2(other_mat2),
+        flags(flags) {}
 
   MatPtr& mat;
   const MatPtr* other_mat1;  // either/both can be nullptr.
@@ -59,8 +60,6 @@ struct TensorArgs {
     // Not an error if the tensor is not present in the file. For example,
     // the _w1/_w2 tensors are not always present.
     kMaybeRead = 1,
-    // Do not attempt to read, just allocate the tensor. Used for `Reshape`.
-    kOnlyAllocate = 2,
   };
   const int flags;
 };
@@ -87,7 +86,6 @@ struct LayerWeightsPtrs {
   LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
                    const TensorInfoRegistry& tensors)
       : suffix_(LayerSuffix(layer_idx)),
-        attn_vec_einsum_w(Concat("att_ein", suffix_), tensors),
         qkv_einsum_w(Concat("qkv_ein", suffix_), tensors),
         qkv_einsum_w1(Concat("qkv1_w", suffix_), tensors),
         qkv_einsum_w2(Concat("qkv2_w", suffix_), tensors),
@@ -127,9 +125,13 @@ struct LayerWeightsPtrs {
         post_ffw_norm_scale(Concat("post_ff_ns", suffix_), tensors),
         ffw_gating_biases(Concat("ffw_gat_b", suffix_), tensors),
         ffw_output_biases(Concat("ffw_out_b", suffix_), tensors),
+
+        attn_vec_einsum_w(Concat("att_ein", suffix_), tensors),
         att_weights(Concat("att_w", suffix_), tensors),
+
         key_norm_scale(Concat("key_norm", suffix_), tensors),
         query_norm_scale(Concat("query_norm", suffix_), tensors),
+
         layer_config(config) {}
   ~LayerWeightsPtrs() = default;
 
@@ -144,10 +146,8 @@ struct LayerWeightsPtrs {
               hwy::If<hwy::IsSame<Weight, double>(), double,
                       hwy::If<IsF32<Weight>(), float, BF16>>>;
 
-  MatPtrT<Weight> attn_vec_einsum_w;
-  // qkv_einsum_w holds 2 different matrices, which may be separated out.
-  // On reading, which is used depends on what is in the file.
-  // At inference, the one with a non-null ptr is used.
+  // Files either have qkv_einsum_w with 2 stacked matrices or separate
+  // w1/w2 tensors. Fixup ensures w1/w2 are ready for use by gemma-inl.h.
   MatPtrT<Weight> qkv_einsum_w;
   MatPtrT<Weight> qkv_einsum_w1;
   MatPtrT<Weight> qkv_einsum_w2;
@@ -185,9 +185,8 @@ struct LayerWeightsPtrs {
     MatPtrT<WeightF32OrBF16> layer_norm_1_scale;
   } vit;
 
-  // gating_einsum_w holds 2 different matrices, which may be separated out.
-  // On reading, which is used depends on what is in the file.
-  // At inference, the one with a non-null ptr is used.
+  // Files either have gating_einsum_w with 2 stacked matrices or separate
+  // w1/w2 tensors. Fixup ensures w1/w2 are ready for use by gemma-inl.h.
   MatPtrT<Weight> gating_einsum_w;
   MatPtrT<Weight> gating_einsum_w1;
   MatPtrT<Weight> gating_einsum_w2;
@@ -201,7 +200,8 @@ struct LayerWeightsPtrs {
   MatPtrT<float> ffw_gating_biases;
   MatPtrT<float> ffw_output_biases;
 
-  MatPtrT<Weight> att_weights;  // For Reshape(); kOnlyAllocate.
+  MatPtrT<Weight> attn_vec_einsum_w;  // Use att_weights instead of this.
+  MatPtrT<Weight> att_weights;        // Use this instead of attn_vec_einsum_w.
 
   MatPtrT<WeightF32OrBF16> key_norm_scale;
   MatPtrT<WeightF32OrBF16> query_norm_scale;
@@ -234,10 +234,10 @@ struct LayerWeightsPtrs {
       return;
     }
     if (layer_config.type == LayerAttentionType::kGemma) {
-      // Not read, will be filled by Reshape() from `attn_vec_einsum_w`.
-      func(TENSOR_ARGS(att_weights, kOnlyAllocate));
-      func(TENSOR_ARGS(attn_vec_einsum_w, kMustRead));
-      func(TENSOR_ARGS(qkv_einsum_w, kMustRead));
+      // Either read from file, or allocated during Fixup().
+      func(TENSOR_ARGS(att_weights, kMaybeRead));
+      func(TENSOR_ARGS(attn_vec_einsum_w, kMaybeRead));
+      func(TENSOR_ARGS(qkv_einsum_w, kMaybeRead));
       func(TENSOR_ARGS(qkv_einsum_w1, kMaybeRead));
       func(TENSOR_ARGS(qkv_einsum_w2, kMaybeRead));
     } else {
@@ -254,7 +254,7 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(griffin.a, kMustRead));
     }
     {
-      func(TENSOR_ARGS(gating_einsum_w, kMustRead));
+      func(TENSOR_ARGS(gating_einsum_w, kMaybeRead));
       func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
       func(TENSOR_ARGS(gating_einsum_w2, kMaybeRead));
       func(TENSOR_ARGS(linear_w, kMustRead));
@@ -306,14 +306,25 @@ struct LayerWeightsPtrs {
     });
   }
 
-  // Initializes att_weights from `attn_vec_einsum_w`, hence this must be called
-  // after reading weights via `ForEachTensor`.
-  // TODO: update compression/convert_weights to bake this in.
-  void Reshape() {
-    // We only have/allocate this tensor for Gemma layers.
-    HWY_ASSERT(att_weights.HasPtr() ==
-               (layer_config.type == LayerAttentionType::kGemma));
-    if (!att_weights.HasPtr()) return;
+  // Must be called after reading weights via `ForEachTensor`.
+  // TODO: exporters should bake this into the weights already.
+  // WARNING: called from multiple threads; `mat_owners` requires a lock.
+  void Fixup(MatOwners& mat_owners) {
+    InitAttWeights(mat_owners);
+    SplitW1();
+    SplitAttW1();
+  }
+
+ private:
+  // Copies att_weights from `attn_vec_einsum_w`.
+  void InitAttWeights(MatOwners& mat_owners) {
+    // We only use this tensor for Gemma layers.
+    if (layer_config.type != LayerAttentionType::kGemma) return;
+
+    // Files must have one or the other, and backprop/ allocates both.
+    HWY_ASSERT(attn_vec_einsum_w.HasPtr() || att_weights.HasPtr());
+    // Done if we already read the transposed tensor.
+    if (att_weights.HasPtr() && !attn_vec_einsum_w.HasPtr()) return;
 
     // NUQ is handled by a specialization in weights.cc.
     HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
@@ -326,9 +337,15 @@ struct LayerWeightsPtrs {
     HWY_ASSERT(att_weights.GetType() == attn_vec_einsum_w.GetType());
     HWY_ASSERT(att_weights.Rows() == model_dim);
     HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
-    HWY_ASSERT(attn_vec_einsum_w.HasPtr());
     HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
     HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
+
+    {
+      static std::mutex m;
+      std::lock_guard<std::mutex> lock(m);
+      mat_owners.AllocateFor(att_weights, MatPadding::kOdd);
+    }
+
     const size_t T_bytes = att_weights.ElementBytes();
     for (size_t m = 0; m < model_dim; ++m) {
       uint8_t* HWY_RESTRICT out_row =
@@ -339,6 +356,77 @@ struct LayerWeightsPtrs {
       }
     }
     att_weights.SetScale(attn_vec_einsum_w.Scale());
+  }
+
+  // For FFN. Fast, only updates pointers.
+  void SplitW1() {
+    // We only use this tensor for Gemma layers.
+    if (layer_config.type != LayerAttentionType::kGemma) return;
+
+    // Files have both or neither of w1 and w2, and backprop/ allocates both.
+    HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
+    // w is mutually exclusive with w1 and w2 in the file, but backprop/
+    // allocates both, so we can only rule out both being null.
+    HWY_ASSERT(gating_einsum_w.HasPtr() || gating_einsum_w1.HasPtr());
+    // Done if we already read split tensors. Note that they are not
+    // necessarily the same type.
+    if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
+
+    const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+    HWY_ASSERT(gating_einsum_w.Rows() == 2 * ff_hidden_dim);
+    HWY_ASSERT(gating_einsum_w1.Rows() == ff_hidden_dim);
+    HWY_ASSERT(gating_einsum_w2.Rows() == ff_hidden_dim);
+    // Cols are the model_dim but we don't have ModelConfig here.
+    HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
+    HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
+
+    const size_t stride = gating_einsum_w.Stride();
+    gating_einsum_w1.SetPtr(gating_einsum_w.Row(0), stride);
+    gating_einsum_w2.SetPtr(gating_einsum_w.Row(ff_hidden_dim), stride);
+    gating_einsum_w1.SetType(gating_einsum_w.GetType());
+    gating_einsum_w2.SetType(gating_einsum_w.GetType());
+    gating_einsum_w1.SetScale(gating_einsum_w.Scale());
+    gating_einsum_w2.SetScale(gating_einsum_w.Scale());
+    // Do not invalidate gating_einsum_w: backprop/ calls this repeatedly.
+  }
+
+  // For attention, which might not have a w2. Fast, only updates pointers.
+  void SplitAttW1() {
+    // We only use this tensor for Gemma layers.
+    if (layer_config.type != LayerAttentionType::kGemma) return;
+
+    // w is mutually exclusive with w1 in the file, but backprop/ allocates
+    // both, so we can only rule out both being null.
+    HWY_ASSERT(qkv_einsum_w.HasPtr() || qkv_einsum_w1.HasPtr());
+    // Done if we already read split tensors. Note that w2 does not exist for
+    // MHA, and otherwise might not be the same type.
+    if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
+
+    const size_t w1_rows = layer_config.heads * layer_config.QStride();
+
+    if (layer_config.IsMHA()) {  // MHA only requires w1.
+      qkv_einsum_w1 = qkv_einsum_w;
+      HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+      return;
+    }
+
+    const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
+
+    HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
+    HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+    HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
+    // Cols are the model_dim but we don't have ModelConfig here.
+    HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
+    HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
+
+    const size_t stride = qkv_einsum_w.Stride();
+    qkv_einsum_w1.SetPtr(qkv_einsum_w.Row(0), stride);
+    qkv_einsum_w2.SetPtr(qkv_einsum_w.Row(w1_rows), stride);
+    qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
+    qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
+    qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
+    qkv_einsum_w2.SetScale(qkv_einsum_w.Scale());
+    // Do not invalidate qkv_einsum_w: backprop/ calls this repeatedly.
   }
 };
 
@@ -502,13 +590,13 @@ struct ModelWeightsPtrs {
   // For reshaping file tensors to the shape expected by the code. This would
   // ideally already happen in the importer. Must be called after reading and
   // updating the attention weights.
-  void Reshape(hwy::ThreadPool& pool) {
-    pool.Run(0, c_layers.size(), [this](uint64_t layer, size_t /*thread*/) {
-      GetLayer(layer)->Reshape();
+  void Fixup(MatOwners& mat_owners, hwy::ThreadPool& pool) {
+    pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
+      GetLayer(layer)->Fixup(mat_owners);
     });
 
-    pool.Run(0, vit_layers.size(), [this](uint64_t layer, size_t /*thread*/) {
-      VitLayer(layer)->Reshape();
+    pool.Run(0, vit_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
+      VitLayer(layer)->Fixup(mat_owners);
     });
   }
 };  // `WeightsPtrs`
@@ -521,10 +609,9 @@ class WeightsOwner {
   // `weight_type` is obtained from `ModelConfig` in `ModelStore`.
   WeightsOwner(Type weight_type) : weight_type_(weight_type) {}
 
-  // Reads tensor data from `BlobStore`, or for tensors marked `kOnlyAllocate`,
-  // allocates memory and reshapes. Aborts on error.
-  void ReadOrAllocate(const ModelStore& model, BlobReader& reader,
-                      hwy::ThreadPool& pool);
+  // Reads tensor data from `BlobStore` or aborts on error.
+  void ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+                     hwy::ThreadPool& pool);
 
   // Calls `func(std::unique_ptr<WeightsPtrs<T>>&, args)`. `func` typically
   // calls `ForEachTensor`.
@@ -562,7 +649,7 @@ class WeightsOwner {
 
   // Usually taken care of by `ReadOrAllocate`, but must also be called by
   // `optimize_test, which updates the attention weights from which this copies.
-  void Reshape(hwy::ThreadPool& pool);
+  void Fixup(hwy::ThreadPool& pool);
 
  private:
   Type weight_type_;

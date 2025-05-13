@@ -714,13 +714,6 @@ struct ConstMat {
   size_t Rows() const { return extents.rows; }
   size_t Cols() const { return extents.cols; }
 
-  // Shrinks the row-extent of this matrix view, i.e. reduces the view to a
-  // subrange of the original rows starting at row 0.
-  void ShrinkRows(size_t rows) {
-    HWY_ASSERT(rows <= extents.rows);
-    extents.rows = rows;
-  }
-
   const T* HWY_RESTRICT ptr;
   Extents2D extents;
   size_t stride;

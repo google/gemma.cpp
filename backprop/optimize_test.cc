@@ -100,7 +100,7 @@ TEST(OptimizeTest, GradientDescent) {
   };
 
   gemma.MutableWeights().RandInit(1.0f, gen);
-  gemma.MutableWeights().Reshape(pool);
+  gemma.MutableWeights().Fixup(pool);
 
   printf("Initial weights:\n");
   gemma.MutableWeights().LogWeightStatsF32();
@@ -129,7 +129,7 @@ TEST(OptimizeTest, GradientDescent) {
       CrossEntropyLossBackwardPass(prompt, *gemma.Weights().GetF32(), forward,
                                    *grad.GetF32(), backward, inv_timescale,
                                    pool);
-      gemma.MutableWeights().Reshape(pool);
+      gemma.MutableWeights().Fixup(pool);
       num_ok += verify(prompt) ? 1 : 0;
     }
     total_loss /= kBatchSize;

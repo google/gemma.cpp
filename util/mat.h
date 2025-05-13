@@ -257,6 +257,10 @@ class MatPtrT : public MatPtr {
   const MatT* Row(size_t row) const { return this->RowT<MatT>(row); }
   MatT* Row(size_t row) { return this->RowT<MatT>(row); }
 
+  PackedSpan<const MatT> PaddedSpan() const {
+    return MakeConstSpan(Row(0), Rows() * Stride());
+  }
+
   // For `compress-inl.h` functions, which assume contiguous streams and thus
   // require packed layout.
   PackedSpan<const MatT> Span() const {

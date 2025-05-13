@@ -246,10 +246,6 @@ class GemmaAttention {
     const size_t heads = layer_config_.heads;
     const size_t kv_heads = layer_config_.kv_heads;
 
-    using WeightT = typename decltype(layer_weights_.qkv_einsum_w)::T;
-    ConstMat<WeightT> w_q1(layer_weights_.qkv_einsum_w.HasPtr()
-                               ? layer_weights_.qkv_einsum_w
-                               : layer_weights_.qkv_einsum_w1);
     // The original qkv_einsum_w has shape [(heads + kv_heads * 2), kKQVDim,
     // model_dim], which we reshaped to (heads + kv_heads * 2) * kKQVDim rows.
     // We must shrink to the actual size because MatMul verifies
@@ -257,23 +253,16 @@ class GemmaAttention {
     // rows are used. Otherwise, `QStride() == qkv_dim` and KV will be
     // computed in the second MatMul.
     const size_t w1_rows = heads * layer_config_.QStride();
-    w_q1.ShrinkRows(w1_rows);
-    MatMul(activations_.pre_att_rms_out, w_q1,
+    HWY_DASSERT(layer_weights_.qkv_einsum_w1.Rows() == w1_rows);
+    MatMul(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w1,
            /*add=*/nullptr, *activations_.env, RowPtrFromMat(activations_.q));
 
     if (is_mha_) {
       // Multi-Head Attention a.k.a. "use_qkv_einsum" computed QKV already.
     } else {
-      decltype(w_q1) w_q2(layer_weights_.qkv_einsum_w.HasPtr()
-                              ? layer_weights_.qkv_einsum_w
-                              : layer_weights_.qkv_einsum_w2);
-      if (layer_weights_.qkv_einsum_w.HasPtr()) {
-        // Skip first half of the matrix.
-        w_q2.ofs = w_q2.Row(w1_rows);
-      }
       // KV structure is [k, v, k, v, ....] = kv_heads pairs of (k, v).
       const size_t w_rows_kv_cols = kv_heads * 2 * qkv_dim;
-      w_q2.ShrinkRows(w_rows_kv_cols);
+      HWY_DASSERT(layer_weights_.qkv_einsum_w2.Rows() == w_rows_kv_cols);
 
       // Single query and no wraparound means we can use a matmul and write
       // directly into the KV cache with a stride of cache_pos_size_.
@@ -284,7 +273,7 @@ class GemmaAttention {
         float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
         RowPtrF kv_rows(kv, w_rows_kv_cols);
         kv_rows.SetStride(cache_pos_size_);
-        MatMul(activations_.pre_att_rms_out, w_q2,
+        MatMul(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w2,
                /*add=*/nullptr, *activations_.env, kv_rows);
       } else {
         // Proceed row by row because there will be wraparound.
@@ -299,7 +288,8 @@ class GemmaAttention {
           const size_t kv_offset =
               cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
           float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-          MatVec(w_q2, w_q2.ofs, w_rows_kv_cols, model_dim, x, kv, pool_);
+          MatVec(layer_weights_.qkv_einsum_w2, 0, w_rows_kv_cols, model_dim, x,
+                 kv, pool_);
         }
       }
     }  // !is_mha_
@@ -825,32 +815,11 @@ HWY_NOINLINE void FFWNoVit(Activations& activations,
   const float* output_bias =
       add_bias ? layer_weights->ffw_output_biases.PackedScale1() : nullptr;
 
-  // Define slightly more readable names for the weights and activations.
-  auto hidden_activations = RowPtrFromMat(activations.C1);
-  auto multiplier = RowPtrFromMat(activations.C2);
-  auto ffw_out = RowPtrFromMat(activations.ffw_out);
-
-  using WeightT = typename decltype(layer_weights->gating_einsum_w)::T;
-
-  // gating_einsum_w holds two half-matrices. We plan to change the importer to
-  // avoid this confusion by splitting into gating_einsum_w1 and
-  // gating_einsum_w2. TODO: move into Reshape().
-  const bool split = layer_weights->gating_einsum_w.HasPtr();
-  ConstMat<WeightT> w1(split ? layer_weights->gating_einsum_w
-                             : layer_weights->gating_einsum_w1);
-  ConstMat<WeightT> w2(split ? layer_weights->gating_einsum_w
-                             : layer_weights->gating_einsum_w2);
-  if (split) {
-    w2.ofs = w2.Row(ffh_hidden_dim);
-    // Ensure that B.Extents().row matches C.Cols() because MatMul checks that.
-    w1.ShrinkRows(ffh_hidden_dim);
-    w2.ShrinkRows(ffh_hidden_dim);
-  }
-
   // Compute the hidden layer activations.
-  MatMul(activations.pre_ffw_rms_out, w1, bias1, *activations.env,
-         hidden_activations);
-  MatMul(activations.pre_ffw_rms_out, w2, bias2, *activations.env, multiplier);
+  MatMul(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w1, bias1,
+         *activations.env, RowPtrFromMat(activations.C1));
+  MatMul(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w2, bias2,
+         *activations.env, RowPtrFromMat(activations.C2));
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_weights->layer_config.activation, activations.C1,
@@ -858,7 +827,7 @@ HWY_NOINLINE void FFWNoVit(Activations& activations,
 
   // Hidden layer -> output layer.
   MatMul(activations.C1, layer_weights->linear_w, output_bias, *activations.env,
-         ffw_out);
+         RowPtrFromMat(activations.ffw_out));
 }
 
 // Same as FFWNoVit, but with different layer_weights members and no second

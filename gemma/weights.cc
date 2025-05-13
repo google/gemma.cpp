@@ -37,13 +37,15 @@
 #include "hwy/profiler.h"
 #include "hwy/stats.h"
 
-// TODO: move into foreach_target; this is only used for NUQ Reshape.
+// TODO: move into foreach_target; this is only used for NUQ Fixup.
 #include "compression/compress-inl.h"
 
 namespace gcpp {
 
-template <>
-void LayerWeightsPtrs<NuqStream>::Reshape() {
+static void InitAttWeightsNUQ(const LayerConfig& layer_config,
+                              MatPtrT<NuqStream>& attn_vec_einsum_w,
+                              MatPtrT<NuqStream>& att_weights,
+                              MatOwners& mat_owners) {
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
 
@@ -81,6 +83,16 @@ void LayerWeightsPtrs<NuqStream>::Reshape() {
                           /*packed_ofs=*/0, pool);
 
   att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+static void SplitW1NUQ(const LayerConfig& layer_config) {
+  // TODO(janwas): implement.
+}
+
+template <>
+void LayerWeightsPtrs<NuqStream>::Fixup(MatOwners& mat_owners) {
+  InitAttWeightsNUQ(layer_config, attn_vec_einsum_w, att_weights, mat_owners);
+  SplitW1NUQ(layer_config);
 }
 
 // Aborts on error.
@@ -134,8 +146,8 @@ static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
   reader.ReadAll(pool);
 }
 
-void WeightsOwner::ReadOrAllocate(const ModelStore& model, BlobReader& reader,
-                                  hwy::ThreadPool& pool) {
+void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+                                 hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
   std::vector<MatPtr*> mats;
   std::vector<BlobRange> ranges;
@@ -148,10 +160,6 @@ void WeightsOwner::ReadOrAllocate(const ModelStore& model, BlobReader& reader,
   // Enumerate all weights (negligible cost).
   CallT([&](const auto& weights) {
     weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      if (t.flags & TensorArgs::kOnlyAllocate) {
-        mat_owners_.AllocateFor(t.mat, padding);
-        return;
-      }
       size_t key_idx;
       if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
         mats.push_back(&t.mat);
@@ -165,7 +173,7 @@ void WeightsOwner::ReadOrAllocate(const ModelStore& model, BlobReader& reader,
 
   MapOrRead(mats, reader, ranges, mat_owners_, padding, pool);
 
-  Reshape(pool);
+  Fixup(pool);
 }
 
 // Allocates `*_weights_`, but not yet the tensors inside. This is split out
@@ -218,6 +226,7 @@ void WeightsOwner::LogWeightStatsF32() {
   HWY_ASSERT(weight_type_ == Type::kF32);  // Only for float weights.
   float_weights_->ForEachTensor(
       nullptr, nullptr, [&total_weights](const TensorArgs& t) {
+        if (!t.mat.HasPtr()) return;
         if (t.mat.Scale() != 1.0f) {
           printf("[scale=%f] ", t.mat.Scale());
         }
@@ -238,9 +247,9 @@ void WeightsOwner::LogWeightStatsF32() {
   printf("%-20s  %12zu\n", "Total", total_weights);
 }
 
-void WeightsOwner::Reshape(hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.Reshape");
-  CallT([&pool](const auto& weights) { weights->Reshape(pool); });
+void WeightsOwner::Fixup(hwy::ThreadPool& pool) {
+  PROFILER_ZONE("Startup.Fixup");
+  CallT([&](const auto& weights) { weights->Fixup(mat_owners_, pool); });
 }
 
 std::vector<uint32_t> WeightsOwner::AddTensorDataToWriter(
@@ -248,7 +257,6 @@ std::vector<uint32_t> WeightsOwner::AddTensorDataToWriter(
   std::vector<uint32_t> serialized_mat_ptrs;
   CallT([&](const auto& weights) {
     weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      if (t.flags & TensorArgs::kOnlyAllocate) return;
       if (t.flags & TensorArgs::kMaybeRead && !t.mat.HasPtr()) return;
       HWY_ASSERT_M(t.mat.HasPtr(), t.mat.Name());
       writer.Add(t.mat.Name(), t.mat.Packed(), t.mat.PackedBytes());
