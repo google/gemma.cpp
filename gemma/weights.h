@@ -609,8 +609,9 @@ class WeightsOwner {
   // `weight_type` is obtained from `ModelConfig` in `ModelStore`.
   WeightsOwner(Type weight_type) : weight_type_(weight_type) {}
 
-  // Reads tensor data from `BlobStore` or aborts on error.
-  void ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+  // Reads tensor data from `BlobStore` or aborts on error. `map` is a user
+  // override for whether to map blobs or read them.
+  void ReadFromBlobs(const ModelStore& model, BlobReader& reader, Tristate map,
                      hwy::ThreadPool& pool);
 
   // Calls `func(std::unique_ptr<WeightsPtrs<T>>&, args)`. `func` typically
@@ -647,7 +648,7 @@ class WeightsOwner {
     return float_weights_.get();
   }
 
-  // Usually taken care of by `ReadOrAllocate`, but must also be called by
+  // Usually taken care of by `ReadFromBlobs`, but must also be called by
   // `optimize_test, which updates the attention weights from which this copies.
   void Fixup(hwy::ThreadPool& pool);
 

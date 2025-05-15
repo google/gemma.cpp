@@ -53,11 +53,11 @@ MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
 
 Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
     : env_(env),
-      reader_(BlobReader::Make(loader.weights, loader.map)),
+      reader_(new BlobReader(loader.weights)),
       model_(*reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config().weight),
       chat_template_(model_.Tokenizer(), model_.Config().model) {
-  weights_.ReadFromBlobs(model_, *reader_, env_.ctx.pools.Pool());
+  weights_.ReadFromBlobs(model_, *reader_, loader.map, env_.ctx.pools.Pool());
   reader_.reset();
 }
 

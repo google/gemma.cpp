@@ -55,25 +55,19 @@ struct BlobIO2 {
 class BlobStore;
 
 // Reads `BlobStore` header, converts keys to strings and creates a hash map for
-// faster lookups, and reads or maps blob data.
-// Thread-safe: it is safe to concurrently call all methods except `Enqueue`,
-// because they are const.
-// TODO(janwas): split into header and reader/mapper classes.
+// faster lookups.
+// TODO(janwas): rename to BlobFinder or similar.
+// Thread-safe: it is safe to concurrently call all methods.
 class BlobReader {
  public:
-  // Parallel I/O into allocated memory, or mapped view of file. The latter is
-  // better when the file is huge, but page faults add noise to measurements.
-  enum class Mode { kRead, kMap };
-
   // Acquires ownership of `file` (which must be non-null) and reads its header.
-  // Factory function instead of ctor because this can fail (return null).
-  static std::unique_ptr<BlobReader> Make(const Path& blob_path,
-                                          Tristate map = Tristate::kDefault);
+  // Aborts on error.
+  explicit BlobReader(const Path& blob_path);
 
-  ~BlobReader() = default;
-
-  // Returns true if the mode passed to ctor was `kMap` and mapping succeeded.
-  bool IsMapped() const { return mode_ == Mode::kMap; }
+  // Non-const version required for File::Map().
+  File& file() { return *file_; }
+  const File& file() const { return *file_; }
+  uint64_t file_bytes() const { return file_bytes_; }
 
   const std::vector<std::string>& Keys() const { return keys_; }
 
@@ -92,31 +86,14 @@ class BlobReader {
     return &range;
   }
 
-  // Only if `IsMapped()`: returns blob as a read-only span of `T`. Note that
-  // everything else except `CallWithSpan` is in units of bytes.
-  template <typename T>
-  hwy::Span<const T> MappedSpan(const BlobRange& range) const {
-    HWY_ASSERT(IsMapped());
-    HWY_ASSERT(range.bytes % sizeof(T) == 0);
-    return hwy::Span<const T>(
-        HWY_RCAST_ALIGNED(const T*, mapped_.get() + range.offset),
-        range.bytes / sizeof(T));
-  }
-
   // Returns error, or calls `func(span)` with the blob identified by `key`.
-  // This may allocate memory for the blob, and is intended for small blobs for
-  // which an aligned allocation is unnecessary.
+  // Allocates unaligned memory for the blob; intended for small metadata blobs.
   template <typename T, class Func>
   bool CallWithSpan(const std::string& key, const Func& func) const {
     const BlobRange* range = Find(key);
     if (!range) {
       HWY_WARN("Blob %s not found, sizeof T=%zu", key.c_str(), sizeof(T));
       return false;
-    }
-
-    if (mode_ == Mode::kMap) {
-      func(MappedSpan<T>(*range));
-      return true;
     }
 
     HWY_ASSERT(range->bytes % sizeof(T) == 0);
@@ -131,30 +108,13 @@ class BlobReader {
     return true;
   }
 
-  // The following methods must only be called if `!IsMapped()`.
-
-  // Enqueues a BlobIO2 for `ReadAll` to execute.
-  void Enqueue(const BlobRange& range, void* data);
-
-  // Reads in parallel all enqueued requests to the specified destinations.
-  // Aborts on error.
-  void ReadAll(hwy::ThreadPool& pool) const;
-
  private:
-  // Only for use by `Make`.
-  BlobReader(std::unique_ptr<File> file, uint64_t file_bytes,
-             const BlobStore& bs, Mode mode);
-
   const std::unique_ptr<File> file_;
   const uint64_t file_bytes_;
-  Mode mode_;
 
   std::vector<std::string> keys_;
   std::vector<BlobRange> ranges_;
   std::unordered_map<std::string, size_t> key_idx_for_key_;
-
-  MapPtr mapped_;                  // only if `kMap`
-  std::vector<BlobIO2> requests_;  // only if `kRead`
 };
 
 // Collects references to blobs and writes them all at once with parallel I/O.

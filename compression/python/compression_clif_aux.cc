@@ -141,7 +141,7 @@ HWY_EXPORT(NewSbsWriter);
 SbsWriter::SbsWriter() : impl_(HWY_DYNAMIC_DISPATCH(NewSbsWriter)()) {}
 
 SbsReader::SbsReader(const std::string& path)
-    : reader_(gcpp::BlobReader::Make(Path(path))), model_(*reader_) {}
+    : reader_(Path(path)), model_(reader_) {}
 
 }  // namespace gcpp
 #endif  // HWY_ONCE

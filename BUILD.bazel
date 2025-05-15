@@ -218,12 +218,14 @@ cc_library(
         ":mat",
         ":model_store",
         ":tensor_info",
+        ":threading_context",
         "//compression:compress",
         "//io:blob_store",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:stats",
         "@highway//:thread_pool",
+        "@highway//:timer",
     ],
 )
 

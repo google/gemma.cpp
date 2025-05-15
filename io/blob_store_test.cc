@@ -19,7 +19,6 @@
 
 #include <algorithm>
 #include <array>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -36,7 +35,7 @@ namespace {
 class BlobStoreTest : public testing::Test {};
 #endif
 
-void TestWithMapped(Tristate map) {
+TEST(BlobStoreTest, TestReadWrite) {
   hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
 
   static const std::array<float, 4> kOriginalData = {-1, 0, 3.14159, 2.71828};
@@ -59,54 +58,36 @@ void TestWithMapped(Tristate map) {
 
   std::fill(buffer.begin(), buffer.end(), 0);
 
-  std::unique_ptr<BlobReader> reader = BlobReader::Make(path, map);
-  HWY_ASSERT(reader);
+  const BlobReader reader(path);
 
-  HWY_ASSERT_EQ(reader->Keys().size(), 2);
-  HWY_ASSERT_STRING_EQ(reader->Keys()[0].c_str(), keyA.c_str());
-  HWY_ASSERT_STRING_EQ(reader->Keys()[1].c_str(), keyB.c_str());
+  HWY_ASSERT_EQ(reader.Keys().size(), 2);
+  HWY_ASSERT_STRING_EQ(reader.Keys()[0].c_str(), keyA.c_str());
+  HWY_ASSERT_STRING_EQ(reader.Keys()[1].c_str(), keyB.c_str());
 
-  const BlobRange* range = reader->Find(keyA);
+  const BlobRange* range = reader.Find(keyA);
   HWY_ASSERT(range);
   const uint64_t offsetA = range->offset;
   HWY_ASSERT_EQ(offsetA, 256);  // kBlobAlign
   HWY_ASSERT_EQ(range->bytes, 5);
-  range = reader->Find(keyB);
+  range = reader.Find(keyB);
   HWY_ASSERT(range);
   const uint64_t offsetB = range->offset;
   HWY_ASSERT_EQ(offsetB, 2 * 256);
   HWY_ASSERT_EQ(range->bytes, sizeof(buffer));
 
-  if (!reader->IsMapped()) {
-    char str[5];
-    reader->Enqueue(
-        BlobRange{.offset = offsetA, .bytes = sizeof(str), .key_idx = 0}, str);
-    reader->Enqueue(
-        BlobRange{.offset = offsetB, .bytes = sizeof(buffer), .key_idx = 1},
-        buffer.data());
-    reader->ReadAll(pool);
-    HWY_ASSERT_STRING_EQ("DATA", str);
-    HWY_ASSERT_ARRAY_EQ(kOriginalData.data(), buffer.data(), buffer.size());
-  }
-
   HWY_ASSERT(
-      reader->CallWithSpan<char>(keyA, [](const hwy::Span<const char> span) {
+      reader.CallWithSpan<char>(keyA, [](const hwy::Span<const char> span) {
         HWY_ASSERT_EQ(span.size(), 5);
         HWY_ASSERT_STRING_EQ("DATA", span.data());
       }));
   HWY_ASSERT(
-      reader->CallWithSpan<float>(keyB, [](const hwy::Span<const float> span) {
+      reader.CallWithSpan<float>(keyB, [](const hwy::Span<const float> span) {
         HWY_ASSERT_EQ(span.size(), 4);
         HWY_ASSERT_ARRAY_EQ(kOriginalData.data(), span.data(), span.size());
       }));
 
   close(fd);
   unlink(path_str);
-}
-
-TEST(BlobStoreTest, TestReadWrite) {
-  TestWithMapped(Tristate::kFalse);
-  TestWithMapped(Tristate::kTrue);
 }
 
 // Ensures padding works for any number of random-sized blobs.
@@ -143,17 +124,14 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT(blobs.size() == num_blobs);
     writer.WriteAll(pool, path);
 
-    const Tristate map = Tristate::kFalse;
-    std::unique_ptr<BlobReader> reader = BlobReader::Make(path, map);
-    HWY_ASSERT(reader);
-    HWY_ASSERT_EQ(reader->Keys().size(), num_blobs);
+    BlobReader reader(path);
+    HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);
     pool.Run(0, num_blobs, [&](uint64_t i, size_t /*thread*/) {
-      HWY_ASSERT_STRING_EQ(reader->Keys()[i].c_str(),
-                           std::to_string(i).c_str());
-      const BlobRange* range = reader->Find(keys[i]);
+      HWY_ASSERT_STRING_EQ(reader.Keys()[i].c_str(), std::to_string(i).c_str());
+      const BlobRange* range = reader.Find(keys[i]);
       HWY_ASSERT(range);
       HWY_ASSERT_EQ(blobs[i].size(), range->bytes);
-      HWY_ASSERT(reader->CallWithSpan<uint8_t>(
+      HWY_ASSERT(reader.CallWithSpan<uint8_t>(
           keys[i], [path_str, num_blobs, i, range,
                     &blobs](const hwy::Span<const uint8_t> span) {
             HWY_ASSERT_EQ(blobs[i].size(), span.size());

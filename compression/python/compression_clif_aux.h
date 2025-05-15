@@ -77,7 +77,7 @@ class SbsReader {
   const MatPtr* FindMat(const char* name) const { return model_.FindMat(name); }
 
  private:
-  std::unique_ptr<gcpp::BlobReader> reader_;
+  gcpp::BlobReader reader_;
   gcpp::ModelStore model_;
 };
 

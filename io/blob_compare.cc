@@ -18,7 +18,6 @@
 #include <string.h>  // strcmp
 
 #include <atomic>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -108,11 +107,10 @@ void ReadBlobs(BlobReader& reader, const RangeVec& ranges, BlobVec& blobs,
                hwy::ThreadPool& pool) {
   HWY_ASSERT(reader.Keys().size() == blobs.size());
   HWY_ASSERT(ranges.size() == blobs.size());
-  for (size_t i = 0; i < blobs.size(); ++i) {
+  pool.Run(0, blobs.size(), [&](size_t i, size_t /*thread*/) {
     HWY_ASSERT(ranges[i].bytes == blobs[i].size());
-    reader.Enqueue(ranges[i], blobs[i].data());
-  }
-  reader.ReadAll(pool);
+    reader.file().Read(ranges[i].offset, ranges[i].bytes, blobs[i].data());
+  });
 }
 
 // Parallelizes ReadBlobs across (two) packages, if available.
@@ -213,20 +211,14 @@ void CompareBlobs(const KeyVec& keys, BlobVec& blobs1, BlobVec& blobs2,
 }
 
 // Compares two sbs files, including blob order.
-void ReadAndCompareBlobs(const char* path1, const char* path2) {
-  const Tristate map = Tristate::kFalse;
-  std::unique_ptr<BlobReader> reader1 = BlobReader::Make(Path(path1), map);
-  std::unique_ptr<BlobReader> reader2 = BlobReader::Make(Path(path2), map);
-  if (!reader1 || !reader2) {
-    HWY_ABORT(
-        "Failed to create readers for files %s %s, see error messages above.\n",
-        path1, path2);
-  }
+void ReadAndCompareBlobs(const Path& path1, const Path& path2) {
+  BlobReader reader1(path1);
+  BlobReader reader2(path2);
 
-  CompareKeys(*reader1, *reader2);
-  const RangeVec ranges1 = AllRanges(reader1->Keys(), *reader1);
-  const RangeVec ranges2 = AllRanges(reader2->Keys(), *reader2);
-  CompareRangeSizes(reader1->Keys(), ranges1, ranges2);
+  CompareKeys(reader1, reader2);
+  const RangeVec ranges1 = AllRanges(reader1.Keys(), reader1);
+  const RangeVec ranges2 = AllRanges(reader2.Keys(), reader2);
+  CompareRangeSizes(reader1.Keys(), ranges1, ranges2);
 
   // Single allocation, avoid initializing the memory.
   const size_t total_bytes = TotalBytes(ranges1) + TotalBytes(ranges2);
@@ -236,10 +228,10 @@ void ReadAndCompareBlobs(const char* path1, const char* path2) {
   BlobVec blobs2 = ReserveMemory(ranges2, all_blobs, pos);
 
   NestedPools& pools = ThreadingContext::Get().pools;
-  ReadBothBlobs(*reader1, *reader2, ranges1, ranges2, total_bytes, blobs1,
-                blobs2, pools);
+  ReadBothBlobs(reader1, reader2, ranges1, ranges2, total_bytes, blobs1, blobs2,
+                pools);
 
-  CompareBlobs(reader1->Keys(), blobs1, blobs2, total_bytes, pools);
+  CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, pools);
 }
 
 }  // namespace gcpp
@@ -251,6 +243,6 @@ int main(int argc, char** argv) {
   if (strcmp(argv[1], argv[2]) == 0) {
     HWY_ABORT("Filenames are the same, skipping comparison: %s\n", argv[1]);
   }
-  gcpp::ReadAndCompareBlobs(argv[1], argv[2]);
+  gcpp::ReadAndCompareBlobs(gcpp::Path(argv[1]), gcpp::Path(argv[2]));
   return 0;
 }

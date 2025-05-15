@@ -31,6 +31,7 @@
 #include "gemma/model_store.h"
 #include "io/blob_store.h"
 #include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -95,37 +96,75 @@ void LayerWeightsPtrs<NuqStream>::Fixup(MatOwners& mat_owners) {
   SplitW1NUQ(layer_config);
 }
 
-// Aborts on error.
-static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
-                      const std::vector<BlobRange>& ranges,
-                      MatOwners& mat_owners, const MatPadding padding,
-                      hwy::ThreadPool& pool) {
-  HWY_ASSERT(mats.size() == ranges.size());
+// Parallel I/O into allocated memory, or mapped view of file. The latter is
+// better when the file is huge, but page faults add noise to measurements.
+enum class Mode { kRead, kMap };
 
-  if (reader.IsMapped()) {
-    PROFILER_ZONE("Startup.Weights.Map");
-    for (size_t i = 0; i < mats.size(); ++i) {
-      // SetPtr does not change the stride, but it is expected to be packed
-      // because that is what Compress() writes to the file.
-      const size_t mat_bytes = mats[i]->PackedBytes();
-      // Ensure blob size matches that computed from metadata.
-      HWY_ASSERT_M(mat_bytes == ranges[i].bytes, mats[i]->Name());
-
-      hwy::Span<const uint8_t> span = reader.MappedSpan<uint8_t>(ranges[i]);
-      HWY_ASSERT(span.size() == mat_bytes);
-      mats[i]->SetPtr(const_cast<uint8_t*>(span.data()), mats[i]->Stride());
-    }
-    return;
+// Decides whether to read or map based on heuristics and user override.
+static Mode ChooseMode(uint64_t file_bytes, Tristate map) {
+  const Allocator& allocator = ThreadingContext::Get().allocator;
+  // User has explicitly requested a map or read via args.
+  if (map == Tristate::kTrue) return Mode::kMap;
+  if (map == Tristate::kFalse) return Mode::kRead;
+  // Else: use heuristics to choose. Note that `FreeMiB` is generally low
+  // because idle memory is used as cache, so do not use it to decide.
+  const size_t file_mib = file_bytes >> 20;
+  const size_t total_mib = allocator.TotalMiB();
+  if (file_mib > total_mib) {
+    HWY_WARN("Weight file %zu MiB > detected memory %zu MiB.",
+             static_cast<size_t>(file_mib), total_mib);
   }
+  // Large fraction of total.
+  if (file_mib >= total_mib / 3) return Mode::kMap;
+  // Big enough that even parallel loading wouldn't be quick.
+  if (file_mib > 50 * 1024) return Mode::kMap;
+  return Mode::kRead;
+}
 
-  PROFILER_ZONE("Startup.Weights.AllocateAndEnqueue");
+MapPtr MapFileOrNull(File& file, uint64_t file_bytes) {
+  const Allocator& allocator = ThreadingContext::Get().allocator;
+  if (file_bytes % allocator.BasePageBytes() == 0) {
+    MapPtr mapped = file.Map();
+    if (!mapped) {
+      HWY_WARN("Failed to map file (%zu KiB), reading instead.",
+               static_cast<size_t>(file_bytes >> 10));
+    }
+  } else {
+    HWY_WARN("Unable to map non-padded file (%zu, %zu), reading instead.",
+             static_cast<size_t>(file_bytes >> 10), allocator.BasePageBytes());
+  }
+  return MapPtr();
+}
 
-  // NOTE: this changes the stride of `mats`!
-  mat_owners.AllocateFor(mats, padding, pool);
+static void MapAll(const std::vector<MatPtr*>& mats,
+                   const std::vector<BlobRange>& ranges, const MapPtr& mapped) {
+  PROFILER_ZONE("Startup.Weights.Map");
+  for (size_t i = 0; i < mats.size(); ++i) {
+    // SetPtr does not change the stride, but it is expected to be packed
+    // because that is what Compress() writes to the file.
+    const size_t mat_bytes = mats[i]->PackedBytes();
+    // Ensure blob size matches that computed from metadata.
+    HWY_ASSERT_M(mat_bytes == ranges[i].bytes, mats[i]->Name());
 
-  // Enqueue the read requests, one per row in each tensor.
+    mats[i]->SetPtr(const_cast<uint8_t*>(mapped.get() + ranges[i].offset),
+                    mats[i]->Stride());
+  }
+}
+
+std::vector<IOBatch> MakeBatches(const std::vector<BlobRange>& ranges,
+                                 const std::vector<MatPtr*>& mats,
+                                 const uint64_t file_bytes) {
+  PROFILER_ZONE("Startup.Weights.MakeBatches");
+  // Batches must be contiguous but blobs are padded, hence at least one
+  // batch per tensor, and more when tensor rows exceed the batch size.
+  std::vector<IOBatch> batches;
+  batches.reserve(mats.size());
+
   for (size_t i = 0; i < mats.size(); ++i) {
     uint64_t offset = ranges[i].offset;
+    HWY_ASSERT(ranges[i].End() <= file_bytes);
+
+    batches.emplace_back(offset, ranges[i].key_idx);
     const size_t file_bytes_per_row = mats[i]->Cols() * mats[i]->ElementBytes();
     // Caution, `RowT` requires knowledge of the actual type. We instead use
     // the first row, which is the same for any type, and advance the *byte*
@@ -133,21 +172,70 @@ static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
     const size_t mem_stride_bytes = mats[i]->Stride() * mats[i]->ElementBytes();
     uint8_t* row = mats[i]->RowT<uint8_t>(0);
     for (size_t r = 0; r < mats[i]->Rows(); ++r) {
-      reader.Enqueue(BlobRange{.offset = offset,
-                               .bytes = file_bytes_per_row,
-                               .key_idx = ranges[i].key_idx},
-                     row);
+      if (!batches.back().Add(row, file_bytes_per_row)) {  // Full batch.
+        batches.emplace_back(offset, ranges[i].key_idx);
+        // Adding to an empty batch is always successful.
+        HWY_ASSERT(batches.back().Add(row, file_bytes_per_row));
+      }
       offset += file_bytes_per_row;
       row += mem_stride_bytes;
       // Keep the in-memory row padding uninitialized so msan detects any use.
     }
+    HWY_ASSERT(offset == ranges[i].End());
   }
 
-  reader.ReadAll(pool);
+  HWY_ASSERT(batches.size() >= mats.size());
+  return batches;
+}
+
+// Parallel synchronous I/O. Note that O_DIRECT seems undesirable because we
+// want to use the OS cache between consecutive runs.
+static void ReadBatches(const BlobReader& reader,
+                        const std::vector<IOBatch>& batches,
+                        hwy::ThreadPool& pool) {
+  PROFILER_ZONE("Startup.Weights.Read");
+  // >5x speedup from parallel reads when cached.
+  pool.Run(0, batches.size(), [&](uint64_t i, size_t /*thread*/) {
+    const IOBatch& batch = batches[i];
+    const std::string& key = reader.Keys()[batch.KeyIdx()];
+    const uint64_t bytes_read = batch.Read(reader.file());
+    if (bytes_read != batch.TotalBytes()) {
+      HWY_ABORT("Read failed for %s from %zu, %zu bytes; got %zu.", key.c_str(),
+                static_cast<size_t>(batch.Offset()),
+                static_cast<size_t>(batch.TotalBytes()),
+                static_cast<size_t>(bytes_read));
+    }
+  });
+}
+
+// Aborts on error.
+static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
+                      const std::vector<BlobRange>& ranges, Tristate map,
+                      MatOwners& mat_owners, const MatPadding padding,
+                      hwy::ThreadPool& pool) {
+  HWY_ASSERT(mats.size() == ranges.size());
+
+  if (ChooseMode(reader.file_bytes(), map) == Mode::kMap) {
+    MapPtr mapped = MapFileOrNull(reader.file(), reader.file_bytes());
+    if (mapped) {
+      MapAll(mats, ranges, mapped);
+      return;
+    }
+  }  // otherwise fall through to read mode
+
+  {
+    PROFILER_ZONE("Startup.Weights.Allocate");
+    // NOTE: this changes the stride of `mats`!
+    mat_owners.AllocateFor(mats, padding, pool);
+  }
+
+  const std::vector<IOBatch> batches =
+      MakeBatches(ranges, mats, reader.file_bytes());
+  ReadBatches(reader, batches, pool);
 }
 
 void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
-                                 hwy::ThreadPool& pool) {
+                                 Tristate map, hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
   std::vector<MatPtr*> mats;
   std::vector<BlobRange> ranges;
@@ -171,7 +259,7 @@ void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
     });
   });
 
-  MapOrRead(mats, reader, ranges, mat_owners_, padding, pool);
+  MapOrRead(mats, reader, ranges, map, mat_owners_, padding, pool);
 
   Fixup(pool);
 }

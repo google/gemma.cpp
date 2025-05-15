@@ -19,23 +19,45 @@
 // check this in source code because we support multiple build systems.
 #if !HWY_OS_WIN
 
-// Request POSIX 2008, including `pread()` and `posix_fadvise()`.
+// Request POSIX 2008, including `pread()` and `posix_fadvise()`. This also
+// implies `_POSIX_C_SOURCE`.
 #if !defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 700
 #undef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 700
-#endif
-#if !defined(_POSIX_C_SOURCE) || _POSIX_C_SOURCE < 200809
-#define _POSIX_C_SOURCE 200809
+#define _XOPEN_SOURCE 700  // SUSv4
 #endif
 
 // Make `off_t` 64-bit even on 32-bit systems. Works for Android >= r15c.
 #undef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64
 
-#include <fcntl.h>  // open
+#if (HWY_OS_LINUX || HWY_OS_FREEBSD) && \
+    (!defined(__ANDROID_API__) || __ANDROID_API__ >= 24)
+#define GEMMA_IO_PREADV 1
+#else
+#define GEMMA_IO_PREADV 0
+#endif
+
+#if (HWY_OS_LINUX || HWY_OS_FREEBSD) && \
+    (!defined(__ANDROID_API__) || __ANDROID_API__ >= 21)
+#define GEMMA_IO_FADVISE 1
+#else
+#define GEMMA_IO_FADVISE 0
+#endif
+
+#if GEMMA_IO_PREADV
+// Replacement for the _BSD_SOURCE specified by preadv documentation.
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+#include <errno.h>
+#include <sys/uio.h>  // preadv
+#endif                // GEMMA_IO_PREADV
+
+#include <fcntl.h>   // open
+#include <limits.h>  // IOV_MAX
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>     // SEEK_END - unistd isn't enough for IDE.
+#include <stdio.h>  // SEEK_END - unistd isn't enough for IDE.
 #include <sys/types.h>
 // Old OSX may require sys/types.h before sys/mman.h.
 #include <sys/mman.h>  // mmap
@@ -43,6 +65,7 @@
 #include <unistd.h>    // read, write, close
 
 #include <memory>
+#include <string>
 
 #include "io/io.h"
 #include "util/allocator.h"
@@ -119,6 +142,8 @@ class FilePosix : public File {
                     HWY_ASSERT(munmap(ptr, mapping_size) == 0);
                   }));
   }
+
+  int Handle() const override { return fd_; }
 };  // FilePosix
 
 HWY_MAYBE_UNUSED extern std::unique_ptr<File> OpenFileGoogle(
@@ -133,14 +158,82 @@ std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode) {
   const int fd = open(filename.path.c_str(), flags, 0644);
   if (fd < 0) return file;
 
-#if HWY_OS_LINUX && (!defined(__ANDROID_API__) || __ANDROID_API__ >= 21)
+#if GEMMA_IO_FADVISE
   if (is_read) {
     // Doubles the readahead window, which seems slightly faster when cached.
     (void)posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
   }
-#endif
+#endif  // GEMMA_IO_FADVISE
 
   return std::make_unique<FilePosix>(fd);
+}
+
+std::unique_ptr<File> OpenFileOrAbort(const Path& filename, const char* mode) {
+  std::unique_ptr<File> file = OpenFileOrNull(filename, "r");
+  if (!file) {
+    HWY_ABORT("Failed to open %s", filename.path.c_str());
+  }
+  return file;
+}
+
+std::string ReadFileToString(const Path& path) {
+  std::unique_ptr<File> file = OpenFileOrAbort(path, "r");
+  const size_t size = file->FileSize();
+  if (size == 0) {
+    HWY_ABORT("Empty file %s", path.path.c_str());
+  }
+  std::string content(size, ' ');
+  if (!file->Read(0, size, content.data())) {
+    HWY_ABORT("Failed to read %s", path.path.c_str());
+  }
+  return content;
+}
+
+#ifdef IOV_MAX
+constexpr size_t kMaxSpans = IOV_MAX;
+#else
+constexpr size_t kMaxSpans = 1024;  // Linux limit
+#endif
+
+IOBatch::IOBatch(uint64_t offset, size_t key_idx)
+    : offset_(offset), key_idx_(key_idx) {
+  spans_.reserve(kMaxSpans);
+}
+
+// Returns true if the batch was full; if so, call again on the new batch.
+bool IOBatch::Add(void* mem, size_t bytes) {
+  if (spans_.size() >= kMaxSpans) return false;
+  if (total_bytes_ + bytes > 0x7FFFF000) return false;  // Linux limit
+  spans_.push_back({.mem = mem, .bytes = bytes});
+  total_bytes_ += bytes;
+  return true;
+}
+
+uint64_t IOBatch::Read(const File& file) const {
+#if GEMMA_IO_PREADV
+  HWY_ASSERT(!spans_.empty());
+
+  ssize_t bytes_read;
+  for (;;) {
+    bytes_read =
+        preadv(file.Handle(), reinterpret_cast<const iovec*>(spans_.data()),
+               static_cast<int>(spans_.size()), offset_);
+    if (bytes_read >= 0) break;
+    if (errno == EINTR) continue;  // signal: retry
+    HWY_WARN("preadv failed, errno %d.", errno);
+    return 0;
+  }
+  return static_cast<uint64_t>(bytes_read);
+#else
+  uint64_t total = 0;
+  uint64_t offset = offset_;
+  for (const IOSpan& span : spans_) {
+    if (!file.Read(offset, span.bytes, span.mem)) return 0;
+    total += span.bytes;
+    offset += span.bytes;
+  }
+  return total;
+#endif
 }
 
 }  // namespace gcpp

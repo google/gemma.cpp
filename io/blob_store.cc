@@ -30,7 +30,6 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_compiler_arch.h"
-#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -289,10 +288,12 @@ class BlobStore {
   std::vector<hwy::uint128_t> directory_;  // two per blob, see `SetRange`.
 };  // BlobStore
 
-BlobReader::BlobReader(std::unique_ptr<File> file, uint64_t file_bytes,
-                       const BlobStore& bs, BlobReader::Mode mode)
-    : file_(std::move(file)), file_bytes_(file_bytes), mode_(mode) {
-  HWY_ASSERT(file_ && file_bytes_ != 0);
+BlobReader::BlobReader(const Path& blob_path)
+    : file_(OpenFileOrAbort(blob_path, "r")), file_bytes_(file_->FileSize()) {
+  if (file_bytes_ == 0) HWY_ABORT("Zero-sized file %s", blob_path.path.c_str());
+
+  BlobStore bs(*file_);
+  HWY_ASSERT(bs.IsValid(file_bytes_));  // IsValid already printed a warning
 
   keys_.reserve(bs.NumBlobs());
   for (const hwy::uint128_t key : bs.Keys()) {
@@ -309,119 +310,6 @@ BlobReader::BlobReader(std::unique_ptr<File> file, uint64_t file_bytes,
         BlobRange{.offset = offset, .bytes = bytes, .key_idx = key_idx});
     key_idx_for_key_[keys_[key_idx]] = key_idx;
   }
-
-  if (mode_ == Mode::kMap) {
-    const Allocator& allocator = ThreadingContext::Get().allocator;
-    // Verify `kEndAlign` is an upper bound on the page size.
-    if (kEndAlign % allocator.BasePageBytes() != 0) {
-      HWY_ABORT("Please raise an issue about kEndAlign %zu %% page size %zu.",
-                kEndAlign, allocator.BasePageBytes());
-    }
-    if (file_bytes_ % allocator.BasePageBytes() == 0) {
-      mapped_ = file_->Map();
-      if (!mapped_) {
-        HWY_WARN("Failed to map file (%zu KiB), reading instead.",
-                 static_cast<size_t>(file_bytes_ >> 10));
-        mode_ = Mode::kRead;  // Switch to kRead and continue.
-      }
-    } else {
-      HWY_WARN("Unable to map non-padded file (%zu, %zu), reading instead.",
-               static_cast<size_t>(file_bytes_ >> 10),
-               allocator.BasePageBytes());
-      mode_ = Mode::kRead;  // Switch to kRead and continue.
-    }
-  }
-
-  if (mode_ == Mode::kRead) {
-    // Potentially one per tensor row, so preallocate many.
-    requests_.reserve(2 << 20);
-  }
-}
-
-void BlobReader::Enqueue(const BlobRange& range, void* data) {
-  // Debug-only because there may be many I/O requests (per row).
-  if constexpr (HWY_IS_DEBUG_BUILD) {
-    HWY_DASSERT(!IsMapped());
-    HWY_DASSERT(range.offset != 0 && range.bytes != 0 && data != nullptr);
-    const BlobRange& blob_range = Range(range.key_idx);
-    HWY_DASSERT(blob_range.End() <= file_bytes_);
-    if (range.End() > blob_range.End()) {
-      HWY_ABORT(
-          "Bug: want to read %zu bytes of %s until %zu, past blob end %zu.",
-          range.bytes, keys_[range.key_idx].c_str(),
-          static_cast<size_t>(range.End()),
-          static_cast<size_t>(blob_range.End()));
-    }
-  }
-  requests_.emplace_back(range, data);
-}
-
-// Parallel synchronous I/O. Alternatives considered:
-// - readv is limited to 0x7FFFF000 bytes on Linux (even 64-bit). Note that
-//   pread calls preadv with a single iovec.
-//   TODO: use preadv for per-tensor batches of sysconf(_SC_IOV_MAX) / IOV_MAX.
-// - O_DIRECT seems undesirable because we do want to use the OS cache
-//   between consecutive runs.
-void BlobReader::ReadAll(hwy::ThreadPool& pool) const {
-  PROFILER_ZONE("Startup.ReadAll");
-  HWY_ASSERT(!IsMapped());
-  // >5x speedup from parallel reads when cached.
-  pool.Run(0, requests_.size(), [this](uint64_t i, size_t /*thread*/) {
-    const BlobRange& range = requests_[i].range;
-    const uint64_t end = range.End();
-    const std::string& key = keys_[range.key_idx];
-    const BlobRange& blob_range = Range(range.key_idx);
-    HWY_ASSERT(blob_range.End() <= file_bytes_);
-    if (end > blob_range.End()) {
-      HWY_ABORT(
-          "Bug: want to read %zu bytes of %s until %zu, past blob end %zu.",
-          range.bytes, key.c_str(), static_cast<size_t>(end),
-          static_cast<size_t>(blob_range.End()));
-    }
-    if (!file_->Read(range.offset, range.bytes, requests_[i].data)) {
-      HWY_ABORT("Read failed for %s from %zu, %zu bytes to %p.", key.c_str(),
-                static_cast<size_t>(range.offset), range.bytes,
-                requests_[i].data);
-    }
-  });
-}
-
-// Decides whether to read or map the file.
-static BlobReader::Mode ChooseMode(uint64_t file_mib, Tristate map) {
-  const Allocator& allocator = ThreadingContext::Get().allocator;
-  // User has explicitly requested a map or read via args.
-  if (map == Tristate::kTrue) return BlobReader::Mode::kMap;
-  if (map == Tristate::kFalse) return BlobReader::Mode::kRead;
-  // Else: use heuristics to choose. Note that `FreeMiB` is generally low
-  // because idle memory is used as cache, so do not use it to decide.
-  const size_t total_mib = allocator.TotalMiB();
-  if (file_mib > total_mib) {
-    HWY_WARN("Weight file %zu MiB > detected memory %zu MiB.",
-             static_cast<size_t>(file_mib), total_mib);
-  }
-  // Large fraction of total.
-  if (file_mib >= total_mib / 3) return BlobReader::Mode::kMap;
-  // Big enough that even parallel loading wouldn't be quick.
-  if (file_mib > 50 * 1024) return BlobReader::Mode::kMap;
-  return BlobReader::Mode::kRead;
-}
-
-std::unique_ptr<BlobReader> BlobReader::Make(const Path& blob_path,
-                                             const Tristate map) {
-  if (blob_path.Empty()) HWY_ABORT("No --weights specified.");
-  std::unique_ptr<File> file = OpenFileOrNull(blob_path, "r");
-  if (!file) HWY_ABORT("Failed to open file %s", blob_path.path.c_str());
-  const uint64_t file_bytes = file->FileSize();
-  if (file_bytes == 0) HWY_ABORT("Zero-sized file %s", blob_path.path.c_str());
-
-  // Even if `kMap`, read the directory via the `kRead` mode for simplicity.
-  BlobStore bs(*file);
-  if (!bs.IsValid(file_bytes)) {
-    return std::unique_ptr<BlobReader>();  // IsValid already printed a warning
-  }
-
-  return std::unique_ptr<BlobReader>(new BlobReader(
-      std::move(file), file_bytes, bs, ChooseMode(file_bytes >> 20, map)));
 }
 
 // Split into chunks for load-balancing even if blob sizes vary.

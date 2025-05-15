@@ -22,6 +22,7 @@
 #include <memory>
 #include <string>
 #include <utility>  // std::move
+#include <vector>
 
 #include "util/allocator.h"
 #include "hwy/base.h"
@@ -49,21 +50,65 @@ class File {
   virtual uint64_t FileSize() const = 0;
 
   // Returns true if all the requested bytes were read.
+  // Thread-compatible.
   virtual bool Read(uint64_t offset, uint64_t size, void* to) const = 0;
 
   // Returns true if all the requested bytes were written.
+  // Thread-compatible.
   virtual bool Write(const void* from, uint64_t size, uint64_t offset) = 0;
 
   // Maps the entire file into read-only memory or returns nullptr on failure.
   // We do not support offsets because Windows requires them to be a multiple of
   // the allocation granularity, which is 64 KiB. Some implementations may fail
-  // if the file is zero-sized and return a nullptr.
+  // if the file is zero-sized and return a nullptr. Non-const because it may
+  // modify internal state. This is only expected to be called once per file.
   virtual MapPtr Map() = 0;
+
+  // For use by `IOBatch::Read`.
+  virtual int Handle() const { return -1; }
 };
 
 // Returns nullptr on failure. `mode` is either "r" or "w+". This is not just
 // named 'OpenFile' to avoid a conflict with Windows.h #define.
 std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode);
+
+// As above, but aborts on instead of returning nullptr.
+std::unique_ptr<File> OpenFileOrAbort(const Path& filename, const char* mode);
+
+// Compatible with Linux iovec.
+struct IOSpan {
+  void* mem;
+  size_t bytes;
+};
+
+// Wrapper for Linux/BSD `preadv`, calling `File::Read` on other systems. To
+// insert row padding, we previously issued one IO per tensor row, which is
+// expensive. `preadv` reduces up to 1024 syscalls to 1.
+// The file data must be contiguous starting from `IOBatch::offset_`, because
+// `preadv` does not support per-`IOSpan` offsets.
+class IOBatch {
+ public:
+  // Reserves memory in `spans_`. `key_idx` identifies the blob/tensor.
+  explicit IOBatch(uint64_t offset, size_t key_idx);
+
+  // The next `bytes` will be read from file into `mem`.
+  // Returns true if the batch was full; if so, call again on the new batch.
+  bool Add(void* mem, size_t bytes);
+
+  uint64_t Offset() const { return offset_; }
+  uint64_t TotalBytes() const { return total_bytes_; }
+  size_t KeyIdx() const { return key_idx_; }
+
+  // Returns the total number of bytes read, or 0 if any I/O failed.
+  // Thread-compatible.
+  uint64_t Read(const File& file) const;
+
+ private:
+  uint64_t offset_;
+  uint64_t total_bytes_ = 0;
+  size_t key_idx_;
+  std::vector<IOSpan> spans_;  // contiguous in the file.
+};
 
 // Wrapper for strings representing a path name. Differentiates vs. arbitrary
 // strings and supports shortening for display purposes.
@@ -97,21 +142,7 @@ struct Path {
 };
 
 // Aborts on error.
-static inline HWY_MAYBE_UNUSED std::string ReadFileToString(const Path& path) {
-  std::unique_ptr<File> file = OpenFileOrNull(path, "r");
-  if (!file) {
-    HWY_ABORT("Failed to open %s", path.path.c_str());
-  }
-  const size_t size = file->FileSize();
-  if (size == 0) {
-    HWY_ABORT("Empty file %s", path.path.c_str());
-  }
-  std::string content(size, ' ');
-  if (!file->Read(0, size, content.data())) {
-    HWY_ABORT("Failed to read %s", path.path.c_str());
-  }
-  return content;
-}
+std::string ReadFileToString(const Path& path);
 
 }  // namespace gcpp
 
