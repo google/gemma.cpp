@@ -22,7 +22,6 @@
 
 #include <random>
 #include <string>
-#include <vector>
 
 // IWYU pragma: begin_exports
 #include "compression/types.h"  // Type
@@ -32,7 +31,6 @@
 #include "util/basics.h"  // Extents2D
 // IWYU pragma: end_exports
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
@@ -376,29 +374,12 @@ class MatOwner {
   MatOwner& operator=(MatOwner&&) = default;
 
   // Allocates the type/extents indicated by `mat` and sets its pointer.
+  // Ignores `padding` for NUQ tensors, which are always packed.
+  // Thread-compatible, weights are allocated in parallel.
   void AllocateFor(MatPtr& mat, MatPadding padding);
 
  private:
   AlignedPtr<uint8_t[]> storage_;
-};
-
-// Multiple `MatOwner`, with support for parallel allocation.
-class MatOwners {
- public:
-  // Ignores `padding` for NUQ tensors, which are always packed.
-  void AllocateFor(MatPtr& mat, MatPadding padding) {
-    if (mat.GetType() == Type::kNUQ) padding = MatPadding::kPacked;
-    owners_.push_back(MatOwner());
-    owners_.back().AllocateFor(mat, padding);
-  }
-
-  // Allocates multiple in parallel. Ignores `padding` for NUQ tensors,
-  // which are always packed.
-  void AllocateFor(const std::vector<MatPtr*>& mats, MatPadding padding,
-                   hwy::ThreadPool& pool);
-
- private:
-  std::vector<MatOwner> owners_;
 };
 
 // `MatStorageT` IS-A `MatPtrT` and HAS-A `MatOwner`. Used by `backprop/` and

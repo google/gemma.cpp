@@ -172,7 +172,6 @@ cc_library(
         "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -217,6 +216,7 @@ cc_library(
         ":configs",
         ":mat",
         ":model_store",
+        ":ops",
         ":tensor_info",
         ":threading_context",
         "//compression:compress",
@@ -281,7 +281,6 @@ cc_library(
         ":allocator",
         ":basics",
         ":mat",
-        ":threading",
         ":threading_context",
         "//compression:compress",
         "@highway//:algo",

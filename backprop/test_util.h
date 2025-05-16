@@ -20,6 +20,7 @@
 
 #include <cmath>
 #include <complex>
+#include <vector>
 
 #include "gtest/gtest.h"
 #include "gemma/configs.h"
@@ -75,7 +76,7 @@ class WeightsWrapper {
   ModelWeightsPtrs<T>& get() { return weights_; }
 
  private:
-  MatOwners owners_;
+  std::vector<MatOwner> owners_;
   ModelWeightsPtrs<T> weights_;
 };
 

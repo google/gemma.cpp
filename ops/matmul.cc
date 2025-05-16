@@ -25,10 +25,12 @@
 
 #include "util/allocator.h"
 #include "util/basics.h"
-#include "util/threading.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/detect_targets.h"
 #include "hwy/per_target.h"
+#include "hwy/profiler.h"
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -386,7 +388,7 @@ std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
 // rows for that.
 static size_t NPMultiple(const Allocator& allocator, size_t N,
                          size_t sizeof_TC, size_t nr, size_t num_packages) {
-  size_t np_multiple = allocator.QuantumBytes() / sizeof_TC;
+  size_t np_multiple = allocator.BasePageBytes() / sizeof_TC;
   // If binding, `np_multiple` is typically 1024 and `num_packages` > 1. For
   // `N` < 4096, this can cause significant load imbalance. If split unevenly,
   // choose a smaller multiple.
@@ -421,6 +423,61 @@ MatMulEnv::MatMulEnv(ThreadingContext& ctx)
     : ctx(ctx), parallel(ctx), storage(ctx.allocator, parallel) {
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
+}
+
+void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
+  Allocator& allocator = parallel.allocator();
+  if (!allocator.ShouldBind()) return;
+  if (B.Rows() == 1) return;
+
+  PROFILER_ZONE("Startup.BindB");
+
+  const IndexRangePartition ranges_np =
+      parallel.RangesOfNP(MMParallel::kMaxPackages, B.Rows(), sizeof_TC, kNR);
+  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
+    const IndexRange& rows_b = ranges_np.Range(pkg_idx);
+    const size_t node = parallel.Node(pkg_idx);
+    uintptr_t begin =
+        reinterpret_cast<uintptr_t>(B.RowT<uint8_t>(rows_b.begin()));
+    uintptr_t end = begin + rows_b.Num() * B.Stride() * B.ElementBytes();
+    // B row padding is less than the page size, so only bind the subset that
+    // is page-aligned.
+    begin = hwy::RoundUpTo(begin, allocator.BasePageBytes());
+    end = hwy::RoundDownTo(end, allocator.BasePageBytes());
+    if (HWY_LIKELY(begin != end)) {
+      allocator.BindMemory(reinterpret_cast<void*>(begin), end - begin, node);
+    }
+  }
+}
+
+// C is BF16/float, or double for partial
+void BindC(const MatPtr& C, MMParallel& parallel) {
+  Allocator& allocator = parallel.allocator();
+  if (!allocator.ShouldBind()) return;
+
+  PROFILER_ZONE("Startup.BindC");
+
+  const IndexRangePartition ranges_np = parallel.RangesOfNP(
+      MMParallel::kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
+  bool ok = true;
+  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
+    const IndexRange& cols_c = ranges_np.Range(pkg_idx);
+    // `BindMemory` requires page alignment. These are in bytes.
+    const size_t begin = hwy::RoundUpTo(cols_c.begin() * C.ElementBytes(),
+                                        allocator.BasePageBytes());
+    const size_t end = hwy::RoundDownTo(cols_c.end() * C.ElementBytes(),
+                                        allocator.BasePageBytes());
+
+    const size_t node = parallel.Node(pkg_idx);
+    for (size_t im = 0; im < C.Rows(); ++im) {
+      ok &= allocator.BindMemory(C.MutableRowT<uint8_t>(im) + begin,
+                                 end - begin, node);
+    }
+  }
+  if (HWY_UNLIKELY(!ok)) {
+    HWY_WARN("Failed to bind C (%zux%zu), %zu packages.", C.Rows(), C.Cols(),
+             ranges_np.NumTasks());
+  }
 }
 
 }  // namespace gcpp

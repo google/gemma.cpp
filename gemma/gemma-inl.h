@@ -21,7 +21,7 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::min
-#include <cstdio>
+#include <memory>     // std::make_unique
 #include <vector>
 
 #include "gemma/activations.h"
@@ -1055,7 +1055,8 @@ HWY_NOINLINE void Prefill(
   // intensity, and so we are eventually compute-limited. We could devote some
   // threads to parallelizing over queries, but for simplicity we assign them
   // all to MatMul.
-  const size_t max_tbatch_size = activations.x.Rows();
+  const size_t max_tbatch_size = runtime_config.prefill_tbatch_size;
+  HWY_DASSERT(max_tbatch_size <= activations.x.Rows());
 
   // For each query. `qi` is within the batch, not the global query index.
   for (size_t qi = 0; qi < num_queries; ++qi) {
@@ -1429,18 +1430,10 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   // Prefill stops before min_prompt_size - 1 because the last prompt
   // token is the first input token for generation.
   timing_info.prefill_start = hwy::platform::Now();
-  // If tbatch is larger than the qbatch we already have in `activations`, then
-  // allocate prefill_activations, otherwise reuse.
-  const bool use_prefill_activations =
-      runtime_config.prefill_tbatch_size > activations.x.Rows();
-  Activations prefill_activations(
-      weights.weights_config,
-      use_prefill_activations ? runtime_config.prefill_tbatch_size : 0,
-      activations.env);
+  // Note that Prefill calls activations.SetBatchSize, so we reset it below.
   Prefill(queries_prompt, queries_mutable_pos, queries_prefix_end,
-          query_idx_start, weights,
-          use_prefill_activations ? prefill_activations : activations,
-          runtime_config, div_seq_len, kv_caches);
+          query_idx_start, weights, activations, runtime_config, div_seq_len,
+          kv_caches);
   // Compute the number of tokens that were prefilled and notify timing_info.
   size_t prefilled_tokens = 0;
   for (size_t qi = 0; qi < num_queries; ++qi) {
@@ -1448,6 +1441,7 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   }
   timing_info.NotifyPrefill(prefilled_tokens);
   // queries_pos are incremented by Prefill.
+  activations.SetBatchSize(num_queries);
 
   // Storage for the last generated token from each query, passed to the next
   // Transformer() call.
@@ -1489,8 +1483,10 @@ void GenerateSingleT(const ModelStore& model,
   constexpr size_t kNumQueries = 1;
   const size_t qbatch_start = 0;
 
+  const size_t max_batch_size =
+      HWY_MAX(kNumQueries, runtime_config.prefill_tbatch_size);
   // TODO: move into Gemma?
-  Activations activations(model.Config(), kNumQueries, env);
+  Activations activations(model.Config(), max_batch_size, env);
 
   const QueriesPromptTokens queries_prompt(&prompt, kNumQueries);
   QueriesPos queries_pos(&pos, kNumQueries);
@@ -1523,7 +1519,9 @@ void GenerateBatchT(const ModelStore& model,
     }
   }
 
-  Activations activations(model.Config(), max_qbatch_size, env);
+  const size_t max_batch_size =
+      HWY_MAX(max_qbatch_size, runtime_config.prefill_tbatch_size);
+  Activations activations(model.Config(), max_batch_size, env);
 
   for (size_t qbatch_start = 0; qbatch_start < num_queries;
        qbatch_start += max_qbatch_size) {
@@ -1557,6 +1555,7 @@ void GenerateImageTokensT(const ModelStore& model,
   prefill_runtime_config.prefill_tbatch_size =
       vit_config.seq_len / (vit_config.pool_dim * vit_config.pool_dim);
   Activations prefill_activations(vit_config, vit_config.seq_len, env);
+  prefill_activations.SetBatchSize(prefill_runtime_config.prefill_tbatch_size);
   // Weights are for the full PaliGemma model, not just the ViT part.
   PrefillVit(weights, prefill_runtime_config, image, image_tokens,
              prefill_activations);

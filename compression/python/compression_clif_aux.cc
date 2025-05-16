@@ -67,7 +67,8 @@ class SbsWriterImpl : public ISbsWriter {
     }
 
     mat.AppendTo(serialized_mat_ptrs_);
-    mat_owners_.AllocateFor(mat, MatPadding::kPacked);
+    mat_owners_.push_back(MatOwner());
+    mat_owners_.back().AllocateFor(mat, MatPadding::kPacked);
 
     // Handle gemma_export_test's MockArray. Write blobs so that the test
     // succeeds, but we only have 10 floats, not the full tensor.
@@ -121,7 +122,7 @@ class SbsWriterImpl : public ISbsWriter {
   }
 
   hwy::ThreadPool& pool_;
-  MatOwners mat_owners_;
+  std::vector<MatOwner> mat_owners_;
   CompressWorkingSet working_set_;
   BlobWriter writer_;
   std::vector<uint32_t> serialized_mat_ptrs_;

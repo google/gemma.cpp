@@ -19,11 +19,9 @@
 #include <stdint.h>
 
 #include <random>
-#include <vector>
 
 #include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/per_target.h"  // VectorBytes
 #include "hwy/profiler.h"
 
@@ -124,17 +122,6 @@ void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
       hwy::RoundUpTo(bytes, allocator.QuantumBytes() / mat.ElementBytes());
   storage_ = allocator.AllocBytes(padded_bytes);
   mat.SetPtr(storage_.get(), stride);
-}
-
-void MatOwners::AllocateFor(const std::vector<MatPtr*>& mats,
-                            MatPadding padding, hwy::ThreadPool& pool) {
-  const size_t start = owners_.size();
-  owners_.resize(start + mats.size());
-
-  // Allocate in parallel because faulting in large tensors is slow.
-  pool.Run(0, mats.size(), [&](uint64_t task, size_t /*thread*/) {
-    owners_[start + task].AllocateFor(*mats[task], padding);
-  });
 }
 
 }  // namespace gcpp

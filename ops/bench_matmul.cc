@@ -79,7 +79,6 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 // M = A rows, K = A cols, N = C cols.
 template <typename TA, typename TB = TA, typename TC = float>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
-  const Allocator& allocator = env.ctx.allocator;
   hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   if (env.print_config || env.print_measurement) {
     fprintf(stderr, "\n");
@@ -92,8 +91,8 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  MatStorageT<TC> c_slow_batch("c_slow_batch", C_extents, MatPadding::kOdd);
-  MatStorageT<TC> c_batch("c_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> c_slow_mat("c_slow_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> c_mat("c_batch", C_extents, MatPadding::kOdd);
 
   MatStorageT<float> add_storage("add", Extents2D(), MatPadding::kPacked);
   if (add) {
@@ -105,7 +104,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C = RowPtrFromMat(c_batch);
+  const RowPtr<TC> C = RowPtrFromMat(c_mat);
 
   // Fewer reps for large batch sizes, which take longer.
   const size_t num_samples = M < 32 ? 20 : 12;
@@ -115,8 +114,8 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(allocator, sizeof(TC), b_trans, env.parallel);
-  BindC(allocator, A_extents.rows, C, env.parallel);
+  BindB(b_trans, sizeof(TC), env.parallel);
+  BindC(c_mat, env.parallel);
 
   Tristate use_spinning = Tristate::kDefault;
   env.ctx.pools.MaybeStartSpinning(use_spinning);

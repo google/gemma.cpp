@@ -27,11 +27,12 @@
 #include <vector>
 
 #include "compression/types.h"  // IsF32
-#include "gemma/configs.h"       // ModelConfig
-#include "gemma/model_store.h"   // ModelStore
-#include "gemma/tensor_info.h"   // TensorInfoRegistry
-#include "io/blob_store.h"       // BlobWriter
-#include "util/mat.h"            // MatPtr
+#include "gemma/configs.h"      // ModelConfig
+#include "gemma/model_store.h"  // ModelStore
+#include "gemma/tensor_info.h"  // TensorInfoRegistry
+#include "io/blob_store.h"      // BlobWriter
+#include "ops/matmul.h"         // MatMulEnv
+#include "util/mat.h"           // MatPtr
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
@@ -191,7 +192,7 @@ struct LayerWeightsPtrs {
   MatPtrT<Weight> gating_einsum_w1;
   MatPtrT<Weight> gating_einsum_w2;
   MatPtrT<Weight> linear_w;
-  // We don't yet have an RMSNorm that accepts all Weight.
+  // > W8 is likely helpful.
   MatPtrT<WeightF32OrBF16> pre_attention_norm_scale;
   MatPtrT<WeightF32OrBF16> pre_ffw_norm_scale;
   MatPtrT<WeightF32OrBF16> post_attention_norm_scale;
@@ -299,17 +300,18 @@ struct LayerWeightsPtrs {
 
   // Allocates memory for all the tensors in the layer. Note that this is slow
   // (non-parallel) and only used for a stand-alone layer.
-  void AllocateForTest(MatOwners& mat_owners) {
+  void AllocateForTest(std::vector<MatOwner>& mat_owners) {
     ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
       // `backprop/` does not use row accessors and hence requires kPacked.
-      mat_owners.AllocateFor(t.mat, MatPadding::kPacked);
+      mat_owners.push_back(MatOwner());
+      mat_owners.back().AllocateFor(t.mat, MatPadding::kPacked);
     });
   }
 
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
-  void Fixup(MatOwners& mat_owners) {
+  void Fixup(std::vector<MatOwner>& mat_owners) {
     InitAttWeights(mat_owners);
     SplitW1();
     SplitAttW1();
@@ -317,7 +319,7 @@ struct LayerWeightsPtrs {
 
  private:
   // Copies att_weights from `attn_vec_einsum_w`.
-  void InitAttWeights(MatOwners& mat_owners) {
+  void InitAttWeights(std::vector<MatOwner>& mat_owners) {
     // We only use this tensor for Gemma layers.
     if (layer_config.type != LayerAttentionType::kGemma) return;
 
@@ -343,7 +345,8 @@ struct LayerWeightsPtrs {
     {
       static std::mutex m;
       std::lock_guard<std::mutex> lock(m);
-      mat_owners.AllocateFor(att_weights, MatPadding::kOdd);
+      mat_owners.push_back(MatOwner());
+      mat_owners.back().AllocateFor(att_weights, MatPadding::kOdd);
     }
 
     const size_t T_bytes = att_weights.ElementBytes();
@@ -575,7 +578,8 @@ struct ModelWeightsPtrs {
 
   // Instead of reading, only allocates memory for all tensors. Used by
   // `optimizer.cc` via the `Gemma` constructor without weights.
-  void AllocateForTest(MatOwners& mat_owners, hwy::ThreadPool& pool) {
+  void AllocateForTest(std::vector<MatOwner>& mat_owners,
+                       hwy::ThreadPool& pool) {
     // First get a list of all the tensors.
     std::vector<MatPtr*> all_mat;
     all_mat.reserve(10 * c_layers.size());
@@ -583,14 +587,20 @@ struct ModelWeightsPtrs {
       all_mat.push_back(&t.mat);
     });
 
-    // `backprop/` does not use row accessors and hence requires kPacked.
-    mat_owners.AllocateFor(all_mat, MatPadding::kPacked, pool);
+    const size_t start = mat_owners.size();
+    mat_owners.resize(start + all_mat.size());
+
+    // Allocate in parallel because faulting in large tensors is slow.
+    pool.Run(0, all_mat.size(), [&](uint64_t task, size_t /*thread*/) {
+      // `backprop/` does not use row accessors and hence requires kPacked.
+      mat_owners[start + task].AllocateFor(*all_mat[task], MatPadding::kPacked);
+    });
   }
 
   // For reshaping file tensors to the shape expected by the code. This would
   // ideally already happen in the importer. Must be called after reading and
   // updating the attention weights.
-  void Fixup(MatOwners& mat_owners, hwy::ThreadPool& pool) {
+  void Fixup(std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool) {
     pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
       GetLayer(layer)->Fixup(mat_owners);
     });
@@ -666,7 +676,7 @@ class WeightsOwner {
   std::unique_ptr<ModelWeightsPtrs<NuqStream>> nuq_weights_;
 
   // Owns the memory referenced by all `MatPtr`.
-  MatOwners mat_owners_;
+  std::vector<MatOwner> mat_owners_;
 };
 
 }  // namespace gcpp

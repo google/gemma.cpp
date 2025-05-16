@@ -22,13 +22,13 @@
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "hwy/base.h"
+#include "hwy/profiler.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // This test can be run manually with the downloaded gemma weights.
 // To run the test, pass the following flags:
-// --model <model> --tokenizer <tokenizer_path> --weights <weights_path>
+// --tokenizer <tokenizer_path> --weights <weights_path>
 // It should pass for the following models:
-// Gemma1: 2b-it (v1 and v1.1), 7b-it (v1 and v1.1), gr2b-it,
 // Gemma2: gemma2-2b-it, 9b-it, 27b-it,
 
 namespace gcpp {
@@ -76,26 +76,25 @@ class GemmaTest : public ::testing::Test {
     return replies;
   }
 
-  void GenerateTokens(std::vector<std::string> &kQA, size_t num_questions) {
+  void GenerateTokens(const std::vector<std::string>& questions) {
     ASSERT_NE(s_env->GetGemma(), nullptr);
 
+    // Fills prompts round robin from `questions` until the desired batch size.
     std::vector<std::string> inputs;
-    inputs.reserve(num_questions);
-    for (size_t i = 0; i < num_questions; ++i) {
-      inputs.push_back(kQA[i]);
+    inputs.reserve(s_env->MutableConfig().decode_qbatch_size);
+    size_t qpos = 0;
+    for (size_t i = 0; i < inputs.capacity(); ++i) {
+      inputs.push_back(questions[qpos++]);
+      if (qpos == questions.size()) qpos = 0;
     }
     std::vector<std::string> responses = BatchGemmaReply(inputs);
-    for (size_t i = 0; i < num_questions; ++i) {
-      std::string response = responses.at(i);
-      fprintf(stderr, "Batch answer %zu '%s'\n\n", i + 1, response.c_str());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      fprintf(stderr, "Batch answer %zu '%s'\n\n", i, responses[i].c_str());
     }
   }
 };
 
 TEST_F(GemmaTest, RandomQuestionsBatched) {
-  s_env->MutableConfig().decode_qbatch_size = 3;
-  s_env->MutableConfig().verbosity = 5;
-
   static std::vector<std::string> kQA = {
       {"Write me a poem about Australia?"},
       {"What's the history of Denmark?"},
@@ -130,8 +129,9 @@ TEST_F(GemmaTest, RandomQuestionsBatched) {
       {"Tell me about space travel."},
       {"Explain to me how electric cars work."},
   };
-  static const size_t kNum = kQA.size();
-  GenerateTokens(kQA, kNum);
+  s_env->MutableConfig().verbosity = 5;
+  GenerateTokens(kQA);
+  PROFILER_PRINT_RESULTS();
 }
 }  // namespace
 }  // namespace gcpp

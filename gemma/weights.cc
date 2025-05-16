@@ -16,10 +16,10 @@
 #include "gemma/weights.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-#include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <random>
 #include <string>
@@ -30,6 +30,7 @@
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "io/blob_store.h"
+#include "ops/matmul.h"  // MMParallel
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -46,7 +47,7 @@ namespace gcpp {
 static void InitAttWeightsNUQ(const LayerConfig& layer_config,
                               MatPtrT<NuqStream>& attn_vec_einsum_w,
                               MatPtrT<NuqStream>& att_weights,
-                              MatOwners& mat_owners) {
+                              std::vector<MatOwner>& mat_owners) {
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
 
@@ -91,9 +92,27 @@ static void SplitW1NUQ(const LayerConfig& layer_config) {
 }
 
 template <>
-void LayerWeightsPtrs<NuqStream>::Fixup(MatOwners& mat_owners) {
+void LayerWeightsPtrs<NuqStream>::Fixup(std::vector<MatOwner>& mat_owners) {
   InitAttWeightsNUQ(layer_config, attn_vec_einsum_w, att_weights, mat_owners);
   SplitW1NUQ(layer_config);
+}
+
+// Allocates multiple in parallel and binds to NUMA nodes.
+static void AllocateAndBindAll(const std::vector<MatPtr*>& mats,
+                               MatPadding padding,
+                               std::vector<MatOwner>& owners,
+                               hwy::ThreadPool& pool) {
+  const size_t start = owners.size();
+  owners.resize(start + mats.size());
+
+  MMParallel parallel(ThreadingContext::Get());
+
+  // Allocate in parallel because faulting in large tensors is slow.
+  pool.Run(0, mats.size(), [&](uint64_t task, size_t /*thread*/) {
+    owners[start + task].AllocateFor(*mats[task], padding);
+    // TODO(janwas): MatMul outputs will later also be BF16.
+    BindB(*mats[task], sizeof(float), parallel);
+  });
 }
 
 // Parallel I/O into allocated memory, or mapped view of file. The latter is
@@ -209,10 +228,10 @@ static void ReadBatches(const BlobReader& reader,
 }
 
 // Aborts on error.
-static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
-                      const std::vector<BlobRange>& ranges, Tristate map,
-                      MatOwners& mat_owners, const MatPadding padding,
-                      hwy::ThreadPool& pool) {
+static void MapOrReadAll(const std::vector<MatPtr*>& mats, BlobReader& reader,
+                         const std::vector<BlobRange>& ranges, Tristate map,
+                         std::vector<MatOwner>& mat_owners,
+                         const MatPadding padding, hwy::ThreadPool& pool) {
   HWY_ASSERT(mats.size() == ranges.size());
 
   if (ChooseMode(reader.file_bytes(), map) == Mode::kMap) {
@@ -226,7 +245,7 @@ static void MapOrRead(const std::vector<MatPtr*>& mats, BlobReader& reader,
   {
     PROFILER_ZONE("Startup.Weights.Allocate");
     // NOTE: this changes the stride of `mats`!
-    mat_owners.AllocateFor(mats, padding, pool);
+    AllocateAndBindAll(mats, padding, mat_owners, pool);
   }
 
   const std::vector<IOBatch> batches =
@@ -259,7 +278,7 @@ void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
     });
   });
 
-  MapOrRead(mats, reader, ranges, map, mat_owners_, padding, pool);
+  MapOrReadAll(mats, reader, ranges, map, mat_owners_, padding, pool);
 
   Fixup(pool);
 }

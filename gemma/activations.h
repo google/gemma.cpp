@@ -83,6 +83,8 @@ struct Activations {
 
         env(env) {
     HWY_ASSERT(batch_size != 0);
+
+    // Note that BindC on any MatMul output considerably slows down Prefill.
   }
 
   void SetBatchSize(size_t batch_size) {

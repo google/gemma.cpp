@@ -46,6 +46,8 @@ namespace gcpp {
 // `MMAddHorizontalSumsIntoPartial`. We ensure `C.Cols() % kNR == 0`.
 constexpr size_t kNR = 4;
 
+// Mostly stateless, can be constructed on the fly by weights.cc, but captures
+// the singleton ThreadingContext to reduce MatMul call overhead.
 class MMParallel {
  public:
   static constexpr size_t kMaxPackages = 4;
@@ -54,6 +56,8 @@ class MMParallel {
   MMParallel(ThreadingContext& ctx) : ctx_(ctx) {
     HWY_DASSERT(ctx_.pools.NumPackages() <= kMaxPackages);
   }
+
+  Allocator& allocator() const { return ctx_.allocator; }
 
   // Initial static partitioning of B rows across packages.
   IndexRangePartition RangesOfNP(size_t max_packages, size_t N,
@@ -168,31 +172,9 @@ class MMParallel {
   ThreadingContext& ctx_;
 };
 
-template <typename TC>  // BF16/float for C, double for partial
-void BindC(const Allocator& allocator, size_t M, const RowPtr<TC>& C,
-           MMParallel& parallel) {
-  if (!allocator.ShouldBind()) return;
-
-  const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, C.Cols(), sizeof(TC), kNR);
-  const size_t quantum = allocator.Quantum<TC>();
-  bool ok = true;
-  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
-    const IndexRange& cols_c = ranges_np.Range(pkg_idx);
-    const size_t node = parallel.Node(pkg_idx);
-    for (size_t im = 0; im < M; ++im) {
-      // `BindMemory` requires page alignment.
-      const size_t begin = hwy::RoundUpTo(cols_c.begin(), quantum);
-      const size_t end = hwy::RoundDownTo(cols_c.end(), quantum);
-      ok &= allocator.BindMemory(C.Row(im) + begin, (end - begin) * sizeof(TC),
-                                 node);
-    }
-  }
-  if (HWY_UNLIKELY(!ok)) {
-    HWY_WARN("Failed to bind C (%zux%zu), %zu packages.", M, C.Cols(),
-             ranges_np.NumTasks());
-  }
-}
+void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
+// C is BF16/float, or double for partial.
+void BindC(const MatPtr& C, MMParallel& parallel);
 
 // Per-package storage for packed A, and one global C-shaped `partial` for
 // accumulating partial dot products (sections of K).
@@ -227,7 +209,7 @@ class MMStorage {
         const size_t node = parallel.Node(pkg_idx);
         size_t bytes = pkg_A_[pkg_idx]->Rows() * pkg_A_[pkg_idx]->Stride() *
                        pkg_A_[pkg_idx]->ElementBytes();
-        bytes = hwy::RoundDownTo(bytes, allocator.QuantumBytes());
+        bytes = hwy::RoundDownTo(bytes, allocator.BasePageBytes());
         if (!allocator.BindMemory(pkg_A_[pkg_idx]->Row(0), bytes, node)) {
           HWY_WARN("Failed to bind memory for package %zu", pkg_idx);
         }
@@ -235,7 +217,7 @@ class MMStorage {
     });
 
     // Avoid cross-package accesses.
-    BindC(allocator, kMaxM, partial_, parallel);
+    BindC(partial_storage_, parallel);
   }
 
   // Returns per-package matrix view.
@@ -680,29 +662,6 @@ struct MMZone {
   void MaybeEnter(const char*, const MMArgs&) {}
 };
 #endif  // PROFILER_ENABLED
-
-template <typename TB>
-void BindB(const Allocator& allocator, size_t sizeof_TC, const MatPtrT<TB>& B,
-           MMParallel& parallel) {
-  if (!allocator.ShouldBind()) return;
-
-  const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, B.Rows(), sizeof_TC, kNR);
-  const size_t quantum = allocator.Quantum<TB>();
-  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
-    const IndexRange& rows_b = ranges_np.Range(pkg_idx);
-    const size_t node = parallel.Node(pkg_idx);
-    uintptr_t begin = reinterpret_cast<uintptr_t>(B.Row(rows_b.begin()));
-    uintptr_t end = begin + rows_b.Num() * B.Stride() * sizeof(TB);
-    // B is not yet guaranteed to have padded rows, so only bind the
-    // subset that is page-aligned.
-    begin = hwy::RoundUpTo(begin, quantum);
-    end = hwy::RoundDownTo(end, quantum);
-    if (HWY_LIKELY(begin != end)) {
-      allocator.BindMemory(reinterpret_cast<void*>(begin), end - begin, node);
-    }
-  }
-}
 
 }  // namespace gcpp
 

@@ -98,16 +98,12 @@ class Allocator {
   // = HWY_MAX(LineBytes(), VectorBytes())
   size_t StepBytes() const { return step_bytes_; }
 
-  // File size multiple required for memory mapping.
+  // File size multiple required for memory mapping. Also used when binding
+  // memory to NUMA nodes (see `BindB/BindC`).
   size_t BasePageBytes() const { return base_page_bytes_; }
 
-  // Either StepBytes or BasePageBytes if NUMA.
+  // Desired allocator alignment: Either StepBytes, or BasePageBytes if NUMA.
   size_t QuantumBytes() const { return quantum_bytes_; }
-  template <typename T>
-  // For rounding down elements to the page size in `BindB/BindC`.
-  size_t Quantum() const {
-    return QuantumBytes() / sizeof(T);
-  }
 
   // L1 and L2 are typically per core.
   size_t L1Bytes() const { return l1_bytes_; }
