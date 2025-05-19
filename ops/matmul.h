@@ -172,9 +172,9 @@ class MMParallel {
   ThreadingContext& ctx_;
 };
 
-void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
+void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
 // C is BF16/float, or double for partial.
-void BindC(const MatPtr& C, MMParallel& parallel);
+void BindC(MatPtr& C, MMParallel& parallel);
 
 // Per-package storage for packed A, and one global C-shaped `partial` for
 // accumulating partial dot products (sections of K).

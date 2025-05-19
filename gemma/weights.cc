@@ -97,21 +97,27 @@ void LayerWeightsPtrs<NuqStream>::Fixup(std::vector<MatOwner>& mat_owners) {
   SplitW1NUQ(layer_config);
 }
 
+struct TensorToRead {
+  MatPtr* mat;
+  BlobRange range;
+  // Some tensors opt out of padding via kNoPad flags.
+  MatPadding padding;
+};
+
 // Allocates multiple in parallel and binds to NUMA nodes.
-static void AllocateAndBindAll(const std::vector<MatPtr*>& mats,
-                               MatPadding padding,
+static void AllocateAndBindAll(const std::vector<TensorToRead>& tensors,
                                std::vector<MatOwner>& owners,
                                hwy::ThreadPool& pool) {
   const size_t start = owners.size();
-  owners.resize(start + mats.size());
+  owners.resize(start + tensors.size());
 
   MMParallel parallel(ThreadingContext::Get());
 
   // Allocate in parallel because faulting in large tensors is slow.
-  pool.Run(0, mats.size(), [&](uint64_t task, size_t /*thread*/) {
-    owners[start + task].AllocateFor(*mats[task], padding);
+  pool.Run(0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
+    owners[start + task].AllocateFor(*tensors[task].mat, tensors[task].padding);
     // TODO(janwas): MatMul outputs will later also be BF16.
-    BindB(*mats[task], sizeof(float), parallel);
+    BindB(*tensors[task].mat, sizeof(float), parallel);
   });
 }
 
@@ -155,55 +161,54 @@ MapPtr MapFileOrNull(File& file, uint64_t file_bytes) {
   return MapPtr();
 }
 
-static void MapAll(const std::vector<MatPtr*>& mats,
-                   const std::vector<BlobRange>& ranges, const MapPtr& mapped) {
+static void MapAll(const std::vector<TensorToRead>& tensors,
+                   const MapPtr& mapped) {
   PROFILER_ZONE("Startup.Weights.Map");
-  for (size_t i = 0; i < mats.size(); ++i) {
+  for (size_t i = 0; i < tensors.size(); ++i) {
     // SetPtr does not change the stride, but it is expected to be packed
     // because that is what Compress() writes to the file.
-    const size_t mat_bytes = mats[i]->PackedBytes();
+    const size_t mat_bytes = tensors[i].mat->PackedBytes();
     // Ensure blob size matches that computed from metadata.
-    HWY_ASSERT_M(mat_bytes == ranges[i].bytes, mats[i]->Name());
+    HWY_ASSERT_M(mat_bytes == tensors[i].range.bytes, tensors[i].mat->Name());
 
-    mats[i]->SetPtr(const_cast<uint8_t*>(mapped.get() + ranges[i].offset),
-                    mats[i]->Stride());
+    tensors[i].mat->SetPtr(
+        const_cast<uint8_t*>(mapped.get() + tensors[i].range.offset),
+        tensors[i].mat->Stride());
   }
 }
 
-std::vector<IOBatch> MakeBatches(const std::vector<BlobRange>& ranges,
-                                 const std::vector<MatPtr*>& mats,
+std::vector<IOBatch> MakeBatches(const std::vector<TensorToRead>& tensors,
                                  const uint64_t file_bytes) {
   PROFILER_ZONE("Startup.Weights.MakeBatches");
   // Batches must be contiguous but blobs are padded, hence at least one
   // batch per tensor, and more when tensor rows exceed the batch size.
   std::vector<IOBatch> batches;
-  batches.reserve(mats.size());
+  batches.reserve(tensors.size());
 
-  for (size_t i = 0; i < mats.size(); ++i) {
-    uint64_t offset = ranges[i].offset;
-    HWY_ASSERT(ranges[i].End() <= file_bytes);
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    const BlobRange& range = tensors[i].range;
+    MatPtr& mat = *tensors[i].mat;
+    uint64_t offset = range.offset;
+    HWY_ASSERT(range.End() <= file_bytes);
 
-    batches.emplace_back(offset, ranges[i].key_idx);
-    const size_t file_bytes_per_row = mats[i]->Cols() * mats[i]->ElementBytes();
-    // Caution, `RowT` requires knowledge of the actual type. We instead use
-    // the first row, which is the same for any type, and advance the *byte*
-    // pointer by the *byte* stride.
-    const size_t mem_stride_bytes = mats[i]->Stride() * mats[i]->ElementBytes();
-    uint8_t* row = mats[i]->RowT<uint8_t>(0);
-    for (size_t r = 0; r < mats[i]->Rows(); ++r) {
-      if (!batches.back().Add(row, file_bytes_per_row)) {  // Full batch.
-        batches.emplace_back(offset, ranges[i].key_idx);
+    batches.emplace_back(offset, range.key_idx);
+    const size_t file_bytes_per_row = mat.Cols() * mat.ElementBytes();
+    const size_t mem_stride_bytes = mat.Stride() * mat.ElementBytes();
+    uint8_t* row_bytes = mat.RowBytes(0);
+    for (size_t r = 0; r < mat.Rows(); ++r) {
+      if (!batches.back().Add(row_bytes, file_bytes_per_row)) {  // Full batch.
+        batches.emplace_back(offset, range.key_idx);
         // Adding to an empty batch is always successful.
-        HWY_ASSERT(batches.back().Add(row, file_bytes_per_row));
+        HWY_ASSERT(batches.back().Add(row_bytes, file_bytes_per_row));
       }
       offset += file_bytes_per_row;
-      row += mem_stride_bytes;
+      row_bytes += mem_stride_bytes;
       // Keep the in-memory row padding uninitialized so msan detects any use.
     }
-    HWY_ASSERT(offset == ranges[i].End());
+    HWY_ASSERT(offset == range.End());
   }
 
-  HWY_ASSERT(batches.size() >= mats.size());
+  HWY_ASSERT(batches.size() >= tensors.size());
   return batches;
 }
 
@@ -228,16 +233,14 @@ static void ReadBatches(const BlobReader& reader,
 }
 
 // Aborts on error.
-static void MapOrReadAll(const std::vector<MatPtr*>& mats, BlobReader& reader,
-                         const std::vector<BlobRange>& ranges, Tristate map,
+static void MapOrReadAll(const std::vector<TensorToRead>& tensors,
+                         BlobReader& reader, Tristate map,
                          std::vector<MatOwner>& mat_owners,
-                         const MatPadding padding, hwy::ThreadPool& pool) {
-  HWY_ASSERT(mats.size() == ranges.size());
-
+                         hwy::ThreadPool& pool) {
   if (ChooseMode(reader.file_bytes(), map) == Mode::kMap) {
     MapPtr mapped = MapFileOrNull(reader.file(), reader.file_bytes());
     if (mapped) {
-      MapAll(mats, ranges, mapped);
+      MapAll(tensors, mapped);
       return;
     }
   }  // otherwise fall through to read mode
@@ -245,32 +248,32 @@ static void MapOrReadAll(const std::vector<MatPtr*>& mats, BlobReader& reader,
   {
     PROFILER_ZONE("Startup.Weights.Allocate");
     // NOTE: this changes the stride of `mats`!
-    AllocateAndBindAll(mats, padding, mat_owners, pool);
+    AllocateAndBindAll(tensors, mat_owners, pool);
   }
 
   const std::vector<IOBatch> batches =
-      MakeBatches(ranges, mats, reader.file_bytes());
+      MakeBatches(tensors, reader.file_bytes());
   ReadBatches(reader, batches, pool);
 }
 
 void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
                                  Tristate map, hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
-  std::vector<MatPtr*> mats;
-  std::vector<BlobRange> ranges;
-
-  // Padding is inserted when reading row by row, except for NUQ tensors.
-  const MatPadding padding = MatPadding::kOdd;
+  std::vector<TensorToRead> tensors;
 
   AllocatePointer(model.Config());
 
   // Enumerate all weights (negligible cost).
   CallT([&](const auto& weights) {
     weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+      const MatPadding padding = (t.flags & TensorArgs::kNoPad)
+                                     ? MatPadding::kPacked
+                                     : MatPadding::kOdd;
       size_t key_idx;
       if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
-        mats.push_back(&t.mat);
-        ranges.push_back(reader.Range(key_idx));
+        tensors.push_back({.mat = &t.mat,
+                           .range = reader.Range(key_idx),
+                           .padding = padding});
         return;
       }
       if (t.flags & TensorArgs::kMaybeRead) return;  // optional and not found.
@@ -278,7 +281,7 @@ void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
     });
   });
 
-  MapOrReadAll(mats, reader, ranges, map, mat_owners_, padding, pool);
+  MapOrReadAll(tensors, reader, map, mat_owners_, pool);
 
   Fixup(pool);
 }
@@ -338,9 +341,9 @@ void WeightsOwner::LogWeightStatsF32() {
           printf("[scale=%f] ", t.mat.Scale());
         }
         hwy::Stats stats;
-        HWY_ASSERT(t.mat.GetType() == Type::kF32);
+        const MatPtrT<float> mat_f(t.mat);
         for (size_t r = 0; r < t.mat.Rows(); ++r) {
-          const float* HWY_RESTRICT row = t.mat.RowT<float>(r);
+          const float* HWY_RESTRICT row = mat_f.Row(r);
           for (size_t c = 0; c < t.mat.Cols(); ++c) {
             stats.Notify(row[c]);
           }

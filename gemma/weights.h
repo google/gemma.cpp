@@ -43,24 +43,27 @@ struct TensorArgs {
   // name/type from another `LayerWeightsPtrs` for iterating over tensor pairs
   // (for copying) or triples (for `AdamUpdateMV`). Set by `TENSOR_ARGS`.
   // `flags` is a combination of zero or more `Flags`.
-  TensorArgs(MatPtr& mat, const MatPtr* other_mat1, const MatPtr* other_mat2,
-             int flags)
+  TensorArgs(MatPtr& mat, MatPtr* other_mat1, MatPtr* other_mat2, int flags)
       : mat(mat),
         other_mat1(other_mat1),
         other_mat2(other_mat2),
         flags(flags) {}
 
   MatPtr& mat;
-  const MatPtr* other_mat1;  // either/both can be nullptr.
-  const MatPtr* other_mat2;
+  MatPtr* other_mat1;  // either/both can be nullptr.
+  MatPtr* other_mat2;
 
-  // TODO: freestanding enum class instead? These are mutually exclusive.
   enum Flags {
-    // Read the tensor from the file and abort if it is not found.
+    // Default: Read the tensor from the file and abort if it is not found.
     kMustRead = 0,
+
     // Not an error if the tensor is not present in the file. For example,
     // the _w1/_w2 tensors are not always present.
     kMaybeRead = 1,
+
+    // Avoid padding tensor rows when reading. Used for some Griffin tensors
+    // whose index computations do not use Row() accessors.
+    kNoPad = 2,
   };
   const int flags;
 };
@@ -214,8 +217,8 @@ struct LayerWeightsPtrs {
   // can also iterate over pairs or triples of tensors for `AdamUpdateMV`.
   // Public because also called by `WeightsPtrs`.
   template <class Func>
-  void ForEachTensor(const LayerWeightsPtrs<Weight>* other1,
-                     const LayerWeightsPtrs<Weight>* other2, Func func) {
+  void ForEachTensor(LayerWeightsPtrs<Weight>* other1,
+                     LayerWeightsPtrs<Weight>* other2, Func func) {
     if (layer_config.type == LayerAttentionType::kVit) {
       // MHA.
       func(TENSOR_ARGS(vit.attn_out_w, kMustRead));
@@ -248,9 +251,9 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(griffin.linear_y_biases, kMustRead));
       func(TENSOR_ARGS(griffin.linear_out_w, kMustRead));
       func(TENSOR_ARGS(griffin.linear_out_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.conv_w, kMustRead));
+      func(TENSOR_ARGS(griffin.conv_w, kMustRead | TensorArgs::kNoPad));
       func(TENSOR_ARGS(griffin.conv_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.gate_w, kMustRead));
+      func(TENSOR_ARGS(griffin.gate_w, kMustRead | TensorArgs::kNoPad));
       func(TENSOR_ARGS(griffin.gate_biases, kMustRead));
       func(TENSOR_ARGS(griffin.a, kMustRead));
     }
@@ -363,8 +366,8 @@ struct LayerWeightsPtrs {
 
   // For FFN. Fast, only updates pointers.
   void SplitW1() {
-    // We only use this tensor for Gemma layers.
-    if (layer_config.type != LayerAttentionType::kGemma) return;
+    // Used for Gemma and Griffin layers; FFWVit uses different tensors.
+    if (layer_config.type == LayerAttentionType::kVit) return;
 
     // Files have both or neither of w1 and w2, and backprop/ allocates both.
     HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
@@ -514,10 +517,10 @@ struct ModelWeightsPtrs {
   // used to copy from another set of weights. Public because called by tests
   // and `WeightsOwner`.
   template <class Func>
-  void ForEachTensor(const ModelWeightsPtrs<Weight>* other1,
-                     const ModelWeightsPtrs<Weight>* other2, Func func) {
-    const LayerWeightsPtrs<Weight>* other_layer1 = nullptr;
-    const LayerWeightsPtrs<Weight>* other_layer2 = nullptr;
+  void ForEachTensor(ModelWeightsPtrs<Weight>* other1,
+                     ModelWeightsPtrs<Weight>* other2, Func func) {
+    LayerWeightsPtrs<Weight>* other_layer1 = nullptr;
+    LayerWeightsPtrs<Weight>* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
 
@@ -569,11 +572,12 @@ struct ModelWeightsPtrs {
 
   // Copies only the allocated tensors in `*this` from tensors in `other`.
   void CopyFrom(const ModelWeightsPtrs<Weight>& other) {
-    ForEachTensor(&other, nullptr, [](const TensorArgs& t) {
-      if (!t.mat.HasPtr()) return;
-      HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
-      CopyMat(*t.other_mat1, t.mat);
-    });
+    ForEachTensor(const_cast<ModelWeightsPtrs<Weight>*>(&other), nullptr,
+                  [](const TensorArgs& t) {
+                    if (!t.mat.HasPtr()) return;
+                    HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
+                    CopyMat(*t.other_mat1, t.mat);
+                  });
   }
 
   // Instead of reading, only allocates memory for all tensors. Used by

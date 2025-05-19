@@ -21,7 +21,6 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::min
-#include <memory>     // std::make_unique
 #include <vector>
 
 #include "gemma/activations.h"
@@ -69,30 +68,44 @@ namespace HWY_NAMESPACE {
 // Different functions use different naming conventions for the number of
 // tokens. Functions that are query-independent, such as RMSNorm*, call the
 // count `num_interleaved`. Functions that are query-dependent, such as
-// `Attention`, use separate `num_tokens` and `num_queries`.
+// `Attention`, use separate `num_tokens` and `num_queries`. `num_tokens` is the
+// number of tokens from one query: 1 for decode, otherwise prefill_tbatch_size.
 
-// TODO: add batch query support for Griffin (QueriesPos).
 template <typename T>
-HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
-                                   size_t layer, Activations& activations,
+HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
+                                   size_t num_tokens, size_t griffin_layer,
+                                   Activations& activations,
                                    const LayerWeightsPtrs<T>* layer_weights,
                                    const KVCaches& kv_caches) {
   PROFILER_ZONE("Gen.Griffin");
-  KVCache& kv_cache = kv_caches[0];
   hwy::ThreadPool& pool = activations.env->ctx.pools.Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
+  const D df;
+
   const size_t model_dim = layer_weights->layer_config.model_dim;
-  const size_t conv_1d_width = layer_weights->layer_config.conv1d_width;
+  HWY_DASSERT(model_dim % hn::Lanes(df) == 0);
+
   const size_t heads = layer_weights->layer_config.heads;
+  const size_t conv_1d_width = layer_weights->layer_config.conv1d_width;
+  HWY_ASSERT_M(conv_1d_width % 2 == 0, "Conv width must be even");
+  const size_t kHeadDim = model_dim / heads;
+  const size_t kMatrixSize = kHeadDim * kHeadDim;
+
+  const size_t num_queries = queries_pos.size();
+  const hwy::Divisor div_num_q(static_cast<uint32_t>(num_queries));
+  const size_t num_interleaved = num_tokens * num_queries;
 
   // X / Y linear layers.
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    float* HWY_RESTRICT y = activations.griffin_y.Row(batch_idx);
-    float* HWY_RESTRICT x = activations.griffin_x.Row(batch_idx);
+  // TODO: MatMul
+  HWY_DASSERT(activations.griffin_y.Rows() == activations.griffin_x.Rows());
+  HWY_DASSERT(num_interleaved == activations.griffin_y.Rows());
+  for (size_t r = 0; r < num_interleaved; ++r) {
+    float* HWY_RESTRICT y = activations.griffin_y.Row(r);
+    float* HWY_RESTRICT x = activations.griffin_x.Row(r);
     TwoMatVecAdd(layer_weights->griffin.linear_x_w,
                  layer_weights->griffin.linear_y_w, 0, model_dim, model_dim,
-                 activations.pre_att_rms_out.Row(batch_idx),
+                 activations.pre_att_rms_out.Row(r),
                  /*add0=*/layer_weights->griffin.linear_x_biases.PackedScale1(),
                  /*add1=*/layer_weights->griffin.linear_y_biases.PackedScale1(),
                  /*out0=*/x, /*out1=*/y, pool);
@@ -100,18 +113,19 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
   }
 
   // Conv1D.
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    const size_t pos = batch_start + batch_idx;
-    float* HWY_RESTRICT x = activations.griffin_x.Row(batch_idx);
-    HWY_FULL(float) df;
-    HWY_DASSERT(model_dim % hn::Lanes(df) == 0);
+  for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
+       ++interleaved_idx) {
+    const size_t query_idx = div_num_q.Remainder(interleaved_idx);
+    const size_t batch_idx = div_num_q.Divide(interleaved_idx);
+    const size_t pos = queries_pos[query_idx] + batch_idx;
+    float* HWY_RESTRICT x = activations.griffin_x.Row(query_idx);
 
     // cache[i] = input at time t-i.
     float* HWY_RESTRICT cache[kMaxConv1DWidth];
     cache[0] = x;
     for (size_t i = 1; i < conv_1d_width; i++) {
       cache[i] =
-          kv_cache.conv1d_cache.Row(layer) +
+          kv_caches[query_idx].conv1d_cache.Row(griffin_layer) +
           ((pos + conv_1d_width - 1 - i) % (conv_1d_width - 1)) * model_dim;
     }
     for (size_t i = 0; i < model_dim; i += hn::Lanes(df)) {
@@ -119,7 +133,6 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
       auto accum0 =
           hn::Load(df, layer_weights->griffin.conv_biases.PackedScale1() + i);
       auto accum1 = hn::Zero(df);
-      HWY_ASSERT_M(conv_1d_width % 2 == 0, "Conv width must be even");
       for (size_t l = 0; 2 * l < conv_1d_width; l++) {
         auto wv0 =
             hn::Load(df, layer_weights->griffin.conv_w.PackedScale1() +
@@ -136,17 +149,20 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
   }
 
   // RGLRU
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    const size_t pos = batch_start + batch_idx;
-    float* HWY_RESTRICT y = activations.griffin_y.Row(batch_idx);
-    float* HWY_RESTRICT x = activations.griffin_x.Row(batch_idx);
-    float* HWY_RESTRICT gate_x = activations.griffin_gate_x.Row(batch_idx);
-    float* HWY_RESTRICT a = activations.griffin_multiplier.Row(batch_idx);
-    float* HWY_RESTRICT rnn_state = kv_cache.rglru_cache.Row(layer);
+  for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
+       ++interleaved_idx) {
+    const size_t query_idx = div_num_q.Remainder(interleaved_idx);
+    const size_t batch_idx = div_num_q.Divide(interleaved_idx);
+    const size_t pos = queries_pos[query_idx] + batch_idx;
+
+    float* HWY_RESTRICT x = activations.griffin_x.Row(query_idx);
+    float* HWY_RESTRICT y = activations.griffin_y.Row(query_idx);
+    float* HWY_RESTRICT gate_x = activations.griffin_gate_x.Row(query_idx);
+    float* HWY_RESTRICT a = activations.griffin_multiplier.Row(query_idx);
+    float* HWY_RESTRICT rnn_state =
+        kv_caches[query_idx].rglru_cache.Row(griffin_layer);
 
     pool.Run(0, heads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
-      const size_t kHeadDim = model_dim / heads;
-      const size_t kMatrixSize = kHeadDim * kHeadDim;
       size_t head_offset = head * kHeadDim;
       TwoOfsMatVecAddLoop(
           layer_weights->griffin.gate_w, kMatrixSize * head,
@@ -166,7 +182,6 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
       hn::Transform1(D(), x + head_offset, kHeadDim, gate_x + head_offset,
                      fn_mul);
       // RNN scan
-      HWY_FULL(float) df;
       HWY_DASSERT(kHeadDim % hn::Lanes(df) == 0);
       for (size_t i = 0; i < kHeadDim; i += hn::Lanes(df)) {
         auto log_a = hn::Load(df, a + head_offset + i);
@@ -186,17 +201,18 @@ HWY_NOINLINE void GriffinRecurrent(size_t batch_start, size_t num_tokens,
         hn::Store(pre_out, df, x + head_offset + i);
       }
     });
-  }
+  }  // interleaved_idx
 
   // Final linear layer.
-  for (size_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
-    float* HWY_RESTRICT x = activations.griffin_x.Row(batch_idx);
-    float* out_ptr = activations.att_sums.Row(batch_idx);
+  // TODO: MatMul
+  for (size_t r = 0; r < num_interleaved; ++r) {
+    float* HWY_RESTRICT x = activations.griffin_x.Row(r);
+    float* out_ptr = activations.att_sums.Row(r);
     MatVecAdd(layer_weights->griffin.linear_out_w, 0, model_dim, model_dim, x,
               layer_weights->griffin.linear_out_biases.PackedScale1(), out_ptr,
               pool);
   }
-}
+}  // GriffinRecurrent
 
 // Wrapper class; holds arguments in member variables to shorten call sites.
 template <typename T>
@@ -219,11 +235,7 @@ class GemmaAttention {
         activations_.weights_config.attention_window_sizes[layer] ==
         activations_.seq_len;
     // TODO: add a config flag instead of hardcoding the model.
-    if (is_global_layer &&
-        (activations_.weights_config.model == Model::GEMMA3_4B ||
-         activations_.weights_config.model == Model::GEMMA3_12B ||
-         activations_.weights_config.model == Model::GEMMA3_27B ||
-         activations_.weights_config.model == Model::GEMMA3_1B)) {
+    if (is_global_layer && IsVLM(activations_.weights_config.model)) {
       inv_timescale = activations_.inv_timescale_global.Packed();
     }
     // PostQKType::Rope
@@ -454,7 +466,6 @@ class GemmaAttention {
 
                 SingleDotSoftmaxWeightedSum(q, k, v, att, att_out, query_scale,
                                             pos, start_pos, last_pos);
-
               });
   }
 
@@ -587,14 +598,12 @@ HWY_NOINLINE void Attention(
     GemmaAttention<T>(queries_pos, queries_prefix_end, num_tokens, layer,
                       activations, layer_weights, div_seq_len, kv_caches)();
   } else {
-    // Only reached if the model is Griffin.
-    // The kv_caches are allocated only for the griffin layers, so we need to
-    // map the layer index to the griffin layer index.
-    auto type = layer_weights->layer_config.type;
-    size_t layer_of_type =
+    HWY_DASSERT(type == LayerAttentionType::kGriffinRecurrentBlock);
+    // KVCache conv1d_cache and rglru_cache have one row per *Griffin* layer,
+    // so map `layer` to the Griffin layer index.
+    const size_t griffin_layer =
         activations.weights_config.NumLayersOfTypeBefore(type, layer);
-    HWY_ASSERT(queries_pos.size() == 1);
-    GriffinRecurrent(queries_pos[0], num_tokens, layer_of_type, activations,
+    GriffinRecurrent(queries_pos, num_tokens, griffin_layer, activations,
                      layer_weights, kv_caches);
   }
 }
@@ -1056,7 +1065,6 @@ HWY_NOINLINE void Prefill(
   // threads to parallelizing over queries, but for simplicity we assign them
   // all to MatMul.
   const size_t max_tbatch_size = runtime_config.prefill_tbatch_size;
-  HWY_DASSERT(max_tbatch_size <= activations.x.Rows());
 
   // For each query. `qi` is within the batch, not the global query index.
   for (size_t qi = 0; qi < num_queries; ++qi) {
@@ -1397,6 +1405,7 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
                const QueriesPos& queries_prefix_end,
                const size_t query_idx_start, const KVCaches& kv_caches,
                TimingInfo& timing_info) {
+  HWY_ASSERT(queries_pos_in.size() == kv_caches.size());
   // Griffin assumes that the recurrent block cache is zero-initialized.
   for (size_t i = 0; i < kv_caches.size(); ++i) {
     if (queries_pos_in[i] == 0) {
@@ -1510,17 +1519,10 @@ void GenerateBatchT(const ModelStore& model,
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(queries_pos.size() == num_queries);
   HWY_ASSERT(kv_caches.size() >= num_queries);
-  // Griffin does not support query batching.
-  size_t max_qbatch_size = runtime_config.decode_qbatch_size;
-  for (const LayerConfig& layer_config : model.Config().layer_configs) {
-    if (layer_config.type == LayerAttentionType::kGriffinRecurrentBlock) {
-      max_qbatch_size = 1;
-      break;
-    }
-  }
-
+  const size_t max_qbatch_size = runtime_config.decode_qbatch_size;
   const size_t max_batch_size =
       HWY_MAX(max_qbatch_size, runtime_config.prefill_tbatch_size);
+
   Activations activations(model.Config(), max_batch_size, env);
 
   for (size_t qbatch_start = 0; qbatch_start < num_queries;
@@ -1528,7 +1530,6 @@ void GenerateBatchT(const ModelStore& model,
     // Generate one batch of tokens from `qbatch_size` queries.
     const size_t qbatch_size =
         HWY_MIN(num_queries - qbatch_start, max_qbatch_size);
-    activations.SetBatchSize(qbatch_size);
     const QueriesPromptTokens qbatch_prompts(&queries_prompt[qbatch_start],
                                              qbatch_size);
     QueriesPos qbatch_pos(&queries_pos[qbatch_start], qbatch_size);

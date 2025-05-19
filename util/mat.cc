@@ -41,8 +41,8 @@ void CopyMat(const MatPtr& from, MatPtr& to) {
   }
   const size_t row_bytes = to.Cols() * to.ElementBytes();
   for (size_t r = 0; r < to.Rows(); ++r) {
-    const uint8_t* from_row = from.RowT<uint8_t>(r);
-    uint8_t* to_row = to.RowT<uint8_t>(r);
+    const uint8_t* from_row = from.RowBytes(r);
+    uint8_t* to_row = to.RowBytes(r);
     hwy::CopyBytes(from_row, to_row, row_bytes);
   }
 }
@@ -58,7 +58,7 @@ void ZeroInit(MatPtr& mat) {
   }
   const size_t row_bytes = mat.Cols() * mat.ElementBytes();
   for (size_t r = 0; r < mat.Rows(); ++r) {
-    hwy::ZeroBytes(mat.RowT<uint8_t>(r), row_bytes);
+    hwy::ZeroBytes(mat.RowBytes(r), row_bytes);
   }
 }
 
@@ -71,15 +71,19 @@ void RandInit(MatPtr& mat, float stddev, std::mt19937& gen) {
 
   std::normal_distribution<float> dist(0.0, stddev);
   if (mat.GetType() == Type::kF32) {
+    MatPtrT<float> mat_f(mat);
+
     for (size_t r = 0; r < mat.Rows(); ++r) {
-      float* HWY_RESTRICT row = mat.RowT<float>(r);
+      float* HWY_RESTRICT row = mat_f.Row(r);
       for (size_t c = 0; c < mat.Cols(); ++c) {
         row[c] = dist(gen);
       }
     }
   } else {
+    MatPtrT<double> mat_d(mat);
+
     for (size_t r = 0; r < mat.Rows(); ++r) {
-      double* HWY_RESTRICT row = mat.RowT<double>(r);
+      double* HWY_RESTRICT row = mat_d.Row(r);
       for (size_t c = 0; c < mat.Cols(); ++c) {
         row[c] = dist(gen);
       }

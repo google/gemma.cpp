@@ -33,8 +33,7 @@ struct Activations {
         layer_config(config.layer_configs[0]),
         seq_len(config.seq_len),
         cache_pos_size(config.CachePosSize()),
-        is_griffin(layer_config.type ==
-                   LayerAttentionType::kGriffinRecurrentBlock),
+        is_griffin(config.model == Model::GRIFFIN_2B),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         q("q",
@@ -58,21 +57,18 @@ struct Activations {
         C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
         ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
 
-        // No padding for Griffin because it does not always use Row().
         griffin_x("griffin_x",
                   is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-                  MatPadding::kPacked),
+                  pad_),
         griffin_y("griffin_y",
                   is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-                  MatPadding::kPacked),
+                  pad_),
         griffin_gate_x(
             "griffin_gate_x",
-            is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-            MatPadding::kPacked),
+            is_griffin ? Extents2D(batch_size, config.model_dim) : none_, pad_),
         griffin_multiplier(
             "griffin_mul",
-            is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-            MatPadding::kPacked),
+            is_griffin ? Extents2D(batch_size, config.model_dim) : none_, pad_),
 
         inv_timescale(CreateInvTimescale(
             ThreadingContext::Get().allocator, layer_config.qkv_dim,

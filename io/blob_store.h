@@ -44,16 +44,6 @@ struct BlobRange {
   size_t key_idx;
 };
 
-// A read or write I/O request, each serviced by one thread in a pool.
-struct BlobIO2 {
-  BlobIO2(BlobRange range, void* data) : range(range), data(data) {}
-
-  BlobRange range;
-  void* data;  // Modified only if a read request. Read-only for writes.
-};
-
-class BlobStore;
-
 // Reads `BlobStore` header, converts keys to strings and creates a hash map for
 // faster lookups.
 // TODO(janwas): rename to BlobFinder or similar.

@@ -84,6 +84,14 @@ struct Header {             // standard layout class
 static_assert(sizeof(Header) == 16);
 }  // namespace
 
+// A write I/O request, each serviced by one thread in a pool.
+struct BlobIO {
+  BlobIO(BlobRange range, void* data) : range(range), data(data) {}
+
+  BlobRange range;
+  void* data;  // Read-only for writes.
+};
+
 // Little-endian on-disk representation: a fixed-size `Header`, then a padded
 // variable-length 'directory' of blob keys and their offset/sizes, then the
 // 'payload' of each blob's data with padding in between, followed by padding to
@@ -238,11 +246,11 @@ class BlobStore {
     return true;  // all OK
   }
 
-  void EnqueueWriteForHeaderAndDirectory(std::vector<BlobIO2>& writes) const {
+  void EnqueueWriteForHeaderAndDirectory(std::vector<BlobIO>& writes) const {
     const size_t key_idx = 0;  // not actually associated with a key/blob
     writes.emplace_back(
         BlobRange{.offset = 0, .bytes = sizeof(header_), .key_idx = key_idx},
-        // members are const and BlobIO2 requires non-const pointers, and they
+        // members are const and BlobIO requires non-const pointers, and they
         // are not modified by file writes.
         const_cast<Header*>(&header_));
     writes.emplace_back(
@@ -314,7 +322,7 @@ BlobReader::BlobReader(const Path& blob_path)
 
 // Split into chunks for load-balancing even if blob sizes vary.
 static void EnqueueChunks(size_t key_idx, uint64_t offset, uint64_t bytes,
-                          uint8_t* data, std::vector<BlobIO2>& writes) {
+                          uint8_t* data, std::vector<BlobIO>& writes) {
   constexpr size_t kChunkBytes = 4 * 1024 * 1024;
   const uint64_t end = offset + bytes;
   // Split into whole chunks and possibly one remainder.
@@ -336,7 +344,7 @@ static void EnqueueChunks(size_t key_idx, uint64_t offset, uint64_t bytes,
 static void EnqueueWritesForBlobs(const BlobStore& bs,
                                   const hwy::Span<const uint8_t> blobs[],
                                   std::vector<uint8_t>& zeros,
-                                  std::vector<BlobIO2>& writes) {
+                                  std::vector<BlobIO>& writes) {
   // All-zero buffer used to write padding to the file without copying the
   // input blobs.
   static constexpr uint8_t kZeros[kBlobAlign] = {0};
@@ -388,7 +396,7 @@ void BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
   HWY_ASSERT(num_blobs != 0);
   HWY_ASSERT(num_blobs == blobs_.size());
 
-  std::vector<BlobIO2> writes;
+  std::vector<BlobIO> writes;
   writes.reserve(16384);
 
   const BlobStore bs(num_blobs, keys_.data(), blobs_.data());

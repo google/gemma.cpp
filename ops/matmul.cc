@@ -425,7 +425,7 @@ MatMulEnv::MatMulEnv(ThreadingContext& ctx)
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
 }
 
-void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
+void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
   Allocator& allocator = parallel.allocator();
   if (!allocator.ShouldBind()) return;
   if (B.Rows() == 1) return;
@@ -437,8 +437,7 @@ void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& rows_b = ranges_np.Range(pkg_idx);
     const size_t node = parallel.Node(pkg_idx);
-    uintptr_t begin =
-        reinterpret_cast<uintptr_t>(B.RowT<uint8_t>(rows_b.begin()));
+    uintptr_t begin = reinterpret_cast<uintptr_t>(B.RowBytes(rows_b.begin()));
     uintptr_t end = begin + rows_b.Num() * B.Stride() * B.ElementBytes();
     // B row padding is less than the page size, so only bind the subset that
     // is page-aligned.
@@ -451,7 +450,7 @@ void BindB(const MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
 }
 
 // C is BF16/float, or double for partial
-void BindC(const MatPtr& C, MMParallel& parallel) {
+void BindC(MatPtr& C, MMParallel& parallel) {
   Allocator& allocator = parallel.allocator();
   if (!allocator.ShouldBind()) return;
 
@@ -470,8 +469,7 @@ void BindC(const MatPtr& C, MMParallel& parallel) {
 
     const size_t node = parallel.Node(pkg_idx);
     for (size_t im = 0; im < C.Rows(); ++im) {
-      ok &= allocator.BindMemory(C.MutableRowT<uint8_t>(im) + begin,
-                                 end - begin, node);
+      ok &= allocator.BindMemory(C.RowBytes(im) + begin, end - begin, node);
     }
   }
   if (HWY_UNLIKELY(!ok)) {

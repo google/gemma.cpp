@@ -91,21 +91,14 @@ class MatPtr : public IFields {
     return num_elements_ * element_bytes_;
   }
 
-  // Works for any kind of padding.
-  template <typename T>
-  T* MutableRowT(size_t row) const {
+  // Works for any kind of padding and element type.
+  uint8_t* RowBytes(size_t row) {
     HWY_DASSERT(row < Rows());
-    return HWY_RCAST_ALIGNED(T*, ptr_) + row * stride_;
+    return static_cast<uint8_t*>(ptr_) + row * (stride_ * element_bytes_);
   }
-  template <typename T>
-  T* RowT(size_t row) {
+  const uint8_t* RowBytes(size_t row) const {
     HWY_DASSERT(row < Rows());
-    return HWY_RCAST_ALIGNED(T*, ptr_) + row * stride_;
-  }
-  template <typename T>
-  const T* RowT(size_t row) const {
-    HWY_DASSERT(row < Rows());
-    return HWY_RCAST_ALIGNED(const T*, ptr_) + row * stride_;
+    return static_cast<const uint8_t*>(ptr_) + row * (stride_ * element_bytes_);
   }
 
   Type GetType() const { return type_; }
@@ -209,9 +202,8 @@ class MatPtr : public IFields {
   float scale_ = 1.0f;  // multiplier for each value, for MatMul.
 };
 
-// Non-type erased version of `MatPtr`. Although `MatPtr` also provides
-// type-aware accessors (`RowT`), this class is more convenient when accessing
-// elements, and ensures the template argument and `Type` are consistent.
+// Non-type erased version of `MatPtr`: provides type-safe `Row()` and ensures
+// the template argument and `Type` are consistent.
 template <typename MatT>
 class MatPtrT : public MatPtr {
  public:
@@ -227,7 +219,9 @@ class MatPtrT : public MatPtr {
       : MatPtrT<MatT>(name.c_str(), ExtentsFromInfo(info.Find(name))) {}
 
   // Copying allowed because the metadata is small.
-  MatPtrT(const MatPtr& other) : MatPtr(other) {}
+  MatPtrT(const MatPtr& other) : MatPtr(other) {
+    HWY_ASSERT(other.GetType() == TypeEnum<MatT>());
+  }
   MatPtrT& operator=(const MatPtr& other) {
     MatPtr::operator=(other);
     return *this;
@@ -252,22 +246,24 @@ class MatPtrT : public MatPtr {
     return Packed();
   }
 
-  const MatT* Row(size_t row) const { return this->RowT<MatT>(row); }
-  MatT* Row(size_t row) { return this->RowT<MatT>(row); }
+  MatT* Row(size_t row) { return HWY_RCAST_ALIGNED(T*, RowBytes(row)); }
+  const MatT* Row(size_t row) const {
+    return HWY_RCAST_ALIGNED(const T*, RowBytes(row));
+  }
 
   PackedSpan<const MatT> PaddedSpan() const {
-    return MakeConstSpan(Row(0), Rows() * Stride());
+    return MakeConstSpan(HWY_RCAST_ALIGNED(MatT*, ptr_), Rows() * Stride());
   }
 
   // For `compress-inl.h` functions, which assume contiguous streams and thus
   // require packed layout.
-  PackedSpan<const MatT> Span() const {
-    HWY_ASSERT(IsPacked());
-    return MakeConstSpan(Row(0), num_elements_);
-  }
   PackedSpan<MatT> Span() {
     HWY_ASSERT(IsPacked());
-    return MakeSpan(Row(0), num_elements_);
+    return MakeSpan(HWY_RCAST_ALIGNED(MatT*, ptr_), num_elements_);
+  }
+  PackedSpan<const MatT> Span() const {
+    HWY_ASSERT(IsPacked());
+    return MakeConstSpan(HWY_RCAST_ALIGNED(MatT*, ptr_), num_elements_);
   }
 };
 

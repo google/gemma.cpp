@@ -25,8 +25,9 @@
 namespace gcpp {
 
 void KVCache::ZeroGriffinCache() {
-  if (conv1d_cache.HasPtr()) ZeroInit(conv1d_cache);
-  if (rglru_cache.HasPtr()) ZeroInit(rglru_cache);
+  if (griffin_layers == 0) return;
+  ZeroInit(conv1d_cache);
+  ZeroInit(rglru_cache);
 }
 
 static size_t GriffinConv1dCols(const ModelConfig& config) {
@@ -34,7 +35,9 @@ static size_t GriffinConv1dCols(const ModelConfig& config) {
   for (const auto& layer_config : config.layer_configs) {
     conv1d_width = HWY_MAX(conv1d_width, layer_config.conv1d_width);
   }
-  return conv1d_width == 0 ? 0 : conv1d_width - 1;
+  // The row offset, in blocks of model_dim is computed mod (conv1d_width - 1),
+  // hence allocate conv1d_width * model_dim total columns.
+  return conv1d_width * config.model_dim;
 }
 
 // prefill_tbatch_size is the maximum number of tokens from one query to
@@ -42,12 +45,9 @@ static size_t GriffinConv1dCols(const ModelConfig& config) {
 KVCache::KVCache(const ModelConfig& config, size_t prefill_tbatch_size)
     : griffin_layers(
           config.NumLayersOfType(LayerAttentionType::kGriffinRecurrentBlock)),
-      griffin_conv1d_cols(GriffinConv1dCols(config)),
-      // TODO(patrickms): Add query batching support for Griffin.
-      conv1d_cache(
-          "conv1d_cache",
-          Extents2D(griffin_layers, griffin_conv1d_cols * config.model_dim),
-          MatPadding::kOdd),
+      conv1d_cache("conv1d_cache",
+                   Extents2D(griffin_layers, GriffinConv1dCols(config)),
+                   MatPadding::kOdd),
       rglru_cache("rglru_cache", Extents2D(griffin_layers, config.model_dim),
                   MatPadding::kOdd) {
   // TODO: move to MatStorageT.

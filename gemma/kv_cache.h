@@ -31,7 +31,6 @@ struct KVCache {
   KVCache Copy(const ModelConfig& weights_config, size_t prefill_tbatch_size);
 
   size_t griffin_layers = 0;
-  size_t griffin_conv1d_cols = 0;
   // griffin_layers, griffin_conv1d_cols * config.model_dim
   MatStorageT<float> conv1d_cache;
   MatStorageT<float> rglru_cache;  // griffin_layers, config.model_dim

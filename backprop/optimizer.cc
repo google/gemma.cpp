@@ -27,6 +27,8 @@ namespace gcpp {
 
 namespace {
 
+using MatPtrF = MatPtrT<float>;
+
 // Split into two classes so that ForEachTensor only requires two "other"
 // arguments. This is anyway useful for locality, because `grad` only feeds
 // into `grad_m` and `grad_v` here.
@@ -40,12 +42,11 @@ class AdamUpdateMV {
         norm1_(1.0 / (1.0 - std::pow(beta1, t))),
         norm2_(1.0 / (1.0 - std::pow(beta2, t))) {}
 
-  void operator()(const MatPtr& grad, const MatPtr& grad_m,
-                  const MatPtr& grad_v) {
+  void operator()(const MatPtrF& grad, MatPtrF& grad_m, MatPtrF& grad_v) {
     for (size_t r = 0; r < grad.Rows(); ++r) {
-      const float* HWY_RESTRICT g = grad.RowT<float>(r);
-      float* HWY_RESTRICT m = grad_m.MutableRowT<float>(r);
-      float* HWY_RESTRICT v = grad_v.MutableRowT<float>(r);
+      const float* HWY_RESTRICT g = grad.Row(r);
+      float* HWY_RESTRICT m = grad_m.Row(r);
+      float* HWY_RESTRICT v = grad_v.Row(r);
       for (size_t c = 0; c < grad.Cols(); ++c) {
         m[c] *= beta1_;
         m[c] += cbeta1_ * g[c];
@@ -73,11 +74,12 @@ class AdamUpdateW {
         norm2_(1.0 / (1.0 - std::pow(beta2, t))),
         epsilon_(epsilon) {}
 
-  void operator()(MatPtr& weights, const MatPtr& grad_m, const MatPtr& grad_v) {
+  void operator()(MatPtrF& weights, const MatPtrF& grad_m,
+                  const MatPtrF& grad_v) {
     for (size_t r = 0; r < weights.Rows(); ++r) {
-      float* HWY_RESTRICT w = weights.RowT<float>(r);
-      const float* HWY_RESTRICT m = grad_m.RowT<float>(r);
-      const float* HWY_RESTRICT v = grad_v.RowT<float>(r);
+      float* HWY_RESTRICT w = weights.Row(r);
+      const float* HWY_RESTRICT m = grad_m.Row(r);
+      const float* HWY_RESTRICT v = grad_v.Row(r);
       for (size_t c = 0; c < weights.Cols(); ++c) {
         const float mhat = m[c] * norm1_;
         const float vhat = v[c] * norm2_;
@@ -100,12 +102,18 @@ void AdamUpdate(ModelWeightsPtrs<float>* grad, float alpha, float beta1,
                 ModelWeightsPtrs<float>* grad_v, hwy::ThreadPool& pool) {
   AdamUpdateMV update_mv(beta1, beta2, t);
   grad->ForEachTensor(grad_m, grad_v, [&update_mv](const TensorArgs& t) {
-    update_mv(t.mat, *t.other_mat1, *t.other_mat2);
+    const MatPtrF grad_f(t.mat);
+    MatPtrF grad_m_f(*t.other_mat1);
+    MatPtrF grad_v_f(*t.other_mat2);
+    update_mv(grad_f, grad_m_f, grad_v_f);
   });
 
   AdamUpdateW update_w(alpha, beta1, beta2, epsilon, t);
   weights->ForEachTensor(grad_m, grad_v, [&update_w](const TensorArgs& t) {
-    update_w(t.mat, *t.other_mat1, *t.other_mat2);
+    MatPtrF weights_f(t.mat);
+    const MatPtrF grad_m_f(*t.other_mat1);
+    const MatPtrF grad_v_f(*t.other_mat2);
+    update_w(weights_f, grad_m_f, grad_v_f);
   });
 }
 
