@@ -136,7 +136,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     ++tokens_generated_this_turn;
     if (in_prompt) {
       if (inference.verbosity >= 1) {
-        std::cerr << "." << std::flush;
+        std::cout << "." << std::flush;
       }
       return true;
     } else if (config.IsEOS(token)) {
@@ -188,7 +188,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                     .use_spinning = threading.spin};
     inference.CopyTo(runtime_config);
     std::vector<int> prompt;
-    size_t prompt_size = 0;
     size_t prefix_end = 0;
     if (have_image) {
       prompt = WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
@@ -196,12 +195,15 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                image_tokens.Rows());
       runtime_config.image_tokens = &image_tokens;
       prompt_size = prompt.size();
-      // The end of the prefix for prefix-LM style attention in Paligemma.
-      // See Figure 2 of https://arxiv.org/abs/2407.07726.
-      prefix_end = prompt_size;
-
-      // REMOVED: Don't change prefill_tbatch_size for image handling
-      // runtime_config.prefill_tbatch_size = prompt_size;
+      if (config.wrapping == PromptWrapping::PALIGEMMA) {
+        // The end of the prefix for prefix-LM style attention in Paligemma.
+        // See Figure 2 of https://arxiv.org/abs/2407.07726.
+        prefix_end = prompt_size;
+        // We need to look at all the tokens for the prefix.
+        // NOTE: Online softmax is on the roadmap, after which this requirement
+        // can be lifted.
+        runtime_config.prefill_tbatch_size = prompt_size;
+      }
     } else {
       prompt = WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
                                config.wrapping, abs_pos, prompt_string);

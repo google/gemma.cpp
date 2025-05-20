@@ -1556,7 +1556,6 @@ void GenerateImageTokensT(const ModelStore& model,
   prefill_runtime_config.prefill_tbatch_size =
       vit_config.seq_len / (vit_config.pool_dim * vit_config.pool_dim);
   Activations prefill_activations(vit_config, vit_config.seq_len, env);
-  prefill_activations.SetBatchSize(prefill_runtime_config.prefill_tbatch_size);
   // Weights are for the full PaliGemma model, not just the ViT part.
   PrefillVit(weights, prefill_runtime_config, image, image_tokens,
              prefill_activations);
