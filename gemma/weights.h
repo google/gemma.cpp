@@ -224,7 +224,7 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(vit.attn_out_w, kMustRead));
       func(TENSOR_ARGS(vit.attn_out_b, kMustRead));
       func(TENSOR_ARGS(vit.qkv_einsum_w, kMustRead));
-      func(TENSOR_ARGS(vit.qkv_einsum_b, kMustRead));
+      func(TENSOR_ARGS(vit.qkv_einsum_b, kMustRead | TensorArgs::kNoPad));
       // MlpBlock.
       func(TENSOR_ARGS(vit.linear_0_w, kMustRead));
       func(TENSOR_ARGS(vit.linear_0_b, kMustRead));
