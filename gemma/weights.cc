@@ -100,7 +100,7 @@ void LayerWeightsPtrs<NuqStream>::Fixup(std::vector<MatOwner>& mat_owners) {
 struct TensorToRead {
   MatPtr* mat;
   BlobRange range;
-  // Some tensors opt out of padding via kNoPad flags.
+  // Some tensors opt out of padding via kPacked flags.
   MatPadding padding;
 };
 
@@ -266,7 +266,7 @@ void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
   // Enumerate all weights (negligible cost).
   CallT([&](const auto& weights) {
     weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      const MatPadding padding = (t.flags & TensorArgs::kNoPad)
+      const MatPadding padding = (t.flags & TensorArgs::kPacked)
                                      ? MatPadding::kPacked
                                      : MatPadding::kOdd;
       size_t key_idx;

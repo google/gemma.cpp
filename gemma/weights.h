@@ -63,7 +63,7 @@ struct TensorArgs {
 
     // Avoid padding tensor rows when reading. Used for some Griffin tensors
     // whose index computations do not use Row() accessors.
-    kNoPad = 2,
+    kPacked = 2,
   };
   const int flags;
 };
@@ -224,7 +224,9 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(vit.attn_out_w, kMustRead));
       func(TENSOR_ARGS(vit.attn_out_b, kMustRead));
       func(TENSOR_ARGS(vit.qkv_einsum_w, kMustRead));
-      func(TENSOR_ARGS(vit.qkv_einsum_b, kMustRead | TensorArgs::kNoPad));
+      // Used as 1D MatMul bias, but has `heads + 2 * kv_heads` rows, hence
+      // must not be padded.
+      func(TENSOR_ARGS(vit.qkv_einsum_b, kMustRead | TensorArgs::kPacked));
       // MlpBlock.
       func(TENSOR_ARGS(vit.linear_0_w, kMustRead));
       func(TENSOR_ARGS(vit.linear_0_b, kMustRead));
@@ -251,9 +253,11 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(griffin.linear_y_biases, kMustRead));
       func(TENSOR_ARGS(griffin.linear_out_w, kMustRead));
       func(TENSOR_ARGS(griffin.linear_out_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.conv_w, kMustRead | TensorArgs::kNoPad));
+      // conv_w and gate_w are not accessed via Row(), hence must not be padded.
+      // Note that *biases are 1D, hence packing/padding does not matter.
+      func(TENSOR_ARGS(griffin.conv_w, kMustRead | TensorArgs::kPacked));
       func(TENSOR_ARGS(griffin.conv_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.gate_w, kMustRead | TensorArgs::kNoPad));
+      func(TENSOR_ARGS(griffin.gate_w, kMustRead | TensorArgs::kPacked));
       func(TENSOR_ARGS(griffin.gate_biases, kMustRead));
       func(TENSOR_ARGS(griffin.a, kMustRead));
     }
