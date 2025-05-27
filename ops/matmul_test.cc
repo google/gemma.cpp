@@ -18,13 +18,18 @@
 #include "hwy/detect_compiler_arch.h"  // IWYU pragma: keep
 #ifndef HWY_DISABLED_TARGETS
 // Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
-// double-precision support, and older x86 to speed up builds.
+// double-precision support.
 #if HWY_ARCH_ARM_V7
 #define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
 #else
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_SSSE3 | HWY_SSE4)
-#endif
-#endif
+#define HWY_DISABLED_TARGETS (HWY_SCALAR)
+#endif  // HWY_ARCH_ARM_V7
+#endif  // HWY_DISABLED_TARGETS
+// matmul_static is not built as a test, hence does not define MatMulStatic for
+// worse-than-baseline targets (to speed up builds), so we skip them here, too.
+#ifndef HWY_SKIP_NON_BEST_BASELINE
+#define HWY_SKIP_NON_BEST_BASELINE
+#endif  // HWY_SKIP_NON_BEST_BASELINE
 
 #include <stddef.h>
 #include <stdio.h>
@@ -35,6 +40,7 @@
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
+#include "hwy/nanobenchmark.h"  // Unpredictable1
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -46,7 +52,7 @@
 #include "compression/compress-inl.h"
 #include "compression/test_util-inl.h"
 #include "ops/dot-inl.h"
-#include "ops/matmul-inl.h"
+#include "ops/matmul_static.h"  // also textual
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -234,7 +240,7 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   MatMulSlow(a, b_trans, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
   for (size_t rep = 0; rep < 16; ++rep) {
-    MMPerKey* per_key = MatMul(a, b_trans, add_row, env, C);
+    MMPerKey* per_key = MatMulStatic(a, b_trans, add_row, env, C);
     AssertClose(a, b_trans, C_slow, C, line);
     if (per_key->autotune.Best()) break;
   }
@@ -258,12 +264,12 @@ void TestTiny() {
     MatMulEnv env(ThreadingContext::Get());
     NestedPools& pools = env.ctx.pools;
 
-#if GEMMA_DISABLE_TOPOLOGY
-    if (max_packages == 2) break;  // we only have one package
-#else
-    // If less than the limit, we have already tested all num_packages.
-    if (env.ctx.topology.FullTopology().packages.size() < max_packages) break;
-#endif
+    if constexpr (GEMMA_DISABLE_TOPOLOGY) {
+      if (max_packages == 2) break;  // we only have one package
+    } else {
+      // If less than the limit, we have already tested all num_packages.
+      if (env.ctx.topology.FullTopology().packages.size() < max_packages) break;
+    }
     fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
             env.ctx.topology.TopologyString(), pools.PinString());
 
@@ -282,8 +288,10 @@ void TestTiny() {
 
 void TestAllMatMul() {
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
-  if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSE4 ||
-      HWY_TARGET == HWY_SSSE3 || HWY_TARGET == HWY_SSE2) {
+  // Add Unpredictable1 to prevent erroneous "unreachable code" warning.
+  if (hwy::Unpredictable1() == 1 &&
+      (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSE4 ||
+       HWY_TARGET == HWY_SSSE3 || HWY_TARGET == HWY_SSE2)) {
     return;
   }
 

@@ -295,6 +295,35 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "matmul",
+    srcs = [
+        # single-file build time is ~30sec for msan, hence shard.
+        "ops/matmul_static_bf16.cc",
+        "ops/matmul_static_f32.cc",
+        "ops/matmul_static_nuq.cc",
+        "ops/matmul_static_sfp.cc",
+    ],
+    hdrs = [
+        "ops/matmul_static.h",
+    ],
+    textual_hdrs = [
+        "ops/matmul_static-inl.h",
+        "ops/matmul-inl.h",
+    ],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":ops",
+        ":threading_context",
+        "//compression:compress",
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:timer",
+    ],
+)
+
 cc_test(
     name = "dot_test",
     size = "small",
@@ -373,6 +402,7 @@ cc_test(
     deps = [
         ":basics",
         ":mat",
+        ":matmul",
         ":ops",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -380,6 +410,7 @@ cc_test(
         "//compression:test_util",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
         "@highway//:thread_pool",
     ],
 )
@@ -463,6 +494,7 @@ cc_library(
         ":gemma_args",
         ":kv_cache",
         ":mat",
+        ":matmul",
         ":model_store",
         ":ops",
         ":tokenizer",
@@ -578,6 +610,7 @@ cc_test(
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:profiler",
     ],
 )
 

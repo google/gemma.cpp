@@ -18,7 +18,7 @@ bazel_dep(name = "google_benchmark", version = "1.8.5")
 # Require a more recent version.
 git_override(
     module_name = "highway",
-    commit = "c5bebf84ad01edec97e336f5c97ca4e0df6b4d06",
+    commit = "12d9fa908e0c1d3346c298d472584687a24e4ce6",
     remote = "https://github.com/google/highway",
 )
 
