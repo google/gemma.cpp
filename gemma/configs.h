@@ -162,7 +162,7 @@ enum class Model {
   GEMMA2_9B = 3,
   GEMMA2_27B,
   GRIFFIN_2B,
-  GEMMA_TINY,  // for backprop/ only
+  GEMMA_TINY,  // for testing only
   GEMMA2_2B,
   // 8 and 9 are obsolete.
   PALIGEMMA2_3B_224 = 10,
@@ -330,9 +330,8 @@ struct ModelConfig : public IFields {
   // from a blob. Also used by `config_converter.py`, which sets sufficient
   // fields for `TestEqual` and then calls `OverwriteWithCanonical()`.
   ModelConfig() = default;
-  // For use by `backprop/`, and `model_store.cc` for pre-2025 format after
-  // deducing the model from tensors plus a user-specified `wrapping` override
-  // (see `ChooseWrapping`).
+  // For use by `model_store.cc` for pre-2025 format after deducing the model
+  // from tensors plus a user-specified `wrapping` override (`ChooseWrapping`).
   ModelConfig(Model model, Type weight, PromptWrapping wrapping);
   // Parses a string returned by `Specifier()`. Used by the exporter to select
   // the model from command line arguments. Do not use this elsewhere - the

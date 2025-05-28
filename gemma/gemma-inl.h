@@ -230,13 +230,13 @@ class GemmaAttention {
                                        const float mul) {
     // qk is either q or k, so qkv_dim is the length we operate on.
     const size_t qkv_dim = layer_config_.qkv_dim;
-    const float* inv_timescale = activations_.inv_timescale.Packed();
+    const float* inv_timescale = activations_.inv_timescale.PackedScale1();
     bool is_global_layer =
         activations_.weights_config.attention_window_sizes[layer] ==
         activations_.seq_len;
     // TODO: add a config flag instead of hardcoding the model.
     if (is_global_layer && IsVLM(activations_.weights_config.model)) {
-      inv_timescale = activations_.inv_timescale_global.Packed();
+      inv_timescale = activations_.inv_timescale_global.PackedScale1();
     }
     // PostQKType::Rope
     (void)layer;

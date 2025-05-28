@@ -41,18 +41,6 @@ FetchContent_MakeAvailable(benchmark)
 
 # Base source files
 set(SOURCES
-  backprop/activations.h
-  backprop/backward_scalar.h
-  backprop/backward-inl.h
-  backprop/backward.cc
-  backprop/backward.h
-  backprop/common_scalar.h
-  backprop/forward_scalar.h
-  backprop/forward-inl.h
-  backprop/forward.cc
-  backprop/forward.h
-  backprop/optimizer.cc
-  backprop/optimizer.h
   compression/compress-inl.h
   compression/compress.cc
   compression/compress.h
@@ -202,8 +190,6 @@ enable_testing()
 include(GoogleTest)
 
 set(GEMMA_TEST_FILES
-  backprop/backward_test.cc
-  backprop/optimize_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
   compression/nuq_test.cc

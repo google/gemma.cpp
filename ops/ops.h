@@ -35,7 +35,7 @@ static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
         static_cast<double>(2 * dim) / static_cast<double>(rope_dim);
     // Replacing with expf(ln(1E4) * freq_exponents) changes results
     // noticeably.
-    inv_timescale.Packed()[dim] =
+    inv_timescale.Row(0)[dim] =
         static_cast<float>(1.0 / std::pow(base_frequency, freq_exponents));
   }
   return inv_timescale;

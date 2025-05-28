@@ -20,7 +20,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <random>
 #include <string>
 
 // IWYU pragma: begin_exports
@@ -229,21 +228,11 @@ class MatPtrT : public MatPtr {
   MatPtrT(const MatPtrT& other) = default;
   MatPtrT& operator=(const MatPtrT& other) = default;
 
-  // Returns the entire tensor for use by `backprop/*`. Verifies layout is
-  // `kPacked`. Preferably call `Row` instead, which works for either layout.
-  MatT* Packed() {
-    HWY_DASSERT_M(IsPacked(), name_.c_str());
-    return HWY_RCAST_ALIGNED(MatT*, ptr_);
-  }
-  const MatT* Packed() const {
-    HWY_DASSERT_M(IsPacked(), name_.c_str());
-    return HWY_RCAST_ALIGNED(const MatT*, ptr_);
-  }
-  // As `Packed()`, plus checks the scale is 1.0 because callers will ignore it.
-  // This is typically used for `MatMul` bias vectors and norm weights.
+  // Returns the entire tensor after checking the scale is 1.0 because callers
+  // will ignore it. Used for `MatMul` bias vectors and norm weights.
   const MatT* PackedScale1() const {
     HWY_DASSERT(Scale() == 1.0f);
-    return Packed();
+    return HWY_RCAST_ALIGNED(const MatT*, ptr_);
   }
 
   MatT* Row(size_t row) { return HWY_RCAST_ALIGNED(T*, RowBytes(row)); }
@@ -268,8 +257,7 @@ class MatPtrT : public MatPtr {
 };
 
 // Calls `func` with a dynamic_cast of `MatPtr` to `MatPtrT<T>`, plus the
-// optional `args`. This supports all types used as weights, which excludes
-// `kC64` and `kF64` (used only in `backprop/`).
+// optional `args`. This supports all types used as weights.
 template <class Func, typename... Args>
 decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                             Args&&... args) {
@@ -334,8 +322,6 @@ decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
 
 void CopyMat(const MatPtr& from, MatPtr& to);
 void ZeroInit(MatPtr& mat);
-// F32/F64 only.
-void RandInit(MatPtr& mat, float stddev, std::mt19937& gen);
 
 // Our tensors are always row-major. This enum indicates how much (if any)
 // padding comes after each row.
@@ -346,9 +332,6 @@ enum class MatPadding {
   // `BlobStore`) are not padded, which also extends to memory-mapped tensors.
   // However, `BlobStore` is able to insert padding via row-wise I/O when
   // reading from disk via `Mode::kRead`.
-  //
-  // `backprop/*` also requires this layout because it indexes directly into
-  // the storage instead of calling `Row()`.
   kPacked,
   // Enough to round up to an odd number of cache lines, which can reduce
   // cache conflict misses or 4K aliasing.
@@ -378,9 +361,9 @@ class MatOwner {
   AlignedPtr<uint8_t[]> storage_;
 };
 
-// `MatStorageT` IS-A `MatPtrT` and HAS-A `MatOwner`. Used by `backprop/` and
-// tests to allocate and access tensors of a known type. By contrast, the
-// heterogeneous model weights are owned by vectors of `MatOwner`.
+// `MatStorageT` IS-A `MatPtrT` and HAS-A `MatOwner`. Used by tests to allocate
+// and access tensors of a known type. By contrast, the heterogeneous model
+// weights are owned by vectors of `MatOwner`.
 template <typename MatT>
 class MatStorageT : public MatPtrT<MatT> {
  public:
@@ -393,20 +376,13 @@ class MatStorageT : public MatPtrT<MatT> {
       : MatStorageT(name, Extents2D(1, cols), MatPadding::kPacked) {}
   ~MatStorageT() = default;
 
-  // Allow move for backprop/activations.
+  // Allow move for KVCache.
   MatStorageT(MatStorageT&&) = default;
   MatStorageT& operator=(MatStorageT&&) = default;
 
  private:
   MatOwner owner_;
 };
-
-// Helper factory function for use by `backprop/` to avoid specifying the
-// `MatPadding` argument everywhere.
-template <typename T>
-MatStorageT<T> MakePacked(const char* name, size_t rows, size_t cols) {
-  return MatStorageT<T>(name, Extents2D(rows, cols), MatPadding::kPacked);
-}
 
 // Lightweight version of `MatPtr` used by matmul-inl.h for padded tensors with
 // seekable (non-NUQ) T.

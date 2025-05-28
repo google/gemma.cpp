@@ -399,7 +399,7 @@ void TestRopeAndMulBy() {
   auto random_float = [&r, &gen] { return r(gen); };
 
   for (int i = 0; i < dim_qkv; ++i) {
-    x.Packed()[i] = random_float();
+    x.Row(0)[i] = random_float();
   }
 
   const float qmul = ChooseQueryScale(config);
@@ -417,25 +417,25 @@ void TestRopeAndMulBy() {
     // Rope'd Q embeddings
     CopyMat(x, qactual);
     CopyMat(x, qexpected);
-    ScalarRopeAndMulBy(qmul, qexpected.Packed(), dim_qkv,
-                       inv_timescale.Packed(), pos);
-    RopeAndMulBy(qmul, qactual.Packed(), dim_qkv, inv_timescale.Packed(), pos);
+    ScalarRopeAndMulBy(qmul, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
+                       pos);
+    RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(qactual.Packed()[i], qexpected.Packed()[i], 1e-4)
-          << "qIndex:" << i << "qInput:" << qactual.Packed()[i];
+      EXPECT_NEAR(qactual.Row(0)[i], qexpected.Row(0)[i], 1e-4)
+          << "qIndex:" << i << "qInput:" << qactual.Row(0)[i];
     }
 
     // Rope'd K embeddings
     CopyMat(x, kactual);
     CopyMat(x, kexpected);
-    ScalarRopeAndMulBy(kmul, kexpected.Packed(), dim_qkv,
-                       inv_timescale.Packed(), pos);
-    RopeAndMulBy(kmul, kactual.Packed(), dim_qkv, inv_timescale.Packed(), pos);
+    ScalarRopeAndMulBy(kmul, kexpected.Row(0), dim_qkv, inv_timescale.Row(0),
+                       pos);
+    RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
 
     for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(kactual.Packed()[i], kexpected.Packed()[i], 1e-4)
-          << "kIndex:" << i << "kInput:" << kactual.Packed()[i];
+      EXPECT_NEAR(kactual.Row(0)[i], kexpected.Row(0)[i], 1e-4)
+          << "kIndex:" << i << "kInput:" << kactual.Row(0)[i];
     }
   }
 }

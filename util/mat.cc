@@ -18,8 +18,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <random>
-
 #include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/per_target.h"  // VectorBytes
@@ -59,35 +57,6 @@ void ZeroInit(MatPtr& mat) {
   const size_t row_bytes = mat.Cols() * mat.ElementBytes();
   for (size_t r = 0; r < mat.Rows(); ++r) {
     hwy::ZeroBytes(mat.RowBytes(r), row_bytes);
-  }
-}
-
-void RandInit(MatPtr& mat, float stddev, std::mt19937& gen) {
-  PROFILER_FUNC;
-  HWY_ASSERT_M(mat.HasPtr(), mat.Name());
-  // Only generates float/double for use by backprop/.
-  HWY_ASSERT(mat.GetType() == Type::kF32 || mat.GetType() == Type::kF64);
-  mat.SetScale(1.0f);
-
-  std::normal_distribution<float> dist(0.0, stddev);
-  if (mat.GetType() == Type::kF32) {
-    MatPtrT<float> mat_f(mat);
-
-    for (size_t r = 0; r < mat.Rows(); ++r) {
-      float* HWY_RESTRICT row = mat_f.Row(r);
-      for (size_t c = 0; c < mat.Cols(); ++c) {
-        row[c] = dist(gen);
-      }
-    }
-  } else {
-    MatPtrT<double> mat_d(mat);
-
-    for (size_t r = 0; r < mat.Rows(); ++r) {
-      double* HWY_RESTRICT row = mat_d.Row(r);
-      for (size_t c = 0; c < mat.Cols(); ++c) {
-        row[c] = dist(gen);
-      }
-    }
   }
 }
 

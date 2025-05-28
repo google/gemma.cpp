@@ -1018,14 +1018,14 @@ struct TestShortDotsT {
       const PackedSpan<T> v = vectors.Span();
 
       MatStorageT<double> bufs("bufs", num);
-      double* HWY_RESTRICT buf = bufs.Packed();
+      double* HWY_RESTRICT buf = bufs.Row(0);
 
       for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
-        GenerateWellConditionedInputs(num, raw_w.Packed(), rng, w, work);
-        GenerateWellConditionedInputs(num, raw_v.Packed(), rng, v, work);
+        GenerateWellConditionedInputs(num, raw_w.Row(0), rng, w, work);
+        GenerateWellConditionedInputs(num, raw_v.Row(0), rng, v, work);
 
         const float dot_exact =
-            ExactDot(raw_w.Packed(), raw_v.Packed(), num, buf);
+            ExactDot(raw_w.PackedScale1(), raw_v.PackedScale1(), num, buf);
         float dots[kVariants];
         for (size_t variant = 0; variant < kVariants; ++variant) {
           // Here Packed is not always float, so we must not call kDouble.

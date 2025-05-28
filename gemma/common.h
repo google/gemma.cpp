@@ -29,7 +29,6 @@ namespace gcpp {
 void Wrap(const ModelConfig& config, size_t pos, std::string& prompt);
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).
-// Also used by backprop/.
 float EmbeddingScaling(size_t model_dim);
 
 // Returns the scale value to use for the query in the attention computation.

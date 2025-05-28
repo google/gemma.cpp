@@ -65,8 +65,8 @@ static constexpr bool kIsTest = false;
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
 
-// Used by backprop/, where weights are currently f32; also MatMul for f32
-// weights or activations, if native `ReorderWidenMulAccumulate` is available.
+// Used by MatMul for f32 weights or activations, if native
+// `ReorderWidenMulAccumulate` is available.
 template <>
 struct CompressTraits<float> {
   using Packed = float;

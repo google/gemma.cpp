@@ -21,9 +21,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <complex>
-#include <cstdio>
-
 // IWYU pragma: begin_exports
 #include "util/basics.h"  // BF16
 #include "hwy/aligned_allocator.h"
@@ -160,24 +157,22 @@ constexpr bool IsNuqStream() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>();
 }
 
-// Tensor types for loading weights. Note that not all types are supported as
-// weights for a model, but can be used for other purposes, such as types for
-// `WeightsPtrs`. When adding a new type that is supported, also
-// update gemma.cc, weights.*, and add instantiations/new_one.cc.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kC64 };
+// Tensor types for loading weights.
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
-static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
-                                               "nuq",     "f64", "c64"};
+static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16",
+                                               "sfp",     "nuq", "f64"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
-static constexpr size_t kTypeBits[] = {0,
-                                       8 * sizeof(float),
-                                       8 * sizeof(BF16),
-                                       8 * sizeof(SfpStream),
-                                       4 /* NuqStream, actually 4.5 */,
-                                       8 * sizeof(double),
-                                       8 * sizeof(std::complex<double>)};
+static constexpr size_t kTypeBits[] = {
+    0,
+    8 * sizeof(float),
+    8 * sizeof(BF16),
+    8 * sizeof(SfpStream),
+    4 /* NuqStream, actually 4.5 */,
+    8 * sizeof(double),
+};
 
 static inline bool EnumValid(Type type) {
   return static_cast<size_t>(type) < kNumTypes;
@@ -197,8 +192,6 @@ Type TypeEnum() {
     return Type::kNUQ;
   } else if constexpr (hwy::IsSame<Packed, double>()) {
     return Type::kF64;
-  } else if constexpr (hwy::IsSame<Packed, std::complex<double>>()) {
-    return Type::kC64;
   } else {
     HWY_DASSERT(false);
     return Type::kUnknown;

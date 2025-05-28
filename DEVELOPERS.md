@@ -173,9 +173,6 @@ more custom you can call transformer which performs a single inference operation
 on a single token and mutates the Activations and the KVCache through the neural
 network computation.
 
-Note that an experimental backward pass is available in backprop/, which may be
-useful for fine tuning.
-
 ### For low level operations, defining new architectures, call `ops.h` functions directly
 
 You use `ops.h` if you're writing other NN architectures or modifying the

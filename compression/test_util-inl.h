@@ -81,7 +81,7 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents, hwy::ThreadPool& pool) {
     }
   });
 
-  Compress(raw.Packed(), raw.Extents().Area(), ws, compressed.Span(),
+  Compress(raw.PackedScale1(), raw.Extents().Area(), ws, compressed.Span(),
            /*packed_ofs=*/0, pool);
   compressed.SetScale(0.6f);  // Arbitrary value, different from 1.
   return compressed;
@@ -104,7 +104,7 @@ MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
     }
   });
 
-  Compress(raw.Packed(), raw.Extents().Area(), ws, compressed.Span(),
+  Compress(raw.PackedScale1(), raw.Extents().Area(), ws, compressed.Span(),
            /*packed_ofs=*/0, pool);
   // Arbitrary value, different from 1, must match `GenerateMat`.
   compressed.SetScale(0.6f);

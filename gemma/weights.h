@@ -22,7 +22,6 @@
 #include <complex>
 #include <memory>
 #include <mutex>  // NOLINT
-#include <random>
 #include <string>
 #include <vector>
 
@@ -298,23 +297,6 @@ struct LayerWeightsPtrs {
     });
   }
 
-  void RandInit(float stddev, std::mt19937& gen) {
-    ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      if (!t.mat.HasPtr()) return;
-      gcpp::RandInit(t.mat, stddev, gen);
-    });
-  }
-
-  // Allocates memory for all the tensors in the layer. Note that this is slow
-  // (non-parallel) and only used for a stand-alone layer.
-  void AllocateForTest(std::vector<MatOwner>& mat_owners) {
-    ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      // `backprop/` does not use row accessors and hence requires kPacked.
-      mat_owners.push_back(MatOwner());
-      mat_owners.back().AllocateFor(t.mat, MatPadding::kPacked);
-    });
-  }
-
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
@@ -330,8 +312,8 @@ struct LayerWeightsPtrs {
     // We only use this tensor for Gemma layers.
     if (layer_config.type != LayerAttentionType::kGemma) return;
 
-    // Files must have one or the other, and backprop/ allocates both.
-    HWY_ASSERT(attn_vec_einsum_w.HasPtr() || att_weights.HasPtr());
+    // Files must have one or the other.
+    HWY_ASSERT(attn_vec_einsum_w.HasPtr() ^ att_weights.HasPtr());
     // Done if we already read the transposed tensor.
     if (att_weights.HasPtr() && !attn_vec_einsum_w.HasPtr()) return;
 
@@ -373,11 +355,10 @@ struct LayerWeightsPtrs {
     // Used for Gemma and Griffin layers; FFWVit uses different tensors.
     if (layer_config.type == LayerAttentionType::kVit) return;
 
-    // Files have both or neither of w1 and w2, and backprop/ allocates both.
+    // Files have both or neither of w1 and w2.
     HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
-    // w is mutually exclusive with w1 and w2 in the file, but backprop/
-    // allocates both, so we can only rule out both being null.
-    HWY_ASSERT(gating_einsum_w.HasPtr() || gating_einsum_w1.HasPtr());
+    // w is mutually exclusive with w1 and w2 in the file.
+    HWY_ASSERT(gating_einsum_w.HasPtr() ^ gating_einsum_w1.HasPtr());
     // Done if we already read split tensors. Note that they are not
     // necessarily the same type.
     if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
@@ -397,7 +378,7 @@ struct LayerWeightsPtrs {
     gating_einsum_w2.SetType(gating_einsum_w.GetType());
     gating_einsum_w1.SetScale(gating_einsum_w.Scale());
     gating_einsum_w2.SetScale(gating_einsum_w.Scale());
-    // Do not invalidate gating_einsum_w: backprop/ calls this repeatedly.
+    gating_einsum_w.SetPtr(nullptr, gating_einsum_w.Cols());
   }
 
   // For attention, which might not have a w2. Fast, only updates pointers.
@@ -405,9 +386,8 @@ struct LayerWeightsPtrs {
     // We only use this tensor for Gemma layers.
     if (layer_config.type != LayerAttentionType::kGemma) return;
 
-    // w is mutually exclusive with w1 in the file, but backprop/ allocates
-    // both, so we can only rule out both being null.
-    HWY_ASSERT(qkv_einsum_w.HasPtr() || qkv_einsum_w1.HasPtr());
+    // w is mutually exclusive with w1 in the file.
+    HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
     // Done if we already read split tensors. Note that w2 does not exist for
     // MHA, and otherwise might not be the same type.
     if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
@@ -436,7 +416,7 @@ struct LayerWeightsPtrs {
     qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
     qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
     qkv_einsum_w2.SetScale(qkv_einsum_w.Scale());
-    // Do not invalidate qkv_einsum_w: backprop/ calls this repeatedly.
+    qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
   }
 };
 
@@ -567,13 +547,6 @@ struct ModelWeightsPtrs {
     });
   }
 
-  void RandInit(float stddev, std::mt19937& gen) {
-    ForEachTensor(nullptr, nullptr, [stddev, &gen](const TensorArgs& t) {
-      if (!t.mat.HasPtr()) return;
-      gcpp::RandInit(t.mat, stddev, gen);
-    });
-  }
-
   // Copies only the allocated tensors in `*this` from tensors in `other`.
   void CopyFrom(const ModelWeightsPtrs<Weight>& other) {
     ForEachTensor(const_cast<ModelWeightsPtrs<Weight>*>(&other), nullptr,
@@ -582,27 +555,6 @@ struct ModelWeightsPtrs {
                     HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
                     CopyMat(*t.other_mat1, t.mat);
                   });
-  }
-
-  // Instead of reading, only allocates memory for all tensors. Used by
-  // `optimizer.cc` via the `Gemma` constructor without weights.
-  void AllocateForTest(std::vector<MatOwner>& mat_owners,
-                       hwy::ThreadPool& pool) {
-    // First get a list of all the tensors.
-    std::vector<MatPtr*> all_mat;
-    all_mat.reserve(10 * c_layers.size());
-    ForEachTensor(nullptr, nullptr, [&all_mat](const TensorArgs& t) {
-      all_mat.push_back(&t.mat);
-    });
-
-    const size_t start = mat_owners.size();
-    mat_owners.resize(start + all_mat.size());
-
-    // Allocate in parallel because faulting in large tensors is slow.
-    pool.Run(0, all_mat.size(), [&](uint64_t task, size_t /*thread*/) {
-      // `backprop/` does not use row accessors and hence requires kPacked.
-      mat_owners[start + task].AllocateFor(*all_mat[task], MatPadding::kPacked);
-    });
   }
 
   // For reshaping file tensors to the shape expected by the code. This would
@@ -640,8 +592,6 @@ class WeightsOwner {
       return func(sfp_weights_, std::forward<TArgs>(args)...);
     } else if (weight_type_ == Type::kNUQ) {
       return func(nuq_weights_, std::forward<TArgs>(args)...);
-    } else if (weight_type_ == Type::kF32) {
-      return func(float_weights_, std::forward<TArgs>(args)...);
     } else if (weight_type_ == Type::kBF16) {
       return func(bf16_weights_, std::forward<TArgs>(args)...);
     }
@@ -653,23 +603,6 @@ class WeightsOwner {
   // Adds one blob for each tensor's data and returns all serialized MatPtr.
   std::vector<uint32_t> AddTensorDataToWriter(BlobWriter& writer) const;
 
-  // For backprop/:
-
-  // Only allocates; must subsequently call `ZeroInit` or `RandInit`.
-  void AllocateForTest(const ModelConfig& config, hwy::ThreadPool& pool);
-  void ZeroInit();
-  void RandInit(float stddev, std::mt19937& gen);  // F32 or F64 only.
-  void LogWeightStatsF32();
-
-  ModelWeightsPtrs<float>* GetF32() const {
-    HWY_ASSERT(weight_type_ == Type::kF32);
-    return float_weights_.get();
-  }
-
-  // Usually taken care of by `ReadFromBlobs`, but must also be called by
-  // `optimize_test, which updates the attention weights from which this copies.
-  void Fixup(hwy::ThreadPool& pool);
-
  private:
   Type weight_type_;
 
@@ -677,8 +610,10 @@ class WeightsOwner {
   // of `CallT` so that can be const.
   void AllocatePointer(const ModelConfig& config);
 
+  // Called by `ReadFromBlobs`.
+  void Fixup(hwy::ThreadPool& pool);
+
   // Only one is non-null, determined by `weight_type_`.
-  std::unique_ptr<ModelWeightsPtrs<float>> float_weights_;
   std::unique_ptr<ModelWeightsPtrs<BF16>> bf16_weights_;
   std::unique_ptr<ModelWeightsPtrs<SfpStream>> sfp_weights_;
   std::unique_ptr<ModelWeightsPtrs<NuqStream>> nuq_weights_;

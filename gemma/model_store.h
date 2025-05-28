@@ -53,10 +53,7 @@ class ModelStore {
   // Reads from file(s) or aborts on error. The latter two arguments are only
   // used for pre-2025 files.
   ModelStore(BlobReader& reader, const Path& tokenizer_path = Path(),
-              Tristate wrapping = Tristate::kDefault);
-  // For optimize_test.cc.
-  ModelStore(const ModelConfig& config, GemmaTokenizer&& tokenizer)
-      : config_(config), tokenizer_(std::move(tokenizer)) {}
+             Tristate wrapping = Tristate::kDefault);
   ~ModelStore();
 
   const ModelConfig& Config() const {

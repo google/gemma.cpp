@@ -24,7 +24,6 @@
 #include <string.h>
 
 #include <memory>
-#include <utility>  // std::move
 #include <vector>
 
 // Placeholder for internal header, do not modify.
@@ -59,16 +58,6 @@ Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
       chat_template_(model_.Tokenizer(), model_.Config().model) {
   weights_.ReadFromBlobs(model_, *reader_, loader.map, env_.ctx.pools.Pool());
   reader_.reset();
-}
-
-Gemma::Gemma(const ModelConfig& config, GemmaTokenizer&& tokenizer,
-             MatMulEnv& env)
-    : env_(env),
-      model_(config, std::move(tokenizer)),
-      weights_(config.weight),
-      chat_template_(model_.Tokenizer(), model_.Config().model) {
-  HWY_ASSERT(config.weight == Type::kF32);
-  weights_.AllocateForTest(config, env_.ctx.pools.Pool(0));
 }
 
 Gemma::~Gemma() = default;

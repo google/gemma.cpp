@@ -60,8 +60,7 @@ class GemmaTokenizer {
 
 class GemmaChatTemplate {
  public:
-  // No effect if `tokenizer` is unavailable (as happens in optimize_test.cc),
-  // but then any other method may abort.
+  // No effect if `tokenizer` is unavailable, but any other method may abort.
   GemmaChatTemplate(const GemmaTokenizer& tokenizer, Model model);
 
   // Given prompt tokens, this returns the wrapped prompt including BOS and

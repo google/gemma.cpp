@@ -387,7 +387,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 */
 
 // `inv_timescale[dim_qkv / 2]` is precomputed in Activations::Allocate.
-// This overload is called from backprop/ and if kUseHalfRope.
+// This overload is called if kUseHalfRope.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, int pos) {

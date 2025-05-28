@@ -21,7 +21,6 @@
 #include <stdlib.h>
 
 #include <memory>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -37,7 +36,6 @@
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
-#include "hwy/stats.h"
 
 // TODO: move into foreach_target; this is only used for NUQ Fixup.
 #include "compression/compress-inl.h"
@@ -297,64 +295,12 @@ void WeightsOwner::AllocatePointer(const ModelConfig& config) {
     case Type::kNUQ:
       nuq_weights_.reset(new ModelWeightsPtrs<NuqStream>(config));
       break;
-    case Type::kF32:
-      float_weights_.reset(new ModelWeightsPtrs<float>(config));
-      break;
     case Type::kBF16:
       bf16_weights_.reset(new ModelWeightsPtrs<BF16>(config));
       break;
     default:
       HWY_ABORT("Unsupported weight type %s.", TypeName(weight_type_));
   }
-}
-
-// Gemma calls `WeightsOwner::ReadOrAllocate`, but test code instead calls
-// `WeightsPtrs::AllocateForTest`, so the implementation is there, and here
-// we only type-dispatch.
-void WeightsOwner::AllocateForTest(const ModelConfig& config,
-                                   hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.AllocateWeights");
-
-  AllocatePointer(config);
-  CallT([&](const auto& weights) {
-    weights->AllocateForTest(mat_owners_, pool);
-  });
-}
-
-void WeightsOwner::ZeroInit() {
-  PROFILER_FUNC;
-  CallT([](const auto& weights) { weights->ZeroInit(); });
-}
-
-void WeightsOwner::RandInit(float stddev, std::mt19937& gen) {
-  PROFILER_FUNC;
-  float_weights_->RandInit(stddev, gen);
-}
-
-void WeightsOwner::LogWeightStatsF32() {
-  size_t total_weights = 0;
-  HWY_ASSERT(weight_type_ == Type::kF32);  // Only for float weights.
-  float_weights_->ForEachTensor(
-      nullptr, nullptr, [&total_weights](const TensorArgs& t) {
-        if (!t.mat.HasPtr()) return;
-        if (t.mat.Scale() != 1.0f) {
-          printf("[scale=%f] ", t.mat.Scale());
-        }
-        hwy::Stats stats;
-        const MatPtrT<float> mat_f(t.mat);
-        for (size_t r = 0; r < t.mat.Rows(); ++r) {
-          const float* HWY_RESTRICT row = mat_f.Row(r);
-          for (size_t c = 0; c < t.mat.Cols(); ++c) {
-            stats.Notify(row[c]);
-          }
-        }
-        printf("%-20s  %12zu   %13.10f   %8.5f   %13.10f\n", t.mat.Name(),
-               t.mat.Rows() * t.mat.Cols(), stats.Min(), stats.Mean(),
-               stats.Max());
-
-        total_weights += t.mat.Rows() * t.mat.Cols();
-      });
-  printf("%-20s  %12zu\n", "Total", total_weights);
 }
 
 void WeightsOwner::Fixup(hwy::ThreadPool& pool) {

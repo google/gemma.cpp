@@ -152,13 +152,12 @@ static ModelConfig ConfigGemmaTiny() {
   config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 32;
   config.vocab_size = 32;  // at least two f32 vectors
-  config.seq_len = 32;  // optimize_test requires more than 24
+  config.seq_len = 32;
   LayerConfig layer_config = LayerConfigGemmaTiny(config.model_dim);
   config.num_layers = 2;
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
-  // This is required for optimize_test to pass.
   config.att_cap = 50.0f;
   config.final_cap = 30.0f;
   config.eos_id = 11;
@@ -203,7 +202,6 @@ static ModelConfig ConfigGriffin2B() {
   }
   config.attention_window_sizes = FixedAttentionWindowSizes<26>(config.seq_len);
   config.use_local_attention = true;
-  // This is required for optimize_test to pass.
   config.final_cap = 0.0f;
   return config;
 }

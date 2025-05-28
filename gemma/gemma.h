@@ -107,11 +107,6 @@ class Gemma {
   // `env` must remain valid for the lifetime of this Gemma.
   Gemma(const LoaderArgs& loader, MatMulEnv& env);
 
-  // Only allocates weights, caller is responsible for filling them. Only used
-  // by `optimize_test.cc`.
-  // `env` must remain valid for the lifetime of this Gemma.
-  Gemma(const ModelConfig& config, GemmaTokenizer&& tokenizer, MatMulEnv& env);
-
   ~Gemma();
 
   MatMulEnv& Env() const { return env_; }
