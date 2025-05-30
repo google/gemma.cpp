@@ -572,7 +572,8 @@ ModelConfig::ModelConfig(const Model model, Type weight,
 static Model FindModel(const std::string& specifier) {
   Model found_model = Model::UNKNOWN;
   ForEachModel([&](Model model) {
-    const char* prefix = ModelPrefix(model);
+    // Some model names are prefixes of other model names
+    const std::string prefix = std::string(ModelPrefix(model)) + "-";
     if (specifier.rfind(prefix, 0) == 0) {  // Starts with prefix.
       // We only expect one match.
       HWY_ASSERT_M(found_model == Model::UNKNOWN, specifier.c_str());
