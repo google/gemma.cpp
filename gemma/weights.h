@@ -135,7 +135,8 @@ struct LayerWeightsPtrs {
         key_norm_scale(Concat("key_norm", suffix_), tensors),
         query_norm_scale(Concat("query_norm", suffix_), tensors),
 
-        layer_config(config) {}
+        layer_config(config) {
+  }
   ~LayerWeightsPtrs() = default;
 
   const std::string suffix_;
@@ -264,7 +265,7 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(gating_einsum_w, kMaybeRead));
       func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
       func(TENSOR_ARGS(gating_einsum_w2, kMaybeRead));
-      func(TENSOR_ARGS(linear_w, kMustRead));
+      func(TENSOR_ARGS(linear_w, kMaybeRead));
       func(TENSOR_ARGS(pre_attention_norm_scale, kMustRead));
       func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
     }

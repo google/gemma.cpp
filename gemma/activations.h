@@ -18,6 +18,8 @@
 
 #include <stddef.h>
 
+#include <vector>
+
 #include "gemma/configs.h"   // ModelConfig
 #include "ops/matmul.h"      // MatMulEnv
 #include "ops/ops.h"         // CreateInvTimescale

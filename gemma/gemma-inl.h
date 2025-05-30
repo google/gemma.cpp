@@ -21,6 +21,7 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::min
+#include <numeric>    // std::iota
 #include <vector>
 
 #include "gemma/activations.h"
