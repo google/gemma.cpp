@@ -176,6 +176,44 @@ void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
 // C is BF16/float, or double for partial.
 void BindC(MatPtr& C, MMParallel& parallel);
 
+// Lightweight view into `MatStorageT`.
+#pragma pack(push, 1)  // power of two size
+template <typename T>
+class RowPtr {
+ public:
+  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
+      : row0_(row0),
+        cols_(static_cast<uint32_t>(cols)),
+        stride_(static_cast<uint32_t>(stride)) {
+    HWY_DASSERT(stride >= cols);
+  }
+
+  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
+  size_t Cols() const { return static_cast<size_t>(cols_); }
+
+  size_t Stride() const { return static_cast<size_t>(stride_); }
+  void SetStride(size_t stride) {
+    HWY_DASSERT(stride >= Cols());
+    stride_ = stride;
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  RowPtr<T> View(size_t r, size_t c, size_t cols) const {
+    HWY_DASSERT(c < Cols());
+    HWY_DASSERT(cols <= Cols() - c);
+    return RowPtr<T>(Row(r) + c, cols, stride_);
+  }
+
+ private:
+  T* HWY_RESTRICT row0_;
+  uint32_t cols_;
+  uint32_t stride_;
+};
+#pragma pack(pop)
+
+using RowPtrBF = RowPtr<BF16>;
+using RowPtrD = RowPtr<double>;
+
 // Per-package storage for packed A, and one global C-shaped `partial` for
 // accumulating partial dot products (sections of K).
 class MMStorage {

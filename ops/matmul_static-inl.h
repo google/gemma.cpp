@@ -28,7 +28,7 @@
 #define GEMMA_MATMUL_DEFINE_ONE(TA, TB, TC)                             \
   MMPerKey* MatMulStatic(const MatPtrT<TA>& A, const MatPtrT<TB>& B,    \
                          const float* HWY_RESTRICT add, MatMulEnv& env, \
-                         const RowPtr<TC>& C) {                         \
+                         MatPtrT<TC>& C) {                              \
     return MatMul(A, B, add, env, C);                                   \
   }
 

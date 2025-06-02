@@ -80,6 +80,7 @@ hn::Vec<DC> TCFromF32(DC dc, hn::Vec<DF> vf) {
   return hn::DemoteTo(dc, vf);
 }
 
+// Type-safe wrapper over uint8_t row pointers referenced by MatPtrT.
 template <typename TC>
 class CRows {
  public:
@@ -1183,7 +1184,10 @@ class MMPerPackage {
     if constexpr (hwy::IsSame<TA, BF16>()) {
       // Only if no zero-padding required.
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
-      if (HWY_LIKELY(A.Cols() % NBF == 0)) return RowPtrFromMat(A);
+      if (HWY_LIKELY(A.Cols() % NBF == 0)) {
+        // Actually const, but RowPtr is also used for partial which is not.
+        return RowPtrBF(const_cast<TA*>(A.Row(0)), A.Cols(), A.Stride());
+      }
     }
 
     if (HWY_LIKELY(autotune.Best())) {
@@ -1312,7 +1316,21 @@ struct MMImpl {
 template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
-                              CRows<TC> C_rows) {
+                              MatPtrT<TC>& C) {
+  CRows<TC> C_rows(C.GetRowPtrs());
+  if (HWY_UNLIKELY(!C.GetRowPtrs())) {
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      fprintf(stderr,
+              "MatMul perf warning: setting row pointers because "
+              "C.AttachRowPtrs() was not called.\n");
+    }
+    HWY_DASSERT(C.HasPtr());
+    for (size_t r = 0; r < C.Rows(); ++r) {
+      env.storage.OutRow(r) = reinterpret_cast<uint8_t*>(C.Row(r));
+    }
+    C_rows = CRows<TC>(&env.storage.OutRow(0));
+  }
+
   const Allocator& allocator = env.ctx.allocator;
   const size_t M = A.Rows();
   const size_t K = A.Cols();
@@ -1390,19 +1408,6 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   }
 
   return &per_key;
-}
-
-// Adapter that fills the row array. This is the common case, whereas only
-// GemmaAttention::ComputeQKV uses the arbitrary output rows feature.
-template <typename TA, typename TB, typename TC>
-HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                              const float* HWY_RESTRICT add, MatMulEnv& env,
-                              const RowPtr<TC>& C) {
-  HWY_DASSERT(B.Rows() == C.Cols());
-  for (size_t row_ac = 0; row_ac < A.Rows(); ++row_ac) {
-    env.storage.OutRow(row_ac) = reinterpret_cast<uint8_t*>(C.Row(row_ac));
-  }
-  return MatMul(A, B, add, env, CRows<TC>(&env.storage.OutRow(0)));
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

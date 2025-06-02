@@ -35,7 +35,7 @@
 #define GEMMA_MATMUL_DECL_ONE(TA, TB, TC)                               \
   MMPerKey* MatMulStatic(const MatPtrT<TA>& A, const MatPtrT<TB>& B,    \
                          const float* HWY_RESTRICT add, MatMulEnv& env, \
-                         const RowPtr<TC>& C);
+                         MatPtrT<TC>& C);
 
 // Passed to HWY_VISIT_TARGETS; declares all overloads for all targets.
 #define GEMMA_MATMUL_DECL(TARGET, NAMESPACE)                  \

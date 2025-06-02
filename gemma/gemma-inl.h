@@ -249,64 +249,38 @@ class GemmaAttention {
     }
   }
 
-  // Fills activations.q and computes KV. For is_mha_, a single MatMul suffices
-  // and we later copy KV from q to KVCache. Otherwise, a second MatMul writes
-  // KV directly to KVCache.
+  // Fills activations.q and writes to KV cache.
   HWY_NOINLINE void ComputeQKV(const size_t num_interleaved) {
     PROFILER_ZONE("Gen.Attention.QKV");
-    const size_t model_dim = layer_config_.model_dim;
     const size_t qkv_dim = layer_config_.qkv_dim;
-    const size_t heads = layer_config_.heads;
     const size_t kv_heads = layer_config_.kv_heads;
 
-    // The original qkv_einsum_w has shape [(heads + kv_heads * 2), kKQVDim,
-    // model_dim], which we reshaped to (heads + kv_heads * 2) * kKQVDim rows.
-    // We must shrink to the actual size because MatMul verifies
-    // `B.extents.rows == C.Cols()`. If MHA, `QStride() == 3 * qkv_dim` and all
-    // rows are used. Otherwise, `QStride() == qkv_dim` and KV will be
-    // computed in the second MatMul.
-    const size_t w1_rows = heads * layer_config_.QStride();
-    HWY_DASSERT(layer_weights_.qkv_einsum_w1.Rows() == w1_rows);
+    // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
+    // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
     MatMulStatic(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w1,
-                 /*add=*/nullptr, *activations_.env,
-                 RowPtrFromMat(activations_.q));
+                 /*add=*/nullptr, *activations_.env, activations_.q);
 
-    if (is_mha_) {
-      // Multi-Head Attention a.k.a. "use_qkv_einsum" computed QKV already.
-    } else {
-      // KV structure is [k, v, k, v, ....] = kv_heads pairs of (k, v).
-      const size_t w_rows_kv_cols = kv_heads * 2 * qkv_dim;
-      HWY_DASSERT(layer_weights_.qkv_einsum_w2.Rows() == w_rows_kv_cols);
-
-      // Single query and no wraparound means we can use a matmul and write
-      // directly into the KV cache with a stride of cache_pos_size_.
-      if (num_queries_ == 1 &&
-          queries_pos_[0] + num_tokens_ <= div_seq_len_.GetDivisor()) {
-        const size_t kv_ofs =
-            queries_pos_[0] * cache_pos_size_ + layer_ * cache_layer_size_;
-        float* HWY_RESTRICT kv = kv_caches_[0].kv_cache.get() + kv_ofs;
-        RowPtrF kv_rows(kv, w_rows_kv_cols);
-        kv_rows.SetStride(cache_pos_size_);
-        MatMulStatic(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w2,
-                     /*add=*/nullptr, *activations_.env, kv_rows);
-      } else {
-        // Proceed row by row because there will be wraparound.
-        for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
-             ++interleaved_idx) {
-          const float* x = activations_.pre_att_rms_out.Row(interleaved_idx);
-          const size_t query_idx = interleaved_idx % num_queries_;
-          const size_t batch_idx = interleaved_idx / num_queries_;
-          KVCache& kv_cache = kv_caches_[query_idx];
-          const size_t cache_pos =
-              div_seq_len_.Remainder(queries_pos_[query_idx] + batch_idx);
-          const size_t kv_offset =
-              cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
-          float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-          MatVec(layer_weights_.qkv_einsum_w2, 0, w_rows_kv_cols, model_dim, x,
-                 kv, pool_);
-        }
-      }
-    }  // !is_mha_
+    // Set up MatMul row pointers for writing to KV, which consists of
+    // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
+    // because rows are computed modulo seq_len.
+    MatPtrT<float> kv_rows("kv",
+                           Extents2D(activations_.pre_att_rms_out.Rows(),
+                                     layer_weights_.qkv_einsum_w2.Rows()));
+    for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
+         ++interleaved_idx) {
+      const size_t query_idx = interleaved_idx % num_queries_;
+      const size_t batch_idx = interleaved_idx / num_queries_;
+      const size_t cache_pos =
+          div_seq_len_.Remainder(queries_pos_[query_idx] + batch_idx);
+      const size_t kv_offset =
+          cache_pos * cache_pos_size_ + layer_ * cache_layer_size_;
+      activations_.env->storage.OutRow(interleaved_idx) =
+          reinterpret_cast<uint8_t*>(kv_caches_[query_idx].kv_cache.get() +
+                                     kv_offset);
+    }
+    kv_rows.AttachRowPtrs(&activations_.env->storage.OutRow(0));
+    MatMulStatic(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w2,
+                 /*add=*/nullptr, *activations_.env, kv_rows);
 
     // Apply positional encodings for K (and copy KV to cache if MHA).
     pool_.Run(0, kv_heads * num_interleaved,
@@ -322,13 +296,6 @@ class GemmaAttention {
                                          head * qkv_dim * 2;
                 KVCache& kv_cache = kv_caches_[query_idx];
                 float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
-                // If MHA, copy computed K and V into KVCache.
-                if (is_mha_) {
-                  const float* HWY_RESTRICT mha_kv =
-                      activations_.q.Row(interleaved_idx) + head * q_stride_ +
-                      qkv_dim;
-                  hwy::CopyBytes(mha_kv, kv, 2 * qkv_dim * sizeof(*kv));
-                }
 
                 // Apply further processing to K.
                 if (layer_weights_.key_norm_scale.HasPtr()) {
@@ -435,7 +402,7 @@ class GemmaAttention {
           const size_t head_offset = (head / kHeadGroups) * qkv_dim * 2;
 
           float* HWY_RESTRICT q =
-              activations_.q.Row(interleaved_idx) + head * q_stride_;
+              activations_.q.Row(interleaved_idx) + head * qkv_dim;
           float* HWY_RESTRICT att = activations_.att.Row(interleaved_idx) +
                                     head * activations_.seq_len;
           float* HWY_RESTRICT att_out =
@@ -490,7 +457,7 @@ class GemmaAttention {
             ? layer_weights_.attention_output_biases.PackedScale1()
             : nullptr;
     MatMulStatic(activations_.att_out, layer_weights_.att_weights, add,
-                 *activations_.env, RowPtrFromMat(activations_.att_sums));
+                 *activations_.env, activations_.att_sums);
   }
 
  public:
@@ -548,15 +515,14 @@ class GemmaAttention {
         num_tokens_(num_tokens),
         layer_(layer),
         layer_config_(layer_weights->layer_config),
-        q_stride_(layer_config_.QStride()),
         cache_layer_size_(layer_weights->layer_config.CacheLayerSize()),
         cache_pos_size_(activations.cache_pos_size),
-        is_mha_(layer_config_.IsMHA()),
         activations_(activations),
         layer_weights_(*layer_weights),
         div_seq_len_(div_seq_len),
         kv_caches_(kv_caches),
         pool_(ctx.pools.Pool(0)) {
+    HWY_DASSERT(!layer_config_.IsMHA());  // No longer supported.
     HWY_DASSERT(num_queries_ <= kv_caches_.size());
     HWY_DASSERT_M((layer_config_.heads % layer_config_.kv_heads) == 0,
                   "query heads must be a multiple of key-value heads");
@@ -576,10 +542,8 @@ class GemmaAttention {
   const size_t num_tokens_;
   const size_t layer_;
   const LayerConfig& layer_config_;
-  const size_t q_stride_ = 0;
   const size_t cache_layer_size_ = 0;
   const size_t cache_pos_size_ = 0;
-  const bool is_mha_ = false;
 
   Activations& activations_;
   const LayerWeightsPtrs<T>& layer_weights_;
@@ -627,7 +591,7 @@ class VitAttention {
     HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
     MatMulStatic(activations_.pre_att_rms_out, layer_weights_.vit.qkv_einsum_w,
                  layer_weights_.vit.qkv_einsum_b.PackedScale1(),
-                 *activations_.env, RowPtrFromMat(qkv));
+                 *activations_.env, qkv);
   }
 
   // TODO(philculliton): transition fully to MatMul.
@@ -667,7 +631,7 @@ class VitAttention {
       });
 
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
-      MatMulStatic(Q, K, nullptr, *activations_.env, RowPtrFromMat(C));
+      MatMulStatic(Q, K, nullptr, *activations_.env, C);
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         float* HWY_RESTRICT c = C.Row(task);
@@ -733,9 +697,8 @@ class VitAttention {
     // att_weights and att_out are concatenated heads, each of length
     // qkv_dim. Thus the [num_tokens_, layer_config_.model_dim]
     // matmul output is the sum over heads.
-    auto att_sums = RowPtrFromMat(activations_.att_sums);
     MatMulStatic(activations_.att_out, layer_weights_.vit.attn_out_w, bias,
-                 *activations_.env, att_sums);
+                 *activations_.env, activations_.att_sums);
   }
 
  public:
@@ -827,9 +790,9 @@ HWY_NOINLINE void FFWNoVit(Activations& activations,
 
   // Compute the hidden layer activations.
   MatMulStatic(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w1,
-               bias1, *activations.env, RowPtrFromMat(activations.C1));
+               bias1, *activations.env, activations.C1);
   MatMulStatic(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w2,
-               bias2, *activations.env, RowPtrFromMat(activations.C2));
+               bias2, *activations.env, activations.C2);
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_weights->layer_config.activation, activations.C1,
@@ -837,7 +800,7 @@ HWY_NOINLINE void FFWNoVit(Activations& activations,
 
   // Hidden layer -> output layer.
   MatMulStatic(activations.C1, layer_weights->linear_w, output_bias,
-               *activations.env, RowPtrFromMat(activations.ffw_out));
+               *activations.env, activations.ffw_out);
 }
 
 // Same as FFWNoVit, but with different layer_weights members and no second
@@ -855,14 +818,14 @@ HWY_NOINLINE void FFWVit(Activations& activations,
 
   // Compute the hidden layer activations.
   MatMulStatic(activations.pre_ffw_rms_out, layer_weights->vit.linear_0_w,
-               bias1, *activations.env, RowPtrFromMat(activations.C1));
+               bias1, *activations.env, activations.C1);
 
   // Activation (Gelu), store in C1.
   ActivationBatched(layer_weights->layer_config.activation, activations.C1);
 
   // Hidden layer -> output layer.
   MatMulStatic(activations.C1, layer_weights->vit.linear_1_w, output_bias,
-               *activations.env, RowPtrFromMat(activations.ffw_out));
+               *activations.env, activations.ffw_out);
 }
 
 // `batch_idx` indicates which row of `x` to write to.
@@ -1176,10 +1139,10 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   //   kPatchSize), MatPadding::kPacked);
   // [Get patches]
   // MatMulStatic(
-  //       MatFromBatch(kVitSeqLen, image_patches),
-  //       MatFromWeights(weights.vit_img_embedding_kernel),
+  //       image_patches,
+  //       weights.vit_img_embedding_kernel,
   //       weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
-  //       RowPtrF(activations.x.Row(0), kVitModelDim));
+  //       activations.x);
   // However, MatMul currently requires that
   //   A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0
   // which is not the case here. We should relax that requirement on MatMul and
@@ -1228,7 +1191,7 @@ HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
   MatMulStatic(activations.x, weights.vit_img_head_kernel,
                weights.vit_img_head_bias.PackedScale1(), *activations.env,
-               RowPtrFromMat(image_tokens));
+               image_tokens);
 }
 
 // Generates one token for each query. `queries_token` is the previous token
@@ -1367,8 +1330,7 @@ bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
     PROFILER_ZONE("Gen.EmbeddingMatmul");
     // Compute logits from last layer activations.
     MatMulStatic(activations.x, weights.embedder_input_embedding,
-                 /*add=*/nullptr, *activations.env,
-                 RowPtrFromMat(activations.logits));
+                 /*add=*/nullptr, *activations.env, activations.logits);
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {

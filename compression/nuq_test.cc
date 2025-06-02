@@ -517,6 +517,7 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 HWY_BEFORE_TEST(NuqTest);
+#if GEMMA_ENABLE_NUQ
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllFlat);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllPlateaus);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllRamp);
@@ -530,6 +531,9 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestUnalignedOffsetF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecF32);
+#else
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(NuqTest);
+#endif  // GEMMA_ENABLE_NUQ
 HWY_AFTER_TEST();
 }  // namespace gcpp
 #endif  // HWY_ONCE

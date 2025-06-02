@@ -62,7 +62,9 @@ void ForeachPackedAndRawType() {
   ForeachRawType<BF16, TestT>();
   ForeachRawType<float, TestT>();
   ForeachRawType<SfpStream, TestT>();
-  ForeachRawType<NuqStream, TestT>();
+  if constexpr (GEMMA_ENABLE_NUQ) {
+    ForeachRawType<NuqStream, TestT>();
+  }
 }
 
 // Generates inputs: deterministic, within max SfpStream range.

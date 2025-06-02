@@ -29,6 +29,11 @@
 
 namespace gcpp {
 
+// Only used in experiments, hence disable in default builds.
+#ifndef GEMMA_ENABLE_NUQ
+#define GEMMA_ENABLE_NUQ 0
+#endif
+
 // Switching Floating Point: a hybrid 8-bit float representation of bf16/f32
 // inputs that combines the advantages of e4m3 and e5m2 into a single format.
 // It supports seeking at a granularity of 1 and decoding to bf16/f32.

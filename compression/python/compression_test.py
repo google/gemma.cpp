@@ -71,12 +71,6 @@ class CompressionTest(absltest.TestCase):
     info_256.axes = [0]
     info_256.shape = [256]
     writer.insert(
-        "tensor_nuq",
-        np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32),
-        configs.Type.kNUQ,
-        info_256,
-    )
-    writer.insert(
         "tensor_sfp",
         np.array([0.000375] * 128 + [0.00009] * 128, dtype=np.float32),
         configs.Type.kSFP,
@@ -97,7 +91,7 @@ class CompressionTest(absltest.TestCase):
 
     config = configs.ModelConfig(
         configs.Model.GEMMA_TINY,
-        configs.Type.kNUQ,
+        configs.Type.kSFP,
         configs.PromptWrapping.GEMMA_IT,
     )
     tokenizer_path = ""  # no tokenizer required for testing
@@ -108,7 +102,7 @@ class CompressionTest(absltest.TestCase):
     reader = compression.SbsReader(temp_file.full_path)
 
     self.assertEqual(reader.config.model, configs.Model.GEMMA_TINY)
-    self.assertEqual(reader.config.weight, configs.Type.kNUQ)
+    self.assertEqual(reader.config.weight, configs.Type.kSFP)
 
     mat = reader.find_mat("tensor0")
     self.assertEqual(mat.cols, 192)
@@ -127,12 +121,6 @@ class CompressionTest(absltest.TestCase):
     self.assertEqual(mat.rows, 10 * 12)
     self.assertEqual(mat.type, configs.Type.kSFP)
     self.assertAlmostEqual(mat.scale, 192 * 120 / 1e3 / 1.875, places=2)
-
-    mat = reader.find_mat("tensor_nuq")
-    self.assertEqual(mat.cols, 256)
-    self.assertEqual(mat.rows, 1)
-    self.assertEqual(mat.type, configs.Type.kNUQ)
-    self.assertAlmostEqual(mat.scale, 1.0)
 
     mat = reader.find_mat("tensor_sfp")
     self.assertEqual(mat.cols, 256)

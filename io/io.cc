@@ -15,10 +15,6 @@
 
 // Safe to be first, does not include POSIX headers.
 #include "hwy/detect_compiler_arch.h"
-// Only compile this file on non-Windows; it replaces io_win.cc. It is easier to
-// check this in source code because we support multiple build systems.
-#if !HWY_OS_WIN
-
 // Request POSIX 2008, including `pread()` and `posix_fadvise()`. This also
 // implies `_POSIX_C_SOURCE`.
 #if !defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 700
@@ -29,6 +25,14 @@
 // Make `off_t` 64-bit even on 32-bit systems. Works for Android >= r15c.
 #undef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64
+
+#include <stddef.h>
+
+#include <memory>
+#include <string>
+
+#include "io/io.h"
+#include "hwy/base.h"  // HWY_ASSERT
 
 #if (HWY_OS_LINUX || HWY_OS_FREEBSD) && \
     (!defined(__ANDROID_API__) || __ANDROID_API__ >= 24)
@@ -44,6 +48,11 @@
 #define GEMMA_IO_FADVISE 0
 #endif
 
+// FilePosix should only be compiled on non-Windows. It is easier to
+// check this in source code because we support multiple build systems. Note
+// that IOBatch at the end of this TU is still compiled on all platforms.
+#if !HWY_OS_WIN
+
 #if GEMMA_IO_PREADV
 // Replacement for the _BSD_SOURCE specified by preadv documentation.
 #ifndef _DEFAULT_SOURCE
@@ -55,7 +64,6 @@
 
 #include <fcntl.h>   // open
 #include <limits.h>  // IOV_MAX
-#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>  // SEEK_END - unistd isn't enough for IDE.
 #include <sys/types.h>
@@ -64,12 +72,7 @@
 #include <sys/stat.h>  // O_RDONLY
 #include <unistd.h>    // read, write, close
 
-#include <memory>
-#include <string>
-
-#include "io/io.h"
 #include "util/allocator.h"
-#include "hwy/base.h"  // HWY_ASSERT
 
 namespace gcpp {
 
@@ -168,6 +171,12 @@ std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode) {
   return std::make_unique<FilePosix>(fd);
 }
 
+}  // namespace gcpp
+
+#endif  // !HWY_OS_WIN
+
+namespace gcpp {
+
 std::unique_ptr<File> OpenFileOrAbort(const Path& filename, const char* mode) {
   std::unique_ptr<File> file = OpenFileOrNull(filename, "r");
   if (!file) {
@@ -237,4 +246,3 @@ uint64_t IOBatch::Read(const File& file) const {
 }
 
 }  // namespace gcpp
-#endif  // !HWY_OS_WIN

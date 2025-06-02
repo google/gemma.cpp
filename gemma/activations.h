@@ -38,8 +38,7 @@ struct Activations {
         is_griffin(config.model == Model::GRIFFIN_2B),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
-        q("q",
-          Extents2D(batch_size, layer_config.heads * layer_config.QStride()),
+        q("q", Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim),
           pad_),
         logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
 
@@ -81,6 +80,25 @@ struct Activations {
 
         env(env) {
     HWY_ASSERT(batch_size != 0);
+
+    // For MatMul outputs, precompute their row pointers.
+    const auto init_row_ptrs = [&](MatPtrT<float>& mat) {
+      row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(mat.Rows()));
+      uint8_t** ptrs = row_ptrs.back().get();
+      for (size_t r = 0; r < mat.Rows(); ++r) {
+        ptrs[r] = mat.RowBytes(r);
+      }
+      mat.AttachRowPtrs(ptrs);
+    };
+    // If we forget any MatMul outputs here, debug builds print a warning but
+    // fill them in each MatMul call.
+    init_row_ptrs(q);
+    init_row_ptrs(logits);
+    init_row_ptrs(att_sums);
+    init_row_ptrs(C1);
+    init_row_ptrs(C2);
+    init_row_ptrs(ffw_out);
+    // TODO: also init rows for image_tokens.
 
     // Note that BindC on any MatMul output considerably slows down Prefill.
   }
@@ -144,6 +162,9 @@ struct Activations {
   MatStorageT<float> inv_timescale_global;
 
   MatMulEnv* env;
+  // Per-tensor allocations to make it likelier that asan detects bugs such as
+  // use after free, overrun, and dangling references.
+  std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
 }  // namespace gcpp

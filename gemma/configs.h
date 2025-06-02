@@ -259,16 +259,12 @@ struct LayerConfig : public IFields {
   // Multi-Head Attention?
   bool IsMHA() const { return heads == kv_heads; }
 
-  // Stride between subsequent queries. Each of Q, K, V are of length kQKVDim,
-  // but for MHA we store them as Q,K,V, Q,K,V, .. instead of Q..Q, K..K, V..V.
-  size_t QStride() const { return qkv_dim * (IsMHA() ? 3 : 1); }
-
   uint32_t model_dim = 0;
   uint32_t griffin_dim = 0;
   uint32_t ff_hidden_dim = 0;
   uint32_t heads = 0;
   uint32_t kv_heads = 0;
-  uint32_t qkv_dim = 0;
+  uint32_t qkv_dim = 0;       // length of Q, K, V vectors (contiguous).
   uint32_t conv1d_width = 0;  // Griffin only
   bool ff_biases = false;
   bool softmax_attn_output_biases = false;  // for Griffin

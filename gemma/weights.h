@@ -393,14 +393,7 @@ struct LayerWeightsPtrs {
     // MHA, and otherwise might not be the same type.
     if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
 
-    const size_t w1_rows = layer_config.heads * layer_config.QStride();
-
-    if (layer_config.IsMHA()) {  // MHA only requires w1.
-      qkv_einsum_w1 = qkv_einsum_w;
-      HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
-      return;
-    }
-
+    const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
     const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
 
     HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);

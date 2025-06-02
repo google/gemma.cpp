@@ -33,6 +33,18 @@
 
 namespace gcpp {
 
+// Type-safe wrapper over type-erased uint8_t row pointers from MatPtr.
+template <typename TC>
+class CRows {
+ public:
+  CRows(TC** C_rows) : C_rows_(C_rows) {}
+
+  TC* HWY_RESTRICT operator[](size_t row_idx) const { return C_rows_[row_idx]; }
+
+ private:
+  TC** C_rows_;
+};
+
 // Type-erased, non-owning pointer and metadata for rank-1 or 2 tensors (vector
 // or matrix). Base class of the non-type-erased `MatPtrT`. Use this class
 // to store hetereogeneous tensor references in a vector.
@@ -63,12 +75,28 @@ class MatPtr : public IFields {
     ptr_ = ptr;
     stride_ = static_cast<uint32_t>(stride);
 
+    // If row pointers were already attached, `SetPtr` would invalidate them.
+    HWY_DASSERT_M(row_ptrs_ == nullptr, "Do not call after AttachRowPtrs.");
+
     // NUQ streams must not be padded because that would change the position of
     // the group tables.
-    if (type_ == Type::kNUQ) HWY_ASSERT(IsPacked());
+    if (type_ == Type::kNUQ) {
+      HWY_ASSERT_M(GEMMA_ENABLE_NUQ, "Set GEMMA_ENABLE_NUQ=1.");
+      HWY_ASSERT(IsPacked());
+    }
   }
 
   bool HasPtr() const { return ptr_ != nullptr; }
+
+  // Caller has initialized Rows() pointers in row_ptrs[].
+  void AttachRowPtrs(uint8_t** row_ptrs) {
+    row_ptrs_ = row_ptrs;
+    for (size_t r = 0; r < Rows(); ++r) {
+      HWY_DASSERT(row_ptrs[r] != nullptr);
+    }
+  }
+
+  uint8_t** GetRowPtrs() const { return row_ptrs_; }
 
   // A single row counts as packed because there is no padding between rows.
   bool IsPacked() const { return (stride_ == cols_) || (Rows() == 1); }
@@ -195,6 +223,11 @@ class MatPtr : public IFields {
   // this object.
   void* ptr_ = nullptr;  // not serialized
 
+  // Points to an array of pointers, one per row, or nullptr if `AttachRowPtrs`
+  // was not called. Only used for MatMul output tensors, hence we
+  // minimize the cost for other tensors by only holding a non-owning pointer.
+  uint8_t** row_ptrs_ = nullptr;  // not serialized
+
   // Offset by which to advance pointers to the next row, >= `cols_`.
   uint32_t stride_;
 
@@ -261,6 +294,13 @@ class MatPtrT : public MatPtr {
 template <class Func, typename... Args>
 decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                             Args&&... args) {
+#if GEMMA_ENABLE_NUQ
+  if (base->GetType() == Type::kNUQ) {
+    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base),
+                std::forward<Args>(args)...);
+  }
+#endif  // GEMMA_ENABLE_NUQ
+
   if (base->GetType() == Type::kF32) {
     return func(dynamic_cast<const MatPtrT<float>*>(base),
                 std::forward<Args>(args)...);
@@ -269,9 +309,6 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                 std::forward<Args>(args)...);
   } else if (base->GetType() == Type::kSFP) {
     return func(dynamic_cast<const MatPtrT<SfpStream>*>(base),
-                std::forward<Args>(args)...);
-  } else if (base->GetType() == Type::kNUQ) {
-    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base),
                 std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
@@ -283,6 +320,15 @@ template <class Func, typename... Args>
 decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
                                 const Func& func, Args&&... args) {
   HWY_ASSERT(base1->GetType() == base2->GetType());
+
+#if GEMMA_ENABLE_NUQ
+  if (base1->GetType() == Type::kNUQ) {
+    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base1),
+                dynamic_cast<const MatPtrT<NuqStream>*>(base2),
+                std::forward<Args>(args)...);
+  }
+#endif  // GEMMA_ENABLE_NUQ
+
   if (base1->GetType() == Type::kF32) {
     return func(dynamic_cast<const MatPtrT<float>*>(base1),
                 dynamic_cast<const MatPtrT<float>*>(base2),
@@ -294,10 +340,6 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
   } else if (base1->GetType() == Type::kSFP) {
     return func(dynamic_cast<const MatPtrT<SfpStream>*>(base1),
                 dynamic_cast<const MatPtrT<SfpStream>*>(base2),
-                std::forward<Args>(args)...);
-  } else if (base1->GetType() == Type::kNUQ) {
-    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base1),
-                dynamic_cast<const MatPtrT<NuqStream>*>(base2),
                 std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));
@@ -383,56 +425,6 @@ class MatStorageT : public MatPtrT<MatT> {
  private:
   MatOwner owner_;
 };
-
-// Lightweight version of `MatPtr` used by matmul-inl.h for padded tensors with
-// seekable (non-NUQ) T.
-#pragma pack(push, 1)  // power of two size
-template <typename T>
-class RowPtr {
- public:
-  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
-      : row0_(row0),
-        cols_(static_cast<uint32_t>(cols)),
-        stride_(static_cast<uint32_t>(stride)) {
-    HWY_DASSERT(stride >= cols);
-  }
-
-  RowPtr(T* HWY_RESTRICT row0, size_t cols) : RowPtr(row0, cols, cols) {}
-
-  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
-  size_t Cols() const { return static_cast<size_t>(cols_); }
-
-  size_t Stride() const { return static_cast<size_t>(stride_); }
-  void SetStride(size_t stride) {
-    HWY_DASSERT(stride >= Cols());
-    stride_ = stride;
-  }
-
-  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  RowPtr<T> View(size_t r, size_t c, size_t cols) const {
-    HWY_DASSERT(c < Cols());
-    HWY_DASSERT(cols <= Cols() - c);
-    return RowPtr<T>(Row(r) + c, cols, stride_);
-  }
-
- private:
-  T* HWY_RESTRICT row0_;
-  uint32_t cols_;
-  uint32_t stride_;
-};
-#pragma pack(pop)
-
-using RowPtrBF = RowPtr<BF16>;
-using RowPtrF = RowPtr<float>;
-using RowPtrD = RowPtr<double>;
-
-template <typename T>
-RowPtr<T> RowPtrFromMat(const MatPtrT<T>& row_vectors) {
-  // RowPtr is non-const for MatMul C, but is also used for A which is const.
-  // Callers are responsible for checking their usage of RowPtr.
-  return RowPtr<T>(const_cast<T*>(row_vectors.Row(0)), row_vectors.Cols(),
-                   row_vectors.Stride());
-}
 
 }  // namespace gcpp
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_MAT_H_

@@ -91,7 +91,7 @@ float MaxAbs(const MatStorageT<float>& a) {
 // B is already transposed.
 template <typename TA, typename TB, typename TC>
 void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                 const RowPtr<TC>& C_slow, const RowPtr<TC>& C, int line) {
+                 const MatPtrT<TC>& C_slow, const MatPtrT<TC>& C, int line) {
   const hn::ScalableTag<float> df;
   const size_t cols = A.Cols();
   const size_t B_rows = B.Rows();
@@ -161,7 +161,7 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 template <typename TA, typename TB, typename TC>
 HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
                            const float* HWY_RESTRICT add_row, MatMulEnv& env,
-                           const RowPtr<TC>& C) {
+                           MatPtrT<TC>& C) {
   // TA can be any Packed except NuqStream because it uses pointer
   // arithmetic, because it is the second argument to Dot, which does not
   // support a v_ofs.
@@ -223,25 +223,22 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStorageT<TA> a(GenerateMat<TA>(A_extents, pool));
-  MatStorageT<TB> b_trans(GenerateTransposedMat<TB>(B_extents, pool));
-  MatStorageT<TC> c_slow_batch("c_slow_batch", C_extents, MatPadding::kOdd);
-  MatStorageT<TC> c_batch("c_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TA> A(GenerateMat<TA>(A_extents, pool));
+  MatStorageT<TB> BT(GenerateTransposedMat<TB>(B_extents, pool));
+  MatStorageT<TC> C_slow("c_slow_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> C("c_batch", C_extents, MatPadding::kOdd);
 
   MatStorageT<float> add_storage =
       add ? GenerateMat<float>(Extents2D(1, cols_bc), pool)
           : MatStorageT<float>("add", Extents2D(), MatPadding::kPacked);
   add_storage.SetScale(1.0f);
-
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
-  const RowPtr<TC> C_slow = RowPtrFromMat(c_slow_batch);
-  const RowPtr<TC> C = RowPtrFromMat(c_batch);
 
-  MatMulSlow(a, b_trans, add_row, env, C_slow);
+  MatMulSlow(A, BT, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
   for (size_t rep = 0; rep < 16; ++rep) {
-    MMPerKey* per_key = MatMulStatic(a, b_trans, add_row, env, C);
-    AssertClose(a, b_trans, C_slow, C, line);
+    MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C);
+    AssertClose(A, BT, C_slow, C, line);
     if (per_key->autotune.Best()) break;
   }
 }
