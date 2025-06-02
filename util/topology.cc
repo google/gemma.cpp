@@ -83,12 +83,13 @@ static LPS EnabledLPs(const BoundedSlice& lp_slice) {
 
 BoundedTopology::BoundedTopology(BoundedSlice package_slice,
                                  BoundedSlice cluster_slice,
-                                 BoundedSlice lp_slice) {
+                                 BoundedSlice lp_slice)
+    : package_slice_(package_slice), cluster_slice_(cluster_slice) {
   const LPS enabled_lps = EnabledLPs(lp_slice);
 
 #if !GEMMA_DISABLE_TOPOLOGY
   if (HWY_LIKELY(!topology_.packages.empty())) {
-    InitFromTopology(enabled_lps, package_slice, cluster_slice);
+    InitFromTopology(enabled_lps);
   }
 #endif
 
@@ -270,16 +271,14 @@ static void ScanTClusters(hwy::Topology& topology_, size_t& max_tclusters,
 }
 
 // Main part of ctor, called when topology is known.
-void BoundedTopology::InitFromTopology(const LPS& enabled_lps,
-                                       BoundedSlice package_slice,
-                                       BoundedSlice cluster_slice) {
+void BoundedTopology::InitFromTopology(const LPS& enabled_lps) {
   size_t max_tclusters, max_tcluster_cores, max_tcluster_lps;
   ScanTClusters(topology_, max_tclusters, max_tcluster_cores, max_tcluster_lps);
 
   // (Possibly empty) subset of `Topology` packages that have `enabled_lps`.
-  package_slice.Foreach(
+  package_slice_.Foreach(
       "package", topology_.packages.size(), [&](size_t pkg_idx) {
-        Package package(enabled_lps, topology_, pkg_idx, cluster_slice);
+        Package package(enabled_lps, topology_, pkg_idx, cluster_slice_);
         // Skip if empty, i.e. too few `enabled_lps`.
         if (HWY_LIKELY(!package.clusters.empty())) {
           packages_.push_back(std::move(package));

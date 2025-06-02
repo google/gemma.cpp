@@ -59,8 +59,8 @@ class Pinning {
 
   // If want_pin_, tries to pin each worker in `pool` to an LP in `cluster`,
   // and sets `any_error_` if any fails.
-  void MaybePin(size_t pkg_idx, size_t cluster_idx,
-                const BoundedTopology::Cluster& cluster,
+  void MaybePin(const BoundedTopology& topology, size_t pkg_idx,
+                size_t cluster_idx, const BoundedTopology::Cluster& cluster,
                 hwy::ThreadPool& pool) {
     const std::vector<size_t> lps = cluster.LPVector();
     HWY_ASSERT(pool.NumWorkers() <= lps.size());
@@ -68,9 +68,10 @@ class Pinning {
       HWY_ASSERT(task == thread);  // each worker has one task
 
       char buf[16];  // Linux limitation
-      const int bytes_written =
-          snprintf(buf, sizeof(buf), "P%zu X%02zu C%03d", pkg_idx, cluster_idx,
-                   static_cast<int>(task));
+      const int bytes_written = snprintf(
+          buf, sizeof(buf), "P%zu X%02zu C%03d",
+          topology.SkippedPackages() + pkg_idx,
+          topology.SkippedClusters() + cluster_idx, static_cast<int>(task));
       HWY_ASSERT(bytes_written < static_cast<int>(sizeof(buf)));
       hwy::SetThreadName(buf, 0);  // does not support varargs
 
@@ -195,7 +196,7 @@ NestedPools::Package::Package(const BoundedTopology& topology,
             allocator, CapIfNonZero(cluster.Size(), max_workers_per_cluster),
             cluster.Node());
         // Pin workers AND the calling thread from `all_clusters`.
-        GetPinning().MaybePin(pkg_idx, cluster_idx, cluster,
+        GetPinning().MaybePin(topology, pkg_idx, cluster_idx, cluster,
                               *clusters_[cluster_idx]);
       });
 }
