@@ -605,11 +605,11 @@ cc_test(
     ],
     deps = [
         ":benchmark_helper",
-        ":configs",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
         "@highway//:profiler",
     ],
 )
