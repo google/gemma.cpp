@@ -372,6 +372,11 @@ bool ModelStore::FindAndUpdateMatPtr(MatPtr& mat, size_t& key_idx) const {
   // `Compress()` output is always packed because it assumes a 1D array.
   HWY_ASSERT(mat.IsPacked());
   // Update fields. Name already matched, otherwise we would not find it.
+  // For MatPtr tensors, the type will be `kUnknown`. If it was a `MatPtrT`,
+  // ensure the type set via code matches the file.
+  HWY_ASSERT_M(
+      mat.GetType() == Type::kUnknown || mat.GetType() == file_mat->GetType(),
+      mat.Name());
   mat.SetType(file_mat->GetType());
   if (scales_.empty()) {
     // `file_mat->Scale()` is either read from file, or we have pre-2025 format

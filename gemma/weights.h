@@ -19,18 +19,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <complex>
-#include <memory>
-#include <mutex>  // NOLINT
 #include <string>
 #include <vector>
 
-#include "compression/types.h"  // IsF32
+#include "compression/types.h"
 #include "gemma/configs.h"      // ModelConfig
 #include "gemma/model_store.h"  // ModelStore
 #include "gemma/tensor_info.h"  // TensorInfoRegistry
 #include "io/blob_store.h"      // BlobWriter
-#include "ops/matmul.h"         // MatMulEnv
 #include "util/mat.h"           // MatPtr
 #include "hwy/contrib/thread_pool/thread_pool.h"
 
@@ -73,142 +69,141 @@ struct TensorArgs {
   TensorArgs(mat, other1 ? &other1->mat : nullptr, \
              other2 ? &other2->mat : nullptr, TensorArgs::flag)
 
-// Per-layer weight metadata and pointers. The tensor data is owned by
-// `WeightsOwner`. Note that this class could be type-erased: member functions
-// do not actually use the `Weight` template argument. See `WeightsPtrs`.
-// `TensorInfoRegistry` (constructed from `ModelConfig`) is the source of truth
-// for all tensor shapes.
-template <class Weight>
-struct LayerWeightsPtrs {
-  static inline std::string Concat(const char* base_name,
-                                   const std::string& suffix) {
-    return std::string(base_name) + suffix;
+// Finds tensors by name in `TensorInfoRegistry` (constructed from
+// `ModelConfig`) and constructs `MatPtr` metadata with those shapes.
+class MatFinder {
+ public:
+  MatFinder(const std::string& suffix, const TensorInfoRegistry& tensors)
+      : suffix_(suffix), tensors_(tensors) {}
+
+  // Retrieves shape by name via `TensorInfo` from `TensorInfoRegistry`.
+  MatPtr operator()(const std::string& base_name) const {
+    const std::string name = std::string(base_name) + suffix_;
+    return MatPtr(name.c_str(), Type::kUnknown,
+                  ExtentsFromInfo(tensors_.Find(name)));
   }
 
+ private:
+  const std::string suffix_;
+  const TensorInfoRegistry& tensors_;
+};
+
+// Per-layer weight metadata and pointers. The tensor data is owned by
+// `WeightsOwner`.
+struct LayerWeightsPtrs {
   // Initializes tensor metadata without allocating.
   LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
                    const TensorInfoRegistry& tensors)
-      : suffix_(LayerSuffix(layer_idx)),
-        qkv_einsum_w(Concat("qkv_ein", suffix_), tensors),
-        qkv_einsum_w1(Concat("qkv1_w", suffix_), tensors),
-        qkv_einsum_w2(Concat("qkv2_w", suffix_), tensors),
-        attention_output_biases(Concat("attn_ob", suffix_), tensors),
-        griffin(
-            {.linear_x_w = {Concat("gr_lin_x_w", suffix_), tensors},
-             .linear_x_biases = {Concat("gr_lin_x_b", suffix_), tensors},
-             .linear_y_w = {Concat("gr_lin_y_w", suffix_), tensors},
-             .linear_y_biases = {Concat("gr_lin_y_b", suffix_), tensors},
-             .linear_out_w = {Concat("gr_lin_out_w", suffix_), tensors},
-             .linear_out_biases = {Concat("gr_lin_out_b", suffix_), tensors},
-             .conv_w = {Concat("gr_conv_w", suffix_), tensors},
-             .conv_biases = {Concat("gr_conv_b", suffix_), tensors},
-             .gate_w = {Concat("gr_gate_w", suffix_), tensors},
-             .gate_biases = {Concat("gr_gate_b", suffix_), tensors},
-             .a = {Concat("gr_a", suffix_), tensors}}),
+      : finder_(LayerSuffix(layer_idx), tensors),
+        qkv_einsum_w(finder_("qkv_ein")),
+        qkv_einsum_w1(finder_("qkv1_w")),
+        qkv_einsum_w2(finder_("qkv2_w")),
+        attention_output_biases(finder_("attn_ob")),
+        griffin({.linear_x_w = finder_("gr_lin_x_w"),
+                 .linear_x_biases = finder_("gr_lin_x_b"),
+                 .linear_y_w = finder_("gr_lin_y_w"),
+                 .linear_y_biases = finder_("gr_lin_y_b"),
+                 .linear_out_w = finder_("gr_lin_out_w"),
+                 .linear_out_biases = finder_("gr_lin_out_b"),
+                 .conv_w = finder_("gr_conv_w"),
+                 .conv_biases = finder_("gr_conv_b"),
+                 .gate_w = finder_("gr_gate_w"),
+                 .gate_biases = finder_("gr_gate_b"),
+                 .a = finder_("gr_a")}),
         // MultiHeadDotProductAttention.
-        vit({.attn_out_w = {Concat("attn_out_w", suffix_), tensors},
-             .attn_out_b = {Concat("attn_out_b", suffix_), tensors},
-             .qkv_einsum_w = {Concat("qkv_ein_w", suffix_), tensors},
-             .qkv_einsum_b = {Concat("qkv_ein_b", suffix_), tensors},
-             .linear_0_w = {Concat("linear_0_w", suffix_), tensors},
-             .linear_0_b = {Concat("linear_0_b", suffix_), tensors},
-             .linear_1_w = {Concat("linear_1_w", suffix_), tensors},
-             .linear_1_b = {Concat("linear_1_b", suffix_), tensors},
-             .layer_norm_0_bias = {Concat("ln_0_bias", suffix_), tensors},
-             .layer_norm_0_scale = {Concat("ln_0_scale", suffix_), tensors},
-             .layer_norm_1_bias = {Concat("ln_1_bias", suffix_), tensors},
-             .layer_norm_1_scale = {Concat("ln_1_scale", suffix_), tensors}}),
-        gating_einsum_w(Concat("gating_ein", suffix_), tensors),
-        gating_einsum_w1(Concat("gating1_w", suffix_), tensors),
-        gating_einsum_w2(Concat("gating2_w", suffix_), tensors),
-        linear_w(Concat("linear_w", suffix_), tensors),
-        pre_attention_norm_scale(Concat("pre_att_ns", suffix_), tensors),
-        pre_ffw_norm_scale(Concat("pre_ff_ns", suffix_), tensors),
-        post_attention_norm_scale(Concat("post_att_ns", suffix_), tensors),
-        post_ffw_norm_scale(Concat("post_ff_ns", suffix_), tensors),
-        ffw_gating_biases(Concat("ffw_gat_b", suffix_), tensors),
-        ffw_output_biases(Concat("ffw_out_b", suffix_), tensors),
+        vit({.attn_out_w = finder_("attn_out_w"),
+             .attn_out_b = finder_("attn_out_b"),
+             .qkv_einsum_w = finder_("qkv_ein_w"),
+             .qkv_einsum_b = finder_("qkv_ein_b"),
+             .linear_0_w = finder_("linear_0_w"),
+             .linear_0_b = finder_("linear_0_b"),
+             .linear_1_w = finder_("linear_1_w"),
+             .linear_1_b = finder_("linear_1_b"),
+             .layer_norm_0_bias = finder_("ln_0_bias"),
+             .layer_norm_0_scale = finder_("ln_0_scale"),
+             .layer_norm_1_bias = finder_("ln_1_bias"),
+             .layer_norm_1_scale = finder_("ln_1_scale")}),
+        gating_einsum_w(finder_("gating_ein")),
+        gating_einsum_w1(finder_("gating1_w")),
+        gating_einsum_w2(finder_("gating2_w")),
+        linear_w(finder_("linear_w")),
+        pre_attention_norm_scale(finder_("pre_att_ns")),
+        pre_ffw_norm_scale(finder_("pre_ff_ns")),
+        post_attention_norm_scale(finder_("post_att_ns")),
+        post_ffw_norm_scale(finder_("post_ff_ns")),
+        ffw_gating_biases(finder_("ffw_gat_b")),
+        ffw_output_biases(finder_("ffw_out_b")),
 
-        attn_vec_einsum_w(Concat("att_ein", suffix_), tensors),
-        att_weights(Concat("att_w", suffix_), tensors),
+        attn_vec_einsum_w(finder_("att_ein")),
+        att_weights(finder_("att_w")),
 
-        key_norm_scale(Concat("key_norm", suffix_), tensors),
-        query_norm_scale(Concat("query_norm", suffix_), tensors),
+        key_norm_scale(finder_("key_norm")),
+        query_norm_scale(finder_("query_norm")),
 
         layer_config(config) {
   }
   ~LayerWeightsPtrs() = default;
 
-  const std::string suffix_;
-
-  // If weights are f32, also f32; otherwise at least bf16. Useful for ops that
-  // do not yet support smaller compressed types, or require at least bf16. When
-  // weights are f32, we also want such tensors to be f32.
-  // If weights are complex, this is also complex.
-  using WeightF32OrBF16 =
-      hwy::If<hwy::IsSame<Weight, std::complex<double>>(), std::complex<double>,
-              hwy::If<hwy::IsSame<Weight, double>(), double,
-                      hwy::If<IsF32<Weight>(), float, BF16>>>;
+  const MatFinder finder_;
 
   // Files either have qkv_einsum_w with 2 stacked matrices or separate
   // w1/w2 tensors. Fixup ensures w1/w2 are ready for use by gemma-inl.h.
-  MatPtrT<Weight> qkv_einsum_w;
-  MatPtrT<Weight> qkv_einsum_w1;
-  MatPtrT<Weight> qkv_einsum_w2;
+  MatPtr qkv_einsum_w;
+  MatPtr qkv_einsum_w1;
+  MatPtr qkv_einsum_w2;
   MatPtrT<float> attention_output_biases;
 
   struct {
-    MatPtrT<Weight> linear_x_w;
+    MatPtr linear_x_w;
     MatPtrT<float> linear_x_biases;
-    MatPtrT<Weight> linear_y_w;
+    MatPtr linear_y_w;
     MatPtrT<float> linear_y_biases;
-    MatPtrT<Weight> linear_out_w;
+    MatPtr linear_out_w;
     MatPtrT<float> linear_out_biases;
     MatPtrT<float> conv_w;
     MatPtrT<float> conv_biases;
-    MatPtrT<Weight> gate_w;
+    MatPtr gate_w;
     MatPtrT<float> gate_biases;
     MatPtrT<float> a;
   } griffin;
 
   struct {
     // MultiHeadDotProductAttention.
-    MatPtrT<WeightF32OrBF16> attn_out_w;
+    MatPtr attn_out_w;  // at least BF16.
     MatPtrT<float> attn_out_b;
-    MatPtrT<WeightF32OrBF16> qkv_einsum_w;
+    MatPtr qkv_einsum_w;  // at least BF16.
     MatPtrT<float> qkv_einsum_b;
     // MlpBlock.
-    MatPtrT<WeightF32OrBF16> linear_0_w;
+    MatPtr linear_0_w;  // at least BF16.
     MatPtrT<float> linear_0_b;
-    MatPtrT<WeightF32OrBF16> linear_1_w;
+    MatPtr linear_1_w;  // at least BF16.
     MatPtrT<float> linear_1_b;
     // LayerNorm.
-    MatPtrT<WeightF32OrBF16> layer_norm_0_bias;
-    MatPtrT<WeightF32OrBF16> layer_norm_0_scale;
-    MatPtrT<WeightF32OrBF16> layer_norm_1_bias;
-    MatPtrT<WeightF32OrBF16> layer_norm_1_scale;
+    MatPtr layer_norm_0_bias;   // at least BF16.
+    MatPtr layer_norm_0_scale;  // at least BF16.
+    MatPtr layer_norm_1_bias;   // at least BF16.
+    MatPtr layer_norm_1_scale;  // at least BF16.
   } vit;
 
   // Files either have gating_einsum_w with 2 stacked matrices or separate
-  // w1/w2 tensors. Fixup ensures w1/w2 are ready for use by gemma-inl.h.
-  MatPtrT<Weight> gating_einsum_w;
-  MatPtrT<Weight> gating_einsum_w1;
-  MatPtrT<Weight> gating_einsum_w2;
-  MatPtrT<Weight> linear_w;
-  // > W8 is likely helpful.
-  MatPtrT<WeightF32OrBF16> pre_attention_norm_scale;
-  MatPtrT<WeightF32OrBF16> pre_ffw_norm_scale;
-  MatPtrT<WeightF32OrBF16> post_attention_norm_scale;
-  MatPtrT<WeightF32OrBF16> post_ffw_norm_scale;
+  // w1/w2 tensors. `Fixup` ensures w1/w2 are ready for use by gemma-inl.h.
+  MatPtr gating_einsum_w;
+  MatPtr gating_einsum_w1;
+  MatPtr gating_einsum_w2;
+  MatPtr linear_w;
+  MatPtr pre_attention_norm_scale;   // at least BF16.
+  MatPtr pre_ffw_norm_scale;         // at least BF16.
+  MatPtr post_attention_norm_scale;  // at least BF16.
+  MatPtr post_ffw_norm_scale;        // at least BF16.
 
   MatPtrT<float> ffw_gating_biases;
   MatPtrT<float> ffw_output_biases;
 
-  MatPtrT<Weight> attn_vec_einsum_w;  // Use att_weights instead of this.
-  MatPtrT<Weight> att_weights;        // Use this instead of attn_vec_einsum_w.
+  MatPtr attn_vec_einsum_w;  // Use att_weights instead of this.
+  MatPtr att_weights;        // Use this instead of attn_vec_einsum_w.
 
-  MatPtrT<WeightF32OrBF16> key_norm_scale;
-  MatPtrT<WeightF32OrBF16> query_norm_scale;
+  MatPtr key_norm_scale;    // at least BF16.
+  MatPtr query_norm_scale;  // at least BF16.
 
   const LayerConfig& layer_config;
 
@@ -217,8 +212,8 @@ struct LayerWeightsPtrs {
   // can also iterate over pairs or triples of tensors for `AdamUpdateMV`.
   // Public because also called by `WeightsPtrs`.
   template <class Func>
-  void ForEachTensor(LayerWeightsPtrs<Weight>* other1,
-                     LayerWeightsPtrs<Weight>* other2, Func func) {
+  void ForEachTensor(LayerWeightsPtrs* other1, LayerWeightsPtrs* other2,
+                     Func func) {
     if (layer_config.type == LayerAttentionType::kVit) {
       // MHA.
       func(TENSOR_ARGS(vit.attn_out_w, kMustRead));
@@ -301,208 +296,98 @@ struct LayerWeightsPtrs {
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
-  void Fixup(std::vector<MatOwner>& mat_owners) {
-    InitAttWeights(mat_owners);
-    SplitW1();
-    SplitAttW1();
-  }
+  void Fixup(std::vector<MatOwner>& mat_owners);
 
  private:
   // Copies att_weights from `attn_vec_einsum_w`.
-  void InitAttWeights(std::vector<MatOwner>& mat_owners) {
-    // We only use this tensor for Gemma layers.
-    if (layer_config.type != LayerAttentionType::kGemma) return;
-
-    // Files must have one or the other.
-    HWY_ASSERT(attn_vec_einsum_w.HasPtr() ^ att_weights.HasPtr());
-    // Done if we already read the transposed tensor.
-    if (att_weights.HasPtr() && !attn_vec_einsum_w.HasPtr()) return;
-
-    // NUQ is handled by a specialization in weights.cc.
-    HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
-
-    const size_t model_dim = layer_config.model_dim;
-    const size_t heads = layer_config.heads;
-    const size_t qkv_dim = layer_config.qkv_dim;
-
-    // Reshape [heads, model_dim, qkv_dim] to [model_dim, heads * qkv_dim].
-    HWY_ASSERT(att_weights.GetType() == attn_vec_einsum_w.GetType());
-    HWY_ASSERT(att_weights.Rows() == model_dim);
-    HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
-    HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
-    HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
-
-    {
-      static std::mutex m;
-      std::lock_guard<std::mutex> lock(m);
-      mat_owners.push_back(MatOwner());
-      mat_owners.back().AllocateFor(att_weights, MatPadding::kOdd);
-    }
-
-    const size_t T_bytes = att_weights.ElementBytes();
-    for (size_t m = 0; m < model_dim; ++m) {
-      uint8_t* HWY_RESTRICT out_row =
-          reinterpret_cast<uint8_t*>(att_weights.Row(m));
-      for (size_t h = 0; h < heads; ++h) {
-        hwy::CopyBytes(attn_vec_einsum_w.Row(h * model_dim + m),
-                       out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
-      }
-    }
-    att_weights.SetScale(attn_vec_einsum_w.Scale());
-  }
+  void InitAttWeights(std::vector<MatOwner>& mat_owners);
 
   // For FFN. Fast, only updates pointers.
-  void SplitW1() {
-    // Used for Gemma and Griffin layers; FFWVit uses different tensors.
-    if (layer_config.type == LayerAttentionType::kVit) return;
-
-    // Files have both or neither of w1 and w2.
-    HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
-    // w is mutually exclusive with w1 and w2 in the file.
-    HWY_ASSERT(gating_einsum_w.HasPtr() ^ gating_einsum_w1.HasPtr());
-    // Done if we already read split tensors. Note that they are not
-    // necessarily the same type.
-    if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
-
-    const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
-    HWY_ASSERT(gating_einsum_w.Rows() == 2 * ff_hidden_dim);
-    HWY_ASSERT(gating_einsum_w1.Rows() == ff_hidden_dim);
-    HWY_ASSERT(gating_einsum_w2.Rows() == ff_hidden_dim);
-    // Cols are the model_dim but we don't have ModelConfig here.
-    HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
-    HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
-
-    const size_t stride = gating_einsum_w.Stride();
-    gating_einsum_w1.SetPtr(gating_einsum_w.Row(0), stride);
-    gating_einsum_w2.SetPtr(gating_einsum_w.Row(ff_hidden_dim), stride);
-    gating_einsum_w1.SetType(gating_einsum_w.GetType());
-    gating_einsum_w2.SetType(gating_einsum_w.GetType());
-    gating_einsum_w1.SetScale(gating_einsum_w.Scale());
-    gating_einsum_w2.SetScale(gating_einsum_w.Scale());
-    gating_einsum_w.SetPtr(nullptr, gating_einsum_w.Cols());
-  }
+  void SplitW1();
 
   // For attention, which might not have a w2. Fast, only updates pointers.
-  void SplitAttW1() {
-    // We only use this tensor for Gemma layers.
-    if (layer_config.type != LayerAttentionType::kGemma) return;
-
-    // w is mutually exclusive with w1 in the file.
-    HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
-    // Done if we already read split tensors. Note that w2 does not exist for
-    // MHA, and otherwise might not be the same type.
-    if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
-
-    const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
-    const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
-
-    HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
-    HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
-    HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
-    // Cols are the model_dim but we don't have ModelConfig here.
-    HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
-    HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
-
-    const size_t stride = qkv_einsum_w.Stride();
-    qkv_einsum_w1.SetPtr(qkv_einsum_w.Row(0), stride);
-    qkv_einsum_w2.SetPtr(qkv_einsum_w.Row(w1_rows), stride);
-    qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
-    qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
-    qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
-    qkv_einsum_w2.SetScale(qkv_einsum_w.Scale());
-    qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
-  }
+  void SplitAttW1();
 };
 
 // Holds layer-independent weight metadata and pointers plus per-layer
-// `LayerWeightsPtrs`. The tensor data is owned by `WeightsOwner`. As with
-// `LayerWeightsPtrs`, this class could be type-erased: member functions do not
-// actually use the `Weight` template argument. The template does allow user
-// code to dispatch only once. However, most tensors are large enough that
-// dispatch at each usage would be feasible.
+// `LayerWeightsPtrs`. The tensor data is owned by `WeightsOwner`.
 // TODO: move `gemma-inl.h` toward dispatch at each usage.
 // TODO: rename to WeightsPtrs.
-template <class Weight>
 struct ModelWeightsPtrs {
-  using WeightT = Weight;
-
   explicit ModelWeightsPtrs(const ModelConfig& config)
-      : tensors_(config),
-        // No suffix, these are per-model.
-        embedder_input_embedding("c_embedding", tensors_),
-        final_norm_scale("c_final_norm", tensors_),
-        vit_encoder_norm_bias("enc_norm_bias", tensors_),
-        vit_encoder_norm_scale("enc_norm_scale", tensors_),
-        vit_img_embedding_bias("img_emb_bias", tensors_),
-        vit_img_embedding_kernel("img_emb_kernel", tensors_),
-        vit_img_pos_embedding("img_pos_emb", tensors_),
-        vit_img_head_bias("img_head_bias", tensors_),
-        vit_img_head_kernel("img_head_kernel", tensors_),
-        mm_embed_norm("mm_embed_norm", tensors_),
-        weights_config(config) {
-    c_layers.reserve(config.layer_configs.size());
-    for (size_t idx = 0; idx < config.layer_configs.size(); ++idx) {
-      const LayerConfig& layer_config = config.layer_configs[idx];
+      : config_(config),
+        tensors_(config_),
+        finder_("", tensors_),  // no suffix because these are per-model.
+        embedder_input_embedding(finder_("c_embedding")),
+        final_norm_scale(finder_("c_final_norm")),
+        vit_encoder_norm_bias(finder_("enc_norm_bias")),
+        vit_encoder_norm_scale(finder_("enc_norm_scale")),
+        vit_img_embedding_bias(finder_("img_emb_bias")),
+        vit_img_embedding_kernel(finder_("img_emb_kernel")),
+        vit_img_pos_embedding(finder_("img_pos_emb")),
+        vit_img_head_bias(finder_("img_head_bias")),
+        vit_img_head_kernel(finder_("img_head_kernel")),
+        mm_embed_norm(finder_("mm_embed_norm")),
+        c_layers() {
+    c_layers.reserve(config_.layer_configs.size());
+    for (size_t idx = 0; idx < config_.layer_configs.size(); ++idx) {
+      const LayerConfig& layer_config = config_.layer_configs[idx];
       c_layers.emplace_back(idx, layer_config, tensors_);
     }
-    for (size_t idx = 0; idx < config.vit_config.layer_configs.size(); ++idx) {
-      const LayerConfig& layer_config = config.vit_config.layer_configs[idx];
+    for (size_t idx = 0; idx < config_.vit_config.layer_configs.size(); ++idx) {
+      const LayerConfig& layer_config = config_.vit_config.layer_configs[idx];
       vit_layers.emplace_back(idx, layer_config, tensors_);
     }
   }
 
   ~ModelWeightsPtrs() = default;
-  // = F32 if weights are F32, else BF16.
-  using WeightF32OrBF16 = typename LayerWeightsPtrs<Weight>::WeightF32OrBF16;
 
-  // Passed to all  `MatPtrT` initializers, hence must be initialized first.
+  const ModelConfig& config_;
+  // Passed to finder_, hence must be initialized first.
   const TensorInfoRegistry tensors_;
+  const MatFinder finder_;
 
   // TODO: switch to SFP?
-  MatPtrT<WeightF32OrBF16> embedder_input_embedding;
-  MatPtrT<WeightF32OrBF16> final_norm_scale;
+  MatPtr embedder_input_embedding;
+  MatPtr final_norm_scale;  // at least BF16.
 
   // Vit parts.
-  MatPtrT<WeightF32OrBF16> vit_encoder_norm_bias;
-  MatPtrT<WeightF32OrBF16> vit_encoder_norm_scale;
+  MatPtr vit_encoder_norm_bias;   // at least BF16.
+  MatPtr vit_encoder_norm_scale;  // at least BF16.
   MatPtrT<float> vit_img_embedding_bias;
-  MatPtrT<WeightF32OrBF16> vit_img_embedding_kernel;
-  MatPtrT<float> vit_img_pos_embedding;
+  MatPtr vit_img_embedding_kernel;  // at least BF16.
+  MatPtr vit_img_pos_embedding;     // F32?
   // The head maps from VitConfig::model_dim (Vit final layer) to
   // model_dim (LLM input).
   MatPtrT<float> vit_img_head_bias;
-  MatPtrT<WeightF32OrBF16> vit_img_head_kernel;
+  MatPtr vit_img_head_kernel;  // at least BF16.
 
-  MatPtrT<WeightF32OrBF16> mm_embed_norm;
+  MatPtr mm_embed_norm;  // at least BF16.
 
-  const ModelConfig& weights_config;
+  std::vector<LayerWeightsPtrs> c_layers;
+  std::vector<LayerWeightsPtrs> vit_layers;
 
-  std::vector<LayerWeightsPtrs<Weight>> c_layers;
-  std::vector<LayerWeightsPtrs<Weight>> vit_layers;
-
-  const LayerWeightsPtrs<Weight>* GetLayer(size_t layer) const {
+  const LayerWeightsPtrs* GetLayer(size_t layer) const {
     return &c_layers[layer];
   }
-  LayerWeightsPtrs<Weight>* GetLayer(size_t layer) { return &c_layers[layer]; }
-  const LayerWeightsPtrs<Weight>* VitLayer(size_t layer) const {
+  LayerWeightsPtrs* GetLayer(size_t layer) { return &c_layers[layer]; }
+  const LayerWeightsPtrs* VitLayer(size_t layer) const {
     return &vit_layers[layer];
   }
-  LayerWeightsPtrs<Weight>* VitLayer(size_t layer) {
-    return &vit_layers[layer];
-  }
+  LayerWeightsPtrs* VitLayer(size_t layer) { return &vit_layers[layer]; }
 
   // Called via `CallT`. `other1` and `other2` are usually null, but can be
   // used to copy from another set of weights. Public because called by tests
   // and `WeightsOwner`.
   template <class Func>
-  void ForEachTensor(ModelWeightsPtrs<Weight>* other1,
-                     ModelWeightsPtrs<Weight>* other2, Func func) {
-    LayerWeightsPtrs<Weight>* other_layer1 = nullptr;
-    LayerWeightsPtrs<Weight>* other_layer2 = nullptr;
+  void ForEachTensor(ModelWeightsPtrs* other1, ModelWeightsPtrs* other2,
+                     Func func) {
+    LayerWeightsPtrs* other_layer1 = nullptr;
+    LayerWeightsPtrs* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
 
-    if (!weights_config.vit_config.layer_configs.empty()) {  // Vit parts.
+    if (!config_.vit_config.layer_configs.empty()) {  // Vit parts.
       func(TENSOR_ARGS(vit_encoder_norm_bias, kMustRead));
       func(TENSOR_ARGS(vit_encoder_norm_scale, kMustRead));
       func(TENSOR_ARGS(vit_img_embedding_bias, kMustRead));
@@ -511,7 +396,7 @@ struct ModelWeightsPtrs {
       func(TENSOR_ARGS(vit_img_head_bias, kMustRead));
       func(TENSOR_ARGS(vit_img_head_kernel, kMustRead));
 
-      if (weights_config.wrapping == PromptWrapping::GEMMA_VLM) {
+      if (config_.wrapping == PromptWrapping::GEMMA_VLM) {
         func(TENSOR_ARGS(mm_embed_norm, kMustRead));
       }
     }
@@ -522,8 +407,7 @@ struct ModelWeightsPtrs {
       GetLayer(layer_idx)->ForEachTensor(other_layer1, other_layer2, func);
     }
 
-    HWY_ASSERT(weights_config.vit_config.layer_configs.empty() ==
-               vit_layers.empty());
+    HWY_ASSERT(config_.vit_config.layer_configs.empty() == vit_layers.empty());
     for (size_t layer_idx = 0; layer_idx < vit_layers.size(); ++layer_idx) {
       HWY_ASSERT(vit_layers[layer_idx].layer_config.type ==
                  LayerAttentionType::kVit);
@@ -534,87 +418,24 @@ struct ModelWeightsPtrs {
   }  // `ForEachTensor`
 
   // Zero-initializes only the allocated tensors in `*this`.
-  void ZeroInit() {
-    ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
-      if (!t.mat.HasPtr()) return;
-      gcpp::ZeroInit(t.mat);
-    });
-  }
-
+  void ZeroInit();
   // Copies only the allocated tensors in `*this` from tensors in `other`.
-  void CopyFrom(const ModelWeightsPtrs<Weight>& other) {
-    ForEachTensor(const_cast<ModelWeightsPtrs<Weight>*>(&other), nullptr,
-                  [](const TensorArgs& t) {
-                    if (!t.mat.HasPtr()) return;
-                    HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
-                    CopyMat(*t.other_mat1, t.mat);
-                  });
-  }
-
-  // For reshaping file tensors to the shape expected by the code. This would
-  // ideally already happen in the importer. Must be called after reading and
-  // updating the attention weights.
-  void Fixup(std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool) {
-    pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-      GetLayer(layer)->Fixup(mat_owners);
-    });
-
-    pool.Run(0, vit_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-      VitLayer(layer)->Fixup(mat_owners);
-    });
-  }
-};  // `WeightsPtrs`
-#undef TENSOR_ARGS
-
-// Type-erased facade for `WeightsPtrs<T>`, stored inside the non-template
-// `Gemma`. Also owns the underlying memory.
-class WeightsOwner {
- public:
-  // `weight_type` is obtained from `ModelConfig` in `ModelStore`.
-  WeightsOwner(Type weight_type) : weight_type_(weight_type) {}
+  void CopyFrom(const ModelWeightsPtrs& other);
 
   // Reads tensor data from `BlobStore` or aborts on error. `map` is a user
   // override for whether to map blobs or read them.
   void ReadFromBlobs(const ModelStore& model, BlobReader& reader, Tristate map,
-                     hwy::ThreadPool& pool);
-
-  // Calls `func(std::unique_ptr<WeightsPtrs<T>>&, args)`. `func` typically
-  // calls `ForEachTensor`.
-  template <class Func, typename... TArgs>
-  decltype(auto) CallT(const Func& func, TArgs&&... args) const {
-    if (HWY_LIKELY(weight_type_ == Type::kSFP)) {
-      return func(sfp_weights_, std::forward<TArgs>(args)...);
-    } else if (weight_type_ == Type::kNUQ) {
-      return func(nuq_weights_, std::forward<TArgs>(args)...);
-    } else if (weight_type_ == Type::kBF16) {
-      return func(bf16_weights_, std::forward<TArgs>(args)...);
-    }
-    return HWY_ABORT("Unsupported weight type %s.", TypeName(weight_type_));
-  }
-
-  // For writers:
+                     std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
 
   // Adds one blob for each tensor's data and returns all serialized MatPtr.
   std::vector<uint32_t> AddTensorDataToWriter(BlobWriter& writer) const;
 
  private:
-  Type weight_type_;
-
-  // Allocates `*_weights_`, but not yet the tensors inside. This is split out
-  // of `CallT` so that can be const.
-  void AllocatePointer(const ModelConfig& config);
-
-  // Called by `ReadFromBlobs`.
-  void Fixup(hwy::ThreadPool& pool);
-
-  // Only one is non-null, determined by `weight_type_`.
-  std::unique_ptr<ModelWeightsPtrs<BF16>> bf16_weights_;
-  std::unique_ptr<ModelWeightsPtrs<SfpStream>> sfp_weights_;
-  std::unique_ptr<ModelWeightsPtrs<NuqStream>> nuq_weights_;
-
-  // Owns the memory referenced by all `MatPtr`.
-  std::vector<MatOwner> mat_owners_;
-};
+  // For reshaping file tensors to the shape expected by the code. This would
+  // ideally already happen in the importer. Called by ReadFromBlobs.
+  void Fixup(std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
+};  // `ModelWeightsPtrs`
+#undef TENSOR_ARGS
 
 }  // namespace gcpp
 

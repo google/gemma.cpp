@@ -59,6 +59,8 @@ class BlobReader {
   const File& file() const { return *file_; }
   uint64_t file_bytes() const { return file_bytes_; }
 
+  void CloseFile() { file_.reset(); }
+
   const std::vector<std::string>& Keys() const { return keys_; }
 
   const BlobRange& Range(size_t key_idx) const {
@@ -99,7 +101,7 @@ class BlobReader {
   }
 
  private:
-  const std::unique_ptr<File> file_;
+  std::unique_ptr<File> file_;
   const uint64_t file_bytes_;
 
   std::vector<std::string> keys_;

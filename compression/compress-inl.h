@@ -556,7 +556,7 @@ HWY_INLINE void Decompress2(DRaw d, const PackedSpan<Packed>& packed,
 // Decompresses from any type of `packed`, starting at (any) `packed_ofs`, to
 // (any) `num` elements in `raw`, then appends `[0, hn::Lanes(d))` zeroes as
 // required to round `num` up to one vector, if it is not already. The caller is
-// responsible for scaling `raw` to the original range because `EmbedToken`
+// responsible for scaling `raw` to the original range because `EmbedMMToken`
 // also wants to scale the decompressed elements.
 // `TRaw` can be `float/BF16`, or `double` if `Packed` is `float`.
 template <class DRaw, typename Packed, typename TRaw = hn::TFromD<DRaw>>

@@ -18,7 +18,7 @@
 
 #include <stdio.h>
 
-#include <memory>
+#include <vector>
 
 // IWYU pragma: begin_exports
 #include "gemma/activations.h"
@@ -113,11 +113,9 @@ class Gemma {
   // TODO: rename to Config()
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
-  const WeightsOwner& Weights() const { return weights_; }
+  const ModelWeightsPtrs& Weights() const { return weights_; }
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
 
-  // For tests.
-  WeightsOwner& MutableWeights() { return weights_; }
   void Save(const Path& weights_path, hwy::ThreadPool& pool) const;
 
   // `pos` is the position in the KV cache. Users are responsible for
@@ -154,9 +152,10 @@ class Gemma {
 
  private:
   MatMulEnv& env_;
-  std::unique_ptr<BlobReader> reader_;  // null for second ctor
+  BlobReader reader_;
   ModelStore model_;
-  WeightsOwner weights_;
+  std::vector<MatOwner> mat_owners_;
+  ModelWeightsPtrs weights_;
   GemmaChatTemplate chat_template_;
 };
 

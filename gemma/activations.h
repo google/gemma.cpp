@@ -83,6 +83,7 @@ struct Activations {
 
     // For MatMul outputs, precompute their row pointers.
     const auto init_row_ptrs = [&](MatPtrT<float>& mat) {
+      if (!mat.HasPtr()) return;
       row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(mat.Rows()));
       uint8_t** ptrs = row_ptrs.back().get();
       for (size_t r = 0; r < mat.Rows(); ++r) {
