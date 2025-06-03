@@ -131,6 +131,13 @@ class MatPtr : public IFields {
   Type GetType() const { return type_; }
   void SetType(Type type) {
     type_ = type;
+    if (type == Type::kUnknown) {
+      // Temporary invalid state. Happens during weights.h construction, before
+      // the ForEachTensor that loads them and sets the type.
+      element_bytes_ = 0;
+      num_elements_ = 0;
+      return;
+    }
     element_bytes_ = static_cast<uint32_t>(hwy::DivCeil(TypeBits(type), 8));
     num_elements_ = static_cast<uint32_t>(ComputeNumElements(type, Extents()));
     HWY_DASSERT(0 != element_bytes_ && element_bytes_ <= 16);
@@ -244,15 +251,17 @@ class MatPtrT : public MatPtr {
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}
-  // Retrieves shape by name via `TensorInfo` from `TensorInfoRegistry`. This is
-  // not a factory function because `weights.h` initializes members of type
-  // `MatPtrT<T>`, and `T` cannot be inferred at compile time from arguments.
-  MatPtrT(const std::string& name, const TensorInfoRegistry& info)
-      : MatPtrT<MatT>(name.c_str(), ExtentsFromInfo(info.Find(name))) {}
 
   // Copying allowed because the metadata is small.
   MatPtrT(const MatPtr& other) : MatPtr(other) {
-    HWY_ASSERT(other.GetType() == TypeEnum<MatT>());
+    // Happens in weights.h when constructing via MatFinder, which does not
+    // know the type. Setting the type here avoids having to keep the
+    // initializer list and member type in sync.
+    if (GetType() == Type::kUnknown) {
+      SetType(TypeEnum<MatT>());
+    } else {
+      HWY_ASSERT(other.GetType() == TypeEnum<MatT>());
+    }
   }
   MatPtrT& operator=(const MatPtr& other) {
     MatPtr::operator=(other);
@@ -289,27 +298,27 @@ class MatPtrT : public MatPtr {
   }
 };
 
-// Calls `func` with a dynamic_cast of `MatPtr` to `MatPtrT<T>`, plus the
-// optional `args`. This supports all types used as weights.
+// Calls `func` with `MatPtrT<T>*` plus the optional `args`. This supports all
+// types used as weights.
 template <class Func, typename... Args>
 decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                             Args&&... args) {
 #if GEMMA_ENABLE_NUQ
   if (base->GetType() == Type::kNUQ) {
-    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<NuqStream> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   }
 #endif  // GEMMA_ENABLE_NUQ
 
   if (base->GetType() == Type::kF32) {
-    return func(dynamic_cast<const MatPtrT<float>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<float> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else if (base->GetType() == Type::kBF16) {
-    return func(dynamic_cast<const MatPtrT<BF16>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<BF16> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else if (base->GetType() == Type::kSFP) {
-    return func(dynamic_cast<const MatPtrT<SfpStream>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<SfpStream> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
   }
@@ -323,24 +332,24 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
 
 #if GEMMA_ENABLE_NUQ
   if (base1->GetType() == Type::kNUQ) {
-    return func(dynamic_cast<const MatPtrT<NuqStream>*>(base1),
-                dynamic_cast<const MatPtrT<NuqStream>*>(base2),
-                std::forward<Args>(args)...);
+    const MatPtrT<NuqStream> mat1(*base1);
+    const MatPtrT<NuqStream> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
   }
 #endif  // GEMMA_ENABLE_NUQ
 
   if (base1->GetType() == Type::kF32) {
-    return func(dynamic_cast<const MatPtrT<float>*>(base1),
-                dynamic_cast<const MatPtrT<float>*>(base2),
-                std::forward<Args>(args)...);
+    const MatPtrT<float> mat1(*base1);
+    const MatPtrT<float> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else if (base1->GetType() == Type::kBF16) {
-    return func(dynamic_cast<const MatPtrT<BF16>*>(base1),
-                dynamic_cast<const MatPtrT<BF16>*>(base2),
-                std::forward<Args>(args)...);
+    const MatPtrT<BF16> mat1(*base1);
+    const MatPtrT<BF16> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else if (base1->GetType() == Type::kSFP) {
-    return func(dynamic_cast<const MatPtrT<SfpStream>*>(base1),
-                dynamic_cast<const MatPtrT<SfpStream>*>(base2),
-                std::forward<Args>(args)...);
+    const MatPtrT<SfpStream> mat1(*base1);
+    const MatPtrT<SfpStream> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));
   }

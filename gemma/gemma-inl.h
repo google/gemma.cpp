@@ -53,18 +53,17 @@
 #include "ops/matvec-inl.h"
 #include "ops/ops-inl.h"
 
-#ifndef GEMMA_TYPE
-#if HWY_IDE
-// Provide a definition so the IDE does not complain.
-#define GEMMA_TYPE float
-#else
-#error "Only include from instantiations/*.cc, which must define GEMMA_TYPE"
-#endif  // HWY_IDE
-#endif  // GEMMA_TYPE
-
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
+
+template <typename TA, typename TC>
+MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
+                     const float* HWY_RESTRICT add, MatMulEnv& env,
+                     MatPtrT<TC>& C) {
+  return CallUpcasted(
+      &B, [&](const auto* B_t) { return MatMulStatic(A, *B_t, add, env, C); });
+}
 
 // Different functions use different naming conventions for the number of
 // tokens. Functions that are query-independent, such as RMSNorm*, call the
@@ -72,12 +71,12 @@ namespace HWY_NAMESPACE {
 // `Attention`, use separate `num_tokens` and `num_queries`. `num_tokens` is the
 // number of tokens from one query: 1 for decode, otherwise prefill_tbatch_size.
 
-template <typename T>
-HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
-                                   size_t num_tokens, size_t griffin_layer,
-                                   Activations& activations,
-                                   const LayerWeightsPtrs<T>* layer_weights,
-                                   const KVCaches& kv_caches) {
+static HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
+                                          size_t num_tokens,
+                                          size_t griffin_layer,
+                                          Activations& activations,
+                                          const LayerWeightsPtrs* layer_weights,
+                                          const KVCaches& kv_caches) {
   PROFILER_ZONE("Gen.Griffin");
   hwy::ThreadPool& pool = activations.env->ctx.pools.Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
@@ -101,17 +100,21 @@ HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
   // TODO: MatMul
   HWY_DASSERT(activations.griffin_y.Rows() == activations.griffin_x.Rows());
   HWY_DASSERT(num_interleaved == activations.griffin_y.Rows());
-  for (size_t r = 0; r < num_interleaved; ++r) {
-    float* HWY_RESTRICT y = activations.griffin_y.Row(r);
-    float* HWY_RESTRICT x = activations.griffin_x.Row(r);
-    TwoMatVecAdd(layer_weights->griffin.linear_x_w,
-                 layer_weights->griffin.linear_y_w, 0, model_dim, model_dim,
-                 activations.pre_att_rms_out.Row(r),
-                 /*add0=*/layer_weights->griffin.linear_x_biases.PackedScale1(),
-                 /*add1=*/layer_weights->griffin.linear_y_biases.PackedScale1(),
-                 /*out0=*/x, /*out1=*/y, pool);
-    Gelu(y, model_dim);
-  }
+  CallUpcastedSame(
+      &layer_weights->griffin.linear_x_w, &layer_weights->griffin.linear_y_w,
+      [&](const auto* wx, const auto* wy) {
+        for (size_t r = 0; r < num_interleaved; ++r) {
+          float* HWY_RESTRICT y = activations.griffin_y.Row(r);
+          float* HWY_RESTRICT x = activations.griffin_x.Row(r);
+          TwoMatVecAdd(
+              *wx, *wy, 0, model_dim, model_dim,
+              activations.pre_att_rms_out.Row(r),
+              /*add0=*/layer_weights->griffin.linear_x_biases.PackedScale1(),
+              /*add1=*/layer_weights->griffin.linear_y_biases.PackedScale1(),
+              /*out0=*/x, /*out1=*/y, pool);
+          Gelu(y, model_dim);
+        }
+      });
 
   // Conv1D.
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
@@ -165,14 +168,16 @@ HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
 
     pool.Run(0, heads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
       size_t head_offset = head * kHeadDim;
-      TwoOfsMatVecAddLoop(
-          layer_weights->griffin.gate_w, kMatrixSize * head,
-          kMatrixSize * (heads + head), kHeadDim, kHeadDim, x + head_offset,
-          /*add0=*/layer_weights->griffin.gate_biases.PackedScale1() +
-              head_offset,
-          /*add1=*/layer_weights->griffin.gate_biases.PackedScale1() +
-              model_dim + head_offset,
-          /*out0=*/gate_x + head_offset, /*out1=*/a + head_offset);
+      CallUpcasted(&layer_weights->griffin.gate_w, [&](const auto* gate_w) {
+        TwoOfsMatVecAddLoop(
+            *gate_w, kMatrixSize * head, kMatrixSize * (heads + head), kHeadDim,
+            kHeadDim, x + head_offset,
+            /*add0=*/layer_weights->griffin.gate_biases.PackedScale1() +
+                head_offset,
+            /*add1=*/layer_weights->griffin.gate_biases.PackedScale1() +
+                model_dim + head_offset,
+            /*out0=*/gate_x + head_offset, /*out1=*/a + head_offset);
+      });
       Sigmoid(gate_x + head_offset, kHeadDim);
       Sigmoid(a + head_offset, kHeadDim);
       const auto fn_mul = [](D d, hn::Vec<D> x, hn::Vec<D> gate_x)
@@ -206,17 +211,19 @@ HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
 
   // Final linear layer.
   // TODO: MatMul
-  for (size_t r = 0; r < num_interleaved; ++r) {
-    float* HWY_RESTRICT x = activations.griffin_x.Row(r);
-    float* out_ptr = activations.att_sums.Row(r);
-    MatVecAdd(layer_weights->griffin.linear_out_w, 0, model_dim, model_dim, x,
-              layer_weights->griffin.linear_out_biases.PackedScale1(), out_ptr,
-              pool);
-  }
+  CallUpcasted(
+      &layer_weights->griffin.linear_out_w, [&](const auto* weights_t) {
+        for (size_t r = 0; r < num_interleaved; ++r) {
+          float* HWY_RESTRICT x = activations.griffin_x.Row(r);
+          float* out_ptr = activations.att_sums.Row(r);
+          MatVecAdd(*weights_t, 0, model_dim, model_dim, x,
+                    layer_weights->griffin.linear_out_biases.PackedScale1(),
+                    out_ptr, pool);
+        }
+      });
 }  // GriffinRecurrent
 
 // Wrapper class; holds arguments in member variables to shorten call sites.
-template <typename T>
 class GemmaAttention {
   // The attention window usually starts at 0 unless `pos` is larger than
   // the attention window size, then it is `pos` - window_size + 1.
@@ -257,8 +264,8 @@ class GemmaAttention {
 
     // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
     // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
-    MatMulStatic(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w1,
-                 /*add=*/nullptr, *activations_.env, activations_.q);
+    CallMatMul(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w1,
+               /*add=*/nullptr, *activations_.env, activations_.q);
 
     // Set up MatMul row pointers for writing to KV, which consists of
     // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
@@ -279,8 +286,8 @@ class GemmaAttention {
                                      kv_offset);
     }
     kv_rows.AttachRowPtrs(&activations_.env->storage.OutRow(0));
-    MatMulStatic(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w2,
-                 /*add=*/nullptr, *activations_.env, kv_rows);
+    CallMatMul(activations_.pre_att_rms_out, layer_weights_.qkv_einsum_w2,
+               /*add=*/nullptr, *activations_.env, kv_rows);
 
     // Apply positional encodings for K (and copy KV to cache if MHA).
     pool_.Run(0, kv_heads * num_interleaved,
@@ -299,8 +306,11 @@ class GemmaAttention {
 
                 // Apply further processing to K.
                 if (layer_weights_.key_norm_scale.HasPtr()) {
-                  RMSNormInplace(layer_weights_.key_norm_scale.PackedScale1(),
-                                 0, kv, qkv_dim);
+                  CallUpcasted(&layer_weights_.key_norm_scale,
+                               [&](const auto* weights_t) {
+                                 RMSNormInplace(weights_t->PackedScale1(), 0,
+                                                kv, qkv_dim);
+                               });
                 }
                 PositionalEncodingQK(kv, pos, layer_, /*mul=*/1.0f);
               });
@@ -367,8 +377,10 @@ class GemmaAttention {
 
     // Apply rope and scaling to Q.
     if (layer_weights_.query_norm_scale.HasPtr()) {
-      RMSNormInplace(layer_weights_.query_norm_scale.PackedScale1(), 0, q,
-                     qkv_dim);
+      CallUpcasted(&layer_weights_.query_norm_scale,
+                   [&](const auto* weights_t) {
+                     RMSNormInplace(weights_t->PackedScale1(), 0, q, qkv_dim);
+                   });
     }
     PositionalEncodingQK(q, pos, layer_, query_scale);
 
@@ -456,8 +468,8 @@ class GemmaAttention {
         layer_weights_.layer_config.softmax_attn_output_biases
             ? layer_weights_.attention_output_biases.PackedScale1()
             : nullptr;
-    MatMulStatic(activations_.att_out, layer_weights_.att_weights, add,
-                 *activations_.env, activations_.att_sums);
+    CallMatMul(activations_.att_out, layer_weights_.att_weights, add,
+               *activations_.env, activations_.att_sums);
   }
 
  public:
@@ -467,7 +479,7 @@ class GemmaAttention {
   GemmaAttention(const QueriesPos& queries_pos,
                  const QueriesPos& queries_prefix_end, size_t num_tokens,
                  size_t layer, Activations& activations,
-                 const LayerWeightsPtrs<T>* layer_weights,
+                 const LayerWeightsPtrs* layer_weights,
                  const hwy::Divisor& div_seq_len, const KVCaches& kv_caches)
       : GemmaAttention(queries_pos, &queries_prefix_end, num_tokens, layer,
                        activations, layer_weights, div_seq_len, kv_caches,
@@ -475,7 +487,7 @@ class GemmaAttention {
   // Constructor with default initialization to 0 for queries_prefix_end.
   GemmaAttention(const QueriesPos& queries_pos, size_t num_tokens, size_t layer,
                  Activations& activations,
-                 const LayerWeightsPtrs<T>* layer_weights,
+                 const LayerWeightsPtrs* layer_weights,
                  const hwy::Divisor& div_seq_len, const KVCaches& kv_caches)
       : GemmaAttention(queries_pos, nullptr, num_tokens, layer, activations,
                        layer_weights, div_seq_len, kv_caches,
@@ -487,7 +499,7 @@ class GemmaAttention {
   GemmaAttention(const QueriesPos& queries_pos,
                  const QueriesPos& queries_prefix_end, size_t num_tokens,
                  size_t layer, Activations& activations,
-                 const LayerWeightsPtrs<T>* layer_weights,
+                 const LayerWeightsPtrs* layer_weights,
                  const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
                  ThreadingContext& ctx)
       : GemmaAttention(queries_pos, &queries_prefix_end, num_tokens, layer,
@@ -507,7 +519,7 @@ class GemmaAttention {
   GemmaAttention(const QueriesPos& queries_pos,
                  const QueriesPos* queries_prefix_end, size_t num_tokens,
                  size_t layer, Activations& activations,
-                 const LayerWeightsPtrs<T>* layer_weights,
+                 const LayerWeightsPtrs* layer_weights,
                  const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
                  ThreadingContext& ctx)
       : queries_pos_(queries_pos),
@@ -546,21 +558,20 @@ class GemmaAttention {
   const size_t cache_pos_size_ = 0;
 
   Activations& activations_;
-  const LayerWeightsPtrs<T>& layer_weights_;
+  const LayerWeightsPtrs& layer_weights_;
   const hwy::Divisor& div_seq_len_;
   const KVCaches& kv_caches_;
   hwy::ThreadPool& pool_;
 };
 
-template <typename T>
-HWY_NOINLINE void Attention(
+static HWY_NOINLINE void Attention(
     LayerAttentionType type, const QueriesPos& queries_pos,
     const QueriesPos& queries_prefix_end, size_t num_tokens, size_t layer,
-    Activations& activations, const LayerWeightsPtrs<T>* layer_weights,
+    Activations& activations, const LayerWeightsPtrs* layer_weights,
     const hwy::Divisor& div_seq_len, const KVCaches& kv_caches) {
   if (type == LayerAttentionType::kGemma) {
-    GemmaAttention<T>(queries_pos, queries_prefix_end, num_tokens, layer,
-                      activations, layer_weights, div_seq_len, kv_caches)();
+    GemmaAttention(queries_pos, queries_prefix_end, num_tokens, layer,
+                   activations, layer_weights, div_seq_len, kv_caches)();
   } else {
     HWY_DASSERT(type == LayerAttentionType::kGriffinRecurrentBlock);
     // KVCache conv1d_cache and rglru_cache have one row per *Griffin* layer,
@@ -581,7 +592,6 @@ HWY_NOINLINE void Attention(
 // This results in a much simpler implementation. However, to avoid duplicating
 // code, we should still consider merging the two classes.
 // TODO(keysers): Refactor to share code with GemmaAttention.
-template <typename T>
 class VitAttention {
   // Computes Q, K, V for all heads, stored in activations_.q.
   HWY_NOINLINE void ComputeQKV() {
@@ -589,9 +599,9 @@ class VitAttention {
     auto& qkv = activations_.q;
     HWY_ASSERT(qkv.Rows() == num_tokens_);
     HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
-    MatMulStatic(activations_.pre_att_rms_out, layer_weights_.vit.qkv_einsum_w,
-                 layer_weights_.vit.qkv_einsum_b.PackedScale1(),
-                 *activations_.env, qkv);
+    CallMatMul(activations_.pre_att_rms_out, layer_weights_.vit.qkv_einsum_w,
+               layer_weights_.vit.qkv_einsum_b.PackedScale1(),
+               *activations_.env, qkv);
   }
 
   // TODO(philculliton): transition fully to MatMul.
@@ -631,7 +641,7 @@ class VitAttention {
       });
 
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
-      MatMulStatic(Q, K, nullptr, *activations_.env, C);
+      CallMatMul(Q, K, nullptr, *activations_.env, C);
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         float* HWY_RESTRICT c = C.Row(task);
@@ -697,15 +707,14 @@ class VitAttention {
     // att_weights and att_out are concatenated heads, each of length
     // qkv_dim. Thus the [num_tokens_, layer_config_.model_dim]
     // matmul output is the sum over heads.
-    MatMulStatic(activations_.att_out, layer_weights_.vit.attn_out_w, bias,
-                 *activations_.env, activations_.att_sums);
+    CallMatMul(activations_.att_out, layer_weights_.vit.attn_out_w, bias,
+               *activations_.env, activations_.att_sums);
   }
 
  public:
   VitAttention(size_t num_tokens, size_t layer, Activations& activations,
-               const LayerWeightsPtrs<T>* layer_weights)
+               const LayerWeightsPtrs* layer_weights)
       : num_tokens_(num_tokens),
-        layer_(layer),
         activations_(activations),
         layer_weights_(*layer_weights),
         layer_config_(layer_weights->layer_config),
@@ -723,9 +732,8 @@ class VitAttention {
 
  private:
   const size_t num_tokens_;
-  const size_t layer_;
   Activations& activations_;
-  const LayerWeightsPtrs<T>& layer_weights_;
+  const LayerWeightsPtrs& layer_weights_;
   const LayerConfig& layer_config_;
   hwy::ThreadPool& pool_;
 };
@@ -775,9 +783,8 @@ void ActivationBatched(ActivationType activation, Mat& c1, const Mat* c2) {
   }
 }
 
-template <typename T>
-HWY_NOINLINE void FFWNoVit(Activations& activations,
-                           const LayerWeightsPtrs<T>* layer_weights) {
+static HWY_NOINLINE void FFWNoVit(Activations& activations,
+                                  const LayerWeightsPtrs* layer_weights) {
   PROFILER_ZONE("Gen.FFW");
   const size_t ffh_hidden_dim = layer_weights->layer_config.ff_hidden_dim;
 
@@ -789,25 +796,24 @@ HWY_NOINLINE void FFWNoVit(Activations& activations,
       add_bias ? layer_weights->ffw_output_biases.PackedScale1() : nullptr;
 
   // Compute the hidden layer activations.
-  MatMulStatic(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w1,
-               bias1, *activations.env, activations.C1);
-  MatMulStatic(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w2,
-               bias2, *activations.env, activations.C2);
+  CallMatMul(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w1,
+             bias1, *activations.env, activations.C1);
+  CallMatMul(activations.pre_ffw_rms_out, layer_weights->gating_einsum_w2,
+             bias2, *activations.env, activations.C2);
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_weights->layer_config.activation, activations.C1,
                     &activations.C2);
 
   // Hidden layer -> output layer.
-  MatMulStatic(activations.C1, layer_weights->linear_w, output_bias,
-               *activations.env, activations.ffw_out);
+  CallMatMul(activations.C1, layer_weights->linear_w, output_bias,
+             *activations.env, activations.ffw_out);
 }
 
 // Same as FFWNoVit, but with different layer_weights members and no second
 // gating matrix.
-template <typename T>
-HWY_NOINLINE void FFWVit(Activations& activations,
-                         const LayerWeightsPtrs<T>* layer_weights) {
+static HWY_NOINLINE void FFWVit(Activations& activations,
+                                const LayerWeightsPtrs* layer_weights) {
   PROFILER_ZONE("Gen.FFW.ViT");
 
   const bool add_bias = layer_weights->layer_config.ff_biases;
@@ -817,15 +823,15 @@ HWY_NOINLINE void FFWVit(Activations& activations,
       add_bias ? layer_weights->vit.linear_1_b.PackedScale1() : nullptr;
 
   // Compute the hidden layer activations.
-  MatMulStatic(activations.pre_ffw_rms_out, layer_weights->vit.linear_0_w,
-               bias1, *activations.env, activations.C1);
+  CallMatMul(activations.pre_ffw_rms_out, layer_weights->vit.linear_0_w, bias1,
+             *activations.env, activations.C1);
 
   // Activation (Gelu), store in C1.
   ActivationBatched(layer_weights->layer_config.activation, activations.C1);
 
   // Hidden layer -> output layer.
-  MatMulStatic(activations.C1, layer_weights->vit.linear_1_w, output_bias,
-               *activations.env, activations.ffw_out);
+  CallMatMul(activations.C1, layer_weights->vit.linear_1_w, output_bias,
+             *activations.env, activations.ffw_out);
 }
 
 // `batch_idx` indicates which row of `x` to write to.
@@ -836,67 +842,52 @@ HWY_NOINLINE void FFWVit(Activations& activations,
 // spec) until we run out of image tokens. This allows for a multi-image prompt
 // if -2 locations with appropriate begin/end image tokens are created by the
 // calling application.
-template <typename T>
-HWY_NOINLINE void EmbedMMToken(int token, size_t batch_idx, size_t pos,
-                               size_t pos_in_prompt,
-                               const ModelWeightsPtrs<T>& weights,
-                               MatStorageT<float>& x,
-                               const ImageTokens* image_tokens,
-                               size_t& image_token_position) {
+// Returns new image_token_position.
+static HWY_NOINLINE size_t
+EmbedMMToken(int token, size_t batch_idx, size_t pos, size_t pos_in_prompt,
+             const ModelConfig& model_config, const ModelWeightsPtrs& weights,
+             MatStorageT<float>& x, const ImageTokens* image_tokens = nullptr,
+             size_t image_token_position = 0) {
   // Image tokens just need to be copied.
-  if (weights.weights_config.wrapping == PromptWrapping::GEMMA_VLM &&
+  if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
       image_tokens != nullptr && token == -2 &&
       image_token_position < image_tokens->Rows()) {
     hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(batch_idx),
                    x.Cols() * x.ElementBytes());
-    image_token_position++;
-    return;
+    return image_token_position + 1;
   }
 
-  if (weights.weights_config.wrapping == PromptWrapping::PALIGEMMA &&
+  if (model_config.wrapping == PromptWrapping::PALIGEMMA &&
       image_tokens != nullptr && pos_in_prompt < image_tokens->Rows()) {
     hwy::CopyBytes(image_tokens->Row(pos_in_prompt), x.Row(batch_idx),
                    x.Cols() * x.ElementBytes());
-    return;
+    return image_token_position;
   }
 
-  const size_t model_dim = weights.weights_config.model_dim;
+  const size_t model_dim = model_config.model_dim;
   const float emb_scaling = EmbeddingScaling(model_dim);
 
   HWY_DASSERT(token >= 0);
-  HWY_DASSERT(token < static_cast<int>(weights.weights_config.vocab_size));
+  HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
 
-  const hn::ScalableTag<float> df;
-  // Using `Stride` to compute the offset works for both NUQ (because we use an
-  // offset and NUQ is never padded) and padded, because non-NUQ types are
-  // seekable, hence the offset can also skip any padding.
-  const size_t embedding_ofs =
-      token * weights.embedder_input_embedding.Stride();
-  HWY_ASSERT(weights.embedder_input_embedding.Cols() == model_dim);
-  const auto embedding_span = MakeSpan(weights.embedder_input_embedding.Row(0),
-                                       embedding_ofs + model_dim);
-  DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(batch_idx),
-                       model_dim);
-  MulByConst(emb_scaling * weights.embedder_input_embedding.Scale(),
-             x.Row(batch_idx), model_dim);
-  if (weights.weights_config.absolute_pe) {
+  CallUpcasted(&weights.embedder_input_embedding, [&](const auto* weights_t) {
+    // Using `Stride` to compute the offset works for both NUQ (because we use
+    // an offset and NUQ is never padded) and padded, because non-NUQ types are
+    // seekable, hence the offset can also skip any padding.
+    const size_t embedding_ofs = token * weights_t->Stride();
+    HWY_ASSERT(weights_t->Cols() == model_dim);
+    const auto embedding_span =
+        MakeSpan(weights_t->Row(0), embedding_ofs + model_dim);
+    const hn::ScalableTag<float> df;
+    DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(batch_idx),
+                         model_dim);
+    MulByConst(emb_scaling * weights_t->Scale(), x.Row(batch_idx), model_dim);
+  });
+
+  if (model_config.absolute_pe) {
     AddAbsolutePositionalEmbeddings(x.Row(batch_idx), model_dim, pos);
   }
-}
-
-// `batch_idx` indicates which row of `x` to write to.
-// `pos` is the *token*'s position, not the start of the batch, because this is
-// called for batches of tokens in prefill, but batches of queries in decode.
-// This version of the function doesn't track internal image token position.
-template <typename T>
-HWY_NOINLINE void EmbedToken(int token, size_t batch_idx, size_t pos,
-                             size_t pos_in_prompt,
-                             const ModelWeightsPtrs<T>& weights,
-                             MatStorageT<float>& x,
-                             const ImageTokens* image_tokens) {
-  size_t image_token_position = 0;
-  EmbedMMToken<T>(token, batch_idx, pos, pos_in_prompt, weights, x,
-                  image_tokens, image_token_position);
+  return image_token_position;
 }
 
 template <typename T2, class LayerWeights>
@@ -908,8 +899,8 @@ HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
   AddFromBatched(other, x);
 }
 
-template <typename WeightT, typename InOutT>
-void PostNorm(PostNormType post_norm, const MatPtrT<WeightT>& weights,
+template <typename InOutT>
+void PostNorm(PostNormType post_norm, const MatPtr& weights,
               MatPtrT<InOutT>& inout) {
   HWY_DASSERT(weights.Rows() == 1);
   if (post_norm == PostNormType::Scale) {
@@ -917,14 +908,11 @@ void PostNorm(PostNormType post_norm, const MatPtrT<WeightT>& weights,
   }
 }
 
-template <typename T>
-HWY_NOINLINE void TransformerLayer(const QueriesPos& queries_pos,
-                                   const QueriesPos& queries_prefix_end,
-                                   size_t num_tokens, size_t cache_layer_idx,
-                                   const LayerWeightsPtrs<T>* layer_weights,
-                                   Activations& activations,
-                                   const hwy::Divisor& div_seq_len,
-                                   const KVCaches& kv_caches) {
+static HWY_NOINLINE void TransformerLayer(
+    const QueriesPos& queries_pos, const QueriesPos& queries_prefix_end,
+    size_t num_tokens, size_t cache_layer_idx,
+    const LayerWeightsPtrs* layer_weights, Activations& activations,
+    const hwy::Divisor& div_seq_len, const KVCaches& kv_caches) {
   auto type = layer_weights->layer_config.type;
 
   RMSNormBatched(activations.x, layer_weights->pre_attention_norm_scale,
@@ -960,10 +948,9 @@ HWY_NOINLINE void TransformerLayer(const QueriesPos& queries_pos,
 // github.com/google-research/big_vision/blob/main/big_vision/models/vit.py
 // TODO(keysers): consider adding a wrapper for both LayerNorm with RMSNorm and
 // try merging this with TransformerLayer.
-template <typename T>
-HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
-                                      const LayerWeightsPtrs<T>* layer_weights,
-                                      Activations& activations) {
+static HWY_NOINLINE void VitTransformerLayer(
+    size_t num_tokens, size_t layer, const LayerWeightsPtrs* layer_weights,
+    Activations& activations) {
   const size_t model_dim = activations.weights_config.model_dim;
   auto type = layer_weights->layer_config.type;
   HWY_DASSERT(type == LayerAttentionType::kVit);
@@ -982,7 +969,7 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
 
   // y = out["sa"] = nn.MultiHeadDotProductAttention(...)(y, y)
   // y ~ att_sums
-  VitAttention<T>(num_tokens, layer, activations, layer_weights)();
+  VitAttention(num_tokens, layer, activations, layer_weights)();
 
   // x = out["+sa"] = x + y
   AddFromBatched(activations.att_sums, x);
@@ -1005,13 +992,13 @@ HWY_NOINLINE void VitTransformerLayer(size_t num_tokens, size_t layer,
 using QueriesMutablePos = hwy::Span<size_t>;
 
 // Populates KV cache for batches of tokens from one query at a time.
-template <typename T>
-HWY_NOINLINE void Prefill(
+static HWY_NOINLINE void Prefill(
     const QueriesPromptTokens& queries_prompt,
     const QueriesMutablePos& queries_pos, const QueriesPos& queries_prefix_end,
-    const size_t query_idx_start, const ModelWeightsPtrs<T>& weights,
-    Activations& activations, const RuntimeConfig& runtime_config,
-    const hwy::Divisor& div_seq_len, const KVCaches& kv_caches) {
+    const size_t query_idx_start, const ModelConfig& config,
+    const ModelWeightsPtrs& weights, Activations& activations,
+    const RuntimeConfig& runtime_config, const hwy::Divisor& div_seq_len,
+    const KVCaches& kv_caches) {
   PROFILER_ZONE("Gen.Prefill");
   const size_t num_queries = queries_prompt.size();
   HWY_DASSERT(queries_pos.size() == num_queries);
@@ -1072,14 +1059,14 @@ HWY_NOINLINE void Prefill(
         const size_t pos = queries_pos[qi] + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
         const int token = queries_prompt[qi][pos_in_prompt];
-        EmbedMMToken(token, ti, pos, pos_in_prompt, weights, activations.x,
-                     runtime_config.image_tokens, image_token_position);
+        image_token_position = EmbedMMToken(
+            token, ti, pos, pos_in_prompt, config, weights, activations.x,
+            runtime_config.image_tokens, image_token_position);
       }
 
       // Transformer with one batch of tokens from a single query.
-      for (size_t layer = 0;
-           layer < weights.weights_config.layer_configs.size(); ++layer) {
-        const LayerWeightsPtrs<T>* layer_weights = weights.GetLayer(layer);
+      for (size_t layer = 0; layer < config.layer_configs.size(); ++layer) {
+        const LayerWeightsPtrs* layer_weights = weights.GetLayer(layer);
         TransformerLayer(single_query_pos, single_query_prefix_end, tbatch_size,
                          layer, layer_weights, activations, div_seq_len,
                          single_kv_cache);
@@ -1115,13 +1102,13 @@ HWY_NOINLINE void Prefill(
 
 // Gets the patches of the image and embeds them with the image embedding
 // kernel. The result is stored in activations.x.
-template <typename T>
-HWY_NOINLINE void EmbedImagePatches(const Image& image,
-                                    const ModelWeightsPtrs<T>& weights,
-                                    Activations& activations) {
-  const size_t model_dim = weights.weights_config.vit_config.model_dim;
-  const size_t patch_width = weights.weights_config.vit_config.patch_width;
-  const size_t seq_len = weights.weights_config.vit_config.seq_len;
+static HWY_NOINLINE void EmbedImagePatches(const Image& image,
+                                           const ModelConfig& model_config,
+                                           const ModelWeightsPtrs& weights,
+                                           Activations& activations) {
+  const size_t model_dim = model_config.vit_config.model_dim;
+  const size_t patch_width = model_config.vit_config.patch_width;
+  const size_t seq_len = model_config.vit_config.seq_len;
   const size_t patch_size = patch_width * patch_width * 3;
   HWY_DASSERT(weights.vit_img_embedding_kernel.Rows() == model_dim);
   HWY_DASSERT(weights.vit_img_embedding_kernel.Cols() == patch_size);
@@ -1138,7 +1125,7 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // MatStorageT<float> image_patches("patches", Extents2D(kSeqLen,
   //   kPatchSize), MatPadding::kPacked);
   // [Get patches]
-  // MatMulStatic(
+  // CallMatMul(
   //       image_patches,
   //       weights.vit_img_embedding_kernel,
   //       weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
@@ -1147,61 +1134,64 @@ HWY_NOINLINE void EmbedImagePatches(const Image& image,
   //   A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0
   // which is not the case here. We should relax that requirement on MatMul and
   // then use the above. For now, we rely on MatVecAdd instead.
-  for (size_t i = 0; i < seq_len; ++i) {
-    MatVecAdd(weights.vit_img_embedding_kernel, 0, model_dim, patch_size,
-              image_patches[i].get(),
-              weights.vit_img_embedding_bias.PackedScale1(),
-              activations.x.Row(i), activations.env->ctx.pools.Pool(0));
-  }
+  CallUpcasted(&weights.vit_img_embedding_kernel, [&](const auto* embedding_t) {
+    for (size_t i = 0; i < seq_len; ++i) {
+      MatVecAdd(*embedding_t, 0, model_dim, patch_size, image_patches[i].get(),
+                weights.vit_img_embedding_bias.PackedScale1(),
+                activations.x.Row(i), activations.env->ctx.pools.Pool(0));
+    }
+  });
   // Add position embeddings.
   AddFromBatched(weights.vit_img_pos_embedding, activations.x);
 }
 
 // Prefills the image tokens with the ViT encoder.
-template <typename T>
-HWY_NOINLINE void PrefillVit(const ModelWeightsPtrs<T>& weights,
-                             const RuntimeConfig& runtime_config,
-                             const Image& image, ImageTokens& image_tokens,
-                             Activations& activations) {
+static HWY_NOINLINE void PrefillVit(const ModelConfig& model_config,
+                                    const ModelWeightsPtrs& weights,
+                                    const RuntimeConfig& runtime_config,
+                                    const Image& image,
+                                    ImageTokens& image_tokens,
+                                    Activations& activations) {
   PROFILER_ZONE("Gen.PrefillVit");
-  const size_t num_tokens = weights.weights_config.vit_config.seq_len;
-  const size_t vit_model_dim = weights.weights_config.vit_config.model_dim;
+  const size_t num_tokens = model_config.vit_config.seq_len;
+  const size_t vit_model_dim = model_config.vit_config.model_dim;
   HWY_ASSERT(num_tokens == activations.x.Rows());
   // Embed the image patches.
-  EmbedImagePatches(image, weights, activations);
+  EmbedImagePatches(image, model_config, weights, activations);
   // Go through all layers.
-  for (size_t layer = 0;
-       layer < weights.weights_config.vit_config.layer_configs.size();
+  for (size_t layer = 0; layer < model_config.vit_config.layer_configs.size();
        ++layer) {
-    const LayerWeightsPtrs<T>* layer_weights = weights.VitLayer(layer);
+    const LayerWeightsPtrs* layer_weights = weights.VitLayer(layer);
     VitTransformerLayer(num_tokens, layer, layer_weights, activations);
   }
   // Final Layernorm.
   LayerNormBatched(activations.x, weights.vit_encoder_norm_scale,
                    weights.vit_encoder_norm_bias, activations.x);
 
-  if (weights.weights_config.wrapping == PromptWrapping::GEMMA_VLM) {
+  if (model_config.wrapping == PromptWrapping::GEMMA_VLM) {
     activations.x = AvgPool4x4(activations.x);
 
     // Apply soft embedding norm before input projection.
-    RMSNormInplace(weights.mm_embed_norm.PackedScale1(), 0,
-                   activations.x.Row(0), vit_model_dim);
+    CallUpcasted(&weights.mm_embed_norm, [&](const auto* weights_t) {
+      RMSNormInplace(weights_t->PackedScale1(), 0, activations.x.Row(0),
+                     vit_model_dim);
+    });
   }
 
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
-  MatMulStatic(activations.x, weights.vit_img_head_kernel,
-               weights.vit_img_head_bias.PackedScale1(), *activations.env,
-               image_tokens);
+  CallMatMul(activations.x, weights.vit_img_head_kernel,
+             weights.vit_img_head_bias.PackedScale1(), *activations.env,
+             image_tokens);
 }
 
 // Generates one token for each query. `queries_token` is the previous token
 // from each query, and `queries_pos` are their position in the sequence.
-template <typename T>
-HWY_NOINLINE void Transformer(
+static HWY_NOINLINE void Transformer(
     const QueriesToken& queries_token, const QueriesMutablePos& queries_pos,
-    const QueriesPos& queries_prefix_end, const ModelWeightsPtrs<T>& weights,
-    Activations& activations, const hwy::Divisor& div_seq_len,
-    const KVCaches& kv_caches, const LayersOutputFunc& layers_output,
+    const QueriesPos& queries_prefix_end, const ModelConfig& config,
+    const ModelWeightsPtrs& weights, Activations& activations,
+    const hwy::Divisor& div_seq_len, const KVCaches& kv_caches,
+    const LayersOutputFunc& layers_output,
     const ActivationsObserverFunc& activations_observer) {
   const size_t num_queries = queries_token.size();
   HWY_DASSERT(queries_pos.size() == num_queries);
@@ -1215,15 +1205,13 @@ HWY_NOINLINE void Transformer(
     }
   }
 
-  size_t image_token_position = 0;
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
     EmbedMMToken(queries_token[query_idx], query_idx, queries_pos[query_idx],
-                 /*pos_in_prompt=*/0, weights, activations.x,
-                 /*image_tokens=*/nullptr, image_token_position);
+                 /*pos_in_prompt=*/0, config, weights, activations.x);
   }
 
   for (size_t layer = 0; layer < weights.c_layers.size(); ++layer) {
-    const LayerWeightsPtrs<T>* layer_weights = weights.GetLayer(layer);
+    const LayerWeightsPtrs* layer_weights = weights.GetLayer(layer);
     TransformerLayer(queries_pos, queries_prefix_end, /*num_tokens=*/1, layer,
                      layer_weights, activations, div_seq_len, kv_caches);
 
@@ -1302,25 +1290,25 @@ HWY_INLINE SampleFunc ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   };
 }
 
-template <typename T>
 // Runs one decode step for all the queries in the batch. Returns true if all
 // queries are at <end_of_sentence>.
-bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
-                 const RuntimeConfig& runtime_config,
-                 const QueriesPromptTokens& queries_prompt,
-                 const size_t query_idx_start, const KVCaches& kv_caches,
-                 const QueriesPos& queries_prefix_end,
-                 const hwy::Divisor div_seq_len, const size_t vocab_size,
-                 const SampleFunc& sample_token, Activations& activations,
-                 TokenStreamer& token_streamer, std::vector<int>& gen_tokens,
-                 TimingInfo& timing_info,
-                 const QueriesMutablePos& queries_mutable_pos) {
+static bool DecodeStepT(const ModelConfig& config,
+                        const ModelWeightsPtrs& weights,
+                        const RuntimeConfig& runtime_config,
+                        const QueriesPromptTokens& queries_prompt,
+                        const size_t query_idx_start, const KVCaches& kv_caches,
+                        const QueriesPos& queries_prefix_end,
+                        const hwy::Divisor div_seq_len, const size_t vocab_size,
+                        const SampleFunc& sample_token,
+                        Activations& activations, TokenStreamer& token_streamer,
+                        std::vector<int>& gen_tokens, TimingInfo& timing_info,
+                        const QueriesMutablePos& queries_mutable_pos) {
   const size_t num_queries = queries_prompt.size();
   // Decode generates one token per query and increments
   // queries_mutable_pos.
   Transformer(QueriesToken(gen_tokens.data(), num_queries), queries_mutable_pos,
-              queries_prefix_end, weights, activations, div_seq_len, kv_caches,
-              runtime_config.layers_output,
+              queries_prefix_end, config, weights, activations, div_seq_len,
+              kv_caches, runtime_config.layers_output,
               runtime_config.activations_observer);
   // queries_pos are incremented by Transformer.
 
@@ -1329,13 +1317,13 @@ bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
   {
     PROFILER_ZONE("Gen.EmbeddingMatmul");
     // Compute logits from last layer activations.
-    MatMulStatic(activations.x, weights.embedder_input_embedding,
-                 /*add=*/nullptr, *activations.env, activations.logits);
+    CallMatMul(activations.x, weights.embedder_input_embedding,
+               /*add=*/nullptr, *activations.env, activations.logits);
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
     float* HWY_RESTRICT logits = activations.logits.Row(query_idx);
-    MaybeLogitsSoftCap(weights.weights_config.final_cap, logits, vocab_size);
+    MaybeLogitsSoftCap(config.final_cap, logits, vocab_size);
     const TokenAndProb tp = sample_token(logits, vocab_size);
     timing_info.NotifyGenerated();
 
@@ -1359,15 +1347,16 @@ bool DecodeStepT(const ModelConfig& config, const ModelWeightsPtrs<T>& weights,
 // `StreamFunc` gets the global query index, not relative to the batch.
 //
 // `kv_caches` is for the batch, size must match `queries_prompt`.
-template <typename T>
-void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
-               Activations& activations, const RuntimeConfig& runtime_config,
-               const QueriesPromptTokens& queries_prompt,
-               const QueriesPos& queries_pos_in,
-               const QueriesPos& queries_prefix_end,
-               const size_t query_idx_start, const KVCaches& kv_caches,
-               TimingInfo& timing_info) {
+static void GenerateT(const ModelConfig& config,
+                      const ModelWeightsPtrs& weights, Activations& activations,
+                      const RuntimeConfig& runtime_config,
+                      const QueriesPromptTokens& queries_prompt,
+                      const QueriesPos& queries_pos_in,
+                      const QueriesPos& queries_prefix_end,
+                      const size_t query_idx_start, const KVCaches& kv_caches,
+                      TimingInfo& timing_info) {
   HWY_ASSERT(queries_pos_in.size() == kv_caches.size());
+
   // Griffin assumes that the recurrent block cache is zero-initialized.
   for (size_t i = 0; i < kv_caches.size(); ++i) {
     if (queries_pos_in[i] == 0) {
@@ -1384,7 +1373,7 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   // Sanity check: prompts should not be empty, nor start with EOS.
   for (size_t query_idx = 0; query_idx < queries_prompt.size(); ++query_idx) {
     const PromptTokens& prompt = queries_prompt[query_idx];
-    HWY_ASSERT(prompt.size() != 0 && prompt[0] != model.Config().eos_id);
+    HWY_ASSERT(prompt.size() != 0 && prompt[0] != config.eos_id);
   }
 
   const size_t num_queries = queries_prompt.size();
@@ -1395,7 +1384,7 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   const hwy::Divisor div_seq_len(static_cast<uint32_t>(kv_caches[0].seq_len));
   size_t max_prompt_size = MaxQueryLength(queries_prompt);
   size_t max_generated_tokens = runtime_config.max_generated_tokens;
-  RangeChecks(weights.weights_config, max_generated_tokens, max_prompt_size);
+  RangeChecks(config, max_generated_tokens, max_prompt_size);
   const SampleFunc sample_token = ChooseSampleFunc(runtime_config);
 
   // Prefill stops before min_prompt_size - 1 because the last prompt
@@ -1403,8 +1392,8 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   timing_info.prefill_start = hwy::platform::Now();
   // Note that Prefill calls activations.SetBatchSize, so we reset it below.
   Prefill(queries_prompt, queries_mutable_pos, queries_prefix_end,
-          query_idx_start, weights, activations, runtime_config, div_seq_len,
-          kv_caches);
+          query_idx_start, config, weights, activations, runtime_config,
+          div_seq_len, kv_caches);
   // Compute the number of tokens that were prefilled and notify timing_info.
   size_t prefilled_tokens = 0;
   for (size_t qi = 0; qi < num_queries; ++qi) {
@@ -1419,7 +1408,7 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   std::vector<int> gen_tokens(num_queries);
 
   // Stream the last prompt token from each query and fill gen_tokens.
-  TokenStreamer token_streamer(runtime_config, model.Config());
+  TokenStreamer token_streamer(runtime_config, config);
   for (size_t query_idx = 0; query_idx < num_queries; ++query_idx) {
     size_t last_token_pos_in_prompt =
         queries_mutable_pos[query_idx] - queries_pos_in[query_idx];
@@ -1430,53 +1419,49 @@ void GenerateT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   }
 
   {
-    const size_t vocab_size = model.Config().vocab_size;
+    const size_t vocab_size = config.vocab_size;
     timing_info.generate_start = hwy::platform::Now();
     for (size_t gen = 0; gen < max_generated_tokens; ++gen) {
-      bool all_queries_eos = DecodeStepT<T>(
-          model.Config(), weights, runtime_config, queries_prompt,
-          query_idx_start, kv_caches, queries_prefix_end, div_seq_len,
-          vocab_size, sample_token, activations, token_streamer, gen_tokens,
-          timing_info, queries_mutable_pos);
+      bool all_queries_eos = DecodeStepT(
+          config, weights, runtime_config, queries_prompt, query_idx_start,
+          kv_caches, queries_prefix_end, div_seq_len, vocab_size, sample_token,
+          activations, token_streamer, gen_tokens, timing_info,
+          queries_mutable_pos);
       if (all_queries_eos) break;
     }  // foreach token to generate
     timing_info.NotifyGenerateDone();
   }
 }
 
-template <typename T>
-void GenerateSingleT(const ModelStore& model,
-                     const ModelWeightsPtrs<T>& weights,
-                     const RuntimeConfig& runtime_config,
-                     const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                     KVCache& kv_cache, MatMulEnv* env,
-                     TimingInfo& timing_info) {
+static HWY_MAYBE_UNUSED void GenerateSingleT(
+    const ModelConfig& config, const ModelWeightsPtrs& weights,
+    const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
+    size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,
+    TimingInfo& timing_info) {
   constexpr size_t kNumQueries = 1;
   const size_t qbatch_start = 0;
 
   const size_t max_batch_size =
       HWY_MAX(kNumQueries, runtime_config.prefill_tbatch_size);
   // TODO: move into Gemma?
-  Activations activations(model.Config(), max_batch_size, env);
+  Activations activations(config, max_batch_size, env);
 
   const QueriesPromptTokens queries_prompt(&prompt, kNumQueries);
   QueriesPos queries_pos(&pos, kNumQueries);
   const QueriesPos queries_prefix_end(&prefix_end, kNumQueries);
   const KVCaches kv_caches{&kv_cache, kNumQueries};
 
-  GenerateT<T>(model, weights, activations, runtime_config, queries_prompt,
-               queries_pos, queries_prefix_end, qbatch_start, kv_caches,
-               timing_info);
+  GenerateT(config, weights, activations, runtime_config, queries_prompt,
+            queries_pos, queries_prefix_end, qbatch_start, kv_caches,
+            timing_info);
 }
 
-template <typename T>
-void GenerateBatchT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
-                    const RuntimeConfig& runtime_config,
-                    const QueriesPromptTokens& queries_prompt,
-                    const QueriesPos& queries_pos,
-                    const QueriesPos& queries_prefix_end,
-                    const KVCaches& kv_caches, MatMulEnv* env,
-                    TimingInfo& timing_info) {
+static HWY_MAYBE_UNUSED void GenerateBatchT(
+    const ModelConfig& config, const ModelWeightsPtrs& weights,
+    const RuntimeConfig& runtime_config,
+    const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
+    const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
+    MatMulEnv* env, TimingInfo& timing_info) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(queries_pos.size() == num_queries);
   HWY_ASSERT(kv_caches.size() >= num_queries);
@@ -1484,7 +1469,7 @@ void GenerateBatchT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
   const size_t max_batch_size =
       HWY_MAX(max_qbatch_size, runtime_config.prefill_tbatch_size);
 
-  Activations activations(model.Config(), max_batch_size, env);
+  Activations activations(config, max_batch_size, env);
 
   for (size_t qbatch_start = 0; qbatch_start < num_queries;
        qbatch_start += max_qbatch_size) {
@@ -1497,68 +1482,31 @@ void GenerateBatchT(const ModelStore& model, const ModelWeightsPtrs<T>& weights,
     const QueriesPos qbatch_prefix_end(&queries_prefix_end[qbatch_start],
                                        qbatch_size);
     const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
-    GenerateT<T>(model, weights, activations, runtime_config, qbatch_prompts,
-                 qbatch_pos, qbatch_prefix_end, qbatch_start, qbatch_kv,
-                 timing_info);
+    GenerateT(config, weights, activations, runtime_config, qbatch_prompts,
+              qbatch_pos, qbatch_prefix_end, qbatch_start, qbatch_kv,
+              timing_info);
   }
 }
 
-template <typename T>
-void GenerateImageTokensT(const ModelStore& model,
-                          const ModelWeightsPtrs<T>& weights,
-                          const RuntimeConfig& runtime_config,
-                          const Image& image, ImageTokens& image_tokens,
-                          MatMulEnv* env) {
-  if (model.Config().vit_config.layer_configs.empty()) {
+static HWY_MAYBE_UNUSED void GenerateImageTokensT(
+    const ModelConfig& config, const ModelWeightsPtrs& weights,
+    const RuntimeConfig& runtime_config, const Image& image,
+    ImageTokens& image_tokens, MatMulEnv* env) {
+  if (config.vit_config.layer_configs.empty()) {
     HWY_ABORT("Model does not support generating image tokens.");
   }
   RuntimeConfig prefill_runtime_config = runtime_config;
-  ModelConfig vit_config = GetVitConfig(model.Config());
+  ModelConfig vit_config = GetVitConfig(config);
   prefill_runtime_config.prefill_tbatch_size =
       vit_config.seq_len / (vit_config.pool_dim * vit_config.pool_dim);
   Activations prefill_activations(vit_config, vit_config.seq_len, env);
   // Weights are for the full PaliGemma model, not just the ViT part.
-  PrefillVit(weights, prefill_runtime_config, image, image_tokens,
+  PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
              prefill_activations);
 }
 
+// NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
-
-#if HWY_ONCE
-
-// These are extern functions defined by instantiations/*.cc, which include this
-// 'header' after defining `GEMMA_TYPE`.
-void GenerateSingle(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
-    const RuntimeConfig& runtime_config, const PromptTokens& prompt, size_t pos,
-    size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,
-    TimingInfo& timing_info) {
-  HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateSingleT<GEMMA_TYPE>)
-  (model, weights, runtime_config, prompt, pos, prefix_end, kv_cache, env,
-   timing_info);
-}
-
-void GenerateBatch(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
-    const RuntimeConfig& runtime_config,
-    const QueriesPromptTokens& queries_prompt, const QueriesPos& queries_pos,
-    const QueriesPos& queries_prefix_end, const KVCaches& kv_caches,
-    MatMulEnv* env, TimingInfo& timing_info) {
-  HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateBatchT<GEMMA_TYPE>)
-  (model, weights, runtime_config, queries_prompt, queries_pos,
-   queries_prefix_end, kv_caches, env, timing_info);
-}
-
-void GenerateImageTokens(  // NOLINT(misc-definitions-in-headers)
-    const ModelStore& model, const ModelWeightsPtrs<GEMMA_TYPE>& weights,
-    const RuntimeConfig& runtime_config, const Image& image,
-    ImageTokens& image_tokens, MatMulEnv* env) {
-  HWY_EXPORT_AND_DYNAMIC_DISPATCH_T(GenerateImageTokensT<GEMMA_TYPE>)
-  (model, weights, runtime_config, image, image_tokens, env);
-}
-
-#endif  // HWY_ONCE
-
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
 

@@ -61,10 +61,6 @@ set(SOURCES
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
-  gemma/instantiations/bf16.cc
-  gemma/instantiations/f32.cc
-  gemma/instantiations/nuq.cc
-  gemma/instantiations/sfp.cc
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/model_store.cc

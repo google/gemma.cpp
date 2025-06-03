@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include <memory>
+#include <mutex>  // NOLINT
 #include <string>
 #include <vector>
 
@@ -42,15 +42,127 @@
 
 namespace gcpp {
 
-static void InitAttWeightsNUQ(const LayerConfig& layer_config,
-                              MatPtrT<NuqStream>& attn_vec_einsum_w,
-                              MatPtrT<NuqStream>& att_weights,
-                              std::vector<MatOwner>& mat_owners) {
+// Copies att_weights from `attn_vec_einsum_w`.
+void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners) {
+  // We only use this tensor for Gemma layers.
+  if (layer_config.type != LayerAttentionType::kGemma) return;
+
+  // Files must have one or the other.
+  HWY_ASSERT(attn_vec_einsum_w.HasPtr() ^ att_weights.HasPtr());
+  // Done if we already read the transposed tensor.
+  if (att_weights.HasPtr() && !attn_vec_einsum_w.HasPtr()) return;
+
+  // NUQ is handled by a specialization in weights.cc.
+  HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
+
+  const size_t model_dim = layer_config.model_dim;
+  const size_t heads = layer_config.heads;
+  const size_t qkv_dim = layer_config.qkv_dim;
+
+  // Reshape [heads, model_dim, qkv_dim] to [model_dim, heads * qkv_dim].
+  att_weights.SetType(attn_vec_einsum_w.GetType());
+  HWY_ASSERT(att_weights.Rows() == model_dim);
+  HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
+
+  {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    mat_owners.push_back(MatOwner());
+    mat_owners.back().AllocateFor(att_weights, MatPadding::kOdd);
+  }
+
+  const size_t T_bytes = att_weights.ElementBytes();
+  for (size_t m = 0; m < model_dim; ++m) {
+    uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
+    for (size_t h = 0; h < heads; ++h) {
+      hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
+                     out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+    }
+  }
+  att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+// For FFN. Fast, only updates pointers.
+void LayerWeightsPtrs::SplitW1() {
+  // Used for Gemma and Griffin layers; FFWVit uses different tensors.
+  if (layer_config.type == LayerAttentionType::kVit) return;
+
+  // Files have both or neither of w1 and w2.
+  HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
+  // w is mutually exclusive with w1 and w2 in the file.
+  HWY_ASSERT(gating_einsum_w.HasPtr() ^ gating_einsum_w1.HasPtr());
+  // Done if we already read split tensors. Note that they are not
+  // necessarily the same type.
+  if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
+
+  const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+  HWY_ASSERT(gating_einsum_w.Rows() == 2 * ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w1.Rows() == ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w2.Rows() == ff_hidden_dim);
+  // Cols are the model_dim but we don't have ModelConfig here.
+  HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
+  HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
+
+  const size_t stride = gating_einsum_w.Stride();
+  gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
+  gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
+  gating_einsum_w1.SetType(gating_einsum_w.GetType());
+  gating_einsum_w2.SetType(gating_einsum_w.GetType());
+  gating_einsum_w1.SetScale(gating_einsum_w.Scale());
+  gating_einsum_w2.SetScale(gating_einsum_w.Scale());
+  gating_einsum_w.SetPtr(nullptr, gating_einsum_w.Cols());
+}
+
+// For attention, which might not have a w2. Fast, only updates pointers.
+void LayerWeightsPtrs::SplitAttW1() {
+  // We only use this tensor for Gemma layers.
+  if (layer_config.type != LayerAttentionType::kGemma) return;
+
+  // w is mutually exclusive with w1 in the file.
+  HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
+  // Done if we already read split tensors. Note that w2 does not exist for
+  // MHA, and otherwise might not be the same type.
+  if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
+
+  const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
+  const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
+  HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
+  HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+  HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
+  // Cols are the model_dim but we don't have ModelConfig here.
+  HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
+  HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
+
+  const size_t stride = qkv_einsum_w.Stride();
+  qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
+  qkv_einsum_w2.SetPtr(qkv_einsum_w.RowBytes(w1_rows), stride);
+  qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
+  qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
+  qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
+  qkv_einsum_w2.SetScale(qkv_einsum_w.Scale());
+  qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
+}
+
+// Must be called after reading weights via `ForEachTensor`.
+// TODO: exporters should bake this into the weights already.
+// WARNING: called from multiple threads; `mat_owners` requires a lock.
+void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners) {
+  // TODO(janwas): handle NUQ
+  InitAttWeights(mat_owners);
+  SplitW1();
+  SplitAttW1();
+}
+
+static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
+    const LayerConfig& layer_config, MatPtrT<NuqStream>& attn_vec_einsum_w,
+    MatPtrT<NuqStream>& att_weights, std::vector<MatOwner>& mat_owners) {
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
 
   HWY_ASSERT(att_weights.HasPtr());
-  HWY_ASSERT(att_weights.GetType() == Type::kNUQ);
+  att_weights.SetType(Type::kNUQ);
 
   const size_t model_dim = layer_config.model_dim;
   const size_t heads = layer_config.heads;
@@ -85,14 +197,53 @@ static void InitAttWeightsNUQ(const LayerConfig& layer_config,
   att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
 
-static void SplitW1NUQ(const LayerConfig& layer_config) {
+static void HWY_MAYBE_UNUSED SplitW1NUQ(const LayerConfig& layer_config) {
   // TODO(janwas): implement.
 }
 
-template <>
-void LayerWeightsPtrs<NuqStream>::Fixup(std::vector<MatOwner>& mat_owners) {
-  InitAttWeightsNUQ(layer_config, attn_vec_einsum_w, att_weights, mat_owners);
-  SplitW1NUQ(layer_config);
+// Zero-initializes only the allocated tensors in `*this`.
+void ModelWeightsPtrs::ZeroInit() {
+  ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
+    if (!t.mat.HasPtr()) return;
+    gcpp::ZeroInit(t.mat);
+  });
+}
+
+// Copies only the allocated tensors in `*this` from tensors in `other`.
+void ModelWeightsPtrs::CopyFrom(const ModelWeightsPtrs& other) {
+  ForEachTensor(const_cast<ModelWeightsPtrs*>(&other), nullptr,
+                [](const TensorArgs& t) {
+                  if (!t.mat.HasPtr()) return;
+                  HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
+                  CopyMat(*t.other_mat1, t.mat);
+                });
+}
+
+// For reshaping file tensors to the shape expected by the code. This would
+// ideally already happen in the importer. Called by WeightsOwner::Fixup.
+void ModelWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+                             hwy::ThreadPool& pool) {
+  pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
+    GetLayer(layer)->Fixup(mat_owners);
+  });
+
+  pool.Run(0, vit_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
+    VitLayer(layer)->Fixup(mat_owners);
+  });
+}
+
+std::vector<uint32_t> ModelWeightsPtrs::AddTensorDataToWriter(
+    BlobWriter& writer) const {
+  std::vector<uint32_t> serialized_mat_ptrs;
+  // ForEachTensor is non-const but the lambda does not modify *this.
+  const_cast<ModelWeightsPtrs*>(this)->ForEachTensor(
+      nullptr, nullptr, [&](const TensorArgs& t) {
+        if (t.flags & TensorArgs::kMaybeRead && !t.mat.HasPtr()) return;
+        HWY_ASSERT_M(t.mat.HasPtr(), t.mat.Name());
+        writer.Add(t.mat.Name(), t.mat.Packed(), t.mat.PackedBytes());
+        t.mat.AppendTo(serialized_mat_ptrs);
+      });
+  return serialized_mat_ptrs;
 }
 
 struct TensorToRead {
@@ -144,7 +295,7 @@ static Mode ChooseMode(uint64_t file_bytes, Tristate map) {
   return Mode::kRead;
 }
 
-MapPtr MapFileOrNull(File& file, uint64_t file_bytes) {
+static MapPtr MapFileOrNull(File& file, uint64_t file_bytes) {
   const Allocator& allocator = ThreadingContext::Get().allocator;
   if (file_bytes % allocator.BasePageBytes() == 0) {
     MapPtr mapped = file.Map();
@@ -175,8 +326,8 @@ static void MapAll(const std::vector<TensorToRead>& tensors,
   }
 }
 
-std::vector<IOBatch> MakeBatches(const std::vector<TensorToRead>& tensors,
-                                 const uint64_t file_bytes) {
+static std::vector<IOBatch> MakeBatches(
+    const std::vector<TensorToRead>& tensors, const uint64_t file_bytes) {
   PROFILER_ZONE("Startup.Weights.MakeBatches");
   // Batches must be contiguous but blobs are padded, hence at least one
   // batch per tensor, and more when tensor rows exceed the batch size.
@@ -254,72 +405,34 @@ static void MapOrReadAll(const std::vector<TensorToRead>& tensors,
   ReadBatches(reader, batches, pool);
 }
 
-void WeightsOwner::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
-                                 Tristate map, hwy::ThreadPool& pool) {
+void ModelWeightsPtrs::ReadFromBlobs(const ModelStore& model,
+                                     BlobReader& reader, Tristate map,
+                                     std::vector<MatOwner>& mat_owners,
+                                     hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
 
-  AllocatePointer(model.Config());
-
   // Enumerate all weights (negligible cost).
-  CallT([&](const auto& weights) {
-    weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      const MatPadding padding = (t.flags & TensorArgs::kPacked)
-                                     ? MatPadding::kPacked
-                                     : MatPadding::kOdd;
-      size_t key_idx;
-      if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
-        tensors.push_back({.mat = &t.mat,
-                           .range = reader.Range(key_idx),
-                           .padding = padding});
-        return;
-      }
-      if (t.flags & TensorArgs::kMaybeRead) return;  // optional and not found.
-      HWY_ABORT("Tensor %s is required but not found in file.", t.mat.Name());
-    });
+  ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+    const MatPadding padding = (t.flags & TensorArgs::kPacked)
+                                   ? MatPadding::kPacked
+                                   : MatPadding::kOdd;
+    size_t key_idx;
+    if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
+      tensors.push_back(
+          {.mat = &t.mat, .range = reader.Range(key_idx), .padding = padding});
+      return;
+    }
+    if (t.flags & TensorArgs::kMaybeRead) return;  // optional and not found.
+    HWY_ABORT("Tensor %s is required but not found in file.", t.mat.Name());
   });
 
-  MapOrReadAll(tensors, reader, map, mat_owners_, pool);
+  MapOrReadAll(tensors, reader, map, mat_owners, pool);
 
-  Fixup(pool);
-}
-
-// Allocates `*_weights_`, but not yet the tensors inside. This is split out
-// of `CallT` because that is const, hence it would pass a const& of the
-// `unique_ptr` to its lambda, but we want to reset the pointer.
-void WeightsOwner::AllocatePointer(const ModelConfig& config) {
-  switch (weight_type_) {
-    case Type::kSFP:
-      sfp_weights_.reset(new ModelWeightsPtrs<SfpStream>(config));
-      break;
-    case Type::kNUQ:
-      nuq_weights_.reset(new ModelWeightsPtrs<NuqStream>(config));
-      break;
-    case Type::kBF16:
-      bf16_weights_.reset(new ModelWeightsPtrs<BF16>(config));
-      break;
-    default:
-      HWY_ABORT("Unsupported weight type %s.", TypeName(weight_type_));
+  {
+    PROFILER_ZONE("Startup.Fixup");
+    Fixup(mat_owners, pool);
   }
-}
-
-void WeightsOwner::Fixup(hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.Fixup");
-  CallT([&](const auto& weights) { weights->Fixup(mat_owners_, pool); });
-}
-
-std::vector<uint32_t> WeightsOwner::AddTensorDataToWriter(
-    BlobWriter& writer) const {
-  std::vector<uint32_t> serialized_mat_ptrs;
-  CallT([&](const auto& weights) {
-    weights->ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-      if (t.flags & TensorArgs::kMaybeRead && !t.mat.HasPtr()) return;
-      HWY_ASSERT_M(t.mat.HasPtr(), t.mat.Name());
-      writer.Add(t.mat.Name(), t.mat.Packed(), t.mat.PackedBytes());
-      t.mat.AppendTo(serialized_mat_ptrs);
-    });
-  });
-  return serialized_mat_ptrs;
 }
 
 }  // namespace gcpp

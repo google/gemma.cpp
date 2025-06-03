@@ -13,21 +13,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Defines Gemma member functions; the actual implementations are in
-// gemma-inl.h, included from instantiations/*.cc.
+// Defines Gemma member functions which dynamic-dispatch into the SIMD
+// implementations in gemma-inl.h.
 
 #include "gemma/gemma.h"
+
+// Compiles this file for multiple architectures via "foreach_target.h", to
+// which we pass the filename via macro 'argument'.
+// clang-format off
+#undef HWY_TARGET_INCLUDE
+#define HWY_TARGET_INCLUDE "gemma/gemma.cc"  // NOLINT
+// clang-format on
+#include "hwy/foreach_target.h"  // IWYU pragma: keep
+#include "hwy/highway.h"
+// After highway.h
+#include "gemma/gemma-inl.h"
+
+#ifndef GEMMA_CC_ONCE
+#define GEMMA_CC_ONCE
 
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <memory>
 #include <vector>
 
 // Placeholder for internal header, do not modify.
-#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tokenizer.h"
@@ -39,7 +51,13 @@
 #include "util/threading_context.h"
 #include "hwy/base.h"
 
+#endif  // GEMMA_CC_ONCE
+
+#if HWY_ONCE
 namespace gcpp {
+HWY_EXPORT(GenerateSingleT);
+HWY_EXPORT(GenerateBatchT);
+HWY_EXPORT(GenerateImageTokensT);
 
 // Internal init must run before I/O. This helper function takes care of that,
 // plus calling `SetArgs`.
@@ -52,12 +70,13 @@ MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
 
 Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
     : env_(env),
-      reader_(new BlobReader(loader.weights)),
-      model_(*reader_, loader.tokenizer, loader.wrapping),
-      weights_(model_.Config().weight),
+      reader_(loader.weights),
+      model_(reader_, loader.tokenizer, loader.wrapping),
+      weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model) {
-  weights_.ReadFromBlobs(model_, *reader_, loader.map, env_.ctx.pools.Pool());
-  reader_.reset();
+  weights_.ReadFromBlobs(model_, reader_, loader.map, mat_owners_,
+                         env.ctx.pools.Pool());
+  reader_.CloseFile();
 }
 
 Gemma::~Gemma() = default;
@@ -70,42 +89,14 @@ void Gemma::Save(const Path& weights_path, hwy::ThreadPool& pool) const {
                   writer, env_.ctx.pools.Pool(), weights_path);
 }
 
-// There are >=3 types of the inference code. To reduce compile time,
-// we shard them across multiple translation units in instantiations/*.cc.
-// This declares the functions defined there. We use overloading because
-// explicit instantiations are still too slow to compile.
-// TODO: we want to move toward type-erasing, where we check the tensor type at
-// each usage. Then we would have a single function, passing `WeightsOwner`
-// instead of `WeightsPtrs<T>`.
-#define GEMMA_DECLARE(WEIGHT_TYPE)                                             \
-  extern void GenerateSingle(                                                  \
-      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
-      const RuntimeConfig& runtime_config, const PromptTokens& prompt,         \
-      size_t pos, size_t prefix_end, KVCache& kv_cache, MatMulEnv* env,        \
-      TimingInfo& timing_info);                                                \
-  extern void GenerateBatch(                                                   \
-      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
-      const RuntimeConfig& runtime_config, const QueriesPromptTokens& prompts, \
-      const QueriesPos& queries_pos, const QueriesPos& queries_prefix_end,     \
-      const KVCaches& kv_caches, MatMulEnv* env, TimingInfo& timing_info);     \
-  extern void GenerateImageTokens(                                             \
-      const ModelStore& model, const ModelWeightsPtrs<WEIGHT_TYPE>& weights,  \
-      const RuntimeConfig& runtime_config, const Image& image,                 \
-      ImageTokens& image_tokens, MatMulEnv* env);
-GEMMA_DECLARE(float)
-GEMMA_DECLARE(BF16)
-GEMMA_DECLARE(NuqStream)
-GEMMA_DECLARE(SfpStream)
-
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      KVCache& kv_cache, TimingInfo& timing_info) const {
   env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  weights_.CallT([&](auto& weights) {
-    GenerateSingle(model_, *weights, runtime_config, prompt, pos, prefix_end,
-                   kv_cache, &env_, timing_info);
-  });
+  HWY_DYNAMIC_DISPATCH(GenerateSingleT)(model_.Config(), weights_,
+                                        runtime_config, prompt, pos, prefix_end,
+                                        kv_cache, &env_, timing_info);
 
   env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
@@ -127,11 +118,9 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
 
   env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  weights_.CallT([&](auto& weights) {
-    gcpp::GenerateBatch(model_, *weights, runtime_config, queries_prompt,
-                        queries_pos, mutable_queries_prefix_end, kv_caches,
-                        &env_, timing_info);
-  });
+  HWY_DYNAMIC_DISPATCH(GenerateBatchT)(
+      model_.Config(), weights_, runtime_config, queries_prompt, queries_pos,
+      mutable_queries_prefix_end, kv_caches, &env_, timing_info);
 
   env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
@@ -141,12 +130,11 @@ void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 ImageTokens& image_tokens) const {
   env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  weights_.CallT([&](auto& weights) {
-    gcpp::GenerateImageTokens(model_, *weights, runtime_config, image,
-                              image_tokens, &env_);
-  });
+  HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(
+      model_.Config(), weights_, runtime_config, image, image_tokens, &env_);
 
   env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 }  // namespace gcpp
+#endif  // HWY_ONCE

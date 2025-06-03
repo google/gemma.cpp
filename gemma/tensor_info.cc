@@ -1,6 +1,7 @@
 #include "gemma/tensor_info.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <string>
 

@@ -469,10 +469,6 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
-        "gemma/instantiations/bf16.cc",
-        "gemma/instantiations/f32.cc",
-        "gemma/instantiations/nuq.cc",
-        "gemma/instantiations/sfp.cc",
     ],
     hdrs = [
         "gemma/activations.h",

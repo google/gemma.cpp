@@ -21,13 +21,14 @@ TEST(TensorInfoRegistryTest, Find) {
             config.Specifier().c_str());
     const TensorInfoRegistry tensors(config);
     // Each tensor in the model should be known/found.
-    ModelWeightsPtrs<SfpStream> weights(config);
+    ModelWeightsPtrs weights(config);
     weights.ForEachTensor(nullptr, nullptr, [&tensors](const TensorArgs& t) {
       const TensorInfo* info = tensors.Find(t.mat.Name());
       HWY_ASSERT_M(info, t.mat.Name());
       // Test that the `MatPtr` can be constructed from the TensorInfo,
       // and that the dimensions match.
-      MatPtrT<SfpStream> mat_ptr(t.mat.Name(), tensors);
+      const MatPtr mat_ptr(t.mat.Name(), Type::kUnknown,
+                           ExtentsFromInfo(tensors.Find(t.mat.Name())));
       EXPECT_STREQ(t.mat.Name(), mat_ptr.Name()) << t.mat.Name();
       EXPECT_EQ(t.mat.Rows(), mat_ptr.Rows()) << t.mat.Name();
       EXPECT_EQ(t.mat.Cols(), mat_ptr.Cols()) << t.mat.Name();
