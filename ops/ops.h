@@ -26,8 +26,7 @@
 namespace gcpp {
 
 static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
-    const Allocator& allocator, size_t qkv_dim, bool half_rope,
-    double base_frequency = 10000.0) {
+    size_t qkv_dim, bool half_rope, double base_frequency = 10000.0) {
   const size_t rope_dim = half_rope ? qkv_dim / 2 : qkv_dim;
   MatStorageT<float> inv_timescale("inv_timescale", rope_dim / 2);
   for (size_t dim = 0; dim < rope_dim / 2; ++dim) {

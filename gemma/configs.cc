@@ -720,9 +720,16 @@ Model DeduceModel(size_t layers, int layer_types) {
       if (layer_types & kDeducedGriffin) return Model::GRIFFIN_2B;
       if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
       return Model::GEMMA2_2B;
+    case 27:
+      return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
+                                         : Model::PALIGEMMA2_3B_224;
     case 34:
       return Model::GEMMA3_4B;
     case 42:
+      if (layer_types & kDeducedViT) {
+        return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
+                                           : Model::PALIGEMMA2_10B_224;
+      }
       return Model::GEMMA2_9B;
     case 46:
       return Model::GEMMA2_27B;
@@ -735,12 +742,6 @@ Model DeduceModel(size_t layers, int layer_types) {
     /*
     return Model::GEMMA2_772M;
     return Model::PALIGEMMA2_772M_224;
-    return Model::PALIGEMMA_224;
-    return Model::PALIGEMMA_448;
-    return Model::PALIGEMMA2_3B_224;
-    return Model::PALIGEMMA2_3B_448;
-    return Model::PALIGEMMA2_10B_224;
-    return Model::PALIGEMMA2_10B_448;
     */
     default:
       HWY_WARN("Failed to deduce model type from layer count %zu types %x.",

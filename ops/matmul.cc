@@ -401,10 +401,14 @@ static size_t NPMultiple(const Allocator& allocator, size_t N,
     }
     // This happens in tests with small N, hence do not assert.
     if (N % (np_multiple * num_packages) && N >= 128) {
-      HWY_WARN(
-          "NPMultiple: N=%zu still not divisible by np_multiple=%zu "
-          "num_packages=%zu\n",
-          N, np_multiple, num_packages);
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        HWY_WARN(
+            "NPMultiple: N=%zu still not divisible by np_multiple=%zu * "
+            "num_packages=%zu\n",
+            N, np_multiple, num_packages);
+      }
       np_multiple = nr;
     }
   }

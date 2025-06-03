@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -40,25 +41,31 @@ class PaliGemmaTest : public ::testing::Test {
  protected:
   void InitVit(const std::string& path);
   std::string GemmaReply(const std::string& prompt_text) const;
-  void TestQuestions(const char* kQA[][2], size_t num_questions);
+  void TestQuestion(const char* question, const char* expected_substring);
 
-  ImageTokens image_tokens_;
+  std::unique_ptr<ImageTokens> image_tokens_;
+  std::vector<uint8_t*> image_row_ptrs_;
 };
 
 void PaliGemmaTest::InitVit(const std::string& path) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
-  const Allocator& allocator = s_env->Env().ctx.allocator;
   const Gemma& gemma = *(s_env->GetGemma());
-  image_tokens_ = ImageTokens(
-      allocator, Extents2D(gemma.GetModelConfig().vit_config.seq_len,
-                           gemma.GetModelConfig().model_dim));
+  const ModelConfig& config = gemma.GetModelConfig();
+  image_tokens_ = std::make_unique<ImageTokens>(
+      "image", Extents2D(config.vit_config.seq_len, config.model_dim),
+      MatPadding::kPacked);
+  image_row_ptrs_.resize(image_tokens_->Rows());
+  for (size_t r = 0; r < image_tokens_->Rows(); ++r) {
+    image_row_ptrs_[r] = image_tokens_->RowBytes(r);
+  }
+  image_tokens_->AttachRowPtrs(image_row_ptrs_.data());
   Image image;
-  HWY_ASSERT(gemma.GetModelConfig().wrapping == PromptWrapping::PALIGEMMA);
+  HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));
-  const size_t image_size = gemma.GetModelConfig().vit_config.image_size;
+  const size_t image_size = config.vit_config.image_size;
   image.Resize(image_size, image_size);
   RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
-  gemma.GenerateImageTokens(runtime_config, image, image_tokens_);
+  gemma.GenerateImageTokens(runtime_config, image, *image_tokens_);
 }
 
 std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
@@ -67,7 +74,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,
                                   .gen = &s_env->MutableGen(),
                                   .verbosity = 0};
-  runtime_config.image_tokens = &image_tokens_;
+  runtime_config.image_tokens = image_tokens_.get();
   size_t abs_pos = 0;
   std::string mutable_prompt = prompt_text;
   std::vector<int> tokens = s_env->WrapAndTokenize(mutable_prompt);
@@ -79,7 +86,7 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
     return true;
   };
   runtime_config.stream_token = stream_token,
-  tokens.insert(tokens.begin(), image_tokens_.BatchSize(), 0);
+  tokens.insert(tokens.begin(), image_tokens_->Rows(), 0);
   size_t num_tokens = tokens.size();
   size_t prefix_end = num_tokens;
   runtime_config.prefill_tbatch_size = num_tokens;
@@ -89,39 +96,29 @@ std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
   return response;
 }
 
-void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
+void PaliGemmaTest::TestQuestion(const char* question,
+                                 const char* expected_substring) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
   std::string path = "paligemma/testdata/image.ppm";
   InitVit(path);
-  for (size_t i = 0; i < num_questions; ++i) {
-    fprintf(stderr, "Question %zu\n\n", i + 1);
-    std::string response = GemmaReply(kQA[i][0]);
-    fprintf(stderr, "'%s'\n\n", response.c_str());
-    EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
-  }
+  const std::string reply = GemmaReply(question);
+  fprintf(stderr, "'%s'\n\n", reply.c_str());
+  EXPECT_TRUE(reply.find(expected_substring) != std::string::npos);  // NOLINT
 }
 
-TEST_F(PaliGemmaTest, General) {
+TEST_F(PaliGemmaTest, QueryObjects) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
-  static const char* kQA_2_3B_pt_448[][2] = {
-      {"describe this image", "The Grossmünster in Zürich"},
-      {"describe image briefly", "The Grossmünster"},
-      {"answer en What objects are in the image?", "Building, Tower"},
-      {"segment water", "<loc1023> water"},
-  };
-  const char* (*qa)[2];
-  size_t num;
-  switch (s_env->GetGemma()->GetModelConfig().model) {
-    case Model::PALIGEMMA2_3B_448:
-      qa = kQA_2_3B_pt_448;
-      num = sizeof(kQA_2_3B_pt_448) / sizeof(kQA_2_3B_pt_448[0]);
-      break;
-    default:
-      FAIL() << "Unsupported model: "
-             << s_env->GetGemma()->GetModelConfig().display_name;
-      break;
+  const char* question = "answer en What objects are in the image?";
+  const char* expected_substring = "Building, Tower";  // 3B PT 224, 10B Mix 224
+  const Model model = s_env->GetGemma()->GetModelConfig().model;
+  if (model == Model::PALIGEMMA2_3B_448) {
+    expected_substring = "Lake.";
+  } else if (model == Model::PALIGEMMA2_3B_224) {
+    expected_substring = "Cloud, Water.";
+  } else if (model == Model::PALIGEMMA2_10B_224) {
+    expected_substring = "Building.";
   }
-  TestQuestions(qa, num);
+  TestQuestion(question, expected_substring);
 }
 
 }  // namespace

@@ -47,13 +47,16 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
   }
 }
 
-GemmaEnv::GemmaEnv(const LoaderArgs& loader,
-                   const ThreadingArgs& threading_args,
+GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
-    : env_(MakeMatMulEnv(threading_args)), gemma_(loader, env_) {
+    : env_(MakeMatMulEnv(threading)), gemma_(loader, env_) {
+  const ModelConfig& config = gemma_.GetModelConfig();
   // Only allocate one for starters because GenerateBatch might not be called.
-  kv_caches_.push_back(
-      KVCache(gemma_.GetModelConfig(), inference.prefill_tbatch_size));
+  kv_caches_.push_back(KVCache(config, inference.prefill_tbatch_size));
+
+  if (inference.verbosity >= 2) {
+    ShowConfig(loader, threading, inference, config);
+  }
 
   InitGenerator(inference, gen_);
 

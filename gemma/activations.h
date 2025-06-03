@@ -40,9 +40,12 @@ struct Activations {
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
         // and does not use an external KV cache.
-        q("q", Extents2D(batch_size, config.vocab_size == 0 ?
-          layer_config.heads * 3 * layer_config.qkv_dim :
-          layer_config.heads * layer_config.qkv_dim), pad_),
+        q("q",
+          Extents2D(batch_size,
+                    config.vocab_size == 0
+                        ? layer_config.heads * 3 * layer_config.qkv_dim
+                        : layer_config.heads * layer_config.qkv_dim),
+          pad_),
         logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
 
         pre_att_rms_out("pre_att_rms_out",
@@ -74,12 +77,12 @@ struct Activations {
             "griffin_mul",
             is_griffin ? Extents2D(batch_size, config.model_dim) : none_, pad_),
 
-        inv_timescale(CreateInvTimescale(
-            ThreadingContext::Get().allocator, layer_config.qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope)),
+        inv_timescale(
+            CreateInvTimescale(layer_config.qkv_dim,
+                               layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
-            ThreadingContext::Get().allocator, layer_config.qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
+            layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
+            1000000.0)),
 
         env(env) {
     HWY_ASSERT(batch_size != 0);

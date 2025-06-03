@@ -152,7 +152,7 @@ class TypePrefix {
       const uint64_t bytes = bytes_[type_idx];
       if (bytes == 0) continue;
       const double percent = 100.0 * bytes / total_bytes_;
-      fprintf(stderr, "%zu blob bytes (%.2f%%) of %s\n",
+      fprintf(stderr, "%12zu blob bytes (%5.2f%%) of %4s\n",
               static_cast<size_t>(bytes), percent, TypeName(type));
     }
   }
@@ -185,14 +185,21 @@ static size_t DeduceNumLayers(const KeyVec& keys) {
 
 // Looks for known tensor names associated with model families.
 // This works with or without type prefixes because it searches for substrings.
-static int DeduceLayerTypes(const KeyVec& keys) {
+static int DeduceLayerTypes(const BlobReader& reader) {
   int layer_types = 0;
-  for (const std::string& key : keys) {
+  for (size_t key_idx = 0; key_idx < reader.Keys().size(); ++key_idx) {
+    const std::string& key = reader.Keys()[key_idx];
     if (key.find("gr_conv_w") != std::string::npos) {  // NOLINT
       return kDeducedGriffin;
     }
-    if (key.find("qkv_einsum_w") != std::string::npos) {  // NOLINT
+    if (key.find("qkv_ein_w") != std::string::npos) {  // NOLINT
       layer_types |= kDeducedViT;
+    }
+    if (key.find("img_pos_emb") != std::string::npos) {  // NOLINT
+      // About 5.88 elements per pixel; assume at least bf16.
+      if (reader.Range(key_idx).bytes > 448 * 448 * 5 * sizeof(BF16)) {
+        layer_types |= kDeduced448;
+      }
     }
   }
   return layer_types;
@@ -211,7 +218,7 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
 
   // Always deduce so we can verify it against the config we read.
   const size_t layers = DeduceNumLayers(reader.Keys());
-  const int layer_types = DeduceLayerTypes(reader.Keys());
+  const int layer_types = DeduceLayerTypes(reader);
   const Model deduced_model = DeduceModel(layers, layer_types);
 
   ModelConfig config;

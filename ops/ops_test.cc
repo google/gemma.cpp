@@ -386,8 +386,6 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  const Allocator& allocator = ThreadingContext::Get().allocator;
-
   ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
                      ChooseWrapping(Model::GEMMA2_9B));
   int dim_qkv = config.layer_configs[0].qkv_dim;
@@ -410,7 +408,7 @@ void TestRopeAndMulBy() {
   MatStorageT<float> kexpected("kexpected", dim_qkv);
   MatStorageT<float> kactual("kactual", dim_qkv);
   MatStorageT<float> inv_timescale = CreateInvTimescale(
-      allocator, config.layer_configs[0].qkv_dim,
+      config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (int pos = 1; pos < 500; pos++) {

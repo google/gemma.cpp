@@ -19,6 +19,10 @@
 
 #include <vector>
 
+#pragma push_macro("PROFILER_ENABLED")
+#undef PROFILER_ENABLED
+#define PROFILER_ENABLED 0
+
 #include "compression/types.h"
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
@@ -1322,7 +1326,8 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     if constexpr (HWY_IS_DEBUG_BUILD) {
       fprintf(stderr,
               "MatMul perf warning: setting row pointers because "
-              "C.AttachRowPtrs() was not called.\n");
+              "%s.AttachRowPtrs() was not called.\n",
+              C.Name());
     }
     HWY_DASSERT(C.HasPtr());
     for (size_t r = 0; r < C.Rows(); ++r) {
@@ -1416,3 +1421,5 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 HWY_AFTER_NAMESPACE();
 
 #endif  // NOLINT
+
+#pragma pop_macro("PROFILER_ENABLED")
