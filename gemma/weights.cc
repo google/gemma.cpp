@@ -367,7 +367,7 @@ static void MapAll(const std::vector<TensorToRead>& tensors,
 // Mode == kReadBF16:
 
 template <typename T>
-static void DecompressToBF16(const MatPtr& mat,
+static void DecompressToBF16(MatPtr& mat,
                              const hwy::AlignedFreeUniquePtr<uint8_t[]>& buf) {
   hwy::HWY_NAMESPACE::ScalableTag<BF16> dbf;
   const size_t cols = mat.Cols();
