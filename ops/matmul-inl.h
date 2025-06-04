@@ -1106,8 +1106,8 @@ class MMPerPackage {
         });
   }
 
-  // Decompresses all `M x K` from `A` into `A_`. Assumes `TA` is a seekable
-  // type (i.e., not NUQ) so we can use pointer arithmetic.
+  // Decompresses all `M x K` from `A` into padded BF16 `A_`. Assumes `TA` is a
+  // seekable type (i.e., not NUQ) so we can use pointer arithmetic.
   template <typename TA>
   HWY_NOINLINE void DoDecompressA(const MatPtrT<TA>& A, MMParA par_a) const {
     const IndexRange all_M(0, A.Rows());
@@ -1122,8 +1122,9 @@ class MMPerPackage {
                               const IndexRange& range_K) HWY_ATTR {
       const size_t col0 = range_K.begin();
       const size_t cols = range_K.Num();
-      // otherwise, padding overwrites neighbors
-      HWY_DASSERT(cols % NBF == 0 || cols == A.Cols());
+      // Must be a vector multiple, or the last range before row padding,
+      // otherwise `DecompressAndZeroPad` overwrites neighbors.
+      HWY_DASSERT(cols % NBF == 0 || range_K.end() == A.Cols());
       for (size_t row_a : range_M) {
         const PackedSpan<const TA> from = MakeSpan(A.Row(row_a) + col0, cols);
         BF16* HWY_RESTRICT to = A_.Row(row_a) + col0;
@@ -1169,9 +1170,9 @@ class MMPerPackage {
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
-      // Only if no zero-padding required.
+      // Only if vector multiple and padded (see `DoDecompressA`).
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
-      if (HWY_LIKELY(A.Cols() % NBF == 0)) {
+      if (HWY_LIKELY(A.Cols() % NBF == 0 && !A.IsPacked())) {
         // Actually const, but RowPtr is also used for partial which is not.
         return RowPtrBF(const_cast<TA*>(A.Row(0)), A.Cols(), A.Stride());
       }
@@ -1241,7 +1242,7 @@ class MMPerPackage {
 
   const MMArgs args_;  // copy for locality
   const size_t pkg_idx_;
-  RowPtrBF A_;  // points into A or pkg_A.
+  RowPtrBF A_;  // view into A or pkg_A_, both of which are padded.
 
   const IndexRange range_np_;
   // From MMConfig:

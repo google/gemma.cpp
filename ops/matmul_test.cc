@@ -91,7 +91,8 @@ float MaxAbs(const MatStorageT<float>& a) {
 // B is already transposed.
 template <typename TA, typename TB, typename TC>
 void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                 const MatPtrT<TC>& C_slow, const MatPtrT<TC>& C, int line) {
+                 const MatPtrT<TC>& C_slow, const MatPtrT<TC>& C,
+                 MatMulEnv& env, int line) {
   const hn::ScalableTag<float> df;
   const size_t cols = A.Cols();
   const size_t B_rows = B.Rows();
@@ -101,6 +102,7 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                                    MatPadding::kOdd);
   MatStorageT<float> c_batch("c_batch", Extents2D(A.Rows(), B_rows),
                              MatPadding::kOdd);
+  c_batch.AllocateAndAttachRowPtrs(env.row_ptrs);
   MatStorageT<float> c_slow_batch("c_slow_batch", Extents2D(A.Rows(), B_rows),
                                   MatPadding::kOdd);
   for (size_t m = 0; m < A.Rows(); ++m) {
@@ -225,8 +227,9 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatStorageT<TA> A(GenerateMat<TA>(A_extents, pool));
   MatStorageT<TB> BT(GenerateTransposedMat<TB>(B_extents, pool));
-  MatStorageT<TC> C_slow("c_slow_batch", C_extents, MatPadding::kOdd);
-  MatStorageT<TC> C("c_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> C_slow("C_slow", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> C("C", C_extents, MatPadding::kOdd);
+  C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
       add ? GenerateMat<float>(Extents2D(1, cols_bc), pool)
@@ -238,7 +241,7 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   // A few reps to get coverage of the various autotuned code paths.
   for (size_t rep = 0; rep < 16; ++rep) {
     MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C);
-    AssertClose(A, BT, C_slow, C, line);
+    AssertClose(A, BT, C_slow, C, env, line);
     if (per_key->autotune.Best()) break;
   }
 }

@@ -44,7 +44,6 @@ class PaliGemmaTest : public ::testing::Test {
   void TestQuestion(const char* question, const char* expected_substring);
 
   std::unique_ptr<ImageTokens> image_tokens_;
-  std::vector<uint8_t*> image_row_ptrs_;
 };
 
 void PaliGemmaTest::InitVit(const std::string& path) {
@@ -54,11 +53,7 @@ void PaliGemmaTest::InitVit(const std::string& path) {
   image_tokens_ = std::make_unique<ImageTokens>(
       "image", Extents2D(config.vit_config.seq_len, config.model_dim),
       MatPadding::kPacked);
-  image_row_ptrs_.resize(image_tokens_->Rows());
-  for (size_t r = 0; r < image_tokens_->Rows(); ++r) {
-    image_row_ptrs_[r] = image_tokens_->RowBytes(r);
-  }
-  image_tokens_->AttachRowPtrs(image_row_ptrs_.data());
+  image_tokens_->AllocateAndAttachRowPtrs(s_env->Env().row_ptrs);
   Image image;
   HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA);
   HWY_ASSERT(image.ReadPPM(path));

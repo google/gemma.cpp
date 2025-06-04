@@ -90,13 +90,13 @@ struct Activations {
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
-    q.AllocateAndAttachRowPtrs(row_ptrs);
-    logits.AllocateAndAttachRowPtrs(row_ptrs);
-    att_sums.AllocateAndAttachRowPtrs(row_ptrs);
-    C1.AllocateAndAttachRowPtrs(row_ptrs);
-    C2.AllocateAndAttachRowPtrs(row_ptrs);
-    ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
-    // TODO: also init rows for image_tokens.
+    x.AllocateAndAttachRowPtrs(env->row_ptrs);
+    q.AllocateAndAttachRowPtrs(env->row_ptrs);
+    logits.AllocateAndAttachRowPtrs(env->row_ptrs);
+    att_sums.AllocateAndAttachRowPtrs(env->row_ptrs);
+    C1.AllocateAndAttachRowPtrs(env->row_ptrs);
+    C2.AllocateAndAttachRowPtrs(env->row_ptrs);
+    ffw_out.AllocateAndAttachRowPtrs(env->row_ptrs);
 
     // Note that BindC on any MatMul output considerably slows down Prefill.
   }
@@ -160,9 +160,6 @@ struct Activations {
   MatStorageT<float> inv_timescale_global;
 
   MatMulEnv* env;
-  // Per-tensor allocations to make it likelier that asan detects bugs such as
-  // use after free, overrun, and dangling references.
-  std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
 }  // namespace gcpp

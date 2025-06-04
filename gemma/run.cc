@@ -109,6 +109,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                              config.model_dim)
                  : Extents2D(0, 0),
       MatPadding::kOdd);
+  image_tokens.AllocateAndAttachRowPtrs(gemma.Env().row_ptrs);
   if (have_image) {
     HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA ||
                config.wrapping == PromptWrapping::GEMMA_VLM);

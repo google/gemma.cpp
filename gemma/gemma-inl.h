@@ -1105,34 +1105,18 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
   HWY_DASSERT(weights.vit_img_embedding_kernel.Rows() == model_dim);
   HWY_DASSERT(weights.vit_img_embedding_kernel.Cols() == patch_size);
   HWY_DASSERT(activations.x.Cols() == model_dim);
-  std::vector<hwy::AlignedFreeUniquePtr<float[]>> image_patches(seq_len);
-  for (size_t i = 0; i < seq_len; ++i) {
-    image_patches[i] = hwy::AllocateAligned<float>(patch_size);
-    image.GetPatch(i, image_patches[i].get());
-  }
   // img/embedding/kernel has original shape (14, 14, 3, 1152)
   // H x W x C x D transposed to D x (H x W x C) so here (1152, 14 * 14 * 3)
   // image_patches is (256, 14 * 14 * 3)
-  // This could be done as one MatMul like:
-  // MatStorageT<float> image_patches("patches", Extents2D(kSeqLen,
-  //   kPatchSize), MatPadding::kPacked);
-  // [Get patches]
-  // CallMatMul(
-  //       image_patches,
-  //       weights.vit_img_embedding_kernel,
-  //       weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
-  //       activations.x);
-  // However, MatMul currently requires that
-  //   A.cols % (2 * hn::Lanes(hn::ScalableTag<MulT>())) == 0
-  // which is not the case here. We should relax that requirement on MatMul and
-  // then use the above. For now, we rely on MatVecAdd instead.
-  CallUpcasted(&weights.vit_img_embedding_kernel, [&](const auto* embedding_t) {
-    for (size_t i = 0; i < seq_len; ++i) {
-      MatVecAdd(*embedding_t, 0, model_dim, patch_size, image_patches[i].get(),
-                weights.vit_img_embedding_bias.PackedScale1(),
-                activations.x.Row(i), activations.env->ctx.pools.Pool(0));
-    }
-  });
+  // Must be padded, see `DoDecompressA`.
+  MatStorageT<float> image_patches("patches", Extents2D(seq_len, patch_size),
+                                   MatPadding::kOdd);
+  for (size_t i = 0; i < seq_len; ++i) {
+    image.GetPatch(i, image_patches.Row(i));
+  }
+  CallMatMul(image_patches, weights.vit_img_embedding_kernel,
+             weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
+             activations.x);
   // Add position embeddings.
   CallUpcastedActivation(&weights.vit_img_pos_embedding,
                          [&](const auto* weights_t) {

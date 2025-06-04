@@ -240,6 +240,7 @@ class MMStorage {
         // Same stride independent of the actual C.Cols() so we can pre-bind.
         partial_(partial_storage_.Row(0), kMaxN, partial_storage_.Stride()) {
     // Per-package allocation so each can decompress A into its own copy.
+    // Must be padded, see `DoDecompressA`.
     parallel.ForPkg(MMParallel::kMaxPackages, [&](size_t pkg_idx) {
       pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
           "pkg_A", Extents2D(kMaxM, kMaxK), MatPadding::kOdd));
@@ -665,6 +666,11 @@ struct MatMulEnv {
   MMStorage storage;
   MMKeys keys;
   std::vector<MMPerKey> per_key;
+
+  // Pass to MatPtr::AllocateAndAttachRowPtrs.
+  // Per-tensor allocations to make it likelier that asan detects bugs such as
+  // use after free, overrun, and dangling references.
+  std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
 // Arguments to MatMul() that are independent of the A/B/C types.
