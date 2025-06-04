@@ -24,6 +24,7 @@
 
 #include "compression/types.h"
 #include "gemma/configs.h"      // ModelConfig
+#include "gemma/gemma_args.h"   // InferenceArgs
 #include "gemma/model_store.h"  // ModelStore
 #include "gemma/tensor_info.h"  // TensorInfoRegistry
 #include "io/blob_store.h"      // BlobWriter
@@ -424,7 +425,8 @@ struct ModelWeightsPtrs {
 
   // Reads tensor data from `BlobStore` or aborts on error. `map` is a user
   // override for whether to map blobs or read them.
-  void ReadFromBlobs(const ModelStore& model, BlobReader& reader, Tristate map,
+  void ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+                     const LoaderArgs& loader, const InferenceArgs& inference,
                      std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
 
   // Adds one blob for each tensor's data and returns all serialized MatPtr.

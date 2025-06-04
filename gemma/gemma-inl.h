@@ -210,17 +210,9 @@ static HWY_NOINLINE void GriffinRecurrent(const QueriesPos& queries_pos,
   }  // interleaved_idx
 
   // Final linear layer.
-  // TODO: MatMul
-  CallUpcasted(
-      &layer_weights->griffin.linear_out_w, [&](const auto* weights_t) {
-        for (size_t r = 0; r < num_interleaved; ++r) {
-          float* HWY_RESTRICT x = activations.griffin_x.Row(r);
-          float* out_ptr = activations.att_sums.Row(r);
-          MatVecAdd(*weights_t, 0, model_dim, model_dim, x,
-                    layer_weights->griffin.linear_out_biases.PackedScale1(),
-                    out_ptr, pool);
-        }
-      });
+  CallMatMul(activations.griffin_x, layer_weights->griffin.linear_out_w,
+             layer_weights->griffin.linear_out_biases.PackedScale1(),
+             *activations.env, activations.att_sums);
 }  // GriffinRecurrent
 
 // Wrapper class; holds arguments in member variables to shorten call sites.
@@ -1142,7 +1134,10 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
     }
   });
   // Add position embeddings.
-  AddFromBatched(weights.vit_img_pos_embedding, activations.x);
+  CallUpcastedActivation(&weights.vit_img_pos_embedding,
+                         [&](const auto* weights_t) {
+                           AddFromBatched(*weights_t, activations.x);
+                         });
 }
 
 // Prefills the image tokens with the ViT encoder.

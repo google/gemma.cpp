@@ -19,10 +19,6 @@
 
 #include <vector>
 
-#pragma push_macro("PROFILER_ENABLED")
-#undef PROFILER_ENABLED
-#define PROFILER_ENABLED 0
-
 #include "compression/types.h"
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
@@ -952,15 +948,11 @@ class MMPerPackage {
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
         [&](const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const RowPtrBF B_storage_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
-            {
-              MMZone zone;
-              zone.MaybeEnter("MM.NT.DecB", args_);
-              DecompressB(B, row_b, range_K, B_view);
-            }
+            RowPtrBF B_view = DecompressB(B, row_b, range_K, B_storage_view);
             MMKernel::A2C0(A_view, B_view, mr_, range_M, row_b, K, MMSetC(),
                            args_, C_rows);
           }
@@ -985,17 +977,13 @@ class MMPerPackage {
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
       const RowPtrBF& A_view = A_.View(range_mc.begin(), range_kc.begin(), kc);
-      const RowPtrBF B_view(
+      const RowPtrBF B_storage_view(
           B_storage, kc,
           Stride(MatPadding::kOdd, kc, sizeof(BF16), line_bytes_));
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
-        {
-          MMZone zone;
-          zone.MaybeEnter("MM.NT_K.DecB", args_);
-          DecompressB(B, row_b, range_kc, B_view);
-        }
+        RowPtrBF B_view = DecompressB(B, row_b, range_kc, B_storage_view);
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
                        C_rows);
       }
@@ -1051,15 +1039,11 @@ class MMPerPackage {
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           const RowPtrBF& A_view = A_.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const RowPtrBF B_storage_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
-            {
-              MMZone zone;
-              zone.MaybeEnter("MM.NT_MT.DecB", args_);
-              DecompressB(B, row_b, range_K, B_view);
-            }
+            RowPtrBF B_view = DecompressB(B, row_b, range_K, B_storage_view);
             MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, K, MMSetC(),
                            args_, C_rows);
           }
@@ -1081,7 +1065,8 @@ class MMPerPackage {
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
     // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
-    const auto loop_nc = [&](const RowPtrBF& B_view, const IndexRange& range_mc,
+    const auto loop_nc = [&](const RowPtrBF& B_storage_view,
+                             const IndexRange& range_mc,
                              const IndexRange& range_kc,
                              const IndexRange& range_nc,
                              auto out_tag) HWY_ATTR {
@@ -1090,11 +1075,7 @@ class MMPerPackage {
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
-        {
-          MMZone zone;
-          zone.MaybeEnter("MM.NT_MT_K.DecB", args_);
-          DecompressB(B, row_b, range_kc, B_view);
-        }
+        RowPtrBF B_view = DecompressB(B, row_b, range_kc, B_storage_view);
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
                        C_rows);
       }
@@ -1103,15 +1084,17 @@ class MMPerPackage {
         ranges_mc_, ranges_nc_, pkg_idx_,
         [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, kc_max, B_stride);
+          const RowPtrBF B_storage_view(B_storage, kc_max, B_stride);
 
           // Peel off the first iteration of the kc loop: avoid
           // zero-initializing `partial` by writing into it.
           ranges_kc_.VisitFirst([&](const IndexRange& range_kc) {
-            loop_nc(B_view, range_mc, range_kc, range_nc, MMSetPartial());
+            loop_nc(B_storage_view, range_mc, range_kc, range_nc,
+                    MMSetPartial());
           });
           ranges_kc_.VisitRemaining([&](const IndexRange& range_kc) {
-            loop_nc(B_view, range_mc, range_kc, range_nc, MMAddPartial());
+            loop_nc(B_storage_view, range_mc, range_kc, range_nc,
+                    MMAddPartial());
           });
 
           // Already in parallel section, hence no `kParM`, and
@@ -1228,11 +1211,15 @@ class MMPerPackage {
   // col 0 of `B_view`. Decompressing SFP is relatively cheap on `AVX3_DL`
   // thanks to its large table lookups, and less so on other targets.
   template <typename TB>
-  HWY_INLINE void DecompressB(const MatPtrT<TB>& B, const size_t row_b,
-                              const IndexRange& range_kc,
-                              const RowPtrBF& B_view) const {
-    const hn::ScalableTag<BF16> dbf;
+  HWY_INLINE RowPtrBF DecompressB(const MatPtrT<TB>& B, const size_t row_b,
+                                  const IndexRange& range_kc,
+                                  const RowPtrBF& B_view) const {
+    if constexpr (hwy::IsSame<TB, BF16>()) {
+      return RowPtrBF(const_cast<BF16*>(B.Row(row_b)) + range_kc.begin(),
+                      range_kc.Num(), B.Stride());
+    }
 
+    const hn::ScalableTag<BF16> dbf;
     const PackedSpan<const TB> B_span = B.PaddedSpan();
 
     const size_t kc = range_kc.Num();
@@ -1249,6 +1236,7 @@ class MMPerPackage {
         }
       }
     }
+    return B_view;
   }
 
   const MMArgs args_;  // copy for locality
@@ -1421,5 +1409,3 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 HWY_AFTER_NAMESPACE();
 
 #endif  // NOLINT
-
-#pragma pop_macro("PROFILER_ENABLED")

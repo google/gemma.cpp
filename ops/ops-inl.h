@@ -117,6 +117,7 @@ HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
                                                size_t size) {
+  PROFILER_ZONE("ops.Gelu");
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   hn::Transform(D(), x, size,
@@ -181,6 +182,8 @@ namespace detail {
 // Shared by RMSNorm and RMSNormInplace.
 template <typename VT>
 float RMSNormMul(const VT* HWY_RESTRICT x, size_t size) {
+  PROFILER_ZONE("ops.RMSNormMul");
+
   const hn::ScalableTag<float> d;
   const float l2 = DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault());
   constexpr float kEps = 1e-6f;  // avoid divide by zero
@@ -195,7 +198,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
                                            const WT* HWY_RESTRICT weight,
                                            size_t w_ofs, OT* HWY_RESTRICT out,
                                            const size_t size) {
-  PROFILER_FUNC;
+  PROFILER_ZONE("ops.RMSNorm");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
@@ -228,7 +231,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(const WT* HWY_RESTRICT weight,
                                                   size_t w_ofs,
                                                   XT* HWY_RESTRICT inout,
                                                   const size_t size) {
-  PROFILER_FUNC;
+  PROFILER_ZONE("ops.RMSNormInplace");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
@@ -280,7 +283,7 @@ HWY_NOINLINE void ComputeMoments(const XT* HWY_RESTRICT x, size_t size,
 template <typename XT, typename WT, typename OT>
 HWY_NOINLINE void LayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
                             const WT* HWY_RESTRICT bias, OT* out, size_t size) {
-  PROFILER_FUNC;
+  PROFILER_ZONE("ops.LayerNorm");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
@@ -360,7 +363,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
   }
 }
 
-/* RoPE as in Rotary Position Embeddings from the RoFormer paper
+/* RoPE as in Rotary Position Embeddings from the `RoFormer` paper
    (https://arxiv.org/abs/2104.09864v5). The query and key vectors are rotated
    as a function of their absolute position using the rotation matrix R before
    the self-attention operation. R is a d x d matrix.
@@ -391,7 +394,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, int pos) {
-  PROFILER_FUNC;
+  PROFILER_ZONE("ops.Rope");
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
@@ -409,7 +412,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     const float mul, float* HWY_RESTRICT x, size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, int pos) {
-  PROFILER_FUNC;
+  PROFILER_ZONE("ops.RopeAndMulBy");
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -477,15 +480,45 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
   }
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
-    const float* HWY_RESTRICT other, float* HWY_RESTRICT x, const size_t size) {
-  namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  using V = hn::Vec<D>;
+template <typename XT>
+static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
+                                                  float* HWY_RESTRICT out,
+                                                  const size_t size) {
+  PROFILER_ZONE("ops.AddFrom");
 
-  hn::Transform1(D(), x, size, other,
-                 [](const auto d, const V x, const V other)
-                     HWY_ATTR { return hn::Add(x, other); });
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  const size_t NF = hn::Lanes(df);
+  using VF = hn::Vec<decltype(df)>;
+
+  const auto packed_x = MakeSpan(x, size);
+
+  size_t i = 0;
+  if (size >= 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
+      VF x0, x1;
+      Decompress2(df, packed_x, i, x0, x1);
+      VF out0 = hn::Load(df, out + i);
+      VF out1 = hn::Load(df, out + i + NF);
+      hn::Store(hn::Add(x0, out0), df, out + i);
+      hn::Store(hn::Add(x1, out1), df, out + i + NF);
+    }
+  }
+
+  const size_t remaining = size - i;
+  const size_t remaining1 = remaining - HWY_MIN(remaining, NF);
+  HWY_DASSERT(remaining < 2 * NF);
+  HWY_DASSERT(remaining1 < NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
+    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
+    const VF x0 = hn::Load(df, buf_x);
+    const VF x1 = hn::Load(df, buf_x + NF);
+    const VF out0 = hn::LoadN(df, out + i, remaining);
+    const VF out1 = hn::LoadN(df, out + i + NF, remaining1);
+    hn::StoreN(hn::Add(x0, out0), df, out + i, remaining);
+    hn::StoreN(hn::Add(x1, out1), df, out + i + NF, remaining1);
+  }
 }
 
 // Simple loops unless/until batch sizes are large enough to parallelize.
@@ -534,17 +567,19 @@ void LayerNormBatched(const MatPtrT<XT>& x, const MatPtr& weight,
       });
 }
 
-static HWY_INLINE void AddFromBatched(const MatPtrT<float>& other,
-                                      MatPtrT<float>& x) {
-  HWY_DASSERT(x.SameShape(other));
-  for (size_t token_idx = 0; token_idx < x.Rows(); ++token_idx) {
-    AddFrom(other.Row(token_idx), x.Row(token_idx), x.Cols());
+template <typename XT>
+static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x,
+                                      MatPtrT<float>& out) {
+  HWY_DASSERT(out.SameShape(x));
+  for (size_t token_idx = 0; token_idx < out.Rows(); ++token_idx) {
+    AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols());
   }
 }
 
 static HWY_NOINLINE void MulBy(const float* HWY_RESTRICT other,
                                float* HWY_RESTRICT x, const size_t size,
                                const size_t max_pos) {
+  PROFILER_ZONE("ops.MulBy");
   HWY_DASSERT(max_pos <= size);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -563,6 +598,7 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulBy(const float* HWY_RESTRICT other,
 
 static HWY_NOINLINE void MulByConst(const float c, float* HWY_RESTRICT x,
                                     const size_t size, const size_t max_pos) {
+  PROFILER_ZONE("ops.MulByConst");
   HWY_DASSERT(max_pos <= size);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -578,22 +614,56 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MulByConst(const float c,
   MulByConst(c, x, size, size);
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
-    float c, const float* HWY_RESTRICT x, float* HWY_RESTRICT out,
-    size_t size) {
+template <typename XT, typename OT>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(float c,
+                                                    const XT* HWY_RESTRICT x,
+                                                    OT* HWY_RESTRICT out,
+                                                    size_t size) {
+  PROFILER_ZONE("ops.MulByConstAndAdd");
   namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  using V = hn::Vec<D>;
-  hn::Transform1(D(), out, size, x,
-                 [c](const auto d, const V v_out, const V v_x) HWY_ATTR {
-                   return hn::MulAdd(v_x, hn::Set(d, c), v_out);
-                 });
+  const hn::ScalableTag<float> df;
+  const size_t NF = hn::Lanes(df);
+  using VF = hn::Vec<decltype(df)>;
+
+  const VF v_c = hn::Set(df, c);
+  const auto packed_x = MakeSpan(x, size);
+  const auto packed_out = MakeSpan(out, size);
+
+  size_t i = 0;
+  if (size >= 2 * NF) {
+    for (; i <= size - 2 * NF; i += 2 * NF) {
+      VF x0, x1, out0, out1;
+      Decompress2(df, packed_x, i, x0, x1);
+      Decompress2(df, packed_out, i, out0, out1);
+      out0 = hn::MulAdd(x0, v_c, out0);
+      out1 = hn::MulAdd(x1, v_c, out1);
+      Compress2(df, out0, out1, packed_out, i);
+    }
+  }
+
+  const size_t remaining = size - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
+    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
+    DecompressAndZeroPad(df, packed_out, i, buf_out, remaining);
+    const VF x0 = hn::Load(df, buf_x);
+    const VF x1 = hn::Load(df, buf_x + NF);
+    VF out0 = hn::Load(df, buf_out);
+    VF out1 = hn::Load(df, buf_out + NF);
+    out0 = hn::MulAdd(x0, v_c, out0);
+    out1 = hn::MulAdd(x1, v_c, out1);
+    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
+    hwy::CopyBytes(buf_out, out + i, remaining * sizeof(OT));
+  }
 }
 
 // See below for a specialized version for top-1 sampling.
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
                                  const size_t mask_pos,
                                  float temperature = 1.0f) {
+  PROFILER_ZONE("ops.Softmax");
   HWY_DASSERT(size != 0);
   HWY_DASSERT(mask_pos <= size);
 
@@ -733,6 +803,7 @@ static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
 static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
                                        const size_t size,
                                        const size_t max_pos) {
+  PROFILER_ZONE("ops.LogitsSoftCap");
   HWY_DASSERT(max_pos <= size);
 
   namespace hn = hwy::HWY_NAMESPACE;

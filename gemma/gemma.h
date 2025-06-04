@@ -105,7 +105,8 @@ class Gemma {
  public:
   // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
   // `env` must remain valid for the lifetime of this Gemma.
-  Gemma(const LoaderArgs& loader, MatMulEnv& env);
+  Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
+        MatMulEnv& env);
 
   ~Gemma();
 

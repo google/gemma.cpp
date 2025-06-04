@@ -567,6 +567,16 @@ class MMAutoTune {
 
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
+  // Group batch size into buckets to reduce #auto-tunes.
+  static size_t BucketM(size_t M) {
+    // The first 4 may require their own bucket because `kNT` only works for a
+    // single M range, but that depends on the config's `MR()`.
+    if (M <= 4) return M;
+    if (M <= 16) return 16;
+    if (M <= 64) return 64;
+    return 256;
+  }
+
  public:
   using Key = uint64_t;
   // KeyFromDims will only return this if all dims are zero, which is invalid.
@@ -577,7 +587,7 @@ class MMKeys {
     HWY_DASSERT(M < (Key{1} << 16));  // batch sizes are smaller
     HWY_DASSERT(K < (Key{1} << 24));
     HWY_DASSERT(N < (Key{1} << 24));
-    const Key key = static_cast<Key>(M) | (static_cast<Key>(K) << 16) |
+    const Key key = static_cast<Key>(BucketM(M)) | (static_cast<Key>(K) << 16) |
                     (static_cast<Key>(N) << 40);
     HWY_DASSERT(key != kPadding);
     return key;

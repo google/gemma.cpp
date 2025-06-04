@@ -52,6 +52,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path tokenizer;
   Path weights;  // weights file location
   Tristate map;
+  Tristate to_bf16;
   Tristate wrapping;
 
   template <class Visitor>
@@ -62,6 +63,8 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "Path name of model weights (.sbs) file.\n  Required argument.\n");
     visitor(map, "map", Tristate::kDefault,
             "Enable memory-mapping? -1 = auto, 0 = no, 1 = yes.");
+    visitor(to_bf16, "to_bf16", Tristate::kDefault,
+            "Convert weights to bf16? -1 = auto, 0 = no, 1 = yes.");
     visitor(wrapping, "wrapping", Tristate::kDefault,
             "Enable prompt wrapping? Specify 0 for pre-2025 format PT models.");
   }

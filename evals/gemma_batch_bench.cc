@@ -37,7 +37,7 @@ class GemmaTest : public ::testing::Test {
  protected:
   std::vector<std::string> BatchGemmaReply(
       const std::vector<std::string>& inputs) {
-    s_env->SetMaxGeneratedTokens(32);
+    s_env->SetMaxGeneratedTokens(16);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 2;
     std::vector<std::string> replies;

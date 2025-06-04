@@ -88,23 +88,14 @@ struct Activations {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
-    const auto init_row_ptrs = [&](MatPtrT<float>& mat) {
-      if (!mat.HasPtr()) return;
-      row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(mat.Rows()));
-      uint8_t** ptrs = row_ptrs.back().get();
-      for (size_t r = 0; r < mat.Rows(); ++r) {
-        ptrs[r] = mat.RowBytes(r);
-      }
-      mat.AttachRowPtrs(ptrs);
-    };
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
-    init_row_ptrs(q);
-    init_row_ptrs(logits);
-    init_row_ptrs(att_sums);
-    init_row_ptrs(C1);
-    init_row_ptrs(C2);
-    init_row_ptrs(ffw_out);
+    q.AllocateAndAttachRowPtrs(row_ptrs);
+    logits.AllocateAndAttachRowPtrs(row_ptrs);
+    att_sums.AllocateAndAttachRowPtrs(row_ptrs);
+    C1.AllocateAndAttachRowPtrs(row_ptrs);
+    C2.AllocateAndAttachRowPtrs(row_ptrs);
+    ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
     // TODO: also init rows for image_tokens.
 
     // Note that BindC on any MatMul output considerably slows down Prefill.
@@ -142,7 +133,7 @@ struct Activations {
   const MatPadding pad_ = MatPadding::kOdd;
 
   MatStorageT<float> x;  // input
-  MatStorageT<float> q;  // query, also KV if MHA.
+  MatStorageT<float> q;  // query
   MatStorageT<float> logits;
 
   // Attention
@@ -150,13 +141,13 @@ struct Activations {
   MatStorageT<float> att;      // attention vector
   MatStorageT<float> att_out;  // attention output
   // Accumulation of attention outputs over heads
-  MatStorageT<float> att_sums;
+  MatStorageT<BF16> att_sums;
 
   // Gated FFW
   MatStorageT<BF16> pre_ffw_rms_out;
-  MatStorageT<float> C1;
+  MatStorageT<float> C1;  // TODO: BF16 after Activation() supports it
   MatStorageT<float> C2;
-  MatStorageT<float> ffw_out;
+  MatStorageT<BF16> ffw_out;
 
   // Griffin
   MatStorageT<float> griffin_x;

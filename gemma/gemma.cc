@@ -68,13 +68,14 @@ MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
   return MatMulEnv(ThreadingContext::Get());
 }
 
-Gemma::Gemma(const LoaderArgs& loader, MatMulEnv& env)
+Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
+             MatMulEnv& env)
     : env_(env),
       reader_(loader.weights),
       model_(reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model) {
-  weights_.ReadFromBlobs(model_, reader_, loader.map, mat_owners_,
+  weights_.ReadFromBlobs(model_, reader_, loader, inference, mat_owners_,
                          env.ctx.pools.Pool());
   reader_.CloseFile();
 }

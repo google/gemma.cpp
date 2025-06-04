@@ -254,7 +254,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
 
   MatMulEnv env(MakeMatMulEnv(threading));
   if (inference.verbosity >= 2) env.print_best = true;
-  const Gemma gemma(loader, env);
+  const Gemma gemma(loader, inference, env);
   KVCache kv_cache(gemma.GetModelConfig(), inference.prefill_tbatch_size);
 
   if (inference.verbosity >= 1) {

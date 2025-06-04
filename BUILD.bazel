@@ -214,6 +214,7 @@ cc_library(
     hdrs = ["gemma/weights.h"],
     deps = [
         ":configs",
+        ":gemma_args",
         ":mat",
         ":model_store",
         ":ops",
@@ -223,9 +224,7 @@ cc_library(
         "//io:blob_store",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:stats",
         "@highway//:thread_pool",
-        "@highway//:timer",
     ],
 )
 
@@ -500,7 +499,6 @@ cc_library(
         # Placeholder for internal dep, do not remove.,
         "//io:blob_store",
         "//io",
-        "//compression:types",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer

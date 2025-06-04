@@ -96,6 +96,17 @@ class MatPtr : public IFields {
     }
   }
 
+  void AllocateAndAttachRowPtrs(
+      std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs) {
+    if (!HasPtr()) return;
+    row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(Rows()));
+    uint8_t** ptrs = row_ptrs.back().get();
+    for (size_t r = 0; r < Rows(); ++r) {
+      ptrs[r] = RowBytes(r);
+    }
+    AttachRowPtrs(ptrs);
+  };
+
   uint8_t** GetRowPtrs() const { return row_ptrs_; }
 
   // A single row counts as packed because there is no padding between rows.
@@ -328,7 +339,7 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
 template <class Func, typename... Args>
 decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
                                 const Func& func, Args&&... args) {
-  HWY_ASSERT(base1->GetType() == base2->GetType());
+  HWY_DASSERT(base1->GetType() == base2->GetType());
 
 #if GEMMA_ENABLE_NUQ
   if (base1->GetType() == Type::kNUQ) {
@@ -359,13 +370,12 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
 template <class Func, typename... Args>
 decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
                                       Args&&... args) {
-  HWY_ASSERT(base != nullptr);
   if (base->GetType() == Type::kF32) {
-    return func(dynamic_cast<const MatPtrT<float>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<float> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else if (base->GetType() == Type::kBF16) {
-    return func(dynamic_cast<const MatPtrT<BF16>*>(base),
-                std::forward<Args>(args)...);
+    const MatPtrT<BF16> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
   }

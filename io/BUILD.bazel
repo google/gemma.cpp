@@ -73,7 +73,6 @@ cc_library(
         "//:basics",
         "//:threading_context",
         "@highway//:hwy",
-        "@highway//:profiler",
         "@highway//:thread_pool",
     ],
 )

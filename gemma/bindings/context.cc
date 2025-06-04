@@ -109,7 +109,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
       threading_args(threading_args),
       matmul_env(MakeMatMulEnv(threading_args)),
       active_conversation_name("default"),
-      model(loader, matmul_env) {
+      model(loader, inference_args, matmul_env) {
   std::stringstream ss;
 
   LogDebug("Creating initial ConversationData");

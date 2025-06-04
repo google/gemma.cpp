@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
 
   // Instantiate model and KV Cache
   gcpp::MatMulEnv env(MakeMatMulEnv(threading));
-  gcpp::Gemma gemma(loader, env);
+  gcpp::Gemma gemma(loader, inference, env);
   gcpp::KVCache kv_cache(gemma.GetModelConfig(), inference.prefill_tbatch_size);
   size_t generated = 0;
 
