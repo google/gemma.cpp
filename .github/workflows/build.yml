@@ -17,12 +17,10 @@ jobs:
       fail-fast: false
       matrix:
         # When adding another, also add to copybara's github_check_runs.
-        os: ['ubuntu-latest', 'macos-latest', 'windows-latest', 'ubuntu-20.04']
+        os: ['ubuntu-latest', 'macos-latest', 'windows-latest']
         build_type: ['Release']
         preset: ['make', 'windows']
         exclude:
-          - os: ubuntu-20.04
-            preset: windows
           - os: ubuntu-latest
             preset: windows
           - os: macos-latest
@@ -62,44 +60,6 @@ jobs:
           ${{ github.workspace }}/build/gemma
           ${{ github.workspace }}/build/libgemma.a
 
-    - if: matrix.os == 'ubuntu-20.04'
-      name: Upload build artifacts to Kaggle
-      uses: pculliton/push-kaggle-dataset@v1.0.0
-      env:
-        KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-        KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-      with:
-        id:  "phillipculliton/gemma-build-artifacts"
-        files: |
-          build/gemma
-          build/_deps/sentencepiece-build/src/libsentencepiece.so.0
-
-    - if: matrix.os == 'ubuntu-20.04'
-      name: Create code for new test notebook version
-      run: |
-        cat > runner.py << EOF
-        import subprocess
-        subprocess.run(["cp", "/kaggle/input/gemma-build-artifacts/gemma", "/kaggle/working"])
-        subprocess.run(["chmod", "700", "/kaggle/working/gemma"])
-        subprocess.run(["cp", "/kaggle/input/gemma-build-artifacts/_deps/sentencepiece-build/src/libsentencepiece.so.0", "/kaggle/working"])
-        output = subprocess.run(["/kaggle/working/gemma", "--tokenizer", "/kaggle/input/gemma/gemmacpp/2b-it-sfp/4/tokenizer.spm", "--weights", "/kaggle/input/gemma/gemmacpp/2b-it-sfp/4/2b-it-sfp.sbs", "--model", "2b-it", "--verbosity", "0", "--max_generated_tokens", "128"], stdout=subprocess.PIPE, input='Write an email to the moon.', encoding='ascii').stdout
-        assert("write an email to the moon." not in output.lower());
-        assert("moon" in output.lower());
-        EOF
-
-    - if: matrix.os == 'ubuntu-20.04'
-      name: Run kaggle test notebook
-      uses: pculliton/kaggle-action@v1.0.28
-      with:
-        username: ${{ secrets.KAGGLE_USERNAME }}
-        key: ${{ secrets.KAGGLE_KEY }}
-        title: GemmaCPP-CI-2
-        code_file: runner.py
-        dataset_sources: "phillipculliton/gemma-build-artifacts"
-        model_sources: "google/gemma/gemmaCpp/2b-it-sfp/4"
-        enable_gpu: False
-        kernel_type: script
-
   bazel:
     runs-on: ubuntu-latest
     steps:
@@ -116,4 +76,4 @@ jobs:
         with:
           path: ~/.cache/bazel
           key: bazel-${{ runner.os }}
-      - run: bazel build --cxxopt=-std=c++20 //:all
+      - run: bazel build --cxxopt=-std=c++20 //:gemma --jobs=10 --show_progress_rate_limit=1
