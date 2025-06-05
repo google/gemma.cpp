@@ -267,12 +267,12 @@ static Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
   // Disable mapping if not padded to the base page size.
   const Allocator& allocator = ThreadingContext::Get().allocator;
   if (file_bytes % allocator.BasePageBytes() != 0) {
-    if (map != Tristate::kFalse) {  // Do not complain if anyway disabled.
+    if (map == Tristate::kTrue) {  // Only complain if explicitly requested.
       HWY_WARN("Unable to map non-padded file (%zu, %zu), reading instead.",
                static_cast<size_t>(file_bytes >> 10),
                allocator.BasePageBytes());
-      map = Tristate::kFalse;
     }
+    map = Tristate::kFalse;
   }
 
   // Check for user override:
