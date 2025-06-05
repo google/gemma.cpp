@@ -448,8 +448,10 @@ static std::vector<IOBatch> MakeBatches(
         HWY_ASSERT(batches.back().Add(row_bytes, file_bytes_per_row));
       }
       offset += file_bytes_per_row;
+      // Must zero-initialize the in-memory row padding, see MatMul.
+      hwy::ZeroBytes(row_bytes + file_bytes_per_row,
+                      mem_stride_bytes - file_bytes_per_row);
       row_bytes += mem_stride_bytes;
-      // Keep the in-memory row padding uninitialized so msan detects any use.
     }
     HWY_ASSERT(offset == range.End());
   }

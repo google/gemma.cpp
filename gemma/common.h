@@ -28,15 +28,6 @@ namespace gcpp {
 // DEPRECATED, use WrapAndTokenize instead if a tokenized return value is fine.
 void Wrap(const ModelConfig& config, size_t pos, std::string& prompt);
 
-// Returns the scale value to use for the embedding (basically sqrt model_dim).
-float EmbeddingScaling(size_t model_dim);
-
-// Returns the scale value to use for the query in the attention computation.
-float ChooseQueryScale(const ModelConfig& config);
-
-void RangeChecks(const ModelConfig& weights_config,
-                 size_t& max_generated_tokens, size_t prompt_size);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_COMMON_H_

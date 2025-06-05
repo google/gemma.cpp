@@ -216,8 +216,8 @@ cc_library(
         ":configs",
         ":gemma_args",
         ":mat",
+        ":matmul",
         ":model_store",
-        ":ops",
         ":tensor_info",
         ":threading_context",
         "//compression:compress",
@@ -246,11 +246,7 @@ cc_library(
     name = "common",
     srcs = ["gemma/common.cc"],
     hdrs = ["gemma/common.h"],
-    deps = [
-        ":basics",
-        ":configs",
-        "@highway//:hwy",  # base.h
-    ],
+    deps = [":configs"],
 )
 
 # For building all tests in one command, so we can test several.
@@ -260,42 +256,25 @@ test_suite(
 )
 
 cc_library(
-    name = "ops",
-    srcs = [
-        "ops/matmul.cc",
-    ],
-    hdrs = [
-        "ops/matmul.h",
-        "ops/ops.h",
-    ],
-    textual_hdrs = [
-        "ops/dot-inl.h",
-        "ops/sum-inl.h",
-        "ops/fp_arith-inl.h",
-        "ops/matmul-inl.h",
-        "ops/matvec-inl.h",
-        "ops/ops-inl.h",
-    ],
+    name = "matmul",
+    srcs = ["ops/matmul.cc"],
+    hdrs = ["ops/matmul.h"],
+    textual_hdrs = ["ops/matmul-inl.h"],
     deps = [
         ":allocator",
         ":basics",
         ":mat",
         ":threading_context",
         "//compression:compress",
-        "@highway//:algo",
         "@highway//:bit_set",
         "@highway//:hwy",
-        "@highway//:math",
-        "@highway//:matvec",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
-        "@highway//:thread_pool",
-        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
 cc_library(
-    name = "matmul",
+    name = "matmul_static",
     srcs = [
         # single-file build time is ~30sec for msan, hence shard.
         "ops/matmul_static_bf16.cc",
@@ -313,13 +292,41 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
-        ":ops",
+        ":matmul",
         ":threading_context",
         "//compression:compress",
         "//compression:types",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:timer",
+    ],
+)
+
+cc_library(
+    name = "ops",
+    hdrs = ["ops/ops.h"],
+    textual_hdrs = [
+        "ops/dot-inl.h",
+        "ops/sum-inl.h",
+        "ops/fp_arith-inl.h",
+        "ops/matvec-inl.h",
+        "ops/ops-inl.h",
+    ],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":mat",
+        ":matmul",
+        ":matmul_static",
+        ":threading_context",
+        "//compression:compress",
+        "@highway//:algo",
+        "@highway//:hwy",
+        "@highway//:math",
+        "@highway//:matvec",
+        "@highway//:profiler",
+        "@highway//:thread_pool",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -359,7 +366,7 @@ cc_test(
     deps = [
         ":allocator",
         ":basics",
-        ":common",
+        ":gemma_lib",
         ":mat",
         ":ops",
         ":test_util",
@@ -402,6 +409,7 @@ cc_test(
         ":basics",
         ":mat",
         ":matmul",
+        ":matmul_static",
         ":ops",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -458,7 +466,7 @@ cc_library(
         ":args",
         ":basics",
         ":mat",
-        ":ops",  # matmul.h
+        ":matmul",
         "//io",
         "@highway//:hwy",
     ],
@@ -467,11 +475,17 @@ cc_library(
 cc_library(
     name = "gemma_lib",
     srcs = [
+        "gemma/attention.cc",
         "gemma/gemma.cc",
+        "gemma/griffin.cc",
+        "gemma/vit.cc",
     ],
     hdrs = [
         "gemma/activations.h",
+        "gemma/attention.h",
         "gemma/gemma.h",
+        "gemma/griffin.h",
+        "gemma/vit.h",
     ],
     exec_properties = {
         # Avoid linker OOMs when building with sanitizer instrumentation.
@@ -479,12 +493,10 @@ cc_library(
     },
     textual_hdrs = [
         "gemma/gemma-inl.h",
-        # Placeholder for internal file2, do not remove,
     ],
     deps = [
         ":allocator",
         ":basics",
-        ":common",
         ":configs",
         ":gemma_args",
         ":kv_cache",
@@ -527,6 +539,7 @@ cc_library(
         ":cross_entropy",
         ":gemma_args",
         ":gemma_lib",
+        ":matmul",
         ":ops",
         ":threading_context",
         ":tokenizer",
@@ -616,7 +629,7 @@ cc_binary(
         ":benchmark_helper",
         ":gemma_args",
         ":gemma_lib",
-        ":ops",
+        ":matmul",
         ":tokenizer",
         "//compression:types",
         "//paligemma:image",

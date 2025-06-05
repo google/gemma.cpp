@@ -27,6 +27,7 @@
 #include <type_traits>  // std::enable_if_t
 #include <vector>
 
+#include "ops/matmul.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // TokenAndProb
 #include "util/mat.h"
@@ -48,6 +49,7 @@
 
 #include "compression/compress-inl.h"
 #include "ops/dot-inl.h"
+#include "ops/matmul_static.h"  // includes highway.h
 #include "ops/sum-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
 #include "hwy/contrib/math/math-inl.h"
@@ -56,6 +58,14 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+
+template <typename TA, typename TC>
+MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
+                     const float* HWY_RESTRICT add, MatMulEnv& env,
+                     MatPtrT<TC>& C) {
+  return CallUpcasted(
+      &B, [&](const auto* B_t) { return MatMulStatic(A, *B_t, add, env, C); });
+}
 
 HWY_INLINE double PackTokenAndProb(int32_t token, float prob) {
   // casting prob from float to double just makes some changes to the

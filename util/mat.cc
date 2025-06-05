@@ -54,10 +54,9 @@ void ZeroInit(MatPtr& mat) {
     hwy::ZeroBytes(mat.Packed(), mat.PackedBytes());
     return;
   }
-  const size_t row_bytes = mat.Cols() * mat.ElementBytes();
-  for (size_t r = 0; r < mat.Rows(); ++r) {
-    hwy::ZeroBytes(mat.RowBytes(r), row_bytes);
-  }
+  // Also zero-initialize padding (required by MatMul).
+  hwy::ZeroBytes(mat.RowBytes(0),
+                 mat.Stride() * mat.ElementBytes() * mat.Rows());
 }
 
 size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,

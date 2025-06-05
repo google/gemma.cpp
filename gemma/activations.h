@@ -16,6 +16,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_ACTIVATIONS_H_
 
+#include <math.h>  // sqrtf
 #include <stddef.h>
 
 #include <vector>
@@ -29,6 +30,16 @@
 
 namespace gcpp {
 
+// Returns the scale value to use for the query in the attention computation.
+// Also called by ops_test.
+static inline float ChooseQueryScale(const ModelConfig& config) {
+  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
+    return 1.0f / sqrtf(static_cast<float>(config.model_dim /
+                                           config.layer_configs[0].heads));
+  // QueryScaleType::SqrtKeySize
+  return 1.0f / sqrtf(static_cast<float>(config.layer_configs[0].qkv_dim));
+}
+
 struct Activations {
   Activations(const ModelConfig& config, size_t batch_size, MatMulEnv* env)
       : weights_config(config),
@@ -36,6 +47,7 @@ struct Activations {
         seq_len(config.seq_len),
         cache_pos_size(config.CachePosSize()),
         is_griffin(config.model == Model::GRIFFIN_2B),
+        query_scale(ChooseQueryScale(config)),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
@@ -129,6 +141,7 @@ struct Activations {
   size_t seq_len;
   size_t cache_pos_size = 0;  // TODO: after moving KVCache to MatStorageT.
   bool is_griffin = false;
+  float query_scale;
   const Extents2D none_ = Extents2D();
   const MatPadding pad_ = MatPadding::kOdd;
 

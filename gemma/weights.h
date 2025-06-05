@@ -93,6 +93,8 @@ class MatFinder {
 // `WeightsOwner`.
 struct LayerWeightsPtrs {
   // Initializes tensor metadata without allocating.
+  // NOTE: do not store layer_idx, TransformerLayer and Attention may use
+  // other values for purposes of the KV cache.
   LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
                    const TensorInfoRegistry& tensors)
       : finder_(LayerSuffix(layer_idx), tensors),

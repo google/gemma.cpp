@@ -160,9 +160,6 @@ class Gemma {
   GemmaChatTemplate chat_template_;
 };
 
-void RangeChecks(const ModelConfig& weights_config,
-                 size_t& max_generated_tokens, size_t prompt_size);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_

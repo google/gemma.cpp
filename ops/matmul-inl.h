@@ -1294,6 +1294,10 @@ struct MMImpl {
 // are no other restrictions on shape, though performance is better when `M % 4
 // == 0` or `M <= 4`.
 //
+// NOTE: if A and/or B are BF16 and padded, the interval `[Cols(),
+// hwy::RoundUpTo(Cols(), hn::Lanes(dbf))` must be zero-initialized to match
+// the behavior of `DecompressAndZeroPad`. We check this in debug builds.
+//
 // If `add` is non-null, the row-vector `add` is added to each of the `M` rows
 // of `C`, which is a row-major matrix with arbitrary stride. A scale for
 // `add` is not supported, so make sure its scale is 1.

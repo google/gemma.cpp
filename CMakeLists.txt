@@ -53,6 +53,8 @@ set(SOURCES
   evals/cross_entropy.cc
   evals/cross_entropy.h
   gemma/activations.h
+  gemma/attention.cc
+  gemma/attention.h
   gemma/common.cc
   gemma/common.h
   gemma/configs.cc
@@ -61,6 +63,8 @@ set(SOURCES
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
+  gemma/griffin.cc
+  gemma/griffin.h
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/model_store.cc
@@ -69,6 +73,8 @@ set(SOURCES
   gemma/tensor_info.h
   gemma/tokenizer.cc
   gemma/tokenizer.h
+  gemma/vit.cc
+  gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
   io/blob_store.cc
