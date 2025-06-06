@@ -201,9 +201,8 @@ bool Image::WriteBinary(const std::string& filename) const {
     std::cerr << "Failed to open " << filename << "\n";
     return false;
   }
-  for (size_t i = 0; i < data_.size(); ++i) {
-    file.write(reinterpret_cast<const char*>(&data_[i]), sizeof(float));
-  }
+  file.write(reinterpret_cast<const char*>(data_.data()),
+             data_.size() * sizeof(data_[0]));
   file.close();
   return true;
 }
