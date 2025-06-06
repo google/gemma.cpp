@@ -47,7 +47,7 @@ namespace gcpp {
                       const QueriesPos* queries_prefix_end,                    \
                       const hwy::Divisor& div_seq_len, const size_t layer_idx, \
                       const LayerWeightsPtrs& layer, Activations& activations, \
-                      const KVCaches& kv_caches, int flags);                   \
+                      const KVCaches& kv_caches, MatMulEnv& env, int flags);   \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 

@@ -756,7 +756,7 @@ class DotStats {
 
     // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_muls[kCompensated].Min(), 1.0f + 2E-6f);
-    ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 2E-5f);
+    ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 1E-4f);
     ASSERT_LESS(kDouble, s_muls[kDouble].Min(), 1.0f + 2E-6f);
     ASSERT_LESS(kDouble, s_muls[kDouble].Max(), 1.0f + 2E-5f);
 

@@ -60,7 +60,7 @@ class VitAttention {
     HWY_ASSERT(qkv.Rows() == num_tokens_);
     HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
     CallMatMul(activations_.pre_att_rms_out, layer_.vit.qkv_einsum_w,
-               layer_.vit.qkv_einsum_b.PackedScale1(), *activations_.env, qkv);
+               layer_.vit.qkv_einsum_b.PackedScale1(), env_, qkv);
   }
 
   // TODO(philculliton): transition fully to MatMul.
@@ -100,7 +100,7 @@ class VitAttention {
       });
 
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
-      CallMatMul(Q, K, nullptr, *activations_.env, C);
+      CallMatMul(Q, K, nullptr, env_, C);
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         float* HWY_RESTRICT c = C.Row(task);
@@ -166,18 +166,19 @@ class VitAttention {
     // att_weights and att_out are concatenated heads, each of length
     // qkv_dim. Thus the [num_tokens_, layer_config_.model_dim]
     // matmul output is the sum over heads.
-    CallMatMul(activations_.att_out, layer_.vit.attn_out_w, bias,
-               *activations_.env, activations_.att_sums);
+    CallMatMul(activations_.att_out, layer_.vit.attn_out_w, bias, env_,
+               activations_.att_sums);
   }
 
  public:
   VitAttention(size_t num_tokens, size_t layer_idx, Activations& activations,
-               const LayerWeightsPtrs& layer)
+               const LayerWeightsPtrs& layer, MatMulEnv& env)
       : num_tokens_(num_tokens),
         activations_(activations),
         layer_(layer),
         layer_config_(layer.layer_config),
-        pool_(activations.env->ctx.pools.Pool(0)) {}
+        env_(env),
+        pool_(env_.ctx.pools.Pool(0)) {}
 
   HWY_INLINE void operator()() {
     ComputeQKV();
@@ -194,12 +195,14 @@ class VitAttention {
   Activations& activations_;
   const LayerWeightsPtrs& layer_;
   const LayerConfig& layer_config_;
+  MatMulEnv& env_;
   hwy::ThreadPool& pool_;
 };
 
 // Same as FFWNoVit, but with different layer members and no second
 // gating matrix.
-void FFWVit(Activations& activations, const LayerWeightsPtrs& layer) {
+void FFWVit(const LayerWeightsPtrs& layer, Activations& activations,
+            MatMulEnv& env) {
   PROFILER_ZONE("Gen.FFW.ViT");
   const LayerConfig& layer_config = layer.layer_config;
 
@@ -209,15 +212,15 @@ void FFWVit(Activations& activations, const LayerWeightsPtrs& layer) {
       add_bias ? layer.vit.linear_1_b.PackedScale1() : nullptr;
 
   // Compute the hidden layer activations.
-  CallMatMul(activations.pre_ffw_rms_out, layer.vit.linear_0_w, bias1,
-             *activations.env, activations.C1);
+  CallMatMul(activations.pre_ffw_rms_out, layer.vit.linear_0_w, bias1, env,
+             activations.C1);
 
   // Activation (Gelu), store in C1.
   ActivationBatched(layer_config.activation, activations.C1);
 
   // Hidden layer -> output layer.
-  CallMatMul(activations.C1, layer.vit.linear_1_w, output_bias,
-             *activations.env, activations.ffw_out);
+  CallMatMul(activations.C1, layer.vit.linear_1_w, output_bias, env,
+             activations.ffw_out);
 }
 
 // Vit transformer layer. Some comments below refer to the Vit implementation in
@@ -227,7 +230,7 @@ void FFWVit(Activations& activations, const LayerWeightsPtrs& layer) {
 // try merging this with TransformerLayer.
 void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
                          const LayerWeightsPtrs& layer,
-                         Activations& activations) {
+                         Activations& activations, MatMulEnv& env) {
   const size_t model_dim = activations.weights_config.model_dim;
   auto type = layer.layer_config.type;
   HWY_DASSERT(type == LayerAttentionType::kVit);
@@ -245,7 +248,7 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
 
   // y = out["sa"] = nn.MultiHeadDotProductAttention(...)(y, y)
   // y ~ att_sums
-  VitAttention(num_tokens, layer_idx, activations, layer)();
+  VitAttention(num_tokens, layer_idx, activations, layer, env)();
 
   // x = out["+sa"] = x + y
   AddFromBatched(activations.att_sums, x);
@@ -257,7 +260,7 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
 
   // y = out["mlp"] = MlpBlock(...)(y)
   // y ~ ffw_out
-  FFWVit(activations, layer);
+  FFWVit(layer, activations, env);
 
   // x = out["+mlp"] = x + y
   AddFromBatched(activations.ffw_out, x);
@@ -268,7 +271,8 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
 static HWY_NOINLINE void EmbedImagePatches(const Image& image,
                                            const ModelConfig& model_config,
                                            const ModelWeightsPtrs& weights,
-                                           Activations& activations) {
+                                           Activations& activations,
+                                           MatMulEnv& env) {
   const size_t model_dim = model_config.vit_config.model_dim;
   const size_t patch_width = model_config.vit_config.patch_width;
   const size_t seq_len = model_config.vit_config.seq_len;
@@ -287,8 +291,7 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
     image.GetPatch(i, image_patches.Row(i));
   }
   CallMatMul(image_patches, weights.vit_img_embedding_kernel,
-             weights.vit_img_embedding_bias.PackedScale1(), *activations.env,
-             activations.x);
+             weights.vit_img_embedding_bias.PackedScale1(), env, activations.x);
   // Add position embeddings.
   CallUpcastedActivation(&weights.vit_img_pos_embedding,
                          [&](const auto* weights_t) {
@@ -300,18 +303,19 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
 void PrefillVit(const ModelConfig& model_config,
                 const ModelWeightsPtrs& weights,
                 const RuntimeConfig& runtime_config, const Image& image,
-                ImageTokens& image_tokens, Activations& activations) {
+                ImageTokens& image_tokens, Activations& activations,
+                MatMulEnv& env) {
   PROFILER_ZONE("Gen.PrefillVit");
   const size_t num_tokens = model_config.vit_config.seq_len;
   const size_t vit_model_dim = model_config.vit_config.model_dim;
   HWY_ASSERT(num_tokens == activations.x.Rows());
   // Embed the image patches.
-  EmbedImagePatches(image, model_config, weights, activations);
+  EmbedImagePatches(image, model_config, weights, activations, env);
   // Go through all layers.
   for (size_t layer_idx = 0;
        layer_idx < model_config.vit_config.layer_configs.size(); ++layer_idx) {
     VitTransformerLayer(num_tokens, layer_idx, *weights.VitLayer(layer_idx),
-                        activations);
+                        activations, env);
   }
   // Final Layernorm.
   LayerNormBatched(activations.x, weights.vit_encoder_norm_scale,
@@ -329,8 +333,7 @@ void PrefillVit(const ModelConfig& model_config,
 
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
   CallMatMul(activations.x, weights.vit_img_head_kernel,
-             weights.vit_img_head_bias.PackedScale1(), *activations.env,
-             image_tokens);
+             weights.vit_img_head_bias.PackedScale1(), env, image_tokens);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

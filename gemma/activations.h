@@ -41,13 +41,13 @@ static inline float ChooseQueryScale(const ModelConfig& config) {
 }
 
 struct Activations {
-  Activations(const ModelConfig& config, size_t batch_size, MatMulEnv* env)
+  Activations(const ModelConfig& config, size_t batch_size,
+              std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : weights_config(config),
         layer_config(config.layer_configs[0]),
         seq_len(config.seq_len),
         cache_pos_size(config.CachePosSize()),
         is_griffin(config.model == Model::GRIFFIN_2B),
-        query_scale(ChooseQueryScale(config)),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
@@ -96,19 +96,19 @@ struct Activations {
             layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
             1000000.0)),
 
-        env(env) {
+        query_scale(ChooseQueryScale(config)) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
-    x.AllocateAndAttachRowPtrs(env->row_ptrs);
-    q.AllocateAndAttachRowPtrs(env->row_ptrs);
-    logits.AllocateAndAttachRowPtrs(env->row_ptrs);
-    att_sums.AllocateAndAttachRowPtrs(env->row_ptrs);
-    C1.AllocateAndAttachRowPtrs(env->row_ptrs);
-    C2.AllocateAndAttachRowPtrs(env->row_ptrs);
-    ffw_out.AllocateAndAttachRowPtrs(env->row_ptrs);
+    x.AllocateAndAttachRowPtrs(row_ptrs);
+    q.AllocateAndAttachRowPtrs(row_ptrs);
+    logits.AllocateAndAttachRowPtrs(row_ptrs);
+    att_sums.AllocateAndAttachRowPtrs(row_ptrs);
+    C1.AllocateAndAttachRowPtrs(row_ptrs);
+    C2.AllocateAndAttachRowPtrs(row_ptrs);
+    ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
 
     // Note that BindC on any MatMul output considerably slows down Prefill.
   }
@@ -141,7 +141,6 @@ struct Activations {
   size_t seq_len;
   size_t cache_pos_size = 0;  // TODO: after moving KVCache to MatStorageT.
   bool is_griffin = false;
-  float query_scale;
   const Extents2D none_ = Extents2D();
   const MatPadding pad_ = MatPadding::kOdd;
 
@@ -172,7 +171,7 @@ struct Activations {
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
 
-  MatMulEnv* env;
+  float query_scale;
 };
 
 }  // namespace gcpp

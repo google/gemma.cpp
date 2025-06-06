@@ -222,7 +222,7 @@ static HWY_INLINE void ComputeQKV(
     size_t num_tokens, const QueriesPos& queries_pos,
     const hwy::Divisor& div_seq_len, const size_t layer_idx,
     const LayerWeightsPtrs& layer, Activations& activations,
-    const KVCaches& kv_caches, const int flags, NestedPools& pools) {
+    const KVCaches& kv_caches, const int flags, MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.QKV");
   const size_t num_queries = queries_pos.size();
   const size_t num_interleaved = num_tokens * num_queries;
@@ -235,7 +235,7 @@ static HWY_INLINE void ComputeQKV(
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w1,
-             /*add=*/nullptr, *activations.env, activations.q);
+             /*add=*/nullptr, env, activations.q);
 
   // Set up MatMul row pointers for writing to KV, which consists of
   // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
@@ -250,17 +250,16 @@ static HWY_INLINE void ComputeQKV(
         div_seq_len.Remainder(queries_pos[query_idx] + batch_idx);
     const size_t kv_offset =
         cache_pos * cache_pos_size + layer_idx * cache_layer_size;
-    activations.env->storage.OutRow(interleaved_idx) =
-        reinterpret_cast<uint8_t*>(kv_caches[query_idx].kv_cache.get() +
-                                   kv_offset);
+    env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
+        kv_caches[query_idx].kv_cache.get() + kv_offset);
   }
-  kv_rows.AttachRowPtrs(&activations.env->storage.OutRow(0));
+  kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
-             /*add=*/nullptr, *activations.env, kv_rows);
+             /*add=*/nullptr, env, kv_rows);
 
   // Apply positional encodings for K.
   // TODO: 2D parallelism to use more threads.
-  pools.Pool(0).Run(
+  env.ctx.pools.Pool(0).Run(
       0, kv_heads * num_interleaved,
       [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         const size_t head = task % kv_heads;
@@ -289,7 +288,7 @@ static HWY_INLINE void ComputeQKV(
 // Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
 // head_dim (`qkv_dim`) into output (`layer_out`).
 static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
-                                Activations& activations) {
+                                Activations& activations, MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.SumHeads");
   const LayerConfig& layer_config = layer.layer_config;
   // att_weights and att_out are concatenated heads, each of length
@@ -302,7 +301,7 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
   const float* add = layer_config.softmax_attn_output_biases
                          ? layer.attention_output_biases.PackedScale1()
                          : nullptr;
-  CallMatMul(activations.att_out, layer.att_weights, add, *activations.env,
+  CallMatMul(activations.att_out, layer.att_weights, add, env,
              activations.att_sums);
 }
 
@@ -312,7 +311,7 @@ void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,
                     const QueriesPos* queries_prefix_end,
                     const hwy::Divisor& div_seq_len, const size_t layer_idx,
                     const LayerWeightsPtrs& layer, Activations& activations,
-                    const KVCaches& kv_caches, int flags) {
+                    const KVCaches& kv_caches, MatMulEnv& env, int flags) {
   const size_t num_queries = queries_pos.size();
   HWY_DASSERT(num_queries <= kv_caches.size());
 
@@ -331,13 +330,12 @@ void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,
     queries_prefix_end = &queries_prefix_end_span;
   }
 
-  NestedPools& pools = activations.env->ctx.pools;
   ComputeQKV(num_tokens, queries_pos, div_seq_len, layer_idx, layer,
-             activations, kv_caches, flags, pools);
+             activations, kv_caches, flags, env);
   DotSoftmaxWeightedSum(num_tokens, queries_pos, *queries_prefix_end,
                         div_seq_len, layer_idx, layer, activations, kv_caches,
-                        pools);
-  SumHeads(layer, activations);
+                        env.ctx.pools);
+  SumHeads(layer, activations, env);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

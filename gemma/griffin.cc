@@ -48,9 +48,9 @@ namespace HWY_NAMESPACE {
 void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
                       size_t griffin_layer, Activations& activations,
                       const LayerWeightsPtrs* layer_weights,
-                      const KVCaches& kv_caches) {
+                      const KVCaches& kv_caches, MatMulEnv& env) {
   PROFILER_ZONE("Gen.Griffin");
-  hwy::ThreadPool& pool = activations.env->ctx.pools.Pool(0);
+  hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   const D df;
@@ -183,8 +183,8 @@ void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
 
   // Final linear layer.
   CallMatMul(activations.griffin_x, layer_weights->griffin.linear_out_w,
-             layer_weights->griffin.linear_out_biases.PackedScale1(),
-             *activations.env, activations.att_sums);
+             layer_weights->griffin.linear_out_biases.PackedScale1(), env,
+             activations.att_sums);
 }  // GriffinRecurrent
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

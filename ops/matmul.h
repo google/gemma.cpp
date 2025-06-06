@@ -231,10 +231,9 @@ class MMStorage {
   // Internally threaded; must not be called concurrently with the same
   // `ThreadingContext` (used via `parallel`).
   MMStorage(const Allocator& allocator, MMParallel& parallel)
-      : out_rows(hwy::AllocateAligned<uint8_t*>(kMaxM)),
-        // Per-worker copies of `partial` would be wasteful. We instead allocate
-        // one instance of the maximum matrix extents because threads write at
-        // false-sharing-free granularity.
+      :  // Per-worker copies of `partial` would be wasteful. We instead
+         // allocate one instance of the maximum matrix extents because threads
+         // write at false-sharing-free granularity.
         partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN),
                          MatPadding::kOdd),
         // Same stride independent of the actual C.Cols() so we can pre-bind.
@@ -260,8 +259,6 @@ class MMStorage {
     BindC(partial_storage_, parallel);
   }
 
-  uint8_t*& OutRow(size_t row_idx) { return out_rows[row_idx]; }
-
   // Returns per-package matrix view.
   RowPtrBF A(size_t pkg_idx, const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxM);
@@ -273,11 +270,6 @@ class MMStorage {
   RowPtrD Partial() const { return partial_; }
 
  private:
-  // Enables arbitrary output rows. Most callers pass `RowPtr`, which assumes a
-  // constant stride, but GemmaAttention::ComputeQKV writes to differing KV
-  // positions per query / output row. `kMaxM` elements are too large for the
-  // stack, hence dynamic allocation.
-  hwy::AlignedFreeUniquePtr<uint8_t*[]> out_rows;
   std::unique_ptr<MatStorageT<BF16>> pkg_A_[MMParallel::kMaxPackages];
   MatStorageT<double> partial_storage_;
   RowPtrD partial_;
@@ -667,9 +659,13 @@ struct MatMulEnv {
   MMKeys keys;
   std::vector<MMPerKey> per_key;
 
-  // Pass to MatPtr::AllocateAndAttachRowPtrs.
-  // Per-tensor allocations to make it likelier that asan detects bugs such as
-  // use after free, overrun, and dangling references.
+  // Storage for arbitrary output rows, see `MatPtr::AllocateAndAttachRowPtrs`.
+  // Most MatMul callers use strided MatPtr, but GemmaAttention::ComputeQKV
+  // writes to differing KV positions per query / output row.
+  // The first entry is sufficient for any MatMul, but also potentially
+  // overwritten by each MatMul. Subsequent entries are precomputed for tensors
+  // and not overwritten. Per-tensor allocations make it likelier that asan
+  // detects bugs such as use after free, overrun, and dangling references.
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 

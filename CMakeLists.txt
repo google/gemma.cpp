@@ -55,8 +55,6 @@ set(SOURCES
   gemma/activations.h
   gemma/attention.cc
   gemma/attention.h
-  gemma/common.cc
-  gemma/common.h
   gemma/configs.cc
   gemma/configs.h
   gemma/gemma_args.h

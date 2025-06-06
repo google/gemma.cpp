@@ -18,7 +18,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "gemma/weights.h"
+#include "ops/matmul.h"
 #include "util/mat.h"
 #include "hwy/profiler.h"
 
@@ -103,8 +106,8 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
   }
 }
 
-static inline void FFWNoVit(Activations& activations,
-                            const LayerWeightsPtrs& layer) {
+static inline void FFWNoVit(const LayerWeightsPtrs& layer,
+                            Activations& activations, MatMulEnv& env) {
   PROFILER_ZONE("Gen.FFW");
   const LayerConfig& layer_config = layer.layer_config;
   const size_t ffh_hidden_dim = layer_config.ff_hidden_dim;
@@ -117,16 +120,16 @@ static inline void FFWNoVit(Activations& activations,
       add_bias ? layer.ffw_output_biases.PackedScale1() : nullptr;
 
   // Compute the hidden layer activations.
-  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w1, bias1,
-             *activations.env, activations.C1);
-  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w2, bias2,
-             *activations.env, activations.C2);
+  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w1, bias1, env,
+             activations.C1);
+  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w2, bias2, env,
+             activations.C2);
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_config.activation, activations.C1, &activations.C2);
 
   // Hidden layer -> output layer.
-  CallMatMul(activations.C1, layer.linear_w, output_bias, *activations.env,
+  CallMatMul(activations.C1, layer.linear_w, output_bias, env,
              activations.ffw_out);
 }
 

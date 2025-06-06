@@ -29,7 +29,6 @@
 #include <stdio.h>
 #endif
 
-#include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
 #include "ops/matmul.h"  // MatMulEnv

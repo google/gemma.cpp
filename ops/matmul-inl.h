@@ -1324,9 +1324,9 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     }
     HWY_DASSERT(C.HasPtr());
     for (size_t r = 0; r < C.Rows(); ++r) {
-      env.storage.OutRow(r) = reinterpret_cast<uint8_t*>(C.Row(r));
+      env.row_ptrs[0][r] = reinterpret_cast<uint8_t*>(C.Row(r));
     }
-    C_rows = CRows<TC>(&env.storage.OutRow(0));
+    C_rows = CRows<TC>(env.row_ptrs[0].get());
   }
 
   const Allocator& allocator = env.ctx.allocator;

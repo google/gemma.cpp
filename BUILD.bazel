@@ -242,13 +242,6 @@ cc_test(
     ],
 )
 
-cc_library(
-    name = "common",
-    srcs = ["gemma/common.cc"],
-    hdrs = ["gemma/common.h"],
-    deps = [":configs"],
-)
-
 # For building all tests in one command, so we can test several.
 test_suite(
     name = "ops_tests",
@@ -566,11 +559,10 @@ cc_library(
     },
     deps = [
         ":benchmark_helper",
-        ":common",
         ":gemma_args",
         ":gemma_lib",
         ":kv_cache",
-        ":ops",
+        ":matmul",
         ":threading",
         ":threading_context",
         ":tokenizer",
