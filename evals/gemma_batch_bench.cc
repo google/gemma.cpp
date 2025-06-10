@@ -33,7 +33,7 @@ namespace {
 // non-local static variables with dtors.
 GemmaEnv* s_env = nullptr;
 
-class GemmaTest : public ::testing::Test {
+class GemmaBatchBench : public ::testing::Test {
  protected:
   std::vector<std::string> BatchGemmaReply(
       const std::vector<std::string>& inputs) {
@@ -48,7 +48,7 @@ class GemmaTest : public ::testing::Test {
   }
 };
 
-TEST_F(GemmaTest, RandomQuestionsBatched) {
+TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
   const std::vector<std::string> questions = {
       {"Write me a poem about Australia?"},
       {"What's the history of Denmark?"},
@@ -103,6 +103,7 @@ TEST_F(GemmaTest, RandomQuestionsBatched) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  fprintf(stderr, "GemmaEnv setup..\n");
   gcpp::GemmaEnv env(argc, argv);
   gcpp::s_env = &env;
 

@@ -102,7 +102,7 @@ TEST_F(GemmaTest, Multiturn) {
   size_t abs_pos = 0;
   std::string response;
   auto stream_token = [&](int token, float) {
-    if (token == EOS_ID) return true;
+    if (config.IsEOS(token)) return true;
     ++abs_pos;
     std::string token_text;
     EXPECT_TRUE(

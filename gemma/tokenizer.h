@@ -26,10 +26,7 @@
 
 namespace gcpp {
 
-// The tokenizer's end of sentence and beginning of sentence token ids.
-constexpr int EOS_ID = 1;
-constexpr int SECONDARY_EOS_ID = 106;  // for Gemma 3
-constexpr int BOS_ID = 2;
+constexpr int BOS_ID = 2;  // beginning of sequence
 
 // To avoid the complexity of storing the tokenizer into testdata/ or
 // downloading from gs://, while still always writing a blob for the tokenizer,

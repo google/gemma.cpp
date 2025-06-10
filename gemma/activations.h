@@ -27,6 +27,7 @@
 #include "util/allocator.h"  // Allocator
 #include "util/basics.h"     // BF16
 #include "util/mat.h"        // MatStorageT
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -48,6 +49,7 @@ struct Activations {
         seq_len(config.seq_len),
         cache_pos_size(config.CachePosSize()),
         is_griffin(config.model == Model::GRIFFIN_2B),
+        query_scale(ChooseQueryScale(config)),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
@@ -96,7 +98,7 @@ struct Activations {
             layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
             1000000.0)),
 
-        query_scale(ChooseQueryScale(config)) {
+        gen_tokens(batch_size) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -114,6 +116,7 @@ struct Activations {
   }
 
   void SetBatchSize(size_t batch_size) {
+    PROFILER_ZONE("SetBatchSize");
     x.OverrideRows(batch_size);
     q.OverrideRows(batch_size);
     logits.OverrideRows(batch_size);
@@ -134,13 +137,16 @@ struct Activations {
       griffin_gate_x.OverrideRows(batch_size);
       griffin_multiplier.OverrideRows(batch_size);
     }
+
+    gen_tokens.resize(batch_size);
   }
 
   const ModelConfig& weights_config;
   const LayerConfig& layer_config;
   size_t seq_len;
   size_t cache_pos_size = 0;  // TODO: after moving KVCache to MatStorageT.
-  bool is_griffin = false;
+  bool is_griffin;
+  float query_scale;
   const Extents2D none_ = Extents2D();
   const MatPadding pad_ = MatPadding::kOdd;
 
@@ -171,7 +177,9 @@ struct Activations {
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
 
-  float query_scale;
+  // Storage for the last generated token from each query, passed to the next
+  // Transformer() call.
+  std::vector<int> gen_tokens;  // one per query in the batch
 };
 
 }  // namespace gcpp
