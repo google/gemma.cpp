@@ -45,6 +45,7 @@ cc_test(
         "//:configs",
         "//:gemma_lib",
         "//compression:types",
+        "//io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

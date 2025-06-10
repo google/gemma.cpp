@@ -294,6 +294,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  gcpp::InternalInit();
   {
     PROFILER_ZONE("Startup.misc");
 

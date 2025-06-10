@@ -97,6 +97,7 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
+// Returns the `MatMulEnv` after calling `SetArgs`.
 MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args);
 
 using KVCaches = hwy::Span<KVCache>;

@@ -501,7 +501,6 @@ cc_library(
         ":threading",
         ":threading_context",
         ":weights",
-        # Placeholder for internal dep, do not remove.,
         "//io:blob_store",
         "//io",
         "//paligemma:image",
@@ -588,6 +587,7 @@ cc_test(
         ":configs",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

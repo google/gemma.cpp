@@ -22,6 +22,7 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
+#include "io/io.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -175,6 +176,7 @@ TEST_F(GemmaTest, CrossEntropySmall) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInit();
   gcpp::GemmaTest::InitEnv(argc, argv);
   int ret = RUN_ALL_TESTS();
   gcpp::GemmaTest::DeleteEnv();

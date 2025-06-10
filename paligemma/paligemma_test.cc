@@ -22,6 +22,7 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
+#include "io/io.h"
 #include "util/allocator.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
@@ -120,10 +121,11 @@ TEST_F(PaliGemmaTest, QueryObjects) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInit();
+
   gcpp::GemmaEnv env(argc, argv);
   gcpp::s_env = &env;
-
-  testing::InitGoogleTest(&argc, argv);
 
   return RUN_ALL_TESTS();
 }

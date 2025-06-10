@@ -72,6 +72,7 @@
 #include <sys/stat.h>  // O_RDONLY
 #include <unistd.h>    // read, write, close
 
+// Placeholder for internal header, do not modify.
 #include "util/allocator.h"
 
 namespace gcpp {
@@ -216,6 +217,9 @@ bool IOBatch::Add(void* mem, size_t bytes) {
   spans_.push_back({.mem = mem, .bytes = bytes});
   total_bytes_ += bytes;
   return true;
+}
+
+void InternalInit() {
 }
 
 uint64_t IOBatch::Read(const File& file) const {

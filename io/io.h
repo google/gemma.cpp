@@ -144,6 +144,10 @@ struct Path {
 // Aborts on error.
 std::string ReadFileToString(const Path& path);
 
+// No-op in open-source. Must be called at the beginning of a binary, before
+// any I/O or flag usage.
+void InternalInit();
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_IO_H_

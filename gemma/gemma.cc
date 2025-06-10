@@ -43,7 +43,6 @@
 
 #include <vector>
 
-// Placeholder for internal header, do not modify.
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
 #include "gemma/tokenizer.h"
@@ -636,11 +635,7 @@ HWY_EXPORT(GenerateSingleT);
 HWY_EXPORT(GenerateBatchT);
 HWY_EXPORT(GenerateImageTokensT);
 
-// Internal init must run before I/O. This helper function takes care of that,
-// plus calling `SetArgs`.
 MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
-  // Placeholder for internal init, do not modify.
-
   ThreadingContext::SetArgs(threading_args);
   return MatMulEnv(ThreadingContext::Get());
 }
