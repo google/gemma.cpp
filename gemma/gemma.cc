@@ -319,12 +319,9 @@ static HWY_NOINLINE void Transformer(
     }
   }
 
-  size_t image_token_position = 0;
   for (size_t qi = 0; qi < num_queries; ++qi) {
-    image_token_position =
-        EmbedMMToken(queries_token[qi], qi, queries_pos[qi],
-                     /*pos_in_prompt=*/0, config, weights, activations.x,
-                     runtime_config.image_tokens, image_token_position);
+    EmbedMMToken(queries_token[qi], qi, queries_pos[qi],
+                 /*pos_in_prompt=*/0, config, weights, activations.x);
   }
 
   for (size_t layer_idx = 0; layer_idx < weights.c_layers.size(); ++layer_idx) {
@@ -421,6 +418,7 @@ static void StreamAndUpdateEOS(const size_t qi, const size_t pos, int token,
   // User decided to stop: set next token to primary EOS.
   if (HWY_UNLIKELY(!runtime_config.StreamToken(qi, pos, token, prob))) {
     token = config.eos_id;
+    HWY_DASSERT(config.IsEOS(token));
   }
 
   // Primary or secondary EOS: mark query as EOS.
