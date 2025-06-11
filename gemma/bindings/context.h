@@ -31,26 +31,19 @@
 
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
+#include "gemma/kv_cache.h"
 #include "ops/matmul.h"  // MatMulEnv
 #include "hwy/base.h"
 #include "hwy/highway.h"
 
 namespace gcpp {
 
-// Forward declaration - use 'struct' to match definition tag
-struct KVCache;
-
 // Struct to hold data for a single conversation thread
 struct ConversationData {
- public:
-  ConversationData(const ModelConfig& model_config, size_t prefill_tbatch_size);
+  ConversationData(const ModelConfig& model_config,
+                   const InferenceArgs& inference_args);
   ConversationData(const ConversationData& other);
 
- private:
-  const ModelConfig& model_config_ref_;
-  size_t prefill_tbatch_size_;
-
- public:
   std::unique_ptr<KVCache> kv_cache;
   size_t abs_pos = 0;
 };
@@ -142,8 +135,7 @@ class GemmaContext {
     log_msg += "' to prewarmed_cache.";
     LogDebug(log_msg.c_str());
 
-    // Create a deep copy of the active_conversation.
-    // The ConversationData copy constructor handles the deep copy of KVCache.
+    // Create a deep copy of the active_conversation via copy ctor.
     auto conversation_copy =
         std::make_shared<ConversationData>(*active_conversation);
 
@@ -176,8 +168,7 @@ class GemmaContext {
         active_conversation->abs_pos = it->second->abs_pos;
         // Perform a deep copy of the KVCache from the prewarmed version.
         active_conversation->kv_cache =
-            std::make_unique<KVCache>(it->second->kv_cache->Copy(
-                model.GetModelConfig(), inference_args.prefill_tbatch_size));
+            std::make_unique<KVCache>(it->second->kv_cache->Copy());
         LogDebug((log_prefix + "Successfully restored from prewarmed_cache.")
                      .c_str());
         return;
@@ -187,8 +178,8 @@ class GemmaContext {
       // rewind to initial state.
       active_conversation->abs_pos = 0;
       // Replace the cache within the current ConversationData object
-      active_conversation->kv_cache = std::make_unique<KVCache>(
-          model.GetModelConfig(), inference_args.prefill_tbatch_size);
+      active_conversation->kv_cache =
+          std::make_unique<KVCache>(model.GetModelConfig(), inference_args);
 
       LogDebug((log_prefix + "Successfully rewound to initial state.").c_str());
     } else {
@@ -206,7 +197,7 @@ class GemmaContext {
     LogDebug("Creating new conversation");
     // Create a new ConversationData object using make_shared
     conversation_cache[name] = std::make_shared<ConversationData>(
-        model.GetModelConfig(), inference_args.prefill_tbatch_size);
+        model.GetModelConfig(), inference_args);
     return true;
   }
 

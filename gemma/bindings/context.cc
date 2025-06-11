@@ -43,21 +43,15 @@ namespace gcpp {
 
 // ConversationData constructor implementation
 ConversationData::ConversationData(const ModelConfig& model_config,
-                                   size_t prefill_tbatch_size)
-    : model_config_ref_(model_config),
-      prefill_tbatch_size_(prefill_tbatch_size),
-      kv_cache(std::make_unique<KVCache>(model_config, prefill_tbatch_size)),
+                                   const InferenceArgs& inference_args)
+    : kv_cache(std::make_unique<KVCache>(model_config, inference_args)),
       abs_pos(0) {}
 
 // ConversationData copy constructor implementation
 ConversationData::ConversationData(const ConversationData& other)
-    : model_config_ref_(other.model_config_ref_),
-      prefill_tbatch_size_(other.prefill_tbatch_size_),
-      kv_cache(nullptr),
-      abs_pos(other.abs_pos) {
+    : kv_cache(nullptr), abs_pos(other.abs_pos) {
   if (other.kv_cache) {
-    kv_cache = std::make_unique<KVCache>(other.kv_cache->Copy(
-        other.model_config_ref_, other.prefill_tbatch_size_));
+    kv_cache = std::make_unique<KVCache>(other.kv_cache->Copy());
   }
 }
 
@@ -115,7 +109,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
   LogDebug("Creating initial ConversationData");
   // Create the initial ConversationData object using make_shared
   active_conversation = std::make_shared<ConversationData>(
-      model.GetModelConfig(), inference_args.prefill_tbatch_size);
+      model.GetModelConfig(), inference_args);
 
   LogDebug(
       "Storing initial ConversationData in conversation_cache[\"default\"]");

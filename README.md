@@ -322,9 +322,10 @@ model (any model with a `-pt` suffix).
 
 **What sequence lengths are supported?**
 
-See `seq_len` in `configs.cc`. For the Gemma 3 models larger than 1B, this is
-typically 32K but 128K would also work given enough RAM. Note that long
-sequences will be slow due to the quadratic cost of attention.
+See `max_seq_len` in `configs.cc` and `InferenceArgs.seq_len`. For the Gemma 3
+models larger than 1B, this is typically 32K but 128K would also work given
+enough RAM. Note that long sequences will be slow due to the quadratic cost of
+attention.
 
 **How do I convert my fine-tune to a `.sbs` compressed model file?**
 

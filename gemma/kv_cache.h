@@ -19,29 +19,34 @@
 #include <stddef.h>
 
 #include "gemma/configs.h"  // ModelConfig
+#include "gemma/gemma_args.h"
 #include "util/mat.h"
-#include "hwy/aligned_allocator.h"
 
 namespace gcpp {
 
 struct KVCache {
-  KVCache(const ModelConfig& weights_config, size_t prefill_tbatch_size);
+  KVCache(const ModelConfig& config, const InferenceArgs& inference_args);
 
-  // Returns a deep copy of the KVCache.
-  KVCache Copy(const ModelConfig& weights_config, size_t prefill_tbatch_size);
+  // Returns a deep copy of the KVCache. Use explicit function instead of
+  // copy ctor to make the cost explicit.
+  KVCache Copy();
 
-  size_t griffin_layers = 0;
-  // griffin_layers, griffin_conv1d_cols * config.model_dim
-  MatStorageT<float> conv1d_cache;
-  MatStorageT<float> rglru_cache;  // griffin_layers, config.model_dim
   // Zero-initialize the Griffin recurrent block cache, i.e. the conv1d_cache
   // and rglru_cache.
   void ZeroGriffinCache();
 
-  size_t seq_len = 0;  // = kSeqLen + prefill_tbatch_size
+  size_t SeqLen() const { return kv_cache.Rows(); }
 
-  // seq_len * kGemmaLayers * kKVHeads * kQKVDim * 2
-  hwy::AlignedFreeUniquePtr<float[]> kv_cache;
+  // [griffin_layers, griffin_conv1d_cols * model_dim]
+  MatStorageT<float> conv1d_cache;
+  MatStorageT<float> rglru_cache;  // [griffin_layers, model_dim]
+
+  MatStorageT<float> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
+
+ private:
+  // For use by other ctor and Copy()
+  KVCache(const Extents2D& conv1d_extents, const Extents2D& rglru_extents,
+          const Extents2D& kv_extents);
 };
 
 }  // namespace gcpp

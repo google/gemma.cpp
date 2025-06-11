@@ -27,12 +27,8 @@
 
 namespace gcpp {
 
-// Allow changing pre-allocated kv cache size as a compiler flag
-#ifndef GEMMA_MAX_SEQLEN
-#define GEMMA_MAX_SEQLEN 4096
-#endif  // !GEMMA_MAX_SEQLEN
-
 static constexpr size_t kVocabSize = 256000;
+static constexpr size_t kMaxSeqLen = 4096;
 
 static ModelConfig ConfigNoSSM() {
   ModelConfig config;
@@ -69,7 +65,7 @@ static ModelConfig ConfigGemma2_27B() {
   config.model = Model::GEMMA2_27B;
   config.model_dim = 4608;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_27B(config.model_dim);
   config.num_layers = 46;
   config.layer_configs = {config.num_layers, layer_config};
@@ -97,7 +93,7 @@ static ModelConfig ConfigGemma2_9B() {
   config.model = Model::GEMMA2_9B;
   config.model_dim = 3584;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_9B(config.model_dim);
   config.num_layers = 42;
   config.layer_configs = {config.num_layers, layer_config};
@@ -125,7 +121,7 @@ static ModelConfig ConfigGemma2_2B() {
   config.model = Model::GEMMA2_2B;
   config.model_dim = 2304;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_2B(config.model_dim);
   config.num_layers = 26;
   config.layer_configs = {config.num_layers, layer_config};
@@ -152,7 +148,7 @@ static ModelConfig ConfigGemmaTiny() {
   config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 32;
   config.vocab_size = 32;  // at least two f32 vectors
-  config.seq_len = 32;
+  config.max_seq_len = 32;
   LayerConfig layer_config = LayerConfigGemmaTiny(config.model_dim);
   config.num_layers = 2;
   config.layer_configs = {config.num_layers, layer_config};
@@ -188,11 +184,11 @@ static ModelConfig ConfigGriffin2B() {
   ModelConfig config = ConfigNoSSM();
   config.display_name = "Griffin2B";
   config.model = Model::GRIFFIN_2B;
-  // Griffin uses local attention, so GEMMA_MAX_SEQLEN is actually the local
+  // Griffin uses local attention, so max_seq_len is actually the local
   // attention window.
   config.model_dim = 2560;
   config.vocab_size = kVocabSize;
-  config.seq_len = 2048;
+  config.max_seq_len = 2048;
   LayerConfig layer_config = LayerConfigGriffin2B(config.model_dim);
   config.num_layers = 26;
   config.layer_configs = {config.num_layers, layer_config};
@@ -200,7 +196,8 @@ static ModelConfig ConfigGriffin2B() {
     config.layer_configs[i].type = LayerAttentionType::kGemma;
     config.layer_configs[i].griffin_dim = 0;
   }
-  config.attention_window_sizes = FixedAttentionWindowSizes<26>(config.seq_len);
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<26>(config.max_seq_len);
   config.use_local_attention = true;
   config.final_cap = 0.0f;
   return config;
@@ -238,7 +235,7 @@ static void AddVitConfig(ModelConfig& config, size_t image_size = 224) {
 ModelConfig GetVitConfig(const ModelConfig& config) {
   ModelConfig vit_config = ConfigNoSSM();
   vit_config.model_dim = config.vit_config.model_dim;
-  vit_config.seq_len = config.vit_config.seq_len;
+  vit_config.max_seq_len = config.vit_config.seq_len;
   vit_config.layer_configs = config.vit_config.layer_configs;
   vit_config.pool_dim = config.vit_config.pool_dim;
   vit_config.wrapping = config.wrapping;
@@ -313,14 +310,14 @@ static ModelConfig ConfigGemma3_1B() {
   config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 1152;
   config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_1B_LM(config.model_dim);
   config.num_layers = 26;
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<26, 6>(
-      {512, 512, 512, 512, 512, config.seq_len});
+      {512, 512, 512, 512, 512, config.max_seq_len});
   return config;
 }
 
@@ -345,14 +342,14 @@ static ModelConfig ConfigGemma3_4B_LM() {
   config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 2560;
   config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_4B_LM(config.model_dim);
   config.num_layers = 34;
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<34, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 
@@ -394,14 +391,14 @@ static ModelConfig ConfigGemma3_12B_LM() {
   config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 3840;
   config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_12B_LM(config.model_dim);
   config.num_layers = 48;
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<48, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 
@@ -443,14 +440,14 @@ static ModelConfig ConfigGemma3_27B_LM() {
   config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 5376;
   config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_27B_LM(config.model_dim);
   config.num_layers = 62;
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<62, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 

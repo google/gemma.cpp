@@ -101,18 +101,6 @@ directly.
 
 For other models, `gemma_export_main.py` is not yet open sourced.
 
-## Compile-Time Flags (Advanced)
-
-There are several compile-time flags to be aware of (note these may or may not
-be exposed to the build system):
-
-- `GEMMA_MAX_SEQ_LEN` : Sets maximum sequence length to preallocate for the KV
-  Cache. The default is 4096 tokens but can be overridden. This is not exposed
-  through `CMakeLists.txt` yet.
-
-In the medium term this will likely be deprecated in favor of handling options
-at runtime - dynamically resizing the KV cache as needed.
-
 ## Using gemma.cpp as a Library (Advanced)
 
 Unless you are doing lower level implementations or research, from an
@@ -165,7 +153,7 @@ constrained decoding type of use cases where you want to force the generation to
 fit a grammar. If you're not doing this, you can send an empty lambda or
 `std::function` as a no-op which is what `run.cc` does.
 
-### `Transformer()` implements the inference (i.e. `forward()` method in PyTorch or Jax) computation of the neural network
+### `Transformer()` implements inference (i.e. `forward()` in PyTorch or Jax)
 
 For high-level applications, you might only call `model.Generate()` and never
 interact directly with the neural network, but if you're doing something a bit

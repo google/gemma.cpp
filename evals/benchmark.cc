@@ -62,6 +62,7 @@ int BenchmarkSummary(GemmaEnv& env, const Path& text) {
 
 int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
                           size_t batch_tokens) {
+  const Gemma& gemma = *env.GetGemma();
   std::string input = ReadFileToString(text);
   std::vector<int> prompt = env.Tokenize(input);
   std::cout << "Number of input tokens: " << prompt.size() << "\n";
@@ -73,8 +74,7 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-    KVCache kv_cache(env.GetGemma()->GetModelConfig(),
-                     env.MutableConfig().prefill_tbatch_size);
+    KVCache kv_cache(gemma.GetModelConfig(), gemma.Inference());
     float entropy = ComputeCrossEntropy(
         *env.GetGemma(), num_tokens, prompt_slice, kv_cache, env.Verbosity());
     total_entropy += entropy;

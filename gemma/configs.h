@@ -347,7 +347,7 @@ struct ModelConfig : public IFields {
     visitor(num_layers);
     visitor(model_dim);
     visitor(vocab_size);
-    visitor(seq_len);
+    visitor(max_seq_len);
 
     visitor(unused_num_tensor_scales);
 
@@ -413,7 +413,7 @@ struct ModelConfig : public IFields {
     return num_heads;
   }
 
-  size_t CachePosSize() const {
+  size_t KVCacheCols() const {
     size_t num_layers = layer_configs.size();
     return num_layers * layer_configs[0].CacheLayerSize();
   }
@@ -435,7 +435,7 @@ struct ModelConfig : public IFields {
   uint32_t num_layers = 0;
   uint32_t model_dim = 0;
   uint32_t vocab_size = 0;
-  uint32_t seq_len = 0;
+  uint32_t max_seq_len = 0;
 
   // We no longer set nor use this: config_converter is not able to set this,
   // and only pre-2025 format stores scales, and we do not require advance

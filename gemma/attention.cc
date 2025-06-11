@@ -70,9 +70,7 @@ static void PositionalEncodingQK(U* qk, const size_t qkv_dim,
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
-  bool is_global_layer =
-      activations.weights_config.attention_window_sizes[layer_idx] ==
-      activations.seq_len;
+  bool is_global_layer = activations.IsGlobalLayer(layer_idx);
   // TODO: add a config flag instead of hardcoding the model.
   if (is_global_layer && IsVLM(activations.weights_config.model)) {
     inv_timescale = activations.inv_timescale_global.PackedScale1();
@@ -116,13 +114,15 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
 // Calculates the attention outputs for a single q.
 void SingleDotSoftmaxWeightedSum(
     const size_t pos, const size_t start_pos, const size_t last_pos,
-    const hwy::Divisor& div_seq_len, float* HWY_RESTRICT q,
-    const MatPtrT<float>& k, const MatPtrT<float>& v, const size_t layer_idx,
-    const LayerWeightsPtrs& layer, const Activations& activations,
-    float* HWY_RESTRICT att, float* HWY_RESTRICT att_out) {
+    float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v,
+    const size_t layer_idx, const LayerWeightsPtrs& layer,
+    const Activations& activations, float* HWY_RESTRICT att,
+    float* HWY_RESTRICT att_out) {
   const size_t qkv_dim = layer.layer_config.qkv_dim;
   const float att_cap = activations.weights_config.att_cap;
   const float query_scale = activations.query_scale;
+  const size_t seq_len =
+      static_cast<size_t>(activations.div_seq_len.GetDivisor());
 
   // Apply rope and scaling to Q.
   if (layer.query_norm_scale.HasPtr()) {
@@ -133,15 +133,14 @@ void SingleDotSoftmaxWeightedSum(
   PositionalEncodingQK(q, qkv_dim, layer_idx, layer, activations, pos,
                        query_scale);
 
-  QDotK(start_pos, last_pos, div_seq_len, q, k, att);
+  QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att);
 
   // SoftMax with optional SoftCap yields "probabilities" in att.
-  const size_t att_len =
-      HWY_MIN(last_pos + 1, static_cast<size_t>(div_seq_len.GetDivisor()));
+  const size_t att_len = HWY_MIN(last_pos + 1, seq_len);
   MaybeLogitsSoftCap(att_cap, att, att_len);
   Softmax(att, att_len);
 
-  WeightedSumV(start_pos, last_pos, div_seq_len, att, v, att_out);
+  WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out);
 }
 
 // The attention window usually starts at 0 unless `pos` is larger than
@@ -152,11 +151,13 @@ static HWY_INLINE size_t StartPos(size_t pos, const ModelConfig& config,
   return pos - HWY_MIN(att_window_size - 1, pos);
 }
 
-void DotSoftmaxWeightedSum(
-    const size_t num_tokens, const QueriesPos& queries_pos,
-    const QueriesPos& queries_prefix_end, const hwy::Divisor& div_seq_len,
-    const size_t layer_idx, const LayerWeightsPtrs& layer,
-    Activations& activations, const KVCaches& kv_caches, NestedPools& pools) {
+void DotSoftmaxWeightedSum(const size_t num_tokens,
+                           const QueriesPos& queries_pos,
+                           const QueriesPos& queries_prefix_end,
+                           const size_t layer_idx,
+                           const LayerWeightsPtrs& layer,
+                           Activations& activations, const KVCaches& kv_caches,
+                           NestedPools& pools) {
   const size_t num_queries = queries_pos.size();
   const LayerConfig& layer_config = layer.layer_config;
   PROFILER_ZONE("Gen.Attention.DotSoftmax");
@@ -166,7 +167,8 @@ void DotSoftmaxWeightedSum(
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
 
   const size_t cache_layer_size = layer_config.CacheLayerSize();
-  const size_t cache_pos_size = activations.cache_pos_size;
+  const size_t seq_len =
+      static_cast<size_t>(activations.div_seq_len.GetDivisor());
 
   // For each head (token, query), compute Q.K, softmax, and weighted V.
   // TODO: nested parallelism to use more threads.
@@ -183,21 +185,19 @@ void DotSoftmaxWeightedSum(
         float* HWY_RESTRICT q =
             activations.q.Row(interleaved_idx) + head * qkv_dim;
         float* HWY_RESTRICT att =
-            activations.att.Row(interleaved_idx) + head * activations.seq_len;
+            activations.att.Row(interleaved_idx) + head * seq_len;
         float* HWY_RESTRICT att_out =
             activations.att_out.Row(interleaved_idx) + head * qkv_dim;
 
         // Make strided views into the kv cache entries for the current
         // query and head.
-        KVCache& kv_cache = kv_caches[query_idx];
+        auto& kv_cache = kv_caches[query_idx].kv_cache;
         const size_t kv_head_offset =
             layer_idx * cache_layer_size + head_offset;
-        MatPtrT<float> k("k_view", Extents2D(kv_cache.seq_len, qkv_dim));
-        k.SetPtr(kv_cache.kv_cache.get() + kv_head_offset,
-                 /*stride=*/cache_pos_size);
-        MatPtrT<float> v("v_view", Extents2D(kv_cache.seq_len, qkv_dim));
-        v.SetPtr(kv_cache.kv_cache.get() + kv_head_offset + qkv_dim,
-                 /*stride=*/cache_pos_size);
+        MatPtrT<float> k("k_view", Extents2D(seq_len, qkv_dim));
+        k.SetPtr(kv_cache.Row(0) + kv_head_offset, kv_cache.Stride());
+        MatPtrT<float> v("v_view", Extents2D(seq_len, qkv_dim));
+        v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim, kv_cache.Stride());
 
         // Find the token position in the query and calculate the range
         // of cache positions to attend to.
@@ -211,16 +211,15 @@ void DotSoftmaxWeightedSum(
           last_pos = prefix_end - 1;
         }
 
-        SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, div_seq_len, q, k,
-                                    v, layer_idx, layer, activations, att,
+        SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v,
+                                    layer_idx, layer, activations, att,
                                     att_out);
       });
 }
 
 // Fills activations.q and writes to KV cache.
 static HWY_INLINE void ComputeQKV(
-    size_t num_tokens, const QueriesPos& queries_pos,
-    const hwy::Divisor& div_seq_len, const size_t layer_idx,
+    size_t num_tokens, const QueriesPos& queries_pos, const size_t layer_idx,
     const LayerWeightsPtrs& layer, Activations& activations,
     const KVCaches& kv_caches, const int flags, MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.QKV");
@@ -230,7 +229,6 @@ static HWY_INLINE void ComputeQKV(
   const size_t qkv_dim = layer_config.qkv_dim;
   const size_t kv_heads = layer_config.kv_heads;
   const size_t cache_layer_size = layer_config.CacheLayerSize();
-  const size_t cache_pos_size = activations.cache_pos_size;
 
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
@@ -247,11 +245,10 @@ static HWY_INLINE void ComputeQKV(
     const size_t query_idx = interleaved_idx % num_queries;
     const size_t batch_idx = interleaved_idx / num_queries;
     const size_t cache_pos =
-        div_seq_len.Remainder(queries_pos[query_idx] + batch_idx);
-    const size_t kv_offset =
-        cache_pos * cache_pos_size + layer_idx * cache_layer_size;
+        activations.div_seq_len.Remainder(queries_pos[query_idx] + batch_idx);
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
-        kv_caches[query_idx].kv_cache.get() + kv_offset);
+        kv_caches[query_idx].kv_cache.Row(cache_pos) +
+        layer_idx * cache_layer_size);
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
@@ -267,12 +264,11 @@ static HWY_INLINE void ComputeQKV(
         const size_t query_idx = interleaved_idx % num_queries;
         const size_t batch_idx = interleaved_idx / num_queries;
         const size_t pos = queries_pos[query_idx] + batch_idx;
-        const size_t cache_pos = div_seq_len.Remainder(pos);
-        const size_t kv_offset = cache_pos * cache_pos_size +
+        const size_t cache_pos = activations.div_seq_len.Remainder(pos);
+        auto& kv_cache = kv_caches[query_idx].kv_cache;
+        float* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
                                  layer_idx * cache_layer_size +
                                  head * qkv_dim * 2;
-        KVCache& kv_cache = kv_caches[query_idx];
-        float* HWY_RESTRICT kv = kv_cache.kv_cache.get() + kv_offset;
 
         // Apply further processing to K.
         if (layer.key_norm_scale.HasPtr()) {
@@ -309,9 +305,9 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
 // causal attention, and must be non-null for prefix-LM style attention.
 void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,
                     const QueriesPos* queries_prefix_end,
-                    const hwy::Divisor& div_seq_len, const size_t layer_idx,
-                    const LayerWeightsPtrs& layer, Activations& activations,
-                    const KVCaches& kv_caches, MatMulEnv& env, int flags) {
+                    const size_t layer_idx, const LayerWeightsPtrs& layer,
+                    Activations& activations, const KVCaches& kv_caches,
+                    MatMulEnv& env, int flags) {
   const size_t num_queries = queries_pos.size();
   HWY_DASSERT(num_queries <= kv_caches.size());
 
@@ -330,11 +326,10 @@ void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,
     queries_prefix_end = &queries_prefix_end_span;
   }
 
-  ComputeQKV(num_tokens, queries_pos, div_seq_len, layer_idx, layer,
-             activations, kv_caches, flags, env);
-  DotSoftmaxWeightedSum(num_tokens, queries_pos, *queries_prefix_end,
-                        div_seq_len, layer_idx, layer, activations, kv_caches,
-                        env.ctx.pools);
+  ComputeQKV(num_tokens, queries_pos, layer_idx, layer, activations, kv_caches,
+             flags, env);
+  DotSoftmaxWeightedSum(num_tokens, queries_pos, *queries_prefix_end, layer_idx,
+                        layer, activations, kv_caches, env.ctx.pools);
   SumHeads(layer, activations, env);
 }
 

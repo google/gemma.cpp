@@ -117,6 +117,7 @@ class Gemma {
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
   const ModelWeightsPtrs& Weights() const { return weights_; }
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
+  const InferenceArgs& Inference() const { return inference_; }
 
   void Save(const Path& weights_path, hwy::ThreadPool& pool) const;
 
@@ -159,6 +160,7 @@ class Gemma {
   std::vector<MatOwner> mat_owners_;
   ModelWeightsPtrs weights_;
   GemmaChatTemplate chat_template_;
+  InferenceArgs inference_;
 };
 
 }  // namespace gcpp

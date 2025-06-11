@@ -35,11 +35,6 @@
 
 namespace gcpp {
 
-// Allow changing k parameter of `SampleTopK` as a compiler flag
-#ifndef GEMMA_TOPK
-#define GEMMA_TOPK 1
-#endif  // !GEMMA_TOPK
-
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
   LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
   LoaderArgs(const std::string& tokenizer_path,
@@ -115,6 +110,7 @@ using ActivationsObserverFunc =
     std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
 
 // RuntimeConfig holds configuration for a single generation run.
+// TODO: move into InferenceArgs, use that directly.
 struct RuntimeConfig {
   // If not empty, batch_stream_token is called for each token in the batch,
   // instead of stream_token.
@@ -137,7 +133,7 @@ struct RuntimeConfig {
   // Sampling-related parameters.
   float temperature;  // Temperature for sampling.
 
-  size_t top_k = GEMMA_TOPK;  // Top-k for sampling.
+  size_t top_k = 1;           // Top-k for sampling.
   std::mt19937* gen;          // Random number generator used for sampling.
 
   int verbosity;  // Controls verbosity of printed messages.
@@ -170,6 +166,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
   int verbosity;
 
+  size_t seq_len;
   size_t max_generated_tokens;
 
   size_t prefill_tbatch_size;
@@ -192,6 +189,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "developer/debug info).\n    Default = 1.",
             1);  // Changed verbosity level to 1 since it's user-facing
 
+    visitor(seq_len, "seq_len", size_t{2048},
+            "Sequence length, capped by ModelConfig.max_seq_len.");
     visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
             "Maximum number of tokens to generate.");
 

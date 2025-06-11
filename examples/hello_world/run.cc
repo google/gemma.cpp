@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
   // Instantiate model and KV Cache
   gcpp::MatMulEnv env(MakeMatMulEnv(threading));
   gcpp::Gemma gemma(loader, inference, env);
-  gcpp::KVCache kv_cache(gemma.GetModelConfig(), inference.prefill_tbatch_size);
+  gcpp::KVCache kv_cache(gemma.GetModelConfig(), inference);
   size_t generated = 0;
 
   // Initialize random number generator

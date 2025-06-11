@@ -46,8 +46,7 @@ struct Activations {
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : weights_config(config),
         layer_config(config.layer_configs[0]),
-        seq_len(config.seq_len),
-        cache_pos_size(config.CachePosSize()),
+        div_seq_len(static_cast<uint32_t>(config.max_seq_len)),
         is_griffin(config.model == Model::GRIFFIN_2B),
         query_scale(ChooseQueryScale(config)),
 
@@ -64,7 +63,9 @@ struct Activations {
 
         pre_att_rms_out("pre_att_rms_out",
                         Extents2D(batch_size, config.model_dim), pad_),
-        att("att", Extents2D(batch_size, layer_config.heads * config.seq_len),
+        att("att",
+            Extents2D(batch_size,
+                      layer_config.heads * div_seq_len.GetDivisor()),
             pad_),
         att_out(
             "att_out",
@@ -141,10 +142,14 @@ struct Activations {
     gen_tokens.resize(batch_size);
   }
 
+  bool IsGlobalLayer(size_t layer_idx) const {
+    return weights_config.attention_window_sizes[layer_idx] ==
+           div_seq_len.GetDivisor();
+  }
+
   const ModelConfig& weights_config;
   const LayerConfig& layer_config;
-  size_t seq_len;
-  size_t cache_pos_size = 0;  // TODO: after moving KVCache to MatStorageT.
+  hwy::Divisor div_seq_len;
   bool is_griffin;
   float query_scale;
   const Extents2D none_ = Extents2D();

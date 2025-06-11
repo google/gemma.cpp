@@ -30,24 +30,23 @@ namespace gcpp {
   namespace NAMESPACE {                                                        \
   void SingleDotSoftmaxWeightedSum(                                            \
       const size_t pos, const size_t start_pos, const size_t last_pos,         \
-      const hwy::Divisor& div_seq_len, float* HWY_RESTRICT q,                  \
-      const MatPtrT<float>& k, const MatPtrT<float>& v, size_t layer_idx,      \
-      const LayerWeightsPtrs& layer, const Activations& activations,           \
-      float* HWY_RESTRICT att, float* HWY_RESTRICT att_out);                   \
+      float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v, \
+      size_t layer_idx, const LayerWeightsPtrs& layer,                         \
+      const Activations& activations, float* HWY_RESTRICT att,                 \
+      float* HWY_RESTRICT att_out);                                            \
                                                                                \
   void DotSoftmaxWeightedSum(const size_t num_tokens,                          \
                              const QueriesPos& queries_pos,                    \
                              const QueriesPos& queries_prefix_end,             \
-                             const hwy::Divisor& div_seq_len,                  \
                              size_t layer_idx, const LayerWeightsPtrs& layer,  \
                              Activations& activations,                         \
                              const KVCaches& kv_caches, NestedPools& pools);   \
                                                                                \
   void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,        \
                       const QueriesPos* queries_prefix_end,                    \
-                      const hwy::Divisor& div_seq_len, const size_t layer_idx, \
-                      const LayerWeightsPtrs& layer, Activations& activations, \
-                      const KVCaches& kv_caches, MatMulEnv& env, int flags);   \
+                      const size_t layer_idx, const LayerWeightsPtrs& layer,   \
+                      Activations& activations, const KVCaches& kv_caches,     \
+                      MatMulEnv& env, int flags);                              \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 

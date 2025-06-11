@@ -161,7 +161,7 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("num_layers", &ModelConfig::num_layers)
       .def_readwrite("model_dim", &ModelConfig::model_dim)
       .def_readwrite("vocab_size", &ModelConfig::vocab_size)
-      .def_readwrite("seq_len", &ModelConfig::seq_len)
+      .def_readwrite("max_seq_len", &ModelConfig::max_seq_len)
       // Skip `unused_num_tensor_scales`.
       .def_readwrite("att_cap", &ModelConfig::att_cap)
       .def_readwrite("final_cap", &ModelConfig::final_cap)
