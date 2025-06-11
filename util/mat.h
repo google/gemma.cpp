@@ -33,16 +33,19 @@
 
 namespace gcpp {
 
-// Type-safe wrapper over type-erased uint8_t row pointers from MatPtr.
-template <typename TC>
-class CRows {
+// Type-safe wrapper over type-erased uint8_t row pointers from MatPtr. Used
+// for C, in future also for A.
+template <typename T>
+class RowPtrs {
  public:
-  CRows(TC** C_rows) : C_rows_(C_rows) {}
+  RowPtrs(uint8_t** row_ptrs) : row_ptrs_(row_ptrs) {}
 
-  TC* HWY_RESTRICT operator[](size_t row_idx) const { return C_rows_[row_idx]; }
+  T* HWY_RESTRICT operator[](size_t row_idx) const {
+    return HWY_RCAST_ALIGNED(T*, row_ptrs_[row_idx]);
+  }
 
  private:
-  TC** C_rows_;
+  uint8_t** row_ptrs_;
 };
 
 // Type-erased, non-owning pointer and metadata for rank-1 or 2 tensors (vector
@@ -88,7 +91,9 @@ class MatPtr : public IFields {
 
   bool HasPtr() const { return ptr_ != nullptr; }
 
-  // Caller has initialized Rows() pointers in row_ptrs[].
+  // Caller has initialized Rows() pointers in row_ptrs[]. Note that this only
+  // changes `GetRowPtrs`, not `Row()`, because that would require branching
+  // and only a few call sites, in particular MatMul, use row pointers.
   void AttachRowPtrs(uint8_t** row_ptrs) {
     row_ptrs_ = row_ptrs;
     for (size_t r = 0; r < Rows(); ++r) {
@@ -96,6 +101,8 @@ class MatPtr : public IFields {
     }
   }
 
+  // Called by Activations to allocate once, rather than have to fill row
+  // pointers in each call to MatMul.
   void AllocateAndAttachRowPtrs(
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs) {
     if (!HasPtr()) return;
@@ -107,6 +114,7 @@ class MatPtr : public IFields {
     AttachRowPtrs(ptrs);
   };
 
+  // If non-null, this array should be used instead of `Row()`.
   uint8_t** GetRowPtrs() const { return row_ptrs_; }
 
   // A single row counts as packed because there is no padding between rows.

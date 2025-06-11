@@ -176,12 +176,12 @@ void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
 // C is BF16/float, or double for partial.
 void BindC(MatPtr& C, MMParallel& parallel);
 
-// Lightweight view into `MatStorageT`.
+// Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
 #pragma pack(push, 1)  // power of two size
 template <typename T>
-class RowPtr {
+class StridedView {
  public:
-  RowPtr(T* HWY_RESTRICT row0, size_t cols, size_t stride)
+  StridedView(T* HWY_RESTRICT row0, size_t cols, size_t stride)
       : row0_(row0),
         cols_(static_cast<uint32_t>(cols)),
         stride_(static_cast<uint32_t>(stride)) {
@@ -198,10 +198,10 @@ class RowPtr {
   }
 
   // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  RowPtr<T> View(size_t r, size_t c, size_t cols) const {
+  StridedView<T> View(size_t r, size_t c, size_t cols) const {
     HWY_DASSERT(c < Cols());
     HWY_DASSERT(cols <= Cols() - c);
-    return RowPtr<T>(Row(r) + c, cols, stride_);
+    return StridedView<T>(Row(r) + c, cols, stride_);
   }
 
  private:
@@ -211,8 +211,8 @@ class RowPtr {
 };
 #pragma pack(pop)
 
-using RowPtrBF = RowPtr<BF16>;
-using RowPtrD = RowPtr<double>;
+using StridedViewBF = StridedView<BF16>;
+using StridedViewD = StridedView<double>;
 
 // Per-package storage for packed A, and one global C-shaped `partial` for
 // accumulating partial dot products (sections of K).
@@ -260,19 +260,19 @@ class MMStorage {
   }
 
   // Returns per-package matrix view.
-  RowPtrBF A(size_t pkg_idx, const Extents2D& extents) const {
+  StridedViewBF A(size_t pkg_idx, const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxM);
     HWY_DASSERT(extents.cols <= kMaxK);
-    return RowPtrBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)), extents.cols,
-                    pkg_A_[pkg_idx]->Stride());
+    return StridedViewBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
+                         extents.cols, pkg_A_[pkg_idx]->Stride());
   }
 
-  RowPtrD Partial() const { return partial_; }
+  StridedViewD Partial() const { return partial_; }
 
  private:
   std::unique_ptr<MatStorageT<BF16>> pkg_A_[MMParallel::kMaxPackages];
   MatStorageT<double> partial_storage_;
-  RowPtrD partial_;
+  StridedViewD partial_;
 };
 
 //------------------------------------------------------------------------------
@@ -673,7 +673,7 @@ struct MatMulEnv {
 // Reduces register pressure compared to individual values/references.
 struct MMArgs {
   MMArgs(MatMulEnv& env, MMPerKey& per_key, double scale,
-         const float* HWY_RESTRICT add, const RowPtrD& partial)
+         const float* HWY_RESTRICT add, const StridedViewD& partial)
       : env(&env),
         per_key(&per_key),
         scale(scale),
@@ -686,7 +686,7 @@ struct MMArgs {
   double scale;
   const float* HWY_RESTRICT add;
   // Same size as C, threads write at false-sharing-free granularity.
-  RowPtrD partial;
+  StridedViewD partial;
 };
 
 // Wrapper over hwy::Zone that is only enabled when autotuning finished.
