@@ -562,7 +562,7 @@ static void GenerateT(
     StreamAndUpdateEOS(query_idx_start + qi, queries_mutable_pos[qi],
                        queries_prompt[qi][last_token_pos_in_prompt], 0.0f,
                        config, runtime_config, activations, non_eos);
-    // No incrementing queries_mutable_pos[qi].
+    queries_mutable_pos[qi] += 1;
   }
 
   size_t max_gen_steps = runtime_config.max_generated_tokens;
