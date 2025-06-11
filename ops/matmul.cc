@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <atomic>
 #include <vector>
 
 #include "util/allocator.h"
@@ -401,9 +402,8 @@ static size_t NPMultiple(const Allocator& allocator, size_t N,
     }
     // This happens in tests with small N, hence do not assert.
     if (N % (np_multiple * num_packages) && N >= 128) {
-      static bool warned = false;
-      if (!warned) {
-        warned = true;
+      static std::atomic_flag warned = ATOMIC_FLAG_INIT;
+      if (!warned.test_and_set()) {
         HWY_WARN(
             "NPMultiple: N=%zu still not divisible by np_multiple=%zu * "
             "num_packages=%zu\n",
