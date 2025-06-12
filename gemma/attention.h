@@ -35,18 +35,14 @@ namespace gcpp {
       const Activations& activations, float* HWY_RESTRICT att,                 \
       float* HWY_RESTRICT att_out);                                            \
                                                                                \
-  void DotSoftmaxWeightedSum(const size_t num_tokens,                          \
-                             const QueriesPos& queries_pos,                    \
-                             const QueriesPos& queries_prefix_end,             \
-                             size_t layer_idx, const LayerWeightsPtrs& layer,  \
-                             Activations& activations,                         \
-                             const KVCaches& kv_caches, NestedPools& pools);   \
+  void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,        \
+                             const LayerWeightsPtrs& layer,                    \
+                             Activations& activations, QBatch& qbatch,         \
+                             NestedPools& pools);                              \
                                                                                \
-  void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,        \
-                      const QueriesPos* queries_prefix_end,                    \
-                      const size_t layer_idx, const LayerWeightsPtrs& layer,   \
-                      Activations& activations, const KVCaches& kv_caches,     \
-                      MatMulEnv& env, int flags);                              \
+  void GemmaAttention(size_t num_tokens, const size_t layer_idx,               \
+                      const LayerWeightsPtrs& layer, Activations& activations, \
+                      QBatch& qbatch, MatMulEnv& env, int flags);              \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 

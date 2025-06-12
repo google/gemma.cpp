@@ -82,8 +82,9 @@ using ImageTokens = MatStorageT<float>;
 // true to continue generation.
 using StreamFunc = std::function<bool(int, float)>;
 // BatchStreamFunc is called with (query_idx, pos, token, probability).
-// For prompt tokens, probability is 0.0f.
-// StreamFunc should return false to stop generation and true to continue.
+// For prompt tokens, probability is 0.0f. Generation continues if this returns
+// true and stops if it returns false. Note that query_idx is absolute, not
+// relative to the batch.
 using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
@@ -112,8 +113,8 @@ using ActivationsObserverFunc =
 // RuntimeConfig holds configuration for a single generation run.
 // TODO: move into InferenceArgs, use that directly.
 struct RuntimeConfig {
-  // If not empty, batch_stream_token is called for each token in the batch,
-  // instead of stream_token.
+  // If non-null, `batch_stream_token` is called for each token in the batch,
+  // otherwise `stream_token`. `query_idx` is absolute, not batch-relative.
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
     if (batch_stream_token) {
       return batch_stream_token(query_idx, pos, token, prob);
@@ -189,9 +190,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "developer/debug info).\n    Default = 1.",
             1);  // Changed verbosity level to 1 since it's user-facing
 
-    visitor(seq_len, "seq_len", size_t{2048},
+    visitor(seq_len, "seq_len", size_t{8192},
             "Sequence length, capped by ModelConfig.max_seq_len.");
-    visitor(max_generated_tokens, "max_generated_tokens", size_t{2048},
+    visitor(max_generated_tokens, "max_generated_tokens", size_t{4096},
             "Maximum number of tokens to generate.");
 
     visitor(prefill_tbatch_size, "prefill_tbatch", size_t{256},

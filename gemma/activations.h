@@ -42,13 +42,12 @@ static inline float ChooseQueryScale(const ModelConfig& config) {
 }
 
 struct Activations {
-  Activations(const ModelConfig& config, size_t batch_size,
+  Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : weights_config(config),
         layer_config(config.layer_configs[0]),
-        div_seq_len(static_cast<uint32_t>(config.max_seq_len)),
+        div_seq_len(static_cast<uint32_t>(seq_len)),
         is_griffin(config.model == Model::GRIFFIN_2B),
-        query_scale(ChooseQueryScale(config)),
 
         x("x", Extents2D(batch_size, config.model_dim), pad_),
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
@@ -63,10 +62,7 @@ struct Activations {
 
         pre_att_rms_out("pre_att_rms_out",
                         Extents2D(batch_size, config.model_dim), pad_),
-        att("att",
-            Extents2D(batch_size,
-                      layer_config.heads * div_seq_len.GetDivisor()),
-            pad_),
+        att("att", Extents2D(batch_size, layer_config.heads * seq_len), pad_),
         att_out(
             "att_out",
             Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim),
@@ -99,7 +95,7 @@ struct Activations {
             layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
             1000000.0)),
 
-        gen_tokens(batch_size) {
+        query_scale(ChooseQueryScale(config)) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -138,8 +134,6 @@ struct Activations {
       griffin_gate_x.OverrideRows(batch_size);
       griffin_multiplier.OverrideRows(batch_size);
     }
-
-    gen_tokens.resize(batch_size);
   }
 
   bool IsGlobalLayer(size_t layer_idx) const {
@@ -151,7 +145,6 @@ struct Activations {
   const LayerConfig& layer_config;
   hwy::Divisor div_seq_len;
   bool is_griffin;
-  float query_scale;
   const Extents2D none_ = Extents2D();
   const MatPadding pad_ = MatPadding::kOdd;
 
@@ -182,9 +175,7 @@ struct Activations {
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
 
-  // Storage for the last generated token from each query, passed to the next
-  // Transformer() call.
-  std::vector<int> gen_tokens;  // one per query in the batch
+  float query_scale;
 };
 
 }  // namespace gcpp

@@ -120,7 +120,8 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                     .verbosity = inference.verbosity,
                                     .use_spinning = threading.spin};
     double image_tokens_start = hwy::platform::Now();
-    gemma.GenerateImageTokens(runtime_config, image, image_tokens);
+    gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,
+                              image_tokens);
     if (inference.verbosity >= 1) {
       double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
       fprintf(stderr,
