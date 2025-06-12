@@ -392,23 +392,31 @@ static HWY_NOINLINE void PrefillQBatch(
 
 // Also writes the token to activations.gen_tokens for subsequent DecodeStepT,
 // and updates `non_eos` if the query is at the end of its sequence.
-static void StreamAndUpdateEOS(const size_t qi, const size_t pos, int token,
-                               const float prob, const ModelConfig& config,
+static void StreamAndUpdateEOS(const size_t query_idx_start, const size_t qi,
+                               const QueriesMutablePos& queries_mutable_pos,
+                               int token, const float prob,
+                               const ModelConfig& config,
                                const RuntimeConfig& runtime_config,
                                Activations& activations,
                                hwy::BitSet4096<>& non_eos) {
-  HWY_DASSERT(non_eos.Get(qi));
+  auto abs_qi = query_idx_start + qi;
+  HWY_DASSERT(non_eos.Get(abs_qi));
+  auto& pos = queries_mutable_pos[qi];
 
   // User decided to stop: set next token to primary EOS.
-  if (HWY_UNLIKELY(!runtime_config.StreamToken(qi, pos, token, prob))) {
+  if (HWY_UNLIKELY(!runtime_config.StreamToken(abs_qi, pos, token, prob))) {
     token = config.eos_id;
     HWY_DASSERT(config.IsEOS(token));
   }
 
   // Primary or secondary EOS: mark query as EOS.
-  if (HWY_UNLIKELY(config.IsEOS(token))) non_eos.Clear(qi);
+  if (HWY_UNLIKELY(config.IsEOS(token))) {
+    non_eos.Clear(abs_qi);
+  } else {
+    pos += 1;
+  }
 
-  activations.gen_tokens[qi] = token;
+  activations.gen_tokens[abs_qi] = token;
 }
 
 // For a batch of queries, runs Transformer, computes logits, samples and
@@ -447,10 +455,8 @@ static void DecodeStepT(
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
     timing_info.NotifyGenerated();
 
-    StreamAndUpdateEOS(query_idx_start + qi, queries_mutable_pos[qi], tp.token,
+    StreamAndUpdateEOS(query_idx_start, qi, queries_mutable_pos, tp.token,
                        tp.prob, config, runtime_config, activations, non_eos);
-
-    if (non_eos.Get(qi)) queries_mutable_pos[qi] += 1;
   });
 }
 
@@ -559,10 +565,9 @@ static void GenerateT(
   for (size_t qi = 0; qi < num_queries; ++qi) {
     const size_t last_token_pos_in_prompt =
         queries_mutable_pos[qi] - queries_pos_in[qi];
-    StreamAndUpdateEOS(query_idx_start + qi, queries_mutable_pos[qi],
+    StreamAndUpdateEOS(query_idx_start, qi, queries_mutable_pos,
                        queries_prompt[qi][last_token_pos_in_prompt], 0.0f,
                        config, runtime_config, activations, non_eos);
-    queries_mutable_pos[qi] += 1;
   }
 
   size_t max_gen_steps = runtime_config.max_generated_tokens;
