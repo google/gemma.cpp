@@ -153,7 +153,7 @@ class GenerateCandidates {
       // 2D blocking is useless for a single row of M.
       if (IsBlock(order) && M_ <= mr) continue;
       // Conversely, N-only parallelism is uncompetitive for large M.
-      if (!IsBlock(order) && M_ >= 8 * mr) continue;
+      if (!IsBlock(order) && M_ >= kMaxTilesM * mr) continue;
       orders.push_back(order);
     }
   }

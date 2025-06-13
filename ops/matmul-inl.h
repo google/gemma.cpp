@@ -23,6 +23,7 @@
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
 #include "util/basics.h"
+#include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/profiler.h"
@@ -347,13 +348,6 @@ class MMAddHorizontalSumsIntoPartial {
 // Stateless, wraps member functions.
 class MMKernel {
  public:
-  // Choosing `kMaxMR == kNR` minimizes the ratio of loads to FMA, because
-  // we load `kNR + kMaxMR` vectors per `kMaxMR * kNR` element tile.
-  // In general, `M` (batch size) is not a multiple of `kMaxMR`. Thus functions
-  // that load or store a tile are parameterized on `kRowsAC`: usually `kMaxMR`,
-  // or less on ISAs with fewer registers, or for the last few rows of A.
-  static constexpr size_t kMaxMR = 4;
-
   // Calls `LoopKC` for each of `mc` rows of A in steps of `mr`. `A_view`
   // is `mc x kc` and `B_view` is `(kNR x kc)`. Both start at row/col 0.
   // A2C0 in MOMMS terminology updates a `mc x kNR` slice of the output.
@@ -917,7 +911,7 @@ class MMPerPackage {
     return HWY_MAX(kNR, line_bytes_ / sizeof_TC);
   }
 
-  // Single M and K, parallel N. Fills all of C directly.
+  // Single M and K ranges, parallel N. Fills all of C directly.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     MMZone zone;
@@ -950,7 +944,7 @@ class MMPerPackage {
     HWY_DASSERT(out_ == MMOut::kDirect);  // already filled C
   }
 
-  // Single M, parallel N, sequential K. Fills all of partial.
+  // Single M range, parallel N, sequential K. Fills all of partial.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     MMZone zone;
@@ -1365,9 +1359,8 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     HWY_ASSERT(N % kNR == 0);
 
     // Negligible CPU time.
-    tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC),
-                                     MMKernel::kMaxMR, kNR, per_key.ranges_np,
-                                     env.print_config));
+    tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC), kMaxMR,
+                                     kNR, per_key.ranges_np, env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();
