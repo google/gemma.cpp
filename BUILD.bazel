@@ -285,6 +285,7 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
+        ":mat",
         ":matmul",
         ":threading_context",
         "//compression:compress",
