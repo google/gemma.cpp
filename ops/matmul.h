@@ -46,6 +46,13 @@ namespace gcpp {
 // `MMAddHorizontalSumsIntoPartial`. We ensure `C.Cols() % kNR == 0`.
 constexpr size_t kNR = 4;
 
+// Choosing `kMaxMR == kNR` minimizes the ratio of loads to FMA, because
+// we load `kNR + kMaxMR` vectors per `kMaxMR * kNR` element tile.
+// In general, `M` (batch size) is not a multiple of `kMaxMR`. Thus functions
+// that load or store a tile are parameterized on `kRowsAC`: usually `kMaxMR`,
+// or less on ISAs with fewer registers, or for the last few rows of A.
+static constexpr size_t kMaxMR = 4;
+
 // Mostly stateless, can be constructed on the fly by weights.cc, but captures
 // the singleton ThreadingContext to reduce MatMul call overhead.
 class MMParallel {
@@ -558,16 +565,19 @@ class MMAutoTune {
 
 //------------------------------------------------------------------------------
 
+// Minimum M, in units of tile rows of height mr={1, 2, 4}, from which
+// `MMOrder::kNT[_K]` are no longer allowed. They require a single MC range,
+// but choosing the same config for a larger M can result in multiple MC ranges.
+// Thus M less than this must have unique keys/configs.
+static constexpr size_t kMaxTilesM = 8;
+
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
   // Group batch size into buckets to reduce #auto-tunes.
   static size_t BucketM(size_t M) {
-    // The first 4 may require their own bucket because `kNT` only works for a
-    // single M range, but that depends on the config's `MR()`.
-    if (M <= 4) return M;
-    if (M <= 16) return 16;
-    if (M <= 64) return 64;
-    return 256;
+    if (M < kMaxTilesM * kMaxMR) return M;  // See kMaxTilesM above.
+    if (M <= 128) return 128;
+    return 512;
   }
 
  public:
