@@ -98,7 +98,10 @@ struct AttentionActivations {
 
         div_seq_len(static_cast<uint32_t>(seq_len)),
         query_scale(ChooseQueryScale(config)) {
-    HWY_ASSERT(batch_size != 0);
+    if (batch_size == 0) {
+      HWY_WARN("Creating mostly empty activations with a batch_size of 0.");
+      return;
+    }
 
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
