@@ -60,20 +60,21 @@ void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
 
   const size_t num_interleaved = num_tokens * qbatch.Size();
   const hwy::Divisor div_qbatch(static_cast<uint32_t>(qbatch.Size()));
+  GriffinActivations& griffin = *activations.griffin;
 
   // X / Y linear layers.
   // TODO: MatMul
-  HWY_DASSERT(activations.griffin_y.Rows() == activations.griffin_x.Rows());
-  HWY_DASSERT(num_interleaved == activations.griffin_y.Rows());
+  HWY_DASSERT(griffin.griffin_y.Rows() == griffin.griffin_x.Rows());
+  HWY_DASSERT(num_interleaved == griffin.griffin_y.Rows());
   CallUpcastedSame(
       &layer_weights->griffin.linear_x_w, &layer_weights->griffin.linear_y_w,
       [&](const auto* wx, const auto* wy) {
         for (size_t r = 0; r < num_interleaved; ++r) {
-          float* HWY_RESTRICT y = activations.griffin_y.Row(r);
-          float* HWY_RESTRICT x = activations.griffin_x.Row(r);
+          float* HWY_RESTRICT y = griffin.griffin_y.Row(r);
+          float* HWY_RESTRICT x = griffin.griffin_x.Row(r);
           TwoMatVecAdd(
               *wx, *wy, 0, model_dim, model_dim,
-              activations.pre_att_rms_out.Row(r),
+              activations.attention.pre_att_rms_out.Row(r),
               /*add0=*/layer_weights->griffin.linear_x_biases.PackedScale1(),
               /*add1=*/layer_weights->griffin.linear_y_biases.PackedScale1(),
               /*out0=*/x, /*out1=*/y, pool);
@@ -87,7 +88,7 @@ void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
     const size_t qi = div_qbatch.Remainder(interleaved_idx);
     const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
     const size_t pos = qbatch.Pos(qi) + batch_idx;
-    float* HWY_RESTRICT x = activations.griffin_x.Row(qi);
+    float* HWY_RESTRICT x = griffin.griffin_x.Row(qi);
 
     // cache[i] = input at time t-i.
     float* HWY_RESTRICT cache[kMaxConv1DWidth];
@@ -124,10 +125,10 @@ void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
     const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
     const size_t pos = qbatch.Pos(qi) + batch_idx;
 
-    float* HWY_RESTRICT x = activations.griffin_x.Row(qi);
-    float* HWY_RESTRICT y = activations.griffin_y.Row(qi);
-    float* HWY_RESTRICT gate_x = activations.griffin_gate_x.Row(qi);
-    float* HWY_RESTRICT a = activations.griffin_multiplier.Row(qi);
+    float* HWY_RESTRICT x = griffin.griffin_x.Row(qi);
+    float* HWY_RESTRICT y = griffin.griffin_y.Row(qi);
+    float* HWY_RESTRICT gate_x = griffin.griffin_gate_x.Row(qi);
+    float* HWY_RESTRICT a = griffin.griffin_multiplier.Row(qi);
     float* HWY_RESTRICT rnn_state =
         qbatch.KV(qi).rglru_cache.Row(griffin_layer);
 
@@ -175,9 +176,9 @@ void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
   }  // interleaved_idx
 
   // Final linear layer.
-  CallMatMul(activations.griffin_x, layer_weights->griffin.linear_out_w,
+  CallMatMul(griffin.griffin_x, layer_weights->griffin.linear_out_w,
              layer_weights->griffin.linear_out_biases.PackedScale1(), env,
-             activations.att_sums);
+             activations.attention.att_sums);
 }  // GriffinRecurrent
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

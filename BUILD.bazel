@@ -360,6 +360,7 @@ cc_test(
     deps = [
         ":allocator",
         ":basics",
+        ":configs",
         ":gemma_lib",
         ":mat",
         ":ops",

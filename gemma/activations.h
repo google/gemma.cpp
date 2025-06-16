@@ -31,25 +31,46 @@
 
 namespace gcpp {
 
-// Returns the scale value to use for the query in the attention computation.
-// Also called by ops_test.
-static inline float ChooseQueryScale(const ModelConfig& config) {
-  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
-    return 1.0f / sqrtf(static_cast<float>(config.model_dim /
-                                           config.layer_configs[0].heads));
-  // QueryScaleType::SqrtKeySize
-  return 1.0f / sqrtf(static_cast<float>(config.layer_configs[0].qkv_dim));
-}
+struct GriffinActivations {
+  GriffinActivations(const ModelConfig& config, size_t batch_size,
+                     MatPadding pad)
+      : griffin_x("griffin_x", Extents2D(batch_size, config.model_dim), pad),
+        griffin_y("griffin_y", Extents2D(batch_size, config.model_dim), pad),
+        griffin_gate_x("griffin_gate_x",
+                       Extents2D(batch_size, config.model_dim), pad),
+        griffin_multiplier("griffin_mul",
+                           Extents2D(batch_size, config.model_dim), pad) {}
 
-struct Activations {
-  Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
-              std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : weights_config(config),
-        layer_config(config.layer_configs[0]),
-        div_seq_len(static_cast<uint32_t>(seq_len)),
-        is_griffin(config.model == Model::GRIFFIN_2B),
+  void SetBatchSize(size_t batch_size) {
+    griffin_x.OverrideRows(batch_size);
+    griffin_y.OverrideRows(batch_size);
+    griffin_gate_x.OverrideRows(batch_size);
+    griffin_multiplier.OverrideRows(batch_size);
+  }
 
-        x("x", Extents2D(batch_size, config.model_dim), pad_),
+  MatStorageT<float> griffin_x;
+  MatStorageT<float> griffin_y;
+  MatStorageT<float> griffin_gate_x;
+  MatStorageT<float> griffin_multiplier;
+};
+
+struct AttentionActivations {
+  // Returns the scale value to use for the query in the attention computation.
+  // Also called by ops_test.
+  static inline float ChooseQueryScale(const ModelConfig& config) {
+    if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
+      return 1.0f / sqrtf(static_cast<float>(config.model_dim /
+                                             config.layer_configs[0].heads));
+    // QueryScaleType::SqrtKeySize
+    return 1.0f / sqrtf(static_cast<float>(config.layer_configs[0].qkv_dim));
+  }
+
+  AttentionActivations(
+      const ModelConfig& config, const LayerConfig& layer_config,
+      size_t batch_size, size_t seq_len, MatPadding pad,
+      std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
+      : config(config),
+
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
         // and does not use an external KV cache.
         q("q",
@@ -57,36 +78,16 @@ struct Activations {
                     config.vocab_size == 0
                         ? layer_config.heads * 3 * layer_config.qkv_dim
                         : layer_config.heads * layer_config.qkv_dim),
-          pad_),
-        logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
+          pad),
 
         pre_att_rms_out("pre_att_rms_out",
-                        Extents2D(batch_size, config.model_dim), pad_),
-        att("att", Extents2D(batch_size, layer_config.heads * seq_len), pad_),
+                        Extents2D(batch_size, config.model_dim), pad),
+        att("att", Extents2D(batch_size, layer_config.heads * seq_len), pad),
         att_out(
             "att_out",
             Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim),
-            pad_),
-        att_sums("att_sums", Extents2D(batch_size, config.model_dim), pad_),
-
-        pre_ffw_rms_out("pre_ffw_rms_out",
-                        Extents2D(batch_size, config.model_dim), pad_),
-        C1("C1", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
-        C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
-        ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
-
-        griffin_x("griffin_x",
-                  is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-                  pad_),
-        griffin_y("griffin_y",
-                  is_griffin ? Extents2D(batch_size, config.model_dim) : none_,
-                  pad_),
-        griffin_gate_x(
-            "griffin_gate_x",
-            is_griffin ? Extents2D(batch_size, config.model_dim) : none_, pad_),
-        griffin_multiplier(
-            "griffin_mul",
-            is_griffin ? Extents2D(batch_size, config.model_dim) : none_, pad_),
+            pad),
+        att_sums("att_sums", Extents2D(batch_size, config.model_dim), pad),
 
         inv_timescale(
             CreateInvTimescale(layer_config.qkv_dim,
@@ -95,16 +96,73 @@ struct Activations {
             layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
             1000000.0)),
 
+        div_seq_len(static_cast<uint32_t>(seq_len)),
         query_scale(ChooseQueryScale(config)) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
-    x.AllocateAndAttachRowPtrs(row_ptrs);
     q.AllocateAndAttachRowPtrs(row_ptrs);
-    logits.AllocateAndAttachRowPtrs(row_ptrs);
     att_sums.AllocateAndAttachRowPtrs(row_ptrs);
+  }
+
+  void SetBatchSize(size_t batch_size) {
+    q.OverrideRows(batch_size);
+
+    pre_att_rms_out.OverrideRows(batch_size);
+    att.OverrideRows(batch_size);
+    att_out.OverrideRows(batch_size);
+    att_sums.OverrideRows(batch_size);
+  }
+
+  bool IsGlobalLayer(size_t layer_idx) const {
+    return config.attention_window_sizes[layer_idx] == div_seq_len.GetDivisor();
+  }
+
+  const ModelConfig& config;
+
+  MatStorageT<float> q;  // query
+
+  MatStorageT<float> pre_att_rms_out;
+  MatStorageT<float> att;      // attention vector
+  MatStorageT<float> att_out;  // attention output
+  // Accumulation of attention outputs over heads
+  MatStorageT<BF16> att_sums;
+
+  // Rope
+  MatStorageT<float> inv_timescale;
+  MatStorageT<float> inv_timescale_global;
+
+  hwy::Divisor div_seq_len;
+  float query_scale;
+};
+
+struct Activations {
+  Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
+              std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
+      : layer_config(config.layer_configs[0]),
+
+        x("x", Extents2D(batch_size, config.model_dim), pad_),
+        logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
+
+        pre_ffw_rms_out("pre_ffw_rms_out",
+                        Extents2D(batch_size, config.model_dim), pad_),
+        C1("C1", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
+        C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
+        ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
+
+        attention(config, layer_config, batch_size, seq_len, pad_, row_ptrs) {
+    HWY_ASSERT(batch_size != 0);
+    if (config.model == Model::GRIFFIN_2B) {
+      griffin = std::make_unique<GriffinActivations>(config, batch_size, pad_);
+    }
+
+    // For MatMul outputs, precompute their row pointers.
+    // If we forget any MatMul outputs here, debug builds print a warning but
+    // fill them in each MatMul call.
+    x.AllocateAndAttachRowPtrs(row_ptrs);
+    logits.AllocateAndAttachRowPtrs(row_ptrs);
     C1.AllocateAndAttachRowPtrs(row_ptrs);
     C2.AllocateAndAttachRowPtrs(row_ptrs);
     ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
@@ -115,49 +173,26 @@ struct Activations {
   void SetBatchSize(size_t batch_size) {
     PROFILER_ZONE("SetBatchSize");
     x.OverrideRows(batch_size);
-    q.OverrideRows(batch_size);
     logits.OverrideRows(batch_size);
-
-    pre_att_rms_out.OverrideRows(batch_size);
-    att.OverrideRows(batch_size);
-    att_out.OverrideRows(batch_size);
-    att_sums.OverrideRows(batch_size);
 
     pre_ffw_rms_out.OverrideRows(batch_size);
     C1.OverrideRows(batch_size);
     C2.OverrideRows(batch_size);
     ffw_out.OverrideRows(batch_size);
 
-    if (is_griffin) {
-      griffin_x.OverrideRows(batch_size);
-      griffin_y.OverrideRows(batch_size);
-      griffin_gate_x.OverrideRows(batch_size);
-      griffin_multiplier.OverrideRows(batch_size);
+    attention.SetBatchSize(batch_size);
+
+    if (griffin) {
+      griffin->SetBatchSize(batch_size);
     }
   }
 
-  bool IsGlobalLayer(size_t layer_idx) const {
-    return weights_config.attention_window_sizes[layer_idx] ==
-           div_seq_len.GetDivisor();
-  }
-
-  const ModelConfig& weights_config;
   const LayerConfig& layer_config;
-  hwy::Divisor div_seq_len;
-  bool is_griffin;
   const Extents2D none_ = Extents2D();
   const MatPadding pad_ = MatPadding::kOdd;
 
   MatStorageT<float> x;  // input
-  MatStorageT<float> q;  // query
   MatStorageT<float> logits;
-
-  // Attention
-  MatStorageT<float> pre_att_rms_out;
-  MatStorageT<float> att;      // attention vector
-  MatStorageT<float> att_out;  // attention output
-  // Accumulation of attention outputs over heads
-  MatStorageT<BF16> att_sums;
 
   // Gated FFW
   MatStorageT<BF16> pre_ffw_rms_out;
@@ -165,17 +200,8 @@ struct Activations {
   MatStorageT<float> C2;
   MatStorageT<BF16> ffw_out;
 
-  // Griffin
-  MatStorageT<float> griffin_x;
-  MatStorageT<float> griffin_y;
-  MatStorageT<float> griffin_gate_x;
-  MatStorageT<float> griffin_multiplier;
-
-  // Rope
-  MatStorageT<float> inv_timescale;
-  MatStorageT<float> inv_timescale_global;
-
-  float query_scale;
+  AttentionActivations attention;
+  std::unique_ptr<GriffinActivations> griffin;
 };
 
 }  // namespace gcpp

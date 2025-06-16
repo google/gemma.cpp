@@ -20,7 +20,6 @@
 
 #include "gemma/activations.h"
 #include "gemma/gemma.h"
-#include "gemma/gemma_args.h"
 #include "gemma/weights.h"
 #include "util/threading.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -66,14 +65,14 @@ template <typename U>
 static void PositionalEncodingQK(U* qk, const size_t qkv_dim,
                                  const size_t layer_idx,
                                  const LayerWeightsPtrs& layer,
-                                 const Activations& activations,
+                                 const AttentionActivations& activations,
                                  const size_t pos, const float mul = 1.0f) {
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
   bool is_global_layer = activations.IsGlobalLayer(layer_idx);
   // TODO: add a config flag instead of hardcoding the model.
-  if (is_global_layer && IsVLM(activations.weights_config.model)) {
+  if (is_global_layer && IsVLM(activations.config.model)) {
     inv_timescale = activations.inv_timescale_global.PackedScale1();
   }
   // PostQKType::Rope
@@ -118,10 +117,10 @@ void SingleDotSoftmaxWeightedSum(
     const size_t pos, const size_t start_pos, const size_t last_pos,
     float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v,
     const size_t layer_idx, const LayerWeightsPtrs& layer,
-    const Activations& activations, float* HWY_RESTRICT att,
+    const AttentionActivations& activations, float* HWY_RESTRICT att,
     float* HWY_RESTRICT att_out) {
   const size_t qkv_dim = layer.layer_config.qkv_dim;
-  const float att_cap = activations.weights_config.att_cap;
+  const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   const size_t seq_len =
       static_cast<size_t>(activations.div_seq_len.GetDivisor());
@@ -155,7 +154,7 @@ static HWY_INLINE size_t StartPos(size_t pos, const ModelConfig& config,
 
 void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
-                           Activations& activations, QBatch& qbatch,
+                           AttentionActivations& activations, QBatch& qbatch,
                            NestedPools& pools) {
   PROFILER_ZONE("Gen.Attention.DotSoftmax");
   const hwy::Divisor div_qbatch(qbatch.Size());
@@ -190,7 +189,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
               // the range of cache positions to attend to.
               const size_t pos = qbatch.Pos(qi) + batch_idx;
               const size_t start_pos =
-                  StartPos(pos, activations.weights_config, layer_idx);
+                  StartPos(pos, activations.config, layer_idx);
               size_t last_pos = pos;
               const size_t prefix_end = qbatch.PrefixEnd(qi);
               if (prefix_end > 0 && prefix_end - 1 > last_pos) {
@@ -241,7 +240,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 // Fills activations.q and writes to KV cache.
 static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   const LayerWeightsPtrs& layer,
-                                  Activations& activations,
+                                  AttentionActivations& activations,
                                   const QBatch& qbatch, const int flags,
                                   MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.QKV");
@@ -306,7 +305,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
 // Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
 // head_dim (`qkv_dim`) into output (`layer_out`).
 static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
-                                Activations& activations, MatMulEnv& env) {
+                                AttentionActivations& activations,
+                                MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.SumHeads");
   const LayerConfig& layer_config = layer.layer_config;
   // att_weights and att_out are concatenated heads, each of length
@@ -324,8 +324,9 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
 }
 
 void GemmaAttention(size_t num_tokens, const size_t layer_idx,
-                    const LayerWeightsPtrs& layer, Activations& activations,
-                    QBatch& qbatch, MatMulEnv& env, int flags) {
+                    const LayerWeightsPtrs& layer,
+                    AttentionActivations& activations, QBatch& qbatch,
+                    MatMulEnv& env, int flags) {
   const LayerConfig& layer_config = layer.layer_config;
   HWY_DASSERT(!layer_config.IsMHA());  // No longer supported.
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,

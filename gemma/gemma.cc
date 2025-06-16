@@ -65,14 +65,15 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   if (type == LayerAttentionType::kGemma) {
-    GemmaAttention(num_tokens, layer_idx, layer, activations, qbatch, env,
+    GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
+                   env,
                    /*flags=*/0);
   } else {
     HWY_DASSERT(type == LayerAttentionType::kGriffinRecurrentBlock);
     // KVCache conv1d_cache and rglru_cache have one row per *Griffin* layer,
     // so map `layer` to the Griffin layer index.
     const size_t griffin_layer =
-        activations.weights_config.NumLayersOfTypeBefore(type, layer_idx);
+        activations.attention.config.NumLayersOfTypeBefore(type, layer_idx);
     GriffinRecurrent(num_tokens, griffin_layer, &layer, activations, qbatch,
                      env);
   }
@@ -86,15 +87,15 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   const LayerConfig& layer_config = layer.layer_config;
 
   RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
-                 activations.pre_att_rms_out);
+                 activations.attention.pre_att_rms_out);
 
   Attention(layer_config.type, num_tokens, layer_idx, layer, activations,
             qbatch, env);
 
   PostNorm(layer_config.post_norm, layer.post_attention_norm_scale,
-           activations.att_sums);
+           activations.attention.att_sums);
 
-  ResidualConnection(activations.att_sums, activations.x, layer,
+  ResidualConnection(activations.attention.att_sums, activations.x, layer,
                      /*is_attention=*/true);
 
   RMSNormBatched(activations.x, layer.pre_ffw_norm_scale,
@@ -470,7 +471,7 @@ static void GenerateT(const ModelConfig& config,
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
   HWY_ASSERT(prefill_tokens < seq_len);
-  activations.div_seq_len = hwy::Divisor(static_cast<uint32_t>(seq_len));
+  HWY_ASSERT(activations.attention.div_seq_len.GetDivisor() == seq_len);
 
   // Lacks a constructor to bulk-set, hence initialized by Prefill* which have
   // qi loops anyway.

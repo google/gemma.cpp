@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "gemma/activations.h"  // ChooseQueryScale
+#include "gemma/configs.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // BF16
 #include "util/mat.h"     // MatStorageT
@@ -400,7 +401,7 @@ void TestRopeAndMulBy() {
     x.Row(0)[i] = random_float();
   }
 
-  const float qmul = ChooseQueryScale(config);
+  const float qmul = AttentionActivations::ChooseQueryScale(config);
   const float kmul = 1.0;
 
   MatStorageT<float> qexpected("qexpected", dim_qkv);
