@@ -39,16 +39,10 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-// Different functions use different naming conventions for the number of
-// tokens. Functions that are query-independent, such as RMSNorm*, call the
-// count `num_interleaved`. Functions that are query-dependent, such as
-// `Attention`, use separate `num_tokens` and `num_queries`. `num_tokens` is the
-// number of tokens from one query: 1 for decode, otherwise prefill_tbatch_size.
-
-void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
-                      size_t griffin_layer, Activations& activations,
+void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
                       const LayerWeightsPtrs* layer_weights,
-                      const KVCaches& kv_caches, MatMulEnv& env) {
+                      Activations& activations, QBatch& qbatch,
+                      MatMulEnv& env) {
   PROFILER_ZONE("Gen.Griffin");
   hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   namespace hn = hwy::HWY_NAMESPACE;
@@ -64,9 +58,8 @@ void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
   const size_t kHeadDim = model_dim / heads;
   const size_t kMatrixSize = kHeadDim * kHeadDim;
 
-  const size_t num_queries = queries_pos.size();
-  const hwy::Divisor div_num_q(static_cast<uint32_t>(num_queries));
-  const size_t num_interleaved = num_tokens * num_queries;
+  const size_t num_interleaved = num_tokens * qbatch.Size();
+  const hwy::Divisor div_qbatch(static_cast<uint32_t>(qbatch.Size()));
 
   // X / Y linear layers.
   // TODO: MatMul
@@ -91,17 +84,17 @@ void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
   // Conv1D.
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
-    const size_t query_idx = div_num_q.Remainder(interleaved_idx);
-    const size_t batch_idx = div_num_q.Divide(interleaved_idx);
-    const size_t pos = queries_pos[query_idx] + batch_idx;
-    float* HWY_RESTRICT x = activations.griffin_x.Row(query_idx);
+    const size_t qi = div_qbatch.Remainder(interleaved_idx);
+    const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
+    const size_t pos = qbatch.Pos(qi) + batch_idx;
+    float* HWY_RESTRICT x = activations.griffin_x.Row(qi);
 
     // cache[i] = input at time t-i.
     float* HWY_RESTRICT cache[kMaxConv1DWidth];
     cache[0] = x;
     for (size_t i = 1; i < conv_1d_width; i++) {
       cache[i] =
-          kv_caches[query_idx].conv1d_cache.Row(griffin_layer) +
+          qbatch.KV(qi).conv1d_cache.Row(griffin_layer) +
           ((pos + conv_1d_width - 1 - i) % (conv_1d_width - 1)) * model_dim;
     }
     for (size_t i = 0; i < model_dim; i += hn::Lanes(df)) {
@@ -127,16 +120,16 @@ void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens,
   // RGLRU
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
-    const size_t query_idx = div_num_q.Remainder(interleaved_idx);
-    const size_t batch_idx = div_num_q.Divide(interleaved_idx);
-    const size_t pos = queries_pos[query_idx] + batch_idx;
+    const size_t qi = div_qbatch.Remainder(interleaved_idx);
+    const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
+    const size_t pos = qbatch.Pos(qi) + batch_idx;
 
-    float* HWY_RESTRICT x = activations.griffin_x.Row(query_idx);
-    float* HWY_RESTRICT y = activations.griffin_y.Row(query_idx);
-    float* HWY_RESTRICT gate_x = activations.griffin_gate_x.Row(query_idx);
-    float* HWY_RESTRICT a = activations.griffin_multiplier.Row(query_idx);
+    float* HWY_RESTRICT x = activations.griffin_x.Row(qi);
+    float* HWY_RESTRICT y = activations.griffin_y.Row(qi);
+    float* HWY_RESTRICT gate_x = activations.griffin_gate_x.Row(qi);
+    float* HWY_RESTRICT a = activations.griffin_multiplier.Row(qi);
     float* HWY_RESTRICT rnn_state =
-        kv_caches[query_idx].rglru_cache.Row(griffin_layer);
+        qbatch.KV(qi).rglru_cache.Row(griffin_layer);
 
     pool.Run(0, heads, [&](const uint64_t head, size_t /*thread*/) HWY_ATTR {
       size_t head_offset = head * kHeadDim;

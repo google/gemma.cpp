@@ -153,15 +153,12 @@ static HWY_INLINE size_t StartPos(size_t pos, const ModelConfig& config,
   return pos - HWY_MIN(att_window_size - 1, pos);
 }
 
-void DotSoftmaxWeightedSum(const size_t num_tokens,
-                           const QueriesPos& queries_pos,
-                           const QueriesPos& queries_prefix_end,
-                           const size_t layer_idx,
+void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
-                           Activations& activations, const KVCaches& kv_caches,
+                           Activations& activations, QBatch& qbatch,
                            NestedPools& pools) {
   PROFILER_ZONE("Gen.Attention.DotSoftmax");
-  const hwy::Divisor div_queries(queries_pos.size());
+  const hwy::Divisor div_qbatch(qbatch.Size());
   const LayerConfig& layer_config = layer.layer_config;
   const size_t qkv_dim = layer_config.qkv_dim;
 
@@ -176,7 +173,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens,
   // For each head/token/query, compute Q.K, softmax, and weighted V.
 
   // Statically partition token/query across packages.
-  const size_t num_tq = num_tokens * div_queries.GetDivisor();
+  const size_t num_tq = num_tokens * div_qbatch.GetDivisor();
   const IndexRangePartition tq_ranges =
       StaticPartition(IndexRange(0, num_tq), pools.NumPackages(), 1);
   ParallelizeOneRange(
@@ -185,17 +182,17 @@ void DotSoftmaxWeightedSum(const size_t num_tokens,
         pools.AllClusters(pkg_idx).Run(
             tq_range.begin(), tq_range.end(),
             [&](const size_t tq_idx, const size_t cluster_idx) {
-              const size_t query_idx = div_queries.Remainder(tq_idx);
-              const size_t batch_idx = div_queries.Divide(tq_idx);
-              auto& kv_cache = kv_caches[query_idx].kv_cache;
+              const size_t qi = div_qbatch.Remainder(tq_idx);
+              const size_t batch_idx = div_qbatch.Divide(tq_idx);
+              auto& kv_cache = qbatch.KV(qi).kv_cache;
 
               // Find the token position in the query and calculate
               // the range of cache positions to attend to.
-              const size_t pos = queries_pos[query_idx] + batch_idx;
+              const size_t pos = qbatch.Pos(qi) + batch_idx;
               const size_t start_pos =
                   StartPos(pos, activations.weights_config, layer_idx);
               size_t last_pos = pos;
-              const size_t prefix_end = queries_prefix_end[query_idx];
+              const size_t prefix_end = qbatch.PrefixEnd(qi);
               if (prefix_end > 0 && prefix_end - 1 > last_pos) {
                 // last_pos in QDotK and WeightedSumV is inclusive.
                 last_pos = prefix_end - 1;
@@ -235,14 +232,21 @@ void DotSoftmaxWeightedSum(const size_t num_tokens,
       });
 }
 
+// Different functions use different naming conventions for the number of
+// tokens. Functions that are query-independent, such as RMSNorm*, call the
+// count `num_interleaved`. Functions that are query-dependent, such as
+// `Attention`, use separate `num_tokens` and `num_queries`. `num_tokens` is the
+// number of tokens from one query: 1 for decode, otherwise prefill_tbatch_size.
+
 // Fills activations.q and writes to KV cache.
-static HWY_INLINE void ComputeQKV(
-    size_t num_tokens, const QueriesPos& queries_pos, const size_t layer_idx,
-    const LayerWeightsPtrs& layer, Activations& activations,
-    const KVCaches& kv_caches, const int flags, MatMulEnv& env) {
+static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
+                                  const LayerWeightsPtrs& layer,
+                                  Activations& activations,
+                                  const QBatch& qbatch, const int flags,
+                                  MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.QKV");
-  const hwy::Divisor div_queries(queries_pos.size());
-  const size_t num_interleaved = num_tokens * div_queries.GetDivisor();
+  const hwy::Divisor div_qbatch(qbatch.Size());
+  const size_t num_interleaved = num_tokens * div_qbatch.GetDivisor();
   const LayerConfig& layer_config = layer.layer_config;
   const size_t qkv_dim = layer_config.qkv_dim;
   const size_t kv_heads = layer_config.kv_heads;
@@ -260,13 +264,12 @@ static HWY_INLINE void ComputeQKV(
                                          layer.qkv_einsum_w2.Rows()));
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
-    const size_t query_idx = div_queries.Remainder(interleaved_idx);
-    const size_t batch_idx = div_queries.Divide(interleaved_idx);
+    const size_t qi = div_qbatch.Remainder(interleaved_idx);
+    const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
     const size_t cache_pos =
-        activations.div_seq_len.Remainder(queries_pos[query_idx] + batch_idx);
+        activations.div_seq_len.Remainder(qbatch.Pos(qi) + batch_idx);
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
-        kv_caches[query_idx].kv_cache.Row(cache_pos) +
-        layer_idx * cache_layer_size);
+        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_idx * cache_layer_size);
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
@@ -280,11 +283,11 @@ static HWY_INLINE void ComputeQKV(
       [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
         const size_t head = task % kv_heads;
         const size_t interleaved_idx = task / kv_heads;
-        const size_t query_idx = div_queries.Remainder(interleaved_idx);
-        const size_t batch_idx = div_queries.Divide(interleaved_idx);
-        const size_t pos = queries_pos[query_idx] + batch_idx;
+        const size_t qi = div_qbatch.Remainder(interleaved_idx);
+        const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
+        const size_t pos = qbatch.Pos(qi) + batch_idx;
         const size_t cache_pos = activations.div_seq_len.Remainder(pos);
-        auto& kv_cache = kv_caches[query_idx].kv_cache;
+        auto& kv_cache = qbatch.KV(qi).kv_cache;
         float* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
                                  layer_idx * cache_layer_size +
                                  head * qkv_dim * 2;
@@ -320,35 +323,18 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
              activations.att_sums);
 }
 
-// `queries_prefix_end` can be null (interpreted as all-zero) for standard
-// causal attention, and must be non-null for prefix-LM style attention.
-void GemmaAttention(size_t num_tokens, const QueriesPos& queries_pos,
-                    const QueriesPos* queries_prefix_end,
-                    const size_t layer_idx, const LayerWeightsPtrs& layer,
-                    Activations& activations, const KVCaches& kv_caches,
-                    MatMulEnv& env, int flags) {
-  const size_t num_queries = queries_pos.size();
-  HWY_DASSERT(num_queries <= kv_caches.size());
-
+void GemmaAttention(size_t num_tokens, const size_t layer_idx,
+                    const LayerWeightsPtrs& layer, Activations& activations,
+                    QBatch& qbatch, MatMulEnv& env, int flags) {
   const LayerConfig& layer_config = layer.layer_config;
   HWY_DASSERT(!layer_config.IsMHA());  // No longer supported.
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,
                 "query heads must be a multiple of key-value heads");
   (void)layer_config;  // only used in HWY_DASSERT
 
-  std::vector<size_t> queries_prefix_end_vec;
-  QueriesPos queries_prefix_end_span;
-  if (queries_prefix_end == nullptr) {
-    queries_prefix_end_vec.assign(num_queries, 0);
-    queries_prefix_end_span = QueriesPos(queries_prefix_end_vec.data(),
-                                         queries_prefix_end_vec.size());
-    queries_prefix_end = &queries_prefix_end_span;
-  }
-
-  ComputeQKV(num_tokens, queries_pos, layer_idx, layer, activations, kv_caches,
-             flags, env);
-  DotSoftmaxWeightedSum(num_tokens, queries_pos, *queries_prefix_end, layer_idx,
-                        layer, activations, kv_caches, env.ctx.pools);
+  ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
+  DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
+                        env.ctx.pools);
   SumHeads(layer, activations, env);
 }
 

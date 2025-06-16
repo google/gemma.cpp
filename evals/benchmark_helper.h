@@ -88,8 +88,10 @@ class GemmaEnv {
   // Runs inference on the given input and returns the top-1 result string and
   // the number of tokens that were generated.
   QueryResult QueryModel(const std::vector<int>& tokens);
+  // The default prefix_end means "causal attention".
   std::vector<QueryResult> BatchQueryModel(
-      const QueriesPromptTokens& queries_prompt);
+      const QueriesPromptTokens& queries_prompt,
+      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>());
   // Adds turn structure to input, tokenizes and calls the above overload.
   QueryResult QueryModel(std::string& input);
   std::vector<QueryResult> BatchQueryModel(

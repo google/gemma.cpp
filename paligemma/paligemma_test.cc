@@ -57,7 +57,8 @@ class PaliGemmaTest : public ::testing::Test {
     image.Resize(image_size, image_size);
     RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(),
                                     .verbosity = 0};
-    gemma.GenerateImageTokens(runtime_config, image, *image_tokens_);
+    gemma.GenerateImageTokens(runtime_config, s_env->MutableKVCache().SeqLen(),
+                              image, *image_tokens_);
   }
 
   std::string GemmaReply(const std::string& prompt_text) const {
@@ -107,12 +108,11 @@ class PaliGemmaTest : public ::testing::Test {
 TEST_F(PaliGemmaTest, QueryObjects) {
   ASSERT_NE(s_env->GetGemma(), nullptr);
   const char* question = "answer en What objects are in the image?";
-  const char* expected_substring = "Building, Tower";  // 3B PT 224, 10B Mix 224
+  // 3B PT/Mix 224, 10B Mix 224
+  const char* expected_substring = "Building, Tower";
   const Model model = s_env->GetGemma()->GetModelConfig().model;
   if (model == Model::PALIGEMMA2_3B_448) {
     expected_substring = "Lake.";
-  } else if (model == Model::PALIGEMMA2_3B_224) {
-    expected_substring = "Cloud, Water.";
   } else if (model == Model::PALIGEMMA2_10B_224) {
     expected_substring = "Building.";
   }

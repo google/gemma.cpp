@@ -45,7 +45,6 @@
 
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
-#include "gemma/tokenizer.h"
 #include "gemma/weights.h"
 #include "io/blob_store.h"
 #include "io/io.h"  // Path
@@ -62,14 +61,11 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-void Attention(LayerAttentionType type, size_t num_tokens,
-               const QueriesPos& queries_pos,
-               const QueriesPos& queries_prefix_end, const size_t layer_idx,
-               const LayerWeightsPtrs& layer, Activations& activations,
-               const KVCaches& kv_caches, MatMulEnv& env) {
+void Attention(LayerAttentionType type, const size_t num_tokens,
+               const size_t layer_idx, const LayerWeightsPtrs& layer,
+               Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   if (type == LayerAttentionType::kGemma) {
-    GemmaAttention(num_tokens, queries_pos, &queries_prefix_end, layer_idx,
-                   layer, activations, kv_caches, env,
+    GemmaAttention(num_tokens, layer_idx, layer, activations, qbatch, env,
                    /*flags=*/0);
   } else {
     HWY_DASSERT(type == LayerAttentionType::kGriffinRecurrentBlock);
@@ -77,23 +73,23 @@ void Attention(LayerAttentionType type, size_t num_tokens,
     // so map `layer` to the Griffin layer index.
     const size_t griffin_layer =
         activations.weights_config.NumLayersOfTypeBefore(type, layer_idx);
-    GriffinRecurrent(queries_pos, num_tokens, griffin_layer, activations,
-                     &layer, kv_caches, env);
+    GriffinRecurrent(num_tokens, griffin_layer, &layer, activations, qbatch,
+                     env);
   }
 }
 
-static HWY_NOINLINE void TransformerLayer(
-    const size_t num_tokens, const QueriesPos& queries_pos,
-    const QueriesPos& queries_prefix_end, const size_t layer_idx,
-    const LayerWeightsPtrs& layer, Activations& activations,
-    const KVCaches& kv_caches, MatMulEnv& env) {
+static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
+                                          const size_t layer_idx,
+                                          const LayerWeightsPtrs& layer,
+                                          Activations& activations,
+                                          QBatch& qbatch, MatMulEnv& env) {
   const LayerConfig& layer_config = layer.layer_config;
 
   RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
                  activations.pre_att_rms_out);
 
-  Attention(layer_config.type, num_tokens, queries_pos, queries_prefix_end,
-            layer_idx, layer, activations, kv_caches, env);
+  Attention(layer_config.type, num_tokens, layer_idx, layer, activations,
+            qbatch, env);
 
   PostNorm(layer_config.post_norm, layer.post_attention_norm_scale,
            activations.att_sums);
@@ -134,7 +130,7 @@ static float EmbeddingScaling(size_t model_dim) {
 // calling application.
 // Returns new image_token_position.
 static HWY_NOINLINE size_t
-EmbedMMToken(int token, size_t batch_idx, size_t pos, size_t pos_in_prompt,
+EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
              const ModelConfig& model_config, const ModelWeightsPtrs& weights,
              MatStorageT<float>& x, const ImageTokens* image_tokens = nullptr,
              size_t image_token_position = 0) {
@@ -142,14 +138,14 @@ EmbedMMToken(int token, size_t batch_idx, size_t pos, size_t pos_in_prompt,
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
       image_tokens != nullptr && token == -2 &&
       image_token_position < image_tokens->Rows()) {
-    hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(batch_idx),
+    hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(qi),
                    x.Cols() * x.ElementBytes());
     return image_token_position + 1;
   }
 
   if (model_config.wrapping == PromptWrapping::PALIGEMMA &&
       image_tokens != nullptr && pos_in_prompt < image_tokens->Rows()) {
-    hwy::CopyBytes(image_tokens->Row(pos_in_prompt), x.Row(batch_idx),
+    hwy::CopyBytes(image_tokens->Row(pos_in_prompt), x.Row(qi),
                    x.Cols() * x.ElementBytes());
     return image_token_position;
   }
@@ -169,34 +165,27 @@ EmbedMMToken(int token, size_t batch_idx, size_t pos, size_t pos_in_prompt,
     const auto embedding_span =
         MakeSpan(weights_t->Row(0), embedding_ofs + model_dim);
     const hn::ScalableTag<float> df;
-    DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(batch_idx),
+    DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(qi),
                          model_dim);
-    MulByConst(emb_scaling * weights_t->Scale(), x.Row(batch_idx), model_dim);
+    MulByConst(emb_scaling * weights_t->Scale(), x.Row(qi), model_dim);
   });
 
   if (model_config.absolute_pe) {
-    AddAbsolutePositionalEmbeddings(x.Row(batch_idx), model_dim, pos);
+    AddAbsolutePositionalEmbeddings(x.Row(qi), model_dim, pos);
   }
   return image_token_position;
 }
 
-// Incremented in-place by Prefill* and DecodeStepT.
-using QueriesMutablePos = hwy::Span<size_t>;
-
 // Populates KV cache for batches of tokens from one query at a time. This is
 // called if prompts are longer than the query batch size, and also in
 // prefix-LM mode (end > 0), which must see all tokens in one batch.
-static HWY_NOINLINE void PrefillTBatch(
-    const size_t query_idx_start, const QueriesPromptTokens& queries_prompt,
-    const QueriesMutablePos& queries_pos, const QueriesPos& queries_prefix_end,
-    const ModelConfig& config, const RuntimeConfig& runtime_config,
-    const ModelWeightsPtrs& weights, Activations& activations,
-    const KVCaches& kv_caches, MatMulEnv& env, hwy::BitSet4096<>& non_eos) {
+static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
+                                       const RuntimeConfig& runtime_config,
+                                       const ModelWeightsPtrs& weights,
+                                       Activations& activations, QBatch& qbatch,
+                                       MatMulEnv& env,
+                                       hwy::BitSet4096<>& non_eos) {
   PROFILER_ZONE("Gen.PrefillT");
-  const size_t num_queries = queries_prompt.size();
-  HWY_DASSERT(num_queries == queries_pos.size());
-  HWY_DASSERT(num_queries == queries_prefix_end.size());
-  HWY_DASSERT(num_queries == kv_caches.size());
 
   // Batches are important for amortizing loading weights over multiple tokens.
   // This is possible in prefill because we know all tokens beforehand, whereas
@@ -210,19 +199,16 @@ static HWY_NOINLINE void PrefillTBatch(
   const size_t max_tbatch_size = runtime_config.prefill_tbatch_size;
 
   // For each query. `qi` is within the batch, not the global query index.
-  for (size_t qi = 0; qi < num_queries; ++qi) {
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     non_eos.Set(qi);
 
-    // Single query at a time, so pass slices of the spans because
-    // GemmaAttention will only access the first KV cache and position.
-    QueriesPos single_query_pos(&queries_pos[qi], 1);
-    QueriesPos single_query_prefix_end(&queries_prefix_end[qi], 1);
-    KVCaches single_kv_cache(&kv_caches[qi], 1);
+    // One query at a time, batching will be the query's prompt tokens.
+    QBatch qbatch_1 = qbatch.Single(qi);
 
-    const size_t prompt_size = queries_prompt[qi].size();
+    const size_t prompt_size = qbatch_1.Prompt(0).size();
     // In autoregressive mode, we don't need to prefill the last token, so - 1.
     size_t prefill_this_query = prompt_size - 1;
-    const size_t prefix_end_this_query = queries_prefix_end[qi];
+    const size_t prefix_end_this_query = qbatch_1.PrefixEnd(0);
     // We can't attend beyond the prompt_size.
     HWY_ASSERT(prefix_end_this_query <= prompt_size);
     // Special case: if the prefix includes the last token, we need to prefill
@@ -251,9 +237,9 @@ static HWY_NOINLINE void PrefillTBatch(
       // Fill activations.x (much faster than TransformerLayer).
       size_t image_token_position = 0;
       for (size_t ti = 0; ti < tbatch_size; ++ti) {
-        const size_t pos = queries_pos[qi] + ti;
+        const size_t pos = qbatch_1.Pos(0) + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
-        const int token = queries_prompt[qi][pos_in_prompt];
+        const int token = qbatch_1.Prompt(0)[pos_in_prompt];
         image_token_position = EmbedMMToken(
             token, ti, pos, pos_in_prompt, config, weights, activations.x,
             runtime_config.image_tokens, image_token_position);
@@ -262,18 +248,17 @@ static HWY_NOINLINE void PrefillTBatch(
       // Transformer with one batch of tokens from a single query.
       for (size_t layer_idx = 0; layer_idx < config.layer_configs.size();
            ++layer_idx) {
-        TransformerLayer(tbatch_size, single_query_pos, single_query_prefix_end,
-                         layer_idx, *weights.GetLayer(layer_idx), activations,
-                         single_kv_cache, env);
+        TransformerLayer(tbatch_size, layer_idx, *weights.GetLayer(layer_idx),
+                         activations, qbatch_1, env);
       }
 
       // NOTE: we unconditionally call StreamToken, even if EOS.
       for (size_t ti = 0; ti < tbatch_size; ++ti) {
-        const size_t pos = queries_pos[qi] + ti;
+        const size_t pos = qbatch_1.Pos(0) + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
-        const int token = queries_prompt[qi][pos_in_prompt];
+        const int token = qbatch_1.Prompt(0)[pos_in_prompt];
         if (pos_in_prompt < prompt_size - 1) {
-          runtime_config.StreamToken(query_idx_start + qi, pos, token, 0.0f);
+          runtime_config.StreamToken(qbatch_1.QueryIdx(0), pos, token, 0.0f);
         } else {
           // The last token will be streamed later and we should only get here
           // if we need to attend to the last token because it is in the prefix.
@@ -281,7 +266,7 @@ static HWY_NOINLINE void PrefillTBatch(
         }
       }
 
-      queries_pos[qi] += tbatch_size;
+      qbatch_1.MutablePos(0) += tbatch_size;
     }  // for tbatch_start
     if (attend_to_last_token) {
       // We need to rewind the position for the last token that we only
@@ -290,148 +275,125 @@ static HWY_NOINLINE void PrefillTBatch(
       // decoding. Alternatives: (1) real masking; (2) always prefill the last
       // token and only generate the next one from the already prefilled
       // activations.
-      queries_pos[qi] -= 1;
+      qbatch_1.MutablePos(0) -= 1;
     }
   }
 }
 
-// Embeds token and calls each TransformerLayer. `queries_token` is the previous
-// token from each query, and `queries_pos` are their position in the sequence.
+// Embeds PrevToken (one from each query) and calls each TransformerLayer.
 // Called by query-batched `PrefillQBatch` and `DecodeStepT`, but not the
 // token-batched `PrefillTBatch`.
-static HWY_NOINLINE void Transformer(
-    const QueriesToken& queries_token, const QueriesMutablePos& queries_pos,
-    const QueriesPos& queries_prefix_end, const ModelConfig& config,
-    const RuntimeConfig& runtime_config, const ModelWeightsPtrs& weights,
-    Activations& activations, const KVCaches& kv_caches, MatMulEnv& env) {
-  const size_t num_queries = queries_token.size();
-  HWY_DASSERT(num_queries == queries_pos.size());
-  HWY_DASSERT(num_queries == queries_prefix_end.size());
-
+static HWY_NOINLINE void Transformer(const ModelConfig& config,
+                                     const RuntimeConfig& runtime_config,
+                                     const ModelWeightsPtrs& weights,
+                                     Activations& activations, QBatch& qbatch,
+                                     MatMulEnv& env) {
   if (HWY_UNLIKELY(runtime_config.layers_output)) {
-    for (size_t qi = 0; qi < num_queries; ++qi) {
-      const float token_f = queries_token[qi];
-      runtime_config.layers_output(qi, queries_pos[qi], "tokens", -1, &token_f,
-                                   1);
+    for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+      const float token_f = qbatch.PrevToken(qi);
+      runtime_config.layers_output(qbatch.QueryIdx(qi), qbatch.Pos(qi),
+                                   "tokens", -1, &token_f, 1);
     }
   }
 
-  for (size_t qi = 0; qi < num_queries; ++qi) {
-    EmbedMMToken(queries_token[qi], qi, queries_pos[qi],
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    EmbedMMToken(qbatch.PrevToken(qi), qi, qbatch.Pos(qi),
                  /*pos_in_prompt=*/0, config, weights, activations.x);
   }
 
   for (size_t layer_idx = 0; layer_idx < weights.c_layers.size(); ++layer_idx) {
-    TransformerLayer(/*num_tokens=*/1, queries_pos, queries_prefix_end,
-                     layer_idx, *weights.GetLayer(layer_idx), activations,
-                     kv_caches, env);
+    TransformerLayer(/*num_tokens=*/1, layer_idx, *weights.GetLayer(layer_idx),
+                     activations, qbatch, env);
 
     if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-      runtime_config.activations_observer(queries_pos, layer_idx, activations);
+      runtime_config.activations_observer(
+          QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), layer_idx,
+          activations);
     }
   }
 }
 
 // Populates KV cache for the batch queries, one token at a time. Only called
 // for autoregressive (non-prefix-LM) prefill, so `queries_prefix_end` == 0.
-static HWY_NOINLINE void PrefillQBatch(
-    const size_t query_idx_start, const QueriesPromptTokens& queries_prompt,
-    const QueriesMutablePos& queries_pos, const QueriesPos& queries_prefix_end,
-    const size_t max_prompt_size, const ModelConfig& config,
-    const RuntimeConfig& runtime_config, const ModelWeightsPtrs& weights,
-    Activations& activations, const KVCaches& kv_caches, MatMulEnv& env,
-    hwy::BitSet4096<>& non_eos) {
+static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
+                                       const ModelConfig& config,
+                                       const RuntimeConfig& runtime_config,
+                                       const ModelWeightsPtrs& weights,
+                                       Activations& activations, QBatch& qbatch,
+                                       MatMulEnv& env,
+                                       hwy::BitSet4096<>& non_eos) {
   PROFILER_ZONE("Gen.Prefill");
-  const size_t num_queries = queries_prompt.size();
-  HWY_DASSERT(num_queries == queries_pos.size());
-  HWY_DASSERT(num_queries == queries_prefix_end.size());
-  HWY_DASSERT(num_queries == activations.x.Rows());
-  HWY_DASSERT(num_queries == kv_caches.size());
 
-  hwy::BitSet4096<> prefill_active;
-  for (size_t qi = 0; qi < num_queries; ++qi) {
-    prefill_active.Set(qi);
-
-    HWY_DASSERT(queries_prefix_end[qi] == 0);
-    (void)queries_prefix_end;
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    non_eos.Set(qi);
+    HWY_DASSERT(qbatch.PrefixEnd(qi) == 0);
   }
-  non_eos = prefill_active;
 
   // In autoregressive mode, we don't prefill the last token, hence - 1.
   for (size_t pos_in_prompt = 0; pos_in_prompt < max_prompt_size - 1;
        ++pos_in_prompt) {
-    // Streams that have already finished prefill no longer interleave/stream.
-    for (size_t qi = 0; qi < num_queries; ++qi) {
-      if (pos_in_prompt >= queries_prompt[qi].size() - 1) {
-        prefill_active.Clear(qi);
-        activations.gen_tokens[qi] = config.eos_id;
+    for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+      int token = config.eos_id;
+      if (pos_in_prompt < qbatch.Prompt(qi).size() - 1) {
+        token = qbatch.Prompt(qi)[pos_in_prompt];
+        // Ignore StreamToken return value because requesting to stop does not
+        // make sense during prefill.
+        (void)runtime_config.StreamToken(qbatch.QueryIdx(qi), qbatch.Pos(qi),
+                                         token, 0.0f);
       }
+
+      qbatch.PrevToken(qi) = token;
     }
 
-    // Batch := interleaved tokens, one from each non-EOS query.
-    prefill_active.Foreach([&](size_t qi) {
-      activations.gen_tokens[qi] = queries_prompt[qi][pos_in_prompt];
-    });
-
-    // One token from each query in the batch. Increments queries_pos.
+    // The input (PrevToken) is one token from each query in the batch.
     // Do not call DecodeStepT because it computes logits for token
     // probabilities, which are not required for the prompt tokens.
-    Transformer(QueriesToken(activations.gen_tokens.data(), num_queries),
-                queries_pos, queries_prefix_end, config, runtime_config,
-                weights, activations, kv_caches, env);
-
-    prefill_active.Foreach([&](size_t qi) {
-      const int token = queries_prompt[qi][pos_in_prompt];
-      // Ignore any user request to stop during prefill.
-      (void)runtime_config.StreamToken(query_idx_start + qi, queries_pos[qi],
-                                       token, 0.0f);
-      queries_pos[qi] += 1;
-    });
-  }  // pos_in_prompt
+    Transformer(config, runtime_config, weights, activations, qbatch, env);
+  }
 }
 
-// Also writes the token to activations.gen_tokens for subsequent DecodeStepT,
-// and updates `non_eos` if the query is at the end of its sequence.
-static void StreamAndUpdateEOS(const size_t qi, const size_t pos, int token,
-                               const float prob, const ModelConfig& config,
+// Calls `StreamToken`, writes the token to `PrevToken` for use by subsequent
+// `DecodeStepT`, and increments `MutablePos`. Also updates `non_eos` if the
+// query is at the end of its sequence.
+static void StreamAndUpdateEOS(const size_t qi, int token, const float prob,
+                               const ModelConfig& config,
                                const RuntimeConfig& runtime_config,
-                               Activations& activations,
-                               hwy::BitSet4096<>& non_eos) {
-  HWY_DASSERT(non_eos.Get(qi));
+                               QBatch& qbatch, hwy::BitSet4096<>& non_eos) {
+  HWY_DASSERT(non_eos.Get(qi));  // otherwise, should not be called.
 
-  // User decided to stop: set next token to primary EOS.
-  if (HWY_UNLIKELY(!runtime_config.StreamToken(qi, pos, token, prob))) {
+  if (HWY_UNLIKELY(!runtime_config.StreamToken(qbatch.QueryIdx(qi),
+                                               qbatch.Pos(qi), token, prob))) {
+    // User decided to stop: set token to primary EOS to trigger IsEOS below.
     token = config.eos_id;
     HWY_DASSERT(config.IsEOS(token));
   }
 
-  // Primary or secondary EOS: mark query as EOS.
-  if (HWY_UNLIKELY(config.IsEOS(token))) non_eos.Clear(qi);
+  qbatch.PrevToken(qi) = token;
+  qbatch.MutablePos(qi) += 1;
 
-  activations.gen_tokens[qi] = token;
+  // Primary or secondary EOS: mark query as EOS, but still increment (for
+  // multi-turn, we should still keep the prior EOS).
+  if (HWY_UNLIKELY(config.IsEOS(token))) non_eos.Clear(qi);
 }
 
 // For a batch of queries, runs Transformer, computes logits, samples and
 // streams the token.
-static void DecodeStepT(
-    const size_t query_idx_start, const QueriesPromptTokens& queries_prompt,
-    const QueriesMutablePos& queries_mutable_pos,
-    const QueriesPos& queries_prefix_end, const ModelConfig& config,
-    const RuntimeConfig& runtime_config, const ModelWeightsPtrs& weights,
-    const SampleFunc& sample_token, Activations& activations,
-    const KVCaches& kv_caches, MatMulEnv& env, hwy::BitSet4096<>& non_eos,
-    TimingInfo& timing_info) {
-  const size_t num_queries = queries_prompt.size();
-  HWY_DASSERT(num_queries == activations.x.Rows());
+static void DecodeStepT(const ModelConfig& config,
+                        const RuntimeConfig& runtime_config,
+                        const ModelWeightsPtrs& weights,
+                        const SampleFunc& sample_token,
+                        Activations& activations, QBatch& qbatch,
+                        MatMulEnv& env, hwy::BitSet4096<>& non_eos,
+                        TimingInfo& timing_info) {
+  HWY_DASSERT(qbatch.Size() == activations.x.Rows());
 
-  Transformer(QueriesToken(activations.gen_tokens.data(), num_queries),
-              queries_mutable_pos, queries_prefix_end, config, runtime_config,
-              weights, activations, kv_caches, env);
+  Transformer(config, runtime_config, weights, activations, qbatch, env);
 
   RMSNormInplaceBatched(weights.final_norm_scale, activations.x);
 
   if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-    runtime_config.activations_observer(queries_mutable_pos, -1, activations);
+    runtime_config.activations_observer(
+        QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), -1, activations);
   }
 
   {
@@ -447,10 +409,8 @@ static void DecodeStepT(
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
     timing_info.NotifyGenerated();
 
-    StreamAndUpdateEOS(query_idx_start + qi, queries_mutable_pos[qi], tp.token,
-                       tp.prob, config, runtime_config, activations, non_eos);
-
-    if (non_eos.Get(qi)) queries_mutable_pos[qi] += 1;
+    StreamAndUpdateEOS(qi, tp.token, tp.prob, config, runtime_config, qbatch,
+                       non_eos);
   });
 }
 
@@ -477,46 +437,24 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   };
 }
 
-// Generates one continuation for each query in `queries_prompt`, which is one
-// qbatch whose size is at most the `batch_size` passed to `activations` ctor.
-//
-// `queries_pos` stores the KV cache position for each query. In the first turn
-// of a chat, pos = 0; we increment each query's position after each token.
-//
-// `query_idx_start` is the query_idx of the first query in the batch, so that
-// `StreamFunc` gets the global query index, not relative to the batch.
-static void GenerateT(
-    const size_t query_idx_start, const QueriesPromptTokens& queries_prompt,
-    const QueriesPos& queries_pos_in, const QueriesPos& queries_prefix_end,
-    const ModelConfig& config, const RuntimeConfig& runtime_config,
-    const ModelWeightsPtrs& weights, Activations& activations,
-    const KVCaches& kv_caches, MatMulEnv& env, TimingInfo& timing_info) {
-  const size_t num_queries = queries_prompt.size();
-  HWY_ASSERT(num_queries <= 4096);  // non_eos uses `BitSet4096`.
-  HWY_ASSERT(num_queries == queries_pos_in.size());
-  HWY_ASSERT(num_queries == queries_prefix_end.size());
-  HWY_ASSERT(num_queries <= activations.x.Rows());
-  HWY_ASSERT(num_queries == kv_caches.size());
-
+// Decode: generates one continuation token for each query in `qbatch`.
+static void GenerateT(const ModelConfig& config,
+                      const RuntimeConfig& runtime_config,
+                      const ModelWeightsPtrs& weights, Activations& activations,
+                      QBatch& qbatch, MatMulEnv& env, TimingInfo& timing_info) {
   // Griffin assumes that the recurrent block cache is zero-initialized.
-  for (size_t i = 0; i < kv_caches.size(); ++i) {
-    if (queries_pos_in[i] == 0) {
-      kv_caches[i].ZeroGriffinCache();  // No-op for non-Griffin models.
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    if (qbatch.MutablePos(qi) == 0) {
+      qbatch.KV(qi).ZeroGriffinCache();  // No-op for non-Griffin models.
     }
   }
 
-  // Copy so we can increment without requiring users to pass in a mutable span.
-  std::vector<size_t> queries_pos_copy(queries_pos_in.cbegin(),
-                                       queries_pos_in.cend());
-  const QueriesMutablePos queries_mutable_pos(queries_pos_copy.data(),
-                                              queries_pos_copy.size());
-
   size_t max_prompt_size = 0;
   bool all_prefix_end_are_zero = true;
-  size_t prefill_tokens = 0;
-  const size_t seq_len = kv_caches[0].SeqLen();
-  for (size_t qi = 0; qi < num_queries; ++qi) {
-    const PromptTokens& prompt = queries_prompt[qi];
+  size_t prefill_tokens = 0;  // only for timing.
+  const size_t seq_len = qbatch.KV(0).SeqLen();
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    const PromptTokens& prompt = qbatch.Prompt(qi);
     max_prompt_size = HWY_MAX(max_prompt_size, prompt.size());
 
     // Prefill stops before size - 1 because the last prompt token is the
@@ -526,43 +464,38 @@ static void GenerateT(
     // Sanity check: prompts should not be empty, nor start with EOS.
     HWY_ASSERT(prompt.size() != 0 && prompt[0] != config.eos_id);
 
-    all_prefix_end_are_zero &= queries_prefix_end[qi] == 0;
+    all_prefix_end_are_zero &= qbatch.PrefixEnd(qi) == 0;
 
     // We use a single divisor, so all sequence lengths must be the same.
-    HWY_ASSERT(kv_caches[qi].SeqLen() == seq_len);
+    HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
   HWY_ASSERT(prefill_tokens < seq_len);
   activations.div_seq_len = hwy::Divisor(static_cast<uint32_t>(seq_len));
 
   // Lacks a constructor to bulk-set, hence initialized by Prefill* which have
   // qi loops anyway.
-  hwy::BitSet4096<> non_eos;
+  hwy::BitSet4096<> non_eos;  // indexed by qi
 
   timing_info.prefill_start = hwy::platform::Now();
   // Batch over the larger of prompt length, or queries.
-  if ((num_queries > max_prompt_size) && all_prefix_end_are_zero) {
-    activations.SetBatchSize(num_queries);  // required before PrefillQBatch
-    PrefillQBatch(query_idx_start, queries_prompt, queries_mutable_pos,
-                  queries_prefix_end, max_prompt_size, config, runtime_config,
-                  weights, activations, kv_caches, env, non_eos);
+  if ((qbatch.Size() > max_prompt_size) && all_prefix_end_are_zero) {
+    activations.SetBatchSize(qbatch.Size());  // required before PrefillQBatch
+    PrefillQBatch(max_prompt_size, config, runtime_config, weights, activations,
+                  qbatch, env, non_eos);
   } else {
-    PrefillTBatch(query_idx_start, queries_prompt, queries_mutable_pos,
-                  queries_prefix_end, config, runtime_config, weights,
-                  activations, kv_caches, env, non_eos);
-    activations.SetBatchSize(num_queries);  // Restore after PrefillTBatch.
+    PrefillTBatch(config, runtime_config, weights, activations, qbatch, env,
+                  non_eos);
+    activations.SetBatchSize(qbatch.Size());  // Restore after PrefillTBatch.
   }
-  HWY_DASSERT(num_queries == non_eos.Count());
+  HWY_DASSERT(non_eos.Count() == qbatch.Size());
   timing_info.NotifyPrefill(prefill_tokens);
   // queries_pos have been incremented by Prefill.
 
   // Stream the last prompt token from each query, fill activations.gen_tokens.
-  for (size_t qi = 0; qi < num_queries; ++qi) {
-    const size_t last_token_pos_in_prompt =
-        queries_mutable_pos[qi] - queries_pos_in[qi];
-    StreamAndUpdateEOS(query_idx_start + qi, queries_mutable_pos[qi],
-                       queries_prompt[qi][last_token_pos_in_prompt], 0.0f,
-                       config, runtime_config, activations, non_eos);
-    // No incrementing queries_mutable_pos[qi].
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    const size_t last_pos_in_prompt = qbatch.Pos(qi) - qbatch.InitialPos(qi);
+    StreamAndUpdateEOS(qi, qbatch.Prompt(qi)[last_pos_in_prompt], 0.0f, config,
+                       runtime_config, qbatch, non_eos);
   }
 
   size_t max_gen_steps = runtime_config.max_generated_tokens;
@@ -577,10 +510,8 @@ static void GenerateT(
   {
     timing_info.generate_start = hwy::platform::Now();
     for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
-      DecodeStepT(query_idx_start, queries_prompt, queries_mutable_pos,
-                  queries_prefix_end, config, runtime_config, weights,
-                  sample_token, activations, kv_caches, env, non_eos,
-                  timing_info);
+      DecodeStepT(config, runtime_config, weights, sample_token, activations,
+                  qbatch, env, non_eos, timing_info);
     }
     timing_info.NotifyGenerateDone();
   }
@@ -591,61 +522,38 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      const RuntimeConfig& runtime_config,
                      const ModelWeightsPtrs& weights, KVCache& kv_cache,
                      MatMulEnv& env, TimingInfo& timing_info) {
-  constexpr size_t kNumQueries = 1;
-  const size_t qbatch_start = 0;
+  Activations activations(config, runtime_config.prefill_tbatch_size,
+                          kv_cache.SeqLen(), env.row_ptrs);
 
-  const size_t max_batch_size =
-      HWY_MAX(kNumQueries, runtime_config.prefill_tbatch_size);
-  // TODO: move into Gemma?
-  Activations activations(config, max_batch_size, env.row_ptrs);
-
-  const QueriesPromptTokens queries_prompt(&prompt, kNumQueries);
-  QueriesPos queries_pos(&pos, kNumQueries);
-  const QueriesPos queries_prefix_end(&prefix_end, kNumQueries);
-  const KVCaches kv_caches{&kv_cache, kNumQueries};
-
-  GenerateT(qbatch_start, queries_prompt, queries_pos, queries_prefix_end,
-            config, runtime_config, weights, activations, kv_caches, env,
+  AllQueries all_queries(prompt, pos, prefix_end,
+                         hwy::Span<KVCache>(&kv_cache, 1));
+  QBatch qbatch(/*start=*/0, /*max_size=*/1, all_queries);
+  GenerateT(config, runtime_config, weights, activations, qbatch, env,
             timing_info);
 }
 
 // Splits the input into batches of at most `runtime_config.decode_qbatch_size`
 // queries, and calls `GenerateT` on each batch.
-void GenerateBatchT(const QueriesPromptTokens& queries_prompt,
-                    const QueriesPos& queries_pos,
-                    const QueriesPos& queries_prefix_end,
-                    const ModelConfig& config,
+void GenerateBatchT(const ModelConfig& config,
                     const RuntimeConfig& runtime_config,
-                    const ModelWeightsPtrs& weights, const KVCaches& kv_caches,
+                    const ModelWeightsPtrs& weights, AllQueries& all_queries,
                     MatMulEnv& env, TimingInfo& timing_info) {
-  const size_t num_queries = queries_prompt.size();
-  HWY_ASSERT(queries_pos.size() == num_queries);
-  HWY_ASSERT(kv_caches.size() >= num_queries);
+  const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
+                                        runtime_config.prefill_tbatch_size);
+  Activations activations(config, max_batch_size,
+                          all_queries[0].kv_cache.SeqLen(), env.row_ptrs);
 
-  const size_t max_qbatch_size = runtime_config.decode_qbatch_size;
-  const size_t max_batch_size =
-      HWY_MAX(max_qbatch_size, runtime_config.prefill_tbatch_size);
-  Activations activations(config, max_batch_size, env.row_ptrs);
-
-  for (size_t qbatch_start = 0; qbatch_start < num_queries;
-       qbatch_start += max_qbatch_size) {
-    // Generate one batch of tokens from `qbatch_size` queries.
-    const size_t qbatch_size =
-        HWY_MIN(num_queries - qbatch_start, max_qbatch_size);
-    const QueriesPromptTokens qbatch_prompts(&queries_prompt[qbatch_start],
-                                             qbatch_size);
-    QueriesPos qbatch_pos(&queries_pos[qbatch_start], qbatch_size);
-    const QueriesPos qbatch_prefix_end(&queries_prefix_end[qbatch_start],
-                                       qbatch_size);
-    const KVCaches qbatch_kv(&kv_caches[qbatch_start], qbatch_size);
-    GenerateT(qbatch_start, qbatch_prompts, qbatch_pos, qbatch_prefix_end,
-              config, runtime_config, weights, activations, qbatch_kv, env,
+  for (size_t start = 0; start < all_queries.NumQueries();
+       start += runtime_config.decode_qbatch_size) {
+    QBatch qbatch(start, runtime_config.decode_qbatch_size, all_queries);
+    // Generate a batch of one token for each of `qbatch.Size()` queries.
+    GenerateT(config, runtime_config, weights, activations, qbatch, env,
               timing_info);
   }
 }
 
 void GenerateImageTokensT(const ModelConfig& config,
-                          const RuntimeConfig& runtime_config,
+                          const RuntimeConfig& runtime_config, size_t seq_len,
                           const ModelWeightsPtrs& weights, const Image& image,
                           ImageTokens& image_tokens, MatMulEnv& env) {
   if (config.vit_config.layer_configs.empty()) {
@@ -656,7 +564,8 @@ void GenerateImageTokensT(const ModelConfig& config,
   const size_t num_tokens = vit_config.max_seq_len;
   prefill_runtime_config.prefill_tbatch_size =
       num_tokens / (vit_config.pool_dim * vit_config.pool_dim);
-  Activations prefill_activations(vit_config, num_tokens, env.row_ptrs);
+  Activations prefill_activations(vit_config, num_tokens, num_tokens,
+                                  env.row_ptrs);
   // Weights are for the full PaliGemma model, not just the ViT part.
   PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
              prefill_activations, env);
@@ -714,36 +623,25 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
-                          const QueriesPromptTokens& queries_prompt,
-                          const QueriesPos& queries_pos,
-                          const QueriesPos& queries_prefix_end,
-                          const KVCaches& kv_caches,
+                          AllQueries& all_queries,
                           TimingInfo& timing_info) const {
-  // If we did not get passed prefix ends (size 0), assume 0 and pass that on.
-  QueriesPos queries_prefix_end_or_zeros = queries_prefix_end;
-  std::vector<size_t> prefix_end_vec;
-  if (queries_prefix_end.size() == 0) {  // hwy::Span lacks empty()
-    prefix_end_vec.resize(queries_prompt.size(), 0);
-    queries_prefix_end_or_zeros =
-        QueriesPos(prefix_end_vec.data(), prefix_end_vec.size());
-  }
-
   env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  HWY_DYNAMIC_DISPATCH(GenerateBatchT)(
-      queries_prompt, queries_pos, queries_prefix_end_or_zeros, model_.Config(),
-      runtime_config, weights_, kv_caches, env_, timing_info);
+  HWY_DYNAMIC_DISPATCH(GenerateBatchT)(model_.Config(), runtime_config,
+                                       weights_, all_queries, env_,
+                                       timing_info);
 
   env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
-                                const Image& image,
+                                size_t seq_len, const Image& image,
                                 ImageTokens& image_tokens) const {
   env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(
-      model_.Config(), runtime_config, weights_, image, image_tokens, env_);
+  HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(model_.Config(), runtime_config,
+                                             seq_len, weights_, image,
+                                             image_tokens, env_);
 
   env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }

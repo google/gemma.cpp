@@ -26,13 +26,13 @@
 namespace gcpp {
 
 // Passed to HWY_VISIT_TARGETS; declares for one target.
-#define GEMMA_DECL_GRIFFIN(TARGET, NAMESPACE)                             \
-  namespace NAMESPACE {                                                   \
-  void GriffinRecurrent(const QueriesPos& queries_pos, size_t num_tokens, \
-                        size_t griffin_layer, Activations& activations,   \
-                        const LayerWeightsPtrs* layer_weights,            \
-                        const KVCaches& kv_caches, MatMulEnv& env);       \
-  /* NOLINTNEXTLINE(google-readability-namespace-comments) */             \
+#define GEMMA_DECL_GRIFFIN(TARGET, NAMESPACE)                     \
+  namespace NAMESPACE {                                           \
+  void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,  \
+                        const LayerWeightsPtrs* layer_weights,    \
+                        Activations& activations, QBatch& qbatch, \
+                        MatMulEnv& env);                          \
+  /* NOLINTNEXTLINE(google-readability-namespace-comments) */     \
   }  // namespace NAMESPACE
 
 // Function declarations for each SIMD target. Allows direct call from the
