@@ -101,9 +101,11 @@ TEST_F(GemmaTest, Multiturn) {
   const ModelConfig& config = model->GetModelConfig();
   size_t abs_pos = 0;
   std::string response;
-  auto stream_token = [&](int token, float) {
-    if (config.IsEOS(token)) return true;
+  auto stream_token = [&](size_t query_idx, size_t pos, int token, float) {
+    HWY_ASSERT(query_idx == 0);
+    HWY_ASSERT(pos == abs_pos);
     ++abs_pos;
+    if (config.IsEOS(token)) return true;
     std::string token_text;
     EXPECT_TRUE(
         model->Tokenizer().Decode(std::vector<int>{token}, &token_text));
@@ -115,7 +117,7 @@ TEST_F(GemmaTest, Multiturn) {
       .temperature = 0.0f,
       .gen = &s_env->MutableGen(),
       .verbosity = 2,
-      .stream_token = stream_token,
+      .batch_stream_token = stream_token,
   };
   TimingInfo timing_info{.verbosity = 0};
   // First "say" something slightly unusual.

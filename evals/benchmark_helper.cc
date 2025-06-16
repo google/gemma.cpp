@@ -109,16 +109,19 @@ void GemmaEnv::QueryModel(
 }
 
 std::vector<QueryResult> GemmaEnv::BatchQueryModel(
-    const QueriesPromptTokens& queries_prompt) {
+    const QueriesPromptTokens& queries_prompt,
+    const hwy::Span<const size_t>& prefix_end) {
   const size_t num_queries = queries_prompt.size();
   HWY_ASSERT(num_queries != 0);
   std::vector<QueryResult> res(num_queries);
-  const BatchStreamFunc batch_stream_token = [&res, &queries_prompt, this](
-                                                 size_t query_index, size_t pos,
-                                                 int token, float) {
+  const BatchStreamFunc batch_stream_token = [&, this](const size_t query_index,
+                                                       const size_t pos,
+                                                       const int token, float) {
+    HWY_ASSERT(query_index < num_queries);
     std::string token_text;
     HWY_ASSERT(gemma_.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     res[query_index].response.append(token_text);
+    HWY_ASSERT(pos == res[query_index].tokens_generated);
     res[query_index].tokens_generated += 1;
     if (res[query_index].tokens_generated ==
         queries_prompt[query_index].size()) {
@@ -126,6 +129,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
     }
     return true;
   };
+  runtime_config_.batch_stream_token = batch_stream_token;
   if (runtime_config_.verbosity >= 2) {
     fprintf(stderr, "Max gen: %zu temp: %f tbatch: %zu qbatch: %zu\n",
             runtime_config_.max_generated_tokens, runtime_config_.temperature,
@@ -137,13 +141,11 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   while (kv_caches_.size() < num_queries) {
     kv_caches_.push_back(KVCache(gemma_.GetModelConfig(), gemma_.Inference()));
   }
+  const hwy::Span<KVCache> kv_caches(&kv_caches_[0], num_queries);
 
+  gcpp::AllQueries all_queries(queries_prompt, kv_caches, prefix_end);
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
-  runtime_config_.batch_stream_token = batch_stream_token;
-  std::vector<size_t> queries_pos(num_queries, 0);
-  gemma_.GenerateBatch(runtime_config_, queries_prompt,
-                       QueriesPos(queries_pos.data(), num_queries),
-                       KVCaches(&kv_caches_[0], num_queries), timing_info);
+  gemma_.GenerateBatch(runtime_config_, all_queries, timing_info);
   return res;
 }
 

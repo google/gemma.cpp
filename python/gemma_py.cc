@@ -190,7 +190,8 @@ class GemmaModel {
         gcpp::MatPadding::kOdd));
     gcpp::RuntimeConfig runtime_config = {.gen = &gemma_.MutableGen(),
                                           .verbosity = 0};
-    gemma.GenerateImageTokens(runtime_config, c_image, *image_tokens_);
+    gemma.GenerateImageTokens(runtime_config, gemma_.MutableKVCache().SeqLen(),
+                              c_image, *image_tokens_);
   }
 
   // Generates a response to the given prompt, using the last set image.

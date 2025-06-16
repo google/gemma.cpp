@@ -205,7 +205,9 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     // RuntimeConfig runtime_config = { ... }; // This was already defined
     double image_tokens_start = hwy::platform::Now();
     // Pass the populated image object to GenerateImageTokens
-    model.GenerateImageTokens(runtime_config, image, image_tokens);
+    model.GenerateImageTokens(runtime_config,
+                              active_conversation->kv_cache->SeqLen(), image,
+                              image_tokens);
     double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
 
     ss.str("");
