@@ -35,7 +35,7 @@ class SimplifiedGemma {
   SimplifiedGemma(const gcpp::LoaderArgs& loader,
                   const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
                   const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
-      : env_(MakeMatMulEnv(threading)),
+      : env_(MakeMatMulEnv(threading, inference)),
         gemma_(loader, inference, env_),
         kv_cache_(gemma_.GetModelConfig(), inference) {
     // Initialize random number generator

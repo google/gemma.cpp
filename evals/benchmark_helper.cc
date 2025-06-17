@@ -49,7 +49,8 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
-    : env_(MakeMatMulEnv(threading)), gemma_(loader, inference, env_) {
+    : env_(MakeMatMulEnv(threading, inference)),
+      gemma_(loader, inference, env_) {
   const ModelConfig& config = gemma_.GetModelConfig();
   // Only allocate one for starters because GenerateBatch might not be called.
   kv_caches_.push_back(KVCache(config, inference));

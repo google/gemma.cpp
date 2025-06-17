@@ -28,7 +28,6 @@
 namespace gcpp {
 
 static constexpr size_t kVocabSize = 256000;
-static constexpr size_t kMaxSeqLen = 4096;
 
 static ModelConfig ConfigNoSSM() {
   ModelConfig config;

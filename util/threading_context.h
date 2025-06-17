@@ -61,20 +61,20 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
     visitor(skip_packages, "skip_packages", size_t{0},
             "Index of the first socket to use; default 0 = unlimited.", 2);
     visitor(max_packages, "max_packages", size_t{0},
-            "Maximum number of sockets to use; default 0 = unlimited.", 2);
+            "Max sockets to use; default 0 = all unless large batch size.", 2);
     visitor(skip_clusters, "skip_clusters", size_t{0},
             "Index of the first CCX to use; default 0 = unlimited.", 2);
     visitor(max_clusters, "max_clusters", size_t{0},
-            "Maximum number of CCXs to use; default 0 = unlimited.", 2);
+            "Max CCXs to use; default 0 = unlimited.", 2);
     // These are only used when CPU topology is unknown.
     visitor(skip_lps, "skip_lps", size_t{0},
             "Index of the first LP to use; default 0 = unlimited.", 2);
     visitor(max_lps, "max_lps", size_t{0},
-            "Maximum number of LPs to use; default 0 = unlimited.", 2);
+            "Max LPs to use; default 0 = unlimited.", 2);
 
     // The exact meaning is more subtle: see the comment at NestedPools ctor.
     visitor(max_threads, "num_threads", size_t{0},
-            "Maximum number of threads to use; default 0 = unlimited.", 2);
+            "Max threads to use; default 0 = unlimited.", 2);
     visitor(pin, "pin", Tristate::kDefault,
             "Pin threads? -1 = auto, 0 = no, 1 = yes.", 2);
     visitor(spin, "spin", Tristate::kDefault,

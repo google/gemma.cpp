@@ -101,7 +101,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
                            int max_generated_tokens)
     : inference_args(inference_args),
       threading_args(threading_args),
-      matmul_env(MakeMatMulEnv(threading_args)),
+      matmul_env(MakeMatMulEnv(threading_args, inference_args)),
       active_conversation_name("default"),
       model(loader, inference_args, matmul_env) {
   std::stringstream ss;

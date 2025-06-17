@@ -254,7 +254,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
          const InferenceArgs& inference) {
   PROFILER_ZONE("Run.misc");
 
-  MatMulEnv env(MakeMatMulEnv(threading));
+  MatMulEnv env(MakeMatMulEnv(threading, inference));
   if (inference.verbosity >= 2) env.print_best = true;
   const Gemma gemma(loader, inference, env);
   KVCache kv_cache(gemma.GetModelConfig(), inference);

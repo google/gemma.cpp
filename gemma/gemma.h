@@ -226,7 +226,8 @@ struct TimingInfo {
 };
 
 // Returns the `MatMulEnv` after calling `SetArgs`.
-MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args);
+MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args,
+                        const InferenceArgs& inference_args);
 
 class Gemma {
  public:

@@ -344,8 +344,9 @@ static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
         token = qbatch.Prompt(qi)[pos_in_prompt];
         // Ignore StreamToken return value because requesting to stop does not
         // make sense during prefill.
-        (void)runtime_config.StreamToken(qbatch.QueryIdx(qi), qbatch.Pos(qi),
+        (void)runtime_config.StreamToken(qbatch.QueryIdx(qi), pos_in_prompt,
                                          token, 0.0f);
+        qbatch.MutablePos(qi) = pos_in_prompt;
       }
 
       qbatch.PrevToken(qi) = token;
@@ -355,6 +356,10 @@ static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
     // Do not call DecodeStepT because it computes logits for token
     // probabilities, which are not required for the prompt tokens.
     Transformer(config, runtime_config, weights, activations, qbatch, env);
+  }
+
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    qbatch.MutablePos(qi) = qbatch.Prompt(qi).size() - 1;
   }
 }
 
@@ -457,7 +462,7 @@ static void GenerateT(const ModelConfig& config,
 
   size_t max_prompt_size = 0;
   bool all_prefix_end_are_zero = true;
-  size_t prefill_tokens = 0;  // only for timing.
+  size_t total_prefill_tokens = 0;  // only for throughput stats.
   const size_t seq_len = qbatch.KV(0).SeqLen();
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     const PromptTokens& prompt = qbatch.Prompt(qi);
@@ -465,7 +470,7 @@ static void GenerateT(const ModelConfig& config,
 
     // Prefill stops before size - 1 because the last prompt token is the
     // first input token for generation.
-    prefill_tokens += prompt.size() - 1;
+    total_prefill_tokens += prompt.size() - 1;
 
     // Sanity check: prompts should not be empty, nor start with EOS.
     HWY_ASSERT(prompt.size() != 0 && prompt[0] != config.eos_id);
@@ -475,7 +480,7 @@ static void GenerateT(const ModelConfig& config,
     // We use a single divisor, so all sequence lengths must be the same.
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
-  HWY_ASSERT(prefill_tokens < seq_len);
+  HWY_ASSERT(max_prompt_size < seq_len);
   HWY_ASSERT(activations.attention.div_seq_len.GetDivisor() == seq_len);
 
   // Lacks a constructor to bulk-set, hence initialized by Prefill* which have
@@ -494,7 +499,7 @@ static void GenerateT(const ModelConfig& config,
     activations.SetBatchSize(qbatch.Size());  // Restore after PrefillTBatch.
   }
   HWY_DASSERT(non_eos.Count() == qbatch.Size());
-  timing_info.NotifyPrefill(prefill_tokens);
+  timing_info.NotifyPrefill(total_prefill_tokens);
   // queries_pos have been incremented by Prefill.
 
   // Stream the last prompt token from each query, fill activations.gen_tokens.
@@ -505,10 +510,10 @@ static void GenerateT(const ModelConfig& config,
   }
 
   size_t max_gen_steps = runtime_config.max_generated_tokens;
-  if (prefill_tokens + max_gen_steps > seq_len) {
+  if (max_prompt_size + max_gen_steps > seq_len) {
     HWY_WARN("prefill %zu + max_gen_steps %zu > seq_len %zu, truncating.",
-             prefill_tokens, max_gen_steps, seq_len);
-    max_gen_steps = seq_len - prefill_tokens;
+             max_prompt_size, max_gen_steps, seq_len);
+    max_gen_steps = seq_len - max_prompt_size;
   }
 
   const SampleFunc sample_token = ChooseSampleFunc(runtime_config);
@@ -588,8 +593,16 @@ HWY_EXPORT(GenerateSingleT);
 HWY_EXPORT(GenerateBatchT);
 HWY_EXPORT(GenerateImageTokensT);
 
-MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args) {
-  ThreadingContext::SetArgs(threading_args);
+MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args,
+                        const InferenceArgs& inference_args) {
+  if (inference_args.decode_qbatch_size >= 256) {
+    ThreadingArgs copy = threading_args;
+    copy.max_packages = 1;
+    ThreadingContext::SetArgs(copy);
+  } else {
+    ThreadingContext::SetArgs(threading_args);
+  }
+
   return MatMulEnv(ThreadingContext::Get());
 }
 
