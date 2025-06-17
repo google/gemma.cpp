@@ -248,7 +248,7 @@ the PaliGemma 2 model here.
 To use the version of PaliGemma included in this repository, build the gemma
 binary as noted above in Step 3. Download the compressed weights and tokenizer
 from
-[Kaggle](https://www.kaggle.com/models/google/paligemma/gemmaCpp/paligemma-3b-mix-224)
+[Kaggle](https://www.kaggle.com/models/google/paligemma-2/gemmaCpp/paligemma2-3b-mix-224)
 and run the binary as follows:
 
 ```sh
