@@ -62,15 +62,15 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
 }
 
 template <typename U>
-static void PositionalEncodingQK(U* qk, const size_t qkv_dim,
-                                 const size_t layer_idx,
+static void PositionalEncodingQK(U* qk, const size_t layer_idx,
                                  const LayerWeightsPtrs& layer,
                                  const AttentionActivations& activations,
                                  const size_t pos, const float mul = 1.0f) {
+  const size_t qkv_dim = layer.layer_config.qkv_dim;
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
-  bool is_global_layer = activations.IsGlobalLayer(layer_idx);
+  const bool is_global_layer = activations.config.IsGlobalLayer(layer_idx);
   // TODO: add a config flag instead of hardcoding the model.
   if (is_global_layer && IsVLM(activations.config.model)) {
     inv_timescale = activations.inv_timescale_global.PackedScale1();
@@ -119,7 +119,6 @@ void SingleDotSoftmaxWeightedSum(
     const size_t layer_idx, const LayerWeightsPtrs& layer,
     const AttentionActivations& activations, float* HWY_RESTRICT att,
     float* HWY_RESTRICT att_out) {
-  const size_t qkv_dim = layer.layer_config.qkv_dim;
   const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   const size_t seq_len =
@@ -128,11 +127,11 @@ void SingleDotSoftmaxWeightedSum(
   // Apply rope and scaling to Q.
   if (layer.query_norm_scale.HasPtr()) {
     CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
-      RMSNormInplace(weights_t->PackedScale1(), 0, q, qkv_dim);
+      RMSNormInplace(weights_t->PackedScale1(), 0, q,
+                     layer.layer_config.qkv_dim);
     });
   }
-  PositionalEncodingQK(q, qkv_dim, layer_idx, layer, activations, pos,
-                       query_scale);
+  PositionalEncodingQK(q, layer_idx, layer, activations, pos, query_scale);
 
   QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att);
 
@@ -298,7 +297,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
           });
         }
 
-        PositionalEncodingQK(kv, qkv_dim, layer_idx, layer, activations, pos);
+        PositionalEncodingQK(kv, layer_idx, layer, activations, pos);
       });
 }
 

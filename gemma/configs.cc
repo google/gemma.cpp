@@ -71,7 +71,7 @@ static ModelConfig ConfigGemma2_27B() {
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtModelDimDivNumHeads;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<46, 2>({4096, 8192});
+      RepeatedAttentionWindowSizes<46, 2>({4096, config.max_seq_len});
   return config;
 }
 
@@ -99,7 +99,7 @@ static ModelConfig ConfigGemma2_9B() {
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<42, 2>({4096, 8192});
+      RepeatedAttentionWindowSizes<42, 2>({4096, config.max_seq_len});
   return config;
 }
 
@@ -127,7 +127,7 @@ static ModelConfig ConfigGemma2_2B() {
   config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<26, 2>({4096, 8192});
+      RepeatedAttentionWindowSizes<26, 2>({4096, config.max_seq_len});
   return config;
 }
 

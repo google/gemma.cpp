@@ -393,6 +393,10 @@ struct ModelConfig : public IFields {
     HWY_ASSERT(layer_configs.size() <= num_layers);
   }
 
+  bool IsGlobalLayer(size_t layer_idx) const {
+    return attention_window_sizes[layer_idx] == max_seq_len;
+  }
+
   size_t NumLayersOfTypeBefore(LayerAttentionType type, size_t num) const {
     size_t count = 0;
     for (size_t i = 0; i < num; i++) {

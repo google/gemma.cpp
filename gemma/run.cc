@@ -55,9 +55,8 @@ static constexpr std::string_view kAsciiArtBanner = R""(
  |___/                                     |_|   |_|
 )"";
 
-std::string GetPrompt(std::istream& input, int verbosity,
-                      std::string_view eot_line) {
-  PROFILER_ZONE("Gen.input");
+std::string GetPromptFromStream(std::istream& input, int verbosity,
+                                std::string_view eot_line) {
   if (verbosity >= 1) {
     std::cout << "> " << std::flush;
   }
@@ -79,13 +78,16 @@ std::string GetPrompt(std::istream& input, int verbosity,
 
 // Get prompt either from interactive input or command line
 std::string GetPrompt(const InferenceArgs& inference) {
+  PROFILER_ZONE("Gen.input");
   // If prompt is provided via command line, use that
   if (!inference.prompt.empty()) {
     return inference.prompt;
   }
+  if (!inference.prompt_file.Empty()) {
+    return ReadFileToString(inference.prompt_file);
+  }
 
-  // Otherwise get interactive prompt
-  return GetPrompt(std::cin, inference.verbosity, inference.eot_line);
+  return GetPromptFromStream(std::cin, inference.verbosity, inference.eot_line);
 }
 
 // The main Read-Eval-Print Loop.
@@ -162,24 +164,24 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   while (true) {  // Loop until user quits.
     tokens_generated_this_turn = 0;
 
-    // Read prompt and handle special commands.
-    std::string prompt_string = GetPrompt(inference);
+    const std::string prompt_string = GetPrompt(inference);
+    const bool is_interactive = inference.IsInteractive();
+    if (is_interactive) {  // handle special commands:
+      if (!std::cin) return;
 
-    if (!std::cin && inference.prompt.empty()) return;
+      // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
+      if (prompt_string.size() >= 2 && prompt_string[0] == '%') {
+        if (prompt_string[1] == 'q' || prompt_string[1] == 'Q') return;
+        if (prompt_string[1] == 'c' || prompt_string[1] == 'C') {
+          abs_pos = 0;
+          continue;
+        }
+      }
 
-    // If !eot_line.empty(), we append \n, so only look at the first 2 chars.
-    if (inference.prompt.empty() && prompt_string.size() >= 2 &&
-        prompt_string[0] == '%') {
-      if (prompt_string[1] == 'q' || prompt_string[1] == 'Q') return;
-      if (prompt_string[1] == 'c' || prompt_string[1] == 'C') {
-        abs_pos = 0;
+      if (prompt_string.empty()) {
+        std::cout << "Use '%q' to quit.\n";
         continue;
       }
-    }
-
-    if (inference.prompt.empty() && prompt_string.empty()) {
-      std::cout << "Use '%q' to quit.\n";
-      continue;
     }
 
     // Set up runtime config.
@@ -226,10 +228,8 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                    timing_info);
     std::cout << "\n\n";
 
-    // Break the loop if in non-interactive mode
-    if (!inference.prompt.empty()) {
-      break;
-    }
+    // In non-interactive mode, we only process one prompt/turn.
+    if (!is_interactive) break;
 
     // Prepare for the next turn. Works only for PaliGemma.
     if (!inference.multiturn || config.wrapping == PromptWrapping::PALIGEMMA) {
@@ -281,7 +281,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     instructions += examples;
 
     // Skip the banner and instructions in non-interactive mode
-    if (inference.prompt.empty()) {
+    if (inference.IsInteractive()) {
       std::cout << "\033[2J\033[1;1H"  // clear screen
                 << kAsciiArtBanner << "\n\n";
       ShowConfig(loader, threading, inference, gemma.GetModelConfig());

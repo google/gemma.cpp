@@ -165,6 +165,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
   InferenceArgs() { Init(); };
 
+  bool IsInteractive() const { return prompt.empty() && prompt_file.Empty(); }
+
   int verbosity;
 
   size_t seq_len;
@@ -179,7 +181,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool multiturn;
   Path image_file;
 
-  std::string prompt;  // Added prompt flag for non-interactive mode
+  std::string prompt;  // Bypasses std::getline
+  // For prompts longer than the Linux terminal's 4K line edit buffer.
+  Path prompt_file;
   std::string eot_line;
 
   template <class Visitor>
@@ -188,7 +192,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Show verbose developer information\n    0 = only print generation "
             "output\n    1 = standard user-facing terminal ui\n    2 = show "
             "developer/debug info).\n    Default = 1.",
-            1);  // Changed verbosity level to 1 since it's user-facing
+            1);
 
     visitor(seq_len, "seq_len", size_t{8192},
             "Sequence length, capped by ModelConfig.max_seq_len.");
@@ -214,9 +218,12 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
     visitor(prompt, "prompt", std::string(""),
             "Initial prompt for non-interactive mode. When specified, "
-            "generates a response"
-            " and exits.",
-            1);  // Added as user-facing option
+            "generates a response and exits.",
+            1);
+    visitor(prompt_file, "prompt_file", Path(),
+            "Path to file containing the prompt for non-interactive mode. When "
+            " specified, generates a response and exits.",
+            1);
 
     visitor(
         eot_line, "eot_line", std::string(""),

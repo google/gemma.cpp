@@ -60,7 +60,7 @@ void GriffinRecurrent(size_t num_tokens, size_t griffin_layer,
 
   const size_t num_interleaved = num_tokens * qbatch.Size();
   const hwy::Divisor div_qbatch(static_cast<uint32_t>(qbatch.Size()));
-  GriffinActivations& griffin = *activations.griffin;
+  GriffinActivations& griffin = activations.griffin;
 
   // X / Y linear layers.
   // TODO: MatMul

@@ -42,6 +42,7 @@ struct GriffinActivations {
                            Extents2D(batch_size, config.model_dim), pad) {}
 
   void SetBatchSize(size_t batch_size) {
+    if (griffin_x.Rows() == 0) return;
     griffin_x.OverrideRows(batch_size);
     griffin_y.OverrideRows(batch_size);
     griffin_gate_x.OverrideRows(batch_size);
@@ -155,11 +156,10 @@ struct Activations {
         C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
         ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
 
-        attention(config, layer_config, batch_size, seq_len, pad_, row_ptrs) {
+        attention(config, layer_config, batch_size, seq_len, pad_, row_ptrs),
+        griffin(config, config.model == Model::GRIFFIN_2B ? batch_size : 0,
+                pad_) {
     HWY_ASSERT(batch_size != 0);
-    if (config.model == Model::GRIFFIN_2B) {
-      griffin = std::make_unique<GriffinActivations>(config, batch_size, pad_);
-    }
 
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
@@ -184,10 +184,7 @@ struct Activations {
     ffw_out.OverrideRows(batch_size);
 
     attention.SetBatchSize(batch_size);
-
-    if (griffin) {
-      griffin->SetBatchSize(batch_size);
-    }
+    griffin.SetBatchSize(batch_size);
   }
 
   const LayerConfig& layer_config;
@@ -204,7 +201,7 @@ struct Activations {
   MatStorageT<BF16> ffw_out;
 
   AttentionActivations attention;
-  std::unique_ptr<GriffinActivations> griffin;
+  GriffinActivations griffin;
 };
 
 }  // namespace gcpp
