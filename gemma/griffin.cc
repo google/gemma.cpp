@@ -16,6 +16,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 #include "gemma/activations.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"

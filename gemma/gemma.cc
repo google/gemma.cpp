@@ -18,6 +18,11 @@
 
 #include "gemma/gemma.h"
 
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 // clang-format off

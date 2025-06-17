@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32.
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdio.h>

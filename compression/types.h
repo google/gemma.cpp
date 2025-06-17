@@ -29,6 +29,30 @@
 
 namespace gcpp {
 
+// EMU128 must not be disabled because we disable SCALAR.
+#define HWY_BROKEN_EMU128 0
+
+// Allow user override of disabled targets.
+#ifndef GEMMA_DISABLED_TARGETS
+
+// All platforms: exclude SCALAR because we use ReorderWidenMulAccumulate.
+
+#if HWY_ARCH_ARM_V7
+// No NEON because we require double-precision support.
+#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_ALL_NEON)
+#elif HWY_ARCH_ARM_A64
+// We do not yet use AES (e.g. for random generation), hence NEON is the same
+// as NEON_WITHOUT_AES. Also skip SVE because SVE2_128 and SVE_256 cover most.
+#define GEMMA_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON | HWY_SVE)
+#elif HWY_ARCH_X86
+// Skip anything older than Haswell (2013); also use Zen4 for recent CPUs,
+// because we do not use anything added by SPR (e.g. FP16) nor AVX 10.2.
+#define GEMMA_DISABLED_TARGETS \
+  (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX3_SPR | HWY_AVX10_2)
+#endif  // HWY_ARCH_*
+
+#endif  // GEMMA_DISABLED_TARGETS
+
 // Only used in experiments, hence disable in default builds.
 #ifndef GEMMA_ENABLE_NUQ
 #define GEMMA_ENABLE_NUQ 0

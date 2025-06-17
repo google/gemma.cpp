@@ -15,6 +15,11 @@
 
 #include "compression/python/compression_clif_aux.h"
 
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>

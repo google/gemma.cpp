@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// SFP uses ConcatEven/Odd which are not supported; skip SVE for faster tests.
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_SVE)
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdint.h>
@@ -27,7 +27,6 @@
 #include <random>
 
 #include "compression/distortion.h"
-#include "compression/types.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"

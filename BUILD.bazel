@@ -367,6 +367,7 @@ cc_test(
         ":test_util",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:types",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",  #buildcleaner: keep
@@ -430,7 +431,7 @@ cc_test(
     ],
     deps = [
         ":basics",
-        ":ops",
+        ":matmul",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
@@ -500,10 +501,10 @@ cc_library(
         ":matmul",
         ":model_store",
         ":ops",
-        ":tokenizer",
         ":threading",
         ":threading_context",
         ":weights",
+        "//compression:types",
         "//io:blob_store",
         "//io",
         "//paligemma:image",
@@ -521,6 +522,7 @@ cc_library(
     deps = [
         ":gemma_lib",
         ":ops",
+        "//compression:types",
         "@highway//:hwy",
     ],
 )

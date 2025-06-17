@@ -15,16 +15,11 @@
 
 // End to end test of MatMul, comparing against a reference implementation.
 
-#include "hwy/detect_compiler_arch.h"  // IWYU pragma: keep
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
-// double-precision support.
-#if HWY_ARCH_ARM_V7
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
-#else
-#define HWY_DISABLED_TARGETS (HWY_SCALAR)
-#endif  // HWY_ARCH_ARM_V7
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
+
 // matmul_static is not built as a test, hence does not define MatMulStatic for
 // worse-than-baseline targets (to speed up builds), so we skip them here, too.
 #ifndef HWY_SKIP_NON_BEST_BASELINE
@@ -34,7 +29,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "compression/types.h"
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"

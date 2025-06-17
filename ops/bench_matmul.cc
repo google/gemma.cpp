@@ -16,24 +16,17 @@
 // Benchmark of large MatMul instances for which the MatMulSlow would be too
 // slow. This lacks a reference and is only useful for performance measurement.
 
-#include "hwy/base.h"
-#ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
-// double-precision support.
-#if HWY_ARCH_ARM_V7
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
-#else
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
-#endif
-
 #include <stddef.h>
 #include <stdio.h>
 
 #include <algorithm>
 #include <vector>
 
-#include "compression/types.h"
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
