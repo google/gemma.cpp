@@ -19,6 +19,7 @@
 #include <math.h>  // sqrtf
 #include <stddef.h>
 
+#include <atomic>
 #include <vector>
 
 #include "gemma/configs.h"   // ModelConfig
@@ -99,8 +100,12 @@ struct AttentionActivations {
 
         div_seq_len(static_cast<uint32_t>(seq_len)),
         query_scale(ChooseQueryScale(config)) {
+    // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
-      HWY_WARN("Creating mostly empty activations with a batch_size of 0.");
+      static std::atomic_flag warned = ATOMIC_FLAG_INIT;
+      if (!warned.test_and_set()) {
+        HWY_WARN("Creating mostly empty activations with a batch_size of 0.");
+      }
       return;
     }
 
