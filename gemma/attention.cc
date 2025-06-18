@@ -24,6 +24,7 @@
 #endif  // HWY_DISABLED_TARGETS
 
 #include "gemma/activations.h"
+#include "gemma/configs.h"  // kMaxQKVDim
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 #include "util/threading.h"
@@ -39,6 +40,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
+#include "compression/compress-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -50,7 +52,7 @@ namespace HWY_NAMESPACE {
 static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
                              const hwy::Divisor& div_seq_len,
                              const float* HWY_RESTRICT q,
-                             const MatPtrT<float>& k, float* HWY_RESTRICT att) {
+                             const MatPtrT<BF16>& k, float* HWY_RESTRICT att) {
   if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
     // Slightly faster: no wraparound.
     for (size_t pos = start_pos; pos <= last_pos; ++pos) {
@@ -66,8 +68,7 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
   }
 }
 
-template <typename U>
-static void PositionalEncodingQK(U* qk, const size_t layer_idx,
+static void PositionalEncodingQK(float* qk, const size_t layer_idx,
                                  const LayerWeightsPtrs& layer,
                                  const AttentionActivations& activations,
                                  const size_t pos, const float mul = 1.0f) {
@@ -97,7 +98,7 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
                                     const size_t last_pos,
                                     const hwy::Divisor& div_seq_len,
                                     const float* HWY_RESTRICT att,
-                                    const MatPtrT<float>& v,
+                                    const MatPtrT<BF16>& v,
                                     float* HWY_RESTRICT att_out) {
   const size_t qkv_dim = v.Cols();
   hwy::ZeroBytes(att_out, qkv_dim * sizeof(*att_out));
@@ -110,7 +111,7 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
   } else {
     for (size_t pos = start_pos; pos <= last_pos; ++pos) {
       const size_t pos_modulo = div_seq_len.Remainder(pos);
-      const float* HWY_RESTRICT v_ptr = v.Row(pos_modulo);
+      const BF16* HWY_RESTRICT v_ptr = v.Row(pos_modulo);
       MulByConstAndAdd(att[pos_modulo], v_ptr, att_out, v.Cols());
     }
   }
@@ -118,12 +119,14 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
 
 // Calculates the attention outputs for a single q, which may be updated
 // in place for RMSNorm.
-void SingleDotSoftmaxWeightedSum(
-    const size_t pos, const size_t start_pos, const size_t last_pos,
-    float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v,
-    const size_t layer_idx, const LayerWeightsPtrs& layer,
-    const AttentionActivations& activations, float* HWY_RESTRICT att,
-    float* HWY_RESTRICT att_out) {
+void SingleDotSoftmaxWeightedSum(const size_t pos, const size_t start_pos,
+                                 const size_t last_pos, float* HWY_RESTRICT q,
+                                 const MatPtrT<BF16>& k, const MatPtrT<BF16>& v,
+                                 const size_t layer_idx,
+                                 const LayerWeightsPtrs& layer,
+                                 const AttentionActivations& activations,
+                                 float* HWY_RESTRICT att,
+                                 float* HWY_RESTRICT att_out) {
   const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   const size_t seq_len =
@@ -136,6 +139,7 @@ void SingleDotSoftmaxWeightedSum(
                      layer.layer_config.qkv_dim);
     });
   }
+
   PositionalEncodingQK(q, layer_idx, layer, activations, pos, query_scale);
 
   QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att);
@@ -220,10 +224,10 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                         // this query and head.
                         const size_t kv_head_offset =
                             layer_idx * cache_layer_size + head_offset;
-                        MatPtrT<float> k("k_view", Extents2D(seq_len, qkv_dim));
+                        MatPtrT<BF16> k("k_view", Extents2D(seq_len, qkv_dim));
                         k.SetPtr(kv_cache.Row(0) + kv_head_offset,
                                  kv_cache.Stride());
-                        MatPtrT<float> v("v_view", Extents2D(seq_len, qkv_dim));
+                        MatPtrT<BF16> v("v_view", Extents2D(seq_len, qkv_dim));
                         v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim,
                                  kv_cache.Stride());
 
@@ -263,8 +267,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   // Set up MatMul row pointers for writing to KV, which consists of
   // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
   // because rows are computed modulo seq_len.
-  MatPtrT<float> kv_rows("kv", Extents2D(activations.pre_att_rms_out.Rows(),
-                                         layer.qkv_einsum_w2.Rows()));
+  MatPtrT<BF16> kv_rows("kv", Extents2D(activations.pre_att_rms_out.Rows(),
+                                        layer.qkv_einsum_w2.Rows()));
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
     const size_t qi = div_qbatch.Remainder(interleaved_idx);
@@ -291,9 +295,9 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         const size_t pos = qbatch.Pos(qi) + batch_idx;
         const size_t cache_pos = activations.div_seq_len.Remainder(pos);
         auto& kv_cache = qbatch.KV(qi).kv_cache;
-        float* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
-                                 layer_idx * cache_layer_size +
-                                 head * qkv_dim * 2;
+        BF16* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
+                                layer_idx * cache_layer_size +
+                                head * qkv_dim * 2;
 
         // Apply further processing to K.
         if (layer.key_norm_scale.HasPtr()) {
@@ -302,7 +306,12 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
           });
         }
 
-        PositionalEncodingQK(kv, layer_idx, layer, activations, pos);
+        HWY_ALIGN float kv_f32[kMaxQKVDim];
+        const hn::ScalableTag<float> df;
+        DecompressAndZeroPad(df, MakeSpan(kv, qkv_dim), 0, kv_f32, qkv_dim);
+        PositionalEncodingQK(kv_f32, layer_idx, layer, activations, pos);
+        CompressPerThread tls;
+        Compress(kv_f32, qkv_dim, tls, MakeSpan(kv, qkv_dim), 0);
       });
 }
 

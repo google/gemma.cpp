@@ -19,7 +19,8 @@
 #include <stddef.h>
 
 #include "gemma/configs.h"  // ModelConfig
-#include "gemma/gemma_args.h"
+#include "gemma/gemma_args.h"  // InferenceArgs
+#include "util/basics.h"       // BF16
 #include "util/mat.h"
 
 namespace gcpp {
@@ -41,7 +42,7 @@ struct KVCache {
   MatStorageT<float> conv1d_cache;
   MatStorageT<float> rglru_cache;  // [griffin_layers, model_dim]
 
-  MatStorageT<float> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
+  MatStorageT<BF16> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
 
  private:
   // For use by other ctor and Copy()

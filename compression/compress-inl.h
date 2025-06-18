@@ -517,8 +517,19 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   }
 }
 
-// Stores two f32 vectors to f32 or bf16; avoids duplicating RMSNorm and
-// RMSNormInplace for the two output types.
+// Same as above, but without parallelization nor benchmarking.
+template <typename Packed>
+HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
+                           CompressPerThread& tls,
+                           const PackedSpan<Packed>& packed,
+                           const size_t packed_ofs) {
+  packed.BoundsCheck(packed_ofs, num);
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
+  const hn::ScalableTag<float> df;
+  Traits::Compress(df, raw, num, tls, packed, packed_ofs);
+}
+
+// Stores two f32 vectors to f32 or bf16.
 template <class DF, typename Packed, HWY_IF_F32_D(DF), class VF = hn::Vec<DF>>
 void Compress2(DF df, VF raw0, VF raw1, const PackedSpan<Packed>& packed,
                const size_t packed_ofs) {

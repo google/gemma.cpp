@@ -26,25 +26,25 @@
 namespace gcpp {
 
 // Passed to HWY_VISIT_TARGETS; declares for one target.
-#define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                                \
-  namespace NAMESPACE {                                                        \
-  void SingleDotSoftmaxWeightedSum(                                            \
-      const size_t pos, const size_t start_pos, const size_t last_pos,         \
-      float* HWY_RESTRICT q, const MatPtrT<float>& k, const MatPtrT<float>& v, \
-      size_t layer_idx, const LayerWeightsPtrs& layer,                         \
-      const AttentionActivations& activations, float* HWY_RESTRICT att,        \
-      float* HWY_RESTRICT att_out);                                            \
-                                                                               \
-  void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,        \
-                             const LayerWeightsPtrs& layer,                    \
-                             AttentionActivations& activations,                \
-                             QBatch& qbatch, NestedPools& pools);              \
-                                                                               \
-  void GemmaAttention(size_t num_tokens, const size_t layer_idx,               \
-                      const LayerWeightsPtrs& layer,                           \
-                      AttentionActivations& activations, QBatch& qbatch,       \
-                      MatMulEnv& env, int flags);                              \
-  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
+#define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                              \
+  namespace NAMESPACE {                                                      \
+  void SingleDotSoftmaxWeightedSum(                                          \
+      const size_t pos, const size_t start_pos, const size_t last_pos,       \
+      float* HWY_RESTRICT q, const MatPtrT<BF16>& k, const MatPtrT<BF16>& v, \
+      size_t layer_idx, const LayerWeightsPtrs& layer,                       \
+      const AttentionActivations& activations, float* HWY_RESTRICT att,      \
+      float* HWY_RESTRICT att_out);                                          \
+                                                                             \
+  void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,      \
+                             const LayerWeightsPtrs& layer,                  \
+                             AttentionActivations& activations,              \
+                             QBatch& qbatch, NestedPools& pools);            \
+                                                                             \
+  void GemmaAttention(size_t num_tokens, const size_t layer_idx,             \
+                      const LayerWeightsPtrs& layer,                         \
+                      AttentionActivations& activations, QBatch& qbatch,     \
+                      MatMulEnv& env, int flags);                            \
+  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                \
   }  // namespace NAMESPACE
 
 // Function declarations for each SIMD target. Allows direct call from the

@@ -449,6 +449,7 @@ cc_library(
     srcs = ["gemma/kv_cache.cc"],
     hdrs = ["gemma/kv_cache.h"],
     deps = [
+        ":basics",
         ":configs",
         ":gemma_args",
         ":mat",
@@ -504,6 +505,7 @@ cc_library(
         ":threading",
         ":threading_context",
         ":weights",
+        "//compression:compress",
         "//compression:types",
         "//io:blob_store",
         "//io",

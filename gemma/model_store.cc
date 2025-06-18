@@ -25,7 +25,7 @@
 #include <string>
 
 #include "compression/types.h"
-#include "gemma/configs.h"  // ModelConfig
+#include "gemma/configs.h"  // ModelConfig, kMaxQKVDim
 #include "gemma/tensor_info.h"
 #include "gemma/tokenizer.h"
 #include "io/blob_store.h"
@@ -234,6 +234,11 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
     HWY_ASSERT(config.model != Model::UNKNOWN);
     HWY_ASSERT(config.wrapping != PromptWrapping::kSentinel);
     HWY_ASSERT(config.weight != Type::kUnknown);
+    for (const LayerConfig& layer_config : config.layer_configs) {
+      if (static_cast<size_t>(layer_config.qkv_dim) > kMaxQKVDim) {
+        HWY_ABORT("Increase kMaxQKVDim to at least %u.", layer_config.qkv_dim);
+      }
+    }
 
     // We trust the deserialized config, but checking helps to validate the
     // deduction, which we rely on below for pre-2025 files.
