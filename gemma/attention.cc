@@ -299,19 +299,21 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                 layer_idx * cache_layer_size +
                                 head * qkv_dim * 2;
 
+        HWY_ALIGN float kv_f32[2 * kMaxQKVDim];
+        const hn::ScalableTag<float> df;
+        DecompressAndZeroPad(df, MakeSpan(kv, 2 * qkv_dim), 0, kv_f32,
+                             2 * qkv_dim);
+
         // Apply further processing to K.
         if (layer.key_norm_scale.HasPtr()) {
           CallUpcasted(&layer.key_norm_scale, [&](const auto* weights_t) {
-            RMSNormInplace(weights_t->PackedScale1(), 0, kv, qkv_dim);
+            RMSNormInplace(weights_t->PackedScale1(), 0, kv_f32, qkv_dim);
           });
         }
 
-        HWY_ALIGN float kv_f32[kMaxQKVDim];
-        const hn::ScalableTag<float> df;
-        DecompressAndZeroPad(df, MakeSpan(kv, qkv_dim), 0, kv_f32, qkv_dim);
         PositionalEncodingQK(kv_f32, layer_idx, layer, activations, pos);
         CompressPerThread tls;
-        Compress(kv_f32, qkv_dim, tls, MakeSpan(kv, qkv_dim), 0);
+        Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
       });
 }
 

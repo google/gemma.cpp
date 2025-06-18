@@ -480,7 +480,10 @@ static void GenerateT(const ModelConfig& config,
     // We use a single divisor, so all sequence lengths must be the same.
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
-  HWY_ASSERT(max_prompt_size < seq_len);
+  if (max_prompt_size >= seq_len) {
+    HWY_ABORT("max_prompt_size = %zu, increase --seq_len to at least that.",
+              max_prompt_size);
+  }
   HWY_ASSERT(activations.attention.div_seq_len.GetDivisor() == seq_len);
 
   // Lacks a constructor to bulk-set, hence initialized by Prefill* which have

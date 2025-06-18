@@ -83,48 +83,44 @@ T Random(hwy::RandomState& rng) {
       HWY_MAX(hwy::ConvertScalarTo<double>(hwy::LowestValue<T>()), val));
 }
 
-HWY_NOINLINE void SourceAddFrom(const float* HWY_RESTRICT other,
+HWY_NOINLINE void SimpleAddFrom(const float* HWY_RESTRICT other,
                                 float* HWY_RESTRICT x, size_t size) {
   for (size_t i = 0; i < size; ++i) {
     x[i] += other[i];
   }
 }
 
-HWY_NOINLINE void SourceMulBy(const float* HWY_RESTRICT other,
-                              float* HWY_RESTRICT x, size_t size,
-                              size_t max_pos) {
-  HWY_DASSERT(max_pos <= size);
-  for (size_t i = 0; i < max_pos; ++i) {
+HWY_NOINLINE void SimpleMulBy(const float* HWY_RESTRICT other,
+                              float* HWY_RESTRICT x, size_t size) {
+  for (size_t i = 0; i < size; ++i) {
     x[i] *= other[i];
   }
 }
 
-HWY_NOINLINE void SourceMulByConst(float c, float* HWY_RESTRICT x, size_t size,
-                                   size_t max_pos) {
-  for (size_t i = 0; i < max_pos; ++i) {
+HWY_NOINLINE void SimpleMulByConst(float c, float* HWY_RESTRICT x,
+                                   size_t size) {
+  for (size_t i = 0; i < size; ++i) {
     x[i] *= c;
   }
 }
 
-HWY_NOINLINE void SourceMulByConstAndAdd(float c, const float* HWY_RESTRICT x,
+HWY_NOINLINE void SimpleMulByConstAndAdd(float c, const float* HWY_RESTRICT x,
                                          float* HWY_RESTRICT out, size_t size) {
   for (size_t i = 0; i < size; ++i) {
     out[i] += x[i] * c;
   }
 }
 
-HWY_NOINLINE void SourceSoftmax(float* HWY_RESTRICT x, size_t size,
-                                size_t mask_pos) {
+HWY_NOINLINE void SimpleSoftmax(float* HWY_RESTRICT x, size_t size) {
   HWY_DASSERT(size != 0);
-  HWY_DASSERT(mask_pos <= size);
   float sum = 0.0;
-  const float maxval = *std::max_element(x, x + mask_pos);
-  for (size_t i = 0; i < mask_pos; ++i) {
+  const float maxval = *std::max_element(x, x + size);
+  for (size_t i = 0; i < size; ++i) {
     x[i] = std::exp(x[i] - maxval);
     sum += x[i];
   }
   const float scale = 1.0f / sum;
-  for (size_t i = 0; i < mask_pos; ++i) {
+  for (size_t i = 0; i < size; ++i) {
     x[i] *= scale;
   }
 }
@@ -169,40 +165,8 @@ struct TestAddFrom {
       o[i] = Random<T>(rng);
     }
 
-    SourceAddFrom(o, e, count);
+    SimpleAddFrom(o, e, count);
     AddFrom(o, x, count);
-
-    hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
-                            __LINE__);
-  }
-};
-
-struct TestMulBy {
-  template <class D>
-  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
-                  hwy::RandomState& rng) {
-    using T = hn::TFromD<D>;
-
-    hwy::AlignedFreeUniquePtr<T[]> px =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> pe =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
-    hwy::AlignedFreeUniquePtr<T[]> po =
-        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_b + count));
-    HWY_ASSERT(px && pe && po);
-
-    T* x = px.get() + misalign_a;
-    T* e = pe.get() + misalign_a;
-    T* o = po.get() + misalign_b;
-
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-      o[i] = Random<T>(rng);
-    }
-
-    SourceMulBy(o, e, count, count);
-    MulBy(o, x, count, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -234,7 +198,7 @@ struct TestMulByConstAndAdd {
     }
     T constant = Random<T>(rng);
 
-    SourceMulByConstAndAdd(constant, o, e, count);
+    SimpleMulByConstAndAdd(constant, o, e, count);
     MulByConstAndAdd(constant, o, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -264,8 +228,8 @@ struct TestMulByConst {
     }
     T constant = Random<T>(rng);
 
-    SourceMulByConst(constant, e, count, count);
-    MulByConst(constant, x, count, count);
+    SimpleMulByConst(constant, e, count);
+    MulByConst(constant, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -294,8 +258,8 @@ struct TestSoftmax {
       e[i] = x[i];
     }
 
-    SourceSoftmax(e, count, count);
-    Softmax(x, count, count);
+    SimpleSoftmax(e, count);
+    Softmax(x, count);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {
@@ -329,10 +293,6 @@ struct TestCreateDistribution {
 
 void TestAllAddFrom() {
   hn::ForPartialVectors<ForeachCountAndMisalign<TestAddFrom>>()(float());
-}
-
-void TestAllMulBy() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulBy>>()(float());
 }
 
 void TestAllMulByConst() {
@@ -371,8 +331,8 @@ void TestSigmoid() {
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
-    const float mul, float* HWY_RESTRICT x, size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, int pos) {
+    const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
+    const float* HWY_RESTRICT inv_timescale, const int pos) {
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
   for (size_t dim = 0; dim < half_dim_qkv; ++dim) {
@@ -387,9 +347,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
-                     ChooseWrapping(Model::GEMMA2_9B));
-  int dim_qkv = config.layer_configs[0].qkv_dim;
+  const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
+                           ChooseWrapping(Model::GEMMA2_9B));
+  const size_t dim_qkv = config.layer_configs[0].qkv_dim;
   MatStorageT<float> x("x", dim_qkv);
 
   std::mt19937 gen;
@@ -397,44 +357,58 @@ void TestRopeAndMulBy() {
   std::normal_distribution<float> r{0.0, 5.0};
   auto random_float = [&r, &gen] { return r(gen); };
 
-  for (int i = 0; i < dim_qkv; ++i) {
+  for (size_t i = 0; i < dim_qkv; ++i) {
     x.Row(0)[i] = random_float();
   }
 
   const float qmul = AttentionActivations::ChooseQueryScale(config);
-  const float kmul = 1.0;
+  constexpr float kmul = 1.0f;
 
   MatStorageT<float> qexpected("qexpected", dim_qkv);
   MatStorageT<float> qactual("qactual", dim_qkv);
   MatStorageT<float> kexpected("kexpected", dim_qkv);
   MatStorageT<float> kactual("kactual", dim_qkv);
+  MatStorageT<float> kactual2("kactual2", dim_qkv);
   MatStorageT<float> inv_timescale = CreateInvTimescale(
       config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
-  for (int pos = 1; pos < 500; pos++) {
-    // Rope'd Q embeddings
-    CopyMat(x, qactual);
+  for (size_t pos = 1; pos < 500; pos++) {
+    // Rope'd Q embeddings with query scale
     CopyMat(x, qexpected);
+    CopyMat(x, qactual);
     ScalarRopeAndMulBy(qmul, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
     RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    for (size_t i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
+    }
 
-    for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(qactual.Row(0)[i], qexpected.Row(0)[i], 1e-4)
-          << "qIndex:" << i << "qInput:" << qactual.Row(0)[i];
+    // Same without query scale
+    CopyMat(x, qexpected);
+    CopyMat(x, qactual);
+    ScalarRopeAndMulBy(1.0f, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
+                       pos);
+    Rope(qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    for (size_t i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
     }
 
     // Rope'd K embeddings
-    CopyMat(x, kactual);
     CopyMat(x, kexpected);
+    CopyMat(x, kactual);
+    CopyMat(x, kactual2);
     ScalarRopeAndMulBy(kmul, kexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
     RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    static_assert(kmul == 1.0f, "");
+    Rope(kactual2.Row(0), dim_qkv, inv_timescale.Row(0), pos);
 
-    for (int i = 0; i < dim_qkv; ++i) {
-      EXPECT_NEAR(kactual.Row(0)[i], kexpected.Row(0)[i], 1e-4)
-          << "kIndex:" << i << "kInput:" << kactual.Row(0)[i];
+    for (size_t i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(kexpected.Row(0)[i], kactual.Row(0)[i], 1e-4) << " " << i;
+    }
+    for (size_t i = 0; i < dim_qkv; ++i) {
+      EXPECT_NEAR(kexpected.Row(0)[i], kactual2.Row(0)[i], 1e-4) << " " << i;
     }
   }
 }
@@ -662,7 +636,6 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(OpsTest);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllAddFrom);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);

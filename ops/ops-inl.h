@@ -406,7 +406,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 // `inv_timescale[dim_qkv / 2]` is precomputed in AttentionActivations.
 // This overload is called if `post_qk == PostQKType::HalfRope`.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
-    float* HWY_RESTRICT x, size_t dim_qkv,
+    float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos) {
   PROFILER_ZONE("ops.Rope");
   HWY_DASSERT(dim_qkv % 2 == 0);
@@ -430,13 +430,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     hn::SinCos(df, vtheta, vsin_theta, vcos_theta);
 
     // Scale input with rotations.
-    VF vx0 = hn::LoadU(df, x + dim);
-    VF vx1 = hn::LoadU(df, x + dim + half_dim_qkv);
-    vx0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
-    vx1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
+    const VF vx0 = hn::LoadU(df, x + dim);
+    const VF vx1 = hn::LoadU(df, x + dim + half_dim_qkv);
+    const VF vout0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
+    const VF vout1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
 
-    hn::StoreU(vx0, df, x + dim);
-    hn::StoreU(vx1, df, x + dim + half_dim_qkv);
+    hn::StoreU(vout0, df, x + dim);
+    hn::StoreU(vout1, df, x + dim + half_dim_qkv);
   }
 
   // Vectorize computation for remaining dims - same as above, but with LoadN.
@@ -452,19 +452,19 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     hn::SinCos(df, vtheta, vsin_theta, vcos_theta);
 
     // Scale input with rotations.
-    VF vx0 = hn::LoadN(df, x + dim, remaining_dims);
-    VF vx1 = hn::LoadN(df, x + dim + half_dim_qkv, remaining_dims);
-    vx0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
-    vx1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
+    const VF vx0 = hn::LoadN(df, x + dim, remaining_dims);
+    const VF vx1 = hn::LoadN(df, x + dim + half_dim_qkv, remaining_dims);
+    const VF vout0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
+    const VF vout1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
 
-    hn::StoreN(vx0, df, x + dim, remaining_dims);
-    hn::StoreN(vx1, df, x + dim + half_dim_qkv, remaining_dims);
+    hn::StoreN(vout0, df, x + dim, remaining_dims);
+    hn::StoreN(vout1, df, x + dim + half_dim_qkv, remaining_dims);
   }
 }
 
 // `inv_timescale[dim_qkv / 2]` is precomputed in AttentionActivations.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
-    const float mul, float* HWY_RESTRICT x, size_t dim_qkv,
+    const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos) {
   PROFILER_ZONE("ops.RopeAndMulBy");
   HWY_DASSERT(dim_qkv % 2 == 0);
@@ -489,13 +489,13 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     hn::SinCos(df, vtheta, vsin_theta, vcos_theta);
 
     // Scale input with rotations and multiply with constant.
-    VF vx0 = hn::Mul(vmul, hn::LoadU(df, x + dim));
-    VF vx1 = hn::Mul(vmul, hn::LoadU(df, x + dim + half_dim_qkv));
-    vx0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
-    vx1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
+    const VF vx0 = hn::Mul(vmul, hn::LoadU(df, x + dim));
+    const VF vx1 = hn::Mul(vmul, hn::LoadU(df, x + dim + half_dim_qkv));
+    const VF vout0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
+    const VF vout1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
 
-    hn::StoreU(vx0, df, x + dim);
-    hn::StoreU(vx1, df, x + dim + half_dim_qkv);
+    hn::StoreU(vout0, df, x + dim);
+    hn::StoreU(vout1, df, x + dim + half_dim_qkv);
   }
 
   // Vectorize computation for remaining dims - same as above, but with LoadN.
@@ -511,14 +511,14 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     hn::SinCos(df, vtheta, vsin_theta, vcos_theta);
 
     // Scale input with rotations and multiply with constant.
-    VF vx0 = hn::Mul(vmul, hn::LoadN(df, x + dim, remaining_dims));
-    VF vx1 =
+    const VF vx0 = hn::Mul(vmul, hn::LoadN(df, x + dim, remaining_dims));
+    const VF vx1 =
         hn::Mul(vmul, hn::LoadN(df, x + dim + half_dim_qkv, remaining_dims));
-    vx0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
-    vx1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
+    const VF vout0 = hn::MulSub(vx0, vcos_theta, hn::Mul(vx1, vsin_theta));
+    const VF vout1 = hn::MulAdd(vx0, vsin_theta, hn::Mul(vx1, vcos_theta));
 
-    hn::StoreN(vx0, df, x + dim, remaining_dims);
-    hn::StoreN(vx1, df, x + dim + half_dim_qkv, remaining_dims);
+    hn::StoreN(vout0, df, x + dim, remaining_dims);
+    hn::StoreN(vout1, df, x + dim + half_dim_qkv, remaining_dims);
   }
 }
 
