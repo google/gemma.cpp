@@ -875,8 +875,9 @@ class MMPerPackage {
         inner_tasks_(config.InnerTasks()),
         out_(config.Out()),
         line_bytes_(args.env->ctx.allocator.LineBytes()) {
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DecompressA");
     MMZone zone;
-    zone.MaybeEnter("MM.DecompressA", args_);
+    zone.MaybeEnter(pkg_idx, zone_id, args_);
     A_ = DecompressA(A);
   }
 
@@ -914,8 +915,7 @@ class MMPerPackage {
   // Single M and K ranges, parallel N. Fills all of C directly.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT", args_);
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_M = ranges_mc_.Range(0);
@@ -928,7 +928,10 @@ class MMPerPackage {
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
-        [&](const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
           const StridedViewBF B_storage_view(B_storage, K, B_stride);
 
@@ -947,8 +950,7 @@ class MMPerPackage {
   // Single M range, parallel N, sequential K. Fills all of partial.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_K", args_);
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     const IndexRange& range_mc = ranges_mc_.Range(0);
 
@@ -975,7 +977,10 @@ class MMPerPackage {
 
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
-        [&](const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
 
           // Peel off the first iteration of the kc loop: avoid
@@ -988,14 +993,17 @@ class MMPerPackage {
           });
         });
 
-    MMZone fill_zone;
     if (out_ == MMOut::kCopy) {
-      fill_zone.MaybeEnter("MM.NT_K.FillC", args_);
+      static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K.FillC.Copy");
+      MMZone fill_zone;
+      fill_zone.MaybeEnter(0, zone_id, args_);
       MMScaleDemoteAdd::FillC(range_mc, range_np_, args_, C_rows);
     } else if (out_ == MMOut::kParM) {
-      fill_zone.MaybeEnter("MM.NT_K.FillC.ParM", args_);
+      static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K.FillC.ParM");
       args_.env->parallel.ForRangeMC(
-          range_mc, pkg_idx_, [&](size_t row_a) HWY_ATTR {
+          range_mc, pkg_idx_, [&](size_t row_a, size_t worker) HWY_ATTR {
+            MMZone fill_zone;
+            fill_zone.MaybeEnter(worker, zone_id, args_);
             MMScaleDemoteAdd::FillC(IndexRange(row_a, row_a + 1), range_np_,
                                     args_, C_rows);
           });
@@ -1008,8 +1016,7 @@ class MMPerPackage {
   // Fills `mc x nc` sections of C directly, in parallel.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_MT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_MT", args_);
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_MT");
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
@@ -1020,7 +1027,11 @@ class MMPerPackage {
     // except for the profiler strings and `out_tag`.
     args_.env->parallel.ForRangesMC_NC(
         ranges_mc_, ranges_nc_, pkg_idx_,
-        [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           const StridedViewBF& A_view = A_.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
           const StridedViewBF B_storage_view(B_storage, K, B_stride);
@@ -1041,8 +1052,8 @@ class MMPerPackage {
   // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_MT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_MT_K", args_);
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_MT_K");
+    static const uint32_t fill_zone_id = PROFILER_ADD_ZONE("MM.NT_MT_K.FillC");
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
     const size_t B_stride =
@@ -1068,7 +1079,11 @@ class MMPerPackage {
     };  // loop_nc
     args_.env->parallel.ForRangesMC_NC(
         ranges_mc_, ranges_nc_, pkg_idx_,
-        [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
           const StridedViewBF B_storage_view(B_storage, kc_max, B_stride);
 
@@ -1087,7 +1102,7 @@ class MMPerPackage {
           // `kDirect` is only used with `kNT_MT`.
           HWY_DASSERT(out_ == MMOut::kCopy);
           MMZone fill_zone;
-          fill_zone.MaybeEnter("MM.NT_MT_K.FillC", args_);
+          fill_zone.MaybeEnter(worker, fill_zone_id, args_);
           MMScaleDemoteAdd::FillC(range_mc, range_nc, args_, C_rows);
         });
   }
@@ -1139,13 +1154,16 @@ class MMPerPackage {
 
         args_.env->parallel.ForNP(
             all_K, multiple_K, inner_tasks, pkg_idx_,
-            [&](const IndexRange& range_K) { do_range(all_M, range_K); });
+            [&](const IndexRange& range_K, size_t /*worker*/) {
+              do_range(all_M, range_K);
+            });
         break;
       }
       case MMParA::kM:
-        args_.env->parallel.ForRangeMC(all_M, pkg_idx_, [&](size_t row_a) {
-          do_range(IndexRange(row_a, row_a + 1), all_K);
-        });
+        args_.env->parallel.ForRangeMC(
+            all_M, pkg_idx_, [&](size_t row_a, size_t /*worker*/) {
+              do_range(IndexRange(row_a, row_a + 1), all_K);
+            });
         break;
     }
   }
@@ -1261,12 +1279,13 @@ struct MMImpl {
   static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                                     RowPtrs<TC> C_rows, const MMArgs& args,
                                     const MMConfig& config) {
-    MMZone matmul_zone;
-    matmul_zone.MaybeEnter("MM.DoMatMul", args);
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DoMatMul");
 
     // Outermost loop: static NUMA-aware partition of B rows across packages.
     args.env->parallel.ForPkg(
         args.per_key->ranges_np.NumTasks(), [&](size_t pkg_idx) {
+          MMZone matmul_zone;
+          matmul_zone.MaybeEnter(pkg_idx, zone_id, args);
           const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
           MMPerPackage(A, args, config, pkg_idx, range_np)(B, C_rows);
         });

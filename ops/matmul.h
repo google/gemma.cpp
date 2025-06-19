@@ -88,11 +88,13 @@ class MMParallel {
   }
 
   // Cluster/CCX-aware parallel-for over B rows in `range_np`. `nx_multiple` is
-  // the granularity of per-cluster tasks. Calls `func(worker_range)`.
+  // the granularity of per-cluster tasks. Calls `func(worker_range, worker)`.
   template <class Func>
   void ForNP(const IndexRange& range_np, size_t nx_multiple, size_t inner_tasks,
              size_t pkg_idx, const Func& func) {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
+
     // Single cluster: parallel-for over static partition of `range_np`.
     hwy::ThreadPool& all_clusters = ctx_.pools.AllClusters(pkg_idx);
     const size_t num_clusters = all_clusters.NumWorkers();
@@ -102,8 +104,8 @@ class MMParallel {
           range_np, cluster.NumWorkers() * inner_tasks, nx_multiple);
       return ParallelizeOneRange(
           worker_ranges, cluster,
-          [&](const IndexRange& worker_range, size_t /*thread*/) {
-            func(worker_range);
+          [&](const IndexRange& worker_range, size_t thread) {
+            func(worker_range, pkg_base + thread);
           });
     }
 
@@ -114,21 +116,26 @@ class MMParallel {
         nx_ranges, all_clusters,
         [&](const IndexRange& nx_range, const size_t cluster_idx) {
           hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, cluster_idx);
+          const size_t cluster_base =
+              pkg_base + cluster_idx * ctx_.pools.MaxWorkersPerCluster();
           // Parallel-for over sub-ranges of `cluster_range` within the cluster.
           const IndexRangePartition worker_ranges = StaticPartition(
               nx_range, cluster.NumWorkers() * inner_tasks, nx_multiple);
-          ParallelizeOneRange(worker_ranges, cluster,
-                              [&](const IndexRange& worker_range,
-                                  size_t /*thread*/) { func(worker_range); });
+          ParallelizeOneRange(
+              worker_ranges, cluster,
+              [&](const IndexRange& worker_range, size_t thread) {
+                func(worker_range, cluster_base + thread);
+              });
         });
   }
 
   // Cluster/CCX-aware parallel-for over blocks (separate subranges of A and B
-  // rows). Calls `func(range_mc, range_nc)`.
+  // rows). Calls `func(range_mc, range_nc, worker)`.
   template <class Func>
   void ForRangesMC_NC(const IndexRangePartition& ranges_mc,
                       const IndexRangePartition& ranges_nc, size_t pkg_idx,
                       const Func& func) {
+    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
     hwy::ThreadPool& all_clusters = ctx_.pools.AllClusters(pkg_idx);
     // `all_clusters` is a pool with one worker per cluster in a package.
     const size_t num_clusters = all_clusters.NumWorkers();
@@ -140,15 +147,16 @@ class MMParallel {
       // Low-batch: avoid Divide/Remainder.
       if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
         return ParallelizeOneRange(
-            ranges_nc, cluster,
-            [&](const IndexRange& range_nc, size_t /*thread*/) {
-              func(ranges_mc.Range(0), range_nc);
+            ranges_nc, cluster, [&](const IndexRange& range_nc, size_t thread) {
+              func(ranges_mc.Range(0), range_nc, pkg_base + thread);
             });
       } else {
         return ParallelizeTwoRanges(
             ranges_mc, ranges_nc, cluster,
             [&](const IndexRange& range_mc, const IndexRange& range_nc,
-                size_t /*thread*/) { func(range_mc, range_nc); });
+                size_t thread) {
+              func(range_mc, range_nc, pkg_base + thread);
+            });
       }
     }
 
@@ -157,22 +165,24 @@ class MMParallel {
     ParallelizeOneRange(
         ranges_nc, all_clusters,
         [&](const IndexRange range_nc, size_t cluster_idx) {
+          const size_t cluster_base =
+              pkg_base + cluster_idx * ctx_.pools.MaxWorkersPerCluster();
           hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, cluster_idx);
-          ParallelizeOneRange(
-              ranges_mc, cluster,
-              [&](const IndexRange& range_mc, size_t /*thread*/) {
-                func(range_mc, range_nc);
-              });
+          ParallelizeOneRange(ranges_mc, cluster,
+                              [&](const IndexRange& range_mc, size_t thread) {
+                                func(range_mc, range_nc, cluster_base + thread);
+                              });
         });
   }
 
-  // Calls `func(row_a)` in parallel.
+  // Calls `func(row_a, worker)` in parallel.
   template <class Func>
   void ForRangeMC(const IndexRange& range_mc, size_t pkg_idx,
                   const Func& func) {
+    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
     ctx_.pools.Pool(pkg_idx).Run(
         range_mc.begin(), range_mc.end(),
-        [&](uint64_t row_a, size_t /*thread*/) { func(row_a); });
+        [&](uint64_t row_a, size_t thread) { func(row_a, pkg_base + thread); });
   }
 
  private:
@@ -714,9 +724,9 @@ class MMZone {
   }
 
   // `name` must be a string literal.
-  void MaybeEnter(const char* name, const MMArgs& args) {
+  void MaybeEnter(size_t thread_id, uint32_t zone_id, const MMArgs& args) {
     if (args.per_key->WantProfile()) {
-      new (&data_) Zone(name);
+      new (&data_) Zone(thread_id, zone_id);
       used_ = true;
     }
   }
@@ -727,7 +737,7 @@ class MMZone {
 };
 #else
 struct MMZone {
-  void MaybeEnter(const char*, const MMArgs&) {}
+  void MaybeEnter(size_t, uint32_t, const MMArgs&) {}
 };
 #endif  // PROFILER_ENABLED
 

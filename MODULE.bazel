@@ -18,7 +18,7 @@ bazel_dep(name = "google_benchmark", version = "1.8.5")
 # Require a more recent version.
 git_override(
     module_name = "highway",
-    commit = "12d9fa908e0c1d3346c298d472584687a24e4ce6",
+    commit = "01019e979cd098f2ee618f39bb6718f1b4a3d901",
     remote = "https://github.com/google/highway",
 )
 
@@ -71,6 +71,7 @@ pip.parse(
     requirements_lock = "//compression/python:requirements.txt",
 )
 use_repo(pip, "compression_deps")
+
 pip.parse(
     hub_name = "python_deps",
     python_version = "3.11",

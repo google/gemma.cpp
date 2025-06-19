@@ -385,9 +385,8 @@ static void DecompressToBF16(MatPtr& mat,
 
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                           const BlobReader& reader, hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.Weights.ReadBF16");
-
-  pool.Run(0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
+  pool.Run(0, tensors.size(), [&](uint64_t task, size_t thread) {
+    PROFILER_ZONE2(thread, "Startup.Weights.ReadBF16");
     const TensorToRead& tensor = tensors[task];
     MatPtr& mat = *tensor.mat;
 
@@ -465,9 +464,9 @@ static std::vector<IOBatch> MakeBatches(
 static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
                         hwy::ThreadPool& pool) {
-  PROFILER_ZONE("Startup.Weights.Read");
   // >5x speedup from parallel reads when cached.
-  pool.Run(0, batches.size(), [&](uint64_t i, size_t /*thread*/) {
+  pool.Run(0, batches.size(), [&](uint64_t i, size_t thread) {
+    PROFILER_ZONE2(thread, "Startup.Weights.Read");
     const IOBatch& batch = batches[i];
     const std::string& key = reader.Keys()[batch.KeyIdx()];
     const uint64_t bytes_read = batch.Read(reader.file());

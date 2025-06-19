@@ -164,7 +164,10 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
                            AttentionActivations& activations, QBatch& qbatch,
                            NestedPools& pools) {
-  PROFILER_ZONE("Gen.Attention.DotSoftmax");
+  PROFILER_ZONE("Gen.Attention.DotSoftmax.misc");
+  static const uint32_t HWY_MAYBE_UNUSED zone_id_par =
+      PROFILER_ADD_ZONE("Gen.Attention.DotSoftmax.par");
+
   const hwy::Divisor div_qbatch(qbatch.Size());
   const LayerConfig& layer_config = layer.layer_config;
   const size_t qkv_dim = layer_config.qkv_dim;
@@ -186,9 +189,12 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
   ParallelizeOneRange(
       tq_ranges, pools.AllPackages(),
       [&](const IndexRange& tq_range, const size_t pkg_idx) {
+        const size_t pkg_base = pkg_idx * pools.MaxWorkersPerPackage();
         pools.AllClusters(pkg_idx).Run(
             tq_range.begin(), tq_range.end(),
             [&](const size_t tq_idx, const size_t cluster_idx) {
+              const HWY_MAYBE_UNUSED size_t cluster_base =
+                  pkg_base + cluster_idx * pools.MaxWorkersPerCluster();
               const size_t qi = div_qbatch.Remainder(tq_idx);
               const size_t batch_idx = div_qbatch.Divide(tq_idx);
               auto& kv_cache = qbatch.KV(qi).kv_cache;
@@ -209,6 +215,11 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                   .Run(
                       0, layer_config.heads,
                       [&](const size_t head, size_t thread) HWY_ATTR {
+#if PROFILER_ENABLED
+                        const hwy::Zone zone(cluster_base + thread,
+                                             zone_id_par);
+#endif
+
                         const size_t head_offset =
                             (head / kHeadGroups) * qkv_dim * 2;
 
