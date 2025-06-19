@@ -96,7 +96,6 @@ cc_test(
     name = "sfp_test",
     size = "small",
     srcs = ["sfp_test.cc"],
-    features = ["fully_static_link"],
     linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
@@ -117,7 +116,6 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["nuq_test.cc"],
-    features = ["fully_static_link"],
     linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
@@ -160,7 +158,6 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["compress_test.cc"],
-    features = ["fully_static_link"],
     linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.

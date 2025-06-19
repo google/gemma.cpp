@@ -329,6 +329,7 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["ops/dot_test.cc"],
+    linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["ops_tests"],
@@ -352,8 +353,9 @@ cc_test(
 cc_test(
     name = "ops_test",
     size = "small",
-    timeout = "eternal",
+    timeout = "long",
     srcs = ["ops/ops_test.cc"],
+    linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["ops_tests"],
@@ -379,6 +381,7 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["ops/gemma_matvec_test.cc"],
+    linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["ops_tests"],
@@ -398,6 +401,7 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["ops/matmul_test.cc"],
+    linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     # for test_suite.
     tags = ["ops_tests"],
@@ -423,6 +427,7 @@ cc_test(
     size = "small",
     timeout = "long",
     srcs = ["ops/bench_matmul.cc"],
+    linkstatic = True,
     local_defines = ["HWY_IS_TEST"],
     tags = [
         "manual",
@@ -603,6 +608,7 @@ cc_test(
 cc_test(
     name = "gemma_batch_bench",
     srcs = ["evals/gemma_batch_bench.cc"],
+    linkstatic = True,
     # Requires model files
     tags = [
         "local",
