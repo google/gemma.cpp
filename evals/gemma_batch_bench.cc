@@ -37,7 +37,7 @@ class GemmaBatchBench : public ::testing::Test {
  protected:
   std::vector<std::string> BatchGemmaReply(
       const std::vector<std::string>& inputs) {
-    s_env->SetMaxGeneratedTokens(16);
+    s_env->SetMaxGeneratedTokens(24);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 2;
     std::vector<std::string> replies;
@@ -93,7 +93,7 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
     if (qpos == questions.size()) qpos = 0;
   }
   std::vector<std::string> responses = BatchGemmaReply(inputs);
-  for (size_t i = 0; i < hwy::Unpredictable1(); ++i) {
+  for (size_t i = 0; i < hwy::Unpredictable1() * 3; ++i) {
     fprintf(stderr, "Batch answer %zu '%s'\n\n", i, responses[i].c_str());
   }
 
