@@ -428,7 +428,9 @@ MatMulEnv::MatMulEnv(ThreadingContext& ctx)
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
 
-  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));
+  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));  // A
+  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxN));  // B
+  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));  // C
 }
 
 void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {

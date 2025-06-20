@@ -321,6 +321,40 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
   });
 }
 
+// Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
+// over clusters of ONE package, then within each cluster.
+template <class Func>
+void ParallelFor(size_t num_tasks, NestedPools& pools, size_t pkg_idx,
+                 const Func& func) {
+  const size_t pkg_base = pkg_idx * pools.MaxWorkersPerPackage();
+
+  // If few tasks, run on a single cluster. Also avoids a bit of overhead if
+  // there is only one cluster.
+  hwy::ThreadPool& all_clusters = pools.AllClusters(pkg_idx);
+  const size_t num_clusters = all_clusters.NumWorkers();
+  hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, 0);
+  if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
+    return cluster.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+      func(task, pkg_base + thread);
+    });
+  }
+
+  // Assign each cluster a sub-range.
+  const IndexRangePartition ranges =
+      StaticPartition(IndexRange(0, num_tasks), num_clusters, 1);
+  ParallelizeOneRange(
+      ranges, all_clusters,
+      [&](const IndexRange& range, const size_t cluster_idx) {
+        hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, cluster_idx);
+        const size_t cluster_base =
+            pkg_base + cluster_idx * pools.MaxWorkersPerCluster();
+        cluster.Run(range.begin(), range.end(),
+                    [&](uint64_t task, size_t thread) {
+                      func(task, cluster_base + thread);
+                    });
+      });
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_THREADING_H_

@@ -23,6 +23,7 @@
 #include "gemma/weights.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
+#include "util/threading.h"
 #include "hwy/profiler.h"
 
 // Include guard (still compiled once per target)
@@ -43,9 +44,10 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 template <typename T>
-HWY_NOINLINE void Activation(ActivationType activation, T* HWY_RESTRICT c1,
-                             const T* HWY_RESTRICT c2, size_t count) {
-  PROFILER_ZONE("Gen.Activation");
+void Activation(ActivationType activation, T* HWY_RESTRICT c1,
+                const T* HWY_RESTRICT c2, const size_t count,
+                const size_t worker) {
+  PROFILER_ZONE2(worker, "Gen.Activation");
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<T>;
   using VF = hn::Vec<DF>;
@@ -62,29 +64,33 @@ HWY_NOINLINE void Activation(ActivationType activation, T* HWY_RESTRICT c1,
 
 // No C2 multiplier.
 template <class Mat>
-void ActivationBatched(ActivationType activation, Mat& c1) {
+void ActivationBatched(ActivationType activation, Mat& c1, NestedPools& pools) {
   using T = typename Mat::T;
-  for (size_t i = 0; i < c1.Rows(); ++i) {
-    // Cast to correct type so type deduction works.
-    Activation(activation, c1.Row(i), static_cast<const T*>(nullptr),
-               c1.Cols());
-  }
+  ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
+              [&](uint64_t task, size_t worker) {
+                // Cast to correct type so type deduction works.
+                Activation(activation, c1.Row(task),
+                           static_cast<const T*>(nullptr), c1.Cols(), worker);
+              });
 }
 
 template <class Mat>
 HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
-                                    const Mat* c2) {
+                                    const Mat* c2, NestedPools& pools) {
   using T = typename Mat::T;
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
-    for (size_t i = 0; i < c1.Rows(); ++i) {
-      Activation(activation, c1.Row(i), c2->Row(i), c1.Cols());
-    }
+    ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
+                [&](uint64_t task, size_t worker) {
+                  Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
+                             worker);
+                });
   } else {  // No multiplier
-    for (size_t i = 0; i < c1.Rows(); ++i) {
-      Activation(activation, c1.Row(i), static_cast<const T*>(nullptr),
-                 c1.Cols());
-    }
+    ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
+                [&](uint64_t task, size_t worker) {
+                  Activation(activation, c1.Row(task),
+                             static_cast<const T*>(nullptr), c1.Cols(), worker);
+                });
   }
 }
 
@@ -126,7 +132,8 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
              activations.C2);
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
-  ActivationBatched(layer_config.activation, activations.C1, &activations.C2);
+  ActivationBatched(layer_config.activation, activations.C1, &activations.C2,
+                    env.ctx.pools);
 
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.linear_w, output_bias, env,

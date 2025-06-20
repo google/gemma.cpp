@@ -1320,20 +1320,7 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               MatPtrT<TC>& C) {
-  RowPtrs<TC> C_rows(C.GetRowPtrs());
-  if (HWY_UNLIKELY(!C.GetRowPtrs())) {
-    if constexpr (HWY_IS_DEBUG_BUILD) {
-      fprintf(stderr,
-              "MatMul perf warning: setting row pointers because "
-              "%s.AttachRowPtrs() was not called.\n",
-              C.Name());
-    }
-    HWY_DASSERT(C.HasPtr());
-    for (size_t r = 0; r < C.Rows(); ++r) {
-      env.row_ptrs[0][r] = reinterpret_cast<uint8_t*>(C.Row(r));
-    }
-    C_rows = RowPtrs<TC>(env.row_ptrs[0].get());
-  }
+  RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[2]);
 
   const Allocator& allocator = env.ctx.allocator;
   const size_t M = A.Rows();

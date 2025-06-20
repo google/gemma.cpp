@@ -33,7 +33,7 @@ namespace gcpp {
       float* HWY_RESTRICT q, const MatPtrT<BF16>& k, const MatPtrT<BF16>& v, \
       size_t layer_idx, const LayerWeightsPtrs& layer,                       \
       const AttentionActivations& activations, float* HWY_RESTRICT att,      \
-      float* HWY_RESTRICT att_out);                                          \
+      float* HWY_RESTRICT att_out, size_t worker);                           \
                                                                              \
   void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,      \
                              const LayerWeightsPtrs& layer,                  \

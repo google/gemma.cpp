@@ -682,10 +682,11 @@ struct MatMulEnv {
   // Storage for arbitrary output rows, see `MatPtr::AllocateAndAttachRowPtrs`.
   // Most MatMul callers use strided MatPtr, but GemmaAttention::ComputeQKV
   // writes to differing KV positions per query / output row.
-  // The first entry is sufficient for any MatMul, but also potentially
-  // overwritten by each MatMul. Subsequent entries are precomputed for tensors
-  // and not overwritten. Per-tensor allocations make it likelier that asan
-  // detects bugs such as use after free, overrun, and dangling references.
+  // The first three allocations are sufficient for any A, B, C, respectively,
+  // but also potentially overwritten by each MatMul. Subsequent entries are
+  // precomputed for tensors and not overwritten. Per-tensor allocations make
+  // it likelier that asan detects bugs such as use after free, overrun, and
+  // dangling references.
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 

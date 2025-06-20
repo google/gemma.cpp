@@ -34,7 +34,7 @@
 namespace gcpp {
 
 // Type-safe wrapper over type-erased uint8_t row pointers from MatPtr. Used
-// for C, in future also for A.
+// for C (KV output), in future also for A or even B.
 template <typename T>
 class RowPtrs {
  public:
@@ -316,6 +316,25 @@ class MatPtrT : public MatPtr {
     return MakeConstSpan(HWY_RCAST_ALIGNED(MatT*, ptr_), num_elements_);
   }
 };
+
+template <typename T>
+RowPtrs<T> GetOrSetTempRowPtrs(
+    const MatPtrT<T>& mat,
+    const hwy::AlignedFreeUniquePtr<uint8_t*[]>& storage) {
+  if (HWY_LIKELY(mat.GetRowPtrs())) return RowPtrs<T>(mat.GetRowPtrs());
+
+  if constexpr (HWY_IS_DEBUG_BUILD) {
+    fprintf(stderr,
+            "MatMul perf warning: setting row pointers because "
+            "%s.AttachRowPtrs() was not called.\n",
+            mat.Name());
+  }
+  HWY_DASSERT(mat.HasPtr());
+  for (size_t r = 0; r < mat.Rows(); ++r) {
+    storage[r] = reinterpret_cast<uint8_t*>(const_cast<T*>(mat.Row(r)));
+  }
+  return RowPtrs<T>(storage.get());
+}
 
 // Calls `func` with `MatPtrT<T>*` plus the optional `args`. This supports all
 // types used as weights.

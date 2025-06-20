@@ -108,6 +108,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // BindB/C if there is a single package: they will be a no-op.
   BindB(b_trans, sizeof(TC), env.parallel);
   BindC(C, env.parallel);
+  C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   Tristate use_spinning = Tristate::kDefault;
   env.ctx.pools.MaybeStartSpinning(use_spinning);
@@ -139,8 +140,8 @@ using SFP = SfpStream;
 
 void BenchAllMatMul() {
   if (first_target == 0) first_target = HWY_TARGET;
-  // Disable the best-target-only limitation.
-  // if (HWY_TARGET != first_target) return;
+  // Comment out to disable the best-target-only limitation.
+  if (HWY_TARGET != first_target) return;
 
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
   if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSSE3 ||

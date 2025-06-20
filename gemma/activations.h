@@ -18,6 +18,7 @@
 
 #include <math.h>  // sqrtf
 #include <stddef.h>
+#include <stdint.h>
 
 #include <atomic>
 #include <vector>
@@ -99,6 +100,7 @@ struct AttentionActivations {
             1000000.0)),
 
         div_seq_len(static_cast<uint32_t>(seq_len)),
+        div_heads(static_cast<uint32_t>(layer_config.heads)),
         query_scale(ChooseQueryScale(config)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
@@ -125,10 +127,6 @@ struct AttentionActivations {
     att_sums.OverrideRows(batch_size);
   }
 
-  bool IsGlobalLayer(size_t layer_idx) const {
-    return config.attention_window_sizes[layer_idx] == div_seq_len.GetDivisor();
-  }
-
   const ModelConfig& config;
 
   MatStorageT<float> q;  // query
@@ -144,6 +142,8 @@ struct AttentionActivations {
   MatStorageT<float> inv_timescale_global;
 
   hwy::Divisor div_seq_len;
+  // Unfortunately, some models (Griffin) have non-power-of-two heads.
+  hwy::Divisor div_heads;
   float query_scale;
 };
 

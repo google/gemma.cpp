@@ -224,7 +224,7 @@ void FFWVit(const LayerWeightsPtrs& layer, Activations& activations,
              activations.C1);
 
   // Activation (Gelu), store in C1.
-  ActivationBatched(layer_config.activation, activations.C1);
+  ActivationBatched(layer_config.activation, activations.C1, env.ctx.pools);
 
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.vit.linear_1_w, output_bias, env,
