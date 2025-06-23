@@ -112,6 +112,7 @@ class GemmaEnv {
   RuntimeConfig& MutableConfig() { return runtime_config_; }
   std::mt19937& MutableGen() { return gen_; }
   KVCache& MutableKVCache() { return kv_caches_[0]; }
+  MatMulEnv& MutableEnv() { return env_; }
 
  private:
   MatMulEnv env_;

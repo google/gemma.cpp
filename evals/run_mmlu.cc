@@ -131,7 +131,8 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         .stream_token = stream_token,
     };
     env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
-                             env.MutableKVCache(), timing_info);
+                             env.MutableKVCache(), env.MutableEnv(),
+                             timing_info);
 
     std::string output_string = env.StringFromTokens(predicted_token_ids);
     fprintf(stderr, "Correct %s, model '%s'\n", correct_answer.c_str(),

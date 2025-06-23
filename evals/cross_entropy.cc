@@ -99,7 +99,7 @@ HWY_EXPORT(CallSoftmax);
 
 float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
-                          int verbosity) {
+                          MatMulEnv& env, int verbosity) {
   const StreamFunc stream_token = [](int, float) { return true; };
 
   const int vocab_size = gemma.GetModelConfig().vocab_size;
@@ -145,7 +145,7 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
   };
   TimingInfo timing_info;
 
-  gemma.Generate(runtime, prompt0, 0, kv_cache, timing_info);
+  gemma.Generate(runtime, prompt0, 0, kv_cache, env, timing_info);
 
   const float scale = 1.0f / std::log(2.0f);
   return cross_entropy * scale;

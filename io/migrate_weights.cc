@@ -44,6 +44,6 @@ int main(int argc, char** argv) {
   }
 
   gcpp::GemmaEnv env(argc, argv);
-  env.GetGemma()->Save(args.output_weights, env.Env().ctx.pools.Pool());
+  env.GetGemma()->Save(args.output_weights, env.Env().ctx.pools);
   return 0;
 }

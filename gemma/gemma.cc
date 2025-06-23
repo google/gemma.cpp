@@ -610,62 +610,62 @@ MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args,
 }
 
 Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
-             MatMulEnv& env)
-    : env_(env),
-      reader_(loader.weights),
+             NestedPools& pools)
+    : reader_(loader.weights),
       model_(reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model),
       inference_(inference) {
   weights_.ReadFromBlobs(model_, reader_, loader, inference, mat_owners_,
-                         env.ctx.pools.Pool());
+                         pools.Pool());
   reader_.CloseFile();
 }
 
 Gemma::~Gemma() = default;
 
-void Gemma::Save(const Path& weights_path, hwy::ThreadPool& pool) const {
+void Gemma::Save(const Path& weights_path, NestedPools& pools) const {
   BlobWriter writer;
   const std::vector<uint32_t> serialized_mat_ptrs =
       weights_.AddTensorDataToWriter(writer);
   WriteSingleFile(model_.Config(), model_.Tokenizer(), serialized_mat_ptrs,
-                  writer, env_.ctx.pools.Pool(), weights_path);
+                  writer, pools.Pool(), weights_path);
 }
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,
                      const PromptTokens& prompt, size_t pos, size_t prefix_end,
-                     KVCache& kv_cache, TimingInfo& timing_info) const {
-  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
+                     KVCache& kv_cache, MatMulEnv& env,
+                     TimingInfo& timing_info) const {
+  env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   HWY_DYNAMIC_DISPATCH(GenerateSingleT)(prompt, pos, prefix_end,
                                         model_.Config(), runtime_config,
-                                        weights_, kv_cache, env_, timing_info);
+                                        weights_, kv_cache, env, timing_info);
 
-  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
+  env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
-                          AllQueries& all_queries,
+                          AllQueries& all_queries, MatMulEnv& env,
                           TimingInfo& timing_info) const {
-  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
+  env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   HWY_DYNAMIC_DISPATCH(GenerateBatchT)(model_.Config(), runtime_config,
-                                       weights_, all_queries, env_,
-                                       timing_info);
+                                       weights_, all_queries, env, timing_info);
 
-  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
+  env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 size_t seq_len, const Image& image,
-                                ImageTokens& image_tokens) const {
-  env_.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
+                                ImageTokens& image_tokens,
+                                MatMulEnv& env) const {
+  env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(model_.Config(), runtime_config,
                                              seq_len, weights_, image,
-                                             image_tokens, env_);
+                                             image_tokens, env);
 
-  env_.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
+  env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
 
 }  // namespace gcpp

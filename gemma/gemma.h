@@ -229,16 +229,16 @@ struct TimingInfo {
 MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args,
                         const InferenceArgs& inference_args);
 
+// After construction, all methods are const and thread-compatible if using
+// separate MatMulEnv for each thread.
 class Gemma {
  public:
   // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
-  // `env` must remain valid for the lifetime of this Gemma.
+  // `pools` are used to parallelize loading.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
-        MatMulEnv& env);
-
+        NestedPools& pools);
   ~Gemma();
 
-  MatMulEnv& Env() const { return env_; }
   // TODO: rename to Config()
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
@@ -246,29 +246,31 @@ class Gemma {
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
   const InferenceArgs& Inference() const { return inference_; }
 
-  void Save(const Path& weights_path, hwy::ThreadPool& pool) const;
+  void Save(const Path& weights_path, NestedPools& pools) const;
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
-                size_t pos, KVCache& kv_cache, TimingInfo& timing_info) const {
-    Generate(runtime_config, prompt, pos, /*prefix_end=*/0, kv_cache,
+                size_t pos, KVCache& kv_cache, MatMulEnv& env,
+                TimingInfo& timing_info) const {
+    Generate(runtime_config, prompt, pos, /*prefix_end=*/0, kv_cache, env,
              timing_info);
   }
   // For prefix-LM style attention, we can pass the end of the prefix.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
                 size_t pos, size_t prefix_end, KVCache& kv_cache,
-                TimingInfo& timing_info) const;
+                MatMulEnv& env, TimingInfo& timing_info) const;
 
   void GenerateBatch(const RuntimeConfig& runtime_config,
-                     AllQueries& all_queries, TimingInfo& timing_info) const;
+                     AllQueries& all_queries, MatMulEnv& env,
+                     TimingInfo& timing_info) const;
 
   // Generates the image tokens by running the image encoder ViT.
   void GenerateImageTokens(const RuntimeConfig& runtime_config, size_t seq_len,
-                           const Image& image, ImageTokens& image_tokens) const;
+                           const Image& image, ImageTokens& image_tokens,
+                           MatMulEnv& env) const;
 
  private:
-  MatMulEnv& env_;
   BlobReader reader_;
   ModelStore model_;
   std::vector<MatOwner> mat_owners_;

@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
 
   // Instantiate model and KV Cache
   gcpp::MatMulEnv env(MakeMatMulEnv(threading, inference));
-  gcpp::Gemma gemma(loader, inference, env);
+  gcpp::Gemma gemma(loader, inference, env.ctx.pools);
   gcpp::KVCache kv_cache(gemma.GetModelConfig(), inference);
   size_t generated = 0;
 
@@ -93,5 +93,5 @@ int main(int argc, char** argv) {
             return !reject_tokens.contains(token);
           },
   };
-  gemma.Generate(runtime_config, tokens, 0, kv_cache, timing_info);
+  gemma.Generate(runtime_config, tokens, 0, kv_cache, env, timing_info);
 }

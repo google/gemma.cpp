@@ -75,8 +75,9 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
     KVCache kv_cache(gemma.GetModelConfig(), gemma.Inference());
-    float entropy = ComputeCrossEntropy(
-        *env.GetGemma(), num_tokens, prompt_slice, kv_cache, env.Verbosity());
+    float entropy =
+        ComputeCrossEntropy(*env.GetGemma(), num_tokens, prompt_slice, kv_cache,
+                            env.MutableEnv(), env.Verbosity());
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice = env.StringFromTokens(prompt_slice);

@@ -92,7 +92,7 @@ std::string GetPrompt(const InferenceArgs& inference) {
 
 // The main Read-Eval-Print Loop.
 void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
-               const Gemma& gemma, KVCache& kv_cache) {
+               const Gemma& gemma, KVCache& kv_cache, MatMulEnv& env) {
   PROFILER_ZONE("Gen.misc");
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
@@ -111,7 +111,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                              config.model_dim)
                  : Extents2D(0, 0),
       MatPadding::kOdd);
-  image_tokens.AllocateAndAttachRowPtrs(gemma.Env().row_ptrs);
+  image_tokens.AllocateAndAttachRowPtrs(env.row_ptrs);
   if (have_image) {
     HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA ||
                config.wrapping == PromptWrapping::GEMMA_VLM);
@@ -123,7 +123,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
                                     .use_spinning = threading.spin};
     double image_tokens_start = hwy::platform::Now();
     gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,
-                              image_tokens);
+                              image_tokens, env);
     if (inference.verbosity >= 1) {
       double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
       fprintf(stderr,
@@ -224,7 +224,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     if (inference.verbosity >= 1) {
       std::cerr << "\n[ Reading prompt ] " << std::flush;
     }
-    gemma.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache,
+    gemma.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache, env,
                    timing_info);
     std::cout << "\n\n";
 
@@ -256,7 +256,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
 
   MatMulEnv env(MakeMatMulEnv(threading, inference));
   if (inference.verbosity >= 2) env.print_best = true;
-  const Gemma gemma(loader, inference, env);
+  const Gemma gemma(loader, inference, env.ctx.pools);
   KVCache kv_cache(gemma.GetModelConfig(), inference);
 
   if (inference.verbosity >= 1) {
@@ -289,7 +289,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     }
   }
 
-  ReplGemma(threading, inference, gemma, kv_cache);
+  ReplGemma(threading, inference, gemma, kv_cache, env);
 }
 
 }  // namespace gcpp

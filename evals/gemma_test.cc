@@ -127,7 +127,7 @@ TEST_F(GemmaTest, Multiturn) {
                       config.wrapping, abs_pos, mutable_prompt);
 
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
-                  timing_info);
+                  s_env->MutableEnv(), timing_info);
   // Note: we do not rewind any <end_of_turn> tokens here. If the model
   // produced one and WrapAndTokenize() inserts another one, it will just be
   // duplicated.
@@ -139,7 +139,7 @@ TEST_F(GemmaTest, Multiturn) {
   // access to the previous turn by asking to reproduce.
   response.clear();
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
-                  timing_info);
+                  s_env->MutableEnv(), timing_info);
   fprintf(stderr, "decoded: '%s'\n", response.c_str());
   bool remembered_turquoise =
       response.find("turquoise") != std::string::npos;              // NOLINT

@@ -36,7 +36,7 @@ class SimplifiedGemma {
                   const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
                   const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
       : env_(MakeMatMulEnv(threading, inference)),
-        gemma_(loader, inference, env_),
+        gemma_(loader, inference, env_.ctx.pools),
         kv_cache_(gemma_.GetModelConfig(), inference) {
     // Initialize random number generator
     std::random_device rd;
@@ -83,7 +83,7 @@ class SimplifiedGemma {
               return !reject_tokens.contains(token);
             },
     };
-    gemma_.Generate(runtime_config, tokens, 0, kv_cache_, timing_info);
+    gemma_.Generate(runtime_config, tokens, 0, kv_cache_, env_, timing_info);
   }
   ~SimplifiedGemma() = default;
 

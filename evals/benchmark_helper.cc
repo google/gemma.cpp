@@ -32,6 +32,7 @@
 #include "util/threading_context.h"
 #include "hwy/highway.h"
 #include "hwy/per_target.h"  // DispatchedTarget
+#include "hwy/profiler.h"    // PROFILER_ENABLED
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -50,7 +51,7 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
     : env_(MakeMatMulEnv(threading, inference)),
-      gemma_(loader, inference, env_) {
+      gemma_(loader, inference, env_.ctx.pools) {
   const ModelConfig& config = gemma_.GetModelConfig();
   // Only allocate one for starters because GenerateBatch might not be called.
   kv_caches_.push_back(KVCache(config, inference));
@@ -94,7 +95,7 @@ QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
   }
   gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
   runtime_config_.batch_stream_token = batch_stream_token;
-  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
+  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
                   timing_info);
   return result;
 }
@@ -104,7 +105,7 @@ void GemmaEnv::QueryModel(
   gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
   const StreamFunc previous_stream_token = runtime_config_.stream_token;
   runtime_config_.stream_token = stream_token;
-  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0],
+  gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
                   timing_info);
   runtime_config_.stream_token = previous_stream_token;
 }
@@ -146,7 +147,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
 
   gcpp::AllQueries all_queries(queries_prompt, kv_caches, prefix_end);
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
-  gemma_.GenerateBatch(runtime_config_, all_queries, timing_info);
+  gemma_.GenerateBatch(runtime_config_, all_queries, env_, timing_info);
   return res;
 }
 
@@ -176,7 +177,7 @@ float GemmaEnv::CrossEntropy(const std::string& input) {
   std::vector<int> prompt = Tokenize(input);
   prompt.insert(prompt.begin(), BOS_ID);
   return ComputeCrossEntropy(*GetGemma(), /*max_generated_tokens=*/3072, prompt,
-                             MutableKVCache(),
+                             MutableKVCache(), env_,
                              /*verbosity=*/0) /
          static_cast<int>(input.size());
 }
@@ -247,13 +248,13 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
             "CPU                           : %s, bind %d\n"
             "CPU topology                  : %s, %s, %s\n"
             "Instruction set               : %s (%zu bits)\n"
-            "Compiled config               : %s\n"
-            "Memory MiB                    : %4zu, %4zu free\n",
+            "Compiled config               : %s, profiler %d\n"
+            "Memory MiB                    : %4zu\n",
             dt, cpu100, static_cast<int>(threading.bind),
             ctx.topology.TopologyString(), ctx.pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
-            ctx.allocator.VectorBytes() * 8, CompiledConfig(),
-            ctx.allocator.TotalMiB(), ctx.allocator.FreeMiB());
+            ctx.allocator.VectorBytes() * 8, CompiledConfig(), PROFILER_ENABLED,
+            ctx.allocator.TotalMiB());
   }
 }
 

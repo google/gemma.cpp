@@ -103,7 +103,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
       threading_args(threading_args),
       matmul_env(MakeMatMulEnv(threading_args, inference_args)),
       active_conversation_name("default"),
-      model(loader, inference_args, matmul_env) {
+      model(loader, inference_args, matmul_env.ctx.pools) {
   std::stringstream ss;
 
   LogDebug("Creating initial ConversationData");
@@ -207,7 +207,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     // Pass the populated image object to GenerateImageTokens
     model.GenerateImageTokens(runtime_config,
                               active_conversation->kv_cache->SeqLen(), image,
-                              image_tokens);
+                              image_tokens, matmul_env);
     double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
 
     ss.str("");
@@ -244,7 +244,8 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
 
   // Pass the KVCache object by reference from the active conversation
   model.Generate(runtime_config, prompt_span, active_conversation->abs_pos,
-                 prefix_end, *(active_conversation->kv_cache), timing_info);
+                 prefix_end, *active_conversation->kv_cache, matmul_env,
+                 timing_info);
 
   // prepare for next turn
   if (!inference_args.multiturn ||

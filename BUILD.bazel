@@ -551,6 +551,7 @@ cc_library(
         "//compression:compress",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
+        "@highway//:profiler",
     ],
 )
 

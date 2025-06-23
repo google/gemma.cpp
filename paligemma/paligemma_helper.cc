@@ -30,7 +30,7 @@ void PaliGemmaHelper::InitVit(const std::string& path) {
   RuntimeConfig runtime_config = {.gen = &env_->MutableGen(),
                                   .verbosity = 0};
   gemma.GenerateImageTokens(runtime_config, env_->MutableKVCache().SeqLen(),
-                            image, *image_tokens_);
+                            image, *image_tokens_, env_->MutableEnv());
 }
 
 std::string PaliGemmaHelper::GemmaReply(const std::string& prompt_text) const {
@@ -61,7 +61,7 @@ std::string PaliGemmaHelper::GemmaReply(const std::string& prompt_text) const {
     const size_t prefix_end = tokens.size();
     TimingInfo timing_info = {.verbosity = 0};
     model.Generate(runtime_config, tokens, /*pos=*/0, prefix_end,
-                   env_->MutableKVCache(), timing_info);
+                   env_->MutableKVCache(), env_->MutableEnv(), timing_info);
     return response;
 }
 
