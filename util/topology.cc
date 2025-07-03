@@ -59,8 +59,11 @@ static LPS EnabledLPs(const BoundedSlice& lp_slice) {
     });
   } else {
     const size_t num_lps = hwy::TotalLogicalProcessors();
-    HWY_WARN("unknown OS affinity, max %zu LPs and slice %zu.", num_lps,
-             lp_slice.Num(num_lps));
+    // Do not warn on Apple, where affinity is not supported.
+    if (!HWY_OS_APPLE) {
+      HWY_WARN("unknown OS affinity, max %zu LPs and slice %zu.", num_lps,
+               lp_slice.Num(num_lps));
+    }
     for (size_t lp = 0; lp < num_lps; ++lp) {
       if (lp_slice.Contains(num_lps, lp)) {
         enabled_lps.Set(lp);

@@ -77,9 +77,12 @@ class Pinning {
 
       if (HWY_LIKELY(want_pin_)) {
         if (HWY_UNLIKELY(!hwy::PinThreadToLogicalProcessor(lps[task]))) {
-          fprintf(
-              stderr, "Pinning failed for task %d of %zu to %zu (size %zu)\n",
-              static_cast<int>(task), pool.NumWorkers(), lps[task], lps.size());
+          // Apple does not support pinning, hence do not warn there.
+          if (!HWY_OS_APPLE) {
+            HWY_WARN("Pinning failed for task %d of %zu to %zu (size %zu)\n",
+                     static_cast<int>(task), pool.NumWorkers(), lps[task],
+                     lps.size());
+          }
           (void)any_error_.test_and_set();
         }
       }
