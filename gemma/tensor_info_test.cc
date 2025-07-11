@@ -21,7 +21,7 @@ TEST(TensorInfoRegistryTest, Find) {
             config.Specifier().c_str());
     const TensorInfoRegistry tensors(config);
     // Each tensor in the model should be known/found.
-    ModelWeightsPtrs weights(config);
+    WeightsPtrs weights(config);
     weights.ForEachTensor(nullptr, nullptr, [&tensors](const TensorArgs& t) {
       const TensorInfo* info = tensors.Find(t.mat.Name());
       HWY_ASSERT_M(info, t.mat.Name());

@@ -137,7 +137,7 @@ static float EmbeddingScaling(size_t model_dim) {
 // Returns new image_token_position.
 static HWY_NOINLINE size_t
 EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
-             const ModelConfig& model_config, const ModelWeightsPtrs& weights,
+             const ModelConfig& model_config, const WeightsPtrs& weights,
              MatStorageT<float>& x, const ImageTokens* image_tokens = nullptr,
              size_t image_token_position = 0) {
   // Image tokens just need to be copied.
@@ -187,7 +187,7 @@ EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
 // prefix-LM mode (end > 0), which must see all tokens in one batch.
 static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
                                        const RuntimeConfig& runtime_config,
-                                       const ModelWeightsPtrs& weights,
+                                       const WeightsPtrs& weights,
                                        Activations& activations, QBatch& qbatch,
                                        MatMulEnv& env,
                                        hwy::BitSet4096<>& non_eos) {
@@ -291,7 +291,7 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
 // token-batched `PrefillTBatch`.
 static HWY_NOINLINE void Transformer(const ModelConfig& config,
                                      const RuntimeConfig& runtime_config,
-                                     const ModelWeightsPtrs& weights,
+                                     const WeightsPtrs& weights,
                                      Activations& activations, QBatch& qbatch,
                                      MatMulEnv& env) {
   if (HWY_UNLIKELY(runtime_config.layers_output)) {
@@ -324,7 +324,7 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
 static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
                                        const ModelConfig& config,
                                        const RuntimeConfig& runtime_config,
-                                       const ModelWeightsPtrs& weights,
+                                       const WeightsPtrs& weights,
                                        Activations& activations, QBatch& qbatch,
                                        MatMulEnv& env,
                                        hwy::BitSet4096<>& non_eos) {
@@ -391,7 +391,7 @@ static void StreamAndUpdateEOS(const size_t qi, int token, const float prob,
 // streams the token.
 static void DecodeStepT(const ModelConfig& config,
                         const RuntimeConfig& runtime_config,
-                        const ModelWeightsPtrs& weights,
+                        const WeightsPtrs& weights,
                         const SampleFunc& sample_token,
                         Activations& activations, QBatch& qbatch,
                         MatMulEnv& env, hwy::BitSet4096<>& non_eos,
@@ -451,7 +451,7 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config) {
 // Decode: generates one continuation token for each query in `qbatch`.
 static void GenerateT(const ModelConfig& config,
                       const RuntimeConfig& runtime_config,
-                      const ModelWeightsPtrs& weights, Activations& activations,
+                      const WeightsPtrs& weights, Activations& activations,
                       QBatch& qbatch, MatMulEnv& env, TimingInfo& timing_info) {
   // Griffin assumes that the recurrent block cache is zero-initialized.
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
@@ -534,7 +534,7 @@ static void GenerateT(const ModelConfig& config,
 void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      const ModelConfig& config,
                      const RuntimeConfig& runtime_config,
-                     const ModelWeightsPtrs& weights, KVCache& kv_cache,
+                     const WeightsPtrs& weights, KVCache& kv_cache,
                      MatMulEnv& env, TimingInfo& timing_info) {
   Activations activations(config, runtime_config.prefill_tbatch_size,
                           kv_cache.SeqLen(), env.row_ptrs);
@@ -550,7 +550,7 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
 // queries, and calls `GenerateT` on each batch.
 void GenerateBatchT(const ModelConfig& config,
                     const RuntimeConfig& runtime_config,
-                    const ModelWeightsPtrs& weights, AllQueries& all_queries,
+                    const WeightsPtrs& weights, AllQueries& all_queries,
                     MatMulEnv& env, TimingInfo& timing_info) {
   const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
                                         runtime_config.prefill_tbatch_size);
@@ -568,7 +568,7 @@ void GenerateBatchT(const ModelConfig& config,
 
 void GenerateImageTokensT(const ModelConfig& config,
                           const RuntimeConfig& runtime_config, size_t seq_len,
-                          const ModelWeightsPtrs& weights, const Image& image,
+                          const WeightsPtrs& weights, const Image& image,
                           ImageTokens& image_tokens, MatMulEnv& env) {
   if (config.vit_config.layer_configs.empty()) {
     HWY_ABORT("Model does not support generating image tokens.");

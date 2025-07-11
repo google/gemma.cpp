@@ -278,7 +278,7 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
 // kernel. The result is stored in activations.x.
 static HWY_NOINLINE void EmbedImagePatches(const Image& image,
                                            const ModelConfig& model_config,
-                                           const ModelWeightsPtrs& weights,
+                                           const WeightsPtrs& weights,
                                            Activations& activations,
                                            MatMulEnv& env) {
   const size_t model_dim = model_config.vit_config.model_dim;
@@ -308,8 +308,7 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
 }
 
 // Prefills the image tokens with the ViT encoder.
-void PrefillVit(const ModelConfig& model_config,
-                const ModelWeightsPtrs& weights,
+void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights,
                 const RuntimeConfig& runtime_config, const Image& image,
                 ImageTokens& image_tokens, Activations& activations,
                 MatMulEnv& env) {

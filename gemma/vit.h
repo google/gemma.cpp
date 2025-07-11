@@ -26,17 +26,16 @@
 namespace gcpp {
 
 // Passed to HWY_VISIT_TARGETS; declares for one target.
-#define GEMMA_DECL_VIT(TARGET, NAMESPACE)                                  \
-  namespace NAMESPACE {                                                    \
-  void FFWVit(const LayerWeightsPtrs& layer, Activations& activations,     \
-              MatMulEnv& env);                                             \
-                                                                           \
-  void PrefillVit(const ModelConfig& model_config,                         \
-                  const ModelWeightsPtrs& weights,                         \
-                  const RuntimeConfig& runtime_config, const Image& image, \
-                  ImageTokens& image_tokens, Activations& activations,     \
-                  MatMulEnv& env);                                         \
-  /* NOLINTNEXTLINE(google-readability-namespace-comments) */              \
+#define GEMMA_DECL_VIT(TARGET, NAMESPACE)                                      \
+  namespace NAMESPACE {                                                        \
+  void FFWVit(const LayerWeightsPtrs& layer, Activations& activations,         \
+              MatMulEnv& env);                                                 \
+                                                                               \
+  void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights, \
+                  const RuntimeConfig& runtime_config, const Image& image,     \
+                  ImageTokens& image_tokens, Activations& activations,         \
+                  MatMulEnv& env);                                             \
+  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 
 // Function declarations for each SIMD target. Allows direct call from the

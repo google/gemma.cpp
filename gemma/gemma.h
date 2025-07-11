@@ -242,7 +242,7 @@ class Gemma {
   // TODO: rename to Config()
   const ModelConfig& GetModelConfig() const { return model_.Config(); }
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
-  const ModelWeightsPtrs& Weights() const { return weights_; }
+  const WeightsPtrs& Weights() const { return weights_; }
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
   const InferenceArgs& Inference() const { return inference_; }
 
@@ -274,7 +274,7 @@ class Gemma {
   BlobReader reader_;
   ModelStore model_;
   std::vector<MatOwner> mat_owners_;
-  ModelWeightsPtrs weights_;
+  WeightsPtrs weights_;
   GemmaChatTemplate chat_template_;
   InferenceArgs inference_;
 };

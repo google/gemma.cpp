@@ -203,7 +203,7 @@ static void HWY_MAYBE_UNUSED SplitW1NUQ(const LayerConfig& layer_config) {
 }
 
 // Zero-initializes only the allocated tensors in `*this`.
-void ModelWeightsPtrs::ZeroInit() {
+void WeightsPtrs::ZeroInit() {
   ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
     if (!t.mat.HasPtr()) return;
     gcpp::ZeroInit(t.mat);
@@ -211,8 +211,8 @@ void ModelWeightsPtrs::ZeroInit() {
 }
 
 // Copies only the allocated tensors in `*this` from tensors in `other`.
-void ModelWeightsPtrs::CopyFrom(const ModelWeightsPtrs& other) {
-  ForEachTensor(const_cast<ModelWeightsPtrs*>(&other), nullptr,
+void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
+  ForEachTensor(const_cast<WeightsPtrs*>(&other), nullptr,
                 [](const TensorArgs& t) {
                   if (!t.mat.HasPtr()) return;
                   HWY_ASSERT(t.other_mat1 && t.other_mat1->HasPtr());
@@ -222,8 +222,8 @@ void ModelWeightsPtrs::CopyFrom(const ModelWeightsPtrs& other) {
 
 // For reshaping file tensors to the shape expected by the code. This would
 // ideally already happen in the importer. Called by WeightsOwner::Fixup.
-void ModelWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
-                             hwy::ThreadPool& pool) {
+void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+                        hwy::ThreadPool& pool) {
   pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
     GetLayer(layer)->Fixup(mat_owners);
   });
@@ -233,11 +233,11 @@ void ModelWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
   });
 }
 
-std::vector<uint32_t> ModelWeightsPtrs::AddTensorDataToWriter(
+std::vector<uint32_t> WeightsPtrs::AddTensorDataToWriter(
     BlobWriter& writer) const {
   std::vector<uint32_t> serialized_mat_ptrs;
   // ForEachTensor is non-const but the lambda does not modify *this.
-  const_cast<ModelWeightsPtrs*>(this)->ForEachTensor(
+  const_cast<WeightsPtrs*>(this)->ForEachTensor(
       nullptr, nullptr, [&](const TensorArgs& t) {
         if (t.flags & TensorArgs::kMaybeRead && !t.mat.HasPtr()) return;
         HWY_ASSERT_M(t.mat.HasPtr(), t.mat.Name());
@@ -506,12 +506,11 @@ static void MapOrReadAll(std::vector<TensorToRead>& tensors, BlobReader& reader,
   ReadBatches(reader, batches, pool);
 }
 
-void ModelWeightsPtrs::ReadFromBlobs(const ModelStore& model,
-                                     BlobReader& reader,
-                                     const LoaderArgs& loader,
-                                     const InferenceArgs& inference,
-                                     std::vector<MatOwner>& mat_owners,
-                                     hwy::ThreadPool& pool) {
+void WeightsPtrs::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+                                const LoaderArgs& loader,
+                                const InferenceArgs& inference,
+                                std::vector<MatOwner>& mat_owners,
+                                hwy::ThreadPool& pool) {
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
 

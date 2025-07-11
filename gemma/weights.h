@@ -314,10 +314,8 @@ struct LayerWeightsPtrs {
 
 // Holds layer-independent weight metadata and pointers plus per-layer
 // `LayerWeightsPtrs`. The tensor data is owned by `WeightsOwner`.
-// TODO: move `gemma-inl.h` toward dispatch at each usage.
-// TODO: rename to WeightsPtrs.
-struct ModelWeightsPtrs {
-  explicit ModelWeightsPtrs(const ModelConfig& config)
+struct WeightsPtrs {
+  explicit WeightsPtrs(const ModelConfig& config)
       : config_(config),
         tensors_(config_),
         finder_("", tensors_),  // no suffix because these are per-model.
@@ -343,7 +341,7 @@ struct ModelWeightsPtrs {
     }
   }
 
-  ~ModelWeightsPtrs() = default;
+  ~WeightsPtrs() = default;
 
   const ModelConfig& config_;
   // Passed to finder_, hence must be initialized first.
@@ -383,8 +381,7 @@ struct ModelWeightsPtrs {
   // used to copy from another set of weights. Public because called by tests
   // and `WeightsOwner`.
   template <class Func>
-  void ForEachTensor(ModelWeightsPtrs* other1, ModelWeightsPtrs* other2,
-                     Func func) {
+  void ForEachTensor(WeightsPtrs* other1, WeightsPtrs* other2, Func func) {
     LayerWeightsPtrs* other_layer1 = nullptr;
     LayerWeightsPtrs* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
@@ -423,7 +420,7 @@ struct ModelWeightsPtrs {
   // Zero-initializes only the allocated tensors in `*this`.
   void ZeroInit();
   // Copies only the allocated tensors in `*this` from tensors in `other`.
-  void CopyFrom(const ModelWeightsPtrs& other);
+  void CopyFrom(const WeightsPtrs& other);
 
   // Reads tensor data from `BlobStore` or aborts on error. `map` is a user
   // override for whether to map blobs or read them.
@@ -438,7 +435,7 @@ struct ModelWeightsPtrs {
   // For reshaping file tensors to the shape expected by the code. This would
   // ideally already happen in the importer. Called by ReadFromBlobs.
   void Fixup(std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
-};  // `ModelWeightsPtrs`
+};  // `WeightsPtrs`
 #undef TENSOR_ARGS
 
 }  // namespace gcpp
