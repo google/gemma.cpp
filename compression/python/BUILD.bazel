@@ -1,4 +1,5 @@
 # [internal] load strict.bzl
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(
