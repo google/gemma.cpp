@@ -1298,7 +1298,7 @@ struct MMImpl {
 // `K = B.Cols()`, which must match `A.Cols()`, is the number
 // of rows in the original B. `N = C.Cols()` must be a multiple of 4. There
 // are no other restrictions on shape, though performance is better when `M % 4
-// == 0` or `M <= 4`.
+// == 0` or `M <= 4`, and when A is padded (`!A.IsPacked()`).
 //
 // NOTE: if A and/or B are BF16 and padded, the interval `[Cols(),
 // hwy::RoundUpTo(Cols(), hn::Lanes(dbf))` must be zero-initialized to match

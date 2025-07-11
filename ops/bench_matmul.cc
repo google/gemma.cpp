@@ -89,12 +89,14 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
   MatStorageT<float> add_storage("add", Extents2D(), MatPadding::kPacked);
   if (add) {
-    add_storage = GenerateMat<float>(Extents2D(1, N), pool);
+    add_storage =
+        GenerateMat<float>(Extents2D(1, N), MatPadding::kPacked, pool);
     add_storage.SetScale(1.0f);
   }
 
-  MatStorageT<TA> a = GenerateMat<TA>(A_extents, pool);
-  MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
+  MatStorageT<TA> a = GenerateMat<TA>(A_extents, MatPadding::kOdd, pool);
+  MatStorageT<TB> b_trans =
+      GenerateTransposedMat<TB>(B_extents, MatPadding::kOdd, pool);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 

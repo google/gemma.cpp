@@ -219,14 +219,16 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStorageT<TA> A(GenerateMat<TA>(A_extents, pool));
-  MatStorageT<TB> BT(GenerateTransposedMat<TB>(B_extents, pool));
+  MatStorageT<TA> A(GenerateMat<TA>(A_extents, MatPadding::kOdd, pool));
+  // Must be packed because we call Span() on it.
+  MatStorageT<TB> BT(
+      GenerateTransposedMat<TB>(B_extents, MatPadding::kPacked, pool));
   MatStorageT<TC> C_slow("C_slow", C_extents, MatPadding::kOdd);
   MatStorageT<TC> C("C", C_extents, MatPadding::kOdd);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
-      add ? GenerateMat<float>(Extents2D(1, cols_bc), pool)
+      add ? GenerateMat<float>(Extents2D(1, cols_bc), MatPadding::kPacked, pool)
           : MatStorageT<float>("add", Extents2D(), MatPadding::kPacked);
   add_storage.SetScale(1.0f);
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;

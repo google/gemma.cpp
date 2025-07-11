@@ -69,45 +69,51 @@ void ForeachPackedAndRawType() {
 
 // Generates inputs: deterministic, within max SfpStream range.
 template <typename MatT>
-MatStorageT<MatT> GenerateMat(const Extents2D& extents, hwy::ThreadPool& pool) {
+MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
+                              hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
+  ws.tls.resize(pool.NumWorkers());
   MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
-  MatStorageT<MatT> compressed("mat", extents, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("mat", extents, padding);
   const float scale = SfpStream::kMax / extents.Area();
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
+  pool.Run(0, extents.rows, [&](const size_t r, size_t thread) {
     float* HWY_RESTRICT row = raw.Row(r);
     for (size_t c = 0; c < extents.cols; c++) {
       float f = static_cast<float>(r * extents.cols + c) * scale;
       if ((r + c) & 1) f = -f;  // Also generate some negative values.
       row[c] = f;
     }
+    Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
+             MakeSpan(compressed.Row(r), compressed.Cols()),
+             /*packed_ofs=*/0);
   });
 
-  Compress(raw.PackedScale1(), raw.Extents().Area(), ws, compressed.Span(),
-           /*packed_ofs=*/0, pool);
   compressed.SetScale(0.6f);  // Arbitrary value, different from 1.
   return compressed;
 }
 
-// `extents` describes the transposed matrix.
+// Same, but `extents` describes the transposed matrix.
 template <typename MatT>
 MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
+                                        MatPadding padding,
                                         hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
+  ws.tls.resize(pool.NumWorkers());
   MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
-  MatStorageT<MatT> compressed("trans", extents, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("trans", extents, padding);
   const float scale = SfpStream::kMax / extents.Area();
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
+  pool.Run(0, extents.rows, [&](const size_t r, size_t thread) {
     float* HWY_RESTRICT row = raw.Row(r);
     for (size_t c = 0; c < extents.cols; c++) {
       float f = static_cast<float>(c * extents.rows + r) * scale;
       if ((r + c) & 1) f = -f;  // Also generate some negative values.
       row[c] = f;
     }
+    Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
+             MakeSpan(compressed.Row(r), compressed.Cols()),
+             /*packed_ofs=*/0);
   });
 
-  Compress(raw.PackedScale1(), raw.Extents().Area(), ws, compressed.Span(),
-           /*packed_ofs=*/0, pool);
   // Arbitrary value, different from 1, must match `GenerateMat`.
   compressed.SetScale(0.6f);
   return compressed;
