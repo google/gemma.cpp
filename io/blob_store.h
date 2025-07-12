@@ -54,6 +54,8 @@ class BlobReader {
   // Aborts on error.
   explicit BlobReader(const Path& blob_path);
 
+  const Path& blob_path() const { return blob_path_; }
+
   // Non-const version required for File::Map().
   File& file() { return *file_; }
   const File& file() const { return *file_; }
@@ -101,6 +103,7 @@ class BlobReader {
   }
 
  private:
+  Path blob_path_;
   std::unique_ptr<File> file_;
   const uint64_t file_bytes_;
 

@@ -297,7 +297,9 @@ class BlobStore {
 };  // BlobStore
 
 BlobReader::BlobReader(const Path& blob_path)
-    : file_(OpenFileOrAbort(blob_path, "r")), file_bytes_(file_->FileSize()) {
+    : blob_path_(blob_path),
+      file_(OpenFileOrAbort(blob_path, "r")),
+      file_bytes_(file_->FileSize()) {
   if (file_bytes_ == 0) HWY_ABORT("Zero-sized file %s", blob_path.path.c_str());
 
   BlobStore bs(*file_);

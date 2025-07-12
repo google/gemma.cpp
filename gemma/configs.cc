@@ -23,6 +23,7 @@
 
 #include "compression/types.h"  // Type
 #include "io/fields.h"           // IFields
+#include "io/io.h"               // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -708,7 +709,7 @@ bool ModelConfig::OverwriteWithCanonical() {
   return found;
 }
 
-Model DeduceModel(size_t layers, int layer_types) {
+Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
     case 2:
       return Model::GEMMA_TINY;
@@ -740,8 +741,8 @@ Model DeduceModel(size_t layers, int layer_types) {
     return Model::PALIGEMMA2_772M_224;
     */
     default:
-      HWY_WARN("Failed to deduce model type from layer count %zu types %x.",
-               layers, layer_types);
+      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+               blob_path.path.c_str(), layers, layer_types);
       return Model::UNKNOWN;
   }
 }

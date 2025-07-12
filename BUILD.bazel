@@ -132,6 +132,7 @@ cc_library(
     deps = [
         ":basics",
         "//compression:types",
+        "//io",
         "//io:fields",
         "@highway//:hwy",  # base.h
     ],

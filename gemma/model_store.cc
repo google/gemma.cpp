@@ -219,7 +219,8 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
   // Always deduce so we can verify it against the config we read.
   const size_t layers = DeduceNumLayers(reader.Keys());
   const int layer_types = DeduceLayerTypes(reader);
-  const Model deduced_model = DeduceModel(layers, layer_types);
+  const Model deduced_model =
+      DeduceModel(reader.blob_path(), layers, layer_types);
 
   ModelConfig config;
   // Check first to prevent `CallWithSpan` from printing a warning.

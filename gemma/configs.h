@@ -27,6 +27,7 @@
 
 #include "compression/types.h"  // Type
 #include "io/fields.h"           // IFieldsVisitor
+#include "io/io.h"               // Path
 #include "util/basics.h"
 
 namespace gcpp {
@@ -482,7 +483,7 @@ enum DeducedLayerTypes {
 };
 
 // layer_types is one or more of `DeducedLayerTypes`.
-Model DeduceModel(size_t layers, int layer_types);
+Model DeduceModel(const Path& blob_path, size_t layers, int layer_types);
 
 }  // namespace gcpp
 
