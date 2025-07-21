@@ -25,6 +25,8 @@
 
 namespace gcpp {
 
+using KV_t = float;
+
 struct KVCache {
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args);
 
@@ -42,7 +44,7 @@ struct KVCache {
   MatStorageT<float> conv1d_cache;
   MatStorageT<float> rglru_cache;  // [griffin_layers, model_dim]
 
-  MatStorageT<BF16> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
+  MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
 
  private:
   // For use by other ctor and Copy()
