@@ -43,8 +43,10 @@ namespace gcpp {
 
 // ConversationData constructor implementation
 ConversationData::ConversationData(const ModelConfig& model_config,
-                                   const InferenceArgs& inference_args)
-    : kv_cache(std::make_unique<KVCache>(model_config, inference_args)),
+                                   const InferenceArgs& inference_args,
+                                   const Allocator& allocator)
+    : kv_cache(
+          std::make_unique<KVCache>(model_config, inference_args, allocator)),
       abs_pos(0) {}
 
 // ConversationData copy constructor implementation
@@ -101,15 +103,16 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
                            int max_generated_tokens)
     : inference_args(inference_args),
       threading_args(threading_args),
-      matmul_env(MakeMatMulEnv(threading_args, inference_args)),
+      ctx(UpdateArgs(threading_args, inference_args)),
+      matmul_env(ctx),
       active_conversation_name("default"),
-      model(loader, inference_args, matmul_env.ctx.pools) {
+      model(loader, inference_args, matmul_env.ctx) {
   std::stringstream ss;
 
   LogDebug("Creating initial ConversationData");
   // Create the initial ConversationData object using make_shared
   active_conversation = std::make_shared<ConversationData>(
-      model.GetModelConfig(), inference_args);
+      model.GetModelConfig(), inference_args, ctx.allocator);
 
   LogDebug(
       "Storing initial ConversationData in conversation_cache[\"default\"]");
@@ -188,7 +191,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
           ? Extents2D(model_config.vit_config.seq_len / (pool_dim * pool_dim),
                       model_config.model_dim)
           : Extents2D(0, 0),
-      MatPadding::kOdd);
+      ctx.allocator, MatPadding::kOdd);
   if (image_data != nullptr) {
     HWY_ASSERT(model_config.wrapping == PromptWrapping::PALIGEMMA ||
                model_config.wrapping == PromptWrapping::GEMMA_VLM);

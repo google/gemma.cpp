@@ -225,18 +225,15 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
-// Returns the `MatMulEnv` after calling `SetArgs`.
-MatMulEnv MakeMatMulEnv(const ThreadingArgs& threading_args,
-                        const InferenceArgs& inference_args);
-
 // After construction, all methods are const and thread-compatible if using
-// separate MatMulEnv for each thread.
+// separate ThreadingContext for each thread.
 class Gemma {
  public:
   // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
-  // `pools` are used to parallelize loading.
+  // `ctx` is only used to read tensors, but it is typically also referenced
+  // by the `MatMulEnv` passed to the Generate* methods.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
-        NestedPools& pools);
+        ThreadingContext& ctx);
   ~Gemma();
 
   // TODO: rename to Config()

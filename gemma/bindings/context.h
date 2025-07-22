@@ -41,7 +41,8 @@ namespace gcpp {
 // Struct to hold data for a single conversation thread
 struct ConversationData {
   ConversationData(const ModelConfig& model_config,
-                   const InferenceArgs& inference_args);
+                   const InferenceArgs& inference_args,
+                   const Allocator& allocator);
   ConversationData(const ConversationData& other);
 
   std::unique_ptr<KVCache> kv_cache;
@@ -178,8 +179,8 @@ class GemmaContext {
       // rewind to initial state.
       active_conversation->abs_pos = 0;
       // Replace the cache within the current ConversationData object
-      active_conversation->kv_cache =
-          std::make_unique<KVCache>(model.GetModelConfig(), inference_args);
+      active_conversation->kv_cache = std::make_unique<KVCache>(
+          model.GetModelConfig(), inference_args, ctx.allocator);
 
       LogDebug((log_prefix + "Successfully rewound to initial state.").c_str());
     } else {
@@ -197,7 +198,7 @@ class GemmaContext {
     LogDebug("Creating new conversation");
     // Create a new ConversationData object using make_shared
     conversation_cache[name] = std::make_shared<ConversationData>(
-        model.GetModelConfig(), inference_args);
+        model.GetModelConfig(), inference_args, ctx.allocator);
     return true;
   }
 
@@ -280,6 +281,7 @@ class GemmaContext {
   // Cached args (remain global for the context)
   InferenceArgs inference_args;
   ThreadingArgs threading_args;
+  ThreadingContext ctx;
   MatMulEnv matmul_env;
 
   std::string active_conversation_name;

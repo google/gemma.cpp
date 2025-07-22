@@ -35,13 +35,15 @@ namespace gcpp {
 
 struct GriffinActivations {
   GriffinActivations(const ModelConfig& config, size_t batch_size,
-                     MatPadding pad)
-      : griffin_x("griffin_x", Extents2D(batch_size, config.model_dim), pad),
-        griffin_y("griffin_y", Extents2D(batch_size, config.model_dim), pad),
-        griffin_gate_x("griffin_gate_x",
-                       Extents2D(batch_size, config.model_dim), pad),
-        griffin_multiplier("griffin_mul",
-                           Extents2D(batch_size, config.model_dim), pad) {}
+                     const Allocator& allocator)
+      : griffin_x(
+            MatFactory("griffin_x", batch_size, config.model_dim, allocator)),
+        griffin_y(
+            MatFactory("griffin_y", batch_size, config.model_dim, allocator)),
+        griffin_gate_x(MatFactory("griffin_gate_x", batch_size,
+                                  config.model_dim, allocator)),
+        griffin_multiplier(MatFactory("griffin_mul", batch_size,
+                                      config.model_dim, allocator)) {}
 
   void SetBatchSize(size_t batch_size) {
     if (griffin_x.Rows() == 0) return;
@@ -70,34 +72,34 @@ struct AttentionActivations {
 
   AttentionActivations(
       const ModelConfig& config, const LayerConfig& layer_config,
-      size_t batch_size, size_t seq_len, MatPadding pad,
+      size_t batch_size, size_t seq_len, const Allocator& allocator,
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : config(config),
 
         // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
         // and does not use an external KV cache.
-        q("q",
-          Extents2D(batch_size,
-                    config.vocab_size == 0
-                        ? layer_config.heads * 3 * layer_config.qkv_dim
-                        : layer_config.heads * layer_config.qkv_dim),
-          pad),
+        q(MatFactory("q", batch_size,
+                     config.vocab_size == 0
+                         ? layer_config.heads * 3 * layer_config.qkv_dim
+                         : layer_config.heads * layer_config.qkv_dim,
+                     allocator)),
 
-        pre_att_rms_out("pre_att_rms_out",
-                        Extents2D(batch_size, config.model_dim), pad),
-        att("att", Extents2D(batch_size, layer_config.heads * seq_len), pad),
-        att_out(
-            "att_out",
-            Extents2D(batch_size, layer_config.heads * layer_config.qkv_dim),
-            pad),
-        att_sums("att_sums", Extents2D(batch_size, config.model_dim), pad),
+        pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
+                                   config.model_dim, allocator)),
+        att(MatFactory("att", batch_size, layer_config.heads * seq_len,
+                       allocator)),
+        att_out(MatFactory("att_out", batch_size,
+                           layer_config.heads * layer_config.qkv_dim,
+                           allocator)),
+        att_sums(
+            MatFactory("att_sums", batch_size, config.model_dim, allocator)),
 
         inv_timescale(
-            CreateInvTimescale(layer_config.qkv_dim,
+            CreateInvTimescale(allocator, layer_config.qkv_dim,
                                layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
-            layer_config.qkv_dim, layer_config.post_qk == PostQKType::HalfRope,
-            1000000.0)),
+            allocator, layer_config.qkv_dim,
+            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
 
         div_seq_len(static_cast<uint32_t>(seq_len)),
         div_heads(static_cast<uint32_t>(layer_config.heads)),
@@ -149,21 +151,23 @@ struct AttentionActivations {
 
 struct Activations {
   Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
+              const Allocator& allocator,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : layer_config(config.layer_configs[0]),
 
-        x("x", Extents2D(batch_size, config.model_dim), pad_),
-        logits("logits", Extents2D(batch_size, config.vocab_size), pad_),
+        x(MatFactory("x", batch_size, config.model_dim, allocator)),
+        logits(MatFactory("logits", batch_size, config.vocab_size, allocator)),
 
-        pre_ffw_rms_out("pre_ffw_rms_out",
-                        Extents2D(batch_size, config.model_dim), pad_),
-        C1("C1", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
-        C2("C2", Extents2D(batch_size, layer_config.ff_hidden_dim), pad_),
-        ffw_out("ffw_out", Extents2D(batch_size, config.model_dim), pad_),
+        pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
+                                   config.model_dim, allocator)),
+        C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim, allocator)),
+        C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim, allocator)),
+        ffw_out(MatFactory("ffw_out", batch_size, config.model_dim, allocator)),
 
-        attention(config, layer_config, batch_size, seq_len, pad_, row_ptrs),
+        attention(config, layer_config, batch_size, seq_len, allocator,
+                  row_ptrs),
         griffin(config, config.model == Model::GRIFFIN_2B ? batch_size : 0,
-                pad_) {
+                allocator) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -193,15 +197,14 @@ struct Activations {
   }
 
   const LayerConfig& layer_config;
-  const Extents2D none_ = Extents2D();
-  const MatPadding pad_ = MatPadding::kOdd;
 
   MatStorageT<float> x;  // input
   MatStorageT<float> logits;
 
   // Gated FFW
   MatStorageT<BF16> pre_ffw_rms_out;
-  MatStorageT<float> C1;  // TODO: BF16 after Activation() supports it
+  // Norm may be large, so prefer to keep as f32.
+  MatStorageT<float> C1;
   MatStorageT<float> C2;
   MatStorageT<BF16> ffw_out;
 

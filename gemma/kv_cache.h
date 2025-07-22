@@ -28,7 +28,8 @@ namespace gcpp {
 using KV_t = float;
 
 struct KVCache {
-  KVCache(const ModelConfig& config, const InferenceArgs& inference_args);
+  KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+          const Allocator& allocator);
 
   // Returns a deep copy of the KVCache. Use explicit function instead of
   // copy ctor to make the cost explicit.
@@ -47,9 +48,11 @@ struct KVCache {
   MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
 
  private:
+  const Allocator& allocator_;
+
   // For use by other ctor and Copy()
   KVCache(const Extents2D& conv1d_extents, const Extents2D& rglru_extents,
-          const Extents2D& kv_extents);
+          const Extents2D& kv_extents, const Allocator& allocator);
 };
 
 }  // namespace gcpp

@@ -26,6 +26,7 @@
 #include <memory>
 
 #include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -68,10 +69,11 @@ FloatPtr SimpleMatVecAdd(const MatStorageT<float>& mat, const FloatPtr& vec,
 
 template <typename MatT, size_t kOuter, size_t kInner>
 std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
+                                                const Allocator& allocator,
                                                 hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
   const Extents2D extents(kOuter, kInner);
-  auto mat = std::make_unique<MatStorageT<float>>("TestMat", extents,
+  auto mat = std::make_unique<MatStorageT<float>>("TestMat", extents, allocator,
                                                   MatPadding::kPacked);
   FloatPtr raw_mat = hwy::AllocateAligned<float>(extents.Area());
   HWY_ASSERT(raw_mat);
@@ -109,10 +111,12 @@ void AssertClose(const FloatPtr& a, const FloatPtr& b) {
 }
 
 void TestMatVecAdd() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add = GenerateVec<kOuter>(0);
   FloatPtr expected_out = SimpleMatVecAdd(*mat, vec, add);
@@ -124,11 +128,13 @@ void TestMatVecAdd() {
 }
 
 void TestTwoMatVecAdd() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat0 = GenerateMat<float, kOuter, kInner>(0, pool);
-  auto mat1 = GenerateMat<float, kOuter, kInner>(1, pool);
+  auto mat0 = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
+  auto mat1 = GenerateMat<float, kOuter, kInner>(1, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add0 = GenerateVec<kOuter>(0);
   FloatPtr add1 = GenerateVec<kOuter>(1);
@@ -145,10 +151,13 @@ void TestTwoMatVecAdd() {
 }
 
 void TestTwoOfsMatVecAddLoop() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
+
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add0 = GenerateVec<kOuter>(0);
   FloatPtr add1 = GenerateVec<kOuter>(1);

@@ -186,7 +186,7 @@ class GemmaModel {
     image_tokens_.reset(new gcpp::ImageTokens(
         "image_tokens",
         gcpp::Extents2D(config.vit_config.seq_len, config.model_dim),
-        gcpp::MatPadding::kOdd));
+        env_.MutableEnv().ctx.allocator, gcpp::MatPadding::kOdd));
     gcpp::RuntimeConfig runtime_config = {.gen = &env_.MutableGen(),
                                           .verbosity = 0};
     gemma.GenerateImageTokens(runtime_config, env_.MutableKVCache().SeqLen(),

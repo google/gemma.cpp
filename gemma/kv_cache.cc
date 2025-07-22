@@ -57,20 +57,24 @@ static size_t CappedSeqLen(const ModelConfig& config,
 }
 
 KVCache::KVCache(const Extents2D& conv1d_extents,
-                 const Extents2D& rglru_extents, const Extents2D& kv_extents)
-    : conv1d_cache("conv1d_cache", conv1d_extents, MatPadding::kOdd),
-      rglru_cache("rglru_cache", rglru_extents, MatPadding::kOdd),
-      kv_cache("kv", kv_extents, MatPadding::kOdd) {}
+                 const Extents2D& rglru_extents, const Extents2D& kv_extents,
+                 const Allocator& allocator)
+    : conv1d_cache("conv1d_cache", conv1d_extents, allocator, MatPadding::kOdd),
+      rglru_cache("rglru_cache", rglru_extents, allocator, MatPadding::kOdd),
+      kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
+      allocator_(allocator) {}
 
-KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args)
-    : KVCache(Extents2D(GriffinLayers(config), GriffinConv1dCols(config)),
-              Extents2D(GriffinLayers(config), config.model_dim),
-              Extents2D(CappedSeqLen(config, inference_args),
-                        config.KVCacheCols())) {}
+KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+                 const Allocator& allocator)
+    : KVCache(
+          Extents2D(GriffinLayers(config), GriffinConv1dCols(config)),
+          Extents2D(GriffinLayers(config), config.model_dim),
+          Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
+          allocator) {}
 
 KVCache KVCache::Copy() {
   KVCache copy(conv1d_cache.Extents(), rglru_cache.Extents(),
-               kv_cache.Extents());
+               kv_cache.Extents(), allocator_);
 
   if (conv1d_cache.Rows() != 0) {
     CopyMat(conv1d_cache, copy.conv1d_cache);

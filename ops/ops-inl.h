@@ -1018,13 +1018,13 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
 // Input has 4096 (64*64) rows, output has 256 (16*16) rows
 // Each output row is the average of a 4x4 block of input rows
 template <typename T>
-MatStorageT<T> AvgPool4x4(MatStorageT<T>& input) {
+MatStorageT<T> AvgPool4x4(MatStorageT<T>& input, const Allocator& allocator) {
   const Extents2D extents = input.Extents();
   // Input validation
   HWY_DASSERT(extents.rows == 4096);  // 64 * 64 = 4096 input rows
   // Create output with 256 rows and same number of columns
   const size_t out_rows = 256;  // 16 * 16 = 256 output rows
-  MatStorageT<T> result("pool4x4", Extents2D(out_rows, extents.cols),
+  MatStorageT<T> result("pool4x4", Extents2D(out_rows, extents.cols), allocator,
                         MatPadding::kOdd);
   const size_t input_dim = 64;   // Input is 64×64
   const size_t output_dim = 16;  // Output is 16×16

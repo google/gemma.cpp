@@ -80,11 +80,11 @@ class VitAttention {
 
     // Shift Q, K, VT to MatStorageT.
     MatStorageT<float> Q("Q2", Extents2D(num_tokens_, qkv_dim),
-                         MatPadding::kPacked);
-    MatStorageT<float> K("K2", Extents2D(seq_len, qkv_dim),
+                         env_.ctx.allocator, MatPadding::kPacked);
+    MatStorageT<float> K("K2", Extents2D(seq_len, qkv_dim), env_.ctx.allocator,
                          MatPadding::kPacked);
     MatStorageT<float> C("C2", Extents2D(num_tokens_, seq_len),
-                         MatPadding::kPacked);
+                         env_.ctx.allocator, MatPadding::kPacked);
 
     // Initialize att_out to zero prior to head loop.
     ZeroInit(activations_.attention.att_out);
@@ -294,7 +294,7 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // image_patches is (256, 14 * 14 * 3)
   // Must be padded, see `DoDecompressA`.
   MatStorageT<float> image_patches("patches", Extents2D(num_tokens, patch_size),
-                                   MatPadding::kOdd);
+                                   env.ctx.allocator, MatPadding::kOdd);
   for (size_t i = 0; i < num_tokens; ++i) {
     image.GetPatch(i, image_patches.Row(i));
   }
@@ -329,7 +329,7 @@ void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights,
                    weights.vit_encoder_norm_bias, activations.x);
 
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM) {
-    activations.x = AvgPool4x4(activations.x);
+    activations.x = AvgPool4x4(activations.x, env.ctx.allocator);
 
     // Apply soft embedding norm before input projection.
     CallUpcasted(&weights.mm_embed_norm, [&](const auto* weights_t) {

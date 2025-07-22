@@ -443,7 +443,7 @@ class MatOwner {
   // Allocates the type/extents indicated by `mat` and sets its pointer.
   // Ignores `padding` for NUQ tensors, which are always packed.
   // Thread-compatible, weights are allocated in parallel.
-  void AllocateFor(MatPtr& mat, MatPadding padding);
+  void AllocateFor(MatPtr& mat, const Allocator& allocator, MatPadding padding);
 
  private:
   AlignedPtr<uint8_t[]> storage_;
@@ -455,13 +455,14 @@ class MatOwner {
 template <typename MatT>
 class MatStorageT : public MatPtrT<MatT> {
  public:
-  MatStorageT(const char* name, Extents2D extents, MatPadding padding)
+  MatStorageT(const char* name, Extents2D extents, const Allocator& allocator,
+              MatPadding padding)
       : MatPtrT<MatT>(name, extents) {
-    if (extents.Area() != 0) owner_.AllocateFor(*this, padding);
+    if (extents.Area() != 0) owner_.AllocateFor(*this, allocator, padding);
   }
   // Shorthand for 1D tensors: packing does not help, hence `kPacked`.
-  MatStorageT(const char* name, size_t cols)
-      : MatStorageT(name, Extents2D(1, cols), MatPadding::kPacked) {}
+  MatStorageT(const char* name, size_t cols, const Allocator& allocator)
+      : MatStorageT(name, Extents2D(1, cols), allocator, MatPadding::kPacked) {}
   ~MatStorageT() = default;
 
   // Allow move for KVCache.
@@ -470,6 +471,32 @@ class MatStorageT : public MatPtrT<MatT> {
 
  private:
   MatOwner owner_;
+};
+
+// Helper for initializing members which are `MatStorageT<T>`: avoids having to
+// specify Extents2D and MatPadding at each call site.
+class MatFactory {
+ public:
+  // The constructor captures all the necessary arguments.
+  MatFactory(const char* name, size_t rows, size_t cols,
+             const Allocator& allocator, MatPadding padding = MatPadding::kOdd)
+      : name_(name),
+        extents_(rows, cols),
+        allocator_(allocator),
+        padding_(padding) {}
+
+  // Templated conversion so we do not have to specify the type in the
+  // member initializer.
+  template <typename T>
+  operator MatStorageT<T>() const {
+    return MatStorageT<T>(name_.c_str(), extents_, allocator_, padding_);
+  }
+
+ private:
+  const std::string name_;
+  Extents2D extents_;
+  const Allocator& allocator_;
+  MatPadding padding_;
 };
 
 }  // namespace gcpp

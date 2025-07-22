@@ -36,7 +36,9 @@ class BlobStoreTest : public testing::Test {};
 #endif
 
 TEST(BlobStoreTest, TestReadWrite) {
-  hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
 
   static const std::array<float, 4> kOriginalData = {-1, 0, 3.14159, 2.71828};
 
@@ -92,7 +94,9 @@ TEST(BlobStoreTest, TestReadWrite) {
 
 // Ensures padding works for any number of random-sized blobs.
 TEST(BlobStoreTest, TestNumBlobs) {
-  hwy::ThreadPool& pool = ThreadingContext::Get().pools.Pool();
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   hwy::RandomState rng;
 
   for (size_t num_blobs = 1; num_blobs <= 512; ++num_blobs) {

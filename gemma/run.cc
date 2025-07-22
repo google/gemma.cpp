@@ -110,7 +110,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       have_image ? Extents2D(config.vit_config.seq_len / (pool_dim * pool_dim),
                              config.model_dim)
                  : Extents2D(0, 0),
-      MatPadding::kOdd);
+      env.ctx.allocator, MatPadding::kOdd);
   image_tokens.AllocateAndAttachRowPtrs(env.row_ptrs);
   if (have_image) {
     HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA ||
@@ -254,10 +254,11 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
          const InferenceArgs& inference) {
   PROFILER_ZONE("Run.misc");
 
-  MatMulEnv env(MakeMatMulEnv(threading, inference));
+  ThreadingContext ctx(UpdateArgs(threading, inference));
+  MatMulEnv env(ctx);
   if (inference.verbosity >= 2) env.print_best = true;
-  const Gemma gemma(loader, inference, env.ctx.pools);
-  KVCache kv_cache(gemma.GetModelConfig(), inference);
+  const Gemma gemma(loader, inference, ctx);
+  KVCache kv_cache(gemma.GetModelConfig(), inference, ctx.allocator);
 
   if (inference.verbosity >= 1) {
     std::string instructions =
@@ -284,7 +285,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     if (inference.IsInteractive()) {
       std::cout << "\033[2J\033[1;1H"  // clear screen
                 << kAsciiArtBanner << "\n\n";
-      ShowConfig(loader, threading, inference, gemma.GetModelConfig());
+      ShowConfig(loader, threading, inference, gemma.GetModelConfig(), ctx);
       std::cout << "\n" << instructions << "\n";
     }
   }

@@ -999,6 +999,8 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
+    ThreadingArgs threading_args;
+    ThreadingContext ctx(threading_args);
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);
@@ -1009,14 +1011,14 @@ struct TestShortDotsT {
       // GenerateWellConditionedInputs calls DecompressAndZeroPad to `raw*`,
       // hence they require padding to one vector.
       const size_t padded_num = hwy::RoundUpTo(num, N);
-      MatStorageT<float> raw_w("raw_w", padded_num);
-      MatStorageT<float> raw_v("raw_v", padded_num);
-      MatStorageT<Packed> weights("weights", padded_num);
+      MatStorageT<float> raw_w("raw_w", padded_num, ctx.allocator);
+      MatStorageT<float> raw_v("raw_v", padded_num, ctx.allocator);
+      MatStorageT<Packed> weights("weights", padded_num, ctx.allocator);
       const PackedSpan<Packed> w = weights.Span();
-      MatStorageT<T> vectors("vectors", padded_num);
+      MatStorageT<T> vectors("vectors", padded_num, ctx.allocator);
       const PackedSpan<T> v = vectors.Span();
 
-      MatStorageT<double> bufs("bufs", num);
+      MatStorageT<double> bufs("bufs", padded_num, ctx.allocator);
       double* HWY_RESTRICT buf = bufs.Row(0);
 
       for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
@@ -1097,14 +1099,12 @@ void TestAllDot() {
 
   constexpr size_t kMaxWorkers = 15;
 
-  // Reset with cap on workers because we only support `kMaxWorkers`.
-  ThreadingContext::ThreadHostileInvalidate();
+  // Limit workers because we only support `kMaxWorkers`.
   ThreadingArgs threading_args;
   threading_args.max_packages = 1;
   threading_args.max_clusters = 1;
   threading_args.max_lps = kMaxWorkers - 1;
-  ThreadingContext::SetArgs(threading_args);
-  ThreadingContext& ctx = ThreadingContext::Get();
+  ThreadingContext ctx(threading_args);
 
   {  // ensure no profiler zones are active
     const hn::ScalableTag<float> df;
@@ -1116,9 +1116,11 @@ void TestAllDot() {
 
     constexpr size_t kReps = hn::AdjustedReps(40);
     const size_t num = 24 * 1024;
-    MatStorageT<float> a("a", Extents2D(kMaxWorkers, num), MatPadding::kOdd);
-    MatStorageT<float> b("b", Extents2D(kMaxWorkers, num), MatPadding::kOdd);
-    MatStorageT<double> bufs("bufs", Extents2D(kMaxWorkers, num),
+    MatStorageT<float> a("a", Extents2D(kMaxWorkers, num), ctx.allocator,
+                         MatPadding::kOdd);
+    MatStorageT<float> b("b", Extents2D(kMaxWorkers, num), ctx.allocator,
+                         MatPadding::kOdd);
+    MatStorageT<double> bufs("bufs", Extents2D(kMaxWorkers, num), ctx.allocator,
                              MatPadding::kOdd);
     std::array<DotStats, kMaxWorkers> all_stats;
 

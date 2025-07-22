@@ -44,7 +44,8 @@
 namespace gcpp {
 
 // Copies att_weights from `attn_vec_einsum_w`.
-void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners) {
+void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
+                                      const Allocator& allocator) {
   // We only use this tensor for Gemma layers.
   if (layer_config.type != LayerAttentionType::kGemma) return;
 
@@ -71,7 +72,7 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners) {
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
     mat_owners.push_back(MatOwner());
-    mat_owners.back().AllocateFor(att_weights, MatPadding::kOdd);
+    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
   }
 
   const size_t T_bytes = att_weights.ElementBytes();
@@ -149,9 +150,10 @@ void LayerWeightsPtrs::SplitAttW1() {
 // Must be called after reading weights via `ForEachTensor`.
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
-void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners) {
+void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+                             const Allocator& allocator) {
   // TODO(janwas): handle NUQ
-  InitAttWeights(mat_owners);
+  InitAttWeights(mat_owners, allocator);
   SplitW1();
   SplitAttW1();
 }
@@ -223,13 +225,15 @@ void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
 // For reshaping file tensors to the shape expected by the code. This would
 // ideally already happen in the importer. Called by WeightsOwner::Fixup.
 void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
-                        hwy::ThreadPool& pool) {
+                        ThreadingContext& ctx) {
+  // TODO: use 1D parallel-for helper function
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-    GetLayer(layer)->Fixup(mat_owners);
+    GetLayer(layer)->Fixup(mat_owners, ctx.allocator);
   });
 
   pool.Run(0, vit_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-    VitLayer(layer)->Fixup(mat_owners);
+    VitLayer(layer)->Fixup(mat_owners, ctx.allocator);
   });
 }
 
@@ -260,12 +264,12 @@ enum class Mode {
 
 // Decides whether to read or map based on heuristics and user override.
 static Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
-                       const InferenceArgs& inference) {
+                       const InferenceArgs& inference,
+                       const Allocator& allocator) {
   Tristate to_bf16 = loader.to_bf16;
   Tristate map = loader.map;
 
   // Disable mapping if not padded to the base page size.
-  const Allocator& allocator = ThreadingContext::Get().allocator;
   if (file_bytes % allocator.BasePageBytes() != 0) {
     if (map == Tristate::kTrue) {  // Only complain if explicitly requested.
       HWY_WARN("Unable to map non-padded file (%zu, %zu), reading instead.",
@@ -321,30 +325,31 @@ struct TensorToRead {
 // Allocates multiple in parallel and binds to NUMA nodes.
 static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
                                const Mode mode, std::vector<MatOwner>& owners,
-                               hwy::ThreadPool& pool) {
+                               ThreadingContext& ctx) {
   const size_t start = owners.size();
   owners.resize(start + tensors.size());
 
-  MMParallel parallel(ThreadingContext::Get());
+  MMParallel parallel(ctx);
 
   // Allocate in parallel because faulting in large tensors is slow.
-  pool.Run(0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
-    TensorToRead& tensor = tensors[task];
-    MatPtr& mat = *tensor.mat;
+  ctx.pools.Pool().Run(
+      0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
+        TensorToRead& tensor = tensors[task];
+        MatPtr& mat = *tensor.mat;
 
-    tensor.prev_type = mat.GetType();
-    // We only care about MatMul inputs; skip F32 or small tensors.
-    if (tensor.prev_type == Type::kF32 || mat.Rows() < 1024) {
-      tensor.keep_type = true;
-      tensor.padding = MatPadding::kPacked;  // single I/O for simplicity
-    } else if (mode == Mode::kReadBF16) {
-      mat.SetType(Type::kBF16);
-    }
+        tensor.prev_type = mat.GetType();
+        // We only care about MatMul inputs; skip F32 or small tensors.
+        if (tensor.prev_type == Type::kF32 || mat.Rows() < 1024) {
+          tensor.keep_type = true;
+          tensor.padding = MatPadding::kPacked;  // single I/O for simplicity
+        } else if (mode == Mode::kReadBF16) {
+          mat.SetType(Type::kBF16);
+        }
 
-    owners[start + task].AllocateFor(*tensor.mat, tensor.padding);
-    // TODO(janwas): MatMul outputs will later also be BF16.
-    BindB(*tensor.mat, sizeof(float), parallel);
-  });
+        owners[start + task].AllocateFor(*tensor.mat, ctx.allocator,
+                                         tensor.padding);
+        BindB(*tensor.mat, tensor.mat->ElementBytes(), parallel);
+      });
 }
 
 // Mode == kMap
@@ -482,7 +487,7 @@ static void ReadBatches(const BlobReader& reader,
 // Aborts on error.
 static void MapOrReadAll(std::vector<TensorToRead>& tensors, BlobReader& reader,
                          Mode mode, std::vector<MatOwner>& mat_owners,
-                         hwy::ThreadPool& pool) {
+                         ThreadingContext& ctx) {
   if (mode == Mode::kMap) {
     MapPtr mapped = reader.file().Map();
     if (mapped) return MapAll(tensors, mapped);
@@ -496,8 +501,10 @@ static void MapOrReadAll(std::vector<TensorToRead>& tensors, BlobReader& reader,
   {
     PROFILER_ZONE("Startup.Weights.Allocate");
     // NOTE: this changes the stride of `mats`!
-    AllocateAndBindAll(tensors, mode, mat_owners, pool);
+    AllocateAndBindAll(tensors, mode, mat_owners, ctx);
   }
+
+  hwy::ThreadPool& pool = ctx.pools.Pool();
 
   if (mode == Mode::kReadBF16) return ReadAllToBF16(tensors, reader, pool);
 
@@ -510,7 +517,7 @@ void WeightsPtrs::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
                                 const LoaderArgs& loader,
                                 const InferenceArgs& inference,
                                 std::vector<MatOwner>& mat_owners,
-                                hwy::ThreadPool& pool) {
+                                ThreadingContext& ctx) {
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
 
@@ -529,13 +536,14 @@ void WeightsPtrs::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
     HWY_ABORT("Tensor %s is required but not found in file.", t.mat.Name());
   });
 
-  const Mode mode = ChooseMode(reader.file_bytes(), loader, inference);
+  const Mode mode =
+      ChooseMode(reader.file_bytes(), loader, inference, ctx.allocator);
 
-  MapOrReadAll(tensors, reader, mode, mat_owners, pool);
+  MapOrReadAll(tensors, reader, mode, mat_owners, ctx);
 
   {
     PROFILER_ZONE("Startup.Fixup");
-    Fixup(mat_owners, pool);
+    Fixup(mat_owners, ctx);
   }
 }
 

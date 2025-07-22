@@ -57,6 +57,9 @@ class SbsWriterImpl : public ISbsWriter {
   template <typename Packed>
   void InsertT(const char* name, F32Span weights,
                const TensorInfo& tensor_info) {
+    // TODO(janwas): 1D parallel-for.
+    hwy::ThreadPool& pool = ctx_.pools.Pool();
+
     MatPtrT<Packed> mat(name, ExtentsFromInfo(&tensor_info));
     // SFP and NUQ (which uses SFP for cluster centers) have a limited range
     // and depending on the input values may require rescaling. Scaling is
@@ -73,13 +76,13 @@ class SbsWriterImpl : public ISbsWriter {
 
     mat.AppendTo(serialized_mat_ptrs_);
     mat_owners_.push_back(MatOwner());
-    mat_owners_.back().AllocateFor(mat, MatPadding::kPacked);
+    mat_owners_.back().AllocateFor(mat, ctx_.allocator, MatPadding::kPacked);
 
     // Handle gemma_export_test's MockArray. Write blobs so that the test
     // succeeds, but we only have 10 floats, not the full tensor.
     if (weights.size() == 10 && mat.Extents().Area() != 10) {
       Compress(weights.data(), weights.size(), working_set_, mat.Span(),
-               /*packed_ofs=*/0, pool_);
+               /*packed_ofs=*/0, pool);
       writer_.Add(name, mat.Packed(), mat.ElementBytes() * 10);
       return;
     }
@@ -89,12 +92,12 @@ class SbsWriterImpl : public ISbsWriter {
             TypeName(TypeEnum<Packed>()));
     HWY_ASSERT(weights.size() == mat.Extents().Area());
     Compress(weights.data(), weights.size(), working_set_, mat.Span(),
-             /*packed_ofs=*/0, pool_);
+             /*packed_ofs=*/0, pool);
     writer_.Add(name, mat.Packed(), mat.PackedBytes());
   }
 
  public:
-  SbsWriterImpl() : pool_(ThreadingContext::Get().pools.Pool()) {}
+  SbsWriterImpl() : ctx_(ThreadingArgs()) {}
 
   void Insert(const char* name, F32Span weights, Type type,
               const TensorInfo& tensor_info) override {
@@ -122,18 +125,18 @@ class SbsWriterImpl : public ISbsWriter {
     const GemmaTokenizer tokenizer(
         tokenizer_path.empty() ? kMockTokenizer
                                : ReadFileToString(Path(tokenizer_path)));
-    WriteSingleFile(config, tokenizer, serialized_mat_ptrs_, writer_, pool_,
-                    gcpp::Path(path));
+    WriteSingleFile(config, tokenizer, serialized_mat_ptrs_, writer_,
+                    ctx_.pools.Pool(), gcpp::Path(path));
   }
 
-  hwy::ThreadPool& pool_;
+  ThreadingContext ctx_;
   std::vector<MatOwner> mat_owners_;
   CompressWorkingSet working_set_;
   BlobWriter writer_;
   std::vector<uint32_t> serialized_mat_ptrs_;
 };
 
-ISbsWriter* NewSbsWriter() { return new SbsWriterImpl; }
+ISbsWriter* NewSbsWriter() { return new SbsWriterImpl(); }
 
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp

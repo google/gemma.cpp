@@ -347,10 +347,12 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
   const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
                            ChooseWrapping(Model::GEMMA2_9B));
   const size_t dim_qkv = config.layer_configs[0].qkv_dim;
-  MatStorageT<float> x("x", dim_qkv);
+  MatStorageT<float> x("x", dim_qkv, ctx.allocator);
 
   std::mt19937 gen;
   gen.seed(0x12345678);
@@ -364,13 +366,13 @@ void TestRopeAndMulBy() {
   const float qmul = AttentionActivations::ChooseQueryScale(config);
   constexpr float kmul = 1.0f;
 
-  MatStorageT<float> qexpected("qexpected", dim_qkv);
-  MatStorageT<float> qactual("qactual", dim_qkv);
-  MatStorageT<float> kexpected("kexpected", dim_qkv);
-  MatStorageT<float> kactual("kactual", dim_qkv);
-  MatStorageT<float> kactual2("kactual2", dim_qkv);
+  MatStorageT<float> qexpected("qexpected", dim_qkv, ctx.allocator);
+  MatStorageT<float> qactual("qactual", dim_qkv, ctx.allocator);
+  MatStorageT<float> kexpected("kexpected", dim_qkv, ctx.allocator);
+  MatStorageT<float> kactual("kactual", dim_qkv, ctx.allocator);
+  MatStorageT<float> kactual2("kactual2", dim_qkv, ctx.allocator);
   MatStorageT<float> inv_timescale = CreateInvTimescale(
-      config.layer_configs[0].qkv_dim,
+      ctx.allocator, config.layer_configs[0].qkv_dim,
       config.layer_configs[0].post_qk == PostQKType::HalfRope);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (size_t pos = 1; pos < 500; pos++) {

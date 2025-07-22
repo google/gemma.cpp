@@ -91,14 +91,15 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const size_t cols = A.Cols();
   const size_t B_rows = B.Rows();
   // Round up for DecompressAndZeroPad.
-  MatStorageT<float> a_batch("a_batch", A.Extents(), MatPadding::kOdd);
-  MatStorageT<float> b_trans_batch("b_trans_batch", B.Extents(),
-                                   MatPadding::kOdd);
-  MatStorageT<float> c_batch("c_batch", Extents2D(A.Rows(), B_rows),
+  MatStorageT<float> a_batch("a_batch", A.Extents(), env.ctx.allocator,
                              MatPadding::kOdd);
+  MatStorageT<float> b_trans_batch("b_trans_batch", B.Extents(),
+                                   env.ctx.allocator, MatPadding::kOdd);
+  MatStorageT<float> c_batch("c_batch", Extents2D(A.Rows(), B_rows),
+                             env.ctx.allocator, MatPadding::kOdd);
   c_batch.AllocateAndAttachRowPtrs(env.row_ptrs);
   MatStorageT<float> c_slow_batch("c_slow_batch", Extents2D(A.Rows(), B_rows),
-                                  MatPadding::kOdd);
+                                  env.ctx.allocator, MatPadding::kOdd);
   for (size_t m = 0; m < A.Rows(); ++m) {
     DecompressAndZeroPad(df, MakeSpan(A.Row(m), cols), 0, a_batch.Row(m), cols);
     DecompressAndZeroPad(df, MakeSpan(C.Row(m), B_rows), 0, c_batch.Row(m),
@@ -219,17 +220,21 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStorageT<TA> A(GenerateMat<TA>(A_extents, MatPadding::kOdd, pool));
+  MatStorageT<TA> A(
+      GenerateMat<TA>(A_extents, env.ctx.allocator, MatPadding::kOdd, pool));
   // Must be packed because we call Span() on it.
-  MatStorageT<TB> BT(
-      GenerateTransposedMat<TB>(B_extents, MatPadding::kPacked, pool));
-  MatStorageT<TC> C_slow("C_slow", C_extents, MatPadding::kOdd);
-  MatStorageT<TC> C("C", C_extents, MatPadding::kOdd);
+  MatStorageT<TB> BT(GenerateTransposedMat<TB>(B_extents, env.ctx.allocator,
+                                               MatPadding::kPacked, pool));
+  MatStorageT<TC> C_slow("C_slow", C_extents, env.ctx.allocator,
+                         MatPadding::kOdd);
+  MatStorageT<TC> C("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
-      add ? GenerateMat<float>(Extents2D(1, cols_bc), MatPadding::kPacked, pool)
-          : MatStorageT<float>("add", Extents2D(), MatPadding::kPacked);
+      add ? GenerateMat<float>(Extents2D(1, cols_bc), env.ctx.allocator,
+                               MatPadding::kPacked, pool)
+          : MatStorageT<float>("add", Extents2D(), env.ctx.allocator,
+                               MatPadding::kPacked);
   add_storage.SetScale(1.0f);
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 
@@ -252,12 +257,11 @@ void TestTiny() {
   if (HWY_TARGET != first_target) return;
 
   for (size_t max_packages : {1, 2}) {
-    ThreadingContext::ThreadHostileInvalidate();
     ThreadingArgs threading_args;
     threading_args.bind = Tristate::kTrue;
     threading_args.max_packages = max_packages;
-    ThreadingContext::SetArgs(threading_args);
-    MatMulEnv env(ThreadingContext::Get());
+    ThreadingContext ctx(threading_args);
+    MatMulEnv env(ctx);
     NestedPools& pools = env.ctx.pools;
 
     if constexpr (GEMMA_DISABLE_TOPOLOGY) {
@@ -291,11 +295,10 @@ void TestAllMatMul() {
     return;
   }
 
-  ThreadingContext::ThreadHostileInvalidate();
   ThreadingArgs threading_args;
   threading_args.bind = Tristate::kTrue;
-  ThreadingContext::SetArgs(threading_args);
-  MatMulEnv env(ThreadingContext::Get());
+  ThreadingContext ctx(threading_args);
+  MatMulEnv env(ctx);
   NestedPools& pools = env.ctx.pools;
   pools.MaybeStartSpinning(threading_args.spin);
 

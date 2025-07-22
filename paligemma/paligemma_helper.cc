@@ -21,7 +21,7 @@ void PaliGemmaHelper::InitVit(const std::string& path) {
 
   image_tokens_ = std::make_unique<ImageTokens>(
       "image", Extents2D(config.vit_config.seq_len, config.model_dim),
-      MatPadding::kPacked);
+      env_->Env().ctx.allocator, MatPadding::kPacked);
   image_tokens_->AllocateAndAttachRowPtrs(env_->Env().row_ptrs);
   Image image;
   HWY_ASSERT(image.ReadPPM(path));

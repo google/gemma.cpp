@@ -84,19 +84,22 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  MatStorageT<TC> C_slow("c_slow_batch", C_extents, MatPadding::kOdd);
-  MatStorageT<TC> C("c_batch", C_extents, MatPadding::kOdd);
+  MatStorageT<TC> C_slow("c_slow_batch", C_extents, env.ctx.allocator,
+                         MatPadding::kOdd);
+  MatStorageT<TC> C("c_batch", C_extents, env.ctx.allocator, MatPadding::kOdd);
 
-  MatStorageT<float> add_storage("add", Extents2D(), MatPadding::kPacked);
+  MatStorageT<float> add_storage("add", Extents2D(), env.ctx.allocator,
+                                 MatPadding::kPacked);
   if (add) {
-    add_storage =
-        GenerateMat<float>(Extents2D(1, N), MatPadding::kPacked, pool);
+    add_storage = GenerateMat<float>(Extents2D(1, N), env.ctx.allocator,
+                                     MatPadding::kPacked, pool);
     add_storage.SetScale(1.0f);
   }
 
-  MatStorageT<TA> a = GenerateMat<TA>(A_extents, MatPadding::kOdd, pool);
-  MatStorageT<TB> b_trans =
-      GenerateTransposedMat<TB>(B_extents, MatPadding::kOdd, pool);
+  MatStorageT<TA> a =
+      GenerateMat<TA>(A_extents, env.ctx.allocator, MatPadding::kOdd, pool);
+  MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(
+      B_extents, env.ctx.allocator, MatPadding::kOdd, pool);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 
@@ -151,10 +154,10 @@ void BenchAllMatMul() {
     return;
   }
 
-  ThreadingContext& ctx = ThreadingContext::Get();
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
   fprintf(stderr, "BenchAllMatMul %s %s\n", ctx.topology.TopologyString(),
           ctx.pools.PinString());
-
   MatMulEnv env(ctx);
 
   for (size_t batch_size : {1, 4, 128, 512}) {

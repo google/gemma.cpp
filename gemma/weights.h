@@ -29,7 +29,7 @@
 #include "gemma/tensor_info.h"  // TensorInfoRegistry
 #include "io/blob_store.h"      // BlobWriter
 #include "util/mat.h"           // MatPtr
-#include "hwy/contrib/thread_pool/thread_pool.h"
+#include "util/threading_context.h"
 
 namespace gcpp {
 
@@ -299,11 +299,12 @@ struct LayerWeightsPtrs {
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
-  void Fixup(std::vector<MatOwner>& mat_owners);
+  void Fixup(std::vector<MatOwner>& mat_owners, const Allocator& allocator);
 
  private:
   // Copies att_weights from `attn_vec_einsum_w`.
-  void InitAttWeights(std::vector<MatOwner>& mat_owners);
+  void InitAttWeights(std::vector<MatOwner>& mat_owners,
+                      const Allocator& allocator);
 
   // For FFN. Fast, only updates pointers.
   void SplitW1();
@@ -426,7 +427,7 @@ struct WeightsPtrs {
   // override for whether to map blobs or read them.
   void ReadFromBlobs(const ModelStore& model, BlobReader& reader,
                      const LoaderArgs& loader, const InferenceArgs& inference,
-                     std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
+                     std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
 
   // Adds one blob for each tensor's data and returns all serialized MatPtr.
   std::vector<uint32_t> AddTensorDataToWriter(BlobWriter& writer) const;
@@ -434,7 +435,7 @@ struct WeightsPtrs {
  private:
   // For reshaping file tensors to the shape expected by the code. This would
   // ideally already happen in the importer. Called by ReadFromBlobs.
-  void Fixup(std::vector<MatOwner>& mat_owners, hwy::ThreadPool& pool);
+  void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
 };  // `WeightsPtrs`
 #undef TENSOR_ARGS
 

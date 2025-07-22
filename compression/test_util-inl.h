@@ -69,12 +69,13 @@ void ForeachPackedAndRawType() {
 
 // Generates inputs: deterministic, within max SfpStream range.
 template <typename MatT>
-MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
+MatStorageT<MatT> GenerateMat(const Extents2D& extents,
+                              const Allocator& allocator, MatPadding padding,
                               hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
   ws.tls.resize(pool.NumWorkers());
-  MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
-  MatStorageT<MatT> compressed("mat", extents, padding);
+  MatStorageT<float> raw("raw", extents, allocator, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("mat", extents, allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
   pool.Run(0, extents.rows, [&](const size_t r, size_t thread) {
     float* HWY_RESTRICT row = raw.Row(r);
@@ -95,12 +96,13 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
 // Same, but `extents` describes the transposed matrix.
 template <typename MatT>
 MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
+                                        const Allocator& allocator,
                                         MatPadding padding,
                                         hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
   ws.tls.resize(pool.NumWorkers());
-  MatStorageT<float> raw("raw", extents, MatPadding::kPacked);
-  MatStorageT<MatT> compressed("trans", extents, padding);
+  MatStorageT<float> raw("raw", extents, allocator, MatPadding::kPacked);
+  MatStorageT<MatT> compressed("trans", extents, allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
   pool.Run(0, extents.rows, [&](const size_t r, size_t thread) {
     float* HWY_RESTRICT row = raw.Row(r);

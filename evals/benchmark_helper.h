@@ -49,9 +49,6 @@ class GemmaEnv {
   GemmaEnv(int argc, char** argv);
   GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
            const InferenceArgs& inference);
-  // Avoid memory leaks in test.
-  ~GemmaEnv() { ThreadingContext::ThreadHostileInvalidate(); }
-
   MatMulEnv& Env() { return env_; }
 
   size_t MaxGeneratedTokens() const {
@@ -115,6 +112,7 @@ class GemmaEnv {
   MatMulEnv& MutableEnv() { return env_; }
 
  private:
+  ThreadingContext ctx_;
   MatMulEnv env_;
   Gemma gemma_;
   std::mt19937 gen_;                // Random number generator.
@@ -126,7 +124,8 @@ class GemmaEnv {
 void LogSpeedStats(double time_start, size_t total_tokens);
 
 void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
-                const InferenceArgs& inference, const ModelConfig& config);
+                const InferenceArgs& inference, const ModelConfig& config,
+                const ThreadingContext& ctx);
 void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
               const InferenceArgs& inference);
 

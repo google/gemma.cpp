@@ -50,14 +50,13 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
-    : env_(MakeMatMulEnv(threading, inference)),
-      gemma_(loader, inference, env_.ctx.pools) {
+    : ctx_(threading), env_(ctx_), gemma_(loader, inference, ctx_) {
   const ModelConfig& config = gemma_.GetModelConfig();
   // Only allocate one for starters because GenerateBatch might not be called.
-  kv_caches_.push_back(KVCache(config, inference));
+  kv_caches_.push_back(KVCache(config, inference, ctx_.allocator));
 
   if (inference.verbosity >= 2) {
-    ShowConfig(loader, threading, inference, config);
+    ShowConfig(loader, threading, inference, config, ctx_);
   }
 
   InitGenerator(inference, gen_);
@@ -141,7 +140,8 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
 
   // Ensure we have at least one KVCache per query.
   while (kv_caches_.size() < num_queries) {
-    kv_caches_.push_back(KVCache(gemma_.GetModelConfig(), gemma_.Inference()));
+    kv_caches_.push_back(
+        KVCache(gemma_.GetModelConfig(), gemma_.Inference(), ctx_.allocator));
   }
   const hwy::Span<KVCache> kv_caches(&kv_caches_[0], num_queries);
 
@@ -228,7 +228,8 @@ static constexpr const char* CompiledConfig() {
 }
 
 void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
-                const InferenceArgs& inference, const ModelConfig& config) {
+                const InferenceArgs& inference, const ModelConfig& config,
+                const ThreadingContext& ctx) {
   threading.Print(inference.verbosity);
   loader.Print(inference.verbosity);
   inference.Print(inference.verbosity);
@@ -241,7 +242,6 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
     char* dt = ctime(&now);  // NOLINT
     char cpu100[100] = "unknown";
     (void)hwy::platform::GetCpuString(cpu100);
-    const ThreadingContext& ctx = ThreadingContext::Get();
 
     fprintf(stderr,
             "Date & Time                   : %s"  // dt includes \n

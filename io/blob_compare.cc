@@ -227,11 +227,12 @@ void ReadAndCompareBlobs(const Path& path1, const Path& path2) {
   BlobVec blobs1 = ReserveMemory(ranges1, all_blobs, pos);
   BlobVec blobs2 = ReserveMemory(ranges2, all_blobs, pos);
 
-  NestedPools& pools = ThreadingContext::Get().pools;
+  ThreadingArgs args;
+  ThreadingContext ctx(args);
   ReadBothBlobs(reader1, reader2, ranges1, ranges2, total_bytes, blobs1, blobs2,
-                pools);
+                ctx.pools);
 
-  CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, pools);
+  CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, ctx.pools);
 }
 
 }  // namespace gcpp

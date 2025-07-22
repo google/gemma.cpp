@@ -15,60 +15,13 @@
 
 #include "util/threading_context.h"
 
-#include <memory>
-#include <mutex>  // NOLINT
-
-#include "hwy/base.h"  // HWY_ASSERT, HWY_UNLIKELY
-#include "hwy/profiler.h"
-
 namespace gcpp {
 
-static ThreadingArgs s_args;
-// Cannot use magic static because that does not support `Invalidate`, hence
-// allocate manually.
-static std::unique_ptr<ThreadingContext> s_ctx;
-static std::mutex s_ctx_mutex;
-
-/*static*/ void ThreadingContext::SetArgs(const ThreadingArgs& args) {
-  s_ctx_mutex.lock();
-  HWY_ASSERT(!s_ctx);  // Ensure not already initialized, else this is too late.
-  s_args = args;
-  s_ctx_mutex.unlock();
-}
-
-/*static*/ bool ThreadingContext::IsInitialized() {
-  s_ctx_mutex.lock();
-  const bool initialized = !!s_ctx;
-  s_ctx_mutex.unlock();
-  return initialized;
-}
-
-/*static*/ ThreadingContext& ThreadingContext::Get() {
-  PROFILER_FUNC;
-  // We do not bother with double-checked locking because it requires an
-  // atomic pointer, but we prefer to use unique_ptr for simplicity. Also,
-  // callers can cache the result and call less often.
-  s_ctx_mutex.lock();
-  if (HWY_UNLIKELY(!s_ctx)) {
-    s_ctx = std::make_unique<ThreadingContext>(PrivateToken());
-  }
-  s_ctx_mutex.unlock();
-  return *s_ctx;
-}
-
-/*static*/ void ThreadingContext::ThreadHostileInvalidate() {
-  // Deliberately avoid taking the lock so that tsan can warn if this is
-  // called concurrently with other calls to `Get`.
-  s_ctx.reset();
-}
-
-// WARNING: called with `s_ctx_mutex` held. Calling `SetArgs` or `Get` would
-// deadlock.
-ThreadingContext::ThreadingContext(ThreadingContext::PrivateToken)
-    : topology(BoundedSlice(s_args.skip_packages, s_args.max_packages),
-               BoundedSlice(s_args.skip_clusters, s_args.max_clusters),
-               BoundedSlice(s_args.skip_lps, s_args.max_lps)),
-      allocator(topology, s_args.bind != Tristate::kFalse),
-      pools(topology, allocator, s_args.max_threads, s_args.pin) {}
+ThreadingContext::ThreadingContext(const ThreadingArgs& args)
+    : topology(BoundedSlice(args.skip_packages, args.max_packages),
+               BoundedSlice(args.skip_clusters, args.max_clusters),
+               BoundedSlice(args.skip_lps, args.max_lps)),
+      allocator(topology, args.bind != Tristate::kFalse),
+      pools(topology, allocator, args.max_threads, args.pin) {}
 
 }  // namespace gcpp

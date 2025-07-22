@@ -53,8 +53,8 @@ constexpr size_t kNR = 4;
 // or less on ISAs with fewer registers, or for the last few rows of A.
 static constexpr size_t kMaxMR = 4;
 
-// Mostly stateless, can be constructed on the fly by weights.cc, but captures
-// the singleton ThreadingContext to reduce MatMul call overhead.
+// Mostly stateless, can be constructed on the fly by weights.cc. Captures the
+// the ThreadingContext to shorten call sites.
 class MMParallel {
  public:
   static constexpr size_t kMaxPackages = 4;
@@ -251,7 +251,7 @@ class MMStorage {
       :  // Per-worker copies of `partial` would be wasteful. We instead
          // allocate one instance of the maximum matrix extents because threads
          // write at false-sharing-free granularity.
-        partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN),
+        partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN), allocator,
                          MatPadding::kOdd),
         // Same stride independent of the actual C.Cols() so we can pre-bind.
         partial_(partial_storage_.Row(0), kMaxN, partial_storage_.Stride()) {
@@ -259,7 +259,7 @@ class MMStorage {
     // Must be padded, see `DoDecompressA`.
     parallel.ForPkg(MMParallel::kMaxPackages, [&](size_t pkg_idx) {
       pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
-          "pkg_A", Extents2D(kMaxM, kMaxK), MatPadding::kOdd));
+          "pkg_A", Extents2D(kMaxM, kMaxK), allocator, MatPadding::kOdd));
 
       if (allocator.ShouldBind()) {
         const size_t node = parallel.Node(pkg_idx);

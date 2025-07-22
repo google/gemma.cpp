@@ -85,43 +85,9 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
   }
 };
 
-// Lazily-initialized singleton with support for passing in arguments from
-// `ThreadingArgs` and re-initializing with different arguments.
-class ThreadingContext {
-  struct PrivateToken {};  // avoids constructing directly
-
- public:
-  // If not called, default arguments are used when `Get` initializes the
-  // singleton. Must not be called after `Get`, unless after a call to
-  // `ThreadHostileInvalidate`, because otherwise initialization already
-  // happened and the arguments would have no effect. Thread-safe, though this
-  // is expected to be called early in the program, before threading starts.
-  static void SetArgs(const ThreadingArgs& args);
-
-  // Returns whether `Get()` has already been called, typically used to avoid
-  // calling `SetArgs` after that, because it would assert.
-  static bool IsInitialized();
-
-  // Returns a reference to the singleton after initializing it if necessary.
-  // When initializing, uses the args passed to `SetArgs`, or defaults.
-  //
-  // It is safe to call this concurrently with other `Get`, but not with
-  // `SetArgs`, because that will warn if called after this, nor with
-  // `ThreadHostileInvalidate`, because that will invalidate the reference which
-  // callers of this may still be using. Such usage only occurs in tests,
-  // hence we prefer not to pull `std::shared_ptr` into the interface.
-  //
-  // To reduce overhead, callers should cache the result and call less often.
-  static ThreadingContext& Get();
-
-  // Invalidates the singleton before or after a call to `Get`. This allows
-  // changing the arguments between tests. Callers must again call `Get`
-  // afterwards to obtain an instance. WARNING: must not be called concurrently
-  // with other calls to `Get` and usages of its return value.
-  // Also useful to suppress memory leak warnings in tests.
-  static void ThreadHostileInvalidate();
-
-  explicit ThreadingContext(PrivateToken);  // only called via `Get`.
+struct ThreadingContext {
+  // Expected to be called early in the program, before threading starts.
+  explicit ThreadingContext(const ThreadingArgs& args);
 
   BoundedTopology topology;
   Allocator allocator;

@@ -389,6 +389,7 @@ cc_test(
     deps = [
         ":mat",
         ":ops",
+        ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "@highway//:hwy",

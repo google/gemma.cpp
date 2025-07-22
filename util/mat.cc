@@ -78,10 +78,10 @@ size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,
   }
 }
 
-void MatOwner::AllocateFor(MatPtr& mat, MatPadding padding) {
+void MatOwner::AllocateFor(MatPtr& mat, const Allocator& allocator,
+                           MatPadding padding) {
   const bool is_nuq = mat.GetType() == Type::kNUQ;
   if (is_nuq) padding = MatPadding::kPacked;
-  const Allocator& allocator = ThreadingContext::Get().allocator;
   const size_t stride =
       Stride(padding, mat.Cols(), mat.ElementBytes(), allocator.LineBytes());
   const size_t num = is_nuq ? mat.PackedBytes() : mat.Rows() * stride;
