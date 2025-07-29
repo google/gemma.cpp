@@ -51,7 +51,7 @@ void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
     : ctx_(threading), env_(ctx_), gemma_(loader, inference, ctx_) {
-  const ModelConfig& config = gemma_.GetModelConfig();
+  const ModelConfig& config = gemma_.Config();
   // Only allocate one for starters because GenerateBatch might not be called.
   kv_caches_.push_back(KVCache(config, inference, ctx_.allocator));
 
@@ -141,7 +141,7 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   // Ensure we have at least one KVCache per query.
   while (kv_caches_.size() < num_queries) {
     kv_caches_.push_back(
-        KVCache(gemma_.GetModelConfig(), gemma_.Inference(), ctx_.allocator));
+        KVCache(gemma_.Config(), gemma_.Inference(), ctx_.allocator));
   }
   const hwy::Span<KVCache> kv_caches(&kv_caches_[0], num_queries);
 

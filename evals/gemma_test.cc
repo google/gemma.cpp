@@ -43,7 +43,7 @@ class GemmaTest : public ::testing::Test {
   static void InitEnv(int argc, char** argv) {
     HWY_ASSERT(s_env == nullptr);  // Should only be called once.
     s_env = new GemmaEnv(argc, argv);
-    const gcpp::ModelConfig& config = s_env->GetGemma()->GetModelConfig();
+    const gcpp::ModelConfig& config = s_env->GetGemma()->Config();
     fprintf(stderr, "Using %s\n", config.Specifier().c_str());
   }
 
@@ -98,7 +98,7 @@ TEST_F(GemmaTest, Batched) {
 
 TEST_F(GemmaTest, Multiturn) {
   const Gemma* model = s_env->GetGemma();
-  const ModelConfig& config = model->GetModelConfig();
+  const ModelConfig& config = model->Config();
   size_t abs_pos = 0;
   std::string response;
   auto stream_token = [&](size_t query_idx, size_t pos, int token, float) {
@@ -149,7 +149,7 @@ TEST_F(GemmaTest, Multiturn) {
 
 TEST_F(GemmaTest, CrossEntropySmall) {
   HWY_ASSERT(s_env->GetGemma() != nullptr);
-  const ModelConfig& config = s_env->GetGemma()->GetModelConfig();
+  const ModelConfig& config = s_env->GetGemma()->Config();
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);

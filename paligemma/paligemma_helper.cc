@@ -16,7 +16,7 @@ namespace gcpp {
 void PaliGemmaHelper::InitVit(const std::string& path) {
   HWY_ASSERT(env_->GetGemma() != nullptr);
   const Gemma& gemma = *(env_->GetGemma());
-  const ModelConfig& config = gemma.GetModelConfig();
+  const ModelConfig& config = gemma.Config();
   HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA);
 
   image_tokens_ = std::make_unique<ImageTokens>(

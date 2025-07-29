@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
   gcpp::ThreadingContext ctx(gcpp::UpdateArgs(threading, inference));
   gcpp::MatMulEnv env(ctx);
   gcpp::Gemma gemma(loader, inference, ctx);
-  gcpp::KVCache kv_cache(gemma.GetModelConfig(), inference, ctx.allocator);
+  gcpp::KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
   size_t generated = 0;
 
   // Initialize random number generator
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
   std::string prompt = "Write a greeting to the world.";
   const std::vector<int> tokens =
       gcpp::WrapAndTokenize(gemma.Tokenizer(), gemma.ChatTemplate(),
-                            gemma.GetModelConfig().wrapping, generated, prompt);
+                            gemma.Config().wrapping, generated, prompt);
   const size_t prompt_size = tokens.size();
 
   // This callback function gets invoked every time a token is generated
@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
     ++generated;
     if (generated < prompt_size) {
       // print feedback
-    } else if (!gemma.GetModelConfig().IsEOS(token)) {
+    } else if (!gemma.Config().IsEOS(token)) {
       std::string token_text;
       HWY_ASSERT(gemma.Tokenizer().Decode({token}, &token_text));
       std::cout << token_text << std::flush;

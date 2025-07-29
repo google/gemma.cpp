@@ -97,7 +97,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
   size_t prompt_size = 0;
-  const ModelConfig& config = gemma.GetModelConfig();
+  const ModelConfig& config = gemma.Config();
 
   std::mt19937 gen;
   InitGenerator(inference, gen);
@@ -258,7 +258,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
   MatMulEnv env(ctx);
   if (inference.verbosity >= 2) env.print_best = true;
   const Gemma gemma(loader, inference, ctx);
-  KVCache kv_cache(gemma.GetModelConfig(), inference, ctx.allocator);
+  KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
 
   if (inference.verbosity >= 1) {
     std::string instructions =
@@ -285,7 +285,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     if (inference.IsInteractive()) {
       std::cout << "\033[2J\033[1;1H"  // clear screen
                 << kAsciiArtBanner << "\n\n";
-      ShowConfig(loader, threading, inference, gemma.GetModelConfig(), ctx);
+      ShowConfig(loader, threading, inference, gemma.Config(), ctx);
       std::cout << "\n" << instructions << "\n";
     }
   }

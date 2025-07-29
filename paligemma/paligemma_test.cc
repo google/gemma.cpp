@@ -58,7 +58,7 @@ TEST_F(PaliGemmaTest, QueryObjects) {
   const char* question = "answer en What objects are in the image?";
   // 3B PT/Mix 224, 10B Mix 224
   const char* expected_substring = "Building, Tower";
-  const Model model = s_env->GetGemma()->GetModelConfig().model;
+  const Model model = s_env->GetGemma()->Config().model;
   if (model == Model::PALIGEMMA2_3B_448) {
     expected_substring = "Lake.";
   } else if (model == Model::PALIGEMMA2_10B_224) {

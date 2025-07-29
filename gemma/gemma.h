@@ -236,8 +236,7 @@ class Gemma {
         ThreadingContext& ctx);
   ~Gemma();
 
-  // TODO: rename to Config()
-  const ModelConfig& GetModelConfig() const { return model_.Config(); }
+  const ModelConfig& Config() const { return model_.Config(); }
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
   const WeightsPtrs& Weights() const { return weights_; }
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }

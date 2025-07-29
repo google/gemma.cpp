@@ -180,7 +180,7 @@ class GemmaContext {
       active_conversation->abs_pos = 0;
       // Replace the cache within the current ConversationData object
       active_conversation->kv_cache = std::make_unique<KVCache>(
-          model.GetModelConfig(), inference_args, ctx.allocator);
+          model.Config(), inference_args, ctx.allocator);
 
       LogDebug((log_prefix + "Successfully rewound to initial state.").c_str());
     } else {
@@ -198,7 +198,7 @@ class GemmaContext {
     LogDebug("Creating new conversation");
     // Create a new ConversationData object using make_shared
     conversation_cache[name] = std::make_shared<ConversationData>(
-        model.GetModelConfig(), inference_args, ctx.allocator);
+        model.Config(), inference_args, ctx.allocator);
     return true;
   }
 

@@ -112,7 +112,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
   LogDebug("Creating initial ConversationData");
   // Create the initial ConversationData object using make_shared
   active_conversation = std::make_shared<ConversationData>(
-      model.GetModelConfig(), inference_args, ctx.allocator);
+      model.Config(), inference_args, ctx.allocator);
 
   LogDebug(
       "Storing initial ConversationData in conversation_cache[\"default\"]");
@@ -150,7 +150,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     const bool in_prompt = tokens_generated_this_turn < prompt_size;
     const bool first_response_token = tokens_generated_this_turn == prompt_size;
     ++tokens_generated_this_turn;
-    if (in_prompt || model.GetModelConfig().IsEOS(token)) {
+    if (in_prompt || model.Config().IsEOS(token)) {
       return true;
     }
 
@@ -180,7 +180,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
   inference_args.CopyTo(runtime_config);
   size_t prefix_end = 0;
 
-  const ModelConfig& model_config = model.GetModelConfig();
+  const ModelConfig& model_config = model.Config();
 
   // generate
   std::vector<int> prompt;

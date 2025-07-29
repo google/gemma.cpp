@@ -102,7 +102,7 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           MatMulEnv& env, int verbosity) {
   const StreamFunc stream_token = [](int, float) { return true; };
 
-  const int vocab_size = gemma.GetModelConfig().vocab_size;
+  const int vocab_size = gemma.Config().vocab_size;
   float cross_entropy = std::log(vocab_size);  // first token; == -log(1/v_s)
   size_t pos = 1;
 

@@ -38,7 +38,7 @@ class SimplifiedGemma {
       : ctx_(UpdateArgs(threading, inference)),
         env_(ctx_),
         gemma_(loader, inference, ctx_),
-        kv_cache_(gemma_.GetModelConfig(), inference, ctx_.allocator) {
+        kv_cache_(gemma_.Config(), inference, ctx_.allocator) {
     // Initialize random number generator
     std::random_device rd;
     gen_.seed(rd());
@@ -56,7 +56,7 @@ class SimplifiedGemma {
 
     const std::vector<int> tokens = gcpp::WrapAndTokenize(
         gemma_.Tokenizer(), gemma_.ChatTemplate(),
-        gemma_.GetModelConfig().wrapping, generated, prompt);
+        gemma_.Config().wrapping, generated, prompt);
     const size_t prompt_size = tokens.size();
 
     // This callback function gets invoked every time a token is generated
@@ -64,7 +64,7 @@ class SimplifiedGemma {
       ++generated;
       if (generated < prompt_size) {
         // print feedback
-      } else if (!gemma_.GetModelConfig().IsEOS(token)) {
+      } else if (!gemma_.Config().IsEOS(token)) {
         std::string token_text;
         HWY_ASSERT(gemma_.Tokenizer().Decode({token}, &token_text));
         std::cout << token_text << std::flush;
