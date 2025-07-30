@@ -125,6 +125,7 @@ void LogSpeedStats(double time_start, size_t total_tokens);
 
 void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
                 const InferenceArgs& inference, const ModelConfig& config,
+                WeightsPtrs::Mode weight_read_mode,
                 const ThreadingContext& ctx);
 void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
               const InferenceArgs& inference);

@@ -285,7 +285,8 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     if (inference.IsInteractive()) {
       std::cout << "\033[2J\033[1;1H"  // clear screen
                 << kAsciiArtBanner << "\n\n";
-      ShowConfig(loader, threading, inference, gemma.Config(), ctx);
+      ShowConfig(loader, threading, inference, gemma.Config(),
+                 gemma.WeightReadMode(), ctx);
       std::cout << "\n" << instructions << "\n";
     }
   }

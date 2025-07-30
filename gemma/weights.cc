@@ -223,7 +223,7 @@ void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
 }
 
 // For reshaping file tensors to the shape expected by the code. This would
-// ideally already happen in the importer. Called by WeightsOwner::Fixup.
+// ideally already happen in the importer. Called by `ReadFromBlobs`.
 void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                         ThreadingContext& ctx) {
   // TODO: use 1D parallel-for helper function
@@ -251,21 +251,11 @@ std::vector<uint32_t> WeightsPtrs::AddTensorDataToWriter(
   return serialized_mat_ptrs;
 }
 
-enum class Mode {
-  // Parallel I/O, decompress to BF16. Best for large batch sizes.
-  kReadBF16,
-  // Parallel I/O, insert row-wise padding. Safe default.
-  kRead,
-  // Best for large weights relative to available memory, especially for
-  // frequent invocations of small batches and short sequences. Adds noise to
-  // performance measurements due to I/O variability.
-  kMap
-};
-
 // Decides whether to read or map based on heuristics and user override.
-static Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
-                       const InferenceArgs& inference,
-                       const Allocator& allocator) {
+static WeightsPtrs::Mode ChooseMode(uint64_t file_bytes,
+                                    const LoaderArgs& loader,
+                                    const InferenceArgs& inference,
+                                    const Allocator& allocator) {
   Tristate to_bf16 = loader.to_bf16;
   Tristate map = loader.map;
 
@@ -283,8 +273,8 @@ static Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
   if (to_bf16 == Tristate::kTrue && map == Tristate::kTrue) {
     HWY_WARN("Cannot have to_bf16 && map, to_bf16 takes precedence.");
   }
-  if (to_bf16 == Tristate::kTrue) return Mode::kReadBF16;
-  if (map == Tristate::kTrue) return Mode::kMap;
+  if (to_bf16 == Tristate::kTrue) return WeightsPtrs::Mode::kReadBF16;
+  if (map == Tristate::kTrue) return WeightsPtrs::Mode::kMap;
 
   if (to_bf16 == Tristate::kDefault) {
     // Heuristic: sub-bf16 compression is not helpful if compute-bound.
@@ -307,8 +297,9 @@ static Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
   }
 
   // If the `map` heuristic triggers, use that for safety.
-  if (map == Tristate::kTrue) return Mode::kMap;
-  return (to_bf16 == Tristate::kTrue) ? Mode::kReadBF16 : Mode::kRead;
+  if (map == Tristate::kTrue) return WeightsPtrs::Mode::kMap;
+  return (to_bf16 == Tristate::kTrue) ? WeightsPtrs::Mode::kReadBF16
+                                      : WeightsPtrs::Mode::kRead;
 }
 
 struct TensorToRead {
@@ -324,7 +315,8 @@ struct TensorToRead {
 
 // Allocates multiple in parallel and binds to NUMA nodes.
 static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
-                               const Mode mode, std::vector<MatOwner>& owners,
+                               const WeightsPtrs::Mode mode,
+                               std::vector<MatOwner>& owners,
                                ThreadingContext& ctx) {
   const size_t start = owners.size();
   owners.resize(start + tensors.size());
@@ -342,7 +334,7 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
         if (tensor.prev_type == Type::kF32 || mat.Rows() < 1024) {
           tensor.keep_type = true;
           tensor.padding = MatPadding::kPacked;  // single I/O for simplicity
-        } else if (mode == Mode::kReadBF16) {
+        } else if (mode == WeightsPtrs::Mode::kReadBF16) {
           mat.SetType(Type::kBF16);
         }
 
@@ -354,7 +346,7 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
 
 // Mode == kMap
 static void MapAll(const std::vector<TensorToRead>& tensors,
-                   const MapPtr& mapped) {
+                   const MapPtr& mapped, uint64_t file_bytes) {
   PROFILER_ZONE("Startup.Weights.Map");
   for (size_t i = 0; i < tensors.size(); ++i) {
     // SetPtr does not change the stride, but it is expected to be packed
@@ -362,10 +354,12 @@ static void MapAll(const std::vector<TensorToRead>& tensors,
     const size_t mat_bytes = tensors[i].mat->PackedBytes();
     // Ensure blob size matches that computed from metadata.
     HWY_ASSERT_M(mat_bytes == tensors[i].range.bytes, tensors[i].mat->Name());
+    // Ensure the blob lies within the file mapping.
+    const uint64_t offset = tensors[i].range.offset;
+    HWY_ASSERT_M(offset + mat_bytes <= file_bytes, tensors[i].mat->Name());
 
-    tensors[i].mat->SetPtr(
-        const_cast<uint8_t*>(mapped.get() + tensors[i].range.offset),
-        tensors[i].mat->Stride());
+    tensors[i].mat->SetPtr(const_cast<uint8_t*>(mapped.get() + offset),
+                           tensors[i].mat->Stride());
   }
 }
 
@@ -484,40 +478,49 @@ static void ReadBatches(const BlobReader& reader,
   });
 }
 
-// Aborts on error.
-static void MapOrReadAll(std::vector<TensorToRead>& tensors, BlobReader& reader,
-                         Mode mode, std::vector<MatOwner>& mat_owners,
-                         ThreadingContext& ctx) {
-  if (mode == Mode::kMap) {
-    MapPtr mapped = reader.file().Map();
-    if (mapped) return MapAll(tensors, mapped);
+// Aborts on error. Updates `mode` to the actual mode used. Returns mapped
+// memory or nullptr if `kMap` was not used.
+static MapPtr MapOrReadAll(std::vector<TensorToRead>& tensors,
+                           BlobReader& reader, WeightsPtrs::Mode* mode,
+                           std::vector<MatOwner>& mat_owners,
+                           ThreadingContext& ctx) {
+  if (*mode == WeightsPtrs::Mode::kMap) {
+    if (MapPtr mapped = reader.Map()) {
+      MapAll(tensors, mapped, reader.file().FileSize());
+      return mapped;
+    }
     HWY_WARN("Failed to map file (%zu KiB), reading instead.",
              static_cast<size_t>(reader.file_bytes() >> 10));
     // If we wanted to map but failed, memory is probably not plentiful, so
     // fall through to kRead because kReadBF16 requires more memory.
-    mode = Mode::kRead;
+    *mode = WeightsPtrs::Mode::kRead;
   }
 
   {
     PROFILER_ZONE("Startup.Weights.Allocate");
     // NOTE: this changes the stride of `mats`!
-    AllocateAndBindAll(tensors, mode, mat_owners, ctx);
+    AllocateAndBindAll(tensors, *mode, mat_owners, ctx);
   }
 
   hwy::ThreadPool& pool = ctx.pools.Pool();
 
-  if (mode == Mode::kReadBF16) return ReadAllToBF16(tensors, reader, pool);
+  if (*mode == WeightsPtrs::Mode::kReadBF16) {
+    ReadAllToBF16(tensors, reader, pool);
+    return MapPtr();
+  }
 
   const std::vector<IOBatch> batches =
       MakeBatches(tensors, reader.file_bytes());
   ReadBatches(reader, batches, pool);
+  return MapPtr();
 }
 
-void WeightsPtrs::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
-                                const LoaderArgs& loader,
-                                const InferenceArgs& inference,
-                                std::vector<MatOwner>& mat_owners,
-                                ThreadingContext& ctx) {
+WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
+                                             BlobReader& reader,
+                                             const LoaderArgs& loader,
+                                             const InferenceArgs& inference,
+                                             std::vector<MatOwner>& mat_owners,
+                                             ThreadingContext& ctx) {
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
 
@@ -536,15 +539,14 @@ void WeightsPtrs::ReadFromBlobs(const ModelStore& model, BlobReader& reader,
     HWY_ABORT("Tensor %s is required but not found in file.", t.mat.Name());
   });
 
-  const Mode mode =
-      ChooseMode(reader.file_bytes(), loader, inference, ctx.allocator);
-
-  MapOrReadAll(tensors, reader, mode, mat_owners, ctx);
+  Mode mode = ChooseMode(reader.file_bytes(), loader, inference, ctx.allocator);
+  mapped_ = MapOrReadAll(tensors, reader, &mode, mat_owners, ctx);
 
   {
     PROFILER_ZONE("Startup.Fixup");
     Fixup(mat_owners, ctx);
   }
+  return mode;
 }
 
 }  // namespace gcpp

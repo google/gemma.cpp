@@ -239,6 +239,7 @@ class Gemma {
   const ModelConfig& Config() const { return model_.Config(); }
   const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
   const WeightsPtrs& Weights() const { return weights_; }
+  WeightsPtrs::Mode WeightReadMode() const { return weight_read_mode_; }
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
   const InferenceArgs& Inference() const { return inference_; }
 
@@ -271,6 +272,7 @@ class Gemma {
   ModelStore model_;
   std::vector<MatOwner> mat_owners_;
   WeightsPtrs weights_;
+  WeightsPtrs::Mode weight_read_mode_;
   GemmaChatTemplate chat_template_;
   InferenceArgs inference_;
 };

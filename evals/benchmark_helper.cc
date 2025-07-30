@@ -56,7 +56,8 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
   kv_caches_.push_back(KVCache(config, inference, ctx_.allocator));
 
   if (inference.verbosity >= 2) {
-    ShowConfig(loader, threading, inference, config, ctx_);
+    ShowConfig(loader, threading, inference, config, gemma_.WeightReadMode(),
+               ctx_);
   }
 
   InitGenerator(inference, gen_);
@@ -229,13 +230,15 @@ static constexpr const char* CompiledConfig() {
 
 void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
                 const InferenceArgs& inference, const ModelConfig& config,
+                const WeightsPtrs::Mode weight_read_mode,
                 const ThreadingContext& ctx) {
   threading.Print(inference.verbosity);
   loader.Print(inference.verbosity);
   inference.Print(inference.verbosity);
-  fprintf(stderr, "Model                         : %s, to_bf16 %d, mmap %d\n",
-          config.Specifier().c_str(), static_cast<int>(loader.to_bf16),
-          static_cast<int>(loader.map));
+  fprintf(
+      stderr, "Model                         : %s, to_bf16 %d, mmap %d => %s\n",
+      config.Specifier().c_str(), static_cast<int>(loader.to_bf16),
+      static_cast<int>(loader.map), WeightsPtrs::ToString(weight_read_mode));
 
   if (inference.verbosity >= 2) {
     time_t now = time(nullptr);

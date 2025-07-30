@@ -47,7 +47,7 @@ struct BlobRange {
 // Reads `BlobStore` header, converts keys to strings and creates a hash map for
 // faster lookups.
 // TODO(janwas): rename to BlobFinder or similar.
-// Thread-safe: it is safe to concurrently call all methods.
+// Thread-safe: it is safe to concurrently call all methods except `CloseFile`.
 class BlobReader {
  public:
   // Acquires ownership of `file` (which must be non-null) and reads its header.
@@ -56,11 +56,10 @@ class BlobReader {
 
   const Path& blob_path() const { return blob_path_; }
 
-  // Non-const version required for File::Map().
-  File& file() { return *file_; }
   const File& file() const { return *file_; }
   uint64_t file_bytes() const { return file_bytes_; }
-
+  MapPtr Map() { return file_->Map(); }
+  // OK to call if Map() was called; the smart pointer keeps the mapping alive.
   void CloseFile() { file_.reset(); }
 
   const std::vector<std::string>& Keys() const { return keys_; }

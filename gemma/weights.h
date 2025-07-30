@@ -90,7 +90,7 @@ class MatFinder {
 };
 
 // Per-layer weight metadata and pointers. The tensor data is owned by
-// `WeightsOwner`.
+// `MatOwner`.
 struct LayerWeightsPtrs {
   // Initializes tensor metadata without allocating.
   // NOTE: do not store layer_idx, TransformerLayer and Attention may use
@@ -314,7 +314,7 @@ struct LayerWeightsPtrs {
 };
 
 // Holds layer-independent weight metadata and pointers plus per-layer
-// `LayerWeightsPtrs`. The tensor data is owned by `WeightsOwner`.
+// `LayerWeightsPtrs`. The tensor data is owned by `MatOwner`.
 struct WeightsPtrs {
   explicit WeightsPtrs(const ModelConfig& config)
       : config_(config),
@@ -423,9 +423,34 @@ struct WeightsPtrs {
   // Copies only the allocated tensors in `*this` from tensors in `other`.
   void CopyFrom(const WeightsPtrs& other);
 
+  enum class Mode {
+    // Parallel I/O, decompress to BF16. Best for large batch sizes.
+    kReadBF16,
+    // Parallel I/O, insert row-wise padding. Safe default.
+    kRead,
+    // Best for large weights relative to available memory, especially for
+    // frequent invocations of small batches and short sequences. Adds noise to
+    // performance measurements due to I/O variability.
+    kMap
+  };
+
+  static const char* ToString(Mode mode) {
+    switch (mode) {
+      case Mode::kReadBF16:
+        return "ReadBF16";
+      case Mode::kRead:
+        return "Read";
+      case Mode::kMap:
+        return "Map";
+      default:
+        HWY_DASSERT(false);
+        return "?";
+    }
+  }
+
   // Reads tensor data from `BlobStore` or aborts on error. `map` is a user
-  // override for whether to map blobs or read them.
-  void ReadFromBlobs(const ModelStore& model, BlobReader& reader,
+  // override for whether to map blobs or read them. Returns the mode used.
+  Mode ReadFromBlobs(const ModelStore& model, BlobReader& reader,
                      const LoaderArgs& loader, const InferenceArgs& inference,
                      std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
 
@@ -436,6 +461,8 @@ struct WeightsPtrs {
   // For reshaping file tensors to the shape expected by the code. This would
   // ideally already happen in the importer. Called by ReadFromBlobs.
   void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
+
+  MapPtr mapped_;
 };  // `WeightsPtrs`
 #undef TENSOR_ARGS
 
