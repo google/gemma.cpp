@@ -41,7 +41,7 @@ gemma.cpp specifying the tokenizer, compressed weights file, and model type, for
 example:
 
 ```sh
-./hello_world --tokenizer tokenizer.spm --compressed_weights 2b-it-sfp.sbs --model 2b-it
+./hello_world --tokenizer tokenizer.spm --weights 2b-it-sfp.sbs --model 2b-it
 ```
 
 Should print a greeting to the terminal:
