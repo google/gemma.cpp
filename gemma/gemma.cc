@@ -92,19 +92,19 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   const LayerConfig& layer_config = layer.layer_config;
 
   RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
-                 activations.attention.pre_att_rms_out);
+                 activations.attention.pre_att_rms_out, env.ctx);
 
   Attention(layer_config.type, num_tokens, layer_idx, layer, activations,
             qbatch, env);
 
   PostNorm(layer_config.post_norm, layer.post_attention_norm_scale,
-           activations.attention.att_sums);
+           activations.attention.att_sums, env.ctx);
 
   ResidualConnection(activations.attention.att_sums, activations.x, layer,
-                     /*is_attention=*/true);
+                     /*is_attention=*/true, env.ctx);
 
   RMSNormBatched(activations.x, layer.pre_ffw_norm_scale,
-                 activations.pre_ffw_rms_out);
+                 activations.pre_ffw_rms_out, env.ctx);
 
   if (layer_config.type == LayerAttentionType::kVit) {
     FFWVit(layer, activations, env);
@@ -113,10 +113,10 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   }
 
   PostNorm(layer_config.post_norm, layer.post_ffw_norm_scale,
-           activations.ffw_out);
+           activations.ffw_out, env.ctx);
 
   ResidualConnection(activations.ffw_out, activations.x, layer,
-                     /*is_attention=*/false);
+                     /*is_attention=*/false, env.ctx);
 }
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).
@@ -158,6 +158,7 @@ EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
 
   const size_t model_dim = model_config.model_dim;
   const float emb_scaling = EmbeddingScaling(model_dim);
+  const size_t worker = 0;  // Not yet parallelized.
 
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
@@ -173,7 +174,7 @@ EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
     const hn::ScalableTag<float> df;
     DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(qi),
                          model_dim);
-    MulByConst(emb_scaling * weights_t->Scale(), x.Row(qi), model_dim);
+    MulByConst(emb_scaling * weights_t->Scale(), x.Row(qi), model_dim, worker);
   });
 
   if (model_config.absolute_pe) {
@@ -302,6 +303,7 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
     }
   }
 
+  // TODO: parallelize?
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     EmbedMMToken(qbatch.PrevToken(qi), qi, qbatch.Pos(qi),
                  /*pos_in_prompt=*/0, config, weights, activations.x);
@@ -328,7 +330,7 @@ static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
                                        Activations& activations, QBatch& qbatch,
                                        MatMulEnv& env,
                                        hwy::BitSet4096<>& non_eos) {
-  PROFILER_ZONE("Gen.Prefill");
+  PROFILER_ZONE("Gen.PrefillQ");
 
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     non_eos.Set(qi);
@@ -400,7 +402,7 @@ static void DecodeStepT(const ModelConfig& config,
 
   Transformer(config, runtime_config, weights, activations, qbatch, env);
 
-  RMSNormInplaceBatched(weights.final_norm_scale, activations.x);
+  RMSNormInplaceBatched(weights.final_norm_scale, activations.x, env.ctx);
 
   if (HWY_UNLIKELY(runtime_config.activations_observer)) {
     runtime_config.activations_observer(
@@ -414,9 +416,10 @@ static void DecodeStepT(const ModelConfig& config,
                /*add=*/nullptr, env, activations.logits);
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
+  const size_t worker = 0;  // TODO: parallelize
   non_eos.Foreach([&](size_t qi) {
     float* HWY_RESTRICT logits = activations.logits.Row(qi);
-    MaybeLogitsSoftCap(config.final_cap, logits, config.vocab_size);
+    MaybeLogitsSoftCap(config.final_cap, logits, config.vocab_size, worker);
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
     timing_info.NotifyGenerated();
 
@@ -430,10 +433,12 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
+  const size_t worker = 0;  // TODO: parallelize
+
   // Fast path for top-1 with no accept_token.
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
     return [](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
-      PROFILER_ZONE("Gen.Sample Top1");
+      PROFILER_ZONE2(worker, "Gen.Sample Top1");
       return Top1OfSoftmax(logits, vocab_size);
     };
   }
@@ -444,7 +449,7 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config) {
     PROFILER_ZONE("Gen.Sample general");
     return FusedSoftmaxAndSampleTopK(
         logits, runtime_config.top_k, vocab_size, *runtime_config.gen,
-        runtime_config.temperature, runtime_config.accept_token);
+        runtime_config.temperature, runtime_config.accept_token, worker);
   };
 }
 

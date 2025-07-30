@@ -355,6 +355,17 @@ void ParallelFor(size_t num_tasks, NestedPools& pools, size_t pkg_idx,
       });
 }
 
+// As above, but for lightweight tasks. Uses only one pool.
+template <class Func>
+void SmallParallelFor(size_t num_tasks, NestedPools& pools, size_t pkg_idx,
+                      const Func& func) {
+  const size_t pkg_base = pkg_idx * pools.MaxWorkersPerPackage();
+
+  pools.Pool(pkg_idx).Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+    func(task, pkg_base + thread);
+  });
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_THREADING_H_

@@ -90,12 +90,12 @@ class VitAttention {
     ZeroInit(activations_.attention.att_out);
 
     for (size_t head = 0; head < heads; ++head) {
-      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t worker) HWY_ATTR {
         const size_t token = task;
         float* HWY_RESTRICT q =
             activations_.attention.q.Row(token) + head * 3 * qkv_dim;
         // TODO: shift to MatMul with A.scale once MatMul is confirmed working
-        MulByConst(query_scale, q, qkv_dim);
+        MulByConst(query_scale, q, qkv_dim, worker);
         hwy::CopyBytes(q, Q.Row(token), qkv_dim * sizeof(float));
       });
 
@@ -109,19 +109,19 @@ class VitAttention {
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
       CallMatMul(Q, K, nullptr, env_, C);
 
-      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t worker) HWY_ATTR {
         float* HWY_RESTRICT c = C.Row(task);
-        Softmax(c, C.Cols());
+        Softmax(c, C.Cols(), worker);
       });
 
-      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+      pool_.Run(0, num_tokens_, [&](uint64_t task, size_t worker) HWY_ATTR {
         size_t token = task;
         float* HWY_RESTRICT att_out =
             activations_.attention.att_out.Row(token) + head * qkv_dim;
         for (size_t i = 0; i < seq_len; ++i) {
           float* HWY_RESTRICT v = activations_.attention.q.Row(i) +
                                   head * 3 * qkv_dim + 2 * qkv_dim;
-          MulByConstAndAdd(C.Row(token)[i], v, att_out, qkv_dim);
+          MulByConstAndAdd(C.Row(token)[i], v, att_out, qkv_dim, worker);
         }
       });
     }
@@ -138,13 +138,13 @@ class VitAttention {
 
     // Compute Q.K, softmax, and weighted V.
     pool_.Run(0, layer_config_.heads * num_tokens_,
-              [&](uint64_t task, size_t /*thread*/) HWY_ATTR {
+              [&](uint64_t task, size_t worker) HWY_ATTR {
                 const size_t head = task % layer_config_.heads;
                 const size_t token = task / layer_config_.heads;
                 // Compute Q.K scores, which are "logits" stored in head_att.
                 float* HWY_RESTRICT q =
                     activations_.attention.q.Row(token) + head * 3 * qkv_dim;
-                MulByConst(query_scale, q, qkv_dim);
+                MulByConst(query_scale, q, qkv_dim, worker);
                 float* HWY_RESTRICT head_att =
                     activations_.attention.att.Row(token) + head * seq_len;
                 for (size_t i = 0; i < seq_len; ++i) {
@@ -153,7 +153,7 @@ class VitAttention {
                   head_att[i] = Dot(q, k, qkv_dim);  // score = q.k
                 }
                 // SoftMax yields "probabilities" in head_att.
-                Softmax(head_att, seq_len);
+                Softmax(head_att, seq_len, worker);
                 // Compute weighted sum of v into att_out.
                 float* HWY_RESTRICT att_out =
                     activations_.attention.att_out.Row(token) + head * qkv_dim;
@@ -161,7 +161,7 @@ class VitAttention {
                 for (size_t i = 0; i < seq_len; ++i) {
                   float* HWY_RESTRICT v = activations_.attention.q.Row(i) +
                                           head * 3 * qkv_dim + 2 * qkv_dim;
-                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim);
+                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim, worker);
                 }
               });
   }
@@ -259,7 +259,7 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
   VitAttention(num_tokens, layer_idx, activations, layer, env)();
 
   // x = out["+sa"] = x + y
-  AddFromBatched(activations.attention.att_sums, x);
+  AddFromBatched(activations.attention.att_sums, x, env.ctx);
 
   // y = nn.LayerNorm()(x)
   // y ~ pre_ffw_rms_out
@@ -271,7 +271,7 @@ void VitTransformerLayer(size_t num_tokens, const size_t layer_idx,
   FFWVit(layer, activations, env);
 
   // x = out["+mlp"] = x + y
-  AddFromBatched(activations.ffw_out, x);
+  AddFromBatched(activations.ffw_out, x, env.ctx);
 }
 
 // Gets the patches of the image and embeds them with the image embedding
@@ -303,7 +303,7 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
   // Add position embeddings.
   CallUpcastedActivation(&weights.vit_img_pos_embedding,
                          [&](const auto* weights_t) {
-                           AddFromBatched(*weights_t, activations.x);
+                           AddFromBatched(*weights_t, activations.x, env.ctx);
                          });
 }
 
@@ -334,7 +334,7 @@ void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights,
     // Apply soft embedding norm before input projection.
     CallUpcasted(&weights.mm_embed_norm, [&](const auto* weights_t) {
       RMSNormInplace(weights_t->PackedScale1(), 0, activations.x.Row(0),
-                     vit_model_dim);
+                     vit_model_dim, /*worker=*/0);
     });
   }
 

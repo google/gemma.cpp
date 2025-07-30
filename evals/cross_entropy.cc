@@ -85,7 +85,7 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size) {
-  Softmax(logits, vocab_size);
+  Softmax(logits, vocab_size, /*worker=*/0);
 }
 
 }  // namespace HWY_NAMESPACE

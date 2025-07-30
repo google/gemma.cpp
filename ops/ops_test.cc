@@ -166,7 +166,7 @@ struct TestAddFrom {
     }
 
     SimpleAddFrom(o, e, count);
-    AddFrom(o, x, count);
+    AddFrom(o, x, count, /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -199,7 +199,7 @@ struct TestMulByConstAndAdd {
     T constant = Random<T>(rng);
 
     SimpleMulByConstAndAdd(constant, o, e, count);
-    MulByConstAndAdd(constant, o, x, count);
+    MulByConstAndAdd(constant, o, x, count, /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -229,7 +229,7 @@ struct TestMulByConst {
     T constant = Random<T>(rng);
 
     SimpleMulByConst(constant, e, count);
-    MulByConst(constant, x, count);
+    MulByConst(constant, x, count, /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -259,7 +259,7 @@ struct TestSoftmax {
     }
 
     SimpleSoftmax(e, count);
-    Softmax(x, count);
+    Softmax(x, count, /*worker=*/0);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {
@@ -454,7 +454,7 @@ void TestRMSNorm(hwy::RandomState& rng) {
   }
 
   ScalarRMSNorm(vec, weight, expected, kSize);
-  RMSNorm(vec, weight, 0, actual, kSize);
+  RMSNorm(vec, weight, 0, actual, kSize, /*worker=*/0);
 
   for (size_t i = 0; i < kSize; i++) {
     const float e = hwy::ConvertScalarTo<float>(expected[i]);
@@ -584,7 +584,7 @@ void TestSampleTopK() {
   std::vector<float> logits(kSize);
   // Create a vector going from -100 to -100+51=49 and take Softmax.
   std::iota(logits.begin(), logits.end(), -100.0f);
-  Softmax(logits.data(), kSize);
+  Softmax(logits.data(), kSize, /*worker=*/0);
   std::mt19937 gen;
   gen.seed(0x12345678);
   float temperature = 1.0f;
@@ -600,7 +600,7 @@ void TestSampleTopK() {
   EXPECT_EQ(sample, 50);  // Last even index.
   // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
-  Softmax(logits.data(), kSize);
+  Softmax(logits.data(), kSize, /*worker=*/0);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
     sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,

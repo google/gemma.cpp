@@ -66,12 +66,13 @@ void Activation(ActivationType activation, T* HWY_RESTRICT c1,
 template <class Mat>
 void ActivationBatched(ActivationType activation, Mat& c1, NestedPools& pools) {
   using T = typename Mat::T;
-  ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
-              [&](uint64_t task, size_t worker) {
-                // Cast to correct type so type deduction works.
-                Activation(activation, c1.Row(task),
-                           static_cast<const T*>(nullptr), c1.Cols(), worker);
-              });
+  const size_t pkg_idx = 0;
+  SmallParallelFor(
+      c1.Rows(), pools, pkg_idx, [&](uint64_t task, size_t worker) {
+        // Cast to correct type so type deduction works.
+        Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
+                   c1.Cols(), worker);
+      });
 }
 
 template <class Mat>
@@ -79,18 +80,19 @@ HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
                                     const Mat* c2, NestedPools& pools) {
   using T = typename Mat::T;
   HWY_DASSERT(c1.SameShape(*c2));
+  const size_t pkg_idx = 0;
   if (c2 && c2->HasPtr()) {
-    ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
-                [&](uint64_t task, size_t worker) {
-                  Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
-                             worker);
-                });
+    SmallParallelFor(c1.Rows(), pools, pkg_idx,
+                     [&](uint64_t task, size_t worker) {
+                       Activation(activation, c1.Row(task), c2->Row(task),
+                                  c1.Cols(), worker);
+                     });
   } else {  // No multiplier
-    ParallelFor(c1.Rows(), pools, /*pkg_idx=*/0,
-                [&](uint64_t task, size_t worker) {
-                  Activation(activation, c1.Row(task),
-                             static_cast<const T*>(nullptr), c1.Cols(), worker);
-                });
+    SmallParallelFor(
+        c1.Rows(), pools, pkg_idx, [&](uint64_t task, size_t worker) {
+          Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
+                     c1.Cols(), worker);
+        });
   }
 }
 
@@ -98,17 +100,17 @@ template <typename T2, class LayerWeights>
 HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
                                      MatPtrT<float>& HWY_RESTRICT x,
                                      const LayerWeights& layer,
-                                     bool is_attention) {
+                                     bool is_attention, ThreadingContext& ctx) {
   // ResidualType::Add
-  AddFromBatched(other, x);
+  AddFromBatched(other, x, ctx);
 }
 
 template <typename InOutT>
 void PostNorm(PostNormType post_norm, const MatPtr& weights,
-              MatPtrT<InOutT>& inout) {
+              MatPtrT<InOutT>& inout, ThreadingContext& ctx) {
   HWY_DASSERT(weights.Rows() == 1);
   if (post_norm == PostNormType::Scale) {
-    RMSNormInplaceBatched(weights, inout);
+    RMSNormInplaceBatched(weights, inout, ctx);
   }
 }
 

@@ -875,9 +875,6 @@ class MMPerPackage {
         inner_tasks_(config.InnerTasks()),
         out_(config.Out()),
         line_bytes_(args.env->ctx.allocator.LineBytes()) {
-    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DecompressA");
-    MMZone zone;
-    zone.MaybeEnter(pkg_idx, zone_id, args_);
     A_ = DecompressA(A);
   }
 
@@ -1119,8 +1116,14 @@ class MMPerPackage {
     const size_t NBF = hn::Lanes(dbf);
     static_assert(hwy::IsSameEither<TA, BF16, float>(), "Can seek");
 
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DecompressA");
+
     const auto do_range = [&](const IndexRange& range_M,
-                              const IndexRange& range_K) HWY_ATTR {
+                              const IndexRange& range_K,
+                              size_t worker) HWY_ATTR {
+      MMZone zone;
+      zone.MaybeEnter(worker, zone_id, args_);
+
       const size_t col0 = range_K.begin();
       const size_t cols = range_K.Num();
       // Must be a vector multiple, or the last range before row padding,
@@ -1141,7 +1144,7 @@ class MMPerPackage {
 
     switch (par_a) {
       case MMParA::kNone:
-        do_range(all_M, all_K);
+        do_range(all_M, all_K, /*worker=*/0);
         break;
       case MMParA::kK1:
       case MMParA::kK2:
@@ -1154,15 +1157,15 @@ class MMPerPackage {
 
         args_.env->parallel.ForNP(
             all_K, multiple_K, inner_tasks, pkg_idx_,
-            [&](const IndexRange& range_K, size_t /*worker*/) {
-              do_range(all_M, range_K);
+            [&](const IndexRange& range_K, size_t worker) {
+              do_range(all_M, range_K, worker);
             });
         break;
       }
       case MMParA::kM:
         args_.env->parallel.ForRangeMC(
-            all_M, pkg_idx_, [&](size_t row_a, size_t /*worker*/) {
-              do_range(IndexRange(row_a, row_a + 1), all_K);
+            all_M, pkg_idx_, [&](size_t row_a, size_t worker) {
+              do_range(IndexRange(row_a, row_a + 1), all_K, worker);
             });
         break;
     }
@@ -1190,12 +1193,9 @@ class MMPerPackage {
 
     // First call: generate candidates.
     if (HWY_UNLIKELY(!autotune.HasCandidates())) {
-      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4};
-      if (A.Rows() == 1) {
-        candidates.push_back(MMParA::kNone);
-      } else {
-        candidates.push_back(MMParA::kM);
-      }
+      const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
+      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
+                                        other};
       autotune.SetCandidates(candidates);
     }
 
@@ -1279,7 +1279,8 @@ struct MMImpl {
   static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                                     RowPtrs<TC> C_rows, const MMArgs& args,
                                     const MMConfig& config) {
-    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DoMatMul");
+    PROFILER_ZONE("MM.DoMatMul");
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DoMatMul.PerPkg");
 
     // Outermost loop: static NUMA-aware partition of B rows across packages.
     args.env->parallel.ForPkg(
@@ -1353,7 +1354,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     return &per_key;
   }
 
-  PROFILER_ZONE("Matmul.Autotune");
+  // From here, CPU time is negligible except DoMatMul.
 
   // First call: enumerate all feasible configs.
   if (HWY_UNLIKELY(!tuner.HasCandidates())) {
@@ -1364,7 +1365,6 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     HWY_ASSERT(N <= MMStorage::kMaxN);
     HWY_ASSERT(N % kNR == 0);
 
-    // Negligible CPU time.
     tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC), kMaxMR,
                                      kNR, per_key.ranges_np, env.print_config));
   }

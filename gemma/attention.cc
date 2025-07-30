@@ -150,7 +150,7 @@ void SingleDotSoftmaxWeightedSum(
   // SoftMax with optional SoftCap yields "probabilities" in att.
   const size_t att_len = HWY_MIN(last_pos + 1, seq_len);
   MaybeLogitsSoftCap(att_cap, att, att_len, worker);
-  Softmax(att, att_len, /*temperature=*/1.0f, worker);
+  Softmax(att, att_len, worker, /*temperature=*/1.0f);
 
   WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out,
                worker);
@@ -168,7 +168,6 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
                            AttentionActivations& activations, QBatch& qbatch,
                            NestedPools& pools) {
-  PROFILER_ZONE("Gen.Attention.DotSoftmax.misc");
   static const uint32_t HWY_MAYBE_UNUSED zone_id_par =
       PROFILER_ADD_ZONE("Gen.Attention.DotSoftmax.par");
 
@@ -227,8 +226,13 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                                 layer, activations, att, att_out, worker);
   };
 
-  ParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads, pools,
-              /*pkg_idx=*/0, func);
+  {
+    PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
+    const size_t pkg_idx = 0;
+    // Full parallelism is helpful, SmallParallelFor is insufficient.
+    ParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads,
+                pools, pkg_idx, func);
+  }
 }
 
 // Different functions use different naming conventions for the number of

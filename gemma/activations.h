@@ -29,7 +29,6 @@
 #include "util/allocator.h"  // Allocator
 #include "util/basics.h"     // BF16
 #include "util/mat.h"        // MatStorageT
-#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -182,8 +181,8 @@ struct Activations {
     // Note that BindC on any MatMul output considerably slows down Prefill.
   }
 
+  // Negligible CPU time.
   void SetBatchSize(size_t batch_size) {
-    PROFILER_ZONE("SetBatchSize");
     x.OverrideRows(batch_size);
     logits.OverrideRows(batch_size);
 

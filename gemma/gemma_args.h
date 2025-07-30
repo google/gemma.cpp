@@ -32,6 +32,7 @@
 #include "util/mat.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"               // HWY_ABORT
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -116,6 +117,7 @@ struct RuntimeConfig {
   // If non-null, `batch_stream_token` is called for each token in the batch,
   // otherwise `stream_token`. `query_idx` is absolute, not batch-relative.
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
+    PROFILER_ZONE("Gen.StreamToken");
     if (batch_stream_token) {
       return batch_stream_token(query_idx, pos, token, prob);
     }

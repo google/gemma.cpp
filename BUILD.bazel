@@ -474,6 +474,7 @@ cc_library(
         ":matmul",
         "//io",
         "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )
 
