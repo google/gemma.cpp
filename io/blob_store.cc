@@ -411,17 +411,19 @@ void BlobWriter::WriteAll(hwy::ThreadPool& pool, const Path& filename) {
   std::unique_ptr<File> file = OpenFileOrNull(filename, "w+");
   if (!file) HWY_ABORT("Failed to open for writing %s", filename.path.c_str());
 
-  pool.Run(0, writes.size(),
-           [this, &file, &writes](uint64_t i, size_t /*thread*/) {
-             const BlobRange& range = writes[i].range;
+  hwy::ThreadPool null_pool(0);
+  hwy::ThreadPool& pool_or_serial = file->IsAppendOnly() ? null_pool : pool;
+  pool_or_serial.Run(
+      0, writes.size(), [this, &file, &writes](uint64_t i, size_t /*thread*/) {
+        const BlobRange& range = writes[i].range;
 
-             if (!file->Write(writes[i].data, range.bytes, range.offset)) {
-               const std::string& key = StringFromKey(keys_[range.key_idx]);
-               HWY_ABORT("Write failed for %s from %zu, %zu bytes to %p.",
-                         key.c_str(), static_cast<size_t>(range.offset),
-                         range.bytes, writes[i].data);
-             }
-           });
+        if (!file->Write(writes[i].data, range.bytes, range.offset)) {
+          const std::string& key = StringFromKey(keys_[range.key_idx]);
+          HWY_ABORT("Write failed for %s from %zu, %zu bytes to %p.",
+                    key.c_str(), static_cast<size_t>(range.offset), range.bytes,
+                    writes[i].data);
+        }
+      });
 }
 
 }  // namespace gcpp

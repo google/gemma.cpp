@@ -88,6 +88,9 @@ class FilePosix : public File {
     }
   }
 
+  // pwrite is thread-safe and allows arbitrary offsets.
+  bool IsAppendOnly() const override { return false; }
+
   uint64_t FileSize() const override {
     static_assert(sizeof(off_t) == 8, "64-bit off_t required");
     const off_t size = lseek(fd_, 0, SEEK_END);

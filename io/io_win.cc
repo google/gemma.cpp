@@ -47,6 +47,9 @@ class FileWin : public File {
     }
   }
 
+  // WriteFile is thread-safe and allows arbitrary offsets.
+  bool IsAppendOnly() const override { return false; }
+
   uint64_t FileSize() const override {
     DWORD hi;
     const DWORD lo = GetFileSize(hFile_, &hi);

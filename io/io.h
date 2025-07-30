@@ -46,6 +46,10 @@ class File {
   File(const File& other) = delete;
   const File& operator=(const File& other) = delete;
 
+  // If true, Write() should only be called with `offset` equal to the number
+  // of bytes already written to the file, which rules out parallel writes.
+  virtual bool IsAppendOnly() const = 0;
+
   // Returns size in bytes or 0.
   virtual uint64_t FileSize() const = 0;
 
