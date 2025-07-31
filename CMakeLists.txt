@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG c5bebf84ad01edec97e336f5c97ca4e0df6b4d06 EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9414b48aeec251b69e6cadbfa42bebb5ddae1c34 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
@@ -39,58 +39,54 @@ set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
 FetchContent_Declare(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.2 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(benchmark)
 
+# Base source files
 set(SOURCES
-  compression/blob_store.cc
-  compression/blob_store.h
+  compression/compress-inl.h
   compression/compress.cc
   compression/compress.h
-  compression/compress-inl.h
-  compression/fields.cc
-  compression/fields.h
-  compression/io_win.cc
-  compression/io.cc
-  compression/io.h
   compression/nuq-inl.h
   compression/sfp-inl.h
-  compression/shared.h
+  compression/types.h
   compression/test_util-inl.h
-  backprop/activations.h
-  backprop/backward.cc
-  backprop/backward.h
-  backprop/backward-inl.h
-  backprop/backward_scalar.h
-  backprop/common_scalar.h
-  backprop/forward.cc
-  backprop/forward.h
-  backprop/forward-inl.h
-  backprop/forward_scalar.h
-  backprop/optimizer.cc
-  backprop/optimizer.h
   evals/benchmark_helper.cc
   evals/benchmark_helper.h
   evals/cross_entropy.cc
   evals/cross_entropy.h
   gemma/activations.h
-  gemma/common.cc
-  gemma/common.h
+  gemma/attention.cc
+  gemma/attention.h
   gemma/configs.cc
   gemma/configs.h
+  gemma/gemma_args.h
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
-  gemma/instantiations/bf16.cc
-  gemma/instantiations/f32.cc
-  gemma/instantiations/nuq.cc
-  gemma/instantiations/sfp.cc
+  gemma/griffin.cc
+  gemma/griffin.h
   gemma/kv_cache.cc
   gemma/kv_cache.h
-  gemma/tensor_index.cc
-  gemma/tensor_index.h
+  gemma/model_store.cc
+  gemma/model_store.h
+  gemma/tensor_info.cc
+  gemma/tensor_info.h
   gemma/tokenizer.cc
   gemma/tokenizer.h
+  gemma/vit.cc
+  gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
+  io/blob_store.cc
+  io/blob_store.h
+  io/fields.cc
+  io/fields.h
+  io/io_win.cc
+  io/io.cc
+  io/io.h
   ops/dot-inl.h
+  ops/matmul_static_bf16.cc
+  ops/matmul_static_f32.cc
+  ops/matmul_static_nuq.cc
+  ops/matmul_static_sfp.cc
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
@@ -102,15 +98,28 @@ set(SOURCES
   paligemma/image.h
   util/allocator.cc
   util/allocator.h
-  util/app.h
-  util/args.h
   util/basics.h
+  util/mat.cc
+  util/mat.h
   util/test_util.h
+  util/threading_context.cc
+  util/threading_context.h
   util/threading.cc
   util/threading.h
   util/topology.cc
   util/topology.h
+)
+
+# Add C API sources only when building DLL
+if(BUILD_GEMMA_DLL)
+  list(APPEND SOURCES
+    gemma/bindings/context.h
+    gemma/bindings/context.cc
+    gemma/bindings/c_api.h
+    gemma/bindings/c_api.cc
   )
+  message(STATUS "Including C API files for DLL build")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
@@ -130,6 +139,33 @@ target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
 install(TARGETS libgemma DESTINATION lib)
+
+# Shared library target for C# interop
+if(BUILD_GEMMA_DLL)
+    add_library(gemma_shared SHARED ${SOURCES})
+set_property(TARGET gemma_shared PROPERTY CXX_STANDARD 17)
+set_target_properties(gemma_shared PROPERTIES 
+    PREFIX ""
+    OUTPUT_NAME "gemma"
+)
+set_property(TARGET gemma_shared PROPERTY POSITION_INDEPENDENT_CODE ON)
+target_include_directories(gemma_shared PUBLIC ./)
+target_link_libraries(gemma_shared PRIVATE 
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy_contrib>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece-static>
+)
+target_include_directories(gemma_shared PUBLIC ${sentencepiece_SOURCE_DIR})
+target_compile_definitions(gemma_shared 
+    PRIVATE 
+    GEMMA_EXPORTS
+    $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>
+)
+target_compile_options(gemma_shared PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+install(TARGETS gemma_shared DESTINATION lib)
+install(FILES gemma/c_api.h DESTINATION include/gemma)
+install(FILES gemma/GemmaInterop.cs DESTINATION include/gemma)
+endif()
 
 # Executable Target
 
@@ -154,17 +190,14 @@ enable_testing()
 include(GoogleTest)
 
 set(GEMMA_TEST_FILES
-  backprop/backward_scalar_test.cc
-  backprop/backward_test.cc
-  backprop/optimize_test.cc
-  compression/blob_store_test.cc
   compression/compress_test.cc
   compression/distortion_test.cc
-  compression/fields_test.cc
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
-  gemma/tensor_index_test.cc
+  gemma/tensor_info_test.cc
+  io/blob_store_test.cc
+  io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
   ops/gemma_matvec_test.cc
@@ -197,8 +230,5 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
-add_executable(compress_weights compression/compress_weights.cc)
-target_link_libraries(compress_weights libgemma hwy hwy_contrib)
-
-add_executable(migrate_weights compression/migrate_weights.cc)
+add_executable(migrate_weights io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)

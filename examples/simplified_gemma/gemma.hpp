@@ -24,47 +24,30 @@
 #include <vector>
 
 #include "third_party/gemma_cpp/gemma/gemma.h"
+#include "third_party/gemma_cpp/gemma/gemma_args.h"  // LoaderArgs
 #include "third_party/gemma_cpp/gemma/tokenizer.h"
 #include "third_party/gemma_cpp/ops/matmul.h"
-#include "third_party/gemma_cpp/util/app.h"  // LoaderArgs
-#include "third_party/gemma_cpp/util/threading.h"
+#include "third_party/gemma_cpp/util/threading_context.h"
 #include "third_party/highway/hwy/base.h"
 
 class SimplifiedGemma {
  public:
   SimplifiedGemma(const gcpp::LoaderArgs& loader,
-                  const gcpp::InferenceArgs& inference = gcpp::InferenceArgs(),
-                  const gcpp::AppArgs& app = gcpp::AppArgs())
-      : loader_(loader),
-        inference_(inference),
-        app_(app),
-        topology_(gcpp::CreateTopology(app_)),
-        pools_(gcpp::CreatePools(topology_, app_)),
-        env_(topology_, pools_),
-        model_(gcpp::CreateGemma(loader_, env_)) {
-    Init();
-  }
-
-  SimplifiedGemma(int argc, char** argv)
-      : loader_(argc, argv, /*validate=*/true),
-        inference_(argc, argv),
-        app_(argc, argv),
-        topology_(gcpp::CreateTopology(app_)),
-        pools_(gcpp::CreatePools(topology_, app_)),
-        env_(topology_, pools_),
-        model_(gcpp::CreateGemma(loader_, env_)) {
-    Init();
-  }
-
-  void Init() {
-    // Instantiate model and KV Cache
-    kv_cache_ = gcpp::KVCache::Create(model_.GetModelConfig(),
-                                      inference_.prefill_tbatch_size);
-
+                  const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
+                  const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
+      : ctx_(UpdateArgs(threading, inference)),
+        env_(ctx_),
+        gemma_(loader, inference, ctx_),
+        kv_cache_(gemma_.Config(), inference, ctx_.allocator) {
     // Initialize random number generator
     std::random_device rd;
     gen_.seed(rd());
   }
+
+  SimplifiedGemma(int argc, char** argv)
+      : SimplifiedGemma(gcpp::LoaderArgs(argc, argv),
+                        gcpp::ThreadingArgs(argc, argv),
+                        gcpp::InferenceArgs(argc, argv)) {}
 
   void Generate(std::string& prompt, size_t max_generated_tokens = 1024,
                 float temperature = 0.7,
@@ -72,7 +55,8 @@ class SimplifiedGemma {
     size_t generated = 0;
 
     const std::vector<int> tokens = gcpp::WrapAndTokenize(
-        model_.Tokenizer(), loader_.Info(), generated, prompt);
+        gemma_.Tokenizer(), gemma_.ChatTemplate(),
+        gemma_.Config().wrapping, generated, prompt);
     const size_t prompt_size = tokens.size();
 
     // This callback function gets invoked every time a token is generated
@@ -80,9 +64,9 @@ class SimplifiedGemma {
       ++generated;
       if (generated < prompt_size) {
         // print feedback
-      } else if (!this->model_.GetModelConfig().IsEOS(token)) {
+      } else if (!gemma_.Config().IsEOS(token)) {
         std::string token_text;
-        HWY_ASSERT(this->model_.Tokenizer().Decode({token}, &token_text));
+        HWY_ASSERT(gemma_.Tokenizer().Decode({token}, &token_text));
         std::cout << token_text << std::flush;
       }
       return true;
@@ -100,18 +84,14 @@ class SimplifiedGemma {
               return !reject_tokens.contains(token);
             },
     };
-    model_.Generate(runtime_config, tokens, 0, kv_cache_, timing_info);
+    gemma_.Generate(runtime_config, tokens, 0, kv_cache_, env_, timing_info);
   }
   ~SimplifiedGemma() = default;
 
  private:
-  gcpp::LoaderArgs loader_;
-  gcpp::InferenceArgs inference_;
-  gcpp::AppArgs app_;
-  gcpp::BoundedTopology topology_;
-  gcpp::NestedPools pools_;
+  gcpp::ThreadingContext ctx_;
   gcpp::MatMulEnv env_;
-  gcpp::Gemma model_;
+  gcpp::Gemma gemma_;
   gcpp::KVCache kv_cache_;
   std::mt19937 gen_;
   std::string validation_error_;

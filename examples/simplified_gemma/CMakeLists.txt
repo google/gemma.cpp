@@ -14,10 +14,11 @@
 
 cmake_minimum_required(VERSION 3.11)
 project(simplified_gemma)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG c5bebf84ad01edec97e336f5c97ca4e0df6b4d06)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9414b48aeec251b69e6cadbfa42bebb5ddae1c34)
 FetchContent_MakeAvailable(highway)
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 53de76561cfc149d3c01037f0595669ad32a5e7c)
 FetchContent_MakeAvailable(sentencepiece)
@@ -31,7 +32,7 @@ if (NOT BUILD_MODE)
 endif()
 if (BUILD_MODE STREQUAL "local")
   # Relative path to gemma.cpp from examples/simplified_gemma/build/
-  FetchContent_Declare(gemma SOURCE_DIR ../../..) 
+  FetchContent_Declare(gemma SOURCE_DIR ../../..)
 else()
   FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG a9aa63fd2ea6b786ed0706d619588bfe2d43370e)
 endif()

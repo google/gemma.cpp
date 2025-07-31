@@ -23,6 +23,7 @@
 
 // IWYU pragma: begin_exports
 #include "util/allocator.h"
+#include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/topology.h"
 #include "hwy/base.h"  // HWY_ASSERT
@@ -73,10 +74,8 @@ class NestedPools {
   // would cause huge slowdowns when spinning, the `BoundedSlice` arguments
   // only impose upper bounds on the number of detected packages and clusters
   // rather than defining the actual number of threads.
-  //
-  // Caller must have called `Allocator::Init` before this.
-  NestedPools(const BoundedTopology& topology, size_t max_threads = 0,
-              Tristate pin = Tristate::kDefault);
+  NestedPools(const BoundedTopology& topology, const Allocator& allocator,
+              size_t max_threads = 0, Tristate pin = Tristate::kDefault);
 
   bool AllPinned() const { return all_pinned_; }
 
@@ -103,7 +102,7 @@ class NestedPools {
   }
 
   size_t NumPackages() const { return packages_.size(); }
-  hwy::ThreadPool& AllPackages() { return all_packages_[0]; }
+  hwy::ThreadPool& AllPackages() { return *all_packages_; }
   hwy::ThreadPool& AllClusters(size_t pkg_idx) {
     HWY_DASSERT(pkg_idx < NumPackages());
     return packages_[pkg_idx].AllClusters();
@@ -149,36 +148,36 @@ class NestedPools {
   class Package {
    public:
     Package() = default;  // for vector
-    Package(const BoundedTopology& topology, size_t pkg_idx,
-            size_t max_workers_per_package);
+    Package(const BoundedTopology& topology, const Allocator& allocator,
+            size_t pkg_idx, size_t max_workers_per_package);
 
     size_t NumClusters() const { return clusters_.size(); }
     size_t MaxWorkersPerCluster() const {
       size_t max_workers_per_cluster = 0;
       for (const PoolPtr& cluster : clusters_) {
         max_workers_per_cluster =
-            HWY_MAX(max_workers_per_cluster, cluster[0].NumWorkers());
+            HWY_MAX(max_workers_per_cluster, cluster->NumWorkers());
       }
       return max_workers_per_cluster;
     }
     size_t TotalWorkers() const {
       size_t total_workers = 0;
       for (const PoolPtr& cluster : clusters_) {
-        total_workers += cluster[0].NumWorkers();
+        total_workers += cluster->NumWorkers();
       }
       return total_workers;
     }
 
-    hwy::ThreadPool& AllClusters() { return all_clusters_[0]; }
+    hwy::ThreadPool& AllClusters() { return *all_clusters_; }
     hwy::ThreadPool& Cluster(size_t cluster_idx) {
       HWY_DASSERT(cluster_idx < clusters_.size());
-      return clusters_[cluster_idx][0];
+      return *clusters_[cluster_idx];
     }
 
     void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-      all_clusters_[0].SetWaitMode(wait_mode);
+      all_clusters_->SetWaitMode(wait_mode);
       for (PoolPtr& cluster : clusters_) {
-        cluster[0].SetWaitMode(wait_mode);
+        cluster->SetWaitMode(wait_mode);
       }
     }
 
@@ -188,7 +187,7 @@ class NestedPools {
   };  // Package
 
   void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-    all_packages_[0].SetWaitMode(wait_mode);
+    all_packages_->SetWaitMode(wait_mode);
     for (Package& package : packages_) {
       package.SetWaitMode(wait_mode);
     }
@@ -319,6 +318,51 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
     const IndexRange range1 = get1.Range(idx1);
     const IndexRange range2 = get2.Range(idx2);
     func(range1, range2, thread);
+  });
+}
+
+// Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
+// over clusters of ONE package, then within each cluster.
+template <class Func>
+void ParallelFor(size_t num_tasks, NestedPools& pools, size_t pkg_idx,
+                 const Func& func) {
+  const size_t pkg_base = pkg_idx * pools.MaxWorkersPerPackage();
+
+  // If few tasks, run on a single cluster. Also avoids a bit of overhead if
+  // there is only one cluster.
+  hwy::ThreadPool& all_clusters = pools.AllClusters(pkg_idx);
+  const size_t num_clusters = all_clusters.NumWorkers();
+  hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, 0);
+  if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
+    return cluster.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+      func(task, pkg_base + thread);
+    });
+  }
+
+  // Assign each cluster a sub-range.
+  const IndexRangePartition ranges =
+      StaticPartition(IndexRange(0, num_tasks), num_clusters, 1);
+  ParallelizeOneRange(
+      ranges, all_clusters,
+      [&](const IndexRange& range, const size_t cluster_idx) {
+        hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, cluster_idx);
+        const size_t cluster_base =
+            pkg_base + cluster_idx * pools.MaxWorkersPerCluster();
+        cluster.Run(range.begin(), range.end(),
+                    [&](uint64_t task, size_t thread) {
+                      func(task, cluster_base + thread);
+                    });
+      });
+}
+
+// As above, but for lightweight tasks. Uses only one pool.
+template <class Func>
+void SmallParallelFor(size_t num_tasks, NestedPools& pools, size_t pkg_idx,
+                      const Func& func) {
+  const size_t pkg_base = pkg_idx * pools.MaxWorkersPerPackage();
+
+  pools.Pool(pkg_idx).Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+    func(task, pkg_base + thread);
   });
 }
 

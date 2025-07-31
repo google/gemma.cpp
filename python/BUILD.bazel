@@ -1,3 +1,4 @@
+# [internal2] load py_binary
 # [internal] load py_binary
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
@@ -12,8 +13,9 @@ pybind_extension(
     name = "configs",
     srcs = ["configs.cc"],
     deps = [
-        "//:common",
-        "//compression:sfp",
+        "//:configs",
+        "//:tensor_info",
+        "//compression:types",
     ],
 )
 
@@ -21,12 +23,11 @@ pybind_extension(
     name = "gemma",
     srcs = ["gemma_py.cc"],
     deps = [
-        "//:app",
         "//:benchmark_helper",
+        "//:gemma_args",
         "//:gemma_lib",
-        "//compression:sfp",
+        "//:threading_context",
         "@highway//:hwy",
-        "@highway//:thread_pool",
     ],
 )
 

@@ -26,7 +26,7 @@
 #include <cstdlib>  // std::abs
 #include <vector>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/stats.h"

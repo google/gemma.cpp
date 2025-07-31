@@ -13,12 +13,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "util/threading.h"
+#include "util/threading.h"  // NOT threading_context..
+// to ensure there is no deadlock.
 
 #include <stdio.h>
 
 #include <algorithm>  // std::sort
 #include <atomic>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -57,8 +59,8 @@ class Pinning {
 
   // If want_pin_, tries to pin each worker in `pool` to an LP in `cluster`,
   // and sets `any_error_` if any fails.
-  void MaybePin(size_t pkg_idx, size_t cluster_idx,
-                const BoundedTopology::Cluster& cluster,
+  void MaybePin(const BoundedTopology& topology, size_t pkg_idx,
+                size_t cluster_idx, const BoundedTopology::Cluster& cluster,
                 hwy::ThreadPool& pool) {
     const std::vector<size_t> lps = cluster.LPVector();
     HWY_ASSERT(pool.NumWorkers() <= lps.size());
@@ -66,17 +68,21 @@ class Pinning {
       HWY_ASSERT(task == thread);  // each worker has one task
 
       char buf[16];  // Linux limitation
-      const int bytes_written =
-          snprintf(buf, sizeof(buf), "P%zu X%02zu C%03d", pkg_idx, cluster_idx,
-                   static_cast<int>(task));
-      HWY_ASSERT(bytes_written < sizeof(buf));
+      const int bytes_written = snprintf(
+          buf, sizeof(buf), "P%zu X%02zu C%03d",
+          topology.SkippedPackages() + pkg_idx,
+          topology.SkippedClusters() + cluster_idx, static_cast<int>(task));
+      HWY_ASSERT(bytes_written < static_cast<int>(sizeof(buf)));
       hwy::SetThreadName(buf, 0);  // does not support varargs
 
       if (HWY_LIKELY(want_pin_)) {
         if (HWY_UNLIKELY(!hwy::PinThreadToLogicalProcessor(lps[task]))) {
-          fprintf(
-              stderr, "Pinning failed for task %d of %zu to %zu (size %zu)\n",
-              static_cast<int>(task), pool.NumWorkers(), lps[task], lps.size());
+          // Apple does not support pinning, hence do not warn there.
+          if (!HWY_OS_APPLE) {
+            HWY_WARN("Pinning failed for task %d of %zu to %zu (size %zu)\n",
+                     static_cast<int>(task), pool.NumWorkers(), lps[task],
+                     lps.size());
+          }
           (void)any_error_.test_and_set();
         }
       }
@@ -107,16 +113,16 @@ static Pinning& GetPinning() {
   return pinning;
 }
 
-static PoolPtr MakePool(size_t num_workers,
+static PoolPtr MakePool(const Allocator& allocator, size_t num_workers,
                         std::optional<size_t> node = std::nullopt) {
   // `ThreadPool` expects the number of threads to create, which is one less
   // than the number of workers, but avoid underflow if zero.
   const size_t num_threads = num_workers == 0 ? 0 : num_workers - 1;
-  PoolPtr ptr = Allocator::AllocClasses<hwy::ThreadPool>(1, num_threads);
+  PoolPtr ptr = allocator.AllocClasses<hwy::ThreadPool>(1, num_threads);
   const size_t bytes =
-      hwy::RoundUpTo(sizeof(hwy::ThreadPool), Allocator::QuantumBytes());
-  if (node.has_value() && Allocator::ShouldBind()) {
-    Allocator::BindMemory(ptr.get(), bytes, node.value());
+      hwy::RoundUpTo(sizeof(hwy::ThreadPool), allocator.QuantumBytes());
+  if (node.has_value() && allocator.ShouldBind()) {
+    allocator.BindMemory(ptr.get(), bytes, node.value());
   }
   return ptr;
 }
@@ -133,22 +139,22 @@ static size_t DivideMaxAcross(const size_t max, const size_t instances) {
   return max;
 }
 
-NestedPools::NestedPools(const BoundedTopology& topology, size_t max_threads,
+NestedPools::NestedPools(const BoundedTopology& topology,
+                         const Allocator& allocator, size_t max_threads,
                          Tristate pin) {
   GetPinning().SetPolicy(pin);
   packages_.resize(topology.NumPackages());
-  all_packages_ = MakePool(packages_.size());
+  all_packages_ = MakePool(allocator, packages_.size());
   const size_t max_workers_per_package =
       DivideMaxAcross(max_threads, packages_.size());
   // Each worker in all_packages_, including the main thread, will be the
-  // calling thread of an all_clusters[0].Run, and hence pinned to one of the
+  // calling thread of an all_clusters->Run, and hence pinned to one of the
   // `cluster.lps` if `pin`.
-  all_packages_[0].Run(
-      0, packages_.size(), [&](uint64_t pkg_idx, size_t thread) {
-        HWY_ASSERT(pkg_idx == thread);  // each thread has one task
-        packages_[pkg_idx] =
-            Package(topology, pkg_idx, max_workers_per_package);
-      });
+  all_packages_->Run(0, packages_.size(), [&](uint64_t pkg_idx, size_t thread) {
+    HWY_ASSERT(pkg_idx == thread);  // each thread has one task
+    packages_[pkg_idx] =
+        Package(topology, allocator, pkg_idx, max_workers_per_package);
+  });
 
   all_pinned_ = GetPinning().AllPinned(&pin_string_);
 
@@ -172,28 +178,29 @@ static inline size_t CapIfNonZero(size_t num, size_t max_or_zero) {
   return (max_or_zero == 0) ? num : HWY_MIN(num, max_or_zero);
 }
 
-NestedPools::Package::Package(const BoundedTopology& topology, size_t pkg_idx,
+NestedPools::Package::Package(const BoundedTopology& topology,
+                              const Allocator& allocator, size_t pkg_idx,
                               size_t max_workers_per_package) {
   // Pre-allocate because elements are set concurrently.
   clusters_.resize(topology.NumClusters(pkg_idx));
   const size_t max_workers_per_cluster =
       DivideMaxAcross(max_workers_per_package, clusters_.size());
 
-  all_clusters_ =
-      MakePool(clusters_.size(), topology.GetCluster(pkg_idx, 0).Node());
+  all_clusters_ = MakePool(allocator, clusters_.size(),
+                           topology.GetCluster(pkg_idx, 0).Node());
   // Parallel so we also pin the calling worker in `all_clusters` to
   // `cluster.lps`.
-  all_clusters_[0].Run(
-      0, all_clusters_[0].NumWorkers(), [&](size_t cluster_idx, size_t thread) {
+  all_clusters_->Run(
+      0, all_clusters_->NumWorkers(), [&](size_t cluster_idx, size_t thread) {
         HWY_ASSERT(cluster_idx == thread);  // each thread has one task
         const BoundedTopology::Cluster& cluster =
             topology.GetCluster(pkg_idx, cluster_idx);
-        clusters_[cluster_idx] =
-            MakePool(CapIfNonZero(cluster.Size(), max_workers_per_cluster),
-                     cluster.Node());
+        clusters_[cluster_idx] = MakePool(
+            allocator, CapIfNonZero(cluster.Size(), max_workers_per_cluster),
+            cluster.Node());
         // Pin workers AND the calling thread from `all_clusters`.
-        GetPinning().MaybePin(pkg_idx, cluster_idx, cluster,
-                              clusters_[cluster_idx][0]);
+        GetPinning().MaybePin(topology, pkg_idx, cluster_idx, cluster,
+                              *clusters_[cluster_idx]);
       });
 }
 

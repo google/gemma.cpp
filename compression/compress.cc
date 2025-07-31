@@ -15,8 +15,34 @@
 
 #include "compression/compress.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include "util/mat.h"
+#include "hwy/base.h"
+#include "hwy/profiler.h"
+
 namespace gcpp {
 
-MatPtr::~MatPtr() {}
+float ScaleWeights(float* HWY_RESTRICT raw, size_t num) {
+  PROFILER_FUNC;
+
+  float maxabs = 0.0;
+  for (size_t i = 0; i < num; ++i) {
+    maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
+  }
+  if (maxabs <= SfpStream::kMax) {
+    return 1.0f;
+  }
+  const float scale = maxabs / SfpStream::kMax;
+  const float inv_scale = static_cast<float>(1.0 / static_cast<double>(scale));
+  for (size_t i = 0; i < num; ++i) {
+    // Clamp because kMax may still be exceeded.
+    const float magn =
+        HWY_MIN(SfpStream::kMax, hwy::ScalarAbs(raw[i] * inv_scale));
+    raw[i] = hwy::ScalarCopySign(magn, raw[i]);
+  }
+  return scale;
+}
 
 }  // namespace gcpp

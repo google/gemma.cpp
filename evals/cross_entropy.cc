@@ -13,6 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
 // clang-format off
@@ -38,17 +43,12 @@
 #include <vector>
 
 #include "evals/cross_entropy.h"
-#include "gemma/common.h"
 #include "gemma/gemma.h"
 #include "hwy/base.h"
 
 namespace gcpp {
 
 namespace {
-template <typename TConfig>
-struct GetVocabSize {
-  int operator()() const { return TConfig::kVocabSize; }
-};
 
 static std::string TokenString(const GemmaTokenizer& tokenizer, int token) {
   std::string token_str;
@@ -85,7 +85,7 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size) {
-  Softmax(logits, vocab_size);
+  Softmax(logits, vocab_size, /*worker=*/0);
 }
 
 }  // namespace HWY_NAMESPACE
@@ -97,12 +97,12 @@ namespace gcpp {
 
 HWY_EXPORT(CallSoftmax);
 
-float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
+float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
-                          int verbosity) {
+                          MatMulEnv& env, int verbosity) {
   const StreamFunc stream_token = [](int, float) { return true; };
 
-  const int vocab_size = gemma.GetModelConfig().vocab_size;
+  const int vocab_size = gemma.Config().vocab_size;
   float cross_entropy = std::log(vocab_size);  // first token; == -log(1/v_s)
   size_t pos = 1;
 
@@ -145,7 +145,7 @@ float ComputeCrossEntropy(Gemma& gemma, size_t max_generated_tokens,
   };
   TimingInfo timing_info;
 
-  gemma.Generate(runtime, prompt0, 0, kv_cache, timing_info);
+  gemma.Generate(runtime, prompt0, 0, kv_cache, env, timing_info);
 
   const float scale = 1.0f / std::log(2.0f);
   return cross_entropy * scale;

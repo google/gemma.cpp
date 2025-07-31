@@ -21,18 +21,19 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <cmath>  // lroundf, only if COMPRESS_STATS
-#include <string>
+#include <memory>
 #include <vector>
 
-#include "compression/blob_store.h"
 #include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
-#include "gemma/configs.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
+
+#if COMPRESS_STATS
+#include <cmath>  // lroundf
+#endif
 
 #endif  // THIRD_PARTY_GEMMA_CPP_COMPRESSION_COMPRESS_INL_H_
 
@@ -64,8 +65,8 @@ static constexpr bool kIsTest = false;
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
 
-// Used by backprop/, where weights are currently f32; also MatMul for f32
-// weights or activations, if native `ReorderWidenMulAccumulate` is available.
+// Used by MatMul for f32 weights or activations, if native
+// `ReorderWidenMulAccumulate` is available.
 template <>
 struct CompressTraits<float> {
   using Packed = float;
@@ -379,7 +380,7 @@ struct CompressTraits<SfpStream> {
   using Packed = SfpStream;
 
   // Callers are responsible for scaling `raw` such that its magnitudes do not
-  // exceed `SfpStream::kMax`. See CompressedArray::scale().
+  // exceed `SfpStream::kMax`. See CompressedArray::Scale().
   template <class DF, HWY_IF_F32_D(DF)>
   static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
                                   size_t num, CompressPerThread& tls,
@@ -387,7 +388,7 @@ struct CompressTraits<SfpStream> {
                                   const size_t packed_ofs) {
     SfpCodec::Enc(df, raw, num, packed.ptr + packed_ofs);
 
-    if (COMPRESS_STATS) {
+    if constexpr (COMPRESS_STATS) {
       const hn::Repartition<BF16, DF> dbf;
       auto distorted =
           hwy::AllocateAligned<BF16>(hwy::RoundUpTo(num, hn::Lanes(dbf)));
@@ -431,9 +432,10 @@ struct CompressTraits<NuqStream> {
                                   size_t num, CompressPerThread& tls,
                                   const PackedSpan<Packed>& packed,
                                   const size_t packed_ofs) {
-    NuqCodec::Enc(df, raw, num, tls.buf, packed, packed_ofs);
+    if (!tls.buf) tls.buf = std::make_unique<NuqStream::ClusterBuf>();
+    NuqCodec::Enc(df, raw, num, *tls.buf, packed, packed_ofs);
 
-    if (COMPRESS_STATS) {
+    if constexpr (COMPRESS_STATS) {
       for (size_t i = 0; i < num; ++i) {
         tls.stats.NotifyIn(static_cast<int>(lroundf(raw[i] * 100.0f + 500.0f)));
       }
@@ -477,7 +479,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
                            const size_t packed_ofs, hwy::ThreadPool& pool) {
   packed.BoundsCheck(packed_ofs, num);
   work.tls.resize(pool.NumWorkers());
-  if (COMPRESS_STATS) {
+  if constexpr (COMPRESS_STATS) {
     for (auto& tls : work.tls) {
       tls.stats.Reset();
     }
@@ -486,7 +488,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   const bool want_bench = COMPRESS_STATS || !kIsTest;
   const double t0 = want_bench ? hwy::platform::Now() : 0.0;
 
-  using Traits = CompressTraits<Packed>;
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   constexpr size_t kBatch = 8192;
   const size_t num_batches = hwy::DivCeil(num, kBatch);
   pool.Run(0, num_batches,
@@ -507,7 +509,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     fprintf(stderr, "Compress %.1f MB/s\n", mbps);
   }
 
-  if (COMPRESS_STATS) {
+  if constexpr (COMPRESS_STATS) {
     for (size_t i = 1; i < work.tls.size(); ++i) {
       work.tls[0].stats.Assimilate(work.tls[i].stats);
     }
@@ -515,26 +517,25 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   }
 }
 
-// Adapter that compresses into `MatStorageT`. `raw` must already be scaled
-// to fit the value range, if `Packed` is `SfpStream`.
+// Same as above, but without parallelization nor benchmarking.
 template <typename Packed>
-HWY_INLINE void CompressScaled(const float* HWY_RESTRICT raw, size_t num,
-                               CompressWorkingSet& work,
-                               MatStorageT<Packed>& compressed,
-                               hwy::ThreadPool& pool) {
-  Compress(raw, num, work,
-           MakeSpan(compressed.data(), compressed.NumElements()),
-           /*packed_ofs=*/0, pool);
+HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
+                           CompressPerThread& tls,
+                           const PackedSpan<Packed>& packed,
+                           const size_t packed_ofs) {
+  packed.BoundsCheck(packed_ofs, num);
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
+  const hn::ScalableTag<float> df;
+  Traits::Compress(df, raw, num, tls, packed, packed_ofs);
 }
 
-// Stores two f32 vectors to f32 or bf16; avoids duplicating RMSNorm and
-// RMSNormInplace for the two output types.
+// Stores two f32 vectors to f32 or bf16.
 template <class DF, typename Packed, HWY_IF_F32_D(DF), class VF = hn::Vec<DF>>
 void Compress2(DF df, VF raw0, VF raw1, const PackedSpan<Packed>& packed,
                const size_t packed_ofs) {
   static_assert(hwy::IsSameEither<Packed, float, BF16>());
   packed.BoundsCheck(packed_ofs, 2 * hn::Lanes(df));
-  using Traits = CompressTraits<Packed>;
+  using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   Traits::Store2(df, raw0, raw1, packed, packed_ofs);
 }
 
@@ -566,7 +567,7 @@ HWY_INLINE void Decompress2(DRaw d, const PackedSpan<Packed>& packed,
 // Decompresses from any type of `packed`, starting at (any) `packed_ofs`, to
 // (any) `num` elements in `raw`, then appends `[0, hn::Lanes(d))` zeroes as
 // required to round `num` up to one vector, if it is not already. The caller is
-// responsible for scaling `raw` to the original range because `EmbedToken`
+// responsible for scaling `raw` to the original range because `EmbedMMToken`
 // also wants to scale the decompressed elements.
 // `TRaw` can be `float/BF16`, or `double` if `Packed` is `float`.
 template <class DRaw, typename Packed, typename TRaw = hn::TFromD<DRaw>>
@@ -707,51 +708,6 @@ HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
   return kernel.Reduce(d_state, sum0, sum1, sum2, sum3, comp0, comp1, comp2,
                        comp3);
 }
-
-// Functor called for each tensor, which compresses and stores them along with
-// their scaling factors to BlobStore.
-class Compressor {
- public:
-  explicit Compressor(hwy::ThreadPool& pool) : writer_(pool) {}
-
-  template <typename Packed>
-  void operator()(MatPtrT<Packed>* compressed, const char* decorated_name,
-                  const float* HWY_RESTRICT weights) {
-    size_t num_weights = compressed->NumElements();
-    if (num_weights == 0 || weights == nullptr || compressed->Ptr() == nullptr)
-      return;
-    size_t num_compressed = compressed->NumElements();
-    PackedSpan<Packed> packed = MakeSpan(compressed->data(), num_compressed);
-    fprintf(stderr, "Compressing %s (%zuM), please wait\n", decorated_name,
-            num_weights / (1000 * 1000));
-    Compress(weights, num_weights, work_, packed, /*packed_ofs=*/0,
-             writer_.pool());
-    writer_(compressed, decorated_name);
-  }
-
-  void AddTokenizer(const std::string& tokenizer) {
-    writer_.AddTokenizer(tokenizer);
-  }
-
-  void AddScales(const float* scales, size_t len) {
-    writer_.AddScales(scales, len);
-  }
-
-  // Writes all blobs to disk in the given order. The config is optional and
-  // if given, it is written to the file, along with the TOC, making it
-  // single-file format. Otherwise, the file is written in the multi-file format
-  // without a TOC.
-  BlobError WriteAll(const Path& blob_filename, const ModelConfig* config) {
-    return writer_.WriteAll(blob_filename, config);
-  }
-
-  // Returns the number of blobs added.
-  size_t DebugNumBlobsAdded() const { return writer_.DebugNumBlobsAdded(); }
-
- private:
-  CompressWorkingSet work_;
-  WriteToBlobStore writer_;
-};
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE

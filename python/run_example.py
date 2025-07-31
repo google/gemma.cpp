@@ -48,7 +48,6 @@ def main(argv: Sequence[str]) -> None:
   model = gemma.GemmaModel(
       tokenizer_path=tokenizer_path,
       weights_path=weights_path,
-      model_flag="gemma2-2b-it",
       max_threads=24,
   )
 
@@ -87,7 +86,6 @@ def main(argv: Sequence[str]) -> None:
   model = gemma.GemmaModel(
       tokenizer_path=tokenizer_path,
       weights_path=weights_path,
-      model_flag="paligemma-224",
       max_threads=24,
   )
   image = np.array(

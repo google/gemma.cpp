@@ -59,8 +59,11 @@ static LPS EnabledLPs(const BoundedSlice& lp_slice) {
     });
   } else {
     const size_t num_lps = hwy::TotalLogicalProcessors();
-    HWY_WARN("unknown OS affinity, max %zu LPs and slice %zu.", num_lps,
-             lp_slice.Num(num_lps));
+    // Do not warn on Apple, where affinity is not supported.
+    if (!HWY_OS_APPLE) {
+      HWY_WARN("unknown OS affinity, max %zu LPs and slice %zu.", num_lps,
+               lp_slice.Num(num_lps));
+    }
     for (size_t lp = 0; lp < num_lps; ++lp) {
       if (lp_slice.Contains(num_lps, lp)) {
         enabled_lps.Set(lp);
@@ -83,12 +86,13 @@ static LPS EnabledLPs(const BoundedSlice& lp_slice) {
 
 BoundedTopology::BoundedTopology(BoundedSlice package_slice,
                                  BoundedSlice cluster_slice,
-                                 BoundedSlice lp_slice) {
+                                 BoundedSlice lp_slice)
+    : package_slice_(package_slice), cluster_slice_(cluster_slice) {
   const LPS enabled_lps = EnabledLPs(lp_slice);
 
 #if !GEMMA_DISABLE_TOPOLOGY
   if (HWY_LIKELY(!topology_.packages.empty())) {
-    InitFromTopology(enabled_lps, package_slice, cluster_slice);
+    InitFromTopology(enabled_lps);
   }
 #endif
 
@@ -138,13 +142,13 @@ BoundedTopology::Cluster::Cluster(const LPS& enabled_lps,
         }
         if (HWY_UNLIKELY(private_kib_ != tcluster.private_kib)) {
           warned = true;
-          HWY_WARN("lp %zu private_kib %zu != cluster %zu.", lp, private_kib_,
-                   tcluster.private_kib);
+          HWY_WARN("lp %zu private_kib %zu != cluster %u.", lp, private_kib_,
+                   static_cast<unsigned>(tcluster.private_kib));
         }
         if (HWY_UNLIKELY(shared_kib_ != tcluster.shared_kib)) {
           warned = true;
-          HWY_WARN("lp %zu shared_kib %zu != cluster %zu.", lp, shared_kib_,
-                   tcluster.shared_kib);
+          HWY_WARN("lp %zu shared_kib %zu != cluster %u.", lp, shared_kib_,
+                   static_cast<unsigned>(tcluster.shared_kib));
         }
       }  // !warned
     }
@@ -270,16 +274,14 @@ static void ScanTClusters(hwy::Topology& topology_, size_t& max_tclusters,
 }
 
 // Main part of ctor, called when topology is known.
-void BoundedTopology::InitFromTopology(const LPS& enabled_lps,
-                                       BoundedSlice package_slice,
-                                       BoundedSlice cluster_slice) {
+void BoundedTopology::InitFromTopology(const LPS& enabled_lps) {
   size_t max_tclusters, max_tcluster_cores, max_tcluster_lps;
   ScanTClusters(topology_, max_tclusters, max_tcluster_cores, max_tcluster_lps);
 
   // (Possibly empty) subset of `Topology` packages that have `enabled_lps`.
-  package_slice.Foreach(
+  package_slice_.Foreach(
       "package", topology_.packages.size(), [&](size_t pkg_idx) {
-        Package package(enabled_lps, topology_, pkg_idx, cluster_slice);
+        Package package(enabled_lps, topology_, pkg_idx, cluster_slice_);
         // Skip if empty, i.e. too few `enabled_lps`.
         if (HWY_LIKELY(!package.clusters.empty())) {
           packages_.push_back(std::move(package));

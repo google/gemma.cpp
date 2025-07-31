@@ -18,9 +18,9 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // LayersOutputFunc
+#include "io/io.h"
 #include "util/args.h"
 #include "hwy/base.h"
 #include "nlohmann/json.hpp"

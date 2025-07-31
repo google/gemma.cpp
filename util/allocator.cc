@@ -15,12 +15,12 @@
 
 #include "util/allocator.h"
 
+#include <stdint.h>
 #include <stdio.h>
 
 #include "util/basics.h"  // MaybeCheckInitialized
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/futex.h"
 #include "hwy/contrib/thread_pool/topology.h"
 #include "hwy/per_target.h"  // VectorBytes
 
@@ -46,13 +46,32 @@
 #endif  // GEMMA_BIND
 
 #if GEMMA_BIND && HWY_OS_LINUX
+#include <atomic>
+
+#include "hwy/contrib/thread_pool/futex.h"
+#endif
+
+#if HWY_OS_LINUX
+#include <unistd.h>  // sysconf
+#if GEMMA_BIND
 // `move_pages` requires anonymous/private mappings, hence mmap.
 #include <sys/mman.h>
 #include <sys/syscall.h>
 
 #include <cerrno>
 #include <vector>
-#endif  // GEMMA_BIND && HWY_OS_LINUX
+#endif  // GEMMA_BIND
+#elif HWY_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef VC_EXTRALEAN
+#define VC_EXTRALEAN
+#endif
+#include <Windows.h>
+#elif HWY_OS_APPLE
+#include <sys/sysctl.h>
+#endif  // HWY_OS_LINUX
 
 namespace gcpp {
 namespace {
@@ -68,40 +87,58 @@ size_t DetectLineBytes() {
 
 size_t DetectPageSize() {
 #if HWY_OS_LINUX
-  size_t page_bytes = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+  const long ret = sysconf(_SC_PAGESIZE);  // NOLINT(runtime/int)
+  HWY_ASSERT(ret != -1);
+  const size_t page_bytes = static_cast<size_t>(ret);
   HWY_ASSERT(page_bytes <= (4 << 20));
   return page_bytes;
+#elif HWY_OS_WIN
+  SYSTEM_INFO info;
+  GetSystemInfo(&info);
+  return info.dwPageSize;
+#elif HWY_OS_APPLE
+  uint64_t data = 0;
+  size_t len = sizeof(data);
+  HWY_ASSERT(sysctlbyname("vm.pagesize", &data, &len, nullptr, 0) == 0);
+  return data;
 #else
   return 0;
 #endif
 }
 
+size_t DetectTotalMiB(size_t page_bytes) {
+  (void)page_bytes;
+#if HWY_OS_LINUX
+  const long ret = sysconf(_SC_PHYS_PAGES);  // NOLINT(runtime/int)
+  HWY_ASSERT(ret != -1);
+  return static_cast<size_t>(ret) * page_bytes >> 20;
+#elif HWY_OS_WIN
+  MEMORYSTATUSEX ms = {sizeof(MEMORYSTATUSEX)};
+  HWY_ASSERT(GlobalMemoryStatusEx(&ms) != 0);
+  return ms.ullTotalPhys >> 20;
+#elif HWY_OS_APPLE
+  int mib[2] = {CTL_HW, HW_MEMSIZE};
+  uint64_t data = 0;
+  size_t len = sizeof(data);
+  HWY_ASSERT(sysctl(mib, sizeof(mib) / sizeof(*mib), &data, &len, nullptr, 0) ==
+             0);
+  return data >> 20;
+#else
+#error "Port"
+#endif
+}
+
 }  // namespace
 
-static size_t line_bytes_;
-static size_t vector_bytes_;
-static size_t step_bytes_;
-static size_t quantum_bytes_;
-static size_t quantum_steps_;
-static size_t l1_bytes_;
-static size_t l2_bytes_;
-static size_t l3_bytes_;
-static bool should_bind_ = false;
-
-size_t Allocator::LineBytes() { return line_bytes_; }
-size_t Allocator::VectorBytes() { return vector_bytes_; }
-size_t Allocator::StepBytes() { return step_bytes_; }
-size_t Allocator::QuantumBytes() { return quantum_bytes_; }
-size_t Allocator::QuantumSteps() { return quantum_steps_; }
-size_t Allocator::L1Bytes() { return l1_bytes_; }
-size_t Allocator::L2Bytes() { return l2_bytes_; }
-size_t Allocator::L3Bytes() { return l3_bytes_; }
-bool Allocator::ShouldBind() { return should_bind_; }
-
-void Allocator::Init(const BoundedTopology& topology, bool enable_bind) {
+Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   line_bytes_ = DetectLineBytes();
+  // Ensure MaxLineBytes() is an upper bound.
+  HWY_ASSERT(MaxLineBytes() >= LineBytes());
+
   vector_bytes_ = hwy::VectorBytes();
+
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
+  base_page_bytes_ = DetectPageSize();
   quantum_bytes_ = step_bytes_;  // may overwrite below
 
   const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
@@ -117,6 +154,8 @@ void Allocator::Init(const BoundedTopology& topology, bool enable_bind) {
     l3_bytes_ = (cluster.SharedKiB() ? cluster.SharedKiB() : 1024) << 10;
   }
 
+  total_mib_ = DetectTotalMiB(base_page_bytes_);
+
   // Prerequisites for binding:
   // - supported by the OS (currently Linux only),
   // - the page size is known and 'reasonably small', preferably less than
@@ -124,30 +163,44 @@ void Allocator::Init(const BoundedTopology& topology, bool enable_bind) {
   // - we successfully detected topology and there are multiple nodes;
   // - there are multiple packages, because we shard by package_idx.
   if constexpr (GEMMA_BIND) {
-    const size_t page_bytes = DetectPageSize();
-    if ((page_bytes != 0 && page_bytes <= 16 * 1024) &&
+    if ((base_page_bytes_ != 0 && base_page_bytes_ <= 16 * 1024) &&
         topology.NumNodes() > 1 && topology.NumPackages() > 1) {
       if (enable_bind) {
         // Ensure pages meet the alignment requirements of `AllocBytes`.
-        HWY_ASSERT(page_bytes >= quantum_bytes_);
-        quantum_bytes_ = page_bytes;
-        // Ensure MaxQuantumBytes() is an upper bound.
-        HWY_ASSERT(MaxQuantumBytes() >= quantum_bytes_);
-        quantum_bytes_ = HWY_MIN(quantum_bytes_, MaxQuantumBytes());
+        HWY_ASSERT(base_page_bytes_ >= quantum_bytes_);
+        quantum_bytes_ = base_page_bytes_;
         should_bind_ = true;
       } else {
         HWY_WARN(
             "Multiple sockets but binding disabled. This reduces speed; "
-            "set or remove enable_bind to avoid this warning.");
+            "set --bind 1 to avoid this warning.");
       }
     }
   }
-
-  HWY_DASSERT(quantum_bytes_ % step_bytes_ == 0);
-  quantum_steps_ = quantum_bytes_ / step_bytes_;
 }
 
-Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
+size_t Allocator::FreeMiB() const {
+#if HWY_OS_LINUX
+  const long ret = sysconf(_SC_AVPHYS_PAGES);  // NOLINT(runtime/int)
+  HWY_ASSERT(ret != -1);
+  return static_cast<size_t>(ret) * base_page_bytes_ >> 20;
+#elif HWY_OS_WIN
+  MEMORYSTATUSEX ms = {sizeof(MEMORYSTATUSEX)};
+  HWY_ASSERT(GlobalMemoryStatusEx(&ms) != 0);
+  return ms.ullAvailVirtual >> 20;
+#elif HWY_OS_APPLE
+  uint64_t free = 0, inactive = 0, speculative = 0;
+  size_t len = sizeof(free);
+  sysctlbyname("vm.page_free_count", &free, &len, nullptr, 0);
+  sysctlbyname("vm.page_inactive_count", &inactive, &len, nullptr, 0);
+  sysctlbyname("vm.page_speculative_count", &speculative, &len, nullptr, 0);
+  return (free + inactive + speculative) * base_page_bytes_ >> 20;
+#else
+#error "Port"
+#endif
+}
+
+AlignedPtr<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
   // If we are not binding, the Highway allocator is cheaper than `mmap`, and
   // defends against 2K aliasing.
   if (!should_bind_) {
@@ -155,7 +208,7 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
     if (HWY_ALIGNMENT < QuantumBytes()) {
       HWY_WARN(
           "HWY_ALIGNMENT %d < QuantumBytes %zu: either vector or cache lines "
-          "are huge, enable GEMMA_BIND to avoid this warning.",
+          "are huge, enable GEMMA_BIND and set --bind 1 to avoid this warning.",
           HWY_ALIGNMENT, QuantumBytes());
     }
     auto p = hwy::AllocateAligned<uint8_t>(bytes);
@@ -163,10 +216,9 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
     // alignment scheme in aligned_allocator.cc and does not work for
     // already-aligned pointers as returned by `mmap`, hence we wrap the Highway
     // pointer in our own deleter.
-    auto call_free = [](void* ptr, size_t /*bytes*/) {
-      hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
-    };
-    return PtrAndDeleter{p.release(), DeleterFree(call_free, bytes)};
+    return AlignedPtr<uint8_t[]>(p.release(), DeleterFunc([](void* ptr) {
+                                   hwy::FreeAlignedBytes(ptr, nullptr, nullptr);
+                                 }));
   }
 
   // Binding, or large vector/cache line size: use platform-specific allocator.
@@ -178,22 +230,18 @@ Allocator::PtrAndDeleter Allocator::AllocBytes(size_t bytes) {
   const int prot = PROT_READ | PROT_WRITE;
   const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
   const int fd = -1;
-  // Encourage transparent hugepages by rounding up to a multiple of 2 MiB.
-  bytes = hwy::RoundUpTo(bytes, 2ull << 20);
   void* p = mmap(0, bytes, prot, flags, fd, off_t{0});
   if (p == MAP_FAILED) p = nullptr;
-  const auto call_munmap = [](void* ptr, size_t bytes) {
-    const int ret = munmap(ptr, bytes);
-    HWY_ASSERT(ret == 0);
-  };
-  return PtrAndDeleter{p, DeleterFree(call_munmap, bytes)};
+  return AlignedPtr<uint8_t[]>(
+      static_cast<uint8_t*>(p),
+      DeleterFunc([bytes](void* ptr) { HWY_ASSERT(munmap(ptr, bytes) == 0); }));
 #elif HWY_OS_WIN
-  const auto call_free = [](void* ptr, size_t) { _aligned_free(ptr); };
   const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
-  return PtrAndDeleter{_aligned_malloc(bytes, alignment),
-                       DeleterFree(call_free, bytes)};
+  return AlignedPtr<uint8_t[]>(
+      static_cast<uint8_t*>(_aligned_malloc(bytes, alignment)),
+      DeleterFunc([](void* ptr) { _aligned_free(ptr); }));
 #else
-  return PtrAndDeleter{nullptr, DeleterFree(nullptr, 0)};
+  return AlignedPtr<uint8_t[]>(nullptr, DeleterFunc());
 #endif
 }
 
@@ -245,7 +293,7 @@ size_t CountBusyPages(size_t num_pages, size_t node, void** pages,
   return num_busy;
 }
 
-bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) {
+bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) const {
   HWY_DASSERT(should_bind_);
   constexpr size_t kMaxNodes = 1024;  // valid for x86/x64, and "enough"
 
@@ -302,7 +350,7 @@ bool Allocator::BindMemory(void* ptr, size_t bytes, size_t node) {
 }
 
 #else
-bool Allocator::BindMemory(void*, size_t, size_t) { return false; }
+bool Allocator::BindMemory(void*, size_t, size_t) const { return false; }
 #endif  // GEMMA_BIND && HWY_OS_LINUX
 
 }  // namespace gcpp

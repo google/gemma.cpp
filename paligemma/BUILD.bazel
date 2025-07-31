@@ -13,7 +13,7 @@ cc_library(
     srcs = ["image.cc"],
     hdrs = ["image.h"],
     deps = [
-        "//compression:io",
+        "//io",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -29,9 +29,28 @@ cc_test(
     ],
 )
 
+cc_library(
+    name = "paligemma_helper",
+    srcs = ["paligemma_helper.cc"],
+    hdrs = ["paligemma_helper.h"],
+    deps = [
+        ":image",
+        "//:allocator",
+        "//:benchmark_helper",
+        "//:configs",
+        "//:gemma_args",
+        "//:gemma_lib",
+        "//compression:types",
+        "//io",
+        "@highway//:hwy",
+        "@highway//:profiler",
+    ],
+)
+
 cc_test(
     name = "paligemma_test",
     srcs = ["paligemma_test.cc"],
+    linkstatic = True,
     # Requires model files
     tags = [
         "local",
@@ -39,11 +58,15 @@ cc_test(
         "no_tap",
     ],
     deps = [
+        ":paligemma_helper",
+        "//devtools/build/runtime:get_runfiles_dir",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:allocator",
         "//:benchmark_helper",
-        "//:common",
+        "//:configs",
         "//:gemma_lib",
-        "//compression:sfp",
+        "//compression:types",
+        "//io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

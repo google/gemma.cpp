@@ -15,16 +15,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include <vector>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/allocator.h"
 #include "util/basics.h"
-#include "util/threading.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
 
@@ -110,8 +111,8 @@ class MMStoreHorizontalSumsIntoC {
                              VF C20, VF C21, VF C22, VF C23,  //
                              VF C30, VF C31, VF C32, VF C33,  //
                              const size_t row_c, const size_t col_c,
-                             const MMArgs& args, const RowPtr<TC>& C) const {
-    float buf[16 * hn::MaxLanes(df)];
+                             const MMArgs& args, RowPtrs<TC> C_rows) const {
+    HWY_ALIGN float buf[16 * hn::MaxLanes(df)];
     const size_t N = hn::Lanes(df);
     // Horizontal reductions (`ReduceSum`) are rather expensive, entailing
     // log(N) operations for vectors of length N. Because `kNR` == 4, we
@@ -146,10 +147,10 @@ class MMStoreHorizontalSumsIntoC {
     if constexpr (kAdd) {
       vadd = hn::Load(d4, args.add + col_c);
     }
-    MaybeScaleAndStore<0>(d4, sum0, vscale, vadd, C, row_c, col_c);
-    MaybeScaleAndStore<1>(d4, sum1, vscale, vadd, C, row_c, col_c);
-    MaybeScaleAndStore<2>(d4, sum2, vscale, vadd, C, row_c, col_c);
-    MaybeScaleAndStore<3>(d4, sum3, vscale, vadd, C, row_c, col_c);
+    MaybeScaleAndStore<0>(d4, sum0, vscale, vadd, C_rows, row_c, col_c);
+    MaybeScaleAndStore<1>(d4, sum1, vscale, vadd, C_rows, row_c, col_c);
+    MaybeScaleAndStore<2>(d4, sum2, vscale, vadd, C_rows, row_c, col_c);
+    MaybeScaleAndStore<3>(d4, sum3, vscale, vadd, C_rows, row_c, col_c);
   }
 
  private:
@@ -185,13 +186,14 @@ class MMStoreHorizontalSumsIntoC {
     }
   }
 
-  template <size_t kRow, typename TC, class DF4, class VF4 = hn::Vec<DF4>>
+  template <size_t kRow, /*deduced:*/ class DF4, class VF4 = hn::Vec<DF4>,
+            typename TC>
   static HWY_INLINE void MaybeScaleAndStore(DF4 df4, VF4 sum, VF4 vscale,
-                                            VF4 vadd, const RowPtr<TC>& C,
+                                            VF4 vadd, RowPtrs<TC> C_rows,
                                             const size_t row_c,
                                             const size_t col_c) {
     if constexpr (kRow < kRowsAC) {
-      TC* HWY_RESTRICT pos = C.Row(row_c + kRow) + col_c;
+      TC* HWY_RESTRICT pos = C_rows[row_c + kRow] + col_c;
       const hn::Rebind<TC, DF4> dc4;
       const VF4 out = hn::MulAdd(sum, vscale, vadd);
       hn::Store(TCFromF32(dc4, out), dc4, pos);
@@ -221,12 +223,12 @@ class MMAddHorizontalSumsIntoPartial {
                              VF F20, VF F21, VF F22, VF F23,  //
                              VF F30, VF F31, VF F32, VF F33,  //
                              const size_t row_c, const size_t col_c,
-                             const RowPtrD& partial) const {
+                             const StridedViewD& partial) const {
     // We accumulate in 64-bit to avoid loss of precision.
     static_assert(HWY_HAVE_FLOAT64, "Disable Armv7 NEON: we require fp64");
 
     const hn::Repartition<double, DF> dd;
-    double buf[16 * hn::MaxLanes(dd)];
+    HWY_ALIGN double buf[16 * hn::MaxLanes(dd)];
     using VD = hn::Vec<decltype(dd)>;
     const size_t ND = hn::Lanes(dd);
     VD C00 = SumOfPromotedPairs(dd, F00);
@@ -327,7 +329,8 @@ class MMAddHorizontalSumsIntoPartial {
   }
 
   template <size_t kRow, class D4, class V4 = hn::Vec<D4>>
-  static HWY_INLINE void MaybeAddStore(D4 d4, V4 sum, const RowPtrD& partial,
+  static HWY_INLINE void MaybeAddStore(D4 d4, V4 sum,
+                                       const StridedViewD& partial,
                                        const size_t row_c, const size_t col_c) {
     if constexpr (kRow < kRowsAC) {
       double* HWY_RESTRICT pos = partial.Row(row_c + kRow) + col_c;
@@ -345,21 +348,15 @@ class MMAddHorizontalSumsIntoPartial {
 // Stateless, wraps member functions.
 class MMKernel {
  public:
-  // Choosing `kMaxMR == kNR` minimizes the ratio of loads to FMA, because
-  // we load `kNR + kMaxMR` vectors per `kMaxMR * kNR` element tile.
-  // In general, `M` (batch size) is not a multiple of `kMaxMR`. Thus functions
-  // that load or store a tile are parameterized on `kRowsAC`: usually `kMaxMR`,
-  // or less on ISAs with fewer registers, or for the last few rows of A.
-  static constexpr size_t kMaxMR = 4;
-
   // Calls `LoopKC` for each of `mc` rows of A in steps of `mr`. `A_view`
   // is `mc x kc` and `B_view` is `(kNR x kc)`. Both start at row/col 0.
   // A2C0 in MOMMS terminology updates a `mc x kNR` slice of the output.
   template <class Tag, typename TC>
-  static HWY_INLINE void A2C0(const RowPtrBF& A_view, const RowPtrBF& B_view,
-                              size_t mr, const IndexRange& range_mc,
-                              const size_t row_b, size_t kc, Tag tag,
-                              const MMArgs& args, const RowPtr<TC>& C) {
+  static HWY_INLINE void A2C0(const StridedViewBF& A_view,
+                              const StridedViewBF& B_view, size_t mr,
+                              const IndexRange& range_mc, const size_t row_b,
+                              size_t kc, Tag tag, const MMArgs& args,
+                              RowPtrs<TC> C_rows) {
     HWY_DASSERT(1 <= mr && mr <= kMaxMR);
     const size_t row0 = range_mc.begin();
     const size_t mc = range_mc.Num();
@@ -368,7 +365,8 @@ class MMKernel {
     // M == 1, or x86 with 8 SIMD registers:
     if (HWY_UNLIKELY(mr == 1)) {
       for (; imc < mc; ++imc) {
-        LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+        LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args,
+                  C_rows);
       }
       return;
     }
@@ -377,11 +375,13 @@ class MMKernel {
     if (HWY_UNLIKELY(mr == 2)) {
       if (HWY_LIKELY(mc >= 2)) {
         for (; imc <= mc - 2; imc += 2) {
-          LoopKC<2>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+          LoopKC<2>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args,
+                    C_rows);
         }
       }
       if (HWY_UNLIKELY(imc != mc)) {
-        LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+        LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args,
+                  C_rows);
       }
       return;
     }
@@ -389,17 +389,18 @@ class MMKernel {
     HWY_DASSERT(mr == 4);
     if (HWY_LIKELY(mc >= 4)) {
       for (; imc <= mc - 4; imc += 4) {
-        LoopKC<4>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+        LoopKC<4>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args,
+                  C_rows);
       }
     }
     const size_t remainder_mc = mc - imc;
     HWY_DASSERT(remainder_mc < 4);
     if (HWY_UNLIKELY(remainder_mc & 2)) {
-      LoopKC<2>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+      LoopKC<2>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C_rows);
       imc += 2;
     }
     if (HWY_UNLIKELY(remainder_mc & 1)) {
-      LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C);
+      LoopKC<1>(A_view, B_view, row0 + imc, imc, row_b, kc, tag, args, C_rows);
       imc += 1;
     }
     HWY_DASSERT(imc == mc);
@@ -496,11 +497,11 @@ class MMKernel {
   // with top-left corner `partial.Row(row_ac) + col_c`. Both A and B must be
   // BF16 so we can load directly without `Decompress2`, which is expensive for
   // NUQ and requires 2x unrolling, which requires more loads.
-  template <size_t kRowsAC, class Tag, typename TC>
-  static HWY_INLINE void LoopKC(const RowPtrBF& A_view, const RowPtrBF& B_view,
-                                size_t row_ac, size_t imc, size_t col_c,
-                                size_t kc, Tag tag, const MMArgs& args,
-                                const RowPtr<TC>& C) {
+  template <size_t kRowsAC, /*deduced:*/ class Tag, typename TC>
+  static HWY_INLINE void LoopKC(const StridedViewBF& A_view,
+                                const StridedViewBF& B_view, size_t row_ac,
+                                size_t imc, size_t col_c, size_t kc, Tag tag,
+                                const MMArgs& args, RowPtrs<TC> C_rows) {
     const hn::ScalableTag<BF16> dbf;
     using VBF = hn::Vec<decltype(dbf)>;
     const size_t NBF = hn::Lanes(dbf);
@@ -614,11 +615,11 @@ class MMKernel {
       if (args.add) {
         MMStoreHorizontalSumsIntoC<kRowsAC, /*kAdd=*/true>()(
             df, C00, C01, C02, C03, C10, C11, C12, C13, C20, C21, C22, C23, C30,
-            C31, C32, C33, row_ac, col_c, args, C);
+            C31, C32, C33, row_ac, col_c, args, C_rows);
       } else {
         MMStoreHorizontalSumsIntoC<kRowsAC, /*kAdd=*/false>()(
             df, C00, C01, C02, C03, C10, C11, C12, C13, C20, C21, C22, C23, C30,
-            C31, C32, C33, row_ac, col_c, args, C);
+            C31, C32, C33, row_ac, col_c, args, C_rows);
       }
     } else {
       MMAddHorizontalSumsIntoPartial<kRowsAC, Tag>()(
@@ -642,27 +643,27 @@ class MMScaleDemoteAdd {
   template <typename TC>
   static HWY_INLINE void FillC(const IndexRange& range_mc,
                                const IndexRange& range_nc, const MMArgs& args,
-                               const RowPtr<TC>& C) {
+                               RowPtrs<TC> C_rows) {
     size_t row_c = range_mc.begin();
     if (args.add) {
       constexpr bool kAdd = true;
       if (range_mc.Num() >= 4) {
         for (; row_c <= range_mc.end() - 4; row_c += 4) {
-          Do4Rows<kAdd>(row_c, range_nc, args, C);
+          Do4Rows<kAdd>(row_c, range_nc, args, C_rows);
         }
       }
       for (; row_c < range_mc.end(); ++row_c) {
-        Do1Row<kAdd>(row_c, range_nc, args, C);
+        Do1Row<kAdd>(row_c, range_nc, args, C_rows);
       }
     } else {
       constexpr bool kAdd = false;
       if (range_mc.Num() >= 4) {
         for (; row_c <= range_mc.end() - 4; row_c += 4) {
-          Do4Rows<kAdd>(row_c, range_nc, args, C);
+          Do4Rows<kAdd>(row_c, range_nc, args, C_rows);
         }
       }
       for (; row_c < range_mc.end(); ++row_c) {
-        Do1Row<kAdd>(row_c, range_nc, args, C);
+        Do1Row<kAdd>(row_c, range_nc, args, C_rows);
       }
     }
   }
@@ -671,7 +672,7 @@ class MMScaleDemoteAdd {
   // Unrolled for 4 rows to reduce the number of loads from `add`.
   template <bool kAdd, typename TC>
   static HWY_INLINE void Do4Rows(size_t row_c, const IndexRange& range_nc,
-                                 const MMArgs& args, const RowPtr<TC>& C) {
+                                 const MMArgs& args, RowPtrs<TC> C_rows) {
     const hn::ScalableTag<double> dd;
     const hn::Rebind<float, decltype(dd)> df;  // result of DemoteTo
     const hn::Rebind<TC, decltype(dd)> dc;
@@ -685,15 +686,14 @@ class MMScaleDemoteAdd {
     const double* HWY_RESTRICT pr2 = args.partial.Row(row_c + 2);
     const double* HWY_RESTRICT pr3 = args.partial.Row(row_c + 3);
 
-    TC* HWY_RESTRICT cr0 = C.Row(row_c + 0);
-    TC* HWY_RESTRICT cr1 = C.Row(row_c + 1);
-    TC* HWY_RESTRICT cr2 = C.Row(row_c + 2);
-    TC* HWY_RESTRICT cr3 = C.Row(row_c + 3);
+    TC* HWY_RESTRICT cr0 = C_rows[row_c + 0];
+    TC* HWY_RESTRICT cr1 = C_rows[row_c + 1];
+    TC* HWY_RESTRICT cr2 = C_rows[row_c + 2];
+    TC* HWY_RESTRICT cr3 = C_rows[row_c + 3];
 
     // We manually unroll 2x for higher IPC in batch=1.
     size_t col_c = range_nc.begin();
     if (HWY_LIKELY(range_nc.Num() >= 2 * ND)) {
-      HWY_UNROLL(1)
       for (; col_c <= range_nc.end() - 2 * ND; col_c += 2 * ND) {
         VD a0, a1;  // unused if !kAdd
         if constexpr (kAdd) {
@@ -790,7 +790,7 @@ class MMScaleDemoteAdd {
   // Same as above but handles a single row (for remainder rows).
   template <bool kAdd, typename TC>
   static HWY_INLINE void Do1Row(size_t row_c, const IndexRange& range_nc,
-                                const MMArgs& args, const RowPtr<TC>& C) {
+                                const MMArgs& args, RowPtrs<TC> C_rows) {
     const hn::ScalableTag<double> dd;
     const hn::Rebind<float, decltype(dd)> df;  // result of DemoteTo
     const hn::Rebind<TC, decltype(dd)> dc;
@@ -799,12 +799,11 @@ class MMScaleDemoteAdd {
     const size_t ND = hn::Lanes(dd);
     const VD vscale = hn::Set(dd, args.scale);
     const double* HWY_RESTRICT pr0 = args.partial.Row(row_c + 0);
-    TC* HWY_RESTRICT cr0 = C.Row(row_c + 0);
+    TC* HWY_RESTRICT cr0 = C_rows[row_c + 0];
 
     // We manually unroll 2x for higher IPC in batch=1.
     size_t col_c = range_nc.begin();
     if (HWY_LIKELY(range_nc.Num() >= 2 * ND)) {
-      HWY_UNROLL(1)
       for (; col_c <= range_nc.end() - 2 * ND; col_c += 2 * ND) {
         VD a0, a1;  // unused if !kAdd
         if constexpr (kAdd) {
@@ -861,45 +860,37 @@ class MMScaleDemoteAdd {
 class MMPerPackage {
  public:
   template <typename TA>
-  MMPerPackage(const ConstMat<TA>& A, const MMArgs& args,
-               const MMConfig& config, size_t pkg_idx,
-               const IndexRange& range_np)
+  MMPerPackage(const MatPtrT<TA>& A, const MMArgs& args, const MMConfig& config,
+               size_t pkg_idx, const IndexRange& range_np)
       : args_(args),
         pkg_idx_(pkg_idx),
+        // May be overwritten with a view of A, if already BF16.
+        A_(args_.env->storage.A(pkg_idx, A.Extents())),
         range_np_(range_np),
         mr_(config.MR()),
-        ranges_mc_(config.RangesOfMC(A.Extents().rows)),
-        ranges_kc_(config.RangesOfKC(A.Extents().cols)),
+        ranges_mc_(config.RangesOfMC(A.Rows())),
+        ranges_kc_(config.RangesOfKC(A.Cols())),
         ranges_nc_(config.RangesOfNC(range_np)),
         order_(config.Order()),
         inner_tasks_(config.InnerTasks()),
-        out_(config.Out()) {
-    // May be overwritten with a view of A, if already BF16.
-    A_ = args_.env->storage.A(pkg_idx, A.Extents());
-    {
-      MMZone zone;
-      zone.MaybeEnter("MM.DecompressA", args_);
-      A_ = DecompressA(A);
-    }
+        out_(config.Out()),
+        line_bytes_(args.env->ctx.allocator.LineBytes()) {
+    A_ = DecompressA(A);
   }
 
   // B is decompressed several call layers lower, but not all member functions
   // depend on TB, so pass it as an argument instead of templating the class.
   template <typename TB, typename TC>
-  HWY_NOINLINE void operator()(const ConstMat<TB>& B,
-                               const RowPtr<TC>& C) const {
-    // TODO: include NUQ tables? NumPacked in ConstMat?
-    const size_t num_packed_B = B.ofs + B.Stride() * B.Extents().rows;
-
+  HWY_NOINLINE void operator()(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     switch (order_) {
       case MMOrder::kNT:
-        return DoNT(B, num_packed_B, C);
+        return DoNT(B, C_rows);
       case MMOrder::kNT_K:
-        return DoNT_K(B, num_packed_B, C);
+        return DoNT_K(B, C_rows);
       case MMOrder::kNT_MT:
-        return DoNT_MT(B, num_packed_B, C);
+        return DoNT_MT(B, C_rows);
       case MMOrder::kNT_MT_K:
-        return DoNT_MT_K(B, num_packed_B, C);
+        return DoNT_MT_K(B, C_rows);
       default:
         HWY_UNREACHABLE;
     }
@@ -909,58 +900,54 @@ class MMPerPackage {
   // Compute size of per-worker storage for `kNR` row ranges of B. Stack
   // allocation avoids passing a worker index.
   static constexpr size_t B_stride_max_ =
-      StrideForCyclicOffsets<BF16>(MMStorage::kMaxKC);
-  static constexpr size_t B_storage_max_ =
-      kNR * B_stride_max_ + Allocator::MaxQuantumBytes() / sizeof(BF16);
+      MMStorage::kMaxKC + 2 * Allocator::MaxLineBytes() / sizeof(BF16);
+  static constexpr size_t B_storage_max_ = kNR * B_stride_max_;
 
   // Granularity of `ForNP`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
-  static size_t MultipleNP(size_t sizeof_TC) {
-    return HWY_MAX(kNR, Allocator::LineBytes() / sizeof_TC);
+  size_t MultipleNP(size_t sizeof_TC) const {
+    return HWY_MAX(kNR, line_bytes_ / sizeof_TC);
   }
 
-  // Single M and K, parallel N. Fills all of C directly.
+  // Single M and K ranges, parallel N. Fills all of C directly.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT(const ConstMat<TB>& B, size_t num_packed_B,
-                       const RowPtr<TC>& C) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT", args_);
+  HWY_INLINE void DoNT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_M = ranges_mc_.Range(0);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
-    const RowPtrBF& A_view = A_.View(range_M.begin(), 0, K);
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(K);
+    const StridedViewBF& A_view = A_.View(range_M.begin(), 0, K);
+    const size_t B_stride =
+        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
 
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
-        [&](const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const StridedViewBF B_storage_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
-            {
-              MMZone zone;
-              zone.MaybeEnter("MM.NT.DecB", args_);
-              DecompressB(B, num_packed_B, row_b, range_K, B_view);
-            }
+            StridedViewBF B_view =
+                DecompressB(B, row_b, range_K, B_storage_view);
             MMKernel::A2C0(A_view, B_view, mr_, range_M, row_b, K, MMSetC(),
-                           args_, C);
+                           args_, C_rows);
           }
         });
 
     HWY_DASSERT(out_ == MMOut::kDirect);  // already filled C
   }
 
-  // Single M, parallel N, sequential K. Fills all of partial.
+  // Single M range, parallel N, sequential K. Fills all of partial.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_K(const ConstMat<TB>& B, size_t num_packed_B,
-                         const RowPtr<TC>& C) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_K", args_);
+  HWY_INLINE void DoNT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     const IndexRange& range_mc = ranges_mc_.Range(0);
 
@@ -971,24 +958,26 @@ class MMPerPackage {
                              const IndexRange& range_nc,
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
-      const RowPtrBF& A_view = A_.View(range_mc.begin(), range_kc.begin(), kc);
-      const RowPtrBF B_view(B_storage, kc, StrideForCyclicOffsets<BF16>(kc));
+      const StridedViewBF& A_view =
+          A_.View(range_mc.begin(), range_kc.begin(), kc);
+      const StridedViewBF B_storage_view(
+          B_storage, kc,
+          Stride(MatPadding::kOdd, kc, sizeof(BF16), line_bytes_));
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
-        {
-          MMZone zone;
-          zone.MaybeEnter("MM.NT_K.DecB", args_);
-          DecompressB(B, num_packed_B, row_b, range_kc, B_view);
-        }
+        StridedViewBF B_view = DecompressB(B, row_b, range_kc, B_storage_view);
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
-                       C);
+                       C_rows);
       }
     };
 
     args_.env->parallel.ForNP(
         range_np_, MultipleNP(sizeof(TC)), inner_tasks_, pkg_idx_,
-        [&](const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
 
           // Peel off the first iteration of the kc loop: avoid
@@ -1001,16 +990,19 @@ class MMPerPackage {
           });
         });
 
-    MMZone fill_zone;
     if (out_ == MMOut::kCopy) {
-      fill_zone.MaybeEnter("MM.NT_K.FillC", args_);
-      MMScaleDemoteAdd::FillC(range_mc, range_np_, args_, C);
+      static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K.FillC.Copy");
+      MMZone fill_zone;
+      fill_zone.MaybeEnter(0, zone_id, args_);
+      MMScaleDemoteAdd::FillC(range_mc, range_np_, args_, C_rows);
     } else if (out_ == MMOut::kParM) {
-      fill_zone.MaybeEnter("MM.NT_K.FillC.ParM", args_);
+      static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_K.FillC.ParM");
       args_.env->parallel.ForRangeMC(
-          range_mc, pkg_idx_, [&](size_t row_a) HWY_ATTR {
+          range_mc, pkg_idx_, [&](size_t row_a, size_t worker) HWY_ATTR {
+            MMZone fill_zone;
+            fill_zone.MaybeEnter(worker, zone_id, args_);
             MMScaleDemoteAdd::FillC(IndexRange(row_a, row_a + 1), range_np_,
-                                    args_, C);
+                                    args_, C_rows);
           });
     } else {
       HWY_UNREACHABLE;  // kDirect is only used with kNT.
@@ -1020,33 +1012,33 @@ class MMPerPackage {
   // Parallel loops over mc/nc blocks of M/range_np, single K.
   // Fills `mc x nc` sections of C directly, in parallel.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_MT(const ConstMat<TB>& B, size_t num_packed_B,
-                          const RowPtr<TC>& C) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_MT", args_);
+  HWY_INLINE void DoNT_MT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_MT");
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(K);
+    const size_t B_stride =
+        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
 
     // Sequential loop over NC/MC/KC, similar to `loop_nc` below
     // except for the profiler strings and `out_tag`.
     args_.env->parallel.ForRangesMC_NC(
         ranges_mc_, ranges_nc_, pkg_idx_,
-        [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
-          const RowPtrBF& A_view = A_.View(range_mc.begin(), 0, K);
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
+          const StridedViewBF& A_view = A_.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, K, B_stride);
+          const StridedViewBF B_storage_view(B_storage, K, B_stride);
 
           for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
                row_b += kNR) {
-            {
-              MMZone zone;
-              zone.MaybeEnter("MM.NT_MT.DecB", args_);
-              DecompressB(B, num_packed_B, row_b, range_K, B_view);
-            }
+            StridedViewBF B_view =
+                DecompressB(B, row_b, range_K, B_storage_view);
             MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, K, MMSetC(),
-                           args_, C);
+                           args_, C_rows);
           }
         });
 
@@ -1056,79 +1048,89 @@ class MMPerPackage {
   // Parallel loops over mc/nc blocks of M/range_np, sequential K.
   // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
   template <typename TB, typename TC>
-  HWY_INLINE void DoNT_MT_K(const ConstMat<TB>& B, size_t num_packed_B,
-                            const RowPtr<TC>& C) const {
-    MMZone zone;
-    zone.MaybeEnter("MM.NT_MT_K", args_);
+  HWY_INLINE void DoNT_MT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.NT_MT_K");
+    static const uint32_t fill_zone_id = PROFILER_ADD_ZONE("MM.NT_MT_K.FillC");
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
-    const size_t B_stride = StrideForCyclicOffsets<BF16>(kc_max);
+    const size_t B_stride =
+        Stride(MatPadding::kOdd, kc_max, sizeof(BF16), line_bytes_);
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
     // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
-    const auto loop_nc = [&](const RowPtrBF& B_view, const IndexRange& range_mc,
+    const auto loop_nc = [&](const StridedViewBF& B_storage_view,
+                             const IndexRange& range_mc,
                              const IndexRange& range_kc,
                              const IndexRange& range_nc,
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
-      const RowPtrBF& A_view = A_.View(range_mc.begin(), range_kc.begin(), kc);
+      const StridedViewBF& A_view =
+          A_.View(range_mc.begin(), range_kc.begin(), kc);
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
-        {
-          MMZone zone;
-          zone.MaybeEnter("MM.NT_MT_K.DecB", args_);
-          DecompressB(B, num_packed_B, row_b, range_kc, B_view);
-        }
+        StridedViewBF B_view = DecompressB(B, row_b, range_kc, B_storage_view);
         MMKernel::A2C0(A_view, B_view, mr_, range_mc, row_b, kc, out_tag, args_,
-                       C);
+                       C_rows);
       }
     };  // loop_nc
     args_.env->parallel.ForRangesMC_NC(
         ranges_mc_, ranges_nc_, pkg_idx_,
-        [&](const IndexRange& range_mc, const IndexRange& range_nc) HWY_ATTR {
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone zone;
+          zone.MaybeEnter(worker, zone_id, args_);
+
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
-          const RowPtrBF B_view(B_storage, kc_max, B_stride);
+          const StridedViewBF B_storage_view(B_storage, kc_max, B_stride);
 
           // Peel off the first iteration of the kc loop: avoid
           // zero-initializing `partial` by writing into it.
           ranges_kc_.VisitFirst([&](const IndexRange& range_kc) {
-            loop_nc(B_view, range_mc, range_kc, range_nc, MMSetPartial());
+            loop_nc(B_storage_view, range_mc, range_kc, range_nc,
+                    MMSetPartial());
           });
           ranges_kc_.VisitRemaining([&](const IndexRange& range_kc) {
-            loop_nc(B_view, range_mc, range_kc, range_nc, MMAddPartial());
+            loop_nc(B_storage_view, range_mc, range_kc, range_nc,
+                    MMAddPartial());
           });
 
           // Already in parallel section, hence no `kParM`, and
           // `kDirect` is only used with `kNT_MT`.
           HWY_DASSERT(out_ == MMOut::kCopy);
           MMZone fill_zone;
-          fill_zone.MaybeEnter("MM.NT_MT_K.FillC", args_);
-          MMScaleDemoteAdd::FillC(range_mc, range_nc, args_, C);
+          fill_zone.MaybeEnter(worker, fill_zone_id, args_);
+          MMScaleDemoteAdd::FillC(range_mc, range_nc, args_, C_rows);
         });
   }
 
-  // Decompresses all `M x K` from `A` into `pkg_A`. Assumes `TA` is a seekable
-  // type (i.e., not NUQ) so we can use pointer arithmetic.
+  // Decompresses all `M x K` from `A` into padded BF16 `A_`. Assumes `TA` is a
+  // seekable type (i.e., not NUQ) so we can use pointer arithmetic.
   template <typename TA>
-  HWY_NOINLINE void DoDecompressA(const ConstMat<TA>& A, MMParA par_a) const {
-    const IndexRange all_M(0, A.extents.rows);
-    const IndexRange all_K(0, A.extents.cols);
+  HWY_NOINLINE void DoDecompressA(const MatPtrT<TA>& A, MMParA par_a) const {
+    const IndexRange all_M(0, A.Rows());
+    const IndexRange all_K(0, A.Cols());
     HWY_DASSERT(all_K.Num() == A_.Cols());
 
     const hn::ScalableTag<BF16> dbf;
     const size_t NBF = hn::Lanes(dbf);
     static_assert(hwy::IsSameEither<TA, BF16, float>(), "Can seek");
 
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DecompressA");
+
     const auto do_range = [&](const IndexRange& range_M,
-                              const IndexRange& range_K) HWY_ATTR {
+                              const IndexRange& range_K,
+                              size_t worker) HWY_ATTR {
+      MMZone zone;
+      zone.MaybeEnter(worker, zone_id, args_);
+
       const size_t col0 = range_K.begin();
       const size_t cols = range_K.Num();
-      // otherwise, padding overwrites neighbors
-      HWY_DASSERT(cols % NBF == 0 || cols == A.extents.cols);
+      // Must be a vector multiple, or the last range before row padding,
+      // otherwise `DecompressAndZeroPad` overwrites neighbors.
+      HWY_DASSERT(cols % NBF == 0 || range_K.end() == A.Cols());
       for (size_t row_a : range_M) {
-        const PackedSpan<const TA> from =
-            MakeSpan(A.ptr + A.Row(row_a) + col0, cols);
+        const PackedSpan<const TA> from = MakeSpan(A.Row(row_a) + col0, cols);
         BF16* HWY_RESTRICT to = A_.Row(row_a) + col0;
         DecompressAndZeroPad(dbf, from, 0, to, cols);
         // Verify that we zero-padded.
@@ -1142,7 +1144,7 @@ class MMPerPackage {
 
     switch (par_a) {
       case MMParA::kNone:
-        do_range(all_M, all_K);
+        do_range(all_M, all_K, /*worker=*/0);
         break;
       case MMParA::kK1:
       case MMParA::kK2:
@@ -1151,33 +1153,36 @@ class MMPerPackage {
         // At least one vector, otherwise DecompressAndZeroPad will add
         // padding, which might overwrite neighboring tasks. Also a whole cache
         // line to avoid false sharing.
-        const size_t multiple_K =
-            HWY_MAX(NBF, Allocator::LineBytes() / sizeof(BF16));
+        const size_t multiple_K = HWY_MAX(NBF, line_bytes_ / sizeof(BF16));
 
         args_.env->parallel.ForNP(
             all_K, multiple_K, inner_tasks, pkg_idx_,
-            [&](const IndexRange& range_K) { do_range(all_M, range_K); });
+            [&](const IndexRange& range_K, size_t worker) {
+              do_range(all_M, range_K, worker);
+            });
         break;
       }
       case MMParA::kM:
-        args_.env->parallel.ForRangeMC(all_M, pkg_idx_, [&](size_t row_a) {
-          do_range(IndexRange(row_a, row_a + 1), all_K);
-        });
+        args_.env->parallel.ForRangeMC(
+            all_M, pkg_idx_, [&](size_t row_a, size_t worker) {
+              do_range(IndexRange(row_a, row_a + 1), all_K, worker);
+            });
         break;
     }
   }
 
   // Autotuning wrapper for `DoDecompressA`.
   template <typename TA>
-  HWY_INLINE RowPtrBF DecompressA(const ConstMat<TA>& A) const {
+  HWY_INLINE StridedViewBF DecompressA(const MatPtrT<TA>& A) const {
     MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
     // If already BF16, maybe return a view:
     if constexpr (hwy::IsSame<TA, BF16>()) {
-      // Only if no zero-padding required.
+      // Only if vector multiple and padded (see `DoDecompressA`).
       const size_t NBF = hn::Lanes(hn::ScalableTag<BF16>());
-      if (HWY_LIKELY(A.extents.cols % NBF == 0)) {
-        const BF16* pos = A.ptr + A.Row(0);
-        return RowPtrBF(const_cast<BF16*>(pos), A.extents.cols, A.Stride());
+      if (HWY_LIKELY(A.Cols() % NBF == 0 && !A.IsPacked())) {
+        // Const, but cast because StridedView is also used for `partial` which
+        // is non-const.
+        return StridedViewBF(const_cast<TA*>(A.Row(0)), A.Cols(), A.Stride());
       }
     }
 
@@ -1188,12 +1193,9 @@ class MMPerPackage {
 
     // First call: generate candidates.
     if (HWY_UNLIKELY(!autotune.HasCandidates())) {
-      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4};
-      if (A.extents.rows == 1) {
-        candidates.push_back(MMParA::kNone);
-      } else {
-        candidates.push_back(MMParA::kM);
-      }
+      const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
+      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
+                                        other};
       autotune.SetCandidates(candidates);
     }
 
@@ -1215,18 +1217,22 @@ class MMPerPackage {
   // col 0 of `B_view`. Decompressing SFP is relatively cheap on `AVX3_DL`
   // thanks to its large table lookups, and less so on other targets.
   template <typename TB>
-  HWY_INLINE void DecompressB(const ConstMat<TB>& B, size_t num_packed_B,
-                              const size_t row_b, const IndexRange& range_kc,
-                              const RowPtrBF& B_view) const {
-    const hn::ScalableTag<BF16> dbf;
+  HWY_INLINE StridedViewBF DecompressB(const MatPtrT<TB>& B, const size_t row_b,
+                                       const IndexRange& range_kc,
+                                       const StridedViewBF& B_view) const {
+    if constexpr (hwy::IsSame<TB, BF16>()) {
+      return StridedViewBF(const_cast<BF16*>(B.Row(row_b)) + range_kc.begin(),
+                           range_kc.Num(), B.Stride());
+    }
 
-    const PackedSpan<const TB> B_span = MakeSpan(B.ptr, num_packed_B);
+    const hn::ScalableTag<BF16> dbf;
+    const PackedSpan<const TB> B_span = B.PaddedSpan();
 
     const size_t kc = range_kc.Num();
     const size_t col0 = range_kc.begin();
 
     for (size_t r = 0; r < kNR; ++r) {
-      const size_t packed_ofs = B.Row(row_b + r) + col0;
+      const size_t packed_ofs = (row_b + r) * B.Stride() + col0;
       BF16* HWY_RESTRICT to = B_view.Row(r);
       DecompressAndZeroPad(dbf, B_span, packed_ofs, to, kc);
       // Verify that we zero-padded.
@@ -1236,11 +1242,12 @@ class MMPerPackage {
         }
       }
     }
+    return B_view;
   }
 
   const MMArgs args_;  // copy for locality
   const size_t pkg_idx_;
-  RowPtrBF A_;  // points into A or storage.
+  StridedViewBF A_;  // view into A or pkg_A_, both of which are padded.
 
   const IndexRange range_np_;
   // From MMConfig:
@@ -1251,6 +1258,7 @@ class MMPerPackage {
   const MMOrder order_;
   const size_t inner_tasks_;
   const MMOut out_;
+  const size_t line_bytes_;
 };  // MMPerPackage
 
 // Stateless, wraps member functions.
@@ -1268,18 +1276,19 @@ struct MMImpl {
   // Called from `MatMul` from two places: either with the next autotune config,
   // or with the best config.
   template <typename TA, typename TB, typename TC>
-  static HWY_NOINLINE void DoMatMul(const ConstMat<TA>& A,
-                                    const ConstMat<TB>& B, const RowPtr<TC>& C,
-                                    const MMArgs& args,
+  static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
+                                    RowPtrs<TC> C_rows, const MMArgs& args,
                                     const MMConfig& config) {
-    MMZone matmul_zone;
-    matmul_zone.MaybeEnter("MM.DoMatMul", args);
+    PROFILER_ZONE("MM.DoMatMul");
+    static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DoMatMul.PerPkg");
 
     // Outermost loop: static NUMA-aware partition of B rows across packages.
     args.env->parallel.ForPkg(
         args.per_key->ranges_np.NumTasks(), [&](size_t pkg_idx) {
+          MMZone matmul_zone;
+          matmul_zone.MaybeEnter(pkg_idx, zone_id, args);
           const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
-          MMPerPackage(A, args, config, pkg_idx, range_np)(B, C);
+          MMPerPackage(A, args, config, pkg_idx, range_np)(B, C_rows);
         });
   }
 };
@@ -1287,10 +1296,14 @@ struct MMImpl {
 // Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
 //
 // `A` is a row-major matrix with `M` rows and `B` is transposed. The latter's
-// `K = B.Extents().cols`, which must match `A.Extents().cols`, is the number
+// `K = B.Cols()`, which must match `A.Cols()`, is the number
 // of rows in the original B. `N = C.Cols()` must be a multiple of 4. There
 // are no other restrictions on shape, though performance is better when `M % 4
-// == 0` or `M <= 4`.
+// == 0` or `M <= 4`, and when A is padded (`!A.IsPacked()`).
+//
+// NOTE: if A and/or B are BF16 and padded, the interval `[Cols(),
+// hwy::RoundUpTo(Cols(), hn::Lanes(dbf))` must be zero-initialized to match
+// the behavior of `DecompressAndZeroPad`. We check this in debug builds.
 //
 // If `add` is non-null, the row-vector `add` is added to each of the `M` rows
 // of `C`, which is a row-major matrix with arbitrary stride. A scale for
@@ -1305,21 +1318,24 @@ struct MMImpl {
 //
 // Uses considerable stack space: at least 40 KiB per thread.
 template <typename TA, typename TB, typename TC>
-HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
+HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
-                              const RowPtr<TC>& C) {
-  const size_t M = A.Extents().rows;
-  const size_t K = A.Extents().cols;
-  const size_t N = B.Extents().rows;
+                              MatPtrT<TC>& C) {
+  RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[2]);
+
+  const Allocator& allocator = env.ctx.allocator;
+  const size_t M = A.Rows();
+  const size_t K = A.Cols();
+  const size_t N = B.Rows();
   const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
   intptr_t index = MMImpl::IndexOfKey(key, env.keys);
   // First time we see this shape/key.
   if (HWY_UNLIKELY(index < 0)) {
-    env.keys.Append(key);
+    env.keys.Append(key, allocator);
 
     size_t max_packages = MMParallel::kMaxPackages;
     // For low-batch, multiple sockets only help if binding is enabled.
-    if (!Allocator::ShouldBind() && M <= 4) {
+    if (!allocator.ShouldBind() && M <= 4) {
       max_packages = 1;
     }
 
@@ -1331,33 +1347,31 @@ HWY_NOINLINE MMPerKey* MatMul(const ConstMat<TA>& A, const ConstMat<TB>& B,
   MMPerKey& per_key = env.per_key[index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
-  const MMArgs args(env, per_key, static_cast<double>(A.scale) * B.scale, add,
-                    env.storage.Partial());
+  const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
+                    add, env.storage.Partial());
   if (HWY_LIKELY(tuner.Best())) {
-    MMImpl::DoMatMul(A, B, C, args, *tuner.Best());
+    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best());
     return &per_key;
   }
 
-  PROFILER_ZONE("Matmul.Autotune");
+  // From here, CPU time is negligible except DoMatMul.
 
   // First call: enumerate all feasible configs.
   if (HWY_UNLIKELY(!tuner.HasCandidates())) {
     // Ensure matrix dimensions match each other.
-    HWY_ASSERT(K == B.Extents().cols);
-    HWY_ASSERT(N == C.Cols());
+    HWY_ASSERT(K == B.Cols());
     HWY_ASSERT(M <= MMStorage::kMaxM);
     HWY_ASSERT(K <= MMStorage::kMaxK);
     HWY_ASSERT(N <= MMStorage::kMaxN);
     HWY_ASSERT(N % kNR == 0);
 
-    // Negligible CPU time.
-    tuner.SetCandidates(MMCandidates(M, K, N, sizeof(TC), MMKernel::kMaxMR, kNR,
-                                     per_key.ranges_np, env.print_config));
+    tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC), kMaxMR,
+                                     kNR, per_key.ranges_np, env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMImpl::DoMatMul(A, B, C, args, cfg);
+  MMImpl::DoMatMul(A, B, C_rows, args, cfg);
   const uint64_t t1 =
       env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
   const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /

@@ -23,7 +23,7 @@
 #include <algorithm>  // std::transform
 #include <string>
 
-#include "compression/io.h"
+#include "io/io.h"        // Path
 #include "util/basics.h"  // Tristate
 #include "hwy/base.h"  // HWY_ABORT
 
@@ -181,6 +181,10 @@ class ArgsBase {
   void ForEach(Visitor& visitor) {
     static_cast<Args*>(this)->ForEach(visitor);
   }
+  template <class Visitor>
+  void ForEach(Visitor& visitor) const {
+    const_cast<ArgsBase*>(this)->ForEach(visitor);
+  }
 
  public:
   // WARNING: cannot call from ctor because the derived ctor has not yet run.
@@ -189,12 +193,12 @@ class ArgsBase {
     ForEach(visitor);
   }
 
-  void Help() {
+  void Help() const {
     HelpVisitor visitor;
     ForEach(visitor);
   }
 
-  void Print(int verbosity = 0) {
+  void Print(int verbosity = 0) const {
     PrintVisitor visitor(verbosity);
     ForEach(visitor);
   }
@@ -225,7 +229,7 @@ static inline HWY_MAYBE_UNUSED bool HasHelp(int argc, char* argv[]) {
 }
 
 template <class TArgs>
-static inline HWY_MAYBE_UNUSED void AbortIfInvalidArgs(TArgs& args) {
+static inline HWY_MAYBE_UNUSED void AbortIfInvalidArgs(const TArgs& args) {
   if (const char* err = args.Validate()) {
     args.Help();
     HWY_ABORT("Problem with args: %s\n", err);

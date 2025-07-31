@@ -31,6 +31,24 @@
           "lhs": "${hostSystemName}",
           "rhs": "Windows"
         }
+      },
+      {
+        "name": "windows-dll",
+        "inherits": "__defaults__",
+        "displayName": "Windows DLL",
+        "description": "Visual Studio 2022 with Clang/LLVM frontend (DLL build)",
+        "generator": "Visual Studio 17 2022",
+        "toolset": "ClangCL",
+        "condition": {
+          "type": "equals",
+          "lhs": "${hostSystemName}",
+          "rhs": "Windows"
+        },
+        "cacheVariables": {
+          "BUILD_SHARED_LIBS": "OFF",
+          "CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS": "ON",
+          "BUILD_GEMMA_DLL": "ON"
+        }
       }
     ],
     "buildPresets": [
@@ -54,6 +72,15 @@
         "displayName": "Windows",
         "configuration": "Release",
         "configurePreset": "windows"
+      },
+      {
+        "name": "windows-dll",
+        "displayName": "Windows DLL",
+        "configuration": "Release",
+        "configurePreset": "windows-dll",
+        "targets": [
+            "gemma_shared"
+        ]
       }
     ]
   }

@@ -22,19 +22,17 @@
 
 #include <algorithm>
 #include <memory>
-#include <random>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "compression/shared.h"
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"
-#include "util/app.h"
+#include "gemma/gemma_args.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace py = pybind11;
 
@@ -48,17 +46,18 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 class GemmaModel {
  public:
   GemmaModel(const gcpp::LoaderArgs& loader,
-             const gcpp::InferenceArgs& inference, const gcpp::AppArgs& app)
-      : gemma_(loader, inference, app), last_prob_(0.0f) {}
+             const gcpp::ThreadingArgs& threading,
+             const gcpp::InferenceArgs& inference)
+      : env_(loader, threading, inference), last_prob_(0.0f) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
   void GenerateEx(std::string prompt, gcpp::StreamFunc stream,
                   size_t max_generated_tokens, float temperature, float seed,
                   gcpp::AcceptFunc accept, bool skip_prompt) {
-    gemma_.MutableGen().seed(seed);
-    std::vector<int> prompt_tokens = gemma_.WrapAndTokenize(prompt);
-    gcpp::RuntimeConfig& config = gemma_.MutableConfig();
+    env_.MutableGen().seed(seed);
+    std::vector<int> prompt_tokens = env_.WrapAndTokenize(prompt);
+    gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
     config.verbosity = 0;
@@ -73,8 +72,7 @@ class GemmaModel {
       }
       return stream(token, score);
     };
-    gemma_.QueryModel(prompt_tokens,
-                      skip_prompt ? stream_with_skipping : stream);
+    env_.QueryModel(prompt_tokens, skip_prompt ? stream_with_skipping : stream);
   }
 
   // Generates a single example, given a prompt, and returns the result.
@@ -84,13 +82,13 @@ class GemmaModel {
                        const std::vector<std::string>& end) {
     std::set<int> end_token_set{};
     for (const std::string& end_token : end) {
-      std::vector<int> end_token_ids = gemma_.Tokenize(end_token);
+      std::vector<int> end_token_ids = env_.Tokenize(end_token);
       end_token_set.insert(end_token_ids.begin(), end_token_ids.end());
     }
 
     std::vector<int> predicted_token_ids;
     predicted_token_ids.reserve(max_generated_tokens);
-    std::vector<int> prompt_token_ids = gemma_.WrapAndTokenize(prompt);
+    std::vector<int> prompt_token_ids = env_.WrapAndTokenize(prompt);
     int generated = 0;
     auto stream_token = [&generated, &prompt_token_ids, &predicted_token_ids,
                          &end_token_set, this](int token, float proba) {
@@ -107,7 +105,7 @@ class GemmaModel {
 
     std::set<int> accept_token_set{};
     for (const std::string& accept_token : accept) {
-      std::vector<int> accept_token_ids = gemma_.Tokenize(accept_token);
+      std::vector<int> accept_token_ids = env_.Tokenize(accept_token);
       accept_token_set.insert(accept_token_ids.begin(), accept_token_ids.end());
     }
 
@@ -126,17 +124,17 @@ class GemmaModel {
       }
     };
 
-    gemma_.MutableGen().seed(seed);
-    gcpp::RuntimeConfig& config = gemma_.MutableConfig();
+    env_.MutableGen().seed(seed);
+    gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
     config.verbosity = 0;
     config.accept_token = accept_token;
 
-    gemma_.QueryModel(prompt_token_ids, stream_token);
+    env_.QueryModel(prompt_token_ids, stream_token);
 
     if (!predicted_token_ids.empty()) {
-      return gemma_.StringFromTokens(predicted_token_ids);
+      return env_.StringFromTokens(predicted_token_ids);
     } else {
       return "";
     }
@@ -148,14 +146,14 @@ class GemmaModel {
                                          size_t max_generated_tokens,
                                          float temperature, float seed,
                                          size_t top_k) {
-    gcpp::RuntimeConfig& config = gemma_.MutableConfig();
+    gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
     config.top_k = top_k;
     config.verbosity = 0;
-    gemma_.MutableGen().seed(seed);
+    env_.MutableGen().seed(seed);
 
-    std::vector<gcpp::QueryResult> outputs = gemma_.BatchQueryModel(inputs);
+    std::vector<gcpp::QueryResult> outputs = env_.BatchQueryModel(inputs);
     std::vector<std::string> result;
     result.reserve(outputs.size());
     for (const gcpp::QueryResult& output : outputs) {
@@ -168,8 +166,10 @@ class GemmaModel {
   // Generate* will use this image. Throws an error for other models.
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
-    gcpp::Gemma& model = *(gemma_.GetModel());
-    if (model.Info().wrapping != gcpp::PromptWrapping::PALIGEMMA) {
+    const gcpp::Gemma& gemma = *env_.GetGemma();
+    const gcpp::ModelConfig& config = gemma.Config();
+    if (config.wrapping != gcpp::PromptWrapping::PALIGEMMA &&
+        config.wrapping != gcpp::PromptWrapping::GEMMA_VLM) {
       throw std::invalid_argument("Not a PaliGemma model.");
     }
     py::buffer_info buffer = image.request();
@@ -181,14 +181,16 @@ class GemmaModel {
     float* ptr = static_cast<float*>(buffer.ptr);
     gcpp::Image c_image;
     c_image.Set(height, width, ptr);
-    const size_t image_size = model.GetModelConfig().vit_config.image_size;
+    const size_t image_size = config.vit_config.image_size;
     c_image.Resize(image_size, image_size);
-    image_tokens_ = gcpp::ImageTokens(gcpp::Extents2D(
-        model.GetModelConfig().vit_config.seq_len,
-        model.GetModelConfig().model_dim));
-    gcpp::RuntimeConfig runtime_config = {.gen = &gemma_.MutableGen(),
+    image_tokens_.reset(new gcpp::ImageTokens(
+        "image_tokens",
+        gcpp::Extents2D(config.vit_config.seq_len, config.model_dim),
+        env_.MutableEnv().ctx.allocator, gcpp::MatPadding::kOdd));
+    gcpp::RuntimeConfig runtime_config = {.gen = &env_.MutableGen(),
                                           .verbosity = 0};
-    model.GenerateImageTokens(runtime_config, c_image, image_tokens_);
+    gemma.GenerateImageTokens(runtime_config, env_.MutableKVCache().SeqLen(),
+                              c_image, *image_tokens_, env_.MutableEnv());
   }
 
   // Generates a response to the given prompt, using the last set image.
@@ -196,17 +198,15 @@ class GemmaModel {
   std::pair<std::string, std::vector<int>> GenerateWithImage(
       std::string prompt, size_t max_generated_tokens, float temperature,
       float seed, gcpp::AcceptFunc accept, std::vector<int> prompt_tokens) {
-    if (image_tokens_.Cols() == 0) {
-      throw std::invalid_argument("No image set.");
-    }
-    gcpp::Gemma& model = *(gemma_.GetModel());
-    gemma_.MutableGen().seed(seed);
-    gcpp::RuntimeConfig& config = gemma_.MutableConfig();
+    if (!image_tokens_) throw std::invalid_argument("No image set.");
+    const gcpp::Gemma& model = *env_.GetGemma();
+    env_.MutableGen().seed(seed);
+    gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
     config.verbosity = 0;
     config.accept_token = accept;
-    config.image_tokens = &image_tokens_;
+    config.image_tokens = image_tokens_.get();
     std::vector<int> tokens;
     if (!prompt_tokens.empty()) {
       if (!prompt.empty()) {
@@ -216,9 +216,9 @@ class GemmaModel {
       tokens = prompt_tokens;
       RemoveTrailingZeros(tokens);  // Remove padding, if any.
     } else {
-      tokens = gemma_.WrapAndTokenize(prompt);
+      tokens = env_.WrapAndTokenize(prompt);
     }
-    tokens.insert(tokens.begin(), image_tokens_.BatchSize(), 0);
+    tokens.insert(tokens.begin(), image_tokens_->Rows(), 0);
     size_t num_tokens = tokens.size();
     size_t prefix_end = num_tokens;
     config.prefill_tbatch_size = num_tokens;
@@ -234,8 +234,8 @@ class GemmaModel {
     };
     config.stream_token = stream_token;
     gcpp::TimingInfo timing_info = {.verbosity = 0};
-    model.Generate(config, tokens, /*pos=*/0, prefix_end,
-                   gemma_.MutableKVCache(), timing_info);
+    model.Generate(config, tokens, /*pos=*/0, prefix_end, env_.MutableKVCache(),
+                   env_.MutableEnv(), timing_info);
     std::string response;
     model.Tokenizer().Decode(response_tokens, &response);
     return {response, response_tokens};
@@ -244,40 +244,34 @@ class GemmaModel {
   float GetLastProb() const { return last_prob_; }
 
   std::string Detokenize(const std::vector<int>& token_ids) const {
-    return gemma_.StringFromTokens(token_ids);
+    return env_.StringFromTokens(token_ids);
   }
 
-  bool ModelIsLoaded() const { return gemma_.GetModel() != nullptr; }
+  bool ModelIsLoaded() const { return env_.GetGemma() != nullptr; }
 
  private:
-  gcpp::GemmaEnv gemma_;
-  gcpp::ImageTokens image_tokens_;
+  gcpp::GemmaEnv env_;
+  std::unique_ptr<gcpp::ImageTokens> image_tokens_;
   float last_prob_;
 };
 
 PYBIND11_MODULE(gemma, mod) {
   py::class_<GemmaModel>(mod, "GemmaModel")
-      .def(py::init([](std::string tokenizer, std::string weights,
-                       std::string model, std::string weight_type,
+      .def(py::init([](const std::string& tokenizer, const std::string& weights,
                        size_t max_threads) {
-             gcpp::LoaderArgs loader(tokenizer, weights, model);
-             if (const char* err = loader.Validate()) {
-               throw std::invalid_argument(err);
-             }
-             loader.weight_type_str = weight_type;
+             const gcpp::LoaderArgs loader(tokenizer, weights);
+             gcpp::ThreadingArgs threading;
+             threading.max_lps = max_threads;
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
-             gcpp::AppArgs app;
-             app.max_threads = max_threads;
              auto gemma =
-                 std::make_unique<GemmaModel>(loader, inference, app);
+                 std::make_unique<GemmaModel>(loader, threading, inference);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }
              return gemma;
            }),
            py::arg("tokenizer_path"), py::arg("weights_path"),
-           py::arg("model_flag"), py::arg("weight_type") = "sfp",
            py::arg("max_threads") = 0)
       .def("generate_ex", &GemmaModel::GenerateEx, py::arg("prompt"),
            py::arg("stream"), py::arg("max_generated_tokens") = 1024,

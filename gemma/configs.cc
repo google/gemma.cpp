@@ -15,21 +15,30 @@
 
 #include "gemma/configs.h"
 
-#include <cstddef>
-#include <iostream>
+#include <stddef.h>
+#include <stdio.h>
 
+#include <string>
+#include <vector>
+
+#include "compression/types.h"  // Type
+#include "io/fields.h"           // IFields
+#include "io/io.h"               // Path
 #include "hwy/base.h"
 
 namespace gcpp {
 
+static constexpr size_t kVocabSize = 256000;
+
+static constexpr size_t kGemmaV3VocabSize = 262144;
+
 static ModelConfig ConfigNoSSM() {
   ModelConfig config;
-  config.scale_names = {"att_ein",      "qkv_ein",   "gr_lin_x_w", "gr_lin_y_w",
-                        "gr_lin_out_w", "gr_gate_w", "gating_ein", "linear_w"};
+  config.scale_base_names = {"att_ein",    "qkv_ein",      "gr_lin_x_w",
+                             "gr_lin_y_w", "gr_lin_out_w", "gr_gate_w",
+                             "gating_ein", "linear_w"};
   return config;
 }
-
-static ModelConfig ConfigBaseGemmaV1() { return ConfigNoSSM(); }
 
 static ModelConfig ConfigBaseGemmaV2() {
   ModelConfig config = ConfigNoSSM();
@@ -54,17 +63,17 @@ static LayerConfig LayerConfigGemma2_27B(size_t model_dim) {
 
 static ModelConfig ConfigGemma2_27B() {
   ModelConfig config = ConfigBaseGemmaV2();
-  config.model_name = "Gemma2_27B";
+  config.display_name = "Gemma2_27B";
   config.model = Model::GEMMA2_27B;
   config.model_dim = 4608;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_27B(config.model_dim);
-  config.layer_configs = {46, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 46;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtModelDimDivNumHeads;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<46, 2>({4096, 8192});
+      RepeatedAttentionWindowSizes<46, 2>({4096, config.max_seq_len});
   return config;
 }
 
@@ -82,17 +91,17 @@ static LayerConfig LayerConfigGemma2_9B(size_t model_dim) {
 
 static ModelConfig ConfigGemma2_9B() {
   ModelConfig config = ConfigBaseGemmaV2();
-  config.model_name = "Gemma2_9B";
+  config.display_name = "Gemma2_9B";
   config.model = Model::GEMMA2_9B;
   config.model_dim = 3584;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_9B(config.model_dim);
-  config.layer_configs = {42, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 42;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<42, 2>({4096, 8192});
+      RepeatedAttentionWindowSizes<42, 2>({4096, config.max_seq_len});
   return config;
 }
 
@@ -110,66 +119,17 @@ static LayerConfig LayerConfigGemma2_2B(size_t model_dim) {
 
 static ModelConfig ConfigGemma2_2B() {
   ModelConfig config = ConfigBaseGemmaV2();
-  config.model_name = "Gemma2_2B";
+  config.display_name = "Gemma2_2B";
   config.model = Model::GEMMA2_2B;
   config.model_dim = 2304;
   config.vocab_size = kVocabSize;
-  config.seq_len = 8192;
+  config.max_seq_len = 8192;
   LayerConfig layer_config = LayerConfigGemma2_2B(config.model_dim);
-  config.layer_configs = {26, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 26;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   config.attention_window_sizes =
-      RepeatedAttentionWindowSizes<26, 2>({4096, 8192});
-  return config;
-}
-
-static LayerConfig LayerConfigGemma7B(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.ff_hidden_dim = 16 * 3072 / 2;  // = 24576
-  config.heads = 16;
-  config.kv_heads = 16;
-  config.qkv_dim = 256;
-  return config;
-}
-
-static ModelConfig ConfigGemma7B() {
-  ModelConfig config = ConfigBaseGemmaV1();
-  config.model_name = "Gemma7B";
-  config.model = Model::GEMMA_7B;
-  config.model_dim = 3072;
-  config.vocab_size = kVocabSize;
-  config.seq_len = kSeqLen;
-  LayerConfig layer_config = LayerConfigGemma7B(config.model_dim);
-  config.layer_configs = {28, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
-  config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes = FixedAttentionWindowSizes<28>(kSeqLen);
-  return config;
-}
-
-static LayerConfig LayerConfigGemma2B(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.ff_hidden_dim = 16 * 2048 / 2;  // = 16384
-  config.heads = 8;
-  config.kv_heads = 1;
-  config.qkv_dim = 256;
-  return config;
-}
-
-static ModelConfig ConfigGemma2B() {
-  ModelConfig config = ConfigBaseGemmaV1();
-  config.model_name = "Gemma2B";
-  config.model = Model::GEMMA_2B;
-  config.model_dim = 2048;
-  config.vocab_size = kVocabSize;
-  config.seq_len = kSeqLen;
-  LayerConfig layer_config = LayerConfigGemma2B(config.model_dim);
-  config.layer_configs = {18, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
-  config.attention_window_sizes = FixedAttentionWindowSizes<18>(kSeqLen);
+      RepeatedAttentionWindowSizes<26, 2>({4096, config.max_seq_len});
   return config;
 }
 
@@ -185,17 +145,18 @@ static LayerConfig LayerConfigGemmaTiny(size_t model_dim) {
 
 static ModelConfig ConfigGemmaTiny() {
   ModelConfig config = ConfigNoSSM();
-  config.model_name = "GemmaTiny";
+  config.display_name = "GemmaTiny";
   config.model = Model::GEMMA_TINY;
-  config.model_dim = 128;
-  config.vocab_size = 64;
-  config.seq_len = 32;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 32;
+  config.vocab_size = 32;  // at least two f32 vectors
+  config.max_seq_len = 32;
   LayerConfig layer_config = LayerConfigGemmaTiny(config.model_dim);
-  config.layer_configs = {3, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 2;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes = FixedAttentionWindowSizes<3>(32);
-  // This is required for optimize_test to pass.
+  config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
+  config.att_cap = 50.0f;
   config.final_cap = 30.0f;
   config.eos_id = 11;
   config.secondary_eos_id = 11;
@@ -223,23 +184,23 @@ static LayerConfig LayerConfigGriffin2B(size_t model_dim) {
 
 static ModelConfig ConfigGriffin2B() {
   ModelConfig config = ConfigNoSSM();
-  config.model_name = "Griffin2B";
+  config.display_name = "Griffin2B";
   config.model = Model::GRIFFIN_2B;
-  // Griffin uses local attention, so kSeqLen is actually the local attention
-  // window.
+  // Griffin uses local attention, so max_seq_len is actually the local
+  // attention window.
   config.model_dim = 2560;
   config.vocab_size = kVocabSize;
-  config.seq_len = 2048;
+  config.max_seq_len = 2048;
   LayerConfig layer_config = LayerConfigGriffin2B(config.model_dim);
-  config.layer_configs = {26, layer_config};
-  for (size_t i = 2; i < config.layer_configs.size(); i += 3) {
+  config.num_layers = 26;
+  config.layer_configs = {config.num_layers, layer_config};
+  for (size_t i = 2; i < config.num_layers; i += 3) {
     config.layer_configs[i].type = LayerAttentionType::kGemma;
     config.layer_configs[i].griffin_dim = 0;
   }
-  config.num_tensor_scales = 140;
-  config.attention_window_sizes = FixedAttentionWindowSizes<26>(config.seq_len);
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<26>(config.max_seq_len);
   config.use_local_attention = true;
-  // This is required for optimize_test to pass.
   config.final_cap = 0.0f;
   return config;
 }
@@ -273,26 +234,10 @@ static void AddVitConfig(ModelConfig& config, size_t image_size = 224) {
   config.vit_config.num_scales = 4 * config.vit_config.layer_configs.size();
 }
 
-static ModelConfig ConfigPaliGemma_224() {
-  ModelConfig config = ConfigGemma2B();
-  config.model_name = "PaliGemma_224";
-  config.model = Model::PALIGEMMA_224;
-  AddVitConfig(config);
-  return config;
-}
-
-static ModelConfig ConfigPaliGemma_448() {
-  ModelConfig config = ConfigGemma2B();
-  config.model_name = "PaliGemma_448";
-  config.model = Model::PALIGEMMA_448;
-  AddVitConfig(config, /*image_size=*/448);
-  return config;
-}
-
 ModelConfig GetVitConfig(const ModelConfig& config) {
   ModelConfig vit_config = ConfigNoSSM();
   vit_config.model_dim = config.vit_config.model_dim;
-  vit_config.seq_len = config.vit_config.seq_len;
+  vit_config.max_seq_len = config.vit_config.seq_len;
   vit_config.layer_configs = config.vit_config.layer_configs;
   vit_config.pool_dim = config.vit_config.pool_dim;
   vit_config.wrapping = config.wrapping;
@@ -303,32 +248,36 @@ ModelConfig GetVitConfig(const ModelConfig& config) {
 
 static ModelConfig ConfigPaliGemma2_3B_224() {
   ModelConfig config = ConfigGemma2_2B();
-  config.model_name = "PaliGemma2_3B_224";
+  config.display_name = "PaliGemma2_3B_224";
   config.model = Model::PALIGEMMA2_3B_224;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config);
   return config;
 }
 
 static ModelConfig ConfigPaliGemma2_3B_448() {
   ModelConfig config = ConfigGemma2_2B();
-  config.model_name = "PaliGemma2_3B_448";
+  config.display_name = "PaliGemma2_3B_448";
   config.model = Model::PALIGEMMA2_3B_448;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config, /*image_size=*/448);
   return config;
 }
 
 static ModelConfig ConfigPaliGemma2_10B_224() {
   ModelConfig config = ConfigGemma2_9B();
-  config.model_name = "PaliGemma2_10B_224";
+  config.display_name = "PaliGemma2_10B_224";
   config.model = Model::PALIGEMMA2_10B_224;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config);
   return config;
 }
 
 static ModelConfig ConfigPaliGemma2_10B_448() {
   ModelConfig config = ConfigGemma2_9B();
-  config.model_name = "PaliGemma2_10B_448";
+  config.display_name = "PaliGemma2_10B_448";
   config.model = Model::PALIGEMMA2_10B_448;
+  config.wrapping = PromptWrapping::PALIGEMMA;
   AddVitConfig(config, /*image_size=*/448);
   return config;
 }
@@ -358,18 +307,19 @@ static LayerConfig LayerConfigGemma3_1B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_1B() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.model_name = "Gemma3_1B";
+  config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 1152;
-  config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_1B_LM(config.model_dim);
-  config.layer_configs = {26, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 26;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<26, 6>(
-      {512, 512, 512, 512, 512, config.seq_len});
+      {512, 512, 512, 512, 512, config.max_seq_len});
   return config;
 }
 
@@ -389,27 +339,29 @@ static LayerConfig LayerConfigGemma3_4B_LM(size_t model_dim) {
 // Until we have the SigLIP checkpoints included, we use the LM config directly.
 static ModelConfig ConfigGemma3_4B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.model_name = "Gemma3_4B";
+  config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 2560;
-  config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_4B_LM(config.model_dim);
-  config.layer_configs = {34, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 34;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<34, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 
 static ModelConfig ConfigGemma3_4B() {
   ModelConfig config = ConfigGemma3_4B_LM();
-  config.model_name = "Gemma3_4B";
+  config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
-  config.vocab_size = 262144;
+  config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
   const size_t num_patches =
       config.vit_config.image_size / config.vit_config.patch_width;
@@ -436,27 +388,29 @@ static LayerConfig LayerConfigGemma3_12B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_12B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.model_name = "Gemma3_12B";
+  config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 3840;
-  config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_12B_LM(config.model_dim);
-  config.layer_configs = {48, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 48;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<48, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 
 static ModelConfig ConfigGemma3_12B() {
   ModelConfig config = ConfigGemma3_12B_LM();
-  config.model_name = "Gemma3_12B";
+  config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
-  config.vocab_size = 262144;
+  config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
   const size_t num_patches =
       config.vit_config.image_size / config.vit_config.patch_width;
@@ -483,27 +437,29 @@ static LayerConfig LayerConfigGemma3_27B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_27B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.model_name = "Gemma3_27B";
+  config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   config.model_dim = 5376;
-  config.vocab_size = 262144;  // new vocab size / tokenizer
-  config.seq_len = 32 * 1024;
+  config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
+  config.max_seq_len = 32 * 1024;
   LayerConfig layer_config = LayerConfigGemma3_27B_LM(config.model_dim);
-  config.layer_configs = {62, layer_config};
-  config.num_tensor_scales = 4 * config.layer_configs.size();
+  config.num_layers = 62;
+  config.layer_configs = {config.num_layers, layer_config};
   config.query_scale = QueryScaleType::SqrtKeySize;
   // interleaved local / global attention
   config.attention_window_sizes = RepeatedAttentionWindowSizes<62, 6>(
-      {1024, 1024, 1024, 1024, 1024, config.seq_len});
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
   return config;
 }
 
 static ModelConfig ConfigGemma3_27B() {
   ModelConfig config = ConfigGemma3_27B_LM();
-  config.model_name = "Gemma3_27B";
+  config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
   AddVitConfig(config, /*image_size=*/896);
-  config.vocab_size = 262144;
+  config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
   const size_t num_patches =
       config.vit_config.image_size / config.vit_config.patch_width;
@@ -515,12 +471,8 @@ static ModelConfig ConfigGemma3_27B() {
   return config;
 }
 
-ModelConfig ConfigFromModel(Model model) {
+static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
-    case Model::GEMMA_2B:
-      return ConfigGemma2B();
-    case Model::GEMMA_7B:
-      return ConfigGemma7B();
     case Model::GEMMA2_2B:
       return ConfigGemma2_2B();
     case Model::GEMMA2_9B:
@@ -531,10 +483,6 @@ ModelConfig ConfigFromModel(Model model) {
       return ConfigGriffin2B();
     case Model::GEMMA_TINY:
       return ConfigGemmaTiny();
-    case Model::PALIGEMMA_224:
-      return ConfigPaliGemma_224();
-    case Model::PALIGEMMA_448:
-      return ConfigPaliGemma_448();
     case Model::PALIGEMMA2_3B_224:
       return ConfigPaliGemma2_3B_224();
     case Model::PALIGEMMA2_3B_448:
@@ -556,124 +504,249 @@ ModelConfig ConfigFromModel(Model model) {
   }
 }
 
-#define TEST_EQUAL(a, b)                                               \
-  if (a != b) {                                                        \
-    if (debug)                                                         \
-      std::cerr << #a << "=" << a << " != " << #b << "=" << b << "\n"; \
-    result = false;                                                    \
+const char* ModelPrefix(Model model) {
+  switch (model) {
+    case Model::UNKNOWN:
+      return "unknown";
+    case Model::GEMMA2_2B:
+      return "gemma2-2b";
+    case Model::GEMMA2_9B:
+      return "9b";
+    case Model::GEMMA2_27B:
+      return "27b";
+    case Model::GRIFFIN_2B:
+      return "gr2b";
+    case Model::GEMMA_TINY:
+      return "tiny";
+    case Model::PALIGEMMA2_3B_224:
+      return "paligemma2-3b-224";
+    case Model::PALIGEMMA2_3B_448:
+      return "paligemma2-3b-448";
+    case Model::PALIGEMMA2_10B_224:
+      return "paligemma2-10b-224";
+    case Model::PALIGEMMA2_10B_448:
+      return "paligemma2-10b-448";
+    case Model::GEMMA3_4B:
+      return "gemma3-4b";
+    case Model::GEMMA3_1B:
+      return "gemma3-1b";
+    case Model::GEMMA3_12B:
+      return "gemma3-12b";
+    case Model::GEMMA3_27B:
+      return "gemma3-27b";
+    default:
+      HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
-
-#define RETURN_IF_NOT_EQUAL(a, b)                                      \
-  if (a != b) {                                                        \
-    if (debug)                                                         \
-      std::cerr << #a << "=" << a << " != " << #b << "=" << b << "\n"; \
-    return false;                                                      \
-  }
-
-#define WARN_IF_NOT_EQUAL(a, b)                                        \
-  if (a != b) {                                                        \
-    std::cerr << #a << "=" << a << " != " << #b << "=" << b << "\n";   \
-  }
-
-bool LayerConfig::TestEqual(const LayerConfig& other, bool partial,
-                            bool debug) const {
-  bool result = true;
-  // Optimized gating may not be set correctly in the c++ configs.
-  if (debug) {
-    WARN_IF_NOT_EQUAL(optimized_gating, other.optimized_gating)
-  }
-  TEST_EQUAL(model_dim, other.model_dim);
-  TEST_EQUAL(griffin_dim, other.griffin_dim);
-  TEST_EQUAL(ff_hidden_dim, other.ff_hidden_dim);
-  TEST_EQUAL(heads, other.heads);
-  TEST_EQUAL(kv_heads, other.kv_heads);
-  TEST_EQUAL(qkv_dim, other.qkv_dim);
-  TEST_EQUAL(conv1d_width, other.conv1d_width);
-  if (!partial) {
-    TEST_EQUAL(ff_biases, other.ff_biases);
-    TEST_EQUAL(softmax_attn_output_biases, other.softmax_attn_output_biases);
-  }
-  TEST_EQUAL(static_cast<int>(post_norm), static_cast<int>(other.post_norm));
-  TEST_EQUAL(static_cast<int>(type), static_cast<int>(other.type));
-  TEST_EQUAL(static_cast<int>(activation), static_cast<int>(other.activation));
-  TEST_EQUAL(static_cast<int>(post_qk), static_cast<int>(other.post_qk));
-  return result;
 }
 
-bool VitConfig::TestEqual(const VitConfig& other, bool partial,
-                          bool debug) const {
-  bool result = true;
-  TEST_EQUAL(model_dim, other.model_dim);
-  TEST_EQUAL(seq_len, other.seq_len);
-  if (!partial) {
-    TEST_EQUAL(num_scales, other.num_scales);
+PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
+  if (IsPaliGemma(model)) {
+    if (wrapping != Tristate::kDefault) {
+      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
+    }
+    return PromptWrapping::PALIGEMMA;
   }
-  TEST_EQUAL(patch_width, other.patch_width);
-  TEST_EQUAL(image_size, other.image_size);
-  RETURN_IF_NOT_EQUAL(layer_configs.size(), other.layer_configs.size());
-  for (size_t i = 0; i < layer_configs.size(); ++i) {
-    result &=
-        layer_configs[i].TestEqual(other.layer_configs[i], partial, debug);
+  if (IsVLM(model)) {
+    if (wrapping != Tristate::kDefault) {
+      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
+    }
+    return PromptWrapping::GEMMA_VLM;
   }
-  return result;
+  // Default to IT unless --wrapping=0.
+  return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
+                                      : PromptWrapping::GEMMA_IT;
 }
 
-bool ModelConfig::TestEqual(const ModelConfig& other, bool partial,
-                            bool debug) const {
-  bool result = true;
-  TEST_EQUAL(model_family_version, other.model_family_version);
-  // We don't care about model_name, model, wrapping, or weight being different,
-  // but will output in debug mode if they are.
-  if (debug) {
-    WARN_IF_NOT_EQUAL(model_name, other.model_name);
-    WARN_IF_NOT_EQUAL(static_cast<int>(model), static_cast<int>(other.model));
-    WARN_IF_NOT_EQUAL(static_cast<int>(wrapping),
-                      static_cast<int>(other.wrapping));
-    WARN_IF_NOT_EQUAL(static_cast<int>(weight), static_cast<int>(other.weight));
+ModelConfig::ModelConfig(const Model model, Type weight,
+                         PromptWrapping wrapping) {
+  HWY_ASSERT(weight != Type::kUnknown);
+  HWY_ASSERT(wrapping != PromptWrapping::kSentinel);
+  this->model = model;
+  if (model != Model::UNKNOWN) *this = ConfigFromModel(model);
+  HWY_ASSERT(this->model == model);
+  this->weight = weight;
+  this->wrapping = wrapping;
+}
+
+static Model FindModel(const std::string& specifier) {
+  Model found_model = Model::UNKNOWN;
+  ForEachModel([&](Model model) {
+    // Some model names are prefixes of other model names
+    const std::string prefix = std::string(ModelPrefix(model)) + "-";
+    if (specifier.rfind(prefix, 0) == 0) {  // Starts with prefix.
+      // We only expect one match.
+      HWY_ASSERT_M(found_model == Model::UNKNOWN, specifier.c_str());
+      found_model = model;
+    }
+  });
+  HWY_ASSERT_M(found_model != Model::UNKNOWN, specifier.c_str());
+  return found_model;
+}
+
+static Type FindType(const std::string& specifier) {
+  Type found_type = Type::kUnknown;
+  for (size_t i = 1; i < kNumTypes; ++i) {
+    const Type type = static_cast<Type>(i);
+    if (specifier.find(TypeName(type)) != std::string::npos) {  // NOLINT
+      // We only expect one match.
+      HWY_ASSERT_M(found_type == Type::kUnknown, specifier.c_str());
+      found_type = type;
+    }
   }
-  TEST_EQUAL(model_dim, other.model_dim);
-  TEST_EQUAL(vocab_size, other.vocab_size);
-  TEST_EQUAL(seq_len, other.seq_len);
-  if (!partial) {
-    TEST_EQUAL(num_tensor_scales, other.num_tensor_scales);
+  HWY_ASSERT_M(found_type != Type::kUnknown, specifier.c_str());
+  return found_type;
+}
+
+static PromptWrapping FindWrapping(const std::string& specifier) {
+  PromptWrapping found_wrapping = PromptWrapping::kSentinel;
+  for (size_t i = 0; i < static_cast<size_t>(PromptWrapping::kSentinel); ++i) {
+    const PromptWrapping w = static_cast<PromptWrapping>(i);
+    if (specifier.find(WrappingSuffix(w)) != std::string::npos) {  // NOLINT
+      // We expect zero or one match.
+      HWY_ASSERT_M(found_wrapping == PromptWrapping::kSentinel,
+                   specifier.c_str());
+      found_wrapping = w;
+    }
   }
-  TEST_EQUAL(att_cap, other.att_cap);
-  TEST_EQUAL(final_cap, other.final_cap);
-  TEST_EQUAL(absolute_pe, other.absolute_pe);
-  TEST_EQUAL(use_local_attention, other.use_local_attention);
-  TEST_EQUAL(static_cast<int>(query_scale),
-             static_cast<int>(other.query_scale));
-  RETURN_IF_NOT_EQUAL(layer_configs.size(), other.layer_configs.size());
-  for (size_t i = 0; i < layer_configs.size(); ++i) {
-    result &=
-        layer_configs[i].TestEqual(other.layer_configs[i], partial, debug);
+  if (found_wrapping == PromptWrapping::kSentinel) {
+    return ChooseWrapping(FindModel(specifier));
   }
-  RETURN_IF_NOT_EQUAL(attention_window_sizes.size(),
-                     other.attention_window_sizes.size());
-  for (size_t i = 0; i < attention_window_sizes.size(); ++i) {
-    TEST_EQUAL(attention_window_sizes[i], other.attention_window_sizes[i]);
+  return found_wrapping;
+}
+
+// Obtains model/weight/wrapping by finding prefix and suffix strings.
+ModelConfig::ModelConfig(const std::string& specifier)
+    : ModelConfig(FindModel(specifier), FindType(specifier),
+                  FindWrapping(specifier)) {}
+
+std::string ModelConfig::Specifier() const {
+  HWY_ASSERT(model != Model::UNKNOWN);
+  HWY_ASSERT(weight != Type::kUnknown);
+  HWY_ASSERT(wrapping != PromptWrapping::kSentinel);
+
+  std::string base_name = ModelPrefix(model);
+
+  base_name += '-';
+  base_name += TypeName(weight);
+
+  if (wrapping != PromptWrapping::GEMMA_VLM &&
+      wrapping != PromptWrapping::PALIGEMMA) {
+    base_name += WrappingSuffix(wrapping);
   }
-  if (!partial) {
-    if (scale_names != other.scale_names) {
-      result = false;
-      if (debug) {
-        std::cerr << "scale_names mismatch\n";
+
+  return base_name;
+}
+
+// Returns whether all fields match.
+static bool AllEqual(const IFields& a, const IFields& b, bool print) {
+  const std::vector<uint32_t> serialized_a = a.Write();
+  const std::vector<uint32_t> serialized_b = b.Write();
+  if (serialized_a != serialized_b) {
+    if (print) {
+      fprintf(stderr, "%s differs. Recommend generating a diff:\n", a.Name());
+      a.Print();
+      b.Print();
+    }
+    return false;
+  }
+  return true;
+}
+
+bool LayerConfig::TestEqual(const LayerConfig& other, bool print) const {
+  return AllEqual(*this, other, print);
+}
+
+bool VitConfig::TestEqual(const VitConfig& other, bool print) const {
+  return AllEqual(*this, other, print);
+}
+
+bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
+  // Early out to guard the loop below; a differing number of layers will anyway
+  // cause a mismatch.
+  if (layer_configs.size() != other.layer_configs.size()) {
+    if (print) {
+      HWY_WARN("Layer configs size mismatch %zu vs %zu", layer_configs.size(),
+               other.layer_configs.size());
+    }
+    return false;
+  }
+
+  // Copy so we can 'ignore' fields by setting them to the same value.
+  ModelConfig a = *this;
+  ModelConfig b = other;
+  // Called by `OverwriteWithCanonical`, so ignore the fields it will set.
+  a.display_name = b.display_name;
+  a.model = b.model;
+
+  // The following are not yet set by config_converter.py, so we here ignore
+  // them for purposes of comparison, and there overwrite the converter's config
+  // with the canonical ModelConfig constructed via (deduced) enum, so that
+  // these fields will be set.
+  // `vit_config` is also not yet set, but we must not ignore it because
+  // otherwise PaliGemma models will be indistinguishable for `configs_test`.
+  a.pool_dim = b.pool_dim;  // ViT
+  a.eos_id = b.eos_id;
+  a.secondary_eos_id = b.secondary_eos_id;
+  a.scale_base_names = b.scale_base_names;
+  for (size_t i = 0; i < a.layer_configs.size(); ++i) {
+    a.layer_configs[i].optimized_gating = b.layer_configs[i].optimized_gating;
+  }
+
+  return AllEqual(a, b, print);
+}
+
+// Constructs the canonical ModelConfig for each model. If there is one for
+// which TestEqual returns true, overwrites `*this` with that and returns true.
+bool ModelConfig::OverwriteWithCanonical() {
+  bool found = false;
+  const bool print = false;
+  ForEachModel([&](Model model) {
+    const ModelConfig config(model, weight, wrapping);
+    if (config.TestEqual(*this, print)) {
+      HWY_ASSERT(!found);  // Should only find one.
+      found = true;
+      *this = config;
+    }
+  });
+  return found;
+}
+
+Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
+  switch (layers) {
+    case 2:
+      return Model::GEMMA_TINY;
+    case 26:
+      if (layer_types & kDeducedGriffin) return Model::GRIFFIN_2B;
+      if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
+      return Model::GEMMA2_2B;
+    case 27:
+      return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
+                                         : Model::PALIGEMMA2_3B_224;
+    case 34:
+      return Model::GEMMA3_4B;
+    case 42:
+      if (layer_types & kDeducedViT) {
+        return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
+                                           : Model::PALIGEMMA2_10B_224;
       }
-    }
-  }
-  TEST_EQUAL(norm_num_groups, other.norm_num_groups);
-  result &= vit_config.TestEqual(other.vit_config, partial, debug);
-  return result;
-}
+      return Model::GEMMA2_9B;
+    case 46:
+      return Model::GEMMA2_27B;
+    case 48:
+      return Model::GEMMA3_12B;
+    case 62:
+      return Model::GEMMA3_27B;
 
-Model ModelFromConfig(const ModelConfig& config) {
-  for (Model model : kAllModels) {
-    ModelConfig model_config = ConfigFromModel(model);
-    if (config.TestEqual(model_config, /*partial=*/true, /*debug=*/false)) {
-      return model;
-    }
+    // TODO: detect these.
+    /*
+    return Model::GEMMA2_772M;
+    return Model::PALIGEMMA2_772M_224;
+    */
+    default:
+      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+               blob_path.path.c_str(), layers, layer_types);
+      return Model::UNKNOWN;
   }
-  return Model::UNKNOWN;
 }
 
 }  // namespace gcpp

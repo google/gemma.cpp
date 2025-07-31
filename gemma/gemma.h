@@ -16,122 +16,154 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 
-#include <functional>
-#include <random>
-#include <string>
+#include <stdio.h>
+
 #include <vector>
 
 // IWYU pragma: begin_exports
-#include "compression/io.h"  // Path
 #include "gemma/activations.h"
-#include "gemma/common.h"
 #include "gemma/configs.h"
+#include "gemma/gemma_args.h"
 #include "gemma/kv_cache.h"
-#include "gemma/tokenizer.h"
+#include "gemma/model_store.h"
 #include "gemma/weights.h"
+#include "io/blob_store.h"
+#include "io/io.h"       // Path
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
-#include "util/allocator.h"  // RowVectorBatch
-#include "util/basics.h"     // TokenAndProb
+#include "util/basics.h"  // TokenAndProb
+#include "util/threading_context.h"
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
-#include "hwy/aligned_allocator.h"  // Span
 
 namespace gcpp {
-using PromptTokens = hwy::Span<const int>;
 
-// Batches of independent queries have their own prompt, previous token,
-// position in the sequence, and KVCache.
-using QueriesPromptTokens = hwy::Span<const PromptTokens>;
-using QueriesToken = hwy::Span<const int>;
-using QueriesPos = hwy::Span<const size_t>;
-using KVCaches = hwy::Span<KVCache>;
+struct PerQuery {
+  PromptTokens prompt;
 
-// StreamFunc is called with (token, probability). For prompt tokens,
-// probability is 0.0f. StreamFunc should return false to stop generation and
-// true to continue generation.
-using StreamFunc = std::function<bool(int, float)>;
-// BatchStreamFunc is called with (query_idx, pos, token, probability).
-// For prompt tokens, probability is 0.0f.
-// StreamFunc should return false to stop generation and true to continue.
-using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
-// If not empty, AcceptFunc is called with token. It should return false for
-// tokens you don't want to generate and true for tokens you want to generate.
-using AcceptFunc = std::function<bool(int, float)>;
-// If not empty, SampleFunc is called with the logits for the next token, which
-// it may modify/overwrite, and its return value is the next generated token
-// together with its probability.
-using SampleFunc = std::function<TokenAndProb(float*, size_t)>;
-// If not empty, LayersOutputFunc is called for layer outputs, specified with:
-// - index of query within containing batch (if any); zero otherwise.
-// - position in the tokens sequence
-// - name of the data, e.g. "tokens" for token IDs
-// - layer index (or -1 for global outputs)
-// - pointer to the data array
-// - size of the data array
-using LayersOutputFunc = std::function<void(size_t, size_t, const std::string&,
-                                            int, const float*, size_t)>;
-// If not empty, ActivationsObserverFunc is invoked after each layer with:
-// - per-query position within the tokens sequence
-// - layer index (or -1 for post-norm output)
-// - activations
-using ActivationsObserverFunc =
-    std::function<void(const QueriesPos& queries_pos, int, const Activations&)>;
+  // Position in the KV cache: initially zero for the first turn, or when
+  // multi-turn is NOT desired. Incremented by prefill and `StreamAndUpdateEOS`.
+  size_t mutable_pos;
+  // Allows computing the last prefill token as `mutable_pos - initial_pos`,
+  // which might differ from `prompt.size() - 1` for prefix-LM.
+  size_t initial_pos;
+  // Zero for causal attention, or the end of the prefix for prefix-LM style
+  // attention in Paligemma.
+  size_t prefix_end;
 
-// ImageTokens are represented as a RowVectorBatch, where each "batch" index
-// corresponds to a token for an image patch as computed by the image encoder.
-using ImageTokens = RowVectorBatch<float>;
+  KVCache& kv_cache;
 
-// RuntimeConfig holds configuration for a single generation run.
-struct RuntimeConfig {
-  // If not empty, batch_stream_token is called for each token in the batch,
-  // instead of stream_token.
-  bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
-    if (batch_stream_token) {
-      return batch_stream_token(query_idx, pos, token, prob);
+  // Previous token generated for this query, or the last prompt token. Will be
+  // fed into the next Transformer() call.
+  int prev_token = 0;
+};
+
+// Array of `PerQuery`. Referenced by `QBatch` and passed to `GenerateBatch`.
+struct AllQueries {
+  AllQueries() = default;
+
+  // For `GenerateSingleT`: same prompt/pos, replicated for each KV cache.
+  AllQueries(const PromptTokens& prompt, size_t pos, size_t prefix_end,
+             const hwy::Span<KVCache>& kv_caches) {
+    per_query_.reserve(kv_caches.size());
+    for (size_t i = 0; i < kv_caches.size(); ++i) {
+      HWY_ASSERT(kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
+      per_query_.push_back(PerQuery{
+          .prompt = prompt,
+          .mutable_pos = pos,
+          .initial_pos = pos,
+          .prefix_end = prefix_end,
+          .kv_cache = kv_caches[i],
+      });
     }
-    return stream_token(token, prob);
   }
 
-  // Limit on the number of tokens generated.
-  size_t max_generated_tokens;
+  // Batch of queries with initial position set to zero. Causal attention
+  // is requested via empty or all-zero `prefix_end`.
+  AllQueries(
+      const hwy::Span<const PromptTokens>& prompts,
+      const hwy::Span<KVCache>& kv_caches,
+      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>()) {
+    HWY_ASSERT(prompts.size() == kv_caches.size());
+    HWY_ASSERT(prompts.size() == prefix_end.size() || prefix_end.size() == 0);
+    per_query_.reserve(kv_caches.size());
+    for (size_t i = 0; i < kv_caches.size(); ++i) {
+      HWY_ASSERT(kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
+      per_query_.push_back(PerQuery{
+          .prompt = prompts[i],
+          .mutable_pos = 0,
+          .initial_pos = 0,
+          .prefix_end = prefix_end.size() == 0 ? 0 : prefix_end[i],
+          .kv_cache = kv_caches[i],
+      });
+    }
+  }
 
-  // These defaults are overridden by InferenceArgs::CopyTo(*this):
-  // Max tokens per batch during prefill.
-  size_t prefill_tbatch_size = 256;
-  // Max queries per batch (one token from each) during decode.
-  size_t decode_qbatch_size = 16;
+  void Reserve(size_t size) { per_query_.reserve(size); }
+  void Append(const PerQuery& query) { per_query_.push_back(query); }
 
-  // Sampling-related parameters.
-  float temperature;     // Temperature for sampling.
-  size_t top_k = kTopK;  // Top-k for sampling.
-  std::mt19937* gen;     // Random number generator used for sampling.
+  size_t NumQueries() const { return per_query_.size(); }
 
-  int verbosity;  // Controls verbosity of printed messages.
+  PerQuery& operator[](size_t query_idx) {
+    HWY_DASSERT(query_idx < NumQueries());
+    return per_query_[query_idx];
+  }
+  const PerQuery& operator[](size_t query_idx) const {
+    HWY_DASSERT(query_idx < NumQueries());
+    return per_query_[query_idx];
+  }
 
-  // Functions operating on the generated tokens.
-  StreamFunc stream_token;
-  BatchStreamFunc batch_stream_token;
-  AcceptFunc accept_token;         // if empty, accepts all tokens.
-  SampleFunc sample_func;          // if empty, uses SampleTopK.
+ private:
+  std::vector<PerQuery> per_query_;
+};
 
-  // Observer callbacks for intermediate data.
-  LayersOutputFunc layers_output;  // if not empty, called after each layer.
-  ActivationsObserverFunc activations_observer;  // if set, called per-layer.
+// View into AllQueries: either a batch of queries, or a single query for use
+// in PrefillTBatch or GenerateSingleT. Cheap to create because it holds a
+// reference to AllQueries.
+class QBatch {
+ public:
+  QBatch(size_t start, size_t max_size, AllQueries& queries)
+      : start_(start),
+        max_size_(max_size),
+        queries_(queries),
+        size_(HWY_MIN(max_size_, queries_.NumQueries() - start_)) {
+    HWY_ASSERT(max_size_ <= 4096);  // non_eos uses `BitSet4096`.
+    HWY_DASSERT(size_ != 0);
+    HWY_DASSERT(start_ + size_ <= queries_.NumQueries());
+  }
 
-  // If not empty, these point to the image tokens and are used in the
-  // PaliGemma prefix-LM style attention.
-  const ImageTokens *image_tokens = nullptr;
+  // Returns a single-query view starting at `qi` relative to this batch.
+  QBatch Single(size_t qi) const { return QBatch(start_ + qi, 1, queries_); }
 
-  // Whether to use thread spinning to reduce barrier synchronization latency.
-  // Mutable so we can change kDefault to kTrue/kFalse during Generate, because
-  // RuntimeConfig is const there and is not passed to the Gemma ctor. This
-  // default decision is likely sufficient because it is based on whether
-  // threads are successfully pinned.
-  mutable Tristate use_spinning = Tristate::kDefault;
+  // How many queries in this batch, <= `queries_.NumQueries()` and `max_size_`.
+  size_t Size() const { return size_; }
 
-  // End-of-sequence token.
-  int eos_id = EOS_ID;
+  // Returns index for use with `AllQueries` and `BatchStreamToken`.
+  size_t QueryIdx(size_t qi) const {
+    HWY_DASSERT(qi < size_);
+    return start_ + qi;
+  }
+
+  // Accessor functions to bridge the previous SoA and current AoS layout.
+  const PromptTokens& Prompt(size_t qi) const {
+    return queries_[QueryIdx(qi)].prompt;
+  }
+  size_t Pos(size_t qi) const { return queries_[QueryIdx(qi)].mutable_pos; }
+  size_t& MutablePos(size_t qi) { return queries_[QueryIdx(qi)].mutable_pos; }
+  size_t InitialPos(size_t qi) const {
+    return queries_[QueryIdx(qi)].initial_pos;
+  }
+  size_t PrefixEnd(size_t qi) const {
+    return queries_[QueryIdx(qi)].prefix_end;
+  }
+  KVCache& KV(size_t qi) const { return queries_[QueryIdx(qi)].kv_cache; }
+  int& PrevToken(size_t qi) { return queries_[QueryIdx(qi)].prev_token; }
+
+ private:
+  size_t start_;
+  size_t max_size_;
+  AllQueries& queries_;
+  size_t size_;
 };
 
 struct TimingInfo {
@@ -193,81 +225,57 @@ struct TimingInfo {
   size_t tokens_generated = 0;
 };
 
+// After construction, all methods are const and thread-compatible if using
+// separate ThreadingContext for each thread.
 class Gemma {
  public:
-  // Reads old format weights file and tokenizer file.
-  // `env` must remain valid for the lifetime of this Gemma.
-  Gemma(const Path& tokenizer_path, const Path& weights, const ModelInfo& info,
-        MatMulEnv& env);
-  // Reads new format weights file that contains everything in a single file.
-  // `env` must remain valid for the lifetime of this Gemma.
-  Gemma(const Path& weights, MatMulEnv& env);
-  // Allocates weights, caller is responsible for filling them.
-  Gemma(GemmaTokenizer&& tokenizer, const ModelInfo& info, MatMulEnv& env);
+  // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
+  // `ctx` is only used to read tensors, but it is typically also referenced
+  // by the `MatMulEnv` passed to the Generate* methods.
+  Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
+        ThreadingContext& ctx);
   ~Gemma();
 
-  const ModelConfig& GetModelConfig() const { return model_.Config(); }
-  ModelInfo Info() const {
-    return ModelInfo({.model = model_.Config().model,
-                      .wrapping = model_.Config().wrapping,
-                      .weight = model_.Config().weight});
-  }
-  const GemmaTokenizer& Tokenizer() const { return tokenizer_; }
-  const ModelWeightsStorage& Weights() const { return model_; }
-  ModelWeightsStorage& MutableWeights() { return model_; }
-  void Save(const Path& weights, hwy::ThreadPool& pool) {
-    std::string tokenizer_proto = tokenizer_.Serialize();
-    model_.Save(tokenizer_proto, weights, pool);
-  }
+  const ModelConfig& Config() const { return model_.Config(); }
+  const GemmaTokenizer& Tokenizer() const { return model_.Tokenizer(); }
+  const WeightsPtrs& Weights() const { return weights_; }
+  WeightsPtrs::Mode WeightReadMode() const { return weight_read_mode_; }
+  const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
+  const InferenceArgs& Inference() const { return inference_; }
+
+  void Save(const Path& weights_path, NestedPools& pools) const;
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
-                size_t pos, KVCache& kv_cache, TimingInfo& timing_info) {
-    Generate(runtime_config, prompt, pos, /*prefix_end=*/0, kv_cache,
+                size_t pos, KVCache& kv_cache, MatMulEnv& env,
+                TimingInfo& timing_info) const {
+    Generate(runtime_config, prompt, pos, /*prefix_end=*/0, kv_cache, env,
              timing_info);
   }
   // For prefix-LM style attention, we can pass the end of the prefix.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
                 size_t pos, size_t prefix_end, KVCache& kv_cache,
-                TimingInfo& timing_info);
+                MatMulEnv& env, TimingInfo& timing_info) const;
 
-  // `queries_pos` are the positions in the KV cache. Users are responsible for
-  // incrementing them in `BatchStreamFunc`, or setting to zero for single-turn.
   void GenerateBatch(const RuntimeConfig& runtime_config,
-                     const QueriesPromptTokens& queries_prompt,
-                     const QueriesPos& queries_pos, const KVCaches& kv_caches,
-                     TimingInfo& timing_info) {
-    GenerateBatch(runtime_config, queries_prompt, queries_pos,
-                  /*queries_prefix_end=*/{}, kv_caches, timing_info);
-  }
-  // For prefix-LM style attention, we can pass the ends of the prefixes.
-  void GenerateBatch(const RuntimeConfig& runtime_config,
-                     const QueriesPromptTokens& queries_prompt,
-                     const QueriesPos& queries_pos,
-                     const QueriesPos& queries_prefix_end,
-                     const KVCaches& kv_caches, TimingInfo& timing_info);
+                     AllQueries& all_queries, MatMulEnv& env,
+                     TimingInfo& timing_info) const;
 
   // Generates the image tokens by running the image encoder ViT.
-  void GenerateImageTokens(const RuntimeConfig& runtime_config,
-                           const Image& image, ImageTokens& image_tokens);
+  void GenerateImageTokens(const RuntimeConfig& runtime_config, size_t seq_len,
+                           const Image& image, ImageTokens& image_tokens,
+                           MatMulEnv& env) const;
 
  private:
-  MatMulEnv& env_;
-
-  GemmaTokenizer tokenizer_;
-  // Type-erased so that this can be defined in the header.
-  ModelWeightsStorage model_;
+  BlobReader reader_;
+  ModelStore model_;
+  std::vector<MatOwner> mat_owners_;
+  WeightsPtrs weights_;
+  WeightsPtrs::Mode weight_read_mode_;
+  GemmaChatTemplate chat_template_;
+  InferenceArgs inference_;
 };
-
-// Adds BOS token and possibly 'turn' annotations, which depend on `info`
-// and `pos`, the number of tokens decoded so far; returns the corresponding
-// tokens. Asserts that tokenization is successful.
-std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,
-                                 const ModelInfo& info, size_t pos,
-                                 std::string& prompt);
-void RangeChecks(const ModelConfig& weights_config,
-                 size_t& max_generated_tokens, size_t prompt_size);
 
 }  // namespace gcpp
 

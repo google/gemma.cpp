@@ -96,21 +96,10 @@ https://github.com/keras-team/keras-nlp/blob/master/tools/gemma/export_gemma_to_
 From Pytorch, use the following script to generate uncompressed weights:
 https://github.com/google/gemma.cpp/blob/dev/compression/convert_weights.py
 
-Then run `compression/compress_weights.cc` (Bazel target
-`compression:compress_weights`), specifying the resulting file as `--weights`
-and the desired .sbs name as the `--compressed_weights`.
+For PaliGemma, use `python/convert_from_safetensors` to create an SBS file
+directly.
 
-## Compile-Time Flags (Advanced)
-
-There are several compile-time flags to be aware of (note these may or may not
-be exposed to the build system):
-
-- `GEMMA_MAX_SEQ_LEN` : Sets maximum sequence length to preallocate for the KV
-  Cache. The default is 4096 tokens but can be overridden. This is not exposed
-  through `CMakeLists.txt` yet.
-
-In the medium term this will likely be deprecated in favor of handling options
-at runtime - dynamically resizing the KV cache as needed.
+For other models, `gemma_export_main.py` is not yet open sourced.
 
 ## Using gemma.cpp as a Library (Advanced)
 
@@ -164,16 +153,13 @@ constrained decoding type of use cases where you want to force the generation to
 fit a grammar. If you're not doing this, you can send an empty lambda or
 `std::function` as a no-op which is what `run.cc` does.
 
-### `Transformer()` implements the inference (i.e. `forward()` method in PyTorch or Jax) computation of the neural network
+### `Transformer()` implements inference (i.e. `forward()` in PyTorch or Jax)
 
 For high-level applications, you might only call `model.Generate()` and never
 interact directly with the neural network, but if you're doing something a bit
 more custom you can call transformer which performs a single inference operation
 on a single token and mutates the Activations and the KVCache through the neural
 network computation.
-
-Note that an experimental backward pass is available in backprop/, which may be
-useful for fine tuning.
 
 ### For low level operations, defining new architectures, call `ops.h` functions directly
 

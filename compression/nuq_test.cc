@@ -13,20 +13,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// SFP uses ConcatEven/Odd which are not supported; skip SVE for faster tests.
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_SVE)
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include <algorithm>  // std::shuffle
+#include <array>
 #include <random>
 
 #include "compression/distortion.h"
-#include "compression/shared.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -104,7 +104,7 @@ struct TestPlateaus {
       HWY_ASSERT(-0.5f <= in[i] && in[i] < 0.5f);
     }
 
-    std::random_device rd;
+    std::random_device rd;  // NOLINT
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
@@ -151,7 +151,7 @@ struct TestRamp {
       HWY_ASSERT(-0.45f <= in[i] && in[i] < 0.55f);
     }
 
-    std::random_device rd;
+    std::random_device rd;  // NOLINT
     std::mt19937 rng(rd());
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
@@ -246,7 +246,8 @@ struct TestOffset {
     auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
     auto dec1 = hwy::AllocateAligned<T>(total);
     auto dec2 = hwy::AllocateAligned<T>(kMidLen);
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
     HWY_ASSERT(in && dec1 && dec2 && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), total);
 
@@ -296,7 +297,8 @@ struct TestUnalignedOffset {
 
       auto in = hwy::AllocateAligned<float>(total);  // Enc() requires f32
       auto dec1 = hwy::AllocateAligned<T>(total);
-      auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+      auto nuq = hwy::AllocateAligned<NuqStream>(
+          hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
       auto dec2 = hwy::AllocateAligned<T>(num_decompressed);
       HWY_ASSERT(in && dec1 && dec2 && nuq);
       const auto nuq_span = MakeSpan(nuq.get(), total);
@@ -347,7 +349,8 @@ struct TestDec2 {
     auto dec0 = hwy::AllocateAligned<T>(total);
     auto dec1 = hwy::AllocateAligned<T>(total);
     auto dec2 = hwy::AllocateAligned<T>(kMidLen);
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(total));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(total), hwy::VectorBytes()));
     HWY_ASSERT(in && dec0 && dec1 && dec2 && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), total);
 
@@ -449,7 +452,8 @@ struct TestEncDec {
     const size_t num = 4 * kGroupSize;
     auto in = hwy::AllocateAligned<float>(num);  // Enc() requires f32
     auto out = hwy::AllocateAligned<T>(num);     // already padded
-    auto nuq = hwy::AllocateAligned<NuqStream>(NuqStream::PackedEnd(num));
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(num), hwy::VectorBytes()));
     HWY_ASSERT(in && out && nuq);
     const auto nuq_span = MakeSpan(nuq.get(), num);
 
@@ -512,6 +516,7 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 HWY_BEFORE_TEST(NuqTest);
+#if GEMMA_ENABLE_NUQ
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllFlat);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllPlateaus);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllRamp);
@@ -525,6 +530,9 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestUnalignedOffsetF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecF32);
+#else
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(NuqTest);
+#endif  // GEMMA_ENABLE_NUQ
 HWY_AFTER_TEST();
 }  // namespace gcpp
 #endif  // HWY_ONCE

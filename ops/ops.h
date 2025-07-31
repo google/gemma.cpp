@@ -20,21 +20,22 @@
 
 #include <cmath>
 
-#include "util/allocator.h"
+#include "util/mat.h"
 #include "hwy/base.h"
 
 namespace gcpp {
 
-static inline HWY_MAYBE_UNUSED RowVectorBatch<float> CreateInvTimescale(
-    size_t qkv_dim, bool half_rope, double base_frequency = 10000.0) {
+static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
+    const Allocator& allocator, size_t qkv_dim, bool half_rope,
+    double base_frequency = 10000.0) {
   const size_t rope_dim = half_rope ? qkv_dim / 2 : qkv_dim;
-  RowVectorBatch<float> inv_timescale(Extents2D(1, rope_dim / 2));
+  MatStorageT<float> inv_timescale("inv_timescale", rope_dim / 2, allocator);
   for (size_t dim = 0; dim < rope_dim / 2; ++dim) {
     const double freq_exponents =
         static_cast<double>(2 * dim) / static_cast<double>(rope_dim);
     // Replacing with expf(ln(1E4) * freq_exponents) changes results
     // noticeably.
-    inv_timescale.Batch(0)[dim] =
+    inv_timescale.Row(0)[dim] =
         static_cast<float>(1.0 / std::pow(base_frequency, freq_exponents));
   }
   return inv_timescale;

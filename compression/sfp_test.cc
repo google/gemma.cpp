@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// We use ConcatEven/Odd which are not supported. Use HWY_EMU128 instead.
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdint.h>
@@ -25,7 +25,6 @@
 #include <set>
 
 #include "compression/distortion.h"
-#include "compression/shared.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"

@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32.
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdio.h>
@@ -25,7 +25,8 @@
 #include <cmath>      // std::abs
 #include <memory>
 
-#include "compression/compress.h"
+#include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -37,6 +38,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
+#include "compression/compress-inl.h"
 #include "ops/matvec-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -48,18 +50,18 @@ using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
 
 FloatPtr SimpleMatVecAdd(const MatStorageT<float>& mat, const FloatPtr& vec,
                          const FloatPtr& add) {
-  FloatPtr raw_mat = hwy::AllocateAligned<float>(mat.NumElements());
+  const size_t num = mat.Rows() * mat.Cols();
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(num);
   FloatPtr out = hwy::AllocateAligned<float>(mat.Rows());
   HWY_ASSERT(raw_mat && out);
   const hn::ScalableTag<float> df;
-  DecompressAndZeroPad(df, MakeSpan(mat.data(), mat.NumElements()), 0,
-                       raw_mat.get(), mat.NumElements());
+  DecompressAndZeroPad(df, mat.Span(), 0, raw_mat.get(), num);
   for (size_t idx_row = 0; idx_row < mat.Rows(); idx_row++) {
     out[idx_row] = 0.0f;
     for (size_t idx_col = 0; idx_col < mat.Cols(); idx_col++) {
       out[idx_row] += raw_mat[mat.Cols() * idx_row + idx_col] * vec[idx_col];
     }
-    out[idx_row] *= mat.scale();
+    out[idx_row] *= mat.Scale();
     out[idx_row] += add[idx_row];
   }
   return out;
@@ -67,10 +69,13 @@ FloatPtr SimpleMatVecAdd(const MatStorageT<float>& mat, const FloatPtr& vec,
 
 template <typename MatT, size_t kOuter, size_t kInner>
 std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
+                                                const Allocator& allocator,
                                                 hwy::ThreadPool& pool) {
   gcpp::CompressWorkingSet ws;
-  auto mat = std::make_unique<MatStorageT<float>>("TestMat", kOuter, kInner);
-  FloatPtr raw_mat = hwy::AllocateAligned<float>(mat->NumElements());
+  const Extents2D extents(kOuter, kInner);
+  auto mat = std::make_unique<MatStorageT<float>>("TestMat", extents, allocator,
+                                                  MatPadding::kPacked);
+  FloatPtr raw_mat = hwy::AllocateAligned<float>(extents.Area());
   HWY_ASSERT(raw_mat);
   const float scale = 1.0f / kInner;
   pool.Run(0, kOuter, [&](const size_t i, size_t /*thread*/) {
@@ -80,8 +85,8 @@ std::unique_ptr<MatStorageT<float>> GenerateMat(size_t offset,
     }
   });
 
-  CompressScaled(raw_mat.get(), mat->NumElements(), ws, *mat, pool);
-  mat->set_scale(1.9f);  // Arbitrary value, different from 1.
+  Compress(raw_mat.get(), extents.Area(), ws, mat->Span(), 0, pool);
+  mat->SetScale(1.9f);  // Arbitrary value, different from 1.
   return mat;
 }
 
@@ -106,10 +111,12 @@ void AssertClose(const FloatPtr& a, const FloatPtr& b) {
 }
 
 void TestMatVecAdd() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add = GenerateVec<kOuter>(0);
   FloatPtr expected_out = SimpleMatVecAdd(*mat, vec, add);
@@ -121,11 +128,13 @@ void TestMatVecAdd() {
 }
 
 void TestTwoMatVecAdd() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat0 = GenerateMat<float, kOuter, kInner>(0, pool);
-  auto mat1 = GenerateMat<float, kOuter, kInner>(1, pool);
+  auto mat0 = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
+  auto mat1 = GenerateMat<float, kOuter, kInner>(1, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add0 = GenerateVec<kOuter>(0);
   FloatPtr add1 = GenerateVec<kOuter>(1);
@@ -142,10 +151,13 @@ void TestTwoMatVecAdd() {
 }
 
 void TestTwoOfsMatVecAddLoop() {
-  hwy::ThreadPool pool(hwy::ThreadPool::MaxThreads());
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  hwy::ThreadPool& pool = ctx.pools.Pool();
+
   constexpr size_t kOuter = 128 * 3;
   constexpr size_t kInner = 128 * 5;
-  auto mat = GenerateMat<float, kOuter, kInner>(0, pool);
+  auto mat = GenerateMat<float, kOuter, kInner>(0, ctx.allocator, pool);
   FloatPtr vec = GenerateVec<kInner>(0);
   FloatPtr add0 = GenerateVec<kOuter>(0);
   FloatPtr add1 = GenerateVec<kOuter>(1);

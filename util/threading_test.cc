@@ -13,8 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "util/threading.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
@@ -22,9 +20,9 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "util/allocator.h"
 #include "util/basics.h"
-#include "hwy/aligned_allocator.h"
+#include "util/threading_context.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/auto_tune.h"
 #include "hwy/base.h"  // HWY_ASSERT
 #include "hwy/contrib/thread_pool/thread_pool.h"
@@ -282,8 +280,6 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
   }
   const double t1 = hwy::platform::Now();
 
-// TODO(janwas): enable after Highway update
-#if 0
   if (pool.AutoTuneComplete()) {
     hwy::Span<hwy::CostDistribution> cd = pool.AutoTuneCosts();
     std::vector<double> costs;
@@ -310,10 +306,6 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
   } else {
     HWY_WARN("Auto-tuning did not complete yet.");
   }
-#else
-  (void)t0;
-  (void)t1;
-#endif
 
   char cpu100[100];
   static const bool have_stop = hwy::platform::HaveTimerStop(cpu100);
@@ -385,9 +377,9 @@ TEST(ThreadingTest, BenchJoin) {
     }
   };
 
-  BoundedTopology topology;
-  Allocator::Init(topology, true);
-  NestedPools pools(topology);
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  NestedPools& pools = ctx.pools;
   // Use last package because the main thread has been pinned to it.
   const size_t pkg_idx = pools.NumPackages() - 1;
 

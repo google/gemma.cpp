@@ -15,91 +15,75 @@
 
 #include "gemma/kv_cache.h"
 
-#include <algorithm>
+#include <stddef.h>
 
-#include "gemma/common.h"  // CallForModel
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"  // ZeroBytes
+#include "gemma/configs.h"
+#include "gemma/gemma_args.h"
+#include "util/mat.h"  // ZeroInit
+#include "hwy/base.h"    // HWY_MAX
 
 namespace gcpp {
 
 void KVCache::ZeroGriffinCache() {
-  if (conv1d_cache_size != 0) {
-    hwy::ZeroBytes(conv1d_cache.get(),
-                   conv1d_cache_size * sizeof(conv1d_cache[0]));
-  }
-  if (rglru_cache_size != 0) {
-    hwy::ZeroBytes(rglru_cache.get(),
-                   rglru_cache_size * sizeof(rglru_cache[0]));
-  }
+  if (conv1d_cache.Rows() == 0) return;
+  ZeroInit(conv1d_cache);
+  ZeroInit(rglru_cache);
 }
 
-// prefill_tbatch_size is the maximum number of tokens from one query to
-// prefill at a time.
-KVCache KVCache::Create(const ModelConfig& weights_config,
-                        size_t prefill_tbatch_size) {
-  KVCache kv_cache = {};
-
-  const size_t size_cache_pos = weights_config.CachePosSize();
-  if (size_cache_pos != 0) {
-    // Allocate more so that prefill can always access one batch, even if
-    // near the end of the sequence.
-    kv_cache.seq_len = weights_config.seq_len + prefill_tbatch_size;
-    kv_cache.kv_cache =
-        hwy::AllocateAligned<float>(kv_cache.seq_len * size_cache_pos);
-  }
-
-  const size_t num_griffin_layers = weights_config.NumLayersOfType(
-      LayerAttentionType::kGriffinRecurrentBlock);
-  // TODO(patrickms): Add query batching support for Griffin.
-  if (num_griffin_layers > 0) {
-    uint32_t conv1d_width = 0;
-    for (const auto& layer_config : weights_config.layer_configs) {
-      conv1d_width = std::max(conv1d_width, layer_config.conv1d_width);
-    }
-    const size_t conv1d_cache_size =
-        num_griffin_layers * (conv1d_width == 0 ? 0 : conv1d_width - 1) *
-        weights_config.model_dim;
-    kv_cache.conv1d_cache_size = conv1d_cache_size;
-    if (conv1d_cache_size != 0) {
-      kv_cache.conv1d_cache = hwy::AllocateAligned<float>(conv1d_cache_size);
-    }
-
-    const size_t rglru_cache_size =
-        num_griffin_layers * weights_config.model_dim;
-    kv_cache.rglru_cache_size = rglru_cache_size;
-    if (rglru_cache_size != 0) {
-      kv_cache.rglru_cache = hwy::AllocateAligned<float>(rglru_cache_size);
-    }
-  }  // num_griffin_layers
-
-  return kv_cache;
+static size_t GriffinLayers(const ModelConfig& config) {
+  return config.NumLayersOfType(LayerAttentionType::kGriffinRecurrentBlock);
 }
 
-KVCache KVCache::Copy(const ModelConfig& weights_config,
-                      size_t prefill_tbatch_size) {
-  KVCache kv_cache_copy = Create(weights_config, prefill_tbatch_size);
+static size_t GriffinConv1dCols(const ModelConfig& config) {
+  size_t conv1d_width = 0;
+  for (const auto& layer_config : config.layer_configs) {
+    conv1d_width = HWY_MAX(conv1d_width, layer_config.conv1d_width);
+  }
+  // The row offset, in blocks of model_dim is computed mod (conv1d_width - 1),
+  // hence allocate conv1d_width * model_dim total columns.
+  return conv1d_width * config.model_dim;
+}
 
-  const size_t size_cache_pos = weights_config.CachePosSize();
-  if (size_cache_pos != 0) {
-    std::copy(kv_cache.get(), kv_cache.get() + size_cache_pos * seq_len,
-              kv_cache_copy.kv_cache.get());
+// Number of rows for KV cache. Note that both rows and cols are u32, and
+// the total number of elements can exceed 2^32.
+static size_t CappedSeqLen(const ModelConfig& config,
+                           const InferenceArgs& inference_args) {
+  if (inference_args.seq_len > config.max_seq_len) {
+    HWY_WARN("Capping seq_len %zu to config.max_seq_len %u.",
+             inference_args.seq_len, config.max_seq_len);
+    return config.max_seq_len;
+  }
+  return inference_args.seq_len;
+}
+
+KVCache::KVCache(const Extents2D& conv1d_extents,
+                 const Extents2D& rglru_extents, const Extents2D& kv_extents,
+                 const Allocator& allocator)
+    : conv1d_cache("conv1d_cache", conv1d_extents, allocator, MatPadding::kOdd),
+      rglru_cache("rglru_cache", rglru_extents, allocator, MatPadding::kOdd),
+      kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
+      allocator_(allocator) {}
+
+KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+                 const Allocator& allocator)
+    : KVCache(
+          Extents2D(GriffinLayers(config), GriffinConv1dCols(config)),
+          Extents2D(GriffinLayers(config), config.model_dim),
+          Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
+          allocator) {}
+
+KVCache KVCache::Copy() {
+  KVCache copy(conv1d_cache.Extents(), rglru_cache.Extents(),
+               kv_cache.Extents(), allocator_);
+
+  if (conv1d_cache.Rows() != 0) {
+    CopyMat(conv1d_cache, copy.conv1d_cache);
+    CopyMat(rglru_cache, copy.rglru_cache);
   }
 
-  const size_t num_griffin_layers = weights_config.NumLayersOfType(
-      LayerAttentionType::kGriffinRecurrentBlock);
-  if (num_griffin_layers > 0) {
-    if (conv1d_cache_size != 0) {
-      std::copy(conv1d_cache.get(), conv1d_cache.get() + conv1d_cache_size,
-                kv_cache_copy.conv1d_cache.get());
-    }
-    if (rglru_cache_size != 0) {
-      std::copy(rglru_cache.get(),
-                rglru_cache.get() + rglru_cache_size * sizeof(rglru_cache[0]),
-                kv_cache_copy.rglru_cache.get());
-    }
-  }
-  return kv_cache_copy;
+  CopyMat(kv_cache, copy.kv_cache);
+
+  return copy;
 }
 
 }  // namespace gcpp

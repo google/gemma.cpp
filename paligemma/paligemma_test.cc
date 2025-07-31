@@ -13,23 +13,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <cstdio>
-#include <string>
-#include <vector>
+#include <stdio.h>
 
-#include "compression/shared.h"
+#include <memory>
+#include <string>
+
 #include "evals/benchmark_helper.h"
-#include "gemma/common.h"
+#include "gemma/configs.h"
 #include "gemma/gemma.h"
-#include "hwy/base.h"
+#include "io/io.h"
+#include "util/allocator.h"
 #include "hwy/tests/hwy_gtest.h"
+#include "paligemma/paligemma_helper.h"
 
 // This test can be run manually with the downloaded PaliGemma weights.
-// To run the test, pass the following flags:
-// --model paligemma-224 --tokenizer <tokenizer_path> --weights <weights_path>
-// or just use the single-file weights file with --weights <weights_path>.
-// It should pass for the following models:
-// paligemma-3b-mix-224, paligemma2-3b-pt-448
+// It should pass for `paligemma-3b-mix-224` and `paligemma2-3b-pt-448`.
 
 namespace gcpp {
 namespace {
@@ -41,114 +39,43 @@ GemmaEnv* s_env = nullptr;
 
 class PaliGemmaTest : public ::testing::Test {
  protected:
-  void InitVit(const std::string& path);
-  std::string GemmaReply(const std::string& prompt_text) const;
-  void TestQuestions(const char* kQA[][2], size_t num_questions);
+  void TestQuestion(const char* question, const char* expected_substring) {
+    ASSERT_NE(s_env->GetGemma(), nullptr);
+    std::string path = "paligemma/testdata/image.ppm";
 
-  ImageTokens image_tokens_;
+    PaliGemmaHelper paligemma_helper(s_env);
+    paligemma_helper.InitVit(path);
+    const std::string reply = paligemma_helper.GemmaReply(question);
+    fprintf(stderr, "'%s'\n\n", reply.c_str());
+    EXPECT_TRUE(reply.find(expected_substring) != std::string::npos);  // NOLINT
+  }
+
+  std::unique_ptr<ImageTokens> image_tokens_;
 };
 
-void PaliGemmaTest::InitVit(const std::string& path) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
-  Gemma& model = *(s_env->GetModel());
-  image_tokens_ =
-      ImageTokens(Extents2D(model.GetModelConfig().vit_config.seq_len,
-                            model.GetModelConfig().model_dim));
-  Image image;
-  HWY_ASSERT(model.Info().wrapping == PromptWrapping::PALIGEMMA);
-  HWY_ASSERT(image.ReadPPM(path));
-  const size_t image_size = model.GetModelConfig().vit_config.image_size;
-  image.Resize(image_size, image_size);
-  RuntimeConfig runtime_config = {.gen = &s_env->MutableGen(), .verbosity = 0};
-  model.GenerateImageTokens(runtime_config, image, image_tokens_);
-}
-
-std::string PaliGemmaTest::GemmaReply(const std::string& prompt_text) const{
-  Gemma& model = *(s_env->GetModel());
-  s_env->MutableGen().seed(0x12345678);
-  RuntimeConfig runtime_config = {.max_generated_tokens = 512,
-                                  .gen = &s_env->MutableGen(),
-                                  .verbosity = 0};
-  runtime_config.image_tokens = &image_tokens_;
-  size_t abs_pos = 0;
-  std::string mutable_prompt = prompt_text;
-  std::vector<int> tokens = s_env->WrapAndTokenize(mutable_prompt);
-  std::string response;
-  auto stream_token = [&](int token, float) {
-    std::string token_text;
-    HWY_ASSERT(model.Tokenizer().Decode(std::vector<int>{token}, &token_text));
-    response += token_text;
-    return true;
-  };
-  runtime_config.stream_token = stream_token,
-  tokens.insert(tokens.begin(), image_tokens_.BatchSize(), 0);
-  size_t num_tokens = tokens.size();
-  size_t prefix_end = num_tokens;
-  runtime_config.prefill_tbatch_size = num_tokens;
-  TimingInfo timing_info = {.verbosity = 0};
-  model.Generate(runtime_config, tokens, abs_pos, prefix_end,
-                 s_env->MutableKVCache(), timing_info);
-  return response;
-}
-
-void PaliGemmaTest::TestQuestions(const char* kQA[][2], size_t num_questions) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
-  std::string path = "paligemma/testdata/image.ppm";
-  InitVit(path);
-  for (size_t i = 0; i < num_questions; ++i) {
-    fprintf(stderr, "Question %zu\n\n", i + 1);
-    std::string response = GemmaReply(kQA[i][0]);
-    fprintf(stderr, "'%s'\n\n", response.c_str());
-    EXPECT_TRUE(response.find(kQA[i][1]) != std::string::npos);  // NOLINT
+TEST_F(PaliGemmaTest, QueryObjects) {
+  ASSERT_NE(s_env->GetGemma(), nullptr);
+  const char* question = "answer en What objects are in the image?";
+  // 3B PT/Mix 224, 10B Mix 224
+  const char* expected_substring = "Building, Tower";
+  const Model model = s_env->GetGemma()->Config().model;
+  if (model == Model::PALIGEMMA2_3B_448) {
+    expected_substring = "Lake.";
+  } else if (model == Model::PALIGEMMA2_10B_224) {
+    expected_substring = "Building.";
   }
-}
-
-TEST_F(PaliGemmaTest, General) {
-  ASSERT_NE(s_env->GetModel(), nullptr);
-  static const char* kQA_3B_mix_224[][2] = {
-      {"describe this image",
-       "A large building with two towers stands tall on the water's edge."},
-      {"describe image briefly",
-       "A large building with two towers in the middle of a city."},
-      {"What kind of building is it?", "church"},
-      {"How many towers does the church have?", "2"},
-      {"detect water", "<loc1022> water"},
-      {"segment water", "<seg010> water"},
-      {"Which city is this more likely? Tokio or Zurich?", "zurich"},
-  };
-  static const char* kQA_2_3B_pt_448[][2] = {
-      {"describe this image", "The Grossmünster in Zürich"},
-      {"describe image briefly", "The Grossmünster"},
-      {"answer en What objects are in the image?", "Building, Tower"},
-      {"segment water", "<loc1023> water"},
-  };
-  const char* (*qa)[2];
-  size_t num;
-  switch (s_env->GetModel()->Info().model) {
-    case Model::PALIGEMMA_224:
-      qa = kQA_3B_mix_224;
-      num = sizeof(kQA_3B_mix_224) / sizeof(kQA_3B_mix_224[0]);
-      break;
-    case Model::PALIGEMMA2_3B_448:
-      qa = kQA_2_3B_pt_448;
-      num = sizeof(kQA_2_3B_pt_448) / sizeof(kQA_2_3B_pt_448[0]);
-      break;
-    default:
-      FAIL() << "Unsupported model: "
-             << s_env->GetModel()->GetModelConfig().model_name;
-      break;
-  }
-  TestQuestions(qa, num);
+  TestQuestion(question, expected_substring);
 }
 
 }  // namespace
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInit();
+
   gcpp::GemmaEnv env(argc, argv);
   gcpp::s_env = &env;
-
-  testing::InitGoogleTest(&argc, argv);
 
   return RUN_ALL_TESTS();
 }

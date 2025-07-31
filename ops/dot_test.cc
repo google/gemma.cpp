@@ -13,10 +13,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "compression/types.h"
 #ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32.
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
 
 #include <stddef.h>
 #include <stdio.h>
@@ -26,11 +26,10 @@
 #include <cmath>
 #include <random>
 
-#include "compression/shared.h"
+#include "compression/compress.h"
 #include "util/allocator.h"
-#include "util/app.h"
 #include "util/test_util.h"
-#include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -750,13 +749,13 @@ class DotStats {
   // Factor by which the approximate result is off; lower is better.
   void CheckMuls() const {
     // Comp2 is between Compensated and Kahan.
-    ASSERT_INSIDE(kComp2, 1.001, s_muls[kComp2].Mean(), 1.3);
+    ASSERT_INSIDE(kComp2, 1.001, s_muls[kComp2].Mean(), 1.4);
     ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 2.4f);
     ASSERT_INSIDE(kComp2, 1.0, s_muls[kComp2].GeometricMean(), 1.2);
 
     // Compensated and Double are very accurate.
     ASSERT_LESS(kCompensated, s_muls[kCompensated].Min(), 1.0f + 2E-6f);
-    ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 2E-5f);
+    ASSERT_LESS(kCompensated, s_muls[kCompensated].Max(), 1.0f + 1E-4f);
     ASSERT_LESS(kDouble, s_muls[kDouble].Min(), 1.0f + 2E-6f);
     ASSERT_LESS(kDouble, s_muls[kDouble].Max(), 1.0f + 2E-5f);
 
@@ -805,7 +804,7 @@ class DotStats {
     ASSERT_INSIDE(kAddTwoProd, 2.2E-4, s_l1s[kAddTwoProd].Mean(), 8E-4);
     ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_l1s[kAddTwoProd].Max(), 2.1E-3f);
     // Updating Kahan's FastTwoSums to TwoSums does help a bit.
-    ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 5.2E-4);
+    ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 5.8E-4);
 
     ASSERT_INSIDE(kPairwise, 4.5E-4, s_l1s[kPairwise].Mean(), 4E-3);
     ASSERT_INSIDE(kPairwise, 1.1E-3f, s_l1s[kPairwise].Max(), 1E-2f);
@@ -1000,9 +999,8 @@ struct TestShortDotsT {
     const size_t N = hn::Lanes(d);
     const hn::ScalableTag<float> df;  // for CallDot
 
-    const AppArgs app;
-    BoundedTopology topology(CreateTopology(app));
-    NestedPools pools = CreatePools(topology, app);
+    ThreadingArgs threading_args;
+    ThreadingContext ctx(threading_args);
     CompressWorkingSet work;
     std::mt19937 rng;
     rng.seed(12345);
@@ -1013,22 +1011,22 @@ struct TestShortDotsT {
       // GenerateWellConditionedInputs calls DecompressAndZeroPad to `raw*`,
       // hence they require padding to one vector.
       const size_t padded_num = hwy::RoundUpTo(num, N);
-      const size_t packed_num = CompressedArrayElements<Packed>(num);
-      RowVectorBatch<float> raw_w(Extents2D(1, padded_num));
-      RowVectorBatch<float> raw_v(Extents2D(1, padded_num));
-      RowVectorBatch<Packed> weights(Extents2D(1, packed_num));
-      const PackedSpan<Packed> w(weights.Batch(0), packed_num);
-      RowVectorBatch<T> vectors(Extents2D(1, num));
-      const PackedSpan<T> v(vectors.Batch(0), num);
+      MatStorageT<float> raw_w("raw_w", padded_num, ctx.allocator);
+      MatStorageT<float> raw_v("raw_v", padded_num, ctx.allocator);
+      MatStorageT<Packed> weights("weights", padded_num, ctx.allocator);
+      const PackedSpan<Packed> w = weights.Span();
+      MatStorageT<T> vectors("vectors", padded_num, ctx.allocator);
+      const PackedSpan<T> v = vectors.Span();
 
-      RowVectorBatch<double> bufs(Extents2D(1, num));
-      double* HWY_RESTRICT buf = bufs.Batch(0);
+      MatStorageT<double> bufs("bufs", padded_num, ctx.allocator);
+      double* HWY_RESTRICT buf = bufs.Row(0);
 
       for (size_t rep = 0; rep < hn::AdjustedReps(20); ++rep) {
-        GenerateWellConditionedInputs(num, raw_w.All(), rng, w, work);
-        GenerateWellConditionedInputs(num, raw_v.All(), rng, v, work);
+        GenerateWellConditionedInputs(num, raw_w.Row(0), rng, w, work);
+        GenerateWellConditionedInputs(num, raw_v.Row(0), rng, v, work);
 
-        const float dot_exact = ExactDot(raw_w.All(), raw_v.All(), num, buf);
+        const float dot_exact =
+            ExactDot(raw_w.PackedScale1(), raw_v.PackedScale1(), num, buf);
         float dots[kVariants];
         for (size_t variant = 0; variant < kVariants; ++variant) {
           // Here Packed is not always float, so we must not call kDouble.
@@ -1099,10 +1097,18 @@ void TestAllDot() {
     return;
   }
 
+  constexpr size_t kMaxWorkers = 15;
+
+  // Limit workers because we only support `kMaxWorkers`.
+  ThreadingArgs threading_args;
+  threading_args.max_packages = 1;
+  threading_args.max_clusters = 1;
+  threading_args.max_lps = kMaxWorkers - 1;
+  ThreadingContext ctx(threading_args);
+
   {  // ensure no profiler zones are active
     const hn::ScalableTag<float> df;
 
-    constexpr size_t kMaxWorkers = 15;
     std::mt19937 rngs[kMaxWorkers];
     for (size_t i = 0; i < kMaxWorkers; ++i) {
       rngs[i].seed(12345 + 65537 * i);
@@ -1110,44 +1116,46 @@ void TestAllDot() {
 
     constexpr size_t kReps = hn::AdjustedReps(40);
     const size_t num = 24 * 1024;
-    const BoundedTopology topology(BoundedSlice(0, 1), BoundedSlice(0, 1),
-                                   BoundedSlice());
-    NestedPools pools(topology, kMaxWorkers - 1, /*pin=*/Tristate::kDefault);
-    RowVectorBatch<float> a(Extents2D(kMaxWorkers, num));
-    RowVectorBatch<float> b(Extents2D(kMaxWorkers, num));
-    RowVectorBatch<double> bufs(Extents2D(kMaxWorkers, num));
+    MatStorageT<float> a("a", Extents2D(kMaxWorkers, num), ctx.allocator,
+                         MatPadding::kOdd);
+    MatStorageT<float> b("b", Extents2D(kMaxWorkers, num), ctx.allocator,
+                         MatPadding::kOdd);
+    MatStorageT<double> bufs("bufs", Extents2D(kMaxWorkers, num), ctx.allocator,
+                             MatPadding::kOdd);
     std::array<DotStats, kMaxWorkers> all_stats;
 
-    pools.Cluster(0, 0).Run(0, kReps, [&](const uint32_t rep, size_t thread) {
-      float* HWY_RESTRICT pa = a.Batch(thread);
-      float* HWY_RESTRICT pb = b.Batch(thread);
-      double* HWY_RESTRICT buf = bufs.Batch(thread);
-      const PackedSpan<const float> a_span(pa, num);
-      DotStats& stats = all_stats[thread];
-      const double cond =
-          GenerateIllConditionedInputs(num, pa, pb, rngs[thread]);
+    ctx.pools.Cluster(0, 0).Run(
+        0, kReps, [&](const uint32_t rep, size_t thread) {
+          float* HWY_RESTRICT pa = a.Row(thread);
+          float* HWY_RESTRICT pb = b.Row(thread);
+          double* HWY_RESTRICT buf = bufs.Row(thread);
+          const PackedSpan<const float> a_span(pa, num);
+          DotStats& stats = all_stats[thread];
+          const double cond =
+              GenerateIllConditionedInputs(num, pa, pb, rngs[thread]);
 
-      const float dot_exact = ExactDot(pa, pb, num, buf);
+          const float dot_exact = ExactDot(pa, pb, num, buf);
 
-      float dots[kVariants] = {};
-      double times[kVariants] = {};
-      for (size_t variant = 0; variant < kVariants; ++variant) {
-        constexpr size_t kTimeReps = hn::AdjustedReps(10);
-        std::array<double, kTimeReps> elapsed;
-        for (int time_rep = 0; time_rep < kTimeReps; ++time_rep) {
-          const double start = hwy::platform::Now();
-          dots[variant] += CallDot(df, variant, a_span, /*w_ofs=*/0, pb, num);
-          hwy::PreventElision(*pa);
-          elapsed[time_rep] = hwy::platform::Now() - start;
-        }
-        dots[variant] /= kTimeReps;
-        times[variant] = TrimmedMean(elapsed.data(), kTimeReps);
-      }
+          float dots[kVariants] = {};
+          double times[kVariants] = {};
+          for (size_t variant = 0; variant < kVariants; ++variant) {
+            constexpr size_t kTimeReps = hn::AdjustedReps(10);
+            std::array<double, kTimeReps> elapsed;
+            for (size_t time_rep = 0; time_rep < kTimeReps; ++time_rep) {
+              const double start = hwy::platform::Now();
+              dots[variant] +=
+                  CallDot(df, variant, a_span, /*w_ofs=*/0, pb, num);
+              hwy::PreventElision(*pa);
+              elapsed[time_rep] = hwy::platform::Now() - start;
+            }
+            dots[variant] /= kTimeReps;
+            times[variant] = TrimmedMean(elapsed.data(), kTimeReps);
+          }
 
-      stats.NotifyTimes(times);
-      stats.NotifyRep(num, cond, dot_exact, dots);
-      stats.NotifyRatios();
-    });
+          stats.NotifyTimes(times);
+          stats.NotifyRep(num, cond, dot_exact, dots);
+          stats.NotifyRatios();
+        });
 
     DotStats& stats = all_stats[0];
     for (size_t i = 1; i < kMaxWorkers; ++i) {

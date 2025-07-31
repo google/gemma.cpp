@@ -136,7 +136,7 @@ hn::TFromD<DF> ReduceCascadedSums(DF df, const VF sum, VF sum_err) {
   using TF = hn::TFromD<DF>;
   // For non-scalable wide vectors, reduce loop iterations below by recursing
   // once or twice for halves of 256-bit or 512-bit vectors.
-  if constexpr (!HWY_HAVE_SCALABLE) {
+  if constexpr (HWY_HAVE_CONSTEXPR_LANES) {
     if constexpr (hn::Lanes(df) > 16 / sizeof(TF)) {
       const hn::Half<DF> dfh;
       using VFH = hn::Vec<decltype(dfh)>;

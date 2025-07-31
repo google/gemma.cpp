@@ -16,30 +16,20 @@
 // Benchmark of large MatMul instances for which the MatMulSlow would be too
 // slow. This lacks a reference and is only useful for performance measurement.
 
-#include "hwy/base.h"
-#ifndef HWY_DISABLED_TARGETS
-// Exclude HWY_SCALAR due to 2x bf16 -> f32, and Armv7 NEON because we require
-// double-precision support.
-#if HWY_ARCH_ARM_V7
-#define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON)
-#else
-#define HWY_DISABLED_TARGETS HWY_SCALAR
-#endif
-#endif
-
 #include <stddef.h>
 #include <stdio.h>
 
 #include <algorithm>
-#include <memory>
 #include <vector>
 
-#include "compression/compress.h"
-#include "compression/shared.h"
+#include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#ifndef HWY_DISABLED_TARGETS
+#define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
+#endif  // HWY_DISABLED_TARGETS
+
 #include "ops/matmul.h"
-#include "util/allocator.h"
 #include "util/basics.h"
-#include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/profiler.h"
@@ -53,8 +43,8 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "compression/test_util-inl.h"
 #include "ops/matmul-inl.h"
-#include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -62,59 +52,6 @@ namespace gcpp {
 extern int64_t first_target;
 
 namespace HWY_NAMESPACE {
-
-using FloatPtr = hwy::AlignedFreeUniquePtr<float[]>;
-
-template <typename MatT>
-using MatStoragePtr = std::unique_ptr<MatStorageT<MatT>>;
-
-// Generates inputs: deterministic, within max SfpStream range.
-template <typename MatT>
-MatStoragePtr<MatT> GenerateMat(const Extents2D extents,
-                                hwy::ThreadPool& pool) {
-  gcpp::CompressWorkingSet ws;
-  auto mat =
-      std::make_unique<MatStorageT<MatT>>("mat", extents.rows, extents.cols);
-  FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
-  HWY_ASSERT(content);
-  const float scale =
-      SfpStream::kMax / (mat->NumElements() + hwy::Unpredictable1() - 1);
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
-    for (size_t c = 0; c < extents.cols; c++) {
-      float f = static_cast<float>(r * extents.cols + c) * scale;
-      if ((r + c) & 1) f = -f;  // Also generate some negative values.
-      content[r * extents.cols + c] = f;
-    }
-  });
-
-  CompressScaled(content.get(), mat->NumElements(), ws, *mat, pool);
-  mat->set_scale(0.6f);  // Arbitrary value, different from 1.
-  return mat;
-}
-
-// extents describes the transposed matrix.
-template <typename MatT>
-MatStoragePtr<MatT> GenerateTransposedMat(const Extents2D extents,
-                                          hwy::ThreadPool& pool) {
-  gcpp::CompressWorkingSet ws;
-  auto mat =
-      std::make_unique<MatStorageT<MatT>>("trans", extents.rows, extents.cols);
-  FloatPtr content = hwy::AllocateAligned<float>(mat->NumElements());
-  const float scale =
-      SfpStream::kMax / (mat->NumElements() + hwy::Unpredictable1() - 1);
-  pool.Run(0, extents.rows, [&](const size_t r, size_t /*thread*/) {
-    for (size_t c = 0; c < extents.cols; c++) {
-      float f = static_cast<float>(c * extents.rows + r) * scale;
-      if ((r + c) & 1) f = -f;  // Also generate some negative values.
-      content[r * extents.cols + c] = f;
-    }
-  });
-
-  CompressScaled(content.get(), mat->NumElements(), ws, *mat, pool);
-  // Arbitrary value, different from 1, must match GenerateMat.
-  mat->set_scale(0.6f);
-  return mat;
-}
 
 void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
                 std::vector<double>& times, MMPerKey* per_key) {
@@ -135,7 +72,7 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 // M = A rows, K = A cols, N = C cols.
 template <typename TA, typename TB = TA, typename TC = float>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
-  hwy::ThreadPool& pool = env.parallel.Pools().Pool(0);
+  hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   if (env.print_config || env.print_measurement) {
     fprintf(stderr, "\n");
   }
@@ -147,24 +84,24 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   const Extents2D B_extents(N, K);  // already transposed
   const Extents2D C_extents(M, N);
 
-  RowVectorBatch<TC> c_slow_batch = AllocateAlignedRows<TC>(C_extents);
-  RowVectorBatch<TC> c_batch = AllocateAlignedRows<TC>(C_extents);
+  MatStorageT<TC> C_slow("c_slow_batch", C_extents, env.ctx.allocator,
+                         MatPadding::kOdd);
+  MatStorageT<TC> C("c_batch", C_extents, env.ctx.allocator, MatPadding::kOdd);
 
-  std::unique_ptr<MatStorageT<float>> add_storage;
+  MatStorageT<float> add_storage("add", Extents2D(), env.ctx.allocator,
+                                 MatPadding::kPacked);
   if (add) {
-    add_storage = GenerateMat<float>(Extents2D(1, N), pool);
-    HWY_ASSERT(add_storage);
-    add_storage->set_scale(1.0f);
+    add_storage = GenerateMat<float>(Extents2D(1, N), env.ctx.allocator,
+                                     MatPadding::kPacked, pool);
+    add_storage.SetScale(1.0f);
   }
 
-  MatStoragePtr<TA> a = GenerateMat<TA>(A_extents, pool);
-  MatStoragePtr<TB> b_trans = GenerateTransposedMat<TB>(B_extents, pool);
-  HWY_ASSERT(a && b_trans);
-  const auto A = ConstMatFromWeights(*a);
-  const auto B = ConstMatFromWeights(*b_trans);
+  MatStorageT<TA> a =
+      GenerateMat<TA>(A_extents, env.ctx.allocator, MatPadding::kOdd, pool);
+  MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(
+      B_extents, env.ctx.allocator, MatPadding::kOdd, pool);
 
-  const float* add_row = add ? add_storage->data_scale1() : nullptr;
-  const RowPtr<TC> C = RowPtrFromBatch(c_batch);
+  const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 
   // Fewer reps for large batch sizes, which take longer.
   const size_t num_samples = M < 32 ? 20 : 12;
@@ -174,11 +111,12 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(B_extents.rows, sizeof(TC), B, env.parallel);
-  BindC(A_extents.rows, C, env.parallel);
+  BindB(b_trans, sizeof(TC), env.parallel);
+  BindC(C, env.parallel);
+  C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   Tristate use_spinning = Tristate::kDefault;
-  env.parallel.Pools().MaybeStartSpinning(use_spinning);
+  env.ctx.pools.MaybeStartSpinning(use_spinning);
 
   // env.print_config = true;
   // env.print_measurement = true;
@@ -189,7 +127,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Until enough samples collected *after* autotuning finished:
   while (times.size() < num_samples) {
     const double t0 = hwy::platform::Now();
-    per_key = MatMul(A, B, add_row, env, C);
+    per_key = MatMul(a, b_trans, add_row, env, C);
     const double t1 = hwy::platform::Now();
     double elapsed = t1 - t0;
     keep += hwy::ConvertScalarTo<double>(C.Row(0)[hwy::Unpredictable1()]);
@@ -198,7 +136,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     if (per_key->autotune.Best()) times.push_back(elapsed);
   }
   hwy::PreventElision(keep);
-  env.parallel.Pools().MaybeStopSpinning(use_spinning);
+  env.ctx.pools.MaybeStopSpinning(use_spinning);
   PrintSpeed(A_extents, B_extents, times, per_key);
 }
 
@@ -207,8 +145,8 @@ using SFP = SfpStream;
 
 void BenchAllMatMul() {
   if (first_target == 0) first_target = HWY_TARGET;
-  // Disable the best-target-only limitation.
-  // if (HWY_TARGET != first_target) return;
+  // Comment out to disable the best-target-only limitation.
+  if (HWY_TARGET != first_target) return;
 
   // Skip EMU128 (10x slower than SSE4 for SFP) and older x86.
   if (HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SSSE3 ||
@@ -216,17 +154,11 @@ void BenchAllMatMul() {
     return;
   }
 
-  const size_t max_threads = 0;      // no limit
-  const BoundedSlice package_slice;  // all packages/sockets
-  const BoundedSlice cluster_slice;  // all clusters/CCX
-  const BoundedSlice lp_slice;       // default to all cores (per package).
-  const BoundedTopology topology(package_slice, cluster_slice, lp_slice);
-  Allocator::Init(topology, /*enable_bind=*/true);
-  NestedPools pools(topology, max_threads, Tristate::kDefault);
-  fprintf(stderr, "BenchAllMatMul %s %s\n", topology.TopologyString(),
-          pools.PinString());
-
-  MatMulEnv env(topology, pools);
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  fprintf(stderr, "BenchAllMatMul %s %s\n", ctx.topology.TopologyString(),
+          ctx.pools.PinString());
+  MatMulEnv env(ctx);
 
   for (size_t batch_size : {1, 4, 128, 512}) {
     constexpr bool kAdd = false;

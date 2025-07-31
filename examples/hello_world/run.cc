@@ -23,19 +23,15 @@
 #include <string>
 #include <vector>
 
-// Placeholder for internal header, do not modify.
 #include "gemma/gemma.h"
+#include "gemma/gemma_args.h"  // LoaderArgs
 #include "gemma/tokenizer.h"
-#include "util/app.h"  // LoaderArgs
 #include "util/args.h"
-#include "util/threading.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
-int main(int argc, char **argv) { {
-        // Placeholder for internal init, do not modify.
-    }
 
+int main(int argc, char **argv) {
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);
     gcpp::AppArgs app(argc, argv);

@@ -19,12 +19,11 @@
 #include <string>
 #include <vector>
 
-#include "compression/io.h"  // Path
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // Gemma
+#include "io/io.h"        // Path
 #include "util/args.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "nlohmann/json.hpp"
@@ -89,7 +88,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
       "A",  "B",   "C",   "D",   //
       " A", " B",  " C",  " D",  //
       "**", "**:", ":**", "The", "Answer", "is", ":", "."};
-  const TokenSet accept_set(env.GetModel()->Tokenizer(), accept_strings);
+  const TokenSet accept_set(env.GetGemma()->Tokenizer(), accept_strings);
 
   for (auto sample : json_data["samples"]) {
     const int id = sample["i"];
@@ -131,8 +130,9 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         .verbosity = env.Verbosity(),
         .stream_token = stream_token,
     };
-    env.GetModel()->Generate(runtime_config, prompt, /*pos=*/0,
-                             env.MutableKVCache(), timing_info);
+    env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
+                             env.MutableKVCache(), env.MutableEnv(),
+                             timing_info);
 
     std::string output_string = env.StringFromTokens(predicted_token_ids);
     fprintf(stderr, "Correct %s, model '%s'\n", correct_answer.c_str(),

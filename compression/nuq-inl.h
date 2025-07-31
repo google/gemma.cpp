@@ -23,7 +23,7 @@
 
 #include <cstdio>
 
-#include "compression/shared.h"
+#include "compression/types.h"
 #include "util/basics.h"
 #include "hwy/base.h"
 

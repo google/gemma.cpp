@@ -148,6 +148,12 @@ class BoundedTopology {
   const hwy::Topology& FullTopology() const { return topology_; }
 #endif
 
+  // In case we are running with a subset of packages/clusters, these are added
+  // to the package/cluster indices for purposes of the thread name, so that
+  // they are distinct.
+  size_t SkippedPackages() const { return package_slice_.Begin(); }
+  size_t SkippedClusters() const { return cluster_slice_.Begin(); }
+
  private:
   struct Package {
     explicit Package(const LPS& enabled_lps);
@@ -160,13 +166,14 @@ class BoundedTopology {
     std::vector<Cluster> clusters;
   };  // Package
 
-  void InitFromTopology(const LPS& enabled_lps, BoundedSlice package_slice,
-                        BoundedSlice cluster_slice);
+  void InitFromTopology(const LPS& enabled_lps);
   void InitFromLPs(const LPS& enabled_lps);
 
 #if !GEMMA_DISABLE_TOPOLOGY
   hwy::Topology topology_;
 #endif
+  BoundedSlice package_slice_;
+  BoundedSlice cluster_slice_;
   std::vector<Package> packages_;
   char topology_string_[96];
   LPS nodes_;

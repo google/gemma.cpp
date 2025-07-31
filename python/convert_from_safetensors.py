@@ -42,6 +42,7 @@ import safetensors
 import torch
 
 from compression.python import compression
+from python import configs
 
 
 def flatten_f32(x: np.ndarray) -> np.ndarray:
@@ -70,14 +71,23 @@ def compute_scale(x: np.ndarray) -> float:
 
 
 def _is_float_param(param_name: str) -> bool:
-  for prefix in ["img_pos_emb", "attn_out_b", "linear_0_b", "linear_1_b",
-                 "qkv_ein_b", "img_emb_bias", "img_head_bias"]:
+  """Returns whether the tensor should be stored as float32."""
+  for prefix in [
+      "img_pos_emb",
+      "attn_out_b",
+      "linear_0_b",
+      "linear_1_b",
+      "qkv_ein_b",
+      "img_emb_bias",
+      "img_head_bias",
+  ]:
     if param_name.startswith(prefix):
       return True
   return False
 
 
 def _is_bf16_param(param_name: str) -> bool:
+  """Returns whether the tensor should be stored as bf16."""
   for prefix in ["pre_", "post_", "c_", "img_head_kernel"]:
     if param_name.startswith(prefix):
       return True
@@ -106,6 +116,7 @@ def _get_layer_config(dims: Dict[str, Any]):
 
   Args:
     dims: A dictionary of (mostly) dimension values.
+
   Returns:
     A dictionary of layer configurations.
   """
@@ -114,45 +125,141 @@ def _get_layer_config(dims: Dict[str, Any]):
   vit_seq_len = dims["vit_seq_len"]
   config = {
       "llm-non-layers": [
-          ("language_model.model.embed_tokens.weight", (257152, model_dim), "c_embedding"),
+          (
+              "language_model.model.embed_tokens.weight",
+              (257152, model_dim),
+              "c_embedding",
+          ),
           ("language_model.model.norm.weight", (model_dim,), "c_final_norm"),
       ],
       "llm-layers": [
-          ("language_model.model.layers.%d.mlp.down_proj.weight", (model_dim, hidden_dim), "linear_w"),
+          (
+              "language_model.model.layers.%d.mlp.down_proj.weight",
+              (model_dim, hidden_dim),
+              "linear_w",
+          ),
       ],
       "img-non-layers": [
-          ("vision_tower.vision_model.post_layernorm.bias", (1152,), "enc_norm_bias"),
-          ("vision_tower.vision_model.post_layernorm.weight", (1152,), "enc_norm_scale"),
-          ("vision_tower.vision_model.embeddings.patch_embedding.bias", (1152,), "img_emb_bias"),
-          ("vision_tower.vision_model.embeddings.patch_embedding.weight", (1152, 14, 14, 3), "img_emb_kernel"),
+          (
+              "vision_tower.vision_model.post_layernorm.bias",
+              (1152,),
+              "enc_norm_bias",
+          ),
+          (
+              "vision_tower.vision_model.post_layernorm.weight",
+              (1152,),
+              "enc_norm_scale",
+          ),
+          (
+              "vision_tower.vision_model.embeddings.patch_embedding.bias",
+              (1152,),
+              "img_emb_bias",
+          ),
+          (
+              "vision_tower.vision_model.embeddings.patch_embedding.weight",
+              (1152, 14, 14, 3),
+              "img_emb_kernel",
+          ),
           ("multi_modal_projector.linear.bias", (model_dim,), "img_head_bias"),
-          ("multi_modal_projector.linear.weight", (model_dim, 1152), "img_head_kernel"),
-          ("vision_tower.vision_model.embeddings.position_embedding.weight", (vit_seq_len, 1152), "img_pos_emb"),
+          (
+              "multi_modal_projector.linear.weight",
+              (model_dim, 1152),
+              "img_head_kernel",
+          ),
+          (
+              "vision_tower.vision_model.embeddings.position_embedding.weight",
+              (vit_seq_len, 1152),
+              "img_pos_emb",
+          ),
       ],
       "img-layers": [
-          ("vision_tower.vision_model.encoder.layers.%d.layer_norm1.bias", (1152,), "ln_0_bias"),
-          ("vision_tower.vision_model.encoder.layers.%d.layer_norm1.weight", (1152,), "ln_0_scale"),
-          ("vision_tower.vision_model.encoder.layers.%d.layer_norm2.bias", (1152,), "ln_1_bias"),
-          ("vision_tower.vision_model.encoder.layers.%d.layer_norm2.weight", (1152,), "ln_1_scale"),
-          ("vision_tower.vision_model.encoder.layers.%d.mlp.fc1.bias", (4304,), "linear_0_b"),
-          ("vision_tower.vision_model.encoder.layers.%d.mlp.fc1.weight", (4304, 1152), "linear_0_w"),
-          ("vision_tower.vision_model.encoder.layers.%d.mlp.fc2.bias", (1152,), "linear_1_b"),
-          ("vision_tower.vision_model.encoder.layers.%d.mlp.fc2.weight", (1152, 4304), "linear_1_w"),
-          ("vision_tower.vision_model.encoder.layers.%d.self_attn.out_proj.bias", (1152,), "attn_out_b"),
-          ("vision_tower.vision_model.encoder.layers.%d.self_attn.out_proj.weight", (1152, 16 * 72), "attn_out_w"),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.layer_norm1.bias",
+              (1152,),
+              "ln_0_bias",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.layer_norm1.weight",
+              (1152,),
+              "ln_0_scale",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.layer_norm2.bias",
+              (1152,),
+              "ln_1_bias",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.layer_norm2.weight",
+              (1152,),
+              "ln_1_scale",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.mlp.fc1.bias",
+              (4304,),
+              "linear_0_b",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.mlp.fc1.weight",
+              (4304, 1152),
+              "linear_0_w",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.mlp.fc2.bias",
+              (1152,),
+              "linear_1_b",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.mlp.fc2.weight",
+              (1152, 4304),
+              "linear_1_w",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.self_attn.out_proj.bias",
+              (1152,),
+              "attn_out_b",
+          ),
+          (
+              "vision_tower.vision_model.encoder.layers.%d.self_attn.out_proj.weight",
+              (1152, 16 * 72),
+              "attn_out_w",
+          ),
       ],
   }
   if dims["has_post_norm"]:  # See longer comment above.
     config["llm-layers"] += [
-        ("language_model.model.layers.%d.input_layernorm.weight", (model_dim,), "pre_att_ns"),
-        ("language_model.model.layers.%d.pre_feedforward_layernorm.weight", (model_dim,), "pre_ff_ns"),
-        ("language_model.model.layers.%d.post_attention_layernorm.weight", (model_dim,), "post_att_ns"),
-        ("language_model.model.layers.%d.post_feedforward_layernorm.weight", (model_dim,), "post_ff_ns"),
+        (
+            "language_model.model.layers.%d.input_layernorm.weight",
+            (model_dim,),
+            "pre_att_ns",
+        ),
+        (
+            "language_model.model.layers.%d.pre_feedforward_layernorm.weight",
+            (model_dim,),
+            "pre_ff_ns",
+        ),
+        (
+            "language_model.model.layers.%d.post_attention_layernorm.weight",
+            (model_dim,),
+            "post_att_ns",
+        ),
+        (
+            "language_model.model.layers.%d.post_feedforward_layernorm.weight",
+            (model_dim,),
+            "post_ff_ns",
+        ),
     ]
   else:
     config["llm-layers"] += [
-        ("language_model.model.layers.%d.input_layernorm.weight", (model_dim,), "pre_att_ns"),
-        ("language_model.model.layers.%d.post_attention_layernorm.weight", (model_dim,), "pre_ff_ns"),
+        (
+            "language_model.model.layers.%d.input_layernorm.weight",
+            (model_dim,),
+            "pre_att_ns",
+        ),
+        (
+            "language_model.model.layers.%d.post_attention_layernorm.weight",
+            (model_dim,),
+            "pre_ff_ns",
+        ),
     ]
   return config
 
@@ -162,6 +269,7 @@ def _get_dimensions(params):
 
   Args:
     params: A dictionary with parameters.
+
   Returns:
     A dictionary of dimension values.
   """
@@ -191,7 +299,9 @@ def _get_dimensions(params):
 
 
 def export_paligemma_sbs(
+    model_specifier: str,
     load_path: str,
+    tokenizer_file: str,
     csv_file: str,
     sbs_file: str,
 ) -> None:
@@ -220,8 +330,7 @@ def export_paligemma_sbs(
       "language_model.model.embed_tokens.weight"
   ][:-64]
 
-  # Initialize a few things.
-  writer = compression.SbsWriter(compression.CompressorMode.NO_TOC)
+  writer = compression.SbsWriter()
   metadata = []
   scales = {}
   dims = _get_dimensions(params)
@@ -255,13 +364,13 @@ def export_paligemma_sbs(
 
     # Determine the type as which to insert.
     if _is_float_param(sbs_name):
-      insert = writer.insert_float  # Insert as float.
+      packed = configs.Type.kF32
       print(f"Inserting {both_names} as float (f32) (no scaling)")
     elif _is_bf16_param(sbs_name) or param_name.startswith("vision_tower"):
-      insert = writer.insert_bf16  # Insert as BF16.
+      packed = configs.Type.kBF16
       print(f"Inserting {both_names} as BF16 (no scaling)")
     else:
-      insert = writer.insert_sfp  # Insert as SFP.
+      packed = configs.Type.kSFP
       # Assumes that all scales are 1.0 for SFP. Consider adding scales.
       # They would still need to be written, but would be collected here.
       assert scale == 1.0, f"Scale for {both_names} is not 1.0"
@@ -272,7 +381,10 @@ def export_paligemma_sbs(
     sys.stdout.flush()
 
     # Add the data to the writer.
-    insert(sbs_name, value)
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
 
   def add_qkv_einsum(i):  # Handle qkv for layer i.
     name = "language_model.model.layers.%d.self_attn.q_proj.weight"  # (N*H, D)
@@ -367,7 +479,12 @@ def export_paligemma_sbs(
 
   # Handle the image embedding kernel transpose.
   name = "vision_tower.vision_model.embeddings.patch_embedding.weight"
-  assert params[name].shape == (1152, 3, 14, 14,)
+  assert params[name].shape == (
+      1152,
+      3,
+      14,
+      14,
+  )
   params[name] = params[name].permute(0, 2, 3, 1)
 
   # Add the non-layer params.
@@ -393,17 +510,31 @@ def export_paligemma_sbs(
   assert not params, "Some params were not used: %s" % params.keys()
 
   # Write everything to the sbs file.
-  writer.write(sbs_file)
+  assert model_specifier.startswith("paligemma")
+  writer.write(configs.ModelConfig(model_specifier), tokenizer_file, sbs_file)
 
   # Write the metadata for manual inspection.
   with open(csv_file, "w") as csv_handle:
     csv.writer(csv_handle).writerows(metadata)
 
 
+_MODEL_SPECIFIER = flags.DEFINE_string(
+    "model_specifier",
+    None,
+    "String specifying model, size, weight, wrapping (ModelConfig.Specifier)",
+    required=True,
+)
+
 _LOAD_PATH = flags.DEFINE_string(
     "load_path",
-    "",
+    None,
     "Path to the safetensors index.json file to read",
+    required=True,
+)
+_TOKENIZER_FILE = flags.DEFINE_string(
+    "tokenizer_file",
+    "/tmp/tokenizer.spm",
+    "Path to the tokenizer file to read and embed",
 )
 _METADATA_FILE = flags.DEFINE_string(
     "metadata_file",
@@ -422,14 +553,22 @@ def main(argv: Sequence[str]) -> None:
     raise app.UsageError("Too many command-line arguments.")
   logging.use_python_logging()
   logging.set_verbosity(logging.INFO)
+  model_specifier = _MODEL_SPECIFIER.value
   load_path = _LOAD_PATH.value
+  tokenizer_file = _TOKENIZER_FILE.value
   metadata_file = _METADATA_FILE.value
   sbs_file = _SBS_FILE.value
 
   logging.info(
-      "\n====\nReading from %s and writing to %s\n====", load_path, sbs_file
+      "\n====\nReading %s from %s and %s, writing to %s\n====",
+      model_specifier,
+      load_path,
+      tokenizer_file,
+      sbs_file,
   )
-  export_paligemma_sbs(load_path, metadata_file, sbs_file)
+  export_paligemma_sbs(
+      model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+  )
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@
 
 #include <stdio.h>
 
-#include "compression/shared.h"  // SfpStream::kMax
+#include "compression/types.h"  // SfpStream::kMax
 #include "util/test_util.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/tests/hwy_gtest.h"

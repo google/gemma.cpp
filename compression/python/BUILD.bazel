@@ -14,11 +14,16 @@ cc_library(
     hdrs = ["compression_clif_aux.h"],
     visibility = ["//visibility:private"],
     deps = [
-        "@abseil-cpp//absl/types:span",
-        "//:common",
+        "//:basics",
+        "//:configs",
+        "//:mat",
+        "//:model_store",
+        "//:tensor_info",
+        "//:threading_context",
         "//:tokenizer",
         "//compression:compress",
-        "//compression:io",
+        "//io",
+        "//io:blob_store",
         "@highway//:hwy",
         "@highway//:thread_pool",
     ],
@@ -29,9 +34,9 @@ pybind_extension(
     srcs = ["compression_extension.cc"],
     deps = [
         ":compression_clif_aux",
-        "@abseil-cpp//absl/types:span",
-        "//:common",
-        "//compression:sfp",
+        "//:mat",
+        "//:tensor_info",
+        "//compression:types",
     ],
 )
 

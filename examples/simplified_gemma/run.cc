@@ -17,30 +17,25 @@
 
 #include <string>
 
-// Placeholder for internal header, do not modify.
 #include "third_party/gemma_cpp/examples/simplified_gemma/gemma.hpp"
-#include "util/app.h"  // LoaderArgs
+#include "gemma/gemma_args.h"  // LoaderArgs
 
 int main(int argc, char** argv) {
-  {
-    // Placeholder for internal init, do not modify.
-  }
-
   // Standard usage: LoaderArgs takes argc and argv as input, then parses
   // necessary flags.
-  gcpp::LoaderArgs loader(argc, argv, /*validate=*/true);
+  gcpp::LoaderArgs loader(argc, argv);
 
   // Optional: LoaderArgs can also take tokenizer and weights paths directly.
   //
   // gcpp::LoaderArgs loader("/path/to/tokenizer", "/path/to/weights",
   // "model_identifier");
 
-  // Optional: InferenceArgs and AppArgs can be passed in as well. If not
+  // Optional: ThreadingArgs and InferenceArgs can be passed in as well. If not
   // specified, default values will be used.
   //
   // gcpp::InferenceArgs inference(argc, argv);
-  // gcpp::AppArgs app(argc, argv);
-  // SimplifiedGemma gemma(loader, inference, app);
+  // gcpp::ThreadingArgs threading(argc, argv);
+  // SimplifiedGemma gemma(loader, threading, inference);
 
   SimplifiedGemma gemma(loader);
   std::string prompt = "Write a greeting to the world.";
