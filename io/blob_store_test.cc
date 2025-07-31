@@ -52,10 +52,10 @@ TEST(BlobStoreTest, TestReadWrite) {
 
   const std::string keyA("0123456789abcdef");  // max 16 characters
   const std::string keyB("q");
-  BlobWriter writer;
+  BlobWriter writer(path, pool);
   writer.Add(keyA, "DATA", 5);
   writer.Add(keyB, buffer.data(), sizeof(buffer));
-  writer.WriteAll(pool, path);
+  writer.WriteAll();
   HWY_ASSERT_ARRAY_EQ(kOriginalData.data(), buffer.data(), buffer.size());
 
   std::fill(buffer.begin(), buffer.end(), 0);
@@ -69,12 +69,12 @@ TEST(BlobStoreTest, TestReadWrite) {
   const BlobRange* range = reader.Find(keyA);
   HWY_ASSERT(range);
   const uint64_t offsetA = range->offset;
-  HWY_ASSERT_EQ(offsetA, 256);  // kBlobAlign
+  HWY_ASSERT_EQ(offsetA, 256);
   HWY_ASSERT_EQ(range->bytes, 5);
   range = reader.Find(keyB);
   HWY_ASSERT(range);
   const uint64_t offsetB = range->offset;
-  HWY_ASSERT_EQ(offsetB, 2 * 256);
+  HWY_ASSERT_EQ(offsetB, offsetA + 256);
   HWY_ASSERT_EQ(range->bytes, sizeof(buffer));
 
   HWY_ASSERT(
@@ -106,7 +106,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT(fd > 0);
     const Path path(path_str);
 
-    BlobWriter writer;
+    BlobWriter writer(path, pool);
     std::vector<std::string> keys;
     keys.reserve(num_blobs);
     std::vector<std::vector<uint8_t>> blobs;
@@ -126,7 +126,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     }
     HWY_ASSERT(keys.size() == num_blobs);
     HWY_ASSERT(blobs.size() == num_blobs);
-    writer.WriteAll(pool, path);
+    writer.WriteAll();
 
     BlobReader reader(path);
     HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);

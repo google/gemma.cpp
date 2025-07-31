@@ -105,8 +105,7 @@ class ModelStore {
 // produces a single BlobStore file holding everything required for inference.
 void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
                      const std::vector<uint32_t>& serialized_mat_ptrs,
-                     BlobWriter& writer, hwy::ThreadPool& pool,
-                     const Path& path);
+                     BlobWriter& writer);
 
 }  // namespace gcpp
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_MODEL_STORE_H_

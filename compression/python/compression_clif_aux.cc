@@ -75,8 +75,8 @@ class SbsWriterImpl : public ISbsWriter {
     }
 
     mat.AppendTo(serialized_mat_ptrs_);
-    mat_owners_.push_back(MatOwner());
-    mat_owners_.back().AllocateFor(mat, ctx_.allocator, MatPadding::kPacked);
+    MatOwner mat_owner;
+    mat_owner.AllocateFor(mat, ctx_.allocator, MatPadding::kPacked);
 
     // Handle gemma_export_test's MockArray. Write blobs so that the test
     // succeeds, but we only have 10 floats, not the full tensor.
@@ -97,7 +97,9 @@ class SbsWriterImpl : public ISbsWriter {
   }
 
  public:
-  SbsWriterImpl() : ctx_(ThreadingArgs()) {}
+  SbsWriterImpl(const std::string& sbs_path)
+      : ctx_(ThreadingArgs()),
+        writer_(gcpp::Path(sbs_path), ctx_.pools.Pool()) {}
 
   void Insert(const char* name, F32Span weights, Type type,
               const TensorInfo& tensor_info) override {
@@ -120,23 +122,23 @@ class SbsWriterImpl : public ISbsWriter {
     }
   }
 
-  void Write(const ModelConfig& config, const std::string& tokenizer_path,
-             const std::string& path) override {
+  void Write(const ModelConfig& config,
+             const std::string& tokenizer_path) override {
     const GemmaTokenizer tokenizer(
         tokenizer_path.empty() ? kMockTokenizer
                                : ReadFileToString(Path(tokenizer_path)));
-    WriteSingleFile(config, tokenizer, serialized_mat_ptrs_, writer_,
-                    ctx_.pools.Pool(), gcpp::Path(path));
+    WriteSingleFile(config, tokenizer, serialized_mat_ptrs_, writer_);
   }
 
   ThreadingContext ctx_;
-  std::vector<MatOwner> mat_owners_;
   CompressWorkingSet working_set_;
   BlobWriter writer_;
   std::vector<uint32_t> serialized_mat_ptrs_;
 };
 
-ISbsWriter* NewSbsWriter() { return new SbsWriterImpl(); }
+ISbsWriter* NewSbsWriter(const std::string& sbs_path) {
+  return new SbsWriterImpl(sbs_path);
+}
 
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -147,7 +149,8 @@ namespace gcpp {
 
 HWY_EXPORT(NewSbsWriter);
 
-SbsWriter::SbsWriter() : impl_(HWY_DYNAMIC_DISPATCH(NewSbsWriter)()) {}
+SbsWriter::SbsWriter(const std::string& path)
+    : impl_(HWY_DYNAMIC_DISPATCH(NewSbsWriter)(path)) {}
 
 SbsReader::SbsReader(const std::string& path)
     : reader_(Path(path)), model_(reader_) {}

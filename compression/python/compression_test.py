@@ -30,7 +30,8 @@ class CompressionTest(absltest.TestCase):
     info_192.axes = [0]
     info_192.shape = [192]
 
-    writer = compression.SbsWriter()
+    temp_file = self.create_tempfile("test.sbs")
+    writer = compression.SbsWriter(temp_file.full_path)
     writer.insert(
         "tensor0",
         # Large enough to require scaling.
@@ -95,8 +96,7 @@ class CompressionTest(absltest.TestCase):
         configs.PromptWrapping.GEMMA_IT,
     )
     tokenizer_path = ""  # no tokenizer required for testing
-    temp_file = self.create_tempfile("test.sbs")
-    writer.write(config, tokenizer_path, temp_file.full_path)
+    writer.write(config, tokenizer_path)
 
     print("Ignore next two warnings; test does not enable model deduction.")
     reader = compression.SbsReader(temp_file.full_path)

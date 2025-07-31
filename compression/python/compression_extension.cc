@@ -44,10 +44,9 @@ static void CallWithF32Span(SbsWriter& writer, const char* name,
 
 PYBIND11_MODULE(compression, m) {
   class_<SbsWriter>(m, "SbsWriter")
-      .def(init<>())
+      .def(init<std::string>())
       .def("insert", CallWithF32Span<&SbsWriter::Insert>)
-      .def("write", &SbsWriter::Write, arg("config"), arg("tokenizer_path"),
-           arg("path"));
+      .def("write", &SbsWriter::Write, arg("config"), arg("tokenizer_path"));
 
   class_<MatPtr>(m, "MatPtr")
       // No init, only created within C++.

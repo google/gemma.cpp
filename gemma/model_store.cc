@@ -444,8 +444,7 @@ static void AddBlob(const char* name, const std::vector<uint32_t>& data,
 
 void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
                      const std::vector<uint32_t>& serialized_mat_ptrs,
-                     BlobWriter& writer, hwy::ThreadPool& pool,
-                     const Path& path) {
+                     BlobWriter& writer) {
   HWY_ASSERT(config.model != Model::UNKNOWN);
   HWY_ASSERT(config.weight != Type::kUnknown);
   HWY_ASSERT(config.wrapping != PromptWrapping::kSentinel);
@@ -459,7 +458,7 @@ void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
 
   AddBlob(kMatPtrsName, serialized_mat_ptrs, writer);
 
-  writer.WriteAll(pool, path);
+  writer.WriteAll();
 }
 
 }  // namespace gcpp

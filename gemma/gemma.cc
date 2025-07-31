@@ -618,11 +618,11 @@ Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
 Gemma::~Gemma() = default;
 
 void Gemma::Save(const Path& weights_path, NestedPools& pools) const {
-  BlobWriter writer;
+  BlobWriter writer(weights_path, pools.Pool());
   const std::vector<uint32_t> serialized_mat_ptrs =
       weights_.AddTensorDataToWriter(writer);
   WriteSingleFile(model_.Config(), model_.Tokenizer(), serialized_mat_ptrs,
-                  writer, pools.Pool(), weights_path);
+                  writer);
 }
 
 void Gemma::Generate(const RuntimeConfig& runtime_config,

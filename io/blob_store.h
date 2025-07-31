@@ -116,6 +116,8 @@ class BlobReader {
 // does not make sense to call the methods concurrently.
 class BlobWriter {
  public:
+  explicit BlobWriter(const Path& filename, hwy::ThreadPool& pool);
+
   void Add(const std::string& key, const void* data, size_t bytes);
 
   // For `ModelStore`: this is the `key_idx` of the next blob to be added.
@@ -123,11 +125,13 @@ class BlobWriter {
 
   // Stores all blobs to disk in the given order with padding for alignment.
   // Aborts on error.
-  void WriteAll(hwy::ThreadPool& pool, const Path& filename);
+  void WriteAll();
 
  private:
+  std::unique_ptr<File> file_;
   std::vector<hwy::uint128_t> keys_;
-  std::vector<hwy::Span<const uint8_t>> blobs_;
+  std::vector<size_t> blob_sizes_;
+  hwy::ThreadPool& pool_;
 };
 
 }  // namespace gcpp
