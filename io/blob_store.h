@@ -104,7 +104,7 @@ class BlobReader {
  private:
   Path blob_path_;
   std::unique_ptr<File> file_;
-  const uint64_t file_bytes_;
+  uint64_t file_bytes_;  // const after ctor
 
   std::vector<std::string> keys_;
   std::vector<BlobRange> ranges_;

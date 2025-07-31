@@ -93,6 +93,7 @@ cc_library(
         ":threading",
         ":topology",
         "@highway//:hwy",
+        "@highway//:hwy_test_util",
         "@highway//:profiler",
     ],
 )
@@ -205,6 +206,7 @@ cc_library(
         "//io:blob_store",
         "//io:fields",
         "@highway//:hwy",
+        "@highway//:profiler",
         "@highway//:thread_pool",
     ],
 )

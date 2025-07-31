@@ -609,6 +609,7 @@ Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
       weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model),
       inference_(inference) {
+  // Negligible CPU time in the ctor body (except ReadFromBlobs).
   weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, loader, inference,
                                              mat_owners_, ctx);
   // Read everything into memory, or `weights_.mapped_` keeps the mapping alive.

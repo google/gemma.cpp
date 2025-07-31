@@ -78,15 +78,14 @@ std::string GetPromptFromStream(std::istream& input, int verbosity,
 
 // Get prompt either from interactive input or command line
 std::string GetPrompt(const InferenceArgs& inference) {
-  PROFILER_ZONE("Gen.input");
   // If prompt is provided via command line, use that
-  if (!inference.prompt.empty()) {
-    return inference.prompt;
-  }
+  if (!inference.prompt.empty()) return inference.prompt;
   if (!inference.prompt_file.Empty()) {
+    PROFILER_ZONE("Gen.ReadPrompt");
     return ReadFileToString(inference.prompt_file);
   }
 
+  PROFILER_ZONE("Gen.input");
   return GetPromptFromStream(std::cin, inference.verbosity, inference.eot_line);
 }
 
@@ -299,8 +298,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
 int main(int argc, char** argv) {
   gcpp::InternalInit();
   {
-    PROFILER_ZONE("Startup.misc");
-
+    // Negligible CPU time.
     gcpp::LoaderArgs loader(argc, argv);
     gcpp::ThreadingArgs threading(argc, argv);
     gcpp::InferenceArgs inference(argc, argv);

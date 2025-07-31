@@ -36,6 +36,7 @@
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -60,6 +61,8 @@ static void WarnIfExtra(const IFields::ReadResult& result, const char* name) {
 // Reads it from a blob or from a separate file if pre-2025.
 static std::string ReadTokenizer(BlobReader& reader,
                                  const Path& tokenizer_path) {
+  PROFILER_ZONE("Startup.ReadTokenizer");
+
   std::string tokenizer;
   // Check prevents `CallWithSpan` from printing a warning.
   if (reader.Find(kTokenizerName)) {
@@ -305,6 +308,8 @@ static std::vector<float> ReadScales(BlobReader& reader,
 bool ModelStore::ReadMatPtrs(BlobReader& reader) {
   // Check first to prevent `CallWithSpan` from printing a warning.
   if (!reader.Find(kMatPtrsName)) return false;
+
+  PROFILER_ZONE("Startup.ReadMatPtrs");
 
   // For verifying `config_.weight`.
   size_t min_bits = ~size_t{0};

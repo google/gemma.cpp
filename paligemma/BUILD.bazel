@@ -34,16 +34,13 @@ cc_library(
     srcs = ["paligemma_helper.cc"],
     hdrs = ["paligemma_helper.h"],
     deps = [
-        ":image",
         "//:allocator",
         "//:benchmark_helper",
         "//:configs",
         "//:gemma_args",
         "//:gemma_lib",
         "//compression:types",
-        "//io",
         "@highway//:hwy",
-        "@highway//:profiler",
     ],
 )
 
@@ -59,15 +56,12 @@ cc_test(
     ],
     deps = [
         ":paligemma_helper",
-        "//devtools/build/runtime:get_runfiles_dir",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:allocator",
         "//:benchmark_helper",
         "//:configs",
         "//:gemma_lib",
-        "//compression:types",
         "//io",
-        "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
 )

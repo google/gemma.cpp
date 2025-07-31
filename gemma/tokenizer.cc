@@ -104,6 +104,7 @@ bool GemmaTokenizer::Decode(const std::vector<int>& ids,
   return impl_->Decode(ids, detokenized);
 }
 
+// Negligible CPU time in the ctor body.
 GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
                                      Model model) {
   sot_user_.reserve(3);

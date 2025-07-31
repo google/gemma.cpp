@@ -30,6 +30,7 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_compiler_arch.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -413,10 +414,11 @@ class BlobStore {
   std::vector<hwy::uint128_t> directory_;  // two per blob, see `SetRange`.
 };  // BlobStore
 
-BlobReader::BlobReader(const Path& blob_path)
-    : blob_path_(blob_path),
-      file_(OpenFileOrAbort(blob_path, "r")),
-      file_bytes_(file_->FileSize()) {
+BlobReader::BlobReader(const Path& blob_path) : blob_path_(blob_path) {
+  PROFILER_ZONE("Startup.BlobReader");
+
+  file_ = OpenFileOrAbort(blob_path, "r");
+  file_bytes_ = file_->FileSize();
   if (file_bytes_ == 0) HWY_ABORT("Zero-sized file %s", blob_path.path.c_str());
 
   BlobStore bs(*file_);

@@ -344,10 +344,9 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
       });
 }
 
-// Mode == kMap
+// Mode == kMap. CPU time is negligible.
 static void MapAll(const std::vector<TensorToRead>& tensors,
                    const MapPtr& mapped, uint64_t file_bytes) {
-  PROFILER_ZONE("Startup.Weights.Map");
   for (size_t i = 0; i < tensors.size(); ++i) {
     // SetPtr does not change the stride, but it is expected to be packed
     // because that is what Compress() writes to the file.
@@ -521,6 +520,8 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
                                              const InferenceArgs& inference,
                                              std::vector<MatOwner>& mat_owners,
                                              ThreadingContext& ctx) {
+  PROFILER_ZONE("Startup.ReadFromBlobs");
+
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
 
