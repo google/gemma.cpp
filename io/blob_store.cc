@@ -99,14 +99,13 @@ struct BlobIO {
 // For V2: the file is represented as
 //   Header + PadToBlobAlign + Payload + PadToEndAlign + Directory + Header
 // The Header at the beginning has num_blobs == 0; and the Header at the end has
-// the correct num_blobs.
+// the correct num_blobs. This allows writing blobs without knowing the total
+// number of them, nor holding all them in memory. As of 2025-07-31, we support
+// reading both, but always write V2. Note that its num_blobs == 0 was
+// previously disallowed. To read V2, pull the latest code from the dev branch.
 //
 // Actual payload is indexed by the directory with keys, offset and bytes; keys
 // are unique, opaque 128-bit keys.
-//
-// The file format deliberately omits a version number because it is unchanging.
-// Additional data may be added only inside new blobs. Changes to the blob
-// contents or type should be handled by renaming keys.
 //
 // The file format deliberately omits a version number because it is unchanging.
 // Additional data may be added only inside new blobs. Changes to the blob
@@ -473,7 +472,8 @@ static void EnqueueChunks(size_t key_idx, uint64_t offset, uint64_t bytes,
 BlobWriter::BlobWriter(const Path& filename, hwy::ThreadPool& pool)
     : file_(OpenFileOrNull(filename, "w+")), pool_(pool) {
   if (!file_) HWY_ABORT("Failed to open for writing %s", filename.path.c_str());
-  // Write a fake header to the beginning of the file.
+  // Write a placeholder header to the beginning of the file. If append-only,
+  // we will later write a footer, else we will update the header.
   std::vector<uint8_t> bytes_before_blobs = BlobStore::BytesBeforeBlobsV2();
   file_->Write(bytes_before_blobs.data(), bytes_before_blobs.size(), 0);
 }
@@ -503,13 +503,15 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
       });
 }
 
-void BlobWriter::WriteAll() {
+void BlobWriter::Finalize() {
   const BlobStore bs = BlobStore(keys_, blob_sizes_);
 
   // Write the rest of the bytes, which contains: paddings + directory + header.
   const auto bytes_after_blobs = bs.BytesAfterBlobs();
   file_->Write(bytes_after_blobs.data(), bytes_after_blobs.size(),
                file_->FileSize());
+
+  file_.reset();  // closes the file
 }
 
 }  // namespace gcpp

@@ -55,7 +55,7 @@ TEST(BlobStoreTest, TestReadWrite) {
   BlobWriter writer(path, pool);
   writer.Add(keyA, "DATA", 5);
   writer.Add(keyB, buffer.data(), sizeof(buffer));
-  writer.WriteAll();
+  writer.Finalize();
   HWY_ASSERT_ARRAY_EQ(kOriginalData.data(), buffer.data(), buffer.size());
 
   std::fill(buffer.begin(), buffer.end(), 0);
@@ -126,7 +126,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     }
     HWY_ASSERT(keys.size() == num_blobs);
     HWY_ASSERT(blobs.size() == num_blobs);
-    writer.WriteAll();
+    writer.Finalize();
 
     BlobReader reader(path);
     HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);

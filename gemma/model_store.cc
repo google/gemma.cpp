@@ -463,7 +463,7 @@ void WriteSingleFile(const ModelConfig& config, const GemmaTokenizer& tokenizer,
 
   AddBlob(kMatPtrsName, serialized_mat_ptrs, writer);
 
-  writer.WriteAll();
+  writer.Finalize();
 }
 
 }  // namespace gcpp

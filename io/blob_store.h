@@ -111,21 +111,19 @@ class BlobReader {
   std::unordered_map<std::string, size_t> key_idx_for_key_;
 };
 
-// Collects references to blobs and writes them all at once with parallel I/O.
+// Writes blobs immediately using parallel I/O, and collects their metadata for
+// writing the file footer.
 // Thread-compatible: independent instances can be used concurrently, but it
 // does not make sense to call the methods concurrently.
 class BlobWriter {
  public:
-  explicit BlobWriter(const Path& filename, hwy::ThreadPool& pool);
+  BlobWriter(const Path& filename, hwy::ThreadPool& pool);
 
+  // Writes the blob to disk with padding for alignment. Aborts on error.
   void Add(const std::string& key, const void* data, size_t bytes);
 
-  // For `ModelStore`: this is the `key_idx` of the next blob to be added.
-  size_t NumAdded() const { return keys_.size(); }
-
-  // Stores all blobs to disk in the given order with padding for alignment.
-  // Aborts on error.
-  void WriteAll();
+  // Appends a footer and closes the file. Must be called once after all `Add`.
+  void Finalize();
 
  private:
   std::unique_ptr<File> file_;
