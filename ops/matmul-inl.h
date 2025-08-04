@@ -1282,14 +1282,21 @@ struct MMImpl {
     PROFILER_ZONE("MM.DoMatMul");
     static const uint32_t zone_id = PROFILER_ADD_ZONE("MM.DoMatMul.PerPkg");
 
-    // Outermost loop: static NUMA-aware partition of B rows across packages.
-    args.env->parallel.ForPkg(
-        args.per_key->ranges_np.NumTasks(), [&](size_t pkg_idx) {
-          MMZone matmul_zone;
-          matmul_zone.MaybeEnter(pkg_idx, zone_id, args);
-          const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
-          MMPerPackage(A, args, config, pkg_idx, range_np)(B, C_rows);
-        });
+    if constexpr (kMaxPackages > 1) {
+      // Outermost loop: static NUMA-aware partition of B rows across packages.
+      args.env->parallel.ForPkg(
+          args.per_key->ranges_np.NumTasks(), [&](size_t pkg_idx) {
+            MMZone matmul_zone;
+            matmul_zone.MaybeEnter(pkg_idx, zone_id, args);
+            const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
+            MMPerPackage(A, args, config, pkg_idx, range_np)(B, C_rows);
+          });
+    } else {
+      const size_t pkg_idx = 0;
+      HWY_DASSERT(args.per_key->ranges_np.NumTasks() == 1);
+      const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
+      MMPerPackage(A, args, config, pkg_idx, range_np)(B, C_rows);
+    }
   }
 };
 
@@ -1333,7 +1340,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   if (HWY_UNLIKELY(index < 0)) {
     env.keys.Append(key, allocator);
 
-    size_t max_packages = MMParallel::kMaxPackages;
+    size_t max_packages = kMaxPackages;
     // For low-batch, multiple sockets only help if binding is enabled.
     if (!allocator.ShouldBind() && M <= 4) {
       max_packages = 1;

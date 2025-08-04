@@ -103,7 +103,7 @@ GemmaContext::GemmaContext(const LoaderArgs& loader,
                            int max_generated_tokens)
     : inference_args(inference_args),
       threading_args(threading_args),
-      ctx(UpdateArgs(threading_args, inference_args)),
+      ctx(threading_args),
       matmul_env(ctx),
       active_conversation_name("default"),
       model(loader, inference_args, matmul_env.ctx) {

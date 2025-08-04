@@ -278,9 +278,8 @@ static WeightsPtrs::Mode ChooseMode(uint64_t file_bytes,
 
   if (to_bf16 == Tristate::kDefault) {
     // Heuristic: sub-bf16 compression is not helpful if compute-bound.
-    const size_t batch_size =
-        HWY_MAX(inference.prefill_tbatch_size, inference.decode_qbatch_size);
-    to_bf16 = (batch_size >= 128) ? Tristate::kTrue : Tristate::kFalse;
+    to_bf16 = (inference.decode_qbatch_size >= 128) ? Tristate::kTrue
+                                                    : Tristate::kFalse;
   }
 
   if (map == Tristate::kDefault) {

@@ -576,8 +576,7 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
   HWY_DASSERT(activations.SameShape(out));
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    const size_t pkg_idx = 0;
-    SmallParallelFor(activations.Rows(), ctx.pools, pkg_idx,
+    SmallParallelFor(activations.Rows(), ctx.pools,
                      [&](uint64_t token_idx, size_t worker) {
                        RMSNorm(activations.Row(token_idx),
                                weights_t->PackedScale1(), 0, out.Row(token_idx),
@@ -593,8 +592,7 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
   HWY_DASSERT(weights.Cols() == inout.Cols());
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    const size_t pkg_idx = 0;
-    SmallParallelFor(inout.Rows(), ctx.pools, pkg_idx,
+    SmallParallelFor(inout.Rows(), ctx.pools,
                      [&](uint64_t token_idx, size_t worker) {
                        RMSNormInplace(weights_t->PackedScale1(), 0,
                                       inout.Row(token_idx), inout.Cols(),
@@ -624,9 +622,8 @@ template <typename XT>
 static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
                                       ThreadingContext& ctx) {
   HWY_DASSERT(out.SameShape(x));
-  const size_t pkg_idx = 0;
   SmallParallelFor(
-      out.Rows(), ctx.pools, pkg_idx, [&](uint64_t token_idx, size_t worker) {
+      out.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
         AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(), worker);
       });
 }

@@ -264,7 +264,7 @@ void TestTiny() {
     MatMulEnv env(ctx);
     NestedPools& pools = env.ctx.pools;
 
-    if constexpr (GEMMA_DISABLE_TOPOLOGY) {
+    if constexpr (GEMMA_DISABLE_TOPOLOGY || kMaxPackages == 1) {
       if (max_packages == 2) break;  // we only have one package
     } else {
       // If less than the limit, we have already tested all num_packages.

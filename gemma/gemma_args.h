@@ -258,16 +258,6 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   }
 };
 
-static inline ThreadingArgs UpdateArgs(const ThreadingArgs& threading_args,
-                                       const InferenceArgs& inference_args) {
-  if (inference_args.decode_qbatch_size >= 256) {
-    ThreadingArgs copy = threading_args;
-    copy.max_packages = 1;
-    return copy;
-  }
-  return threading_args;
-}
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_ARGS_H_

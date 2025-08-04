@@ -30,6 +30,11 @@
 
 namespace gcpp {
 
+// Maximum number of packages (CPU sockets) to use. `ThreadingArgs` verifies the
+// runtime `max_packages` does not exceed this. MatMul's outer per-package loop
+// is disabled if this is 1.
+constexpr size_t kMaxPackages = 1;
+
 enum class Tristate : int32_t { kFalse = 0, kTrue = 1, kDefault = -1 };
 
 static inline const char* ToString(Tristate t) {

@@ -57,11 +57,12 @@ static constexpr size_t kMaxMR = 4;
 // the ThreadingContext to shorten call sites.
 class MMParallel {
  public:
-  static constexpr size_t kMaxPackages = 4;
-
   // `ctx` must outlive this object.
   MMParallel(ThreadingContext& ctx) : ctx_(ctx) {
-    HWY_DASSERT(ctx_.pools.NumPackages() <= kMaxPackages);
+    if (ctx_.pools.NumPackages() > kMaxPackages) {
+      HWY_WARN("CPU and --max_packages allow %zu > matmul.h kMaxPackages %zu.",
+               ctx_.pools.NumPackages(), kMaxPackages);
+    }
   }
 
   Allocator& allocator() const { return ctx_.allocator; }
@@ -78,13 +79,17 @@ class MMParallel {
   // Calls `func(pkg_idx)` for each package in parallel.
   template <class Func>
   void ForPkg(const size_t max_packages, const Func& func) {
-    ctx_.pools.AllPackages().Run(
-        0, HWY_MIN(max_packages, ctx_.pools.NumPackages()),
-        [&](uint64_t task, size_t pkg_idx) {
-          HWY_DASSERT(task == pkg_idx);
-          (void)task;
-          func(pkg_idx);
-        });
+    if constexpr (kMaxPackages > 1) {
+      ctx_.pools.AllPackages().Run(
+          0, HWY_MIN(max_packages, ctx_.pools.NumPackages()),
+          [&](uint64_t task, size_t pkg_idx) {
+            HWY_DASSERT(task == pkg_idx);
+            (void)task;
+            func(pkg_idx);
+          });
+    } else {
+      func(/*pkg_idx=*/0);
+    }
   }
 
   // Cluster/CCX-aware parallel-for over B rows in `range_np`. `nx_multiple` is
@@ -257,7 +262,7 @@ class MMStorage {
         partial_(partial_storage_.Row(0), kMaxN, partial_storage_.Stride()) {
     // Per-package allocation so each can decompress A into its own copy.
     // Must be padded, see `DoDecompressA`.
-    parallel.ForPkg(MMParallel::kMaxPackages, [&](size_t pkg_idx) {
+    parallel.ForPkg(kMaxPackages, [&](size_t pkg_idx) {
       pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
           "pkg_A", Extents2D(kMaxM, kMaxK), allocator, MatPadding::kOdd));
 
@@ -287,7 +292,7 @@ class MMStorage {
   StridedViewD Partial() const { return partial_; }
 
  private:
-  std::unique_ptr<MatStorageT<BF16>> pkg_A_[MMParallel::kMaxPackages];
+  std::unique_ptr<MatStorageT<BF16>> pkg_A_[kMaxPackages];
   MatStorageT<double> partial_storage_;
   StridedViewD partial_;
 };
@@ -646,7 +651,9 @@ class MMKeys {
 struct MMPerKey {
   MMPerKey(size_t max_packages, size_t N, size_t sizeof_TC, size_t nr,
            MMParallel& parallel)
-      : ranges_np(parallel.RangesOfNP(max_packages, N, sizeof_TC, nr)) {}
+      : ranges_np(parallel.RangesOfNP(max_packages, N, sizeof_TC, nr)) {
+    HWY_DASSERT(ranges_np.NumTasks() <= max_packages);
+  }
 
   // Only profile if enabled and the main autotuner finished (the par_a
   // autotuner is per-package and we want to avoid synchronization).
@@ -654,7 +661,7 @@ struct MMPerKey {
 
   const IndexRangePartition ranges_np;
   MMAutoTune<MMConfig> autotune;
-  MMAutoTune<MMParA> autotune_par_a[MMParallel::kMaxPackages];
+  MMAutoTune<MMParA> autotune_par_a[kMaxPackages];
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive

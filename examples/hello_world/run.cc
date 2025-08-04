@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
   }
 
   // Instantiate model and KV Cache
-  gcpp::ThreadingContext ctx(gcpp::UpdateArgs(threading, inference));
+  gcpp::ThreadingContext ctx(threading);
   gcpp::MatMulEnv env(ctx);
   gcpp::Gemma gemma(loader, inference, ctx);
   gcpp::KVCache kv_cache(gemma.Config(), inference, ctx.allocator);

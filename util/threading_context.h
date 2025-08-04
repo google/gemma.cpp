@@ -25,7 +25,7 @@
 // IWYU pragma: begin_exports
 #include "util/allocator.h"
 #include "util/args.h"
-#include "util/basics.h"  // Tristate
+#include "util/basics.h"  // Tristate, kMaxPackages
 #include "util/threading.h"
 #include "util/topology.h"
 // IWYU pragma: end_exports
@@ -60,8 +60,9 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
     // all available resources.
     visitor(skip_packages, "skip_packages", size_t{0},
             "Index of the first socket to use; default 0 = unlimited.", 2);
-    visitor(max_packages, "max_packages", size_t{0},
-            "Max sockets to use; default 0 = all unless large batch size.", 2);
+    visitor(max_packages, "max_packages", size_t{1},
+            "Max sockets to use; default = 1, 0 = unlimited.", 2);
+    HWY_ASSERT(max_packages <= kMaxPackages);
     visitor(skip_clusters, "skip_clusters", size_t{0},
             "Index of the first CCX to use; default 0 = unlimited.", 2);
     visitor(max_clusters, "max_clusters", size_t{0},

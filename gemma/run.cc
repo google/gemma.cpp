@@ -253,7 +253,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
          const InferenceArgs& inference) {
   PROFILER_ZONE("Run.misc");
 
-  ThreadingContext ctx(UpdateArgs(threading, inference));
+  ThreadingContext ctx(threading);
   MatMulEnv env(ctx);
   if (inference.verbosity >= 2) env.print_best = true;
   const Gemma gemma(loader, inference, ctx);

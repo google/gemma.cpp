@@ -441,7 +441,7 @@ void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
   PROFILER_ZONE("Startup.BindB");
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(MMParallel::kMaxPackages, B.Rows(), sizeof_TC, kNR);
+      parallel.RangesOfNP(kMaxPackages, B.Rows(), sizeof_TC, kNR);
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& rows_b = ranges_np.Range(pkg_idx);
     const size_t node = parallel.Node(pkg_idx);
@@ -464,8 +464,8 @@ void BindC(MatPtr& C, MMParallel& parallel) {
 
   PROFILER_ZONE("Startup.BindC");
 
-  const IndexRangePartition ranges_np = parallel.RangesOfNP(
-      MMParallel::kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
+  const IndexRangePartition ranges_np =
+      parallel.RangesOfNP(kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
   bool ok = true;
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& cols_c = ranges_np.Range(pkg_idx);

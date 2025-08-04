@@ -35,7 +35,7 @@ class SimplifiedGemma {
   SimplifiedGemma(const gcpp::LoaderArgs& loader,
                   const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
                   const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
-      : ctx_(UpdateArgs(threading, inference)),
+      : ctx_(threading),
         env_(ctx_),
         gemma_(loader, inference, ctx_),
         kv_cache_(gemma_.Config(), inference, ctx_.allocator) {

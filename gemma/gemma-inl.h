@@ -66,13 +66,11 @@ void Activation(ActivationType activation, T* HWY_RESTRICT c1,
 template <class Mat>
 void ActivationBatched(ActivationType activation, Mat& c1, NestedPools& pools) {
   using T = typename Mat::T;
-  const size_t pkg_idx = 0;
-  SmallParallelFor(
-      c1.Rows(), pools, pkg_idx, [&](uint64_t task, size_t worker) {
-        // Cast to correct type so type deduction works.
-        Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-                   c1.Cols(), worker);
-      });
+  SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
+    // Cast to correct type so type deduction works.
+    Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
+               c1.Cols(), worker);
+  });
 }
 
 template <class Mat>
@@ -80,19 +78,15 @@ HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
                                     const Mat* c2, NestedPools& pools) {
   using T = typename Mat::T;
   HWY_DASSERT(c1.SameShape(*c2));
-  const size_t pkg_idx = 0;
   if (c2 && c2->HasPtr()) {
-    SmallParallelFor(c1.Rows(), pools, pkg_idx,
-                     [&](uint64_t task, size_t worker) {
-                       Activation(activation, c1.Row(task), c2->Row(task),
-                                  c1.Cols(), worker);
-                     });
+    SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
+      Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(), worker);
+    });
   } else {  // No multiplier
-    SmallParallelFor(
-        c1.Rows(), pools, pkg_idx, [&](uint64_t task, size_t worker) {
-          Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-                     c1.Cols(), worker);
-        });
+    SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
+      Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
+                 c1.Cols(), worker);
+    });
   }
 }
 
