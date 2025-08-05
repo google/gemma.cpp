@@ -330,7 +330,7 @@ def export_paligemma_sbs(
       "language_model.model.embed_tokens.weight"
   ][:-64]
 
-  writer = compression.SbsWriter()
+  writer = compression.SbsWriter(sbs_file)
   metadata = []
   scales = {}
   dims = _get_dimensions(params)
@@ -511,7 +511,8 @@ def export_paligemma_sbs(
 
   # Write everything to the sbs file.
   assert model_specifier.startswith("paligemma")
-  writer.write(configs.ModelConfig(model_specifier), tokenizer_file, sbs_file)
+  sbs_config = configs.ModelConfig(model_specifier)
+  writer.write(sbs_config, tokenizer_file)
 
   # Write the metadata for manual inspection.
   with open(csv_file, "w") as csv_handle:
