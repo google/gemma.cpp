@@ -44,9 +44,7 @@ int main(int argc, char** argv) {
   for (int arg = 0; arg < argc; ++arg) {
     // Find a --reject flag and consume everything after it.
     if (strcmp(argv[arg], "--reject") == 0) {
-      while (++arg < argc) {
-        reject_tokens.insert(atoi(argv[arg]));  // NOLINT
-      }
+      while (++arg < argc) reject_tokens.insert(atoi(argv[arg]));
     }
   }
 
@@ -90,9 +88,9 @@ int main(int argc, char** argv) {
       .verbosity = 0,
       .stream_token = stream_token,
       .accept_token =
-          [&](int token, float /* prob */) {
-            return !reject_tokens.contains(token);
-          },
+          std::function<bool(int, float)>([&](int token, float /* prob */) {
+            return reject_tokens.find(token) == reject_tokens.end();
+          }),
   };
   gemma.Generate(runtime_config, tokens, 0, kv_cache, env, timing_info);
 }
