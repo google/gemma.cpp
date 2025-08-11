@@ -381,9 +381,11 @@ static void DecompressToBF16(MatPtr& mat,
 }
 
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
-                          const BlobReader& reader, hwy::ThreadPool& pool) {
-  pool.Run(0, tensors.size(), [&](uint64_t task, size_t thread) {
-    PROFILER_ZONE2(thread, "Startup.Weights.ReadBF16");
+                          const BlobReader& reader, ThreadingContext& ctx) {
+  static const auto zone =
+      ctx.profiler.AddZone("Startup.Weights.ReadAllToBF16");
+  ctx.pools.Pool().Run(0, tensors.size(), [&](uint64_t task, size_t thread) {
+    PROFILER_ZONE3(ctx.profiler, thread, zone);
     const TensorToRead& tensor = tensors[task];
     MatPtr& mat = *tensor.mat;
 
@@ -460,10 +462,11 @@ static std::vector<IOBatch> MakeBatches(
 // want to use the OS cache between consecutive runs.
 static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
-                        hwy::ThreadPool& pool) {
+                        ThreadingContext& ctx) {
+  static const auto zone = ctx.profiler.AddZone("Startup.Weights.ReadBatches");
   // >5x speedup from parallel reads when cached.
-  pool.Run(0, batches.size(), [&](uint64_t i, size_t thread) {
-    PROFILER_ZONE2(thread, "Startup.Weights.Read");
+  ctx.pools.Pool().Run(0, batches.size(), [&](uint64_t i, size_t thread) {
+    PROFILER_ZONE3(ctx.profiler, thread, zone);
     const IOBatch& batch = batches[i];
     const std::string& key = reader.Keys()[batch.KeyIdx()];
     const uint64_t bytes_read = batch.Read(reader.file());
@@ -500,16 +503,14 @@ static MapPtr MapOrReadAll(std::vector<TensorToRead>& tensors,
     AllocateAndBindAll(tensors, *mode, mat_owners, ctx);
   }
 
-  hwy::ThreadPool& pool = ctx.pools.Pool();
-
   if (*mode == WeightsPtrs::Mode::kReadBF16) {
-    ReadAllToBF16(tensors, reader, pool);
+    ReadAllToBF16(tensors, reader, ctx);
     return MapPtr();
   }
 
   const std::vector<IOBatch> batches =
       MakeBatches(tensors, reader.file_bytes());
-  ReadBatches(reader, batches, pool);
+  ReadBatches(reader, batches, ctx);
   return MapPtr();
 }
 
@@ -519,7 +520,7 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
                                              const InferenceArgs& inference,
                                              std::vector<MatOwner>& mat_owners,
                                              ThreadingContext& ctx) {
-  PROFILER_ZONE("Startup.ReadFromBlobs");
+  PROFILER_ZONE("Startup.Weights.ReadFromBlobs");
 
   // List of tensors to read/map, and where from.
   std::vector<TensorToRead> tensors;
