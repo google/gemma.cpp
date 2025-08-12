@@ -29,7 +29,6 @@
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/contrib/thread_pool/topology.h"
-#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -172,8 +171,6 @@ NestedPools::NestedPools(const BoundedTopology& topology,
   HWY_ASSERT(max_clusters_per_package_ <= 64);
   HWY_ASSERT(max_workers_per_cluster_ >= 1);
   HWY_ASSERT(max_workers_per_cluster_ <= 256);
-
-  hwy::Profiler::Get().SetMaxThreads(MaxWorkers());
 }
 
 // `max_or_zero` == 0 means no limit.

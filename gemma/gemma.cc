@@ -55,7 +55,6 @@
 #include "io/io.h"  // Path
 #include "ops/matmul.h"
 #include "paligemma/image.h"
-#include "util/basics.h"  // PROFILER_ZONE3
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
@@ -139,8 +138,7 @@ static float EmbeddingScaling(size_t model_dim) {
 static HWY_NOINLINE size_t
 EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
              const ModelConfig& model_config, const WeightsPtrs& weights,
-             MatStorageT<float>& x, ThreadingContext& ctx,
-             const ImageTokens* image_tokens = nullptr,
+             MatStorageT<float>& x, const ImageTokens* image_tokens = nullptr,
              size_t image_token_position = 0) {
   // Image tokens just need to be copied.
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
@@ -176,8 +174,7 @@ EmbedMMToken(int token, size_t qi, size_t pos, size_t pos_in_prompt,
     const hn::ScalableTag<float> df;
     DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(qi),
                          model_dim);
-    MulByConst(emb_scaling * weights_t->Scale(), x.Row(qi), model_dim,
-               ctx.profiler, worker);
+    MulByConst(emb_scaling * weights_t->Scale(), x.Row(qi), model_dim, worker);
   });
 
   if (model_config.absolute_pe) {
@@ -252,7 +249,7 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
         const int token = qbatch_1.Prompt(0)[pos_in_prompt];
         image_token_position = EmbedMMToken(
             token, ti, pos, pos_in_prompt, config, weights, activations.x,
-            env.ctx, runtime_config.image_tokens, image_token_position);
+            runtime_config.image_tokens, image_token_position);
       }
 
       // Transformer with one batch of tokens from a single query.
@@ -309,7 +306,7 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
   // TODO: parallelize?
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     EmbedMMToken(qbatch.PrevToken(qi), qi, qbatch.Pos(qi),
-                 /*pos_in_prompt=*/0, config, weights, activations.x, env.ctx);
+                 /*pos_in_prompt=*/0, config, weights, activations.x);
   }
 
   for (size_t layer_idx = 0; layer_idx < weights.c_layers.size(); ++layer_idx) {
@@ -422,8 +419,7 @@ static void DecodeStepT(const ModelConfig& config,
   const size_t worker = 0;  // TODO: parallelize
   non_eos.Foreach([&](size_t qi) {
     float* HWY_RESTRICT logits = activations.logits.Row(qi);
-    MaybeLogitsSoftCap(config.final_cap, logits, config.vocab_size,
-                       env.ctx.profiler, worker);
+    MaybeLogitsSoftCap(config.final_cap, logits, config.vocab_size, worker);
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
     timing_info.NotifyGenerated();
 
@@ -433,28 +429,27 @@ static void DecodeStepT(const ModelConfig& config,
 }
 
 static HWY_INLINE SampleFunc
-ChooseSampleFunc(const RuntimeConfig& runtime_config, ThreadingContext& ctx) {
+ChooseSampleFunc(const RuntimeConfig& runtime_config) {
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
-  static const auto zone = ctx.profiler.AddZone("Gen.Sample Top1");
   const size_t worker = 0;  // TODO: parallelize
 
   // Fast path for top-1 with no accept_token.
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
-    return [&](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
-      PROFILER_ZONE3(ctx.profiler, worker, zone);
+    return [](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
+      PROFILER_ZONE2(worker, "Gen.Sample Top1");
       return Top1OfSoftmax(logits, vocab_size);
     };
   }
 
   // General case: Softmax with top-k sampling.
-  return [&](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
+  return [&runtime_config](float* logits,
+                           size_t vocab_size) HWY_ATTR -> TokenAndProb {
     PROFILER_ZONE("Gen.Sample general");
     return FusedSoftmaxAndSampleTopK(
         logits, runtime_config.top_k, vocab_size, *runtime_config.gen,
-        runtime_config.temperature, runtime_config.accept_token, ctx.profiler,
-        worker);
+        runtime_config.temperature, runtime_config.accept_token, worker);
   };
 }
 
@@ -529,7 +524,7 @@ static void GenerateT(const ModelConfig& config,
     max_gen_steps = seq_len - max_prompt_size;
   }
 
-  const SampleFunc sample_token = ChooseSampleFunc(runtime_config, env.ctx);
+  const SampleFunc sample_token = ChooseSampleFunc(runtime_config);
 
   {
     timing_info.generate_start = hwy::platform::Now();

@@ -38,7 +38,7 @@ namespace gcpp {
   void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,      \
                              const LayerWeightsPtrs& layer,                  \
                              AttentionActivations& activations,              \
-                             QBatch& qbatch, ThreadingContext& ctx);         \
+                             QBatch& qbatch, NestedPools& pools);            \
                                                                              \
   void GemmaAttention(size_t num_tokens, const size_t layer_idx,             \
                       const LayerWeightsPtrs& layer,                         \

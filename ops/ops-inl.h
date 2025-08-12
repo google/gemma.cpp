@@ -125,9 +125,9 @@ HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
   return hn::Mul(v, cdf);
 }
 
-// Activation already has a profiler zone.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
                                                size_t size) {
+  PROFILER_ZONE("ops.Gelu");
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   hn::Transform(D(), x, size,
@@ -191,10 +191,9 @@ namespace detail {
 
 // Shared by RMSNorm and RMSNormInplace.
 template <typename VT>
-float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
-                 const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormMul");
-  PROFILER_ZONE3(p, worker, zone);
+float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size,
+                 const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.RMSNormMul");
 
   const hn::ScalableTag<float> d;
   const float l2 = DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault());
@@ -206,20 +205,18 @@ float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
 
 // `x_ofs` is the offset within `x`, required for NuqStream.
 template <typename XT, typename WT, typename OT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
-                                           const WT* HWY_RESTRICT weight,
-                                           size_t w_ofs, OT* HWY_RESTRICT out,
-                                           const size_t size, hwy::Profiler& p,
-                                           const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNorm");
-  PROFILER_ZONE3(p, worker, zone);
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
+    const XT* HWY_RESTRICT x, const WT* HWY_RESTRICT weight, size_t w_ofs,
+    OT* HWY_RESTRICT out, const size_t size,
+    const size_t HWY_MAYBE_UNUSED worker) {
+  PROFILER_ZONE2(worker, "ops.RMSNorm");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
   const size_t NF = hn::Lanes(df);
 
-  const VF mul = hn::Set(df, detail::RMSNormMul(x, size, p, worker));
+  const VF mul = hn::Set(df, detail::RMSNormMul(x, size, worker));
 
   const auto packed_x = MakeSpan(x, size);
   const auto packed_w = MakeSpan(weight, w_ofs + size);
@@ -243,16 +240,15 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
 template <typename WT, typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const WT* HWY_RESTRICT weight, size_t w_ofs, XT* HWY_RESTRICT inout,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormInplace");
-  PROFILER_ZONE3(p, worker, zone);
+    const size_t size, const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.RMSNormInplace");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
   const size_t NF = hn::Lanes(df);
 
-  const VF mul = hn::Set(df, detail::RMSNormMul(inout, size, p, worker));
+  const VF mul = hn::Set(df, detail::RMSNormMul(inout, size, worker));
 
   const auto packed_w = MakeSpan(weight, w_ofs + size);
   const auto packed_x = MakeSpan(inout, size);
@@ -411,10 +407,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 // This overload is called if `post_qk == PostQKType::HalfRope`.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, const size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
-    const size_t worker) {
-  static const auto zone = p.AddZone("Ops.Rope");
-  PROFILER_ZONE3(p, worker, zone);
+    const float* HWY_RESTRICT inv_timescale, const int pos,
+    const size_t HWY_MAYBE_UNUSED worker = 0) {
+  PROFILER_ZONE2(worker, "ops.Rope");
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -471,10 +466,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
 // `inv_timescale[dim_qkv / 2]` is precomputed in AttentionActivations.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
-    const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RopeAndMulBy");
-  PROFILER_ZONE3(p, worker, zone);
+    const float* HWY_RESTRICT inv_timescale, const int pos,
+    const size_t HWY_MAYBE_UNUSED worker = 0) {
+  PROFILER_ZONE2(worker, "ops.RopeAndMulBy");
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -531,13 +525,10 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
 }
 
 template <typename XT>
-static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
-                                                  float* HWY_RESTRICT out,
-                                                  const size_t size,
-                                                  hwy::Profiler& p,
-                                                  const size_t worker) {
-  static const auto zone = p.AddZone("Ops.AddFrom");
-  PROFILER_ZONE3(p, worker, zone);
+static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(
+    const XT* HWY_RESTRICT x, float* HWY_RESTRICT out, const size_t size,
+    const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.AddFrom");
 
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
@@ -585,11 +576,12 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
   HWY_DASSERT(activations.SameShape(out));
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        activations.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
-          RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(), 0,
-                  out.Row(token_idx), activations.Cols(), ctx.profiler, worker);
-        });
+    SmallParallelFor(activations.Rows(), ctx.pools,
+                     [&](uint64_t token_idx, size_t worker) {
+                       RMSNorm(activations.Row(token_idx),
+                               weights_t->PackedScale1(), 0, out.Row(token_idx),
+                               activations.Cols(), worker);
+                     });
   });
 }
 
@@ -600,11 +592,12 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
   HWY_DASSERT(weights.Cols() == inout.Cols());
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        inout.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
-          RMSNormInplace(weights_t->PackedScale1(), 0, inout.Row(token_idx),
-                         inout.Cols(), ctx.profiler, worker);
-        });
+    SmallParallelFor(inout.Rows(), ctx.pools,
+                     [&](uint64_t token_idx, size_t worker) {
+                       RMSNormInplace(weights_t->PackedScale1(), 0,
+                                      inout.Row(token_idx), inout.Cols(),
+                                      worker);
+                     });
   });
 }
 
@@ -629,20 +622,17 @@ template <typename XT>
 static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
                                       ThreadingContext& ctx) {
   HWY_DASSERT(out.SameShape(x));
-  SmallParallelFor(out.Rows(), ctx.pools,
-                   [&](uint64_t token_idx, size_t worker) {
-                     AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
-                             ctx.profiler, worker);
-                   });
+  SmallParallelFor(
+      out.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
+        AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(), worker);
+      });
 }
 
 template <typename XT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
-                                              const size_t size,
-                                              hwy::Profiler& p,
-                                              const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConst");
-  PROFILER_ZONE3(p, worker, zone);
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(
+    const float c, XT* HWY_RESTRICT x, const size_t size,
+    const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.MulByConst");
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   const size_t NF = hn::Lanes(df);
@@ -682,9 +672,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
 template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstTo");
-  PROFILER_ZONE3(p, worker, zone);
+    const size_t size, const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.MulByConstTo");
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   const size_t NF = hn::Lanes(df);
@@ -725,9 +714,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
 template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
-  PROFILER_ZONE3(p, worker, zone);
+    const size_t size, const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.MulByConstAndAdd");
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> df;
   const size_t NF = hn::Lanes(df);
@@ -772,10 +760,9 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
 
 // See below for a specialized version for top-1 sampling.
 static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
-                                 hwy::Profiler& p, const size_t worker,
+                                 const size_t worker,
                                  float temperature = 1.0f) {
-  static const auto zone = p.AddZone("Ops.Softmax");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE2(worker, "ops.Softmax");
   HWY_DASSERT(size != 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
@@ -816,7 +803,7 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   const float sum_exp = Sum(d, x, size);
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
-  MulByConst(mul, x, size, p, worker);
+  MulByConst(mul, x, size, worker);
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /
@@ -906,10 +893,9 @@ static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
-                                       const size_t size, hwy::Profiler& p,
-                                       const size_t worker) {
-  static const auto zone = p.AddZone("Ops.LogitsSoftCap");
-  PROFILER_ZONE3(p, worker, zone);
+                                       const size_t size,
+                                       const HWY_MAYBE_UNUSED size_t worker) {
+  PROFILER_ZONE2(worker, "ops.LogitsSoftCap");
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -925,10 +911,10 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
 
 // Calls LogitsSoftCap if cap != 0.0f.
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
-    const float cap, float* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
+    const float cap, float* HWY_RESTRICT x, const size_t size,
     const size_t worker) {
   if (cap != 0.0f) {
-    LogitsSoftCap(cap, x, size, p, worker);
+    LogitsSoftCap(cap, x, size, worker);
   }
 }
 
@@ -1012,7 +998,7 @@ template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
     const float* HWY_RESTRICT logits, size_t k, size_t vocab_size,
     std::mt19937& gen, float temperature, TAcceptToken& accept_token,
-    hwy::Profiler& p, size_t worker) {
+    size_t worker) {
   // Softmax and sample top-K is equivalent to taking the top-K logits and
   // sampling from the softmax of the top-K logits. The latter is faster as it
   // avoids computing the softmax of all logits.
@@ -1026,7 +1012,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
   }
 
   size_t mask = token_logits.size();
-  Softmax(topk_logits.data(), mask, p, worker, temperature);
+  Softmax(topk_logits.data(), mask, worker, temperature);
   auto distribution = std::discrete_distribution<int>(
       std::begin(topk_logits), std::begin(topk_logits) + mask);
   int topk_sampled_index = distribution(gen);

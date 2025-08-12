@@ -720,33 +720,32 @@ struct MMArgs {
 // Wrapper over hwy::Zone that is only enabled when autotuning finished.
 #if PROFILER_ENABLED
 class MMZone {
-  using Zone = hwy::profiler::Zone;
-  static_assert(alignof(Zone) <= 8 && sizeof(Zone) <= 16);
+  using Zone = hwy::Zone;
+  static_assert(alignof(Zone) <= 8 && sizeof(Zone) <= 8);
 
  public:
   ~MMZone() {
-    if (data_ != 0) {
+    if (used_) {
       Zone* zone = reinterpret_cast<Zone*>(&data_);
       zone->~Zone();
     }
   }
 
   // `name` must be a string literal.
-  void MaybeEnter(size_t thread, hwy::profiler::ZoneHandle zone,
-                  const MMArgs& args) {
+  void MaybeEnter(size_t thread_id, uint32_t zone_id, const MMArgs& args) {
     if (args.per_key->WantProfile()) {
-      new (&data_) Zone(args.env->ctx.profiler, thread, zone);
-      HWY_DASSERT(data_ != 0);
+      new (&data_) Zone(thread_id, zone_id);
+      used_ = true;
     }
   }
 
  private:
   uint64_t data_ = 0;
-  uint64_t data2_ = 0;
+  bool used_ = false;
 };
 #else
 struct MMZone {
-  void MaybeEnter(size_t, hwy::profiler::ZoneHandle, const MMArgs&) {}
+  void MaybeEnter(size_t, uint32_t, const MMArgs&) {}
 };
 #endif  // PROFILER_ENABLED
 
