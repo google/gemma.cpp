@@ -45,9 +45,10 @@ namespace HWY_NAMESPACE {
 
 template <typename T>
 void Activation(ActivationType activation, T* HWY_RESTRICT c1,
-                const T* HWY_RESTRICT c2, const size_t count,
+                const T* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
                 const size_t worker) {
-  PROFILER_ZONE2(worker, "Gen.Activation");
+  static const auto zone = p.AddZone("Gen.Activation");
+  PROFILER_ZONE3(p, worker, zone);
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<T>;
   using VF = hn::Vec<DF>;
@@ -64,28 +65,30 @@ void Activation(ActivationType activation, T* HWY_RESTRICT c1,
 
 // No C2 multiplier.
 template <class Mat>
-void ActivationBatched(ActivationType activation, Mat& c1, NestedPools& pools) {
+void ActivationBatched(ActivationType activation, Mat& c1,
+                       ThreadingContext& ctx) {
   using T = typename Mat::T;
-  SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
+  SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
     // Cast to correct type so type deduction works.
     Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-               c1.Cols(), worker);
+               c1.Cols(), ctx.profiler, worker);
   });
 }
 
 template <class Mat>
 HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
-                                    const Mat* c2, NestedPools& pools) {
+                                    const Mat* c2, ThreadingContext& ctx) {
   using T = typename Mat::T;
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
-    SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
-      Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(), worker);
+    SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
+      Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
+                 ctx.profiler, worker);
     });
   } else {  // No multiplier
-    SmallParallelFor(c1.Rows(), pools, [&](uint64_t task, size_t worker) {
+    SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
       Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-                 c1.Cols(), worker);
+                 c1.Cols(), ctx.profiler, worker);
     });
   }
 }
@@ -110,7 +113,9 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
 
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
-  PROFILER_ZONE("Gen.FFW");
+  static const auto zone =
+      env.ctx.profiler.AddZone("Gen.FFW", ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
   const LayerConfig& layer_config = layer.layer_config;
   const size_t ffh_hidden_dim = layer_config.ff_hidden_dim;
 
@@ -129,7 +134,7 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
 
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_config.activation, activations.C1, &activations.C2,
-                    env.ctx.pools);
+                    env.ctx);
 
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.linear_w, output_bias, env,

@@ -84,8 +84,9 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size) {
-  Softmax(logits, vocab_size, /*worker=*/0);
+void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size,
+                 hwy::Profiler& p) {
+  Softmax(logits, vocab_size, p, hwy::Profiler::Thread());
 }
 
 }  // namespace HWY_NAMESPACE
@@ -109,7 +110,7 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
   const SampleFunc sample_token = [&](float* probs,
                                       size_t vocab_size) -> TokenAndProb {
     // input is logits, not yet probabilities
-    HWY_DYNAMIC_DISPATCH(CallSoftmax)(probs, vocab_size);
+    HWY_DYNAMIC_DISPATCH(CallSoftmax)(probs, vocab_size, env.ctx.profiler);
     // We are called for each token, but pos starts at 1. Clamping
     // max_generated_tokens to prompt.size() should prevent overrun.
     HWY_ASSERT(pos < prompt.size());

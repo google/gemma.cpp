@@ -18,8 +18,6 @@
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
-#include "ops/ops.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
@@ -33,11 +31,13 @@
 
 #include "gemma/activations.h"  // ChooseQueryScale
 #include "gemma/configs.h"
+#include "ops/ops.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // BF16
 #include "util/mat.h"     // MatStorageT
 #include "util/test_util.h"
 #include "util/threading_context.h"
+#include "hwy/profiler.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // clang-format off
@@ -166,7 +166,7 @@ struct TestAddFrom {
     }
 
     SimpleAddFrom(o, e, count);
-    AddFrom(o, x, count, /*worker=*/0);
+    AddFrom(o, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -199,7 +199,7 @@ struct TestMulByConstAndAdd {
     T constant = Random<T>(rng);
 
     SimpleMulByConstAndAdd(constant, o, e, count);
-    MulByConstAndAdd(constant, o, x, count, /*worker=*/0);
+    MulByConstAndAdd(constant, o, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -229,7 +229,7 @@ struct TestMulByConst {
     T constant = Random<T>(rng);
 
     SimpleMulByConst(constant, e, count);
-    MulByConst(constant, x, count, /*worker=*/0);
+    MulByConst(constant, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -259,7 +259,7 @@ struct TestSoftmax {
     }
 
     SimpleSoftmax(e, count);
-    Softmax(x, count, /*worker=*/0);
+    Softmax(x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {
@@ -349,6 +349,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 void TestRopeAndMulBy() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
+  hwy::Profiler& p = ctx.profiler;
+  const size_t worker = 0;
+
   const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
                            ChooseWrapping(Model::GEMMA2_9B));
   const size_t dim_qkv = config.layer_configs[0].qkv_dim;
@@ -381,7 +384,8 @@ void TestRopeAndMulBy() {
     CopyMat(x, qactual);
     ScalarRopeAndMulBy(qmul, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p,
+                 worker);
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
     }
@@ -391,7 +395,7 @@ void TestRopeAndMulBy() {
     CopyMat(x, qactual);
     ScalarRopeAndMulBy(1.0f, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    Rope(qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    Rope(qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p, worker);
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
     }
@@ -402,9 +406,10 @@ void TestRopeAndMulBy() {
     CopyMat(x, kactual2);
     ScalarRopeAndMulBy(kmul, kexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p,
+                 worker);
     static_assert(kmul == 1.0f, "");
-    Rope(kactual2.Row(0), dim_qkv, inv_timescale.Row(0), pos);
+    Rope(kactual2.Row(0), dim_qkv, inv_timescale.Row(0), pos, p, worker);
 
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(kexpected.Row(0)[i], kactual.Row(0)[i], 1e-4) << " " << i;
@@ -454,7 +459,7 @@ void TestRMSNorm(hwy::RandomState& rng) {
   }
 
   ScalarRMSNorm(vec, weight, expected, kSize);
-  RMSNorm(vec, weight, 0, actual, kSize, /*worker=*/0);
+  RMSNorm(vec, weight, 0, actual, kSize, hwy::Profiler::Get(), /*worker=*/0);
 
   for (size_t i = 0; i < kSize; i++) {
     const float e = hwy::ConvertScalarTo<float>(expected[i]);
@@ -580,11 +585,13 @@ void TestAllLayerNorm() {
 }
 
 void TestSampleTopK() {
+  hwy::Profiler& p = hwy::Profiler::Get();
+  const size_t worker = 0;
   const size_t kSize = 52;
   std::vector<float> logits(kSize);
   // Create a vector going from -100 to -100+51=49 and take Softmax.
   std::iota(logits.begin(), logits.end(), -100.0f);
-  Softmax(logits.data(), kSize, /*worker=*/0);
+  Softmax(logits.data(), kSize, p, worker);
   std::mt19937 gen;
   gen.seed(0x12345678);
   float temperature = 1.0f;
@@ -600,7 +607,7 @@ void TestSampleTopK() {
   EXPECT_EQ(sample, 50);  // Last even index.
   // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
-  Softmax(logits.data(), kSize, /*worker=*/0);
+  Softmax(logits.data(), kSize, p, worker);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
     sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,

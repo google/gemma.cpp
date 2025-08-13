@@ -80,6 +80,7 @@ cc_library(
         ":topology",
         # Placeholder for container detection, do not remove
         "@highway//:hwy",
+        "@highway//:profiler",
         "@highway//:thread_pool",
         "@highway//:topology",
     ],
@@ -379,6 +380,7 @@ cc_test(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",  #buildcleaner: keep
+        "@highway//:profiler",
     ],
 )
 

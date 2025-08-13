@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#include "util/threading_context.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -53,8 +54,9 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
                              const hwy::Divisor& div_seq_len,
                              const float* HWY_RESTRICT q,
                              const MatPtrT<KV_t>& k, float* HWY_RESTRICT att,
-                             const size_t worker) {
-  PROFILER_ZONE2(worker, "Gen.Attention.QDotK");
+                             hwy::Profiler& p, const size_t worker) {
+  static const auto zone = p.AddZone("Gen.Attention.QDotK");
+  PROFILER_ZONE3(p, worker, zone);
   if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
     // Slightly faster: no wraparound.
     for (size_t pos = start_pos; pos <= last_pos; ++pos) {
@@ -73,8 +75,8 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
 static void PositionalEncodingQK(float* qk, const size_t layer_idx,
                                  const LayerWeightsPtrs& layer,
                                  const AttentionActivations& activations,
-                                 const size_t worker, const size_t pos,
-                                 const float mul = 1.0f) {
+                                 hwy::Profiler& p, const size_t worker,
+                                 const size_t pos, const float mul = 1.0f) {
   const size_t qkv_dim = layer.layer_config.qkv_dim;
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
@@ -86,10 +88,10 @@ static void PositionalEncodingQK(float* qk, const size_t layer_idx,
   }
   // PostQKType::Rope
   if (post_qk == PostQKType::HalfRope) {
-    Rope(qk, qkv_dim / 2, inv_timescale, pos, worker);
-    if (mul != 1.0f) MulByConst(mul, qk, qkv_dim, worker);
+    Rope(qk, qkv_dim / 2, inv_timescale, pos, p, worker);
+    if (mul != 1.0f) MulByConst(mul, qk, qkv_dim, p, worker);
   } else {
-    RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, worker);
+    RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, p, worker);
   }
 }
 
@@ -97,26 +99,31 @@ static void PositionalEncodingQK(float* qk, const size_t layer_idx,
 // `att_out`. Equivalent in gemma/modules.py:
 // encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
 // `v` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
-static HWY_INLINE void WeightedSumV(
-    const size_t start_pos, const size_t last_pos,
-    const hwy::Divisor& div_seq_len, const float* HWY_RESTRICT att,
-    const MatPtrT<KV_t>& v, float* HWY_RESTRICT att_out, const size_t worker) {
+static HWY_INLINE void WeightedSumV(const size_t start_pos,
+                                    const size_t last_pos,
+                                    const hwy::Divisor& div_seq_len,
+                                    const float* HWY_RESTRICT att,
+                                    const MatPtrT<KV_t>& v,
+                                    float* HWY_RESTRICT att_out,
+                                    hwy::Profiler& p, const size_t worker) {
   if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
     // Slightly faster: no wraparound. Could be replaced with MatMul(att, v) if
     // we supported non-transposed B.
     // TODO: 2..4x unroll
-    MulByConstTo(att[start_pos], v.Row(start_pos), att_out, v.Cols(), worker);
+    MulByConstTo(att[start_pos], v.Row(start_pos), att_out, v.Cols(), p,
+                 worker);
     for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-      MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols(), worker);
+      MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols(), p, worker);
     }
   } else {
     {
       const size_t pos_mod = div_seq_len.Remainder(start_pos);
-      MulByConstTo(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), worker);
+      MulByConstTo(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), p, worker);
     }
     for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
       const size_t pos_mod = div_seq_len.Remainder(pos);
-      MulByConstAndAdd(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), worker);
+      MulByConstAndAdd(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), p,
+                       worker);
     }
   }
 }
@@ -128,7 +135,7 @@ void SingleDotSoftmaxWeightedSum(
     float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
     const size_t layer_idx, const LayerWeightsPtrs& layer,
     const AttentionActivations& activations, float* HWY_RESTRICT att,
-    float* HWY_RESTRICT att_out, const size_t worker) {
+    float* HWY_RESTRICT att_out, hwy::Profiler& p, const size_t worker) {
   const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   const size_t seq_len =
@@ -138,21 +145,21 @@ void SingleDotSoftmaxWeightedSum(
   if (layer.query_norm_scale.HasPtr()) {
     CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
       RMSNormInplace(weights_t->PackedScale1(), 0, q,
-                     layer.layer_config.qkv_dim, worker);
+                     layer.layer_config.qkv_dim, p, worker);
     });
   }
 
-  PositionalEncodingQK(q, layer_idx, layer, activations, worker, pos,
+  PositionalEncodingQK(q, layer_idx, layer, activations, p, worker, pos,
                        query_scale);
 
-  QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att, worker);
+  QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att, p, worker);
 
   // SoftMax with optional SoftCap yields "probabilities" in att.
   const size_t att_len = HWY_MIN(last_pos + 1, seq_len);
-  MaybeLogitsSoftCap(att_cap, att, att_len, worker);
-  Softmax(att, att_len, worker, /*temperature=*/1.0f);
+  MaybeLogitsSoftCap(att_cap, att, att_len, p, worker);
+  Softmax(att, att_len, p, worker, /*temperature=*/1.0f);
 
-  WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out,
+  WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out, p,
                worker);
 }
 
@@ -167,9 +174,8 @@ static HWY_INLINE size_t StartPos(size_t pos, const ModelConfig& config,
 void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
                            AttentionActivations& activations, QBatch& qbatch,
-                           NestedPools& pools) {
-  static const uint32_t HWY_MAYBE_UNUSED zone_id_par =
-      PROFILER_ADD_ZONE("Gen.Attention.DotSoftmax.par");
+                           ThreadingContext& ctx) {
+  static const auto zone = ctx.profiler.AddZone("Gen.Attention.DotSoftmax.par");
 
   const hwy::Divisor div_qbatch(qbatch.Size());
   const LayerConfig& layer_config = layer.layer_config;
@@ -189,9 +195,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     const size_t tq_idx = activations.div_heads.Divide(task);
     const size_t head = activations.div_heads.Remainder(task);
-#if PROFILER_ENABLED
-    const hwy::Zone zone(worker, zone_id_par);
-#endif
+    PROFILER_ZONE3(ctx.profiler, worker, zone);
 
     const size_t qi = div_qbatch.Remainder(tq_idx);
     const size_t batch_idx = div_qbatch.Divide(tq_idx);
@@ -223,14 +227,15 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
     v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim, kv_cache.Stride());
 
     SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v, layer_idx,
-                                layer, activations, att, att_out, worker);
+                                layer, activations, att, att_out, ctx.profiler,
+                                worker);
   };
 
   {
     PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
     // Full parallelism is helpful, SmallParallelFor is insufficient.
     ParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads,
-                pools, func);
+                ctx.pools, func);
   }
 }
 
@@ -303,12 +308,12 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         if (layer.key_norm_scale.HasPtr()) {
           CallUpcasted(&layer.key_norm_scale, [&](const auto* weights_t) {
             RMSNormInplace(weights_t->PackedScale1(), 0, kv_f32, qkv_dim,
-                           thread);
+                           env.ctx.profiler, thread);
           });
         }
 
-        PositionalEncodingQK(kv_f32, layer_idx, layer, activations, thread,
-                             pos);
+        PositionalEncodingQK(kv_f32, layer_idx, layer, activations,
+                             env.ctx.profiler, thread, pos);
         CompressPerThread tls;
         Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
       });
@@ -339,6 +344,10 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     const LayerWeightsPtrs& layer,
                     AttentionActivations& activations, QBatch& qbatch,
                     MatMulEnv& env, int flags) {
+  static const auto zone =
+      env.ctx.profiler.AddZone("Gen.Attention", ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+
   const LayerConfig& layer_config = layer.layer_config;
   HWY_DASSERT(!layer_config.IsMHA());  // No longer supported.
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,
@@ -347,7 +356,7 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
   DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
-                        env.ctx.pools);
+                        env.ctx);
   SumHeads(layer, activations, env);
 }
 

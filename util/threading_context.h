@@ -90,6 +90,7 @@ struct ThreadingContext {
   // Expected to be called early in the program, before threading starts.
   explicit ThreadingContext(const ThreadingArgs& args);
 
+  hwy::Profiler& profiler;
   BoundedTopology topology;
   Allocator allocator;
   NestedPools pools;

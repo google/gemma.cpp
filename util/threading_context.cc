@@ -72,7 +72,8 @@ static void TunePool(hwy::ThreadPool& pool) {
 }
 
 ThreadingContext::ThreadingContext(const ThreadingArgs& args)
-    : topology(BoundedSlice(args.skip_packages, args.max_packages),
+    : profiler(hwy::Profiler::Get()),
+      topology(BoundedSlice(args.skip_packages, args.max_packages),
                BoundedSlice(args.skip_clusters, args.max_clusters),
                BoundedSlice(args.skip_lps, args.max_lps)),
       allocator(topology, args.bind != Tristate::kFalse),

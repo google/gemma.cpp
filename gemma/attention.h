@@ -33,12 +33,12 @@ namespace gcpp {
       float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v, \
       size_t layer_idx, const LayerWeightsPtrs& layer,                       \
       const AttentionActivations& activations, float* HWY_RESTRICT att,      \
-      float* HWY_RESTRICT att_out, size_t worker);                           \
+      float* HWY_RESTRICT att_out, hwy::Profiler& p, size_t worker);         \
                                                                              \
   void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,      \
                              const LayerWeightsPtrs& layer,                  \
                              AttentionActivations& activations,              \
-                             QBatch& qbatch, NestedPools& pools);            \
+                             QBatch& qbatch, ThreadingContext& ctx);         \
                                                                              \
   void GemmaAttention(size_t num_tokens, const size_t layer_idx,             \
                       const LayerWeightsPtrs& layer,                         \
