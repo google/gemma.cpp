@@ -175,6 +175,7 @@ enum class Model {
   GEMMA3_1B,
   GEMMA3_12B,
   GEMMA3_27B,
+  GEMMA3_270M,
   kSentinel,
 };
 
