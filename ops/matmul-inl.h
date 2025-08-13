@@ -912,7 +912,7 @@ class MMPerPackage {
   // Single M and K ranges, parallel N. Fills all of C directly.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    static const auto zone = PROFILER_ADD_ZONE("MM.NT");
+    static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_M = ranges_mc_.Range(0);
@@ -947,7 +947,7 @@ class MMPerPackage {
   // Single M range, parallel N, sequential K. Fills all of partial.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    static const auto zone = PROFILER_ADD_ZONE("MM.NT_K");
+    static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_K");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
     const IndexRange& range_mc = ranges_mc_.Range(0);
 
@@ -991,12 +991,14 @@ class MMPerPackage {
         });
 
     if (out_ == MMOut::kCopy) {
-      static const auto zone = PROFILER_ADD_ZONE("MM.NT_K.FillC.Copy");
+      static const auto zone =
+          args_.env->ctx.profiler.AddZone("MM.NT_K.FillC.Copy");
       MMZone fill_zone;
       fill_zone.MaybeEnter(0, zone, args_);
       MMScaleDemoteAdd::FillC(range_mc, range_np_, args_, C_rows);
     } else if (out_ == MMOut::kParM) {
-      static const auto zone = PROFILER_ADD_ZONE("MM.NT_K.FillC.ParM");
+      static const auto zone =
+          args_.env->ctx.profiler.AddZone("MM.NT_K.FillC.ParM");
       args_.env->parallel.ForRangeMC(
           range_mc, pkg_idx_, [&](size_t row_a, size_t worker) HWY_ATTR {
             MMZone fill_zone;
@@ -1013,7 +1015,7 @@ class MMPerPackage {
   // Fills `mc x nc` sections of C directly, in parallel.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_MT(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    static const auto zone = PROFILER_ADD_ZONE("MM.NT_MT");
+    static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_MT");
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
@@ -1049,8 +1051,9 @@ class MMPerPackage {
   // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
   template <typename TB, typename TC>
   HWY_INLINE void DoNT_MT_K(const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
-    static const auto zone = PROFILER_ADD_ZONE("MM.NT_MT_K");
-    static const auto fill_zone = PROFILER_ADD_ZONE("MM.NT_MT_K.FillC");
+    static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_MT_K");
+    static const auto fill_zone =
+        args_.env->ctx.profiler.AddZone("MM.NT_MT_K.FillC");
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
     const size_t B_stride =
@@ -1116,7 +1119,7 @@ class MMPerPackage {
     const size_t NBF = hn::Lanes(dbf);
     static_assert(hwy::IsSameEither<TA, BF16, float>(), "Can seek");
 
-    static const auto zone = PROFILER_ADD_ZONE("MM.DecompressA");
+    static const auto zone = args_.env->ctx.profiler.AddZone("MM.DecompressA");
 
     const auto do_range = [&](const IndexRange& range_M,
                               const IndexRange& range_K,
@@ -1280,7 +1283,8 @@ struct MMImpl {
                                     RowPtrs<TC> C_rows, const MMArgs& args,
                                     const MMConfig& config) {
     PROFILER_ZONE("MM.DoMatMul");
-    static const auto zone = PROFILER_ADD_ZONE("MM.DoMatMul.PerPkg");
+    static const auto zone =
+        args.env->ctx.profiler.AddZone("MM.DoMatMul.PerPkg");
 
     if constexpr (kMaxPackages > 1) {
       // Outermost loop: static NUMA-aware partition of B rows across packages.

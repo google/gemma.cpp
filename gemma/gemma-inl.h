@@ -114,7 +114,7 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
   static const auto zone =
-      env.ctx.profiler.AddZone("Gen.FFW", ProfilerFlags::kInclusive);
+      env.ctx.profiler.AddZone("Gen.FFW", hwy::ProfilerFlags::kInclusive);
   PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
   const LayerConfig& layer_config = layer.layer_config;
   const size_t ffh_hidden_dim = layer_config.ff_hidden_dim;

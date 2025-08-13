@@ -345,7 +345,7 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     AttentionActivations& activations, QBatch& qbatch,
                     MatMulEnv& env, int flags) {
   static const auto zone =
-      env.ctx.profiler.AddZone("Gen.Attention", ProfilerFlags::kInclusive);
+      env.ctx.profiler.AddZone("Gen.Attention", hwy::ProfilerFlags::kInclusive);
   PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
 
   const LayerConfig& layer_config = layer.layer_config;
