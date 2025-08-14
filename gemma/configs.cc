@@ -750,6 +750,9 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
     case 2:
       return Model::GEMMA_TINY;
+    case 18:
+      return Model::GEMMA3_270M;
+
     case 26:
       if (layer_types & kDeducedGriffin) return Model::GRIFFIN_2B;
       if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
