@@ -68,7 +68,7 @@ class File {
   // modify internal state. This is only expected to be called once per file.
   virtual MapPtr Map() = 0;
 
-  // For use by `IOBatch::Read`.
+  // Returns handle for use by `IOBatch::Read`, or -1 if not supported.
   virtual int Handle() const { return -1; }
 };
 
