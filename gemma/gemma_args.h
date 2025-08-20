@@ -183,6 +183,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool multiturn;
   Path image_file;
 
+  int port;            // Server port
+  std::string model;   // Model name for API endpoints
   std::string prompt;  // Bypasses std::getline
   // For prompts longer than the Linux terminal's 4K line edit buffer.
   Path prompt_file;
@@ -217,6 +219,10 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "  Default : 0 (conversation "
             "resets every turn)");
     visitor(image_file, "image_file", Path(), "Image file to load.");
+
+    // Since it is not used in the CLI version, the print_verbosity is set higher than others.
+    visitor(port, "port", 8080, "Server port (default: 8080)", 3);
+    visitor(model, "model", std::string("gemma3-4b"), "Model name for API endpoints (default: gemma3-4b)", 3);
 
     visitor(prompt, "prompt", std::string(""),
             "Initial prompt for non-interactive mode. When specified, "
@@ -255,6 +261,34 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
     runtime_config.temperature = temperature;
     runtime_config.top_k = top_k;
+  }
+};
+
+struct ClientArgs : public ArgsBase<ClientArgs> {
+  ClientArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  ClientArgs() { Init(); };
+
+  std::string host;
+  int port;
+  std::string api_key;
+  std::string model;
+  std::string prompt;
+  bool interactive;
+
+  template <class Visitor>
+  void ForEach(const Visitor& visitor) {
+    visitor(host, "host", std::string("localhost"),
+            "Server host (default: localhost)");
+    visitor(port, "port", 8080,
+            "Server port (default: 8080)");
+    visitor(api_key, "api_key", std::string(""),
+            "Use public API with key (changes host to generativelanguage.googleapis.com:443)");
+    visitor(model, "model", std::string("gemma3-4b"),
+            "Model name to use (default: gemma3-4b)");
+    visitor(prompt, "prompt", std::string("Hello! How are you?"),
+            "Prompt for generation (default: 'Hello! How are you?')");
+    visitor(interactive, "interactive", false,
+            "Start interactive chat mode (0 = no, 1 = yes)");
   }
 };
 

@@ -33,6 +33,28 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
 
+# Find OpenSSL for HTTPS support
+find_package(OpenSSL)
+if(OPENSSL_FOUND)
+  message(STATUS "OpenSSL found, enabling HTTPS support")
+  set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE ON)
+else()
+  message(STATUS "OpenSSL not found, HTTPS support disabled")
+  set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF)
+endif()
+
+# HTTP library for API server
+FetchContent_Declare(httplib GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git GIT_TAG v0.18.1 EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(httplib)
+
+# Create interface target for httplib (header-only library)
+add_library(httplib_interface INTERFACE)
+target_include_directories(httplib_interface INTERFACE ${httplib_SOURCE_DIR})
+if(OPENSSL_FOUND)
+  target_link_libraries(httplib_interface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(httplib_interface INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
+endif()
+
 set(BENCHMARK_ENABLE_TESTING OFF)
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
 
@@ -232,3 +254,12 @@ endif()  # GEMMA_ENABLE_TESTS
 
 add_executable(migrate_weights io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)
+
+
+# API server with SSE support
+add_executable(gemma_api_server gemma/api_server.cc)
+target_link_libraries(gemma_api_server libgemma hwy hwy_contrib nlohmann_json::nlohmann_json httplib_interface)
+
+# API client for testing
+add_executable(gemma_api_client gemma/api_client.cc)
+target_link_libraries(gemma_api_client libgemma hwy hwy_contrib nlohmann_json::nlohmann_json httplib_interface)
