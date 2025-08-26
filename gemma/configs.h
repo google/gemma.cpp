@@ -26,8 +26,8 @@
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFieldsVisitor
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFieldsVisitor
+#include "io/io.h"              // Path
 #include "util/basics.h"
 
 namespace gcpp {

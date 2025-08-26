@@ -710,8 +710,10 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
   ModelConfig a = *this;
   ModelConfig b = other;
   // Called by `OverwriteWithCanonical`, so ignore the fields it will set.
-  a.display_name = b.display_name;
-  a.model = b.model;
+  // Order matters: overwrite `b` with `a` because that is the known-good config
+  // when called by `OverwriteWithCanonical`.
+  b.display_name = a.display_name;
+  b.model = a.model;
 
   // The following are not yet set by config_converter.py, so we here ignore
   // them for purposes of comparison, and there overwrite the converter's config
@@ -719,12 +721,12 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
   // these fields will be set.
   // `vit_config` is also not yet set, but we must not ignore it because
   // otherwise PaliGemma models will be indistinguishable for `configs_test`.
-  a.pool_dim = b.pool_dim;  // ViT
-  a.eos_id = b.eos_id;
-  a.secondary_eos_id = b.secondary_eos_id;
-  a.scale_base_names = b.scale_base_names;
-  for (size_t i = 0; i < a.layer_configs.size(); ++i) {
-    a.layer_configs[i].optimized_gating = b.layer_configs[i].optimized_gating;
+  b.pool_dim = a.pool_dim;  // ViT
+  b.eos_id = a.eos_id;
+  b.secondary_eos_id = a.secondary_eos_id;
+  b.scale_base_names = a.scale_base_names;
+  for (size_t i = 0; i < b.layer_configs.size(); ++i) {
+    b.layer_configs[i].optimized_gating = a.layer_configs[i].optimized_gating;
   }
 
   return AllEqual(a, b, print);
