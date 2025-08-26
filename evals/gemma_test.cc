@@ -138,6 +138,10 @@ TEST_F(GemmaTest, Multiturn) {
   // Reset the `response` string here, then check that the model actually has
   // access to the previous turn by asking to reproduce.
   response.clear();
+  // -1 because our prefill does not generate KVs for the last token. Do not
+  // just pass abs_pos - 1 because our callback checks pos == abs_pos.
+  HWY_ASSERT(abs_pos > 0);
+  --abs_pos;
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   s_env->MutableEnv(), timing_info);
   fprintf(stderr, "decoded: '%s'\n", response.c_str());
