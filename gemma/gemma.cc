@@ -61,6 +61,9 @@
 #include "hwy/base.h"
 #include "hwy/timer.h"
 
+// Require opt-in to debug/introspection functions to eliminate their overhead.
+HWY_INLINE_VAR constexpr bool kObserver = false;
+
 #endif  // GEMMA_CC_ONCE
 
 HWY_BEFORE_NAMESPACE();
@@ -143,6 +146,10 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
              MatStorageT<float>& x, ThreadingContext& ctx,
              const ImageTokens* image_tokens = nullptr,
              size_t image_token_position = 0) {
+  static const auto zone =
+      ctx.profiler.AddZone("Gen.Embed", hwy::ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(ctx.profiler, hwy::Profiler::Thread(), zone);
+
   // Image tokens just need to be copied.
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
       image_tokens != nullptr && token == -2 &&
@@ -295,11 +302,13 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
                                      const WeightsPtrs& weights,
                                      Activations& activations, QBatch& qbatch,
                                      MatMulEnv& env) {
-  if (HWY_UNLIKELY(runtime_config.layers_output)) {
-    for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-      const float token_f = qbatch.PrevToken(qi);
-      runtime_config.layers_output(qbatch.QueryIdx(qi), qbatch.Pos(qi),
-                                   "tokens", -1, &token_f, 1);
+  if constexpr (kObserver) {
+    if (HWY_UNLIKELY(runtime_config.layers_output)) {
+      for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+        const float token_f = qbatch.PrevToken(qi);
+        runtime_config.layers_output(qbatch.QueryIdx(qi), qbatch.Pos(qi),
+                                     "tokens", -1, &token_f, 1);
+      }
     }
   }
 
@@ -313,10 +322,12 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
     TransformerLayer(/*num_tokens=*/1, layer_idx, *weights.GetLayer(layer_idx),
                      activations, qbatch, env);
 
-    if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-      runtime_config.activations_observer(
-          QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), layer_idx,
-          activations);
+    if constexpr (kObserver) {
+      if (HWY_UNLIKELY(runtime_config.activations_observer)) {
+        runtime_config.activations_observer(
+            QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), layer_idx,
+            activations);
+      }
     }
   }
 }
@@ -403,23 +414,29 @@ static void SampleAndStream(
 
   RMSNormInplaceBatched(weights.final_norm_scale, activations.x, env.ctx);
 
-  if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-    runtime_config.activations_observer(
-        QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), -1, activations);
+  if constexpr (kObserver) {
+    if (HWY_UNLIKELY(runtime_config.activations_observer)) {
+      runtime_config.activations_observer(
+          QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), -1, activations);
+    }
   }
 
   {
-    PROFILER_ZONE("Gen.EmbeddingMatmul");
+    static const auto zone = env.ctx.profiler.AddZone(
+        "Gen.EmbeddingMatmul", hwy::ProfilerFlags::kInclusive);
+    PROFILER_ZONE3(env.ctx.profiler, /*worker=*/0, zone);
     // Compute logits from last layer activations.
     CallMatMul(activations.x, weights.embedder_input_embedding,
                /*add=*/nullptr, env, activations.logits);
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
-  const size_t worker = 0;  // TODO: parallelize
+
+  MaybeLogitsSoftCapBatched(config.final_cap, activations.logits, non_eos,
+                            env.ctx);
+
+  // TODO: parallelize
   non_eos.Foreach([&](size_t qi) {
     float* HWY_RESTRICT logits = activations.logits.Row(qi);
-    MaybeLogitsSoftCap(config.final_cap, logits, config.vocab_size,
-                       env.ctx.profiler, worker);
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
     timing_info.NotifyGenerated();
 

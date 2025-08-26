@@ -33,6 +33,7 @@
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/bit_set.h"
 #include "hwy/contrib/sort/order.h"
 #include "hwy/contrib/sort/vqsort.h"
 #include "hwy/detect_targets.h"
@@ -930,6 +931,17 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
   if (cap != 0.0f) {
     LogitsSoftCap(cap, x, size, p, worker);
   }
+}
+
+static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
+    const float cap, MatPtrT<float>& x, const hwy::BitSet4096<>& non_eos,
+    ThreadingContext& ctx) {
+  if (cap == 0.0f) return;
+  SmallParallelFor(x.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
+    if (non_eos.Get(task)) {
+      LogitsSoftCap(cap, x.Row(task), x.Cols(), ctx.profiler, worker);
+    }
+  });
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
