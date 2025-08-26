@@ -135,6 +135,14 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
                 [](D d, hn::Vec<D> v) HWY_ATTR { return Gelu(d, v); });
 }
 
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Exp(float* HWY_RESTRICT x,
+                                              size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using D = hn::ScalableTag<float>;
+  hn::Transform(D(), x, size,
+                [](D d, hn::Vec<D> v) HWY_ATTR { return hn::Exp(d, v); });
+}
+
 template <class D, HWY_IF_F32_D(D)>
 HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
   using VF = hn::Vec<D>;
