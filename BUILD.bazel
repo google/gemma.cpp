@@ -526,6 +526,7 @@ cc_library(
         "//io",
         "//paligemma:image",
         "@highway//:hwy",
+        "@highway//hwy/contrib/sort:vqsort",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",

@@ -434,11 +434,12 @@ static void SampleAndStream(
   MaybeLogitsSoftCapBatched(config.final_cap, activations.logits, non_eos,
                             env.ctx);
 
+  timing_info.NotifyGenerated(non_eos.Count());
+
   // TODO: parallelize
   non_eos.Foreach([&](size_t qi) {
     float* HWY_RESTRICT logits = activations.logits.Row(qi);
     const TokenAndProb tp = sample_token(logits, config.vocab_size);
-    timing_info.NotifyGenerated();
 
     // We streamed all prefill tokens, but pos is still one behind because we
     // started generation at pos = prompt.size() - 1. We want the pos argument

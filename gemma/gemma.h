@@ -177,9 +177,10 @@ struct TimingInfo {
 
   // be sure to populate prefill_start and generate_start before calling
   // NotifyGenerated.
-  void NotifyGenerated() {
-    ++tokens_generated;
-    if (HWY_UNLIKELY(tokens_generated == 1)) {
+  void NotifyGenerated(size_t batch_size) {
+    const bool is_first = (tokens_generated == 0);
+    tokens_generated += batch_size;
+    if (HWY_UNLIKELY(is_first)) {
       time_to_first_token = hwy::platform::Now() - prefill_start;
       if (verbosity >= 1) {
         double prefill_tok_sec =
@@ -191,7 +192,7 @@ struct TimingInfo {
                 prefill_tok_sec, static_cast<int>(time_to_first_token * 1000));
       }
     }
-    if (verbosity >= 2 && tokens_generated % 128 == 0) {
+    if (HWY_UNLIKELY(verbosity >= 2 && tokens_generated % 1024 == 0)) {
       double gen_tok_sec = static_cast<double>(tokens_generated) /
                            (hwy::platform::Now() - generate_start);
       fprintf(stderr,
