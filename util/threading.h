@@ -68,7 +68,9 @@ class NestedPools {
 
   // `max_threads` is the maximum number of threads to divide among all
   // clusters. This is more intuitive than a per-cluster limit for users who
-  // may not be aware of the CPU topology. 0 means no limit.
+  // may not be aware of the CPU topology. This should be zero (meaning no
+  // further limits) if the caller has already set limits via `skip_*` or
+  // `max_*` args passed to `ThreadingContext`.
   //
   // To ensure we do not create more threads than there are HW cores, which
   // would cause huge slowdowns when spinning, the `BoundedSlice` arguments

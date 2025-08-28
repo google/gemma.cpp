@@ -227,12 +227,12 @@ struct TimingInfo {
 };
 
 // After construction, all methods are const and thread-compatible if using
-// separate ThreadingContext for each thread.
+// separate `ThreadingContext` and `MatMulEnv` for each concurrent `Generate`.
 class Gemma {
  public:
   // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
-  // `ctx` is only used to read tensors, but it is typically also referenced
-  // by the `MatMulEnv` passed to the Generate* methods.
+  // `ctx` is only used to read tensors and not stored. Calls to `Generate*`
+  // may reference the same, or other `ThreadingContext` via `MatMulEnv`.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
         ThreadingContext& ctx);
   ~Gemma();
@@ -248,6 +248,8 @@ class Gemma {
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
+  // All `Generate*` may be called concurrently if `env` and the
+  // `ThreadingContext` it references are both distinct.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
                 size_t pos, KVCache& kv_cache, MatMulEnv& env,
                 TimingInfo& timing_info) const {
