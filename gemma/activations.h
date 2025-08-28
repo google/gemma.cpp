@@ -205,7 +205,7 @@ struct Activations {
   // Norm may be large, so prefer to keep as f32.
   MatStorageT<float> C1;
   MatStorageT<float> C2;
-  MatStorageT<BF16> ffw_out;
+  MatStorageT<float> ffw_out;
 
   AttentionActivations attention;
   GriffinActivations griffin;
