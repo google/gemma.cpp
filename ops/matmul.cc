@@ -64,19 +64,21 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 class GenerateCandidates {
  public:
   GenerateCandidates(const Allocator& allocator, size_t M, size_t K, size_t N,
-                     size_t sizeof_TC, size_t max_mr, size_t nr,
-                     const IndexRangePartition& ranges_np, bool print_config)
+                     size_t sizeof_TA, size_t sizeof_TC, size_t max_mr,
+                     size_t nr, const IndexRangePartition& ranges_np,
+                     bool print_config)
       : allocator_(allocator),
         M_(M),
         K_(K),
         N_(N),
+        sizeof_TA_(sizeof_TA),
         sizeof_TC_(sizeof_TC),
         max_mr_(max_mr),
         nr_(nr),
         // These influence kc/nc, but are also stored in `MMConfig` for
         // `RangesOf*`. Must be a vector multiple. The previous/next cache line
         // is likely still in L1, but we expect K > 1000 and might as well round
-        // up to the line size.
+        // up to the line size. Use BF16, not sizeof_TA, because B is BF16.
         kc_multiple_(HWY_MIN(K, allocator.LineBytes() / sizeof(BF16))),
         nc_multiple_(allocator.StepBytes() / sizeof_TC),
         ranges_np_(ranges_np),
@@ -176,8 +178,9 @@ class GenerateCandidates {
     // subtract the output and buf, and allow using more than the actual L1
     // size. This results in an overestimate, and the loop below will propose
     // the next few smaller values for the autotuner to evaluate.
-    const size_t bytes_ab = allocator_.L1Bytes() * 3;
-    const size_t col_bytes = rows_a * sizeof(BF16) + nr_ * sizeof(BF16);
+    const size_t bytes_ab =
+        allocator_.L1Bytes() * (sizeof_TA_ + sizeof(SfpStream));
+    const size_t col_bytes = rows_a * sizeof_TA_ + nr_ * sizeof(BF16);
     size_t kc_max = hwy::DivCeil(bytes_ab, col_bytes);
     kc_max =
         RoundDownWithFloor(HWY_MIN(kc_max, MMStorage::kMaxKC), kc_multiple_);
@@ -224,7 +227,7 @@ class GenerateCandidates {
     // packed B. We want `mc * kc` elements of A to fit in L2, alongside
     // `bytes_b` plus `mc` cache lines because resident-A updates `mc` rows of
     // partial.
-    const size_t bytes_per_mc = kc * sizeof(BF16) + allocator_.LineBytes();
+    const size_t bytes_per_mc = kc * sizeof_TA_ + allocator_.LineBytes();
     size_t mc_max = hwy::DivCeil(allocator_.L2Bytes() - bytes_b, bytes_per_mc);
     mc_max = HWY_MIN(mc_max, MMStorage::kMaxM);
     HWY_DASSERT(mc_max != 0);
@@ -359,6 +362,7 @@ class GenerateCandidates {
   const size_t M_;
   const size_t K_;
   const size_t N_;
+  const size_t sizeof_TA_;
   const size_t sizeof_TC_;
 
   const size_t max_mr_;
@@ -376,12 +380,12 @@ class GenerateCandidates {
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
 std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
-                                   size_t K, size_t N, size_t sizeof_TC,
-                                   size_t max_mr, size_t nr,
+                                   size_t K, size_t N, size_t sizeof_TA,
+                                   size_t sizeof_TC, size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
                                    bool print_config) {
-  return GenerateCandidates(allocator, M, K, N, sizeof_TC, max_mr, nr,
-                            ranges_np, print_config)();
+  return GenerateCandidates(allocator, M, K, N, sizeof_TA, sizeof_TC, max_mr,
+                            nr, ranges_np, print_config)();
 }
 
 // Returns the granularity of B rows for `RangesOfNP`. Aims to avoid remote

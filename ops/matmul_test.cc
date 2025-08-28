@@ -118,17 +118,26 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const float max_abs = MaxAbs(a_batch) * MaxAbs(b_trans_batch);
   const double eps_bf16 = hwy::ConvertScalarTo<double>(hwy::Epsilon<BF16>());
   const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
+  // Dot() uses double-precision summation.
   double tolerance = 12 * norm * eps_f32;
-  // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
-  // tolerance there.
-  if (IsF32<TA>() && IsF32<TB>()) {
-    tolerance += 4 * max_abs * eps_bf16;
+  // If B is F32, Dot() promotes F32 or even F64, but MatMul demotes the F32 to
+  // BF16, so add extra tolerance.
+  if (IsF32<TB>()) {
+    tolerance += 2 * max_abs * eps_bf16;
   }
+
   if (tolerance > 500.0) {
     HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);
   }
-  const double max_rel = 1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
+  const double rel_tolerance =
+      1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
 
+  double max_rel = 0.0;
+  size_t worst_r = 0;
+  size_t worst_c = 0;
+  double worst_actual = 0.0;
+  double worst_expected = 0.0;
+  size_t num_outside = 0;
   for (size_t r = 0; r < A.Rows(); r++) {
     const float* expected_row = c_slow_batch.Row(r);
     const float* actual_row = c_batch.Row(r);
@@ -143,14 +152,23 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
         const double min = HWY_MIN(expected_value, actual_value);
         const double rel = max / HWY_MAX(min, 1E-6);
         if (rel > max_rel) {
-          hwy::Abort(__FILE__, line,
-                     "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
-                     "tolerance %f rel %E max_rel %E\n",
-                     r, c, expected_value, actual_value, norm, max_abs,
-                     tolerance, rel, max_rel);
+          worst_expected = expected_value;
+          worst_actual = actual_value;
+          worst_r = r;
+          worst_c = c;
+          max_rel = rel;
+          ++num_outside;
         }
       }
     }
+  }
+
+  if (max_rel > rel_tolerance) {
+    hwy::Abort(__FILE__, line,
+               "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
+               "tolerance %f rel %E max_rel %E num_outside %zu\n",
+               worst_r, worst_c, worst_expected, worst_actual, norm, max_abs,
+               tolerance, max_rel, rel_tolerance, num_outside);
   }
 }
 
@@ -188,9 +206,9 @@ HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
                 TC* HWY_RESTRICT C_row = C.Row(r);
                 for (size_t c : cols_c) {
                   const float add = add_row ? add_row[c] : 0.0f;
-                  C_row[c] = hwy::ConvertScalarTo<TC>(
-                      add + scale * Dot(df, b_span, c * B.Stride(), A.Row(r),
-                                        A.Cols()));
+                  const float dot =
+                      Dot(df, b_span, c * B.Stride(), A.Row(r), A.Cols());
+                  C_row[c] = hwy::ConvertScalarTo<TC>(add + scale * dot);
                 }
               }
             });
@@ -279,6 +297,9 @@ void TestTiny() {
       for (size_t K = 1; K <= 64; K *= 2) {
         for (size_t N = 4; N <= 64; N += max_packages * 4) {
           TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+          TestMatMul<BF16, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+          TestMatMul<F32, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
+          TestMatMul<BF16, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
         }
       }
     }
@@ -333,6 +354,10 @@ void TestAllMatMul() {
 
   TestMatMul<F32, SFP>(256, 256, 256, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(256, 256, 256, /*add=*/true, env, __LINE__);
+
+  // Non-vector-multiple K.
+  TestMatMul<F32, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
   TestMatMul<F32>(35, 128, 32, /*add=*/false, env, __LINE__);

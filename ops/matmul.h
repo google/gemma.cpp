@@ -281,7 +281,9 @@ class MMStorage {
     BindC(partial_storage_, parallel);
   }
 
-  // Returns per-package matrix view.
+  // Returns per-package matrix view. Converting A=F32 to BF16 up-front is
+  // faster than on-the-fly when native BF16 is available: it only happens once,
+  // not per B tile row, and the cache footprint is smaller.
   StridedViewBF A(size_t pkg_idx, const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxM);
     HWY_DASSERT(extents.cols <= kMaxK);
@@ -475,8 +477,8 @@ static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
 std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
-                                   size_t K, size_t N, size_t sizeof_TC,
-                                   size_t max_mr, size_t nr,
+                                   size_t K, size_t N, size_t sizeof_TA,
+                                   size_t sizeof_TC, size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
                                    bool print_config);
 
