@@ -220,9 +220,11 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "resets every turn)");
     visitor(image_file, "image_file", Path(), "Image file to load.");
 
-    // Since it is not used in the CLI version, the print_verbosity is set higher than others.
+    // Since it is not used in the CLI version, the print_verbosity is set
+    // higher than others.
     visitor(port, "port", 8080, "Server port (default: 8080)", 3);
-    visitor(model, "model", std::string("gemma3-4b"), "Model name for API endpoints (default: gemma3-4b)", 3);
+    visitor(model, "model", std::string("gemma3-4b"),
+            "Model name for API endpoints (default: gemma3-4b)", 3);
 
     visitor(prompt, "prompt", std::string(""),
             "Initial prompt for non-interactive mode. When specified, "
@@ -282,7 +284,8 @@ struct ClientArgs : public ArgsBase<ClientArgs> {
     visitor(port, "port", 8080,
             "Server port (default: 8080)");
     visitor(api_key, "api_key", std::string(""),
-            "Use public API with key (changes host to generativelanguage.googleapis.com:443)");
+            "Use public API with key (changes host to "
+            "generativelanguage.googleapis.com:443)");
     visitor(model, "model", std::string("gemma3-4b"),
             "Model name to use (default: gemma3-4b)");
     visitor(prompt, "prompt", std::string("Hello! How are you?"),

@@ -294,6 +294,18 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
   }
 }
 
+static void MaybeObserve(const RuntimeConfig& runtime_config,
+                         Activations& activations, QBatch& qbatch,
+                         int layer_idx) {
+  if constexpr (kObserver) {
+    if (HWY_UNLIKELY(runtime_config.activations_observer)) {
+      runtime_config.activations_observer(
+          QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), layer_idx,
+          activations);
+    }
+  }
+}
+
 // Embeds PrevToken (one from each query) and calls each TransformerLayer.
 // Called by query-batched `PrefillQBatch` and `GenerateT`, but not the
 // token-batched `PrefillTBatch`, which supports image embedding.
@@ -322,13 +334,7 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
     TransformerLayer(/*num_tokens=*/1, layer_idx, *weights.GetLayer(layer_idx),
                      activations, qbatch, env);
 
-    if constexpr (kObserver) {
-      if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-        runtime_config.activations_observer(
-            QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), layer_idx,
-            activations);
-      }
-    }
+    MaybeObserve(runtime_config, activations, qbatch, layer_idx);
   }
 }
 
@@ -412,21 +418,17 @@ static void SampleAndStream(
     hwy::BitSet4096<>& non_eos, TimingInfo& timing_info) {
   HWY_DASSERT(qbatch.Size() == activations.x.Rows());
 
-  RMSNormInplaceBatched(weights.final_norm_scale, activations.x, env.ctx);
+  RMSNormBatched(activations.x, weights.final_norm_scale, activations.x_bf,
+                 env.ctx);
 
-  if constexpr (kObserver) {
-    if (HWY_UNLIKELY(runtime_config.activations_observer)) {
-      runtime_config.activations_observer(
-          QueriesPos(&qbatch.MutablePos(0), qbatch.Size()), -1, activations);
-    }
-  }
+  MaybeObserve(runtime_config, activations, qbatch, -1);
 
   {
     static const auto zone = env.ctx.profiler.AddZone(
         "Gen.EmbeddingMatmul", hwy::ProfilerFlags::kInclusive);
     PROFILER_ZONE3(env.ctx.profiler, /*worker=*/0, zone);
     // Compute logits from last layer activations.
-    CallMatMul(activations.x, weights.embedder_input_embedding,
+    CallMatMul(activations.x_bf, weights.embedder_input_embedding,
                /*add=*/nullptr, env, activations.logits);
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");

@@ -155,6 +155,7 @@ struct Activations {
       : layer_config(config.layer_configs[0]),
 
         x(MatFactory("x", batch_size, config.model_dim, allocator)),
+        x_bf(MatFactory("x_bf", batch_size, config.model_dim, allocator)),
         logits(MatFactory("logits", batch_size, config.vocab_size, allocator)),
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
@@ -173,6 +174,7 @@ struct Activations {
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
     x.AllocateAndAttachRowPtrs(row_ptrs);
+    x_bf.AllocateAndAttachRowPtrs(row_ptrs);
     logits.AllocateAndAttachRowPtrs(row_ptrs);
     C1.AllocateAndAttachRowPtrs(row_ptrs);
     C2.AllocateAndAttachRowPtrs(row_ptrs);
@@ -184,6 +186,7 @@ struct Activations {
   // Negligible CPU time.
   void SetBatchSize(size_t batch_size) {
     x.OverrideRows(batch_size);
+    x_bf.OverrideRows(batch_size);
     logits.OverrideRows(batch_size);
 
     pre_ffw_rms_out.OverrideRows(batch_size);
@@ -198,6 +201,7 @@ struct Activations {
   const LayerConfig& layer_config;
 
   MatStorageT<float> x;  // input
+  MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
   MatStorageT<float> logits;
 
   // Gated FFW
