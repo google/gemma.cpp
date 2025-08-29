@@ -43,7 +43,7 @@ namespace gcpp {
 // at least the product of the FMA latency (3..5) times the throughput (2).
 // This and `mr` are limited by the number of registers, which is generally
 // 32 but 16 for AVX2. `kNR` == 4 enables the `StoreInterleaved4` transpose in
-// `MMAddHorizontalSumsIntoPartial`. We ensure `C.Cols() % kNR == 0`.
+// `MMStoreHorizontalSumsIntoC`. We ensure `C.Cols() % kNR == 0`.
 constexpr size_t kNR = 4;
 
 // Choosing `kMaxMR == kNR` minimizes the ratio of loads to FMA, because
@@ -195,7 +195,7 @@ class MMParallel {
 };
 
 void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
-// C is BF16/float, or double for partial.
+// C is BF16/float.
 void BindC(MatPtr& C, MMParallel& parallel);
 
 // Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
@@ -236,8 +236,7 @@ class StridedView {
 using StridedViewBF = StridedView<BF16>;
 using StridedViewD = StridedView<double>;
 
-// Per-package storage for packed A, and one global C-shaped `partial` for
-// accumulating partial dot products (sections of K).
+// Per-package storage for packed A.
 class MMStorage {
  public:
   // Compile-time bounds on matrix dimensions to enable pre-allocating storage
@@ -245,21 +244,13 @@ class MMStorage {
   // per package and 512 MiB, respectively.
   static constexpr size_t kMaxM = 4096;
   static constexpr size_t kMaxK = 64 * 1024;
-  static constexpr size_t kMaxN = 256 * 1024;
   // Upper bound for per-worker B storage on the stack. Chosen such that one row
   // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
   static constexpr size_t kMaxKC = 8 * 1024;
 
   // Internally threaded; must not be called concurrently with the same
   // `ThreadingContext` (used via `parallel`).
-  MMStorage(const Allocator& allocator, MMParallel& parallel)
-      :  // Per-worker copies of `partial` would be wasteful. We instead
-         // allocate one instance of the maximum matrix extents because threads
-         // write at false-sharing-free granularity.
-        partial_storage_("partial_storage", Extents2D(kMaxM, kMaxN), allocator,
-                         MatPadding::kOdd),
-        // Same stride independent of the actual C.Cols() so we can pre-bind.
-        partial_(partial_storage_.Row(0), kMaxN, partial_storage_.Stride()) {
+  MMStorage(const Allocator& allocator, MMParallel& parallel) {
     // Per-package allocation so each can decompress A into its own copy.
     // Must be padded, see `DoDecompressA`.
     parallel.ForPkg(kMaxPackages, [&](size_t pkg_idx) {
@@ -276,9 +267,6 @@ class MMStorage {
         }
       }
     });
-
-    // Avoid cross-package accesses.
-    BindC(partial_storage_, parallel);
   }
 
   // Returns per-package matrix view. Converting A=F32 to BF16 up-front is
@@ -291,12 +279,8 @@ class MMStorage {
                          extents.cols, pkg_A_[pkg_idx]->Stride());
   }
 
-  StridedViewD Partial() const { return partial_; }
-
  private:
   std::unique_ptr<MatStorageT<BF16>> pkg_A_[kMaxPackages];
-  MatStorageT<double> partial_storage_;
-  StridedViewD partial_;
 };
 
 //------------------------------------------------------------------------------
@@ -349,29 +333,6 @@ static inline const char* StringFromOrder(MMOrder order) {
   }
 }
 
-// How/where to write the A2C0 result. This determines the `tag` argument to
-// that function, which governs whether we call `MMStoreHorizontalSumsIntoC` or
-// `MMAddHorizontalSumsIntoPartial`.
-enum class MMOut : uint8_t {
-  kCopy,    // accumulate into partial, scale/add to C
-  kDirect,  // single kc task, write directly to C
-  kParM     // kCopy but parallel over M
-  // kParN is not better on SKX/Zen4.
-};
-
-static inline const char* StringFromOut(MMOut out) {
-  switch (out) {
-    case MMOut::kDirect:
-      return "Direct";
-    case MMOut::kCopy:
-      return "Copy";
-    case MMOut::kParM:
-      return "ParM";
-    default:
-      return nullptr;
-  }
-}
-
 // How to parallelize the per-package `DecompressA`. To reduce combinatorial
 // explosion, we tune this separately from `MMConfig`.
 enum class MMParA : uint8_t { kNone, kK1 = 1, kK2 = 2, kK4 = 4, kM };
@@ -405,10 +366,9 @@ class MMConfig {
   MMConfig() = default;  // for std::vector
   // `mr` is the number of A rows per call to `MMKernel::LoopKC`.
   // `MMOrder` is how to parallelize the outer loops.
-  // `MMOut` is how/whether to parallelize filling the C result.
   // `inner_tasks` chooses the within-cluster task granularity in `ForNP`.
   MMConfig(size_t K, size_t N, size_t mr, size_t mc, size_t kc, size_t nc,
-           size_t kc_multiple, size_t nc_multiple, MMOrder order, MMOut out,
+           size_t kc_multiple, size_t nc_multiple, MMOrder order,
            int inner_tasks)
       : mr_(static_cast<uint32_t>(mr)),
         mc_(static_cast<uint32_t>(mc)),
@@ -417,7 +377,6 @@ class MMConfig {
         nc_multiple_(static_cast<uint32_t>(nc_multiple)),
         kc_multiple_(static_cast<uint32_t>(kc_multiple)),
         order_(order),
-        out_(out),
         inner_tasks_(static_cast<uint8_t>(inner_tasks)),
         reserved_{} {
     HWY_DASSERT(mr == 1 || mr == 2 || mr == 4);
@@ -433,7 +392,6 @@ class MMConfig {
       HWY_WARN("nc %zu not a multiple of nc_multiple %zu", nc, nc_multiple);
     }
     HWY_DASSERT(StringFromOrder(order_) != nullptr);
-    HWY_DASSERT(StringFromOut(out_) != nullptr);
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
   }
 
@@ -450,7 +408,6 @@ class MMConfig {
   }
 
   MMOrder Order() const { return order_; }
-  MMOut Out() const { return out_; }
   // No `OuterTasks` because static partitioning across clusters is sufficient.
   size_t InnerTasks() const { return static_cast<size_t>(inner_tasks_); }
 
@@ -469,9 +426,8 @@ class MMConfig {
   uint32_t nc_multiple_;
   uint32_t kc_multiple_;
   MMOrder order_;
-  MMOut out_;
   uint8_t inner_tasks_;
-  HWY_MAYBE_UNUSED uint8_t reserved_[5];
+  HWY_MAYBE_UNUSED uint8_t reserved_[6];
 };
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
@@ -691,11 +647,10 @@ struct MatMulEnv {
   // Storage for arbitrary output rows, see `MatPtr::AllocateAndAttachRowPtrs`.
   // Most MatMul callers use strided MatPtr, but GemmaAttention::ComputeQKV
   // writes to differing KV positions per query / output row.
-  // The first three allocations are sufficient for any A, B, C, respectively,
-  // but also potentially overwritten by each MatMul. Subsequent entries are
-  // precomputed for tensors and not overwritten. Per-tensor allocations make
-  // it likelier that asan detects bugs such as use after free, overrun, and
-  // dangling references.
+  // The first entry is sufficient for any C argument, but also potentially
+  // overwritten by each MatMul. Subsequent entries are precomputed for tensors
+  // and not overwritten. Per-tensor allocations make it likelier that asan
+  // detects bugs such as use after free, overrun, and dangling references.
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
@@ -703,20 +658,14 @@ struct MatMulEnv {
 // Reduces register pressure compared to individual values/references.
 struct MMArgs {
   MMArgs(MatMulEnv& env, MMPerKey& per_key, double scale,
-         const float* HWY_RESTRICT add, const StridedViewD& partial)
-      : env(&env),
-        per_key(&per_key),
-        scale(scale),
-        add(add),
-        partial(partial) {}
+         const float* HWY_RESTRICT add)
+      : env(&env), per_key(&per_key), scale(scale), add(add) {}
 
   MatMulEnv* env;
   MMPerKey* per_key;
 
   double scale;
   const float* HWY_RESTRICT add;
-  // Same size as C, threads write at false-sharing-free granularity.
-  StridedViewD partial;
 };
 
 // Wrapper over hwy::Zone that is only enabled when autotuning finished.

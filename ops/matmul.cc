@@ -91,24 +91,21 @@ class GenerateCandidates {
     for (size_t mr : MR()) {
       for (MMOrder order : Orders(mr)) {
         const std::vector<int>& all_inner_tasks = InnerTasks(order);
-        const std::vector<MMOut>& all_outs = Outs(order);
         for (size_t kc : KC(mr, order)) {
           for (size_t mc : MC(mr, kc, order)) {
             for (size_t nc : NC(mr, mc, kc, order)) {
               for (int inner_tasks : all_inner_tasks) {
-                for (MMOut out : all_outs) {
-                  const MMConfig config(K_, N_, mr, mc, kc, nc, kc_multiple_,
-                                        nc_multiple_, order, out, inner_tasks);
-                  const size_t M_tasks = config.RangesOfMC(M_).NumTasks();
-                  const size_t K_tasks = config.RangesOfKC(K_).NumTasks();
+                const MMConfig config(K_, N_, mr, mc, kc, nc, kc_multiple_,
+                                      nc_multiple_, order, inner_tasks);
+                const size_t M_tasks = config.RangesOfMC(M_).NumTasks();
+                const size_t K_tasks = config.RangesOfKC(K_).NumTasks();
 
-                  // Blocks only make sense when there are multiple M tasks.
-                  if (IsBlock(order) != (M_tasks > 1)) continue;
-                  // Single KC only makes sense when there is a single K task.
-                  if (IsOneKC(order) != (K_tasks == 1)) continue;
+                // Blocks only make sense when there are multiple M tasks.
+                if (IsBlock(order) != (M_tasks > 1)) continue;
+                // Single KC only makes sense when there is a single K task.
+                if (IsOneKC(order) != (K_tasks == 1)) continue;
 
-                  candidates.push_back(config);
-                }
+                candidates.push_back(config);
               }
             }
           }
@@ -265,14 +262,13 @@ class GenerateCandidates {
   SizeVec NC(size_t mr, size_t mc, size_t kc, MMOrder order) const {
     const size_t np_max = ranges_np_.TaskSize();
     size_t nc_max = np_max;
-    const size_t out_bytes = IsOneKC(order) ? sizeof_TC_ : sizeof(double);
     // Only if there will be reuse of B: choose the largest `nc_max` (C cols)
     // such that `nc x kc` of B and `mc x nc` of `partial` or `C` fit in L3.
     // Otherwise, leave it unbounded.
     if (M_ > mr) {
-      const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * out_bytes);
-      nc_max = hwy::DivCeil(allocator_.L3Bytes(), bytes_per_nc);
-      nc_max = HWY_MIN(HWY_MIN(nc_max, MMStorage::kMaxN), np_max);
+      const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * sizeof_TC_);
+      nc_max =
+          HWY_MIN(hwy::DivCeil(allocator_.L3Bytes(), bytes_per_nc), np_max);
     }
     HWY_DASSERT(nc_max != 0);
     nc_max = RoundDownWithFloor(nc_max, nc_multiple_);
@@ -338,24 +334,6 @@ class GenerateCandidates {
       inner_tasks.push_back(4);
     }
     return inner_tasks;
-  }
-
-  // Whether to parallelize FillC or enable direct writes to C.
-  std::vector<MMOut> Outs(MMOrder order) const {
-    std::vector<MMOut> outs;
-    for (size_t out_idx = 0;; ++out_idx) {
-      const MMOut out = static_cast<MMOut>(out_idx);
-      if (StringFromOut(out) == nullptr) return outs;  // done
-      // kParM only makes sense if we have more than one row of A.
-      if (out == MMOut::kParM && M_ == 1) continue;
-      // Blocks are already parallelized.
-      if (out == MMOut::kParM && IsBlock(order)) continue;
-      // Direct only works for a single kc range.
-      if ((out == MMOut::kDirect) != IsOneKC(order)) continue;
-      // For non-block, kCopy does not beat kDirect.
-      if (out == MMOut::kCopy && IsOneKC(order) && !IsBlock(order)) continue;
-      outs.push_back(out);
-    }
   }
 
   const Allocator& allocator_;
@@ -432,8 +410,6 @@ MatMulEnv::MatMulEnv(ThreadingContext& ctx)
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
 
-  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));  // A
-  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxN));  // B
   row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));  // C
 }
 
@@ -461,7 +437,7 @@ void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
   }
 }
 
-// C is BF16/float, or double for partial
+// C is BF16/float
 void BindC(MatPtr& C, MMParallel& parallel) {
   Allocator& allocator = parallel.allocator();
   if (!allocator.ShouldBind()) return;

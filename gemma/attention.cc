@@ -275,10 +275,10 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
     const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
     const size_t cache_pos =
         activations.div_seq_len.Remainder(qbatch.Pos(qi) + batch_idx);
-    env.row_ptrs[2][interleaved_idx] = reinterpret_cast<uint8_t*>(
+    env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
         qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_idx * cache_layer_size);
   }
-  kv_rows.AttachRowPtrs(env.row_ptrs[2].get());
+  kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
 
