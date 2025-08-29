@@ -397,34 +397,33 @@ static size_t NPMultiple(const Allocator& allocator, size_t N,
   return np_multiple;
 }
 
-IndexRangePartition MMParallel::RangesOfNP(size_t max_packages, size_t N,
-                                           size_t sizeof_TC, size_t nr) const {
-  const size_t num_packages = HWY_MIN(max_packages, ctx_.pools.NumPackages());
+IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
+                                 size_t N, size_t sizeof_TC, size_t nr) {
+  const size_t num_packages = HWY_MIN(max_packages, ctx.pools.NumPackages());
   return StaticPartition(
       IndexRange(0, N), num_packages,
-      NPMultiple(ctx_.allocator, N, sizeof_TC, nr, num_packages));
+      NPMultiple(ctx.allocator, N, sizeof_TC, nr, num_packages));
 }
 
-MatMulEnv::MatMulEnv(ThreadingContext& ctx)
-    : ctx(ctx), parallel(ctx), storage(ctx.allocator, parallel) {
+MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx), storage(ctx) {
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
 
   row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(MMStorage::kMaxM));  // C
 }
 
-void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
-  Allocator& allocator = parallel.allocator();
+void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC) {
+  Allocator& allocator = ctx.allocator;
   if (!allocator.ShouldBind()) return;
   if (B.Rows() == 1) return;
 
   PROFILER_ZONE("Startup.BindB");
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(kMaxPackages, B.Rows(), sizeof_TC, kNR);
+      MMRangesOfNP(ctx, kMaxPackages, B.Rows(), sizeof_TC, kNR);
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& rows_b = ranges_np.Range(pkg_idx);
-    const size_t node = parallel.Node(pkg_idx);
+    const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
     uintptr_t begin = reinterpret_cast<uintptr_t>(B.RowBytes(rows_b.begin()));
     uintptr_t end = begin + rows_b.Num() * B.Stride() * B.ElementBytes();
     // B row padding is less than the page size, so only bind the subset that
@@ -438,14 +437,14 @@ void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel) {
 }
 
 // C is BF16/float
-void BindC(MatPtr& C, MMParallel& parallel) {
-  Allocator& allocator = parallel.allocator();
+void BindC(ThreadingContext& ctx, MatPtr& C) {
+  Allocator& allocator = ctx.allocator;
   if (!allocator.ShouldBind()) return;
 
   PROFILER_ZONE("Startup.BindC");
 
   const IndexRangePartition ranges_np =
-      parallel.RangesOfNP(kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
+      MMRangesOfNP(ctx, kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
   bool ok = true;
   for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
     const IndexRange& cols_c = ranges_np.Range(pkg_idx);
@@ -455,7 +454,7 @@ void BindC(MatPtr& C, MMParallel& parallel) {
     const size_t end = hwy::RoundDownTo(cols_c.end() * C.ElementBytes(),
                                         allocator.BasePageBytes());
 
-    const size_t node = parallel.Node(pkg_idx);
+    const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
     for (size_t im = 0; im < C.Rows(); ++im) {
       ok &= allocator.BindMemory(C.RowBytes(im) + begin, end - begin, node);
     }

@@ -320,8 +320,6 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
   const size_t start = owners.size();
   owners.resize(start + tensors.size());
 
-  MMParallel parallel(ctx);
-
   // Allocate in parallel because faulting in large tensors is slow.
   ctx.pools.Pool().Run(
       0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
@@ -339,7 +337,7 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
 
         owners[start + task].AllocateFor(*tensor.mat, ctx.allocator,
                                          tensor.padding);
-        BindB(*tensor.mat, tensor.mat->ElementBytes(), parallel);
+        BindB(ctx, *tensor.mat, tensor.mat->ElementBytes());
       });
 }
 

@@ -53,35 +53,31 @@ constexpr size_t kNR = 4;
 // or less on ISAs with fewer registers, or for the last few rows of A.
 static constexpr size_t kMaxMR = 4;
 
-// Mostly stateless, can be constructed on the fly by weights.cc. Captures the
-// the ThreadingContext to shorten call sites.
-class MMParallel {
- public:
-  // `ctx` must outlive this object.
-  MMParallel(ThreadingContext& ctx) : ctx_(ctx) {
-    if (ctx_.pools.NumPackages() > kMaxPackages) {
-      HWY_WARN("CPU and --max_packages allow %zu > matmul.h kMaxPackages %zu.",
-               ctx_.pools.NumPackages(), kMaxPackages);
-    }
-  }
+IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
+                                 size_t N, size_t sizeof_TC, size_t nr);
 
-  Allocator& allocator() const { return ctx_.allocator; }
+enum class ParallelismType : uint8_t {
+  kNone,
+  // No parallelism.
+  kSequential,
+  // Parallelism at cluster level.
+  kCluster,
+  // Parallelism at package level.
+  kNested,
+};
 
-  // Initial static partitioning of B rows across packages.
-  IndexRangePartition RangesOfNP(size_t max_packages, size_t N,
-                                 size_t sizeof_TC, size_t nr) const;
+struct MMOptions {
+  ParallelismType parallelism_type_ = ParallelismType::kNested;
+  uint8_t cluster_idx_ = 0;
+};
 
-  // For `BindB` and `BindC`.
-  size_t Node(size_t pkg_idx) const {
-    return ctx_.topology.GetCluster(pkg_idx, 0).Node();
-  }
-
-  // Calls `func(pkg_idx)` for each package in parallel.
+struct MMNestedParallelPolicy {
   template <class Func>
-  void ForPkg(const size_t max_packages, const Func& func) {
+  static void ForPkg(ThreadingContext& ctx, const size_t max_packages,
+                     const Func& func) {
     if constexpr (kMaxPackages > 1) {
-      ctx_.pools.AllPackages().Run(
-          0, HWY_MIN(max_packages, ctx_.pools.NumPackages()),
+      ctx.pools.AllPackages().Run(
+          0, HWY_MIN(max_packages, ctx.pools.NumPackages()),
           [&](uint64_t task, size_t pkg_idx) {
             HWY_DASSERT(task == pkg_idx);
             (void)task;
@@ -95,16 +91,17 @@ class MMParallel {
   // Cluster/CCX-aware parallel-for over B rows in `range_np`. `nx_multiple` is
   // the granularity of per-cluster tasks. Calls `func(worker_range, worker)`.
   template <class Func>
-  void ForNP(const IndexRange& range_np, size_t nx_multiple, size_t inner_tasks,
-             size_t pkg_idx, const Func& func) {
+  static void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
+                    size_t nx_multiple, size_t inner_tasks, size_t pkg_idx,
+                    const Func& func) {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
-    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
+    const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
 
     // Single cluster: parallel-for over static partition of `range_np`.
-    hwy::ThreadPool& all_clusters = ctx_.pools.AllClusters(pkg_idx);
+    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
     const size_t num_clusters = all_clusters.NumWorkers();
     if (num_clusters == 1) {
-      hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, 0);
+      hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, 0);
       const IndexRangePartition worker_ranges = StaticPartition(
           range_np, cluster.NumWorkers() * inner_tasks, nx_multiple);
       return ParallelizeOneRange(
@@ -120,9 +117,9 @@ class MMParallel {
     ParallelizeOneRange(
         nx_ranges, all_clusters,
         [&](const IndexRange& nx_range, const size_t cluster_idx) {
-          hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, cluster_idx);
+          hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
           const size_t cluster_base =
-              pkg_base + cluster_idx * ctx_.pools.MaxWorkersPerCluster();
+              pkg_base + cluster_idx * ctx.pools.MaxWorkersPerCluster();
           // Parallel-for over sub-ranges of `cluster_range` within the cluster.
           const IndexRangePartition worker_ranges = StaticPartition(
               nx_range, cluster.NumWorkers() * inner_tasks, nx_multiple);
@@ -137,18 +134,19 @@ class MMParallel {
   // Cluster/CCX-aware parallel-for over blocks (separate subranges of A and B
   // rows). Calls `func(range_mc, range_nc, worker)`.
   template <class Func>
-  void ForRangesMC_NC(const IndexRangePartition& ranges_mc,
-                      const IndexRangePartition& ranges_nc, size_t pkg_idx,
-                      const Func& func) {
-    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
-    hwy::ThreadPool& all_clusters = ctx_.pools.AllClusters(pkg_idx);
+  static void ForRangesMC_NC(ThreadingContext& ctx,
+                             const IndexRangePartition& ranges_mc,
+                             const IndexRangePartition& ranges_nc,
+                             size_t pkg_idx, const Func& func) {
+    const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
+    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
     // `all_clusters` is a pool with one worker per cluster in a package.
     const size_t num_clusters = all_clusters.NumWorkers();
     // Single (big) cluster: collapse two range indices into one parallel-for
     // to reduce the number of fork-joins.
     if (num_clusters == 1) {
       const size_t cluster_idx = 0;
-      hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, cluster_idx);
+      hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
       // Low-batch: avoid Divide/Remainder.
       if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
         return ParallelizeOneRange(
@@ -171,8 +169,8 @@ class MMParallel {
         ranges_nc, all_clusters,
         [&](const IndexRange range_nc, size_t cluster_idx) {
           const size_t cluster_base =
-              pkg_base + cluster_idx * ctx_.pools.MaxWorkersPerCluster();
-          hwy::ThreadPool& cluster = ctx_.pools.Cluster(pkg_idx, cluster_idx);
+              pkg_base + cluster_idx * ctx.pools.MaxWorkersPerCluster();
+          hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
           ParallelizeOneRange(ranges_mc, cluster,
                               [&](const IndexRange& range_mc, size_t thread) {
                                 func(range_mc, range_nc, cluster_base + thread);
@@ -182,21 +180,18 @@ class MMParallel {
 
   // Calls `func(row_a, worker)` in parallel.
   template <class Func>
-  void ForRangeMC(const IndexRange& range_mc, size_t pkg_idx,
-                  const Func& func) {
-    const size_t pkg_base = pkg_idx * ctx_.pools.MaxWorkersPerPackage();
-    ctx_.pools.Pool(pkg_idx).Run(
+  static void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
+                         size_t pkg_idx, const Func& func) {
+    const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
+    ctx.pools.Pool(pkg_idx).Run(
         range_mc.begin(), range_mc.end(),
         [&](uint64_t row_a, size_t thread) { func(row_a, pkg_base + thread); });
   }
-
- private:
-  ThreadingContext& ctx_;
 };
 
-void BindB(MatPtr& B, size_t sizeof_TC, MMParallel& parallel);
+void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC);
 // C is BF16/float.
-void BindC(MatPtr& C, MMParallel& parallel);
+void BindC(ThreadingContext& ctx, MatPtr& C);
 
 // Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
 #pragma pack(push, 1)  // power of two size
@@ -250,15 +245,18 @@ class MMStorage {
 
   // Internally threaded; must not be called concurrently with the same
   // `ThreadingContext` (used via `parallel`).
-  MMStorage(const Allocator& allocator, MMParallel& parallel) {
+  MMStorage(ThreadingContext& ctx) {
     // Per-package allocation so each can decompress A into its own copy.
     // Must be padded, see `DoDecompressA`.
-    parallel.ForPkg(kMaxPackages, [&](size_t pkg_idx) {
+    // Default to nested parallel policy.
+    MMNestedParallelPolicy::ForPkg(ctx, kMaxPackages, [&](size_t pkg_idx) {
+      Allocator& allocator = ctx.allocator;
+
       pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
           "pkg_A", Extents2D(kMaxM, kMaxK), allocator, MatPadding::kOdd));
 
       if (allocator.ShouldBind()) {
-        const size_t node = parallel.Node(pkg_idx);
+        const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
         size_t bytes = pkg_A_[pkg_idx]->Rows() * pkg_A_[pkg_idx]->Stride() *
                        pkg_A_[pkg_idx]->ElementBytes();
         bytes = hwy::RoundDownTo(bytes, allocator.BasePageBytes());
@@ -607,9 +605,9 @@ class MMKeys {
 
 // Per-MatMul-shape state.
 struct MMPerKey {
-  MMPerKey(size_t max_packages, size_t N, size_t sizeof_TC, size_t nr,
-           MMParallel& parallel)
-      : ranges_np(parallel.RangesOfNP(max_packages, N, sizeof_TC, nr)) {
+  MMPerKey(ThreadingContext& ctx, size_t max_packages, size_t N,
+           size_t sizeof_TC, size_t nr)
+      : ranges_np(MMRangesOfNP(ctx, max_packages, N, sizeof_TC, nr)) {
     HWY_DASSERT(ranges_np.NumTasks() <= max_packages);
   }
 
@@ -639,7 +637,6 @@ struct MatMulEnv {
   // Whether to print the best config immediately after autotuning finished.
   bool print_best = false;
 
-  MMParallel parallel;
   MMStorage storage;
   MMKeys keys;
   std::vector<MMPerKey> per_key;
