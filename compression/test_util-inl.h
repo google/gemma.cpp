@@ -87,11 +87,6 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents,
     Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
              MakeSpan(compressed.Row(r), extents.cols),
              /*packed_ofs=*/0);
-
-    // MatMul requires that A's padding be zero-initialized.
-    hwy::ZeroBytes(
-        compressed.Row(r) + extents.cols,
-        (compressed.Stride() - extents.cols) * compressed.ElementBytes());
   });
 
   compressed.SetScale(0.6f);  // Arbitrary value, different from 1.
@@ -120,11 +115,6 @@ MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
     Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
              MakeSpan(compressed.Row(r), extents.cols),
              /*packed_ofs=*/0);
-
-    // MatMul requires that B's padding be zero-initialized.
-    hwy::ZeroBytes(
-        compressed.Row(r) + extents.cols,
-        (compressed.Stride() - extents.cols) * compressed.ElementBytes());
   });
 
   // Arbitrary value, different from 1, must match `GenerateMat`.

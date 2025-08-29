@@ -318,6 +318,7 @@ void TestAllMatMul() {
 
   ThreadingArgs threading_args;
   threading_args.bind = Tristate::kTrue;
+
   ThreadingContext ctx(threading_args);
   MatMulEnv env(ctx);
   NestedPools& pools = env.ctx.pools;

@@ -194,6 +194,7 @@ void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC);
 void BindC(ThreadingContext& ctx, MatPtr& C);
 
 // Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
+// Also used to decompress B, hence non-const.
 #pragma pack(push, 1)  // power of two size
 template <typename T>
 class StridedView {
