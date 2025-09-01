@@ -376,6 +376,7 @@ cc_test(
         ":test_util",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:test_util",
         "//compression:types",
         "@highway//:hwy",
         "@highway//:hwy_test_util",

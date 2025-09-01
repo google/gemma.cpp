@@ -47,6 +47,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
+#include "compression/test_util-inl.h"
 #include "ops/ops-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -83,48 +84,6 @@ T Random(hwy::RandomState& rng) {
       HWY_MAX(hwy::ConvertScalarTo<double>(hwy::LowestValue<T>()), val));
 }
 
-HWY_NOINLINE void SimpleAddFrom(const float* HWY_RESTRICT other,
-                                float* HWY_RESTRICT x, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    x[i] += other[i];
-  }
-}
-
-HWY_NOINLINE void SimpleMulBy(const float* HWY_RESTRICT other,
-                              float* HWY_RESTRICT x, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    x[i] *= other[i];
-  }
-}
-
-HWY_NOINLINE void SimpleMulByConst(float c, float* HWY_RESTRICT x,
-                                   size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    x[i] *= c;
-  }
-}
-
-HWY_NOINLINE void SimpleMulByConstAndAdd(float c, const float* HWY_RESTRICT x,
-                                         float* HWY_RESTRICT out, size_t size) {
-  for (size_t i = 0; i < size; ++i) {
-    out[i] += x[i] * c;
-  }
-}
-
-HWY_NOINLINE void SimpleSoftmax(float* HWY_RESTRICT x, size_t size) {
-  HWY_DASSERT(size != 0);
-  float sum = 0.0;
-  const float maxval = *std::max_element(x, x + size);
-  for (size_t i = 0; i < size; ++i) {
-    x[i] = std::exp(x[i] - maxval);
-    sum += x[i];
-  }
-  const float scale = 1.0f / sum;
-  for (size_t i = 0; i < size; ++i) {
-    x[i] *= scale;
-  }
-}
-
 template <size_t k>
 HWY_NOINLINE std::discrete_distribution<int> SourceCreateDistribution(
     std::array<float, k>& top_k, float temperature) {
@@ -141,7 +100,8 @@ HWY_NOINLINE std::discrete_distribution<int> SourceCreateDistribution(
   return std::discrete_distribution<int>(std::begin(top_k), std::end(top_k));
 }
 
-struct TestAddFrom {
+class TestAddFrom {
+ public:
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
@@ -171,9 +131,24 @@ struct TestAddFrom {
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
   }
+
+ private:
+  template <typename T1, typename T2>
+  static HWY_NOINLINE void SimpleAddFrom(const T1* HWY_RESTRICT other,
+                                         T2* HWY_RESTRICT x, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      x[i] = hwy::ConvertScalarTo<T2>(hwy::ConvertScalarTo<float>(x[i]) +
+                                      hwy::ConvertScalarTo<float>(other[i]));
+    }
+  }
 };
 
-struct TestMulByConstAndAdd {
+void TestAllAddFrom() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestAddFrom>>()(float());
+}
+
+class TestMulByConstAndAdd {
+ public:
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
@@ -204,9 +179,27 @@ struct TestMulByConstAndAdd {
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
   }
+
+ private:
+  template <typename T1, typename T2>
+  static HWY_NOINLINE void SimpleMulByConstAndAdd(float c,
+                                                  const T1* HWY_RESTRICT x,
+                                                  T2* HWY_RESTRICT out,
+                                                  size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      out[i] = hwy::ConvertScalarTo<T2>(hwy::ConvertScalarTo<float>(out[i]) +
+                                        hwy::ConvertScalarTo<float>(x[i]) * c);
+    }
+  }
 };
 
-struct TestMulByConst {
+void TestAllMulByConstAndAdd() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConstAndAdd>>()(
+      float());
+}
+
+class TestMulByConst {
+ public:
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
@@ -234,9 +227,61 @@ struct TestMulByConst {
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
   }
+
+ private:
+  template <typename T1>
+  static HWY_NOINLINE void SimpleMulByConst(float c, T1* HWY_RESTRICT x,
+                                            size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+      x[i] = hwy::ConvertScalarTo<T1>(hwy::ConvertScalarTo<float>(x[i]) * c);
+    }
+  }
 };
 
-struct TestSoftmax {
+void TestAllMulByConst() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConst>>()(float());
+}
+
+struct TestMulByConstTo {
+  template <class D>
+  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
+                  hwy::RandomState& rng) {
+    if (misalign_b == 0) return;
+    using T = hn::TFromD<D>;
+
+    hwy::AlignedFreeUniquePtr<T[]> px =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    hwy::AlignedFreeUniquePtr<T[]> pe =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    hwy::AlignedFreeUniquePtr<T[]> pactual =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    HWY_ASSERT(px && pe && pactual);
+
+    T* x = px.get() + misalign_a;
+    T* e = pe.get() + misalign_a;
+    T* actual = pe.get() + misalign_a;
+
+    T constant = Random<T>(rng);
+    for (size_t i = 0; i < count; ++i) {
+      x[i] = Random<T>(rng);
+      e[i] = hwy::ConvertScalarTo<T>(hwy::ConvertScalarTo<float>(x[i]) *
+                                     hwy::ConvertScalarTo<float>(constant));
+    }
+
+    MulByConstTo(constant, x, actual, count, hwy::Profiler::Get(),
+                 /*worker=*/0);
+
+    hwy::AssertArraySimilar(e, actual, count, hwy::TargetName(HWY_TARGET),
+                            __FILE__, __LINE__);
+  }
+};
+
+void TestAllMulByConstTo() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConstTo>>()(float());
+}
+
+class TestSoftmax {
+ public:
   template <class D>
   void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
                   hwy::RandomState& rng) {
@@ -270,7 +315,26 @@ struct TestSoftmax {
     }
     ASSERT_NEAR(sum, 1.0, 1e-6);
   }
+
+ private:
+  static HWY_NOINLINE void SimpleSoftmax(float* HWY_RESTRICT x, size_t size) {
+    HWY_DASSERT(size != 0);
+    float sum = 0.0;
+    const float maxval = *std::max_element(x, x + size);
+    for (size_t i = 0; i < size; ++i) {
+      x[i] = std::exp(x[i] - maxval);
+      sum += x[i];
+    }
+    const float scale = 1.0f / sum;
+    for (size_t i = 0; i < size; ++i) {
+      x[i] *= scale;
+    }
+  }
 };
+
+void TestAllSoftmax() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
+}
 
 template <size_t k>
 struct TestCreateDistribution {
@@ -291,43 +355,60 @@ struct TestCreateDistribution {
   }
 };
 
-void TestAllAddFrom() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestAddFrom>>()(float());
-}
-
-void TestAllMulByConst() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConst>>()(float());
-}
-
-void TestAllMulByConstAndAdd() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestMulByConstAndAdd>>()(
-      float());
-}
-
-void TestAllSoftmax() {
-  hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
-}
-
 void TestAllCreateDistribution() {
   TestCreateDistribution<2048>();
   TestCreateDistribution<5000>();
 }
 
-void TestSigmoid() {
-  std::vector<float> values;
-  for (int i = -150; i <= 150; ++i) {
-    values.push_back(.1f * i);
-  }
-  std::vector<float> result = values;
-  Sigmoid(result.data(), result.size());
+struct TestSigmoid {
+  template <typename T, class D>
+  void operator()(T, D) const {
+    std::vector<T> values;
+    for (int i = -150; i <= 150; ++i) {
+      values.push_back(hwy::ConvertScalarTo<T>(.1f * i));
+    }
+    std::vector<T> result = values;
+    Sigmoid(result.data(), result.size());
 
-  for (size_t i = 0; i < values.size(); i++) {
-    const float max_error = 0.00007;
-    float value = values[i];
-    float approx = result[i];
-    float expected = (1 / (1 + std::exp(-values[i])));
-    EXPECT_NEAR(approx, expected, max_error) << "Input: " << value;
+    for (size_t i = 0; i < values.size(); i++) {
+      const float max_error = IsBF16<T>() ? 0.2f : 0.00007f;
+      const float value = hwy::ConvertScalarTo<float>(values[i]);
+      const float actual = hwy::ConvertScalarTo<float>(result[i]);
+      const float expected = (1 / (1 + std::exp(-value)));
+      EXPECT_NEAR(expected, actual, max_error)
+          << (IsBF16<T>() ? "bf16" : "float");
+    }
   }
+};
+
+static HWY_NOINLINE void TestAllSigmoid() {
+  ForeachActivationType1<TestSigmoid>(hn::ScalableTag<float>());
+}
+
+struct TestGelu {
+  template <typename T, class D>
+  void operator()(T, D) const {
+    std::vector<T> values;
+    for (int i = -150; i <= 150; ++i) {
+      values.push_back(hwy::ConvertScalarTo<T>(.1f * i));
+    }
+    std::vector<T> result = values;
+    Gelu(result.data(), result.size());
+
+    for (size_t i = 0; i < values.size(); i++) {
+      const float max_error = IsBF16<T>() ? 0.2f : 0.00007f;
+      const float x = hwy::ConvertScalarTo<float>(values[i]);
+      const float actual = hwy::ConvertScalarTo<float>(result[i]);
+      const float expected =
+          x * (0.5f + 0.5f * tanh(x * (0.79788f + 0.035677f * x * x)));
+      EXPECT_NEAR(expected, actual, max_error)
+          << (IsBF16<T>() ? "bf16" : "float");
+    }
+  }
+};
+
+static HWY_NOINLINE void TestAllGelu() {
+  ForeachActivationType1<TestGelu>(hn::ScalableTag<float>());
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
@@ -421,7 +502,8 @@ void TestRopeAndMulBy() {
 }
 
 template <typename T>
-HWY_NOINLINE float ScalarSquaredL2(const T* HWY_RESTRICT a, size_t size) {
+static HWY_NOINLINE float ScalarSquaredL2(const T* HWY_RESTRICT a,
+                                          size_t size) {
   double sum = 0.0;
   for (size_t i = 0; i < size; ++i) {
     const float f = hwy::ConvertScalarTo<float>(a[i]);
@@ -431,9 +513,11 @@ HWY_NOINLINE float ScalarSquaredL2(const T* HWY_RESTRICT a, size_t size) {
 }
 
 // Supports bf16 and f32 inputs/outputs, which can be in-place.
+// Shared between TestRMSNorm and TestRMSNormInplace.
 template <typename XT, typename WT, typename OT>
-HWY_NOINLINE void ScalarRMSNorm(const XT* x, const WT* HWY_RESTRICT weight,
-                                OT* out, size_t size) {
+static HWY_NOINLINE void ScalarRMSNorm(const XT* x,
+                                       const WT* HWY_RESTRICT weight, OT* out,
+                                       size_t size) {
   constexpr float kEps = 1e-6f;
   float ss = ScalarSquaredL2(x, size);
   ss = 1.0f / sqrtf(ss / StaticCast<float>(size) + kEps);
@@ -445,42 +529,73 @@ HWY_NOINLINE void ScalarRMSNorm(const XT* x, const WT* HWY_RESTRICT weight,
   }
 }
 
-template <typename XT, typename WT, typename OT>
-void TestRMSNorm(hwy::RandomState& rng) {
-  constexpr size_t kSize = 128;
-  HWY_ALIGN XT vec[kSize];
-  HWY_ALIGN WT weight[kSize];
-  HWY_ALIGN OT expected[kSize];
-  HWY_ALIGN OT actual[kSize];
+struct TestRMSNorm {
+  template <typename XT, typename WT, typename OT, class D>
+  void operator()(XT, WT, OT, D) const {
+    hwy::RandomState rng;
 
-  for (size_t i = 0; i < kSize; ++i) {
-    vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
-    weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
-  }
+    constexpr size_t kSize = 128;
+    HWY_ALIGN XT vec[kSize];
+    HWY_ALIGN WT weight[kSize];
+    HWY_ALIGN OT expected[kSize];
+    HWY_ALIGN OT actual[kSize];
 
-  ScalarRMSNorm(vec, weight, expected, kSize);
-  RMSNorm(vec, weight, 0, actual, kSize, hwy::Profiler::Get(), /*worker=*/0);
+    for (size_t i = 0; i < kSize; ++i) {
+      vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
+      weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
+    }
 
-  for (size_t i = 0; i < kSize; i++) {
-    const float e = hwy::ConvertScalarTo<float>(expected[i]);
-    const float a = hwy::ConvertScalarTo<float>(actual[i]);
-    if (!IsNear(e, a, 1e-5f)) {
-      HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
-                TypeName<WT>(), TypeName<OT>(), i, e, a);
+    ScalarRMSNorm(vec, weight, expected, kSize);
+    RMSNorm(vec, weight, actual, kSize, hwy::Profiler::Get(), /*worker=*/0);
+
+    for (size_t i = 0; i < kSize; i++) {
+      const float e = hwy::ConvertScalarTo<float>(expected[i]);
+      const float a = hwy::ConvertScalarTo<float>(actual[i]);
+      if (!IsNear(e, a, 1e-5f)) {
+        HWY_ABORT("RMSNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
+                  TypeName<WT>(), TypeName<OT>(), i, e, a);
+      }
     }
   }
-}
+};
 
 void TestAllRMSNorm() {
-  hwy::RandomState rng;
-  TestRMSNorm<float, float, float>(rng);
-  TestRMSNorm<float, float, BF16>(rng);
-  TestRMSNorm<float, BF16, float>(rng);
-  TestRMSNorm<float, BF16, BF16>(rng);
-  TestRMSNorm<BF16, float, float>(rng);
-  TestRMSNorm<BF16, float, BF16>(rng);
-  TestRMSNorm<BF16, BF16, float>(rng);
-  TestRMSNorm<BF16, BF16, BF16>(rng);
+  ForeachActivationType3<TestRMSNorm>(hn::ScalableTag<float>());
+}
+
+struct TestRMSNormInplace {
+  template <typename XT, typename WT, class D>
+  void operator()(XT, WT, D) const {
+    hwy::RandomState rng;
+
+    constexpr size_t kSize = 128;
+    HWY_ALIGN XT expected[kSize];
+    HWY_ALIGN XT actual[kSize];
+    HWY_ALIGN WT weight[kSize];
+
+    for (size_t i = 0; i < kSize; ++i) {
+      expected[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
+      actual[i] = expected[i];
+      weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
+    }
+
+    ScalarRMSNorm(expected, weight, expected, kSize);
+    RMSNormInplace(weight, actual, kSize, hwy::Profiler::Get(),
+                   /*worker=*/0);
+
+    for (size_t i = 0; i < kSize; i++) {
+      const float e = hwy::ConvertScalarTo<float>(expected[i]);
+      const float a = hwy::ConvertScalarTo<float>(actual[i]);
+      if (!IsNear(e, a, 1e-5f)) {
+        HWY_ABORT("RMSNormInplace %s %s mismatch at %zu: %E %E\n",
+                  TypeName<XT>(), TypeName<WT>(), i, e, a);
+      }
+    }
+  }
+};
+
+void TestAllRMSNormInplace() {
+  ForeachActivationType2<TestRMSNormInplace>(hn::ScalableTag<float>());
 }
 
 void TestLayerNormSimple() {
@@ -497,91 +612,92 @@ void TestLayerNormSimple() {
 
   for (size_t i = 0; i < kSize; i++) {
     const float max_error = 1e-6f;
-    float value = values[i];
     float res = result[i];
     // out = (x - 0.0) * 1.2 * 0.9999995 + 0.1 = 1.2999994 / -1.0999994;
     float expected = (i % 2 == 0) ? 1.2999994f : -1.0999994f;
-    EXPECT_NEAR(res, expected, max_error) << "Input: " << value;
+    EXPECT_NEAR(res, expected, max_error);
   }
 }
 
-// Computes mean mu and mean of squares mu2 of a vector. Used in
-// ScalarLayerNorm.
-template <typename T>
-HWY_NOINLINE void ScalarMus(const T* HWY_RESTRICT a, size_t size, double& mu,
-                            double& mu2) {
-  HWY_ASSERT(size > 0);
-  double sum = 0.0;
-  double sum2 = 0.0;
-  for (size_t i = 0; i < size; ++i) {
-    const float f = hwy::ConvertScalarTo<float>(a[i]);
-    sum += f;
-    sum2 += f * f;
-  }
-  mu = sum / size;
-  mu2 = sum2 / size;
-}
+class TestLayerNorm {
+ public:
+  template <typename XT, typename WT, typename OT, class D>
+  void operator()(XT, WT, OT, D) const {
+    hwy::RandomState rng;
+    constexpr size_t kSize = 128;
+    XT vec[kSize];
+    WT weight[kSize];
+    WT bias[kSize];
+    OT expected[kSize];
+    OT actual[kSize];
 
-// Compare py/flax/linen/normalization.py.
-// out = (x - mean) * scale * rsqrt(var + epsilon) + bias
-template <typename XT, typename WT, typename OT>
-HWY_NOINLINE void ScalarLayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
-                                  const WT* HWY_RESTRICT bias, OT* out,
-                                  size_t size) {
-  constexpr double kEps = 1e-6;
-  double mu, mu2;
-  ScalarMus(x, size, mu, mu2);
-  double var = mu2 - mu * mu;
-  constexpr double kZero = 0.0;
-  var = HWY_MAX(var, kZero);
-  var = 1.0 / sqrt(var + kEps);
-  for (size_t j = 0; j < size; j++) {
-    const float v = hwy::ConvertScalarTo<float>(x[j]);
-    const float s = hwy::ConvertScalarTo<float>(scale[j]);
-    const float b = hwy::ConvertScalarTo<float>(bias[j]);
-    out[j] = hwy::ConvertScalarTo<OT>((v - mu) * s * var + b);
-  }
-}
+    for (size_t i = 0; i < kSize; ++i) {
+      vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
+      weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
+      bias[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
+    }
 
-template <typename XT, typename WT, typename OT>
-void TestLayerNorm(hwy::RandomState& rng) {
-  constexpr size_t kSize = 128;
-  XT vec[kSize];
-  WT weight[kSize];
-  WT bias[kSize];
-  OT expected[kSize];
-  OT actual[kSize];
+    double expected_mu, expected_mu2;
+    ScalarMus(vec, kSize, expected_mu, expected_mu2);
+    double actual_mu, actual_mu2;
+    ComputeMoments(vec, kSize, actual_mu, actual_mu2);
 
-  for (size_t i = 0; i < kSize; ++i) {
-    vec[i] = hwy::ConvertScalarTo<XT>(RandomGaussian(rng));
-    weight[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
-    bias[i] = hwy::ConvertScalarTo<WT>(RandomGaussian(rng));
-  }
+    ScalarLayerNorm(vec, weight, bias, expected, kSize);
+    LayerNorm(vec, weight, bias, actual, kSize);
 
-  double expected_mu, expected_mu2;
-  ScalarMus(vec, kSize, expected_mu, expected_mu2);
-  double actual_mu, actual_mu2;
-  ComputeMoments(vec, kSize, actual_mu, actual_mu2);
-
-  ScalarLayerNorm(vec, weight, bias, expected, kSize);
-  LayerNorm(vec, weight, bias, actual, kSize);
-
-  for (size_t i = 0; i < kSize; i++) {
-    const float e = hwy::ConvertScalarTo<float>(expected[i]);
-    const float a = hwy::ConvertScalarTo<float>(actual[i]);
-    if (!IsNear(e, a, 1e-5f)) {
-      HWY_ABORT("LayerNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
-                TypeName<WT>(), TypeName<OT>(), i, e, a);
+    for (size_t i = 0; i < kSize; i++) {
+      const float e = hwy::ConvertScalarTo<float>(expected[i]);
+      const float a = hwy::ConvertScalarTo<float>(actual[i]);
+      if (!IsNear(e, a, 1e-5f)) {
+        HWY_ABORT("LayerNorm %s %s %s mismatch at %zu: %E %E\n", TypeName<XT>(),
+                  TypeName<WT>(), TypeName<OT>(), i, e, a);
+      }
     }
   }
-}
+
+ private:
+  // Computes mean mu and mean of squares mu2 of a vector. Used in
+  // ScalarLayerNorm.
+  template <typename T>
+  static HWY_NOINLINE void ScalarMus(const T* HWY_RESTRICT a, size_t size,
+                                     double& mu, double& mu2) {
+    HWY_ASSERT(size > 0);
+    double sum = 0.0;
+    double sum2 = 0.0;
+    for (size_t i = 0; i < size; ++i) {
+      const float f = hwy::ConvertScalarTo<float>(a[i]);
+      sum += f;
+      sum2 += f * f;
+    }
+    mu = sum / size;
+    mu2 = sum2 / size;
+  }
+
+  // Compare py/flax/linen/normalization.py.
+  // out = (x - mean) * scale * rsqrt(var + epsilon) + bias
+  template <typename XT, typename WT, typename OT>
+  static HWY_NOINLINE void ScalarLayerNorm(const XT* x,
+                                           const WT* HWY_RESTRICT scale,
+                                           const WT* HWY_RESTRICT bias, OT* out,
+                                           size_t size) {
+    constexpr double kEps = 1e-6;
+    double mu, mu2;
+    ScalarMus(x, size, mu, mu2);
+    double var = mu2 - mu * mu;
+    constexpr double kZero = 0.0;
+    var = HWY_MAX(var, kZero);
+    var = 1.0 / sqrt(var + kEps);
+    for (size_t j = 0; j < size; j++) {
+      const float v = hwy::ConvertScalarTo<float>(x[j]);
+      const float s = hwy::ConvertScalarTo<float>(scale[j]);
+      const float b = hwy::ConvertScalarTo<float>(bias[j]);
+      out[j] = hwy::ConvertScalarTo<OT>((v - mu) * s * var + b);
+    }
+  }
+};
 
 void TestAllLayerNorm() {
-  hwy::RandomState rng;
-  TestLayerNorm<float, float, float>(rng);
-  TestLayerNorm<float, float, BF16>(rng);
-  TestLayerNorm<float, BF16, float>(rng);
-  TestLayerNorm<float, BF16, BF16>(rng);
+  ForeachActivationType3<TestLayerNorm>(hn::ScalableTag<float>());
 }
 
 void TestSampleTopK() {
@@ -646,12 +762,15 @@ namespace gcpp {
 HWY_BEFORE_TEST(OpsTest);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllAddFrom);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstTo);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
-HWY_EXPORT_AND_TEST_P(OpsTest, TestSigmoid);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSigmoid);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllGelu);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNormInplace);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);

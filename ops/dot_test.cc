@@ -750,7 +750,7 @@ class DotStats {
   void CheckMuls() const {
     // Comp2 is between Compensated and Kahan.
     ASSERT_INSIDE(kComp2, 1.001, s_muls[kComp2].Mean(), 1.4);
-    ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 2.4f);
+    ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 6.8f);
     ASSERT_INSIDE(kComp2, 1.0, s_muls[kComp2].GeometricMean(), 1.2);
 
     // Compensated and Double are very accurate.

@@ -206,9 +206,8 @@ struct Activations {
 
   // Gated FFW
   MatStorageT<BF16> pre_ffw_rms_out;
-  // Norm may be large, so prefer to keep as f32.
-  MatStorageT<float> C1;
-  MatStorageT<float> C2;
+  MatStorageT<BF16> C1;
+  MatStorageT<BF16> C2;
   MatStorageT<float> ffw_out;
 
   AttentionActivations attention;

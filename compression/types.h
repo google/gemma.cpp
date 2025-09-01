@@ -186,6 +186,11 @@ constexpr bool IsNuqStream() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>();
 }
 
+template <typename Packed>
+constexpr bool SupportsPointerArithmetic() {
+  return !IsNuqStream<Packed>();
+}
+
 // Tensor types for loading weights.
 enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not

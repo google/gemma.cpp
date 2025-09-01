@@ -18,11 +18,10 @@
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
-#include "compression/compress.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
+#include "compression/compress.h"
 #include "compression/distortion.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
@@ -45,7 +44,7 @@ namespace hn = hwy::HWY_NAMESPACE;
 
 // Calls Compress and Decompress2 and verifies the distortion/error.
 template <typename Packed>
-struct TestDecompress2T {
+struct TestDecompress2 {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const size_t N = hn::Lanes(d);
@@ -120,12 +119,12 @@ struct TestDecompress2T {
   }
 };
 
-void TestAllDecompress2() { ForeachPackedAndRawType<TestDecompress2T>(); }
+void TestAllDecompress2() { ForeachPackedAndRawType<TestDecompress2>(); }
 
 // Calls Compress and DecompressAndZeroPad for all short lengths and verifies
 // the distortion/error.
 template <typename Packed>
-struct TestShortLengthsT {
+struct TestShortLengths {
   template <typename T, class D>
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const size_t N = hn::Lanes(d);
@@ -196,7 +195,82 @@ struct TestShortLengthsT {
   }
 };
 
-void TestAllShortLengths() { ForeachPackedAndRawType<TestShortLengthsT>(); }
+void TestAllShortLengths() { ForeachPackedAndRawType<TestShortLengths>(); }
+
+// Verifies the arguments and remainder handling of `DecompressAndCompress*`.
+class TestDecompressAndCompress {
+ public:
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    ForeachActivationType3<Test>(d);
+  }
+
+ private:
+  struct Test {
+    template <typename T1, typename T2, typename T3, /*Deduced:*/ class D>
+    void operator()(T1, T2, T3, D d) {
+      hwy::RandomState rng;
+      using DF = hn::Repartition<float, D>;
+      using VF = hn::Vec<DF>;
+      const DF df;
+
+      for (size_t num = 1; num < 7 * hn::Lanes(d); ++num) {
+        auto p = hwy::AllocateAligned<T1>(num);
+        auto p1 = hwy::AllocateAligned<T2>(num);
+        auto p2 = hwy::AllocateAligned<T3>(num);
+        auto out = hwy::AllocateAligned<T1>(num);
+        auto expected1 = hwy::AllocateAligned<T1>(num);
+        auto expected2 = hwy::AllocateAligned<T1>(num);
+        auto expected3 = hwy::AllocateAligned<T1>(num);
+        HWY_ASSERT(p && p1 && p2 && out && expected1 && expected2 && expected3);
+        // Two bits each, totalling 6 bits which fit in the BF16 mantissa.
+        for (size_t i = 0; i < num; ++i) {
+          const size_t mod = i & 3;
+          p[i] = hwy::ConvertScalarTo<T1>(mod);
+          p1[i] = hwy::ConvertScalarTo<T2>(mod << 2);
+          p2[i] = hwy::ConvertScalarTo<T3>(mod << 4);
+          // For `Decompress1AndCompressInplace` to not overwrite `p`.
+          out[i] = p[i];
+          expected1[i] = hwy::ConvertScalarTo<T1>(mod);
+          expected2[i] = hwy::ConvertScalarTo<T1>((mod << 2) | mod);
+          expected3[i] =
+              hwy::ConvertScalarTo<T1>((mod << 4) | (mod << 2) | mod);
+        }
+
+        DecompressAndCompressInplace(df, p.get(), num,
+                                     [](DF, VF v) HWY_ATTR -> VF { return v; });
+        HWY_ASSERT_ARRAY_EQ(expected1.get(), p.get(), num);
+
+        // Uses `out` so as not to overwrite `p`.
+        Decompress1AndCompressInplace(
+            df, out.get(), num, p1.get(),
+            [](DF, VF v, VF v1) HWY_ATTR -> VF { return hn::Add(v, v1); });
+        HWY_ASSERT_ARRAY_EQ(expected2.get(), out.get(), num);
+
+        Decompress1AndCompressTo(df, out.get(), num, p.get(),
+                                 [](DF, VF v) HWY_ATTR -> VF { return v; });
+        HWY_ASSERT_ARRAY_EQ(expected1.get(), out.get(), num);
+
+        Decompress2AndCompressTo(df, out.get(), num, p.get(), p1.get(),
+                                 [](DF, VF v, VF v1)
+                                     HWY_ATTR -> VF { return hn::Add(v, v1); });
+        HWY_ASSERT_ARRAY_EQ(expected2.get(), out.get(), num);
+
+        Decompress3AndCompressTo(
+            df, out.get(), num, p.get(), p1.get(), p2.get(),
+            [](DF, VF v, VF v1, VF v2)
+                HWY_ATTR -> VF { return hn::Add(hn::Add(v, v1), v2); });
+        HWY_ASSERT_ARRAY_EQ(expected3.get(), out.get(), num);
+      }
+    }
+  };
+};
+
+void TestAllDecompressAndCompress() {
+  // The Highway Test interface (`ForGE128Vectors`) only supports a single type.
+  // We hard-code one here, and use `ForeachActivationType` internally.
+  hn::ForGE128Vectors<TestDecompressAndCompress>()(float());
+}
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
@@ -208,6 +282,7 @@ namespace gcpp {
 HWY_BEFORE_TEST(CompressTest);
 HWY_EXPORT_AND_TEST_P(CompressTest, TestAllDecompress2);
 HWY_EXPORT_AND_TEST_P(CompressTest, TestAllShortLengths);
+HWY_EXPORT_AND_TEST_P(CompressTest, TestAllDecompressAndCompress);
 HWY_AFTER_TEST();
 }  // namespace gcpp
 #endif  // HWY_ONCE

@@ -43,14 +43,14 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-template <typename T>
-void Activation(ActivationType activation, T* HWY_RESTRICT c1,
-                const T* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
+template <typename T1, typename T2>
+void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
+                const T2* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
                 const size_t worker) {
   static const auto zone = p.AddZone("Gen.Activation");
   PROFILER_ZONE3(p, worker, zone);
   namespace hn = hwy::HWY_NAMESPACE;
-  using DF = hn::ScalableTag<T>;
+  using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
   // ActivationType::Gelu
   if (c2 == nullptr) {  // No multiplier, just Gelu.
@@ -58,9 +58,10 @@ void Activation(ActivationType activation, T* HWY_RESTRICT c1,
     return;
   };
   // Has multiplier, Gelu(c1) * c2.
-  hn::Transform1(DF(), c1, count, c2, [](DF df, VF v, VF mul) HWY_ATTR {
-    return hn::Mul(mul, Gelu(df, v));
-  });
+  Decompress1AndCompressInplace(DF(), c1, count, c2,
+                                [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+                                  return hn::Mul(v2, Gelu(df, v1));
+                                });
 }
 
 // No C2 multiplier.
@@ -75,10 +76,9 @@ void ActivationBatched(ActivationType activation, Mat& c1,
   });
 }
 
-template <class Mat>
-HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
-                                    const Mat* c2, ThreadingContext& ctx) {
-  using T = typename Mat::T;
+template <class Mat1, class Mat2>
+HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat1& c1,
+                                    const Mat2* c2, ThreadingContext& ctx) {
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
     SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
@@ -87,8 +87,9 @@ HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat& c1,
     });
   } else {  // No multiplier
     SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
-      Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-                 c1.Cols(), ctx.profiler, worker);
+      Activation(activation, c1.Row(task),
+                 static_cast<const typename Mat2::T*>(nullptr), c1.Cols(),
+                 ctx.profiler, worker);
     });
   }
 }
