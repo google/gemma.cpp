@@ -1155,12 +1155,13 @@ struct MMImpl {
       case ParallelismType::kSequential:
         MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
                      range_np)(MMSequentialPolicy(), A, B, C_rows);
-      case ParallelismType::kCluster:
+      case ParallelismType::kWithinCluster:
         MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
                      range_np)(MMClusterParallelPolicy(), A, B, C_rows);
         break;
       default:
-        HWY_ABORT("Parallelism type not implemented.");
+        HWY_ABORT("Parallelism type %s not implemented.",
+                  static_cast<int>(options.parallelism_type));
         break;
     }
   }
@@ -1189,7 +1190,7 @@ struct MMImpl {
 template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
-                              MatPtrT<TC>& C, MMOptions options) {
+                              MatPtrT<TC>& C, MMOptions options = MMOptions()) {
   RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[0]);
 
   const Allocator& allocator = env.ctx.allocator;

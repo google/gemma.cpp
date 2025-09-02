@@ -66,31 +66,39 @@ void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
 
 // No C2 multiplier.
 template <class Mat>
-void ActivationBatched(ActivationType activation, Mat& c1,
-                       ThreadingContext& ctx) {
+void ActivationBatched(
+    ActivationType activation, Mat& c1, ThreadingContext& ctx,
+    size_t cluster_idx = 0,
+    ParallelismType parallelism = ParallelismType::kAcrossClusters) {
   using T = typename Mat::T;
-  SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
-    // Cast to correct type so type deduction works.
-    Activation(activation, c1.Row(task), static_cast<const T*>(nullptr),
-               c1.Cols(), ctx.profiler, worker);
-  });
+  ParallelFor(parallelism, c1.Rows(), ctx.pools, cluster_idx,
+              [&](uint64_t task, size_t worker) {
+                // Cast to correct type so type deduction works.
+                Activation(activation, c1.Row(task),
+                           static_cast<const T*>(nullptr), c1.Cols(),
+                           ctx.profiler, worker);
+              });
 }
 
 template <class Mat1, class Mat2>
-HWY_NOINLINE void ActivationBatched(ActivationType activation, Mat1& c1,
-                                    const Mat2* c2, ThreadingContext& ctx) {
+HWY_NOINLINE void ActivationBatched(
+    ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
+    size_t cluster_idx = 0,
+    ParallelismType parallelism = ParallelismType::kAcrossClusters) {
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
-    SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
-      Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
-                 ctx.profiler, worker);
-    });
+    ParallelFor(parallelism, c1.Rows(), ctx.pools, cluster_idx,
+                [&](uint64_t task, size_t worker) {
+                  Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
+                             ctx.profiler, worker);
+                });
   } else {  // No multiplier
-    SmallParallelFor(c1.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
-      Activation(activation, c1.Row(task),
-                 static_cast<const typename Mat2::T*>(nullptr), c1.Cols(),
-                 ctx.profiler, worker);
-    });
+    ParallelFor(parallelism, c1.Rows(), ctx.pools, cluster_idx,
+                [&](uint64_t task, size_t worker) {
+                  Activation(activation, c1.Row(task),
+                             static_cast<const typename Mat2::T*>(nullptr),
+                             c1.Cols(), ctx.profiler, worker);
+                });
   }
 }
 

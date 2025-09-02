@@ -233,9 +233,9 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 
   {
     PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
-    // Full parallelism is helpful, SmallParallelFor is insufficient.
-    ParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads,
-                ctx.pools, func);
+    // Full parallelism is helpful, kAcrossClusters is insufficient.
+    NestedParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads,
+                      ctx.pools, func);
   }
 }
 

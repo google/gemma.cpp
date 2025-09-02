@@ -27,6 +27,7 @@
 // IWYU pragma: begin_exports
 #include "util/basics.h"
 #include "util/mat.h"
+#include "util/threading.h"
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
@@ -55,16 +56,6 @@ static constexpr size_t kMaxMR = 4;
 
 IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
                                  size_t N, size_t sizeof_TC, size_t nr);
-
-enum class ParallelismType : uint8_t {
-  kNone,
-  // No parallelism.
-  kSequential,
-  // Parallelism at cluster level.
-  kCluster,
-  // Parallelism at package level.
-  kNested,
-};
 
 struct MMOptions {
   ParallelismType parallelism_type = ParallelismType::kNested;

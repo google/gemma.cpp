@@ -326,7 +326,7 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
 // Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
 // over clusters of ONE package, then within each cluster.
 template <class Func>
-void ParallelFor(size_t num_tasks, NestedPools& pools, const Func& func) {
+void NestedParallelFor(size_t num_tasks, NestedPools& pools, const Func& func) {
   // Even if there are multiple packages, we only use the first.
   const size_t pkg_idx = 0;
 
@@ -356,14 +356,57 @@ void ParallelFor(size_t num_tasks, NestedPools& pools, const Func& func) {
       });
 }
 
-// As above, but for lightweight tasks. Uses only one pool.
-template <class Func>
-void SmallParallelFor(size_t num_tasks, NestedPools& pools, const Func& func) {
-  // Even if there are multiple packages, we only use the first.
-  const size_t pkg_idx = 0;
+// Which pool(s) to use for parallelizing:
+enum class ParallelismType : uint8_t {
+  // None: single-threaded loop on the calling thread.
+  kSequential,
+  // One thread per cluster within the first package; or one per core if there
+  // is only one cluster. Use for few or lightweight tasks, or to maximize
+  // memory bandwidth availability.
+  kAcrossClusters,
+  // All cores within the cluster identified by `cluster_idx`. Use if already
+  // within a `kAcrossClusters` parallel-for, or if latency is more important
+  // than memory bandwidth.
+  kWithinCluster,
+  // First statically partitions `kAcrossClusters`, then `kWithinCluster`. This
+  // utilizes all cores, but has higher fork-join overhead (two barriers); use
+  // if there are many or heavy tasks.
+  kNested,
+};
 
-  pools.Pool(pkg_idx).Run(
-      0, num_tasks, [&](uint64_t task, size_t thread) { func(task, thread); });
+// Calls `func(task, worker)` for each `task` in `[0, num_tasks)`, with the
+// number/type of workers determined by `parallelism`. `cluster_idx` is only
+// used if `parallelism == kWithinCluster`.
+template <class Func>
+void ParallelFor(ParallelismType parallelism, size_t num_tasks,
+                 NestedPools& pools, size_t cluster_idx, const Func& func) {
+  if (cluster_idx != 0) {
+    // If already running across clusters, must not use across-cluster modes.
+    HWY_DASSERT(parallelism != ParallelismType::kAcrossClusters &&
+                parallelism != ParallelismType::kNested);
+  }
+
+  const size_t pkg_idx = 0;
+  switch (parallelism) {
+    case ParallelismType::kSequential:
+      for (size_t task = 0; task < num_tasks; ++task) {
+        func(task, /*worker=*/0);
+      }
+      return;
+
+    case ParallelismType::kAcrossClusters:
+      return pools.Pool(pkg_idx).Run(
+          0, num_tasks,
+          [&](uint64_t task, size_t worker) { func(task, worker); });
+
+    case ParallelismType::kWithinCluster:
+      return pools.Cluster(pkg_idx, cluster_idx)
+          .Run(0, num_tasks,
+               [&](uint64_t task, size_t worker) { func(task, worker); });
+
+    case ParallelismType::kNested:
+      return NestedParallelFor(num_tasks, pools, func);
+  }
 }
 
 }  // namespace gcpp

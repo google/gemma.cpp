@@ -494,14 +494,16 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
 // Simple loops unless/until batch sizes are large enough to parallelize.
 template <typename XT, typename OT>
 void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
-                    MatPtrT<OT>& out, ThreadingContext& ctx) {
+                    MatPtrT<OT>& out, ThreadingContext& ctx,
+                    size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
   HWY_DASSERT(weights.Cols() == activations.Cols());
   HWY_DASSERT(activations.SameShape(out));
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        activations.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
+    ParallelFor(
+        ParallelismType::kAcrossClusters, activations.Rows(), ctx.pools,
+        cluster_idx, [&](uint64_t token_idx, size_t worker) {
           RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
                   out.Row(token_idx), activations.Cols(), ctx.profiler, worker);
         });
@@ -510,13 +512,14 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
 
 template <typename XT>
 void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
-                           ThreadingContext& ctx) {
+                           ThreadingContext& ctx, size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
   HWY_DASSERT(weights.Cols() == inout.Cols());
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        inout.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
+    ParallelFor(
+        ParallelismType::kAcrossClusters, inout.Rows(), ctx.pools, cluster_idx,
+        [&](uint64_t token_idx, size_t worker) {
           RMSNormInplace(weights_t->PackedScale1(), inout.Row(token_idx),
                          inout.Cols(), ctx.profiler, worker);
         });
@@ -542,13 +545,14 @@ void LayerNormBatched(const MatPtrT<XT>& x, const MatPtr& weight,
 
 template <typename XT>
 static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
-                                      ThreadingContext& ctx) {
+                                      ThreadingContext& ctx,
+                                      size_t cluster_idx = 0) {
   HWY_DASSERT(out.SameShape(x));
-  SmallParallelFor(out.Rows(), ctx.pools,
-                   [&](uint64_t token_idx, size_t worker) {
-                     AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
-                             ctx.profiler, worker);
-                   });
+  ParallelFor(ParallelismType::kAcrossClusters, out.Rows(), ctx.pools,
+              cluster_idx, [&](uint64_t token_idx, size_t worker) {
+                AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
+                        ctx.profiler, worker);
+              });
 }
 
 template <typename XT>
@@ -776,13 +780,15 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
 
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
     const float cap, MatPtrT<float>& x, const hwy::BitSet4096<>& non_eos,
-    ThreadingContext& ctx) {
+    ThreadingContext& ctx, size_t cluster_idx = 0) {
   if (cap == 0.0f) return;
-  SmallParallelFor(x.Rows(), ctx.pools, [&](uint64_t task, size_t worker) {
-    if (non_eos.Get(task)) {
-      LogitsSoftCap(cap, x.Row(task), x.Cols(), ctx.profiler, worker);
-    }
-  });
+  ParallelFor(ParallelismType::kAcrossClusters, x.Rows(), ctx.pools,
+              cluster_idx, [&](uint64_t task, size_t worker) {
+                if (non_eos.Get(task)) {
+                  LogitsSoftCap(cap, x.Row(task), x.Cols(), ctx.profiler,
+                                worker);
+                }
+              });
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED size_t

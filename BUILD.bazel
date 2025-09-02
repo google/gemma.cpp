@@ -264,6 +264,7 @@ cc_library(
         ":allocator",
         ":basics",
         ":mat",
+        ":threading",
         ":threading_context",
         "//compression:compress",
         "@highway//:bit_set",
