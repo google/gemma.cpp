@@ -67,8 +67,8 @@ enum class ParallelismType : uint8_t {
 };
 
 struct MMOptions {
-  ParallelismType parallelism_type_ = ParallelismType::kNested;
-  uint8_t cluster_idx_ = 0;
+  ParallelismType parallelism_type = ParallelismType::kNested;
+  uint8_t cluster_idx = 0;
 };
 
 struct MMSequentialPolicy {

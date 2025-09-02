@@ -258,8 +258,9 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatMulSlow(A, BT, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
+  MMOptions options;
   for (size_t rep = 0; rep < 16; ++rep) {
-    MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C);
+    MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C, options);
     AssertClose(A, BT, C_slow, C, env, line);
     if (per_key->autotune.Best()) break;
   }

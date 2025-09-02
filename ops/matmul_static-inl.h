@@ -28,8 +28,8 @@
 #define GEMMA_MATMUL_DEFINE_ONE(TA, TB, TC)                             \
   MMPerKey* MatMulStatic(const MatPtrT<TA>& A, const MatPtrT<TB>& B,    \
                          const float* HWY_RESTRICT add, MatMulEnv& env, \
-                         MatPtrT<TC>& C) {                              \
-    return MatMul(A, B, add, env, C);                                   \
+                         MatPtrT<TC>& C, MMOptions options) {           \
+    return MatMul(A, B, add, env, C, options);                          \
   }
 
 #if defined(THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_MATMUL_STATIC_INL_H_) == \

@@ -63,9 +63,10 @@ namespace hn = hwy::HWY_NAMESPACE;
 template <typename TA, typename TC>
 MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
                      const float* HWY_RESTRICT add, MatMulEnv& env,
-                     MatPtrT<TC>& C) {
-  return CallUpcasted(
-      &B, [&](const auto* B_t) { return MatMulStatic(A, *B_t, add, env, C); });
+                     MatPtrT<TC>& C, const MMOptions& options = MMOptions()) {
+  return CallUpcasted(&B, [&](const auto* B_t) {
+    return MatMulStatic(A, *B_t, add, env, C, options);
+  });
 }
 
 HWY_INLINE double PackTokenAndProb(int32_t token, float prob) {

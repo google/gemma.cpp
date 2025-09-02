@@ -1179,7 +1179,7 @@ struct MMImpl {
 template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
-                              MatPtrT<TC>& C) {
+                              MatPtrT<TC>& C, MMOptions options) {
   RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[0]);
 
   const Allocator& allocator = env.ctx.allocator;
@@ -1205,12 +1205,11 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   MMPerKey& per_key = env.per_key[index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
-  // Default to nested parallelism.
-  const ParallelismType parallelism_type = ParallelismType::kNested;
   const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
                     add);
   if (HWY_LIKELY(tuner.Best())) {
-    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best(), parallelism_type);
+    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best(),
+                     options.parallelism_type);
     return &per_key;
   }
 
@@ -1239,7 +1238,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMImpl::DoMatMul(A, B, C_rows, args, cfg, parallelism_type);
+  MMImpl::DoMatMul(A, B, C_rows, args, cfg, options.parallelism_type);
   const uint64_t t1 =
       env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
   const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /
