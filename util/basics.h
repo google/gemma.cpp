@@ -33,7 +33,10 @@ namespace gcpp {
 // Maximum number of packages (CPU sockets) to use. `ThreadingArgs` verifies the
 // runtime `max_packages` does not exceed this. MatMul's outer per-package loop
 // is disabled if this is 1.
-constexpr size_t kMaxPackages = 1;
+HWY_INLINE_VAR constexpr size_t kMaxPackages = 1;
+
+// TODO: extend to 16k after updating non_eos.
+HWY_INLINE_VAR constexpr size_t kMaxBatchSize = 4096;
 
 enum class Tristate : int32_t { kFalse = 0, kTrue = 1, kDefault = -1 };
 

@@ -330,10 +330,8 @@ using StridedViewD = StridedView<double>;
 // Per-package storage for packed A.
 class MMStorage {
  public:
-  // Compile-time bounds on matrix dimensions to enable pre-allocating storage
-  // and reusing it across `MatMul` calls. The resulting allocations are 256 MiB
-  // per package and 512 MiB, respectively.
-  static constexpr size_t kMaxM = 4096;
+  // Compile-time bounds on matrix columns to enable pre-allocating storage
+  // and reusing it across `MatMul` calls.
   static constexpr size_t kMaxK = 64 * 1024;
   // Upper bound for per-worker B storage on the stack. Chosen such that one row
   // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
@@ -348,8 +346,10 @@ class MMStorage {
     MMNestedParallelPolicy::ForPkg(ctx, kMaxPackages, [&](size_t pkg_idx) {
       Allocator& allocator = ctx.allocator;
 
-      pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
-          "pkg_A", Extents2D(kMaxM, kMaxK), allocator, MatPadding::kOdd));
+      // 0.5 GiB per package.
+      pkg_A_[pkg_idx].reset(
+          new MatStorageT<BF16>("pkg_A", Extents2D(kMaxBatchSize, kMaxK),
+                                allocator, MatPadding::kOdd));
 
       if (allocator.ShouldBind()) {
         const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
@@ -367,7 +367,7 @@ class MMStorage {
   // faster than on-the-fly when native BF16 is available: it only happens once,
   // not per B tile row, and the cache footprint is smaller.
   StridedViewBF A(size_t pkg_idx, const Extents2D& extents) const {
-    HWY_DASSERT(extents.rows <= kMaxM);
+    HWY_DASSERT(extents.rows <= kMaxBatchSize);
     HWY_DASSERT(extents.cols <= kMaxK);
     return StridedViewBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
                          extents.cols, pkg_A_[pkg_idx]->Stride());
@@ -527,8 +527,8 @@ static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
 std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
-                                   size_t K, size_t N, size_t sizeof_TA,
-                                   size_t sizeof_TC, size_t max_mr, size_t nr,
+                                   size_t K, size_t N, size_t sizeof_TC,
+                                   size_t max_mr, size_t nr,
                                    const IndexRangePartition& ranges_np,
                                    bool print_config);
 

@@ -120,9 +120,9 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
   // Dot() uses double-precision summation.
   double tolerance = 20 * norm * eps_f32;
-  // If B is F32, Dot() promotes F32 or even F64, but MatMul demotes the F32 to
-  // BF16, so add extra tolerance.
-  if (IsF32<TB>()) {
+  // If either is F32, Dot() promotes F32 or even F64, but MatMul demotes the
+  // F32 to BF16, so add extra tolerance.
+  if (IsF32<TA>() || IsF32<TB>()) {
     tolerance += 2 * max_abs * eps_bf16;
   }
 
