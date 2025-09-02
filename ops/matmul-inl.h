@@ -1147,8 +1147,10 @@ struct MMImpl {
         MMPerPackage(A.Extents(), args, config, pkg_idx, range_np)(
             MMNestedParallelPolicy(), A, B, C_rows);
         break;
-      case ParallelismType::kNone:
       case ParallelismType::kSequential:
+        MMPerPackage(A.Extents(), args, config, pkg_idx, range_np)(
+            MMSequentialPolicy(), A, B, C_rows);
+      case ParallelismType::kNone:
       case ParallelismType::kCluster:
         HWY_ABORT("Parallelism type not implemented.");
         break;
