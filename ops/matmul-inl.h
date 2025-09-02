@@ -728,9 +728,10 @@ class MMPerPackage {
 
  public:
   MMPerPackage(const Extents2D A, const MMArgs& args, const MMConfig& config,
-               size_t pkg_idx, const IndexRange& range_np)
+               size_t pkg_idx, size_t cluster_idx, const IndexRange& range_np)
       : args_(args),
         pkg_idx_(pkg_idx),
+        cluster_idx_(cluster_idx),
         range_np_(range_np),
         mr_(config.MR()),
         ranges_mc_(config.RangesOfMC(A.rows)),
@@ -821,7 +822,8 @@ class MMPerPackage {
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
     MMParallelPolicyT::ForNP(
         args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
-        pkg_idx_, [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+        pkg_idx_, cluster_idx_,
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args_);
 
@@ -869,7 +871,8 @@ class MMPerPackage {
 
     MMParallelPolicyT::ForNP(
         args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
-        pkg_idx_, [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
+        pkg_idx_, cluster_idx_,
+        [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args_);
 
@@ -901,7 +904,7 @@ class MMPerPackage {
     // Sequential loop over NC/MC/KC, similar to `loop_nc` below
     // except for the profiler strings and `out_tag`.
     MMParallelPolicyT::ForRangesMC_NC(
-        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_,
+        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_, cluster_idx_,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
@@ -951,7 +954,7 @@ class MMPerPackage {
       }
     };  // loop_nc
     MMParallelPolicyT::ForRangesMC_NC(
-        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_,
+        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_, cluster_idx_,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
@@ -1024,7 +1027,7 @@ class MMPerPackage {
         const size_t multiple_K = HWY_MAX(NBF, line_bytes_ / sizeof(BF16));
 
         MMParallelPolicyT::ForNP(args_.env->ctx, all_K, multiple_K, inner_tasks,
-                                 pkg_idx_,
+                                 pkg_idx_, cluster_idx_,
                                  [&](const IndexRange& range_K, size_t worker) {
                                    do_range(all_M, range_K, worker);
                                  });
@@ -1032,7 +1035,8 @@ class MMPerPackage {
       }
       case MMParA::kM:
         MMParallelPolicyT::ForRangeMC(
-            args_.env->ctx, all_M, pkg_idx_, [&](size_t row_a, size_t worker) {
+            args_.env->ctx, all_M, pkg_idx_, cluster_idx_,
+            [&](size_t row_a, size_t worker) {
               do_range(IndexRange(row_a, row_a + 1), all_K, worker);
             });
         break;
@@ -1106,6 +1110,7 @@ class MMPerPackage {
 
   const MMArgs args_;  // copy for locality
   const size_t pkg_idx_;
+  const size_t cluster_idx_;  // 0 for sequential and nested.
 
   const IndexRange range_np_;
   // From MMConfig:
@@ -1135,23 +1140,26 @@ struct MMImpl {
   template <typename TA, typename TB, typename TC>
   static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                                     RowPtrs<TC> C_rows, const MMArgs& args,
-                                    const MMConfig& config,
-                                    ParallelismType parallelism_type) {
+                                    const MMConfig& config, MMOptions options) {
     PROFILER_ZONE("MM.DoMatMul");
     const size_t pkg_idx = 0;
     HWY_DASSERT(args.per_key->ranges_np.NumTasks() == 1);
     const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
 
-    switch (parallelism_type) {
+    switch (options.parallelism_type) {
       case ParallelismType::kNested:
-        MMPerPackage(A.Extents(), args, config, pkg_idx, range_np)(
-            MMNestedParallelPolicy(), A, B, C_rows);
+        HWY_DASSERT(options.cluster_idx == 0);
+        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
+                     range_np)(MMNestedParallelPolicy(), A, B, C_rows);
         break;
       case ParallelismType::kSequential:
-        MMPerPackage(A.Extents(), args, config, pkg_idx, range_np)(
-            MMSequentialPolicy(), A, B, C_rows);
-      case ParallelismType::kNone:
+        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
+                     range_np)(MMSequentialPolicy(), A, B, C_rows);
       case ParallelismType::kCluster:
+        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
+                     range_np)(MMClusterParallelPolicy(), A, B, C_rows);
+        break;
+      default:
         HWY_ABORT("Parallelism type not implemented.");
         break;
     }
@@ -1210,8 +1218,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
                     add);
   if (HWY_LIKELY(tuner.Best())) {
-    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best(),
-                     options.parallelism_type);
+    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best(), options);
     return &per_key;
   }
 
@@ -1240,7 +1247,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMImpl::DoMatMul(A, B, C_rows, args, cfg, options.parallelism_type);
+  MMImpl::DoMatMul(A, B, C_rows, args, cfg, options);
   const uint64_t t1 =
       env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
   const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /

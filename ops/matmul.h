@@ -81,9 +81,10 @@ struct MMSequentialPolicy {
   template <class Func>
   static void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
                     size_t nx_multiple, size_t inner_tasks, size_t pkg_idx,
-                    const Func& func) {
+                    size_t cluster_idx, const Func& func) {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
-    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage();
+    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage() +
+                            cluster_idx * ctx.pools.MaxWorkersPerCluster();
     func(range_np, base_idx);
   }
 
@@ -91,8 +92,10 @@ struct MMSequentialPolicy {
   static void ForRangesMC_NC(ThreadingContext& ctx,
                              const IndexRangePartition& ranges_mc,
                              const IndexRangePartition& ranges_nc,
-                             size_t pkg_idx, const Func& func) {
-    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage();
+                             size_t pkg_idx, size_t cluster_idx,
+                             const Func& func) {
+    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage() +
+                            cluster_idx * ctx.pools.MaxWorkersPerCluster();
 
     for (size_t i = 0; i < ranges_mc.NumTasks(); ++i) {
       const IndexRange range_mc = ranges_mc.Range(i);
@@ -105,11 +108,65 @@ struct MMSequentialPolicy {
 
   template <class Func>
   static void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
-                         size_t pkg_idx, const Func& func) {
-    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage();
+                         size_t pkg_idx, size_t cluster_idx, const Func& func) {
+    const size_t base_idx = pkg_idx * ctx.pools.MaxWorkersPerPackage() +
+                            cluster_idx * ctx.pools.MaxWorkersPerCluster();
     for (uint64_t row_a = range_mc.begin(); row_a < range_mc.end(); ++row_a) {
       func(row_a, base_idx);
     }
+  }
+};
+
+struct MMClusterParallelPolicy {
+  template <class Func>
+  static void ForPkg(ThreadingContext& ctx, const size_t max_packages,
+                     const Func& func) {
+    func(/*pkg_idx=*/0);
+  }
+
+  template <class Func>
+  static void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
+                    size_t nx_multiple, size_t inner_tasks, size_t pkg_idx,
+                    size_t cluster_idx, const Func& func) {
+    HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+    const IndexRangePartition worker_ranges = StaticPartition(
+        range_np, cluster.NumWorkers() * inner_tasks, nx_multiple);
+    ParallelizeOneRange(worker_ranges, cluster,
+                        [&](const IndexRange& worker_range, size_t worker) {
+                          func(worker_range, worker);
+                        });
+  }
+
+  template <class Func>
+  static void ForRangesMC_NC(ThreadingContext& ctx,
+                             const IndexRangePartition& ranges_mc,
+                             const IndexRangePartition& ranges_nc,
+                             size_t pkg_idx, size_t cluster_idx,
+                             const Func& func) {
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+
+    // Low-batch: avoid Divide/Remainder.
+    if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
+      ParallelizeOneRange(ranges_nc, cluster,
+                          [&](const IndexRange& range_nc, size_t thread) {
+                            func(ranges_mc.Range(0), range_nc, thread);
+                          });
+    } else {
+      ParallelizeTwoRanges(
+          ranges_mc, ranges_nc, cluster,
+          [&](const IndexRange& range_mc, const IndexRange& range_nc,
+              size_t thread) { func(range_mc, range_nc, thread); });
+    }
+  }
+
+  template <class Func>
+  static void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
+                         size_t pkg_idx, size_t cluster_idx, const Func& func) {
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+    cluster.Run(range_mc.begin(), range_mc.end(),
+                [&](uint64_t row_a, size_t thread) { func(row_a, thread); });
   }
 };
 
@@ -132,10 +189,11 @@ struct MMNestedParallelPolicy {
 
   // Cluster/CCX-aware parallel-for over B rows in `range_np`. `nx_multiple` is
   // the granularity of per-cluster tasks. Calls `func(worker_range, worker)`.
+  // `cluster_idx` is not used here as all clusters within a package are used.
   template <class Func>
   static void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
                     size_t nx_multiple, size_t inner_tasks, size_t pkg_idx,
-                    const Func& func) {
+                    size_t /*cluster_idx*/, const Func& func) {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
 
@@ -175,11 +233,13 @@ struct MMNestedParallelPolicy {
 
   // Cluster/CCX-aware parallel-for over blocks (separate subranges of A and B
   // rows). Calls `func(range_mc, range_nc, worker)`.
+  // `cluster_idx` is not used here as all clusters within a package are used.
   template <class Func>
   static void ForRangesMC_NC(ThreadingContext& ctx,
                              const IndexRangePartition& ranges_mc,
                              const IndexRangePartition& ranges_nc,
-                             size_t pkg_idx, const Func& func) {
+                             size_t pkg_idx, size_t /*cluster_idx*/,
+                             const Func& func) {
     const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
     hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
     // `all_clusters` is a pool with one worker per cluster in a package.
@@ -221,9 +281,11 @@ struct MMNestedParallelPolicy {
   }
 
   // Calls `func(row_a, worker)` in parallel.
+  // `cluster_idx` is not used here as all clusters within a package are used.
   template <class Func>
   static void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
-                         size_t pkg_idx, const Func& func) {
+                         size_t pkg_idx, size_t /*cluster_idx*/,
+                         const Func& func) {
     const size_t pkg_base = pkg_idx * ctx.pools.MaxWorkersPerPackage();
     ctx.pools.Pool(pkg_idx).Run(
         range_mc.begin(), range_mc.end(),
