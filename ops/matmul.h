@@ -369,6 +369,7 @@ class MMStorage {
   StridedViewBF A(size_t pkg_idx, const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxBatchSize);
     HWY_DASSERT(extents.cols <= kMaxK);
+    HWY_DASSERT(pkg_A_[pkg_idx] != nullptr);
     return StridedViewBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
                          extents.cols, pkg_A_[pkg_idx]->Stride());
   }
@@ -733,7 +734,7 @@ struct MatMulEnv {
   // Whether to print the best config immediately after autotuning finished.
   bool print_best = false;
 
-  MMStorage storage;
+  std::vector<MMStorage> storage;
   MMKeys keys;
   std::vector<MMPerKey> per_key;
 

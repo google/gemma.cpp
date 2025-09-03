@@ -599,7 +599,8 @@ class MMPerPackage {
     } else {
       // Always decompress. To reduce code size/compile time, we no longer
       // support a separate F32 kernel; most A are already BF16.
-      const StridedViewBF A_view = args_.env->storage.A(pkg_idx_, A.Extents());
+      const StridedViewBF A_view =
+          args_.env->storage[cluster_idx_].A(pkg_idx_, A.Extents());
       DecompressA<MMParallelPolicyT>(A, A_view);
       DispatchOrder(parallel_policy, A_view, B, C_rows);
     }
