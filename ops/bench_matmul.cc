@@ -111,8 +111,8 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   // Ensure usage conditions are set before autotuning. Both binding and
   // spinning may materially affect the choice of config. No harm in calling
   // BindB/C if there is a single package: they will be a no-op.
-  BindB(b_trans, sizeof(TC), env.parallel);
-  BindC(C, env.parallel);
+  BindB(env.ctx, b_trans, sizeof(TC));
+  BindC(env.ctx, C);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   Tristate use_spinning = Tristate::kDefault;
@@ -160,10 +160,10 @@ void BenchAllMatMul() {
           ctx.pools.PinString());
   MatMulEnv env(ctx);
 
-  for (size_t batch_size : {1, 4, 128, 512}) {
+  for (size_t batch_size : {128, 512}) {
     constexpr bool kAdd = false;
-    BenchMatMul<BF16, SFP, BF16>(batch_size, 24576, 3072, kAdd, env);
-    BenchMatMul<BF16, SFP, BF16>(batch_size, 3072, 24576, kAdd, env);
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 24576, 3072, kAdd, env);
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 3072, 24576, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();

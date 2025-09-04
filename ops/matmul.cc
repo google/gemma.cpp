@@ -405,20 +405,15 @@ IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
 MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx) {
   // Create storage per cluster. This only applies to in-cluster parallelism.
   // For nested and sequential parallelism, a single MMStorage is used.
-  size_t num_packages = ctx.topology.NumPackages();
-  size_t num_clusters = 0;
-  for (size_t pkg_idx = 0; pkg_idx < num_packages; ++pkg_idx) {
-    num_clusters += ctx.topology.NumClusters(pkg_idx);
-  }
+  const size_t num_clusters = ctx.pools.AllClusters(/*pkg_idx=*/0).NumWorkers();
   storage.reserve(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
     storage.push_back(MMStorage(ctx));
+    row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(kMaxBatchSize));  // C
   }
 
   char cpu100[100];
   have_timer_stop = hwy::platform::HaveTimerStop(cpu100);
-
-  row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(kMaxBatchSize));  // C
 }
 
 void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC) {

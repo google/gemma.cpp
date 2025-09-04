@@ -19,7 +19,6 @@
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
-#include "util/threading_context.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -29,7 +28,7 @@
 #include "gemma/gemma.h"
 #include "gemma/weights.h"
 #include "util/threading.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
+#include "util/threading_context.h"
 #include "hwy/profiler.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
@@ -234,8 +233,9 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
   {
     PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
     // Full parallelism is helpful, kAcrossClusters is insufficient.
-    NestedParallelFor(num_tokens * div_qbatch.GetDivisor() * layer_config.heads,
-                      ctx.pools, func);
+    HierarchicalParallelFor(
+        num_tokens * div_qbatch.GetDivisor() * layer_config.heads, ctx.pools,
+        func);
   }
 }
 
@@ -285,9 +285,9 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   // Apply positional encodings for K.
   // Note that 2D parallelism is not worth the fork/join overhead because the
   // tasks are very lightweight.
-  env.ctx.pools.Pool(0).Run(
-      0, kv_heads * num_interleaved,
-      [&](uint64_t task, size_t thread) HWY_ATTR {
+  ParallelFor(
+      ParallelismStrategy::kFlat, kv_heads * num_interleaved, env.ctx,
+      /*cluster_idx=*/0, [&](size_t task, size_t worker) HWY_ATTR {
         const size_t head = task % kv_heads;
         const size_t interleaved_idx = task / kv_heads;
         const size_t qi = div_qbatch.Remainder(interleaved_idx);
@@ -308,12 +308,12 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         if (layer.key_norm_scale.HasPtr()) {
           CallUpcasted(&layer.key_norm_scale, [&](const auto* weights_t) {
             RMSNormInplace(weights_t->PackedScale1(), kv_f32, qkv_dim,
-                           env.ctx.profiler, thread);
+                           env.ctx.profiler, worker);
           });
         }
 
         PositionalEncodingQK(kv_f32, layer_idx, layer, activations,
-                             env.ctx.profiler, thread, pos);
+                             env.ctx.profiler, worker, pos);
         CompressPerThread tls;
         Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
       });

@@ -191,12 +191,13 @@ constexpr bool SupportsPointerArithmetic() {
   return !IsNuqStream<Packed>();
 }
 
-// Tensor types for loading weights.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64 };
+// Tensor types for loading weights. Not all of these are supported weight
+// types, some are only used for `Activations`.
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kU32, kU64 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
-static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16",
-                                               "sfp",     "nuq", "f64"};
+static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
+                                               "nuq",     "f64", "u32",  "u64"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -206,6 +207,8 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(SfpStream),
     4 /* NuqStream, actually 4.5 */,
     8 * sizeof(double),
+    8 * sizeof(uint32_t),
+    8 * sizeof(uint64_t),
 };
 
 static inline bool EnumValid(Type type) {
@@ -226,6 +229,10 @@ Type TypeEnum() {
     return Type::kNUQ;
   } else if constexpr (hwy::IsSame<Packed, double>()) {
     return Type::kF64;
+  } else if constexpr (hwy::IsSame<Packed, uint32_t>()) {
+    return Type::kU32;
+  } else if constexpr (hwy::IsSame<Packed, uint64_t>()) {
+    return Type::kU64;
   } else {
     HWY_DASSERT(false);
     return Type::kUnknown;

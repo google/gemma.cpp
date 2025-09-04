@@ -21,14 +21,14 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
-#include "gemma/configs.h"   // ModelConfig
-#include "ops/matmul.h"      // MatMulEnv
-#include "ops/ops.h"         // CreateInvTimescale
-#include "util/allocator.h"  // Allocator
-#include "util/basics.h"     // BF16
-#include "util/mat.h"        // MatStorageT
+#include "gemma/configs.h"  // ModelConfig
+#include "ops/ops.h"        // CreateInvTimescale
+#include "util/basics.h"    // BF16
+#include "util/mat.h"       // MatStorageT
+#include "util/threading_context.h"
 
 namespace gcpp {
 
@@ -150,24 +150,28 @@ struct AttentionActivations {
 
 struct Activations {
   Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
-              const Allocator& allocator,
+              ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : layer_config(config.layer_configs[0]),
 
-        x(MatFactory("x", batch_size, config.model_dim, allocator)),
-        x_bf(MatFactory("x_bf", batch_size, config.model_dim, allocator)),
-        logits(MatFactory("logits", batch_size, config.vocab_size, allocator)),
+        x(MatFactory("x", batch_size, config.model_dim, ctx.allocator)),
+        x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
+        logits(
+            MatFactory("logits", batch_size, config.vocab_size, ctx.allocator)),
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
-                                   config.model_dim, allocator)),
-        C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim, allocator)),
-        C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim, allocator)),
-        ffw_out(MatFactory("ffw_out", batch_size, config.model_dim, allocator)),
+                                   config.model_dim, ctx.allocator)),
+        C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
+                      ctx.allocator)),
+        C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim,
+                      ctx.allocator)),
+        ffw_out(
+            MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
 
-        attention(config, layer_config, batch_size, seq_len, allocator,
+        attention(config, layer_config, batch_size, seq_len, ctx.allocator,
                   row_ptrs),
         griffin(config, config.model == Model::GRIFFIN_2B ? batch_size : 0,
-                allocator) {
+                ctx.allocator) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.

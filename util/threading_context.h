@@ -116,6 +116,95 @@ struct ThreadingContext {
   NestedPools pools;
 };
 
+// Describes the strategy for distributing parallel work across cores.
+enum class ParallelismStrategy : uint8_t {
+  // Execute using a single-threaded loop on the calling thread. The `worker`
+  // index passed to the user's `Func` is unique across clusters.
+  kNone,
+  // One thread per cluster within the first package. The `worker` index passed
+  // to the user's `Func` is a `cluster_idx <= NumClusters()`. Some CPUs may
+  // only have a single cluster, hence `Func` should also contain a nested
+  // `ParallelFor` with `kWithinCluster`.
+  kAcrossClusters,
+  // All cores within the cluster identified by `cluster_idx`. The `worker`
+  // index passed to the user's `Func` is unique across clusters. Choose this
+  // strategy if already within a `ParallelFor` call with `kAcrossClusters`,
+  // or latency is more important than memory bandwidth.
+  kWithinCluster,
+  // Equivalent to `kAcrossClusters` if there are multiple clusters, otherwise
+  // `kWithinCluster`. Use for few or lightweight tasks (this only uses a
+  // single pool and barrier), or to maximize memory bandwidth availability.
+  kFlat,
+  // First statically partitions `kAcrossClusters`, then `kWithinCluster`. This
+  // utilizes all cores, but has higher fork-join overhead (two barriers); use
+  // if there are many or heavy tasks.
+  kHierarchical,
+};
+
+// Calls `func(task, worker)` for each `task` in `[0, num_tasks)`, with the
+// number/type of workers determined by `parallelism`. `cluster_idx` is for
+// `parallelism == kWithinCluster`, and should be 0 if unknown.
+template <class Func>
+void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
+                 ThreadingContext& ctx, size_t cluster_idx, const Func& func) {
+  HWY_DASSERT(ctx.topology.NumPackages() == 1);
+  const size_t pkg_idx = 0;
+
+  HWY_DASSERT(cluster_idx < ctx.topology.NumClusters(pkg_idx));
+  if (cluster_idx != 0) {
+    // If already running across clusters, only use within-cluster modes.
+    HWY_DASSERT(parallelism == ParallelismStrategy::kNone ||
+                parallelism == ParallelismStrategy::kWithinCluster);
+  }
+
+  switch (parallelism) {
+    case ParallelismStrategy::kNone: {
+      const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+      for (size_t task = 0; task < num_tasks; ++task) {
+        func(task, worker);
+      }
+      return;
+    }
+
+    case ParallelismStrategy::kAcrossClusters:
+      return ctx.pools.AllClusters(pkg_idx).Run(
+          0, num_tasks,
+          [&](uint64_t task, size_t cluster_idx) { func(task, cluster_idx); });
+
+    case ParallelismStrategy::kWithinCluster: {
+      // Ensure the worker argument is unique across clusters, because it is
+      // used for TLS indexing for example in profiler.h.
+      const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+      return ctx.pools.Cluster(pkg_idx, cluster_idx)
+          .Run(0, num_tasks, [&](uint64_t task, size_t worker) {
+            func(task, base + worker);
+          });
+    }
+
+    case ParallelismStrategy::kFlat: {
+      // Check for single cluster; if not, we must compute `cluster_base` for
+      // consistent and non-overlapping worker indices.
+      hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
+      const size_t num_clusters = all_clusters.NumWorkers();
+      if (num_clusters == 1) {
+        return ctx.pools.Cluster(pkg_idx, cluster_idx)
+            .Run(0, num_tasks,
+                 [&](uint64_t task, size_t worker) { func(task, worker); });
+      }
+
+      return ctx.pools.AllClusters(pkg_idx).Run(
+          0, num_tasks, [&](uint64_t task, size_t cluster_idx) {
+            const size_t worker =
+                cluster_idx * ctx.pools.MaxWorkersPerCluster();
+            func(task, worker);
+          });
+    }
+
+    case ParallelismStrategy::kHierarchical:
+      return HierarchicalParallelFor(num_tasks, ctx.pools, func);
+  }
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_THREADING_CONTEXT_H_

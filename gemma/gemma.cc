@@ -574,7 +574,7 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      const WeightsPtrs& weights, KVCache& kv_cache,
                      MatMulEnv& env, TimingInfo& timing_info) {
   Activations activations(config, runtime_config.prefill_tbatch_size,
-                          kv_cache.SeqLen(), env.ctx.allocator, env.row_ptrs);
+                          kv_cache.SeqLen(), env.ctx, env.row_ptrs);
 
   AllQueries all_queries(prompt, pos, prefix_end,
                          hwy::Span<KVCache>(&kv_cache, 1));
@@ -592,7 +592,7 @@ void GenerateBatchT(const ModelConfig& config,
   const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
                                         runtime_config.prefill_tbatch_size);
   Activations activations(config, max_batch_size,
-                          all_queries[0].kv_cache.SeqLen(), env.ctx.allocator,
+                          all_queries[0].kv_cache.SeqLen(), env.ctx,
                           env.row_ptrs);
 
   for (size_t start = 0; start < all_queries.NumQueries();
@@ -616,8 +616,8 @@ void GenerateImageTokensT(const ModelConfig& config,
   const size_t num_tokens = vit_config.max_seq_len;
   prefill_runtime_config.prefill_tbatch_size =
       num_tokens / (vit_config.pool_dim * vit_config.pool_dim);
-  Activations prefill_activations(vit_config, num_tokens, num_tokens,
-                                  env.ctx.allocator, env.row_ptrs);
+  Activations prefill_activations(vit_config, num_tokens, num_tokens, env.ctx,
+                                  env.row_ptrs);
   // Weights are for the full PaliGemma model, not just the ViT part.
   PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
              prefill_activations, env);

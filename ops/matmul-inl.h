@@ -565,45 +565,203 @@ class MMKernel {
   }
 };
 
-// Called on the main thread with the entire N range, or by each package with
-// a static partition of N. This class contains several variants of the
-// outer M/N/K loops, and calls `A2C0` which loops over the inner KC and MC.
-// Its member variables avoid long argument lists in Do*().
-class MMPerPackage {
- public:
-  MMPerPackage(const Extents2D A, const MMArgs& args, const MMConfig& config,
-               size_t pkg_idx, size_t cluster_idx, const IndexRange& range_np)
-      : args_(args),
-        pkg_idx_(pkg_idx),
-        cluster_idx_(cluster_idx),
-        range_np_(range_np),
-        mr_(config.MR()),
-        ranges_mc_(config.RangesOfMC(A.rows)),
-        ranges_kc_(config.RangesOfKC(A.cols)),
-        ranges_nc_(config.RangesOfNC(range_np)),
-        order_(config.Order()),
-        inner_tasks_(config.InnerTasks()),
-        line_bytes_(args.env->ctx.allocator.LineBytes()) {}
+// Miscellaneous stateless helper functions.
+struct MMImpl {
+  // Returns existing entry for the given key or -1.
+  static HWY_INLINE intptr_t IndexOfKey(MMKeys::Key key, const MMKeys& keys) {
+    const hwy::Span<const uint64_t> all_keys = keys.Keys();
+    // TODO: SIMD scan
+    for (size_t i = 0; i < all_keys.size(); ++i) {
+      if (all_keys[i] == key) return static_cast<intptr_t>(i);
+    }
+    return -1;
+  }
 
-  // B and maybe A are decompressed several call layers lower, but not all
-  // member functions depend on TA/TB, so pass them as an argument instead of
-  // templating the class.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_NOINLINE void operator()(const MMParallelPolicyT& parallel_policy,
-                               const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                               RowPtrs<TC> C_rows) const {
+  static size_t Worker(const MMArgs& args) {
+    return args.options.cluster_idx *
+           args.env->ctx.pools.MaxWorkersPerCluster();
+  }
+
+  template <class Func>
+  static void DispatchParallelism(ParallelismStrategy parallelism,
+                                  const Func& func) {
+    switch (parallelism) {
+      case ParallelismStrategy::kHierarchical:
+        return func(MMParallelHierarchical());
+      case ParallelismStrategy::kNone:
+        return func(MMParallelNone());
+      case ParallelismStrategy::kWithinCluster:
+        return func(MMParallelWithinCluster());
+      default:
+        HWY_UNREACHABLE;
+    }
+  }
+
+  // Decompresses all `M x K` from `A` into padded BF16 `A_view`.
+  static HWY_NOINLINE void DoDecompressA(const MatPtrT<float>& A,
+                                         const StridedViewBF A_view,
+                                         MMParA par_a, const MMArgs& args) {
+    const IndexRange all_M(0, A.Rows());
+    const IndexRange all_K(0, A.Cols());
+    HWY_DASSERT(all_K.Num() == A_view.Cols());
+
+    const hn::ScalableTag<BF16> dbf;
+    const size_t NBF = hn::Lanes(dbf);
+
+    static const auto zone = args.env->ctx.profiler.AddZone("MM.DecompressA");
+
+    const auto do_range =
+        [&](const IndexRange& range_M, const IndexRange& range_K, size_t worker)
+            HWY_ATTR {
+              MMZone mm_zone;
+              mm_zone.MaybeEnter(worker, zone, args);
+
+              const size_t col0 = range_K.begin();
+              const size_t cols = range_K.Num();
+              // Must be a vector multiple, or the last range before row
+              // padding, otherwise `DecompressAndZeroPad` overwrites neighbors.
+              HWY_DASSERT(cols % NBF == 0 || range_K.end() == A.Cols());
+              for (size_t row_a : range_M) {
+                const PackedSpan<const float> from =
+                    MakeSpan(A.Row(row_a) + col0, cols);
+                BF16* HWY_RESTRICT to = A_view.Row(row_a) + col0;
+                DecompressAndZeroPad(dbf, from, 0, to, cols);
+                // Verify that we zero-padded.
+                if constexpr (HWY_IS_DEBUG_BUILD) {
+                  for (size_t i = cols; i < hwy::RoundUpTo(cols, NBF); ++i) {
+                    HWY_DASSERT(hwy::ConvertScalarTo<float>(to[i]) == 0.0f);
+                  }
+                }
+              }
+            };
+
+    switch (par_a) {
+      case MMParA::kNone:
+        do_range(all_M, all_K, MMImpl::Worker(args));
+        break;
+
+      case MMParA::kK1:
+      case MMParA::kK2:
+      case MMParA::kK4: {
+        const size_t inner_tasks = static_cast<size_t>(par_a);
+        // At least one vector, otherwise DecompressAndZeroPad will add
+        // padding, which might overwrite neighboring tasks. Also a whole cache
+        // line to avoid false sharing.
+        const size_t multiple_K = HWY_MAX(NBF, args.line_bytes / sizeof(BF16));
+
+        DispatchParallelism(
+            args.options.parallelism, [&](const auto& parallel) {
+              parallel.ForNP(args.env->ctx, all_K, multiple_K, inner_tasks,
+                             args.options.cluster_idx,
+                             [&](const IndexRange& range_K, size_t worker) {
+                               do_range(all_M, range_K, worker);
+                             });
+            });
+        break;
+      }
+      case MMParA::kM:
+        DispatchParallelism(
+            args.options.parallelism, [&](const auto& parallel) {
+              parallel.ForRangeMC(
+                  args.env->ctx, all_M, args.options.cluster_idx,
+                  [&](size_t row_a, size_t worker) {
+                    do_range(IndexRange(row_a, row_a + 1), all_K, worker);
+                  });
+            });
+        break;
+    }
+  }
+
+  // Autotuning wrapper for `DoDecompressA`.
+  static HWY_INLINE void DecompressA(const MatPtrT<float>& A,
+                                     const StridedViewBF A_view,
+                                     const MMArgs& args) {
+    MMAutoTune<MMParA>& autotune = args.per_key->autotune_par_a[/*pkg_idx=*/0];
+
+    if (HWY_LIKELY(autotune.Best())) {
+      return DoDecompressA(A, A_view, *autotune.Best(), args);
+    }
+
+    // First call: generate candidates.
+    if (HWY_UNLIKELY(!autotune.HasCandidates())) {
+      const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
+      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
+                                        other};
+      autotune.SetCandidates(candidates);
+    }
+
+    const MMParA& par_a = autotune.NextConfig();
+    const uint64_t t0 = hwy::timer::Start();
+    DoDecompressA(A, A_view, par_a, args);
+    const uint64_t t1 =
+        args.env->have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+    const uint64_t min_elapsed = autotune.NotifyTicks(t1 - t0);
+    if (HWY_UNLIKELY(args.env->print_measurement && autotune.ShouldPrint())) {
+      fprintf(stderr, "%s,%7.3f\n", StringFromParA(par_a),
+              static_cast<double>(min_elapsed) /
+                  hwy::platform::InvariantTicksPerSecond() * 1E6);
+    }
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  template <typename T>
+  static StridedView<T> View(const MatPtrT<T>& AB, size_t r, size_t c,
+                             size_t cols) {
+    HWY_DASSERT(c < AB.Cols());
+    HWY_DASSERT(cols <= AB.Cols() - c);
+    return StridedView<T>(const_cast<T*>(AB.Row(r)) + c, cols, AB.Stride());
+  }
+
+  template <typename TA>
+  static HWY_INLINE StridedViewBF MaybeDecompressA(const MatPtrT<TA>& A,
+                                                   const MMArgs& args) {
     if constexpr (IsBF16<TA>()) {
       // We can use a view, regardless of columns/padding, because `LoopKC`
       // supports non-vector multiples.
-      DispatchOrder(parallel_policy, View(A, 0, 0, A.Cols()), B, C_rows);
+      return View(A, 0, 0, A.Cols());
     } else {
       // Always decompress. To reduce code size/compile time, we no longer
       // support a separate F32 kernel; most A are already BF16.
       const StridedViewBF A_view =
-          args_.env->storage[cluster_idx_].A(pkg_idx_, A.Extents());
-      DecompressA<MMParallelPolicyT>(A, A_view);
-      DispatchOrder(parallel_policy, A_view, B, C_rows);
+          args.env->storage[args.options.cluster_idx].A(/*pkg_idx=*/0,
+                                                        A.Extents());
+      DecompressA(A, A_view, args);
+      return A_view;
     }
+  }
+};
+
+// Contains several variants of the outer M/N/K loops, and calls `A2C0` which
+// loops over the inner KC and MC. Member variables avoid long argument lists.
+class MMState {
+ public:
+  MMState(const Extents2D A, const MMArgs& args, const MMConfig& config)
+      : args_(args),
+        range_np_(args.per_key->ranges_np.Range(/*pkg_idx=*/0)),
+        mr_(config.MR()),
+        ranges_mc_(config.RangesOfMC(A.rows)),
+        ranges_kc_(config.RangesOfKC(A.cols)),
+        ranges_nc_(config.RangesOfNC(range_np_)),
+        order_(config.Order()),
+        inner_tasks_(config.InnerTasks()) {
+    HWY_DASSERT(args.per_key->ranges_np.NumTasks() == 1);
+  }
+
+  // Called from `MatMul` from two places: either with the next autotune config,
+  // or with the best config.
+  template <typename TB, typename TC>
+  HWY_NOINLINE void DispatchParallelism(const StridedViewBF A,
+                                        const MatPtrT<TB>& B,
+                                        RowPtrs<TC> C_rows) const {
+    /* Disabled due to unknown thread-safety issue:
+    static const auto zone =
+        args_.env->ctx.profiler.AddZone("MM.DispatchParallelism");
+    PROFILER_ZONE3(args_.env->ctx.profiler, MMImpl::Worker(args_), zone);
+    */
+
+    MMImpl::DispatchParallelism(
+        args_.options.parallelism,
+        [&](const auto& parallel) { DispatchOrder(parallel, A, B, C_rows); });
   }
 
  private:
@@ -616,40 +774,32 @@ class MMPerPackage {
   // Granularity of `ForNP`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
   size_t MultipleNP(size_t sizeof_TC) const {
-    return HWY_MAX(kNR, line_bytes_ / sizeof_TC);
+    return HWY_MAX(kNR, args_.line_bytes / sizeof_TC);
   }
 
-  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  template <typename T>
-  static StridedView<T> View(const MatPtrT<T>& AB, size_t r, size_t c,
-                             size_t cols) {
-    HWY_DASSERT(c < AB.Cols());
-    HWY_DASSERT(cols <= AB.Cols() - c);
-    return StridedView<T>(const_cast<T*>(AB.Row(r)) + c, cols, AB.Stride());
-  }
-
-  // `TA` is usually BF16, but can be F32 if `!HWY_NATIVE_DOT_BF16`.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_INLINE void DispatchOrder(const MMParallelPolicyT& parallel_policy,
-                                const StridedView<TA> A, const MatPtrT<TB>& B,
-                                RowPtrs<TC> C_rows) const {
+  // B is decompressed several call layers lower, but not all member functions
+  // depend on `TB`, so pass it as an argument instead of templating the class.
+  template <typename TB, typename TC, class ParallelT>
+  HWY_NOINLINE void DispatchOrder(const ParallelT& parallel_policy,
+                                  const StridedViewBF A, const MatPtrT<TB>& B,
+                                  RowPtrs<TC> C_rows) const {
     switch (order_) {
       case MMOrder::kNT:
-        return DoNT<TA, TB, TC>(parallel_policy, A, B, C_rows);
+        return DoNT(parallel_policy, A, B, C_rows);
       case MMOrder::kNT_K:
-        return DoNT_K<TA, TB, TC>(parallel_policy, A, B, C_rows);
+        return DoNT_K(parallel_policy, A, B, C_rows);
       case MMOrder::kNT_MT:
-        return DoNT_MT<TA, TB, TC>(parallel_policy, A, B, C_rows);
+        return DoNT_MT(parallel_policy, A, B, C_rows);
       case MMOrder::kNT_MT_K:
-        return DoNT_MT_K<TA, TB, TC>(parallel_policy, A, B, C_rows);
+        return DoNT_MT_K(parallel_policy, A, B, C_rows);
       default:
         HWY_UNREACHABLE;
     }
   }
 
   // Single M and K ranges, parallel N. Fills all of C directly.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_INLINE void DoNT(MMParallelPolicyT, const StridedView<TA> A,
+  template <typename TB, typename TC, class ParallelT>
+  HWY_INLINE void DoNT(ParallelT parallel, const StridedViewBF A,
                        const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
@@ -657,14 +807,14 @@ class MMPerPackage {
     const IndexRange& range_M = ranges_mc_.Range(0);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
-    const StridedView<TA> A_view = A.View(range_M.begin(), 0, K);
+    const StridedViewBF A_view = A.View(range_M.begin(), 0, K);
     const size_t B_stride =
-        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
+        Stride(MatPadding::kOdd, K, sizeof(BF16), args_.line_bytes);
 
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
-    MMParallelPolicyT::ForNP(
+    parallel.ForNP(
         args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
-        pkg_idx_, cluster_idx_,
+        args_.options.cluster_idx,
         [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args_);
@@ -683,8 +833,8 @@ class MMPerPackage {
   }
 
   // Single M range, parallel N, sequential K. Sets C, then accumulates.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_INLINE void DoNT_K(MMParallelPolicyT, const StridedView<TA> A,
+  template <typename TB, typename TC, class ParallelT>
+  HWY_INLINE void DoNT_K(ParallelT parallel, const StridedViewBF A,
                          const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_K");
     HWY_DASSERT(ranges_mc_.NumTasks() == 1);
@@ -697,11 +847,11 @@ class MMPerPackage {
                              const IndexRange& range_nc,
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
-      const StridedView<TA> A_view =
+      const StridedViewBF A_view =
           A.View(range_mc.begin(), range_kc.begin(), kc);
       const StridedViewBF B_storage_view(
           B_storage, kc,
-          Stride(MatPadding::kOdd, kc, sizeof(BF16), line_bytes_));
+          Stride(MatPadding::kOdd, kc, sizeof(BF16), args_.line_bytes));
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
            row_b += kNR) {
@@ -711,9 +861,9 @@ class MMPerPackage {
       }
     };
 
-    MMParallelPolicyT::ForNP(
+    parallel.ForNP(
         args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
-        pkg_idx_, cluster_idx_,
+        args_.options.cluster_idx,
         [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args_);
@@ -733,26 +883,26 @@ class MMPerPackage {
 
   // Parallel loops over mc/nc blocks of M/range_np, single K.
   // Fills `mc x nc` sections of C directly, in parallel.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_INLINE void DoNT_MT(MMParallelPolicyT, const StridedView<TA> A,
+  template <typename TB, typename TC, class ParallelT>
+  HWY_INLINE void DoNT_MT(ParallelT parallel, const StridedViewBF A,
                           const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_MT");
     HWY_DASSERT(ranges_kc_.NumTasks() == 1);
     const IndexRange& range_K = ranges_kc_.Range(0);
     const size_t K = range_K.Num();
     const size_t B_stride =
-        Stride(MatPadding::kOdd, K, sizeof(BF16), line_bytes_);
+        Stride(MatPadding::kOdd, K, sizeof(BF16), args_.line_bytes);
 
     // Sequential loop over NC/MC/KC, similar to `loop_nc` below
     // except for the profiler strings and `out_tag`.
-    MMParallelPolicyT::ForRangesMC_NC(
-        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_, cluster_idx_,
+    parallel.ForRangesMC_NC(
+        args_.env->ctx, ranges_mc_, ranges_nc_, args_.options.cluster_idx,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args_);
 
-          const StridedView<TA> A_view = A.View(range_mc.begin(), 0, K);
+          const StridedViewBF A_view = A.View(range_mc.begin(), 0, K);
           HWY_ALIGN BF16 B_storage[B_storage_max_];  // TLS
           const StridedViewBF B_storage_view(B_storage, K, B_stride);
 
@@ -768,14 +918,14 @@ class MMPerPackage {
 
   // Parallel loops over mc/nc blocks of M/range_np, sequential K.
   // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
-  template <typename TA, typename TB, typename TC, class MMParallelPolicyT>
-  HWY_INLINE void DoNT_MT_K(MMParallelPolicyT, const StridedView<TA> A,
+  template <typename TB, typename TC, class ParallelT>
+  HWY_INLINE void DoNT_MT_K(ParallelT parallel, const StridedViewBF A,
                             const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_MT_K");
     const size_t kc_max = ranges_kc_.TaskSize();
     HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
     const size_t B_stride =
-        Stride(MatPadding::kOdd, kc_max, sizeof(BF16), line_bytes_);
+        Stride(MatPadding::kOdd, kc_max, sizeof(BF16), args_.line_bytes);
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
     // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
@@ -785,7 +935,7 @@ class MMPerPackage {
                              const IndexRange& range_nc,
                              auto out_tag) HWY_ATTR {
       const size_t kc = range_kc.Num();
-      const StridedView<TA> A_view =
+      const StridedViewBF A_view =
           A.View(range_mc.begin(), range_kc.begin(), kc);
 
       for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
@@ -795,8 +945,8 @@ class MMPerPackage {
                        C_rows);
       }
     };  // loop_nc
-    MMParallelPolicyT::ForRangesMC_NC(
-        args_.env->ctx, ranges_mc_, ranges_nc_, pkg_idx_, cluster_idx_,
+    parallel.ForRangesMC_NC(
+        args_.env->ctx, ranges_mc_, ranges_nc_, args_.options.cluster_idx,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
@@ -816,106 +966,6 @@ class MMPerPackage {
         });
   }
 
-  // Decompresses all `M x K` from `A` into padded BF16 `A_view`.
-  template <typename MMParallelPolicyT>
-  HWY_NOINLINE void DoDecompressA(const MatPtrT<float>& A,
-                                  const StridedViewBF A_view,
-                                  MMParA par_a) const {
-    const IndexRange all_M(0, A.Rows());
-    const IndexRange all_K(0, A.Cols());
-    HWY_DASSERT(all_K.Num() == A_view.Cols());
-
-    const hn::ScalableTag<BF16> dbf;
-    const size_t NBF = hn::Lanes(dbf);
-
-    static const auto zone = args_.env->ctx.profiler.AddZone("MM.DecompressA");
-
-    const auto do_range = [&](const IndexRange& range_M,
-                              const IndexRange& range_K,
-                              size_t worker) HWY_ATTR {
-      MMZone mm_zone;
-      mm_zone.MaybeEnter(worker, zone, args_);
-
-      const size_t col0 = range_K.begin();
-      const size_t cols = range_K.Num();
-      // Must be a vector multiple, or the last range before row padding,
-      // otherwise `DecompressAndZeroPad` overwrites neighbors.
-      HWY_DASSERT(cols % NBF == 0 || range_K.end() == A.Cols());
-      for (size_t row_a : range_M) {
-        const PackedSpan<const float> from =
-            MakeSpan(A.Row(row_a) + col0, cols);
-        BF16* HWY_RESTRICT to = A_view.Row(row_a) + col0;
-        DecompressAndZeroPad(dbf, from, 0, to, cols);
-        // Verify that we zero-padded.
-        if constexpr (HWY_IS_DEBUG_BUILD) {
-          for (size_t i = cols; i < hwy::RoundUpTo(cols, NBF); ++i) {
-            HWY_DASSERT(hwy::ConvertScalarTo<float>(to[i]) == 0.0f);
-          }
-        }
-      }
-    };
-
-    switch (par_a) {
-      case MMParA::kNone:
-        do_range(all_M, all_K, /*worker=*/0);
-        break;
-      case MMParA::kK1:
-      case MMParA::kK2:
-      case MMParA::kK4: {
-        const size_t inner_tasks = static_cast<size_t>(par_a);
-        // At least one vector, otherwise DecompressAndZeroPad will add
-        // padding, which might overwrite neighboring tasks. Also a whole cache
-        // line to avoid false sharing.
-        const size_t multiple_K = HWY_MAX(NBF, line_bytes_ / sizeof(BF16));
-
-        MMParallelPolicyT::ForNP(args_.env->ctx, all_K, multiple_K, inner_tasks,
-                                 pkg_idx_, cluster_idx_,
-                                 [&](const IndexRange& range_K, size_t worker) {
-                                   do_range(all_M, range_K, worker);
-                                 });
-        break;
-      }
-      case MMParA::kM:
-        MMParallelPolicyT::ForRangeMC(
-            args_.env->ctx, all_M, pkg_idx_, cluster_idx_,
-            [&](size_t row_a, size_t worker) {
-              do_range(IndexRange(row_a, row_a + 1), all_K, worker);
-            });
-        break;
-    }
-  }
-
-  // Autotuning wrapper for `DoDecompressA`.
-  template <typename MMParallelPolicyT>
-  HWY_INLINE void DecompressA(const MatPtrT<float>& A,
-                              const StridedViewBF A_view) const {
-    MMAutoTune<MMParA>& autotune = args_.per_key->autotune_par_a[pkg_idx_];
-
-    if (HWY_LIKELY(autotune.Best())) {
-      return DoDecompressA<MMParallelPolicyT>(A, A_view, *autotune.Best());
-    }
-
-    // First call: generate candidates.
-    if (HWY_UNLIKELY(!autotune.HasCandidates())) {
-      const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
-      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
-                                        other};
-      autotune.SetCandidates(candidates);
-    }
-
-    const MMParA& par_a = autotune.NextConfig();
-    const uint64_t t0 = hwy::timer::Start();
-    DoDecompressA<MMParallelPolicyT>(A, A_view, par_a);
-    const uint64_t t1 =
-        args_.env->have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
-    const uint64_t min_elapsed = autotune.NotifyTicks(t1 - t0);
-    if (HWY_UNLIKELY(args_.env->print_measurement && autotune.ShouldPrint())) {
-      fprintf(stderr, "%s,%7.3f\n", StringFromParA(par_a),
-              static_cast<double>(min_elapsed) /
-                  hwy::platform::InvariantTicksPerSecond() * 1E6);
-    }
-  }
-
   // Decompresses `kNR x kc` from `B[row_b, range_kc.begin()]` to row 0,
   // col 0 of `B_view`. Decompressing SFP is relatively cheap on `AVX3_DL`
   // thanks to its large table lookups, and less so on other targets.
@@ -928,7 +978,7 @@ class MMPerPackage {
 
     // Neither A nor B require padding because `LoopKC` handles remainders.
     if constexpr (hwy::IsSame<TB, BF16>()) {
-      return View(B, row_b, range_kc.begin(), range_kc.Num());
+      return MMImpl::View(B, row_b, range_kc.begin(), range_kc.Num());
     }
 
     const PackedSpan<const TB> B_span = B.PaddedSpan();
@@ -951,8 +1001,6 @@ class MMPerPackage {
   }
 
   const MMArgs args_;  // copy for locality
-  const size_t pkg_idx_;
-  const size_t cluster_idx_;  // 0 for sequential and nested.
 
   const IndexRange range_np_;
   // From MMConfig:
@@ -962,52 +1010,7 @@ class MMPerPackage {
   const IndexRangePartition ranges_nc_;
   const MMOrder order_;
   const size_t inner_tasks_;
-  const size_t line_bytes_;
-};  // MMPerPackage
-
-// Stateless, wraps member functions.
-struct MMImpl {
-  // Returns existing entry for the given key or -1.
-  static HWY_INLINE intptr_t IndexOfKey(MMKeys::Key key, const MMKeys& keys) {
-    const hwy::Span<const uint64_t> all_keys = keys.Keys();
-    // TODO: SIMD scan
-    for (size_t i = 0; i < all_keys.size(); ++i) {
-      if (all_keys[i] == key) return static_cast<intptr_t>(i);
-    }
-    return -1;
-  }
-
-  // Called from `MatMul` from two places: either with the next autotune config,
-  // or with the best config.
-  template <typename TA, typename TB, typename TC>
-  static HWY_NOINLINE void DoMatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
-                                    RowPtrs<TC> C_rows, const MMArgs& args,
-                                    const MMConfig& config, MMOptions options) {
-    PROFILER_ZONE("MM.DoMatMul");
-    const size_t pkg_idx = 0;
-    HWY_DASSERT(args.per_key->ranges_np.NumTasks() == 1);
-    const IndexRange& range_np = args.per_key->ranges_np.Range(pkg_idx);
-
-    switch (options.parallelism_type) {
-      case ParallelismType::kNested:
-        HWY_DASSERT(options.cluster_idx == 0);
-        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
-                     range_np)(MMNestedParallelPolicy(), A, B, C_rows);
-        break;
-      case ParallelismType::kSequential:
-        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
-                     range_np)(MMSequentialPolicy(), A, B, C_rows);
-      case ParallelismType::kWithinCluster:
-        MMPerPackage(A.Extents(), args, config, pkg_idx, options.cluster_idx,
-                     range_np)(MMClusterParallelPolicy(), A, B, C_rows);
-        break;
-      default:
-        HWY_ABORT("Parallelism type %s not implemented.",
-                  static_cast<int>(options.parallelism_type));
-        break;
-    }
-  }
-};
+};  // MMState
 
 // Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
 //
@@ -1033,17 +1036,19 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               MatPtrT<TC>& C, MMOptions options = MMOptions()) {
-  RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[0]);
+  HWY_DASSERT(options.cluster_idx < env.row_ptrs.size());
+  RowPtrs<TC> C_rows =
+      GetOrSetTempRowPtrs(C, env.row_ptrs[options.cluster_idx]);
 
   const Allocator& allocator = env.ctx.allocator;
   const size_t M = A.Rows();
   const size_t K = A.Cols();
   const size_t N = B.Rows();
   const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
-  intptr_t index = MMImpl::IndexOfKey(key, env.keys);
+  intptr_t index = MMImpl::IndexOfKey(key, env.keys[options.cluster_idx]);
   // First time we see this shape/key.
   if (HWY_UNLIKELY(index < 0)) {
-    env.keys.Append(key, allocator);
+    env.keys[options.cluster_idx].Append(key, allocator);
 
     size_t max_packages = kMaxPackages;
     // For low-batch, multiple sockets only help if binding is enabled.
@@ -1052,16 +1057,19 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     }
 
     // invalidates `MMAutoTune::Best()`
-    index = env.per_key.size();
-    env.per_key.push_back(MMPerKey(env.ctx, max_packages, N, sizeof(TC), kNR));
+    std::vector<MMPerKey>& stored_keys = env.per_key[options.cluster_idx];
+    index = stored_keys.size();
+    stored_keys.push_back(MMPerKey(env.ctx, max_packages, N, sizeof(TC), kNR));
   }
-  MMPerKey& per_key = env.per_key[index];
+  MMPerKey& per_key = env.per_key[options.cluster_idx][index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
   const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
-                    add);
+                    add, options);
   if (HWY_LIKELY(tuner.Best())) {
-    MMImpl::DoMatMul(A, B, C_rows, args, *tuner.Best(), options);
+    const MMState state(A.Extents(), args, *tuner.Best());
+    const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
+    state.DispatchParallelism(A_view, B, C_rows);
     return &per_key;
   }
 
@@ -1089,7 +1097,9 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMImpl::DoMatMul(A, B, C_rows, args, cfg, options);
+  MMState state(A.Extents(), args, cfg);
+  const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
+  state.DispatchParallelism(A_view, B, C_rows);
   const uint64_t t1 =
       env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
   const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /

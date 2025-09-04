@@ -35,6 +35,8 @@ namespace gcpp {
 // is disabled if this is 1.
 HWY_INLINE_VAR constexpr size_t kMaxPackages = 1;
 
+HWY_INLINE_VAR constexpr size_t kMaxClusters = 128;  // TODO: shrink
+
 // TODO: extend to 16k after updating non_eos.
 HWY_INLINE_VAR constexpr size_t kMaxBatchSize = 4096;
 
