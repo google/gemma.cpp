@@ -119,6 +119,42 @@ static inline IndexRange MakeIndexRange(size_t begin, size_t end,
                                         size_t max_size) {
   return IndexRange(begin, HWY_MIN(begin + max_size, end));
 }
+
+// Non-cryptographic 64-bit pseudo-random number generator. Supports random or
+// deterministic seeding. Conforms to C++ `UniformRandomBitGenerator`.
+//
+// Based on 5-round AES-CTR. Supports 2^64 streams, each with period 2^64. This
+// is useful for parallel sampling. Each thread can generate the stream for a
+// particular task, without caring about prior/subsequent generations.
+class alignas(16) RNG {
+  // "Large-scale randomness study of security margins for 100+ cryptographic
+  // functions": at least four.
+  // "Parallel Random Numbers: As Easy as 1, 2, 3": four not Crush-resistant.
+  static constexpr size_t kRounds = 5;
+
+ public:
+  explicit RNG(bool deterministic);
+
+  void SetStream(uint64_t stream) {
+    counter_[1] = stream;
+    counter_[0] = 0;
+  }
+
+  using result_type = uint64_t;
+  static constexpr result_type min() { return 0; }
+  static constexpr result_type max() { return ~result_type{0}; }
+
+  // About 100M/s on 3 GHz Skylake. Throughput could be increased 4x via
+  // unrolling by the AES latency (4-7 cycles). `std::discrete_distribution`
+  // makes individual calls to the generator, which would require buffering,
+  // which is not worth the complexity.
+  result_type operator()();
+
+ private:
+  uint64_t counter_[2] = {};
+  uint64_t key_[2 * (1 + kRounds)];
+};
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_BASICS_H_

@@ -120,6 +120,7 @@ set(SOURCES
   paligemma/image.h
   util/allocator.cc
   util/allocator.h
+  util/basics.cc
   util/basics.h
   util/mat.cc
   util/mat.h
@@ -227,6 +228,7 @@ set(GEMMA_TEST_FILES
   ops/ops_test.cc
   paligemma/image_test.cc
   paligemma/paligemma_test.cc
+  util/basics_test.cc
   util/threading_test.cc
 )
 

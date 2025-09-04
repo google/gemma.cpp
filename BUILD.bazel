@@ -29,9 +29,24 @@ exports_files([
 
 cc_library(
     name = "basics",
+    srcs = ["util/basics.cc"],
     hdrs = ["util/basics.h"],
     deps = [
         "@highway//:hwy",
+        "@highway//:timer",
+        "@highway//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_test(
+    name = "basics_test",
+    srcs = ["util/basics_test.cc"],
+    deps = [
+        ":basics",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:timer",
     ],
 )
 
