@@ -421,7 +421,7 @@ struct ModelConfig : public IFields {
   }
 
   size_t KVCacheCols() const {
-    size_t num_layers = layer_configs.size();
+    const size_t num_layers = layer_configs.size();
     return num_layers * layer_configs[0].CacheLayerSize();
   }
 

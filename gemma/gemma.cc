@@ -556,16 +556,13 @@ static void GenerateT(const ModelConfig& config,
 
   const SampleFunc sample_token = ChooseSampleFunc(runtime_config, env.ctx);
 
-  {
-    timing_info.generate_start = hwy::platform::Now();
-    for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
-      Transformer(config, runtime_config, weights, activations, qbatch, env);
-      SampleAndStream(config, runtime_config, weights, sample_token,
-                      activations, qbatch, /*update_pos=*/true, env, non_eos,
-                      timing_info);
-    }
-    timing_info.NotifyGenerateDone();
+  timing_info.generate_start = hwy::platform::Now();
+  for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
+    Transformer(config, runtime_config, weights, activations, qbatch, env);
+    SampleAndStream(config, runtime_config, weights, sample_token, activations,
+                    qbatch, /*update_pos=*/true, env, non_eos, timing_info);
   }
+  timing_info.NotifyGenerateDone();
 }
 
 void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,

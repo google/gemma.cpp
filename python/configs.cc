@@ -147,8 +147,7 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("image_size", &VitConfig::image_size)
       .def_readwrite("layer_configs", &VitConfig::layer_configs);
 
-  class_<InternalModelConfig>(py_module, "InternalModelConfig")
-      .def(init<>());
+  class_<InternalModelConfig>(py_module, "InternalModelConfig").def(init<>());
 
   class_<ModelConfig>(py_module, "ModelConfig")
       .def(init<>())

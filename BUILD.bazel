@@ -539,14 +539,14 @@ cc_library(
         ":weights",
         "//compression:compress",
         "//compression:types",
-        "//io:blob_store",
         "//io",
+        "//io:blob_store",
         "//paligemma:image",
         "@highway//:hwy",
-        "@highway//hwy/contrib/sort:vqsort",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 

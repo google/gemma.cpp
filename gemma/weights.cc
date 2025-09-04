@@ -226,15 +226,16 @@ void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
 // ideally already happen in the importer. Called by `ReadFromBlobs`.
 void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                         ThreadingContext& ctx) {
-  // TODO: use 1D parallel-for helper function
-  hwy::ThreadPool& pool = ctx.pools.Pool();
-  pool.Run(0, c_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-    GetLayer(layer)->Fixup(mat_owners, ctx.allocator);
-  });
+  const size_t cluster_idx = 0;
+  ParallelFor(ParallelismStrategy::kFlat, c_layers.size(), ctx, cluster_idx,
+              [&](uint64_t layer, size_t /*worker*/) {
+                GetLayer(layer)->Fixup(mat_owners, ctx.allocator);
+              });
 
-  pool.Run(0, vit_layers.size(), [&](uint64_t layer, size_t /*thread*/) {
-    VitLayer(layer)->Fixup(mat_owners, ctx.allocator);
-  });
+  ParallelFor(ParallelismStrategy::kFlat, vit_layers.size(), ctx, cluster_idx,
+              [&](uint64_t layer, size_t /*worker*/) {
+                VitLayer(layer)->Fixup(mat_owners, ctx.allocator);
+              });
 }
 
 std::vector<uint32_t> WeightsPtrs::AddTensorDataToWriter(
