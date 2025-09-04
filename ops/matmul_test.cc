@@ -275,37 +275,28 @@ void TestTiny() {
   if (first_target == 0) first_target = HWY_TARGET;
   if (HWY_TARGET != first_target) return;
 
-  for (size_t max_packages : {1, 2}) {
-    ThreadingArgs threading_args;
-    threading_args.bind = Tristate::kTrue;
-    threading_args.max_packages = max_packages;
-    ThreadingContext ctx(threading_args);
-    MatMulEnv env(ctx);
-    NestedPools& pools = env.ctx.pools;
+  ThreadingArgs threading_args;
+  threading_args.bind = Tristate::kTrue;
+  ThreadingContext ctx(threading_args);
+  MatMulEnv env(ctx);
+  NestedPools& pools = env.ctx.pools;
 
-    if constexpr (GEMMA_DISABLE_TOPOLOGY || kMaxPackages == 1) {
-      if (max_packages == 2) break;  // we only have one package
-    } else {
-      // If less than the limit, we have already tested all num_packages.
-      if (env.ctx.topology.FullTopology().packages.size() < max_packages) break;
-    }
-    fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
-            env.ctx.topology.TopologyString(), pools.PinString());
+  fprintf(stderr, "TestTiny: %s %s\n", env.ctx.topology.TopologyString(),
+          pools.PinString());
 
-    pools.MaybeStartSpinning(threading_args.spin);
+  pools.MaybeStartSpinning(threading_args.spin);
 
-    for (size_t M = 1; M <= 12; ++M) {
-      for (size_t K = 1; K <= 64; K *= 2) {
-        for (size_t N = 4; N <= 64; N += max_packages * 4) {
-          TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
-          TestMatMul<BF16, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
-          TestMatMul<F32, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
-          TestMatMul<BF16, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
-        }
+  for (size_t M = 1; M <= 12; ++M) {
+    for (size_t K = 1; K <= 64; K *= 2) {
+      for (size_t N = 4; N <= 64; N += 4) {
+        TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<BF16, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<F32, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<BF16, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
       }
     }
-    pools.MaybeStopSpinning(threading_args.spin);
   }
+  pools.MaybeStopSpinning(threading_args.spin);
 }
 
 void TestAllMatMul() {

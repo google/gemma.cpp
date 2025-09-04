@@ -45,17 +45,18 @@ namespace gcpp {
 // This and `mr` are limited by the number of registers, which is generally
 // 32 but 16 for AVX2. `kNR` == 4 enables the `StoreInterleaved4` transpose in
 // `MMStoreHorizontalSumsIntoC`. We ensure `C.Cols() % kNR == 0`.
-constexpr size_t kNR = 4;
+HWY_INLINE_VAR constexpr size_t kNR = 4;
 
 // Choosing `kMaxMR == kNR` minimizes the ratio of loads to FMA, because
 // we load `kNR + kMaxMR` vectors per `kMaxMR * kNR` element tile.
 // In general, `M` (batch size) is not a multiple of `kMaxMR`. Thus functions
 // that load or store a tile are parameterized on `kRowsAC`: usually `kMaxMR`,
 // or less on ISAs with fewer registers, or for the last few rows of A.
-static constexpr size_t kMaxMR = 4;
+HWY_INLINE_VAR constexpr size_t kMaxMR = 4;
 
-IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
-                                 size_t N, size_t sizeof_TC, size_t nr);
+// Upper bound for per-worker B storage on the stack. Chosen such that one row
+// of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
+HWY_INLINE_VAR constexpr size_t kMaxKC = 8 * 1024;
 
 struct MMOptions {
   uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
@@ -66,12 +67,12 @@ struct MMOptions {
 
 struct MMParallelNone {
   template <class Func>
-  void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
-             size_t nx_multiple, size_t inner_tasks, size_t cluster_idx,
-             const Func& func) const {
+  void ForN(ThreadingContext& ctx, const IndexRange& range_n,
+            size_t /*n_multiple*/, size_t inner_tasks, size_t cluster_idx,
+            const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
-    func(range_np, worker);
+    func(range_n, worker);
   }
 
   template <class Func>
@@ -102,9 +103,8 @@ struct MMParallelNone {
 
 struct MMParallelWithinCluster {
   template <class Func>
-  void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
-             size_t nx_multiple, size_t inner_tasks, size_t cluster_idx,
-             const Func& func) const {
+  void ForN(ThreadingContext& ctx, const IndexRange& range_n, size_t n_multiple,
+            size_t inner_tasks, size_t cluster_idx, const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
 
     const size_t pkg_idx = 0;
@@ -112,7 +112,7 @@ struct MMParallelWithinCluster {
     const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
 
     const IndexRangePartition worker_ranges = StaticPartition(
-        range_np, cluster.NumWorkers() * inner_tasks, nx_multiple);
+        range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
     ParallelizeOneRange(worker_ranges, cluster,
                         [&](const IndexRange& worker_range, size_t worker) {
                           func(worker_range, base + worker);
@@ -156,17 +156,16 @@ struct MMParallelWithinCluster {
 };
 
 struct MMParallelHierarchical {
-  // Cluster/CCX-aware parallel-for over B rows in `range_np`. `nx_multiple` is
+  // Cluster/CCX-aware parallel-for over B rows in `range_n`. `n_multiple` is
   // the granularity of per-cluster tasks. Calls `func(worker_range, worker)`.
   template <class Func>
-  void ForNP(ThreadingContext& ctx, const IndexRange& range_np,
-             size_t nx_multiple, size_t inner_tasks,
-             HWY_MAYBE_UNUSED size_t caller_cluster_idx,
-             const Func& func) const {
+  void ForN(ThreadingContext& ctx, const IndexRange& range_n, size_t n_multiple,
+            size_t inner_tasks, HWY_MAYBE_UNUSED size_t caller_cluster_idx,
+            const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     HWY_DASSERT(caller_cluster_idx == 0);
 
-    // Single cluster: parallel-for over static partition of `range_np`.
+    // Single cluster: parallel-for over static partition of `range_n`.
     const size_t pkg_idx = 0;
     hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
     const size_t num_clusters = all_clusters.NumWorkers();
@@ -174,7 +173,7 @@ struct MMParallelHierarchical {
       const size_t cluster_idx = 0;
       hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
       const IndexRangePartition worker_ranges = StaticPartition(
-          range_np, cluster.NumWorkers() * inner_tasks, nx_multiple);
+          range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
       return ParallelizeOneRange(
           worker_ranges, cluster,
           [&](const IndexRange& worker_range, size_t worker) {
@@ -182,18 +181,18 @@ struct MMParallelHierarchical {
           });
     }
 
-    // Assign each cluster a sub-range of `range_np` (typically hundreds).
-    const IndexRangePartition nx_ranges =
-        StaticPartition(range_np, num_clusters, nx_multiple);
+    // Assign each cluster a sub-range of `range_n` (typically hundreds).
+    const IndexRangePartition n_ranges =
+        StaticPartition(range_n, num_clusters, n_multiple);
     ParallelizeOneRange(
-        nx_ranges, all_clusters,
-        [&](const IndexRange& nx_range, const size_t cluster_idx) {
+        n_ranges, all_clusters,
+        [&](const IndexRange& n_range, const size_t cluster_idx) {
           hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
           const size_t cluster_base =
               cluster_idx * ctx.pools.MaxWorkersPerCluster();
           // Parallel-for over sub-ranges of `cluster_range` within the cluster.
           const IndexRangePartition worker_ranges = StaticPartition(
-              nx_range, cluster.NumWorkers() * inner_tasks, nx_multiple);
+              n_range, cluster.NumWorkers() * inner_tasks, n_multiple);
           ParallelizeOneRange(
               worker_ranges, cluster,
               [&](const IndexRange& worker_range, size_t worker) {
@@ -304,50 +303,29 @@ class StridedView {
 using StridedViewBF = StridedView<BF16>;
 using StridedViewD = StridedView<double>;
 
-// Per-package storage for packed A.
 class MMStorage {
  public:
   // Compile-time bounds on matrix columns to enable pre-allocating storage
   // and reusing it across `MatMul` calls.
   static constexpr size_t kMaxK = 64 * 1024;
-  // Upper bound for per-worker B storage on the stack. Chosen such that one row
-  // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
-  static constexpr size_t kMaxKC = 8 * 1024;
 
-  // Internally threaded; must not be called concurrently with the same
-  // `ThreadingContext` (used via `parallel`).
-  MMStorage(ThreadingContext& ctx) {
-    Allocator& allocator = ctx.allocator;
-    const size_t pkg_idx = 0;
+  MMStorage(const Allocator& allocator)
+      // 0.5 GiB. Must be padded, see `DoDecompressA`.
+      : A_("A_bf", Extents2D(kMaxBatchSize, kMaxK), allocator,
+           MatPadding::kOdd) {}
 
-    // 0.5 GiB per package. Must be padded, see `DoDecompressA`.
-    pkg_A_[pkg_idx].reset(new MatStorageT<BF16>(
-        "pkg_A", Extents2D(kMaxBatchSize, kMaxK), allocator, MatPadding::kOdd));
-
-    if (allocator.ShouldBind()) {
-      const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
-      size_t bytes = pkg_A_[pkg_idx]->Rows() * pkg_A_[pkg_idx]->Stride() *
-                     pkg_A_[pkg_idx]->ElementBytes();
-      bytes = hwy::RoundDownTo(bytes, allocator.BasePageBytes());
-      if (!allocator.BindMemory(pkg_A_[pkg_idx]->Row(0), bytes, node)) {
-        HWY_WARN("Failed to bind memory for package %zu", pkg_idx);
-      }
-    }
-  }
-
-  // Returns per-package matrix view. Converting A=F32 to BF16 up-front is
-  // faster than on-the-fly when native BF16 is available: it only happens once,
-  // not per B tile row, and the cache footprint is smaller.
-  StridedViewBF A(size_t pkg_idx, const Extents2D& extents) const {
+  // Returns matrix view. Converting A=F32 to BF16 up-front is faster than
+  // on-the-fly when native BF16 is available: it only happens once, not per B
+  // tile row, and the cache footprint is smaller.
+  StridedViewBF A(const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxBatchSize);
     HWY_DASSERT(extents.cols <= kMaxK);
-    HWY_DASSERT(pkg_A_[pkg_idx] != nullptr);
-    return StridedViewBF(const_cast<BF16*>(pkg_A_[pkg_idx]->Row(0)),
-                         extents.cols, pkg_A_[pkg_idx]->Stride());
+    return StridedViewBF(const_cast<BF16*>(A_.Row(0)), extents.cols,
+                         A_.Stride());
   }
 
  private:
-  std::unique_ptr<MatStorageT<BF16>> pkg_A_[kMaxPackages];
+  MatStorageT<BF16> A_;
 };
 
 //------------------------------------------------------------------------------
@@ -433,7 +411,7 @@ class MMConfig {
   MMConfig() = default;  // for std::vector
   // `mr` is the number of A rows per call to `MMKernel::LoopKC`.
   // `MMOrder` is how to parallelize the outer loops.
-  // `inner_tasks` chooses the within-cluster task granularity in `ForNP`.
+  // `inner_tasks` chooses the within-cluster task granularity in `ForN`.
   MMConfig(size_t K, size_t N, size_t mr, size_t mc, size_t kc, size_t nc,
            size_t kc_multiple, size_t nc_multiple, MMOrder order,
            int inner_tasks)
@@ -470,8 +448,8 @@ class MMConfig {
   IndexRangePartition RangesOfKC(size_t K) const {
     return MaxSizePartition(IndexRange(0, K), kc_, kc_multiple_);
   }
-  IndexRangePartition RangesOfNC(IndexRange range_np) const {
-    return MaxSizePartition(range_np, nc_, nc_multiple_);
+  IndexRangePartition RangesOfNC(size_t N) const {
+    return MaxSizePartition(IndexRange(0, N), nc_, nc_multiple_);
   }
 
   MMOrder Order() const { return order_; }
@@ -501,9 +479,7 @@ static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 
 std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
                                    size_t K, size_t N, size_t sizeof_TC,
-                                   size_t max_mr, size_t nr,
-                                   const IndexRangePartition& ranges_np,
-                                   bool print_config);
+                                   size_t max_mr, size_t nr, bool print_config);
 
 // State machine for choosing the best `TConfig`, which is `MMConfig` for the
 // main MatMul autotuner.
@@ -609,7 +585,7 @@ class MMAutoTune {
 // `MMOrder::kNT[_K]` are no longer allowed. They require a single MC range,
 // but choosing the same config for a larger M can result in multiple MC ranges.
 // Thus M less than this must have unique keys/configs.
-static constexpr size_t kMaxTilesM = 8;
+HWY_INLINE_VAR constexpr size_t kMaxTilesM = 8;
 
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
@@ -636,8 +612,8 @@ class MMKeys {
     return key;
   }
 
-  // We leave the search to callers so they can use dynamic-dispatched SIMD,
-  // which is not possible in this header.
+  // We leave the search to callers so they can use per-target SIMD, which is
+  // not possible in this header.
   hwy::Span<const Key> Keys() const {
     return hwy::Span<const Key>(keys_.get(), num_unique_);
   }
@@ -674,26 +650,17 @@ class MMKeys {
 
 // Per-MatMul-shape state.
 struct MMPerKey {
-  MMPerKey(ThreadingContext& ctx, size_t max_packages, size_t N,
-           size_t sizeof_TC, size_t nr)
-      : ranges_np(MMRangesOfNP(ctx, max_packages, N, sizeof_TC, nr)) {
-    HWY_DASSERT(ranges_np.NumTasks() <= max_packages);
-  }
-
-  // Only profile if enabled and the main autotuner finished (the par_a
-  // autotuner is per-package and we want to avoid synchronization).
+  // Only profile if enabled and the main autotuner finished. `autotune_par_a`
+  // might not be active if inputs are all BF16.
   bool WantProfile() const { return PROFILER_ENABLED != 0 && autotune.Best(); }
 
-  const IndexRangePartition ranges_np;
   MMAutoTune<MMConfig> autotune;
-  MMAutoTune<MMParA> autotune_par_a[kMaxPackages];
+  MMAutoTune<MMParA> autotune_par_a;
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive
 // `MatMulEnv`.
 struct MatMulEnv {
-  // Internally threaded; must not be called concurrently with the same
-  // `ThreadingContext`.
   explicit MatMulEnv(ThreadingContext& ctx);
 
   ThreadingContext& ctx;
@@ -707,8 +674,13 @@ struct MatMulEnv {
   bool print_best = false;
 
   std::vector<MMStorage> storage;
-  MMKeys keys[kMaxClusters];
-  std::vector<MMPerKey> per_key[kMaxClusters];
+
+  struct PerCluster {
+    MMKeys keys;
+    std::vector<MMPerKey> per_key;
+    HWY_MAYBE_UNUSED uint8_t padding[HWY_ALIGNMENT];  // prevent false sharing
+  };
+  std::vector<PerCluster> per_cluster;
 
   // Storage for arbitrary output rows, see `MatPtr::AllocateAndAttachRowPtrs`.
   // Most MatMul callers use strided MatPtr, but GemmaAttention::ComputeQKV
@@ -739,6 +711,7 @@ struct MMArgs {
 
   double scale;
   const float* HWY_RESTRICT add;
+
   MMOptions options;
   size_t line_bytes;
 };

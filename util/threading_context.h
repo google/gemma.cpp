@@ -25,7 +25,7 @@
 // IWYU pragma: begin_exports
 #include "util/allocator.h"
 #include "util/args.h"
-#include "util/basics.h"  // Tristate, kMaxPackages
+#include "util/basics.h"  // Tristate
 #include "util/threading.h"
 #include "util/topology.h"
 #include "hwy/profiler.h"
@@ -41,7 +41,7 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
 
   // For BoundedTopology:
   size_t skip_packages;
-  size_t max_packages;
+  size_t max_packages = 1;
   size_t skip_clusters;
   size_t max_clusters;
   size_t skip_lps;
@@ -58,13 +58,9 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
   void ForEach(const Visitor& visitor) {
     // These can be used to partition CPU packages/sockets and their
     // clusters/CCXs across several program instances. The default is to use
-    // all available resources on one package. Note that `kMaxPackages` is an
-    // upper bound on `max_packages`.
+    // all available resources on the first package.
     visitor(skip_packages, "skip_packages", size_t{0},
             "Index of the first socket to use; default 0 = unlimited.", 2);
-    visitor(max_packages, "max_packages", size_t{1},
-            "Max sockets to use; default = 1, 0 = unlimited.", 2);
-    HWY_ASSERT(max_packages <= kMaxPackages);
     visitor(skip_clusters, "skip_clusters", size_t{0},
             "Index of the first CCX to use; default 0 = unlimited.", 2);
     visitor(max_clusters, "max_clusters", size_t{0},
@@ -105,7 +101,7 @@ struct ThreadingContext {
   hwy::Profiler& profiler;
 
   // Detects topology, subject to limits imposed by user-specified `args`.
-  // For example, if `args.max_packages` is 1, then `topology.NumPackages()`
+  // For example, if `args.max_clusters` is 1, then `topology.NumClusters()`
   // will be 1 regardless of the actual system topology.
   BoundedTopology topology;
 

@@ -455,6 +455,7 @@ class MatOwner {
 template <typename MatT>
 class MatStorageT : public MatPtrT<MatT> {
  public:
+  MatStorageT() = default;  // for std::vector in Activations.
   MatStorageT(const char* name, Extents2D extents, const Allocator& allocator,
               MatPadding padding)
       : MatPtrT<MatT>(name, extents) {

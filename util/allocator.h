@@ -149,7 +149,7 @@ class Allocator {
   }
 
   // Returns whether `BindMemory` can/should be called, i.e. we have page-level
-  // control over memory placement and multiple packages and NUMA nodes.
+  // control over memory placement and multiple NUMA nodes.
   bool ShouldBind() const { return should_bind_; }
 
   // Attempts to move(!) `[p, p + bytes)` to the given NUMA node, which is

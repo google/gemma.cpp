@@ -1101,7 +1101,6 @@ void TestAllDot() {
 
   // Limit workers because we only support `kMaxWorkers`.
   ThreadingArgs threading_args;
-  threading_args.max_packages = 1;
   threading_args.max_clusters = 1;
   threading_args.max_lps = kMaxWorkers - 1;
   ThreadingContext ctx(threading_args);

@@ -21,7 +21,6 @@
 #include <stdint.h>
 
 #include <atomic>
-#include <memory>
 #include <vector>
 
 #include "gemma/configs.h"  // ModelConfig
@@ -62,11 +61,12 @@ struct AttentionActivations {
   // Returns the scale value to use for the query in the attention computation.
   // Also called by ops_test.
   static inline float ChooseQueryScale(const ModelConfig& config) {
+    const LayerConfig& layer_config = config.layer_configs[0];
     if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
-      return 1.0f / sqrtf(static_cast<float>(config.model_dim /
-                                             config.layer_configs[0].heads));
+      return 1.0f /
+             sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
     // QueryScaleType::SqrtKeySize
-    return 1.0f / sqrtf(static_cast<float>(config.layer_configs[0].qkv_dim));
+    return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
   }
 
   AttentionActivations(

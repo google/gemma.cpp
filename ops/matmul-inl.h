@@ -570,16 +570,44 @@ struct MMImpl {
   // Returns existing entry for the given key or -1.
   static HWY_INLINE intptr_t IndexOfKey(MMKeys::Key key, const MMKeys& keys) {
     const hwy::Span<const uint64_t> all_keys = keys.Keys();
-    // TODO: SIMD scan
-    for (size_t i = 0; i < all_keys.size(); ++i) {
-      if (all_keys[i] == key) return static_cast<intptr_t>(i);
+
+    const hn::ScalableTag<uint64_t> d;
+    using V = hn::Vec<decltype(d)>;
+    const V broadcasted = Set(d, key);
+    const size_t N = hn::Lanes(d);
+
+    size_t i = 0;
+    if (all_keys.size() >= N) {
+      for (; i <= all_keys.size() - N; i += N) {
+        const intptr_t pos = hn::FindFirstTrue(
+            d, hn::Eq(broadcasted, hn::LoadU(d, &all_keys[i])));
+        if (pos >= 0) return static_cast<intptr_t>(i) + pos;
+      }
     }
+
+    const size_t remaining = all_keys.size() - i;
+    if (HWY_LIKELY(remaining > 0)) {
+      HWY_DASSERT(remaining < N);
+      const V v = hn::LoadN(d, &all_keys[i], remaining);
+      const intptr_t pos = hn::FindFirstTrue(d, hn::Eq(broadcasted, v));
+      if (pos >= 0) return static_cast<intptr_t>(i) + pos;
+    }
+
     return -1;
   }
 
   static size_t Worker(const MMArgs& args) {
     return args.options.cluster_idx *
            args.env->ctx.pools.MaxWorkersPerCluster();
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  template <typename T>
+  static StridedView<T> View(const MatPtrT<T>& AB, size_t r, size_t c,
+                             size_t cols) {
+    HWY_DASSERT(c < AB.Cols());
+    HWY_DASSERT(cols <= AB.Cols() - c);
+    return StridedView<T>(const_cast<T*>(AB.Row(r)) + c, cols, AB.Stride());
   }
 
   template <class Func>
@@ -651,11 +679,11 @@ struct MMImpl {
 
         DispatchParallelism(
             args.options.parallelism, [&](const auto& parallel) {
-              parallel.ForNP(args.env->ctx, all_K, multiple_K, inner_tasks,
-                             args.options.cluster_idx,
-                             [&](const IndexRange& range_K, size_t worker) {
-                               do_range(all_M, range_K, worker);
-                             });
+              parallel.ForN(args.env->ctx, all_K, multiple_K, inner_tasks,
+                            args.options.cluster_idx,
+                            [&](const IndexRange& range_K, size_t worker) {
+                              do_range(all_M, range_K, worker);
+                            });
             });
         break;
       }
@@ -676,7 +704,7 @@ struct MMImpl {
   static HWY_INLINE void DecompressA(const MatPtrT<float>& A,
                                      const StridedViewBF A_view,
                                      const MMArgs& args) {
-    MMAutoTune<MMParA>& autotune = args.per_key->autotune_par_a[/*pkg_idx=*/0];
+    MMAutoTune<MMParA>& autotune = args.per_key->autotune_par_a;
 
     if (HWY_LIKELY(autotune.Best())) {
       return DoDecompressA(A, A_view, *autotune.Best(), args);
@@ -703,15 +731,6 @@ struct MMImpl {
     }
   }
 
-  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  template <typename T>
-  static StridedView<T> View(const MatPtrT<T>& AB, size_t r, size_t c,
-                             size_t cols) {
-    HWY_DASSERT(c < AB.Cols());
-    HWY_DASSERT(cols <= AB.Cols() - c);
-    return StridedView<T>(const_cast<T*>(AB.Row(r)) + c, cols, AB.Stride());
-  }
-
   template <typename TA>
   static HWY_INLINE StridedViewBF MaybeDecompressA(const MatPtrT<TA>& A,
                                                    const MMArgs& args) {
@@ -723,8 +742,7 @@ struct MMImpl {
       // Always decompress. To reduce code size/compile time, we no longer
       // support a separate F32 kernel; most A are already BF16.
       const StridedViewBF A_view =
-          args.env->storage[args.options.cluster_idx].A(/*pkg_idx=*/0,
-                                                        A.Extents());
+          args.env->storage[args.options.cluster_idx].A(A.Extents());
       DecompressA(A, A_view, args);
       return A_view;
     }
@@ -735,17 +753,16 @@ struct MMImpl {
 // loops over the inner KC and MC. Member variables avoid long argument lists.
 class MMState {
  public:
-  MMState(const Extents2D A, const MMArgs& args, const MMConfig& config)
+  MMState(const Extents2D A, const size_t B_rows, const MMArgs& args,
+          const MMConfig& config)
       : args_(args),
-        range_np_(args.per_key->ranges_np.Range(/*pkg_idx=*/0)),
+        range_n_(0, B_rows),
         mr_(config.MR()),
         ranges_mc_(config.RangesOfMC(A.rows)),
         ranges_kc_(config.RangesOfKC(A.cols)),
-        ranges_nc_(config.RangesOfNC(range_np_)),
+        ranges_nc_(config.RangesOfNC(B_rows)),
         order_(config.Order()),
-        inner_tasks_(config.InnerTasks()) {
-    HWY_DASSERT(args.per_key->ranges_np.NumTasks() == 1);
-  }
+        inner_tasks_(config.InnerTasks()) {}
 
   // Called from `MatMul` from two places: either with the next autotune config,
   // or with the best config.
@@ -768,12 +785,12 @@ class MMState {
   // Compute size of per-worker storage for `kNR` row ranges of B. Stack
   // allocation avoids passing a worker index.
   static constexpr size_t B_stride_max_ =
-      MMStorage::kMaxKC + 2 * Allocator::MaxLineBytes() / sizeof(BF16);
+      kMaxKC + 2 * Allocator::MaxLineBytes() / sizeof(BF16);
   static constexpr size_t B_storage_max_ = kNR * B_stride_max_;
 
-  // Granularity of `ForNP`. B rows produce C columns, so we
+  // Granularity of `ForN`. B rows produce C columns, so we
   // want a multiple of the line size to prevent false sharing.
-  size_t MultipleNP(size_t sizeof_TC) const {
+  size_t MultipleN(size_t sizeof_TC) const {
     return HWY_MAX(kNR, args_.line_bytes / sizeof_TC);
   }
 
@@ -812,8 +829,8 @@ class MMState {
         Stride(MatPadding::kOdd, K, sizeof(BF16), args_.line_bytes);
 
     // Similar to `loop_nc` below, but here we hoisted `A_view`.
-    parallel.ForNP(
-        args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
+    parallel.ForN(
+        args_.env->ctx, range_n_, MultipleN(sizeof(TC)), inner_tasks_,
         args_.options.cluster_idx,
         [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
@@ -861,8 +878,8 @@ class MMState {
       }
     };
 
-    parallel.ForNP(
-        args_.env->ctx, range_np_, MultipleNP(sizeof(TC)), inner_tasks_,
+    parallel.ForN(
+        args_.env->ctx, range_n_, MultipleN(sizeof(TC)), inner_tasks_,
         args_.options.cluster_idx,
         [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
           MMZone mm_zone;
@@ -881,7 +898,7 @@ class MMState {
         });
   }
 
-  // Parallel loops over mc/nc blocks of M/range_np, single K.
+  // Parallel loops over mc/nc blocks of M/range_n, single K.
   // Fills `mc x nc` sections of C directly, in parallel.
   template <typename TB, typename TC, class ParallelT>
   HWY_INLINE void DoNT_MT(ParallelT parallel, const StridedViewBF A,
@@ -923,7 +940,7 @@ class MMState {
                             const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
     static const auto zone = args_.env->ctx.profiler.AddZone("MM.NT_MT_K");
     const size_t kc_max = ranges_kc_.TaskSize();
-    HWY_DASSERT(kc_max <= MMStorage::kMaxKC);
+    HWY_DASSERT(kc_max <= kMaxKC);
     const size_t B_stride =
         Stride(MatPadding::kOdd, kc_max, sizeof(BF16), args_.line_bytes);
     // Sequential loop over NC/MC/KC, for when the M/N loops are
@@ -1002,7 +1019,7 @@ class MMState {
 
   const MMArgs args_;  // copy for locality
 
-  const IndexRange range_np_;
+  const IndexRange range_n_;
   // From MMConfig:
   const size_t mr_;
   const IndexRangePartition ranges_mc_;
@@ -1036,38 +1053,33 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               MatPtrT<TC>& C, MMOptions options = MMOptions()) {
+  const Allocator& allocator = env.ctx.allocator;
   HWY_DASSERT(options.cluster_idx < env.row_ptrs.size());
+  MatMulEnv::PerCluster& per_cluster = env.per_cluster[options.cluster_idx];
   RowPtrs<TC> C_rows =
       GetOrSetTempRowPtrs(C, env.row_ptrs[options.cluster_idx]);
 
-  const Allocator& allocator = env.ctx.allocator;
   const size_t M = A.Rows();
   const size_t K = A.Cols();
   const size_t N = B.Rows();
   const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
-  intptr_t index = MMImpl::IndexOfKey(key, env.keys[options.cluster_idx]);
+  intptr_t index = MMImpl::IndexOfKey(key, per_cluster.keys);
   // First time we see this shape/key.
   if (HWY_UNLIKELY(index < 0)) {
-    env.keys[options.cluster_idx].Append(key, allocator);
-
-    size_t max_packages = kMaxPackages;
-    // For low-batch, multiple sockets only help if binding is enabled.
-    if (!allocator.ShouldBind() && M <= 4) {
-      max_packages = 1;
-    }
+    per_cluster.keys.Append(key, allocator);
 
     // invalidates `MMAutoTune::Best()`
-    std::vector<MMPerKey>& stored_keys = env.per_key[options.cluster_idx];
-    index = stored_keys.size();
-    stored_keys.push_back(MMPerKey(env.ctx, max_packages, N, sizeof(TC), kNR));
+    std::vector<MMPerKey>& per_keys = per_cluster.per_key;
+    index = per_keys.size();
+    per_keys.push_back(MMPerKey());
   }
-  MMPerKey& per_key = env.per_key[options.cluster_idx][index];
+  MMPerKey& per_key = per_cluster.per_key[index];
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
   const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
                     add, options);
   if (HWY_LIKELY(tuner.Best())) {
-    const MMState state(A.Extents(), args, *tuner.Best());
+    const MMState state(A.Extents(), B.Rows(), args, *tuner.Best());
     const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
     state.DispatchParallelism(A_view, B, C_rows);
     return &per_key;
@@ -1092,12 +1104,12 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     }
 
     tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC), kMaxMR,
-                                     kNR, per_key.ranges_np, env.print_config));
+                                     kNR, env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMState state(A.Extents(), args, cfg);
+  MMState state(A.Extents(), B.Rows(), args, cfg);
   const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
   state.DispatchParallelism(A_view, B, C_rows);
   const uint64_t t1 =

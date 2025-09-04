@@ -21,7 +21,6 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <atomic>
 #include <vector>
 
 #include "util/allocator.h"
@@ -65,7 +64,7 @@ class GenerateCandidates {
  public:
   GenerateCandidates(const Allocator& allocator, size_t M, size_t K, size_t N,
                      size_t sizeof_TC, size_t max_mr, size_t nr,
-                     const IndexRangePartition& ranges_np, bool print_config)
+                     bool print_config)
       : allocator_(allocator),
         M_(M),
         K_(K),
@@ -79,7 +78,6 @@ class GenerateCandidates {
         // up to the line size. Both A and B are BF16.
         kc_multiple_(HWY_MIN(K, allocator.LineBytes() / sizeof(BF16))),
         nc_multiple_(allocator.StepBytes() / sizeof_TC),
-        ranges_np_(ranges_np),
         print_config_(print_config) {}
 
   std::vector<MMConfig> operator()() const {
@@ -177,8 +175,7 @@ class GenerateCandidates {
         allocator_.L1Bytes() * (sizeof(BF16) + sizeof(SfpStream));
     const size_t col_bytes = rows_a * sizeof(BF16) + nr_ * sizeof(BF16);
     size_t kc_max = hwy::DivCeil(bytes_ab, col_bytes);
-    kc_max =
-        RoundDownWithFloor(HWY_MIN(kc_max, MMStorage::kMaxKC), kc_multiple_);
+    kc_max = RoundDownWithFloor(HWY_MIN(kc_max, kMaxKC), kc_multiple_);
     kc_max = HWY_MIN(kc_max, K_);
 
     SizeVec all_kc(1, kc_max);
@@ -258,32 +255,30 @@ class GenerateCandidates {
 
   // The number of (possibly L3 resident) B rows per `NT_MT` task.
   SizeVec NC(size_t mr, size_t mc, size_t kc, MMOrder order) const {
-    const size_t np_max = ranges_np_.TaskSize();
-    size_t nc_max = np_max;
+    size_t nc_max = N_;
     // Only if there will be reuse of B: choose the largest `nc_max` (C cols)
     // such that `nc x kc` of B and `mc x nc` of `partial` or `C` fit in L3.
     // Otherwise, leave it unbounded.
     if (M_ > mr) {
       const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * sizeof_TC_);
-      nc_max =
-          HWY_MIN(hwy::DivCeil(allocator_.L3Bytes(), bytes_per_nc), np_max);
+      nc_max = HWY_MIN(hwy::DivCeil(allocator_.L3Bytes(), bytes_per_nc), N_);
     }
     HWY_DASSERT(nc_max != 0);
     nc_max = RoundDownWithFloor(nc_max, nc_multiple_);
 
     // If there are going to be multiple ranges, anything more than half would
     // be imbalanced and suboptimal.
-    if (nc_max < np_max && nc_max >= np_max / 2) {
-      nc_max = RoundDownWithFloor(np_max / 2, nc_multiple_);
+    if (nc_max < N_ && nc_max >= N_ / 2) {
+      nc_max = RoundDownWithFloor(N_ / 2, nc_multiple_);
     }
 
     // Non-block calls ForNP, which ignores `range_nc` and uses `range_np`.
-    if (!IsBlock(order)) return SizeVec(1, np_max);
+    if (!IsBlock(order)) return SizeVec(1, N_);
 
     SizeVec all_nc(1, nc_max);
 
     // Avoid proposing nc > N.
-    if (np_max > nc_multiple_) {
+    if (N_ > nc_multiple_) {
       // Large L3, but its behavior and characteristics varies across platforms,
       // hence autotune a wider range of nc than the other dimensions.
       size_t reps = 10;
@@ -292,8 +287,7 @@ class GenerateCandidates {
 
       size_t prev = nc_max;
       for (size_t rep = 0; rep < reps; ++rep) {
-        const size_t div =
-            PrevDivisor(nc_multiple_, prev, np_max, nc_multiple_);
+        const size_t div = PrevDivisor(nc_multiple_, prev, N_, nc_multiple_);
         prev = div ? div : RoundDownWithFloor(prev / 2, nc_multiple_);
         all_nc.push_back(prev);
         if (prev == nc_multiple_) break;
@@ -346,8 +340,6 @@ class GenerateCandidates {
   const size_t kc_multiple_;
   const size_t nc_multiple_;
 
-  IndexRangePartition ranges_np_;
-
   const bool print_config_;
 };
 
@@ -357,58 +349,19 @@ class GenerateCandidates {
 std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
                                    size_t K, size_t N, size_t sizeof_TC,
                                    size_t max_mr, size_t nr,
-                                   const IndexRangePartition& ranges_np,
                                    bool print_config) {
   return GenerateCandidates(allocator, M, K, N, sizeof_TC, max_mr, nr,
-                            ranges_np, print_config)();
-}
-
-// Returns the granularity of B rows for `RangesOfNP`. Aims to avoid remote
-// memory accesses or false sharing, unless there are insufficient per-package
-// rows for that.
-static size_t NPMultiple(const Allocator& allocator, size_t N,
-                         size_t sizeof_TC, size_t nr, size_t num_packages) {
-  size_t np_multiple = allocator.BasePageBytes() / sizeof_TC;
-  // If binding, `np_multiple` is typically 1024 and `num_packages` > 1. For
-  // `N` < 4096, this can cause significant load imbalance. If split unevenly,
-  // choose a smaller multiple.
-  if (N % (np_multiple * num_packages)) {
-    const size_t min_multiple = allocator.LineBytes() / sizeof_TC;
-    np_multiple =
-        PrevDivisor(min_multiple, np_multiple, N / num_packages, min_multiple);
-    if (HWY_UNLIKELY(np_multiple == 0)) {
-      np_multiple = min_multiple;
-    }
-    // This happens in tests with small N, hence do not assert.
-    if (N % (np_multiple * num_packages) && N >= 128) {
-      static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-      if (!warned.test_and_set()) {
-        HWY_WARN(
-            "NPMultiple: N=%zu still not divisible by np_multiple=%zu * "
-            "num_packages=%zu\n",
-            N, np_multiple, num_packages);
-      }
-      np_multiple = nr;
-    }
-  }
-  return np_multiple;
-}
-
-IndexRangePartition MMRangesOfNP(ThreadingContext& ctx, size_t max_packages,
-                                 size_t N, size_t sizeof_TC, size_t nr) {
-  const size_t num_packages = HWY_MIN(max_packages, ctx.pools.NumPackages());
-  return StaticPartition(
-      IndexRange(0, N), num_packages,
-      NPMultiple(ctx.allocator, N, sizeof_TC, nr, num_packages));
+                            print_config)();
 }
 
 MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx) {
   // Create storage per cluster. This only applies to in-cluster parallelism.
   // For nested and sequential parallelism, a single MMStorage is used.
   const size_t num_clusters = ctx.pools.AllClusters(/*pkg_idx=*/0).NumWorkers();
+  per_cluster.resize(num_clusters);
   storage.reserve(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-    storage.push_back(MMStorage(ctx));
+    storage.push_back(MMStorage(ctx.allocator));
     row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(kMaxBatchSize));  // C
   }
 
@@ -423,20 +376,15 @@ void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC) {
 
   PROFILER_ZONE("Startup.BindB");
 
-  const IndexRangePartition ranges_np =
-      MMRangesOfNP(ctx, kMaxPackages, B.Rows(), sizeof_TC, kNR);
-  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
-    const IndexRange& rows_b = ranges_np.Range(pkg_idx);
-    const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
-    uintptr_t begin = reinterpret_cast<uintptr_t>(B.RowBytes(rows_b.begin()));
-    uintptr_t end = begin + rows_b.Num() * B.Stride() * B.ElementBytes();
-    // B row padding is less than the page size, so only bind the subset that
-    // is page-aligned.
-    begin = hwy::RoundUpTo(begin, allocator.BasePageBytes());
-    end = hwy::RoundDownTo(end, allocator.BasePageBytes());
-    if (HWY_LIKELY(begin != end)) {
-      allocator.BindMemory(reinterpret_cast<void*>(begin), end - begin, node);
-    }
+  const size_t node = ctx.topology.GetCluster(/*pkg_idx=*/0, 0).Node();
+  uintptr_t begin = reinterpret_cast<uintptr_t>(B.RowBytes(0));
+  uintptr_t end = begin + B.Rows() * B.Stride() * B.ElementBytes();
+  // B row padding is less than the page size, so only bind the subset that
+  // is page-aligned.
+  begin = hwy::RoundUpTo(begin, allocator.BasePageBytes());
+  end = hwy::RoundDownTo(end, allocator.BasePageBytes());
+  if (HWY_LIKELY(begin != end)) {
+    allocator.BindMemory(reinterpret_cast<void*>(begin), end - begin, node);
   }
 }
 
@@ -447,25 +395,20 @@ void BindC(ThreadingContext& ctx, MatPtr& C) {
 
   PROFILER_ZONE("Startup.BindC");
 
-  const IndexRangePartition ranges_np =
-      MMRangesOfNP(ctx, kMaxPackages, C.Cols(), C.ElementBytes(), kNR);
-  bool ok = true;
-  for (size_t pkg_idx = 0; pkg_idx < ranges_np.NumTasks(); ++pkg_idx) {
-    const IndexRange& cols_c = ranges_np.Range(pkg_idx);
-    // `BindMemory` requires page alignment. These are in bytes.
-    const size_t begin = hwy::RoundUpTo(cols_c.begin() * C.ElementBytes(),
-                                        allocator.BasePageBytes());
-    const size_t end = hwy::RoundDownTo(cols_c.end() * C.ElementBytes(),
-                                        allocator.BasePageBytes());
+  const IndexRange cols_c(0, C.Cols());
+  // `BindMemory` requires page alignment. These are in bytes.
+  const size_t begin = hwy::RoundUpTo(cols_c.begin() * C.ElementBytes(),
+                                      allocator.BasePageBytes());
+  const size_t end = hwy::RoundDownTo(cols_c.end() * C.ElementBytes(),
+                                      allocator.BasePageBytes());
 
-    const size_t node = ctx.topology.GetCluster(pkg_idx, 0).Node();
-    for (size_t im = 0; im < C.Rows(); ++im) {
-      ok &= allocator.BindMemory(C.RowBytes(im) + begin, end - begin, node);
-    }
+  const size_t node = ctx.topology.GetCluster(/*pkg_idx=*/0, 0).Node();
+  bool ok = true;
+  for (size_t im = 0; im < C.Rows(); ++im) {
+    ok &= allocator.BindMemory(C.RowBytes(im) + begin, end - begin, node);
   }
   if (HWY_UNLIKELY(!ok)) {
-    HWY_WARN("Failed to bind C (%zux%zu), %zu packages.", C.Rows(), C.Cols(),
-             ranges_np.NumTasks());
+    HWY_WARN("Failed to bind C (%zux%zu).", C.Rows(), C.Cols());
   }
 }
 

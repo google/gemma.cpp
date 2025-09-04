@@ -160,11 +160,10 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   // - supported by the OS (currently Linux only),
   // - the page size is known and 'reasonably small', preferably less than
   //   a fraction of MatMul row/col sizes, which for 27B are up to 144 KiB.
-  // - we successfully detected topology and there are multiple nodes;
-  // - there are multiple packages, because we shard by package_idx.
+  // - we successfully detected topology and there are multiple nodes.
   if constexpr (GEMMA_BIND) {
     if ((base_page_bytes_ != 0 && base_page_bytes_ <= 16 * 1024) &&
-        topology.NumNodes() > 1 && topology.NumPackages() > 1) {
+        topology.NumNodes() > 1) {
       if (enable_bind) {
         // Ensure pages meet the alignment requirements of `AllocBytes`.
         HWY_ASSERT(base_page_bytes_ >= quantum_bytes_);
