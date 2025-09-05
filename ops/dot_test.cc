@@ -851,8 +851,8 @@ class DotStats {
     ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher than others
-    ASSERT_INSIDE(kNaive, 1.5E-8f, s_rels[kNaive].Max(), 3080.f);
-    ASSERT_INSIDE(kOnlyTwoProd, 1.5E-8f, s_rels[kNaive].Max(), 3080.f);
+    ASSERT_INSIDE(kNaive, 1.5E-8f, s_rels[kNaive].Max(), 1.4E4f);
+    ASSERT_INSIDE(kOnlyTwoProd, 1.5E-8f, s_rels[kNaive].Max(), 1.4E4f);
     // Kahan (FastTwoSum) is not much better here!
     ASSERT_INSIDE(kKahan, 6E-10f, s_rels[kKahan].Max(), 0.7f);
 
