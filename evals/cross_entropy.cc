@@ -99,14 +99,15 @@ HWY_EXPORT(CallSoftmax);
 float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
                           MatMulEnv& env, int verbosity) {
-  const StreamFunc stream_token = [](int, float) { return true; };
+  const BatchStreamFunc stream_token = [](size_t, size_t, int, float) {
+    return true;
+  };
 
   const int vocab_size = gemma.Config().vocab_size;
   float cross_entropy = std::log(vocab_size);  // first token; == -log(1/v_s)
-  size_t pos = 1;
 
-  const SampleFunc sample_token = [&](size_t qi,
-                                      Logits logits) -> TokenAndProb {
+  const SampleFunc sample_token = [&](size_t qi, size_t pos, Logits logits,
+                                      size_t /*worker*/) -> TokenAndProb {
     // input is logits, not yet probabilities
     HWY_DYNAMIC_DISPATCH(CallSoftmax)(logits, env.ctx.profiler);
     // We are called for each token, but pos starts at 1. Clamping
@@ -128,7 +129,6 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
       printf("Processed %zu tokens, cross-entropy per token: %f\n", pos + 1,
              cross_entropy / std::log(2.0) / (pos + 1));
     }
-    ++pos;
     return TokenAndProb{.token = token, .prob = prob};
   };
 
@@ -138,7 +138,7 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
       .max_generated_tokens = max_generated_tokens - 1,
       .temperature = 0.0f,
       .verbosity = verbosity,
-      .stream_token = stream_token,
+      .batch_stream_token = stream_token,
       .sample_func = sample_token,
   };
   TimingInfo timing_info;

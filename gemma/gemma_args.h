@@ -89,10 +89,10 @@ using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int, float)>;
-// If not empty, SampleFunc is called with the query_idx and logits for the
-// next token, which it may modify/overwrite. It returns the next generated
-// token together with its probability.
-using SampleFunc = std::function<TokenAndProb(size_t, Logits)>;
+// If not empty, SampleFunc is called concurrently from worker thread(s) with
+// query_idx, pos, logits for the next token (which it may modify/overwrite),
+// and worker. It returns the next generated token and its probability.
+using SampleFunc = std::function<TokenAndProb(size_t, size_t, Logits, size_t)>;
 // If not empty, LayersOutputFunc is called for layer outputs, specified with:
 // - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence
@@ -115,6 +115,7 @@ using ActivationsObserverFunc =
 struct RuntimeConfig {
   // If non-null, `batch_stream_token` is called for each token in the batch,
   // otherwise `stream_token`. `query_idx` is absolute, not batch-relative.
+  // This is called sequentially from the main thread.
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
     PROFILER_ZONE("Gen.StreamToken");
     if (batch_stream_token) {

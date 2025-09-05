@@ -132,6 +132,7 @@ struct Activations {
         x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
         logits(
             MatFactory("logits", batch_size, config.vocab_size, ctx.allocator)),
+        sampled(MatFactory("sampled", batch_size, 3, ctx.allocator)),
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
                                    config.model_dim, ctx.allocator)),
@@ -164,6 +165,7 @@ struct Activations {
     x.OverrideRows(batch_size);
     x_bf.OverrideRows(batch_size);
     logits.OverrideRows(batch_size);
+    sampled.OverrideRows(batch_size);
 
     pre_ffw_rms_out.OverrideRows(batch_size);
     C1.OverrideRows(batch_size);
@@ -178,6 +180,7 @@ struct Activations {
   MatStorageT<float> x;  // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
   MatStorageT<float> logits;
+  MatStorageT<uint32_t> sampled;  // batch_size x 3 (padded)
 
   // Gated FFW
   MatStorageT<BF16> pre_ffw_rms_out;
