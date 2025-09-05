@@ -25,9 +25,11 @@
 namespace gcpp {
 namespace {
 
-TEST(BasicsTest, IsDeterministic) {
-  RNG rng1(/*deterministic=*/true);
-  RNG rng2(/*deterministic=*/true);
+TEST(BasicsTest, EngineIsDeterministic) {
+  const AesCtrEngine engine1(/*deterministic=*/true);
+  const AesCtrEngine engine2(/*deterministic=*/true);
+  RngStream rng1(engine1, 0);
+  RngStream rng2(engine2, 0);
   // Remember for later testing after resetting the stream.
   const uint64_t r0 = rng1();
   const uint64_t r1 = rng1();
@@ -42,15 +44,17 @@ TEST(BasicsTest, IsDeterministic) {
     HWY_ASSERT(rng1() == rng2());
   }
 
-  // Reset counter, ensure it matches the default-constructed RNG.
-  rng1.SetStream(0);
+  // Reset counter, ensure it matches the prior sequence.
+  rng1 = RngStream(engine1, 0);
   HWY_ASSERT(r0 == rng1());
   HWY_ASSERT(r1 == rng1());
 }
 
-TEST(BasicsTest, IsSeeded) {
-  RNG rng1(/*deterministic=*/true);
-  RNG rng2(/*deterministic=*/false);
+TEST(BasicsTest, EngineIsSeeded) {
+  AesCtrEngine engine1(/*deterministic=*/true);
+  AesCtrEngine engine2(/*deterministic=*/false);
+  RngStream rng1(engine1, 0);
+  RngStream rng2(engine2, 0);
   // It would be very unlucky to have even one 64-bit value match, and two are
   // extremely unlikely.
   const uint64_t a0 = rng1();
@@ -60,9 +64,27 @@ TEST(BasicsTest, IsSeeded) {
   HWY_ASSERT(a0 != b0 || a1 != b1);
 }
 
+TEST(BasicsTest, StreamsDiffer) {
+  AesCtrEngine engine(/*deterministic=*/true);
+  // Compare random streams for more coverage than just the first N streams.
+  RngStream rng_for_stream(engine, 0);
+  for (size_t i = 0; i < 1000; ++i) {
+    RngStream rng1(engine, rng_for_stream());
+    RngStream rng2(engine, rng_for_stream());
+    // It would be very unlucky to have even one 64-bit value match, and two are
+    // extremely unlikely.
+    const uint64_t a0 = rng1();
+    const uint64_t a1 = rng1();
+    const uint64_t b0 = rng2();
+    const uint64_t b1 = rng2();
+    HWY_ASSERT(a0 != b0 || a1 != b1);
+  }
+}
+
 // If not close to 50% 1-bits, the RNG is quite broken.
 TEST(BasicsTest, BitDistribution) {
-  RNG rng(/*deterministic=*/true);
+  AesCtrEngine engine(/*deterministic=*/true);
+  RngStream rng(engine, 0);
   constexpr size_t kU64 = 2 * 1000 * 1000;
   const hwy::Timestamp t0;
   uint64_t one_bits = 0;
@@ -78,7 +100,8 @@ TEST(BasicsTest, BitDistribution) {
 }
 
 TEST(BasicsTest, ChiSquared) {
-  RNG rng(/*deterministic=*/true);
+  AesCtrEngine engine(/*deterministic=*/true);
+  RngStream rng(engine, 0);
   constexpr size_t kU64 = 1 * 1000 * 1000;
 
   // Test each byte separately.

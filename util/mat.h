@@ -301,6 +301,13 @@ class MatPtrT : public MatPtr {
     return HWY_RCAST_ALIGNED(const T*, RowBytes(row));
   }
 
+  hwy::Span<MatT> RowSpan(size_t row) {
+    return hwy::Span<MatT>(Row(row), Cols());
+  }
+  hwy::Span<const MatT> RowSpan(size_t row) const {
+    return hwy::Span<const MatT>(Row(row), Cols());
+  }
+
   PackedSpan<const MatT> PaddedSpan() const {
     return MakeConstSpan(HWY_RCAST_ALIGNED(MatT*, ptr_), Rows() * Stride());
   }

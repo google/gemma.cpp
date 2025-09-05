@@ -278,6 +278,7 @@ class Gemma {
   WeightsPtrs::Mode weight_read_mode_;
   GemmaChatTemplate chat_template_;
   InferenceArgs inference_;
+  AesCtrEngine aes_ctr_engine_;
 };
 
 }  // namespace gcpp

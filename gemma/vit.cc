@@ -110,8 +110,7 @@ class VitAttention {
       CallMatMul(Q, K, nullptr, env_, C);
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t worker) HWY_ATTR {
-        float* HWY_RESTRICT c = C.Row(task);
-        Softmax(c, C.Cols(), env_.ctx.profiler, worker);
+        Softmax(C.RowSpan(task), env_.ctx.profiler, worker);
       });
 
       pool_.Run(0, num_tokens_, [&](uint64_t task, size_t worker) HWY_ATTR {
@@ -154,7 +153,7 @@ class VitAttention {
                   head_att[i] = Dot(q, k, qkv_dim);  // score = q.k
                 }
                 // SoftMax yields "probabilities" in head_att.
-                Softmax(head_att, seq_len, env_.ctx.profiler, worker);
+                Softmax(Logits(head_att, seq_len), env_.ctx.profiler, worker);
                 // Compute weighted sum of v into att_out.
                 float* HWY_RESTRICT att_out =
                     activations_.attention.att_out.Row(token) + head * qkv_dim;

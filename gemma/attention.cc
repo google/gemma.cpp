@@ -155,8 +155,9 @@ void SingleDotSoftmaxWeightedSum(
 
   // SoftMax with optional SoftCap yields "probabilities" in att.
   const size_t att_len = HWY_MIN(last_pos + 1, seq_len);
-  MaybeLogitsSoftCap(att_cap, att, att_len, p, worker);
-  Softmax(att, att_len, p, worker, /*temperature=*/1.0f);
+  const Logits logits(att, att_len);
+  MaybeLogitsSoftCap(att_cap, logits, p, worker);
+  Softmax(logits, p, worker, /*temperature=*/1.0f);
 
   WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out, p,
                worker);

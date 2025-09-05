@@ -18,7 +18,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
-#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -38,11 +37,7 @@ class SimplifiedGemma {
       : ctx_(threading),
         env_(ctx_),
         gemma_(loader, inference, ctx_),
-        kv_cache_(gemma_.Config(), inference, ctx_.allocator) {
-    // Initialize random number generator
-    std::random_device rd;
-    gen_.seed(rd());
-  }
+        kv_cache_(gemma_.Config(), inference, ctx_.allocator) {}
 
   SimplifiedGemma(int argc, char** argv)
       : SimplifiedGemma(gcpp::LoaderArgs(argc, argv),
@@ -76,7 +71,6 @@ class SimplifiedGemma {
     gcpp::RuntimeConfig runtime_config = {
         .max_generated_tokens = max_generated_tokens,
         .temperature = temperature,
-        .gen = &gen_,
         .verbosity = 0,
         .stream_token = stream_token,
         .accept_token =
@@ -93,6 +87,5 @@ class SimplifiedGemma {
   gcpp::MatMulEnv env_;
   gcpp::Gemma gemma_;
   gcpp::KVCache kv_cache_;
-  std::mt19937 gen_;
   std::string validation_error_;
 };

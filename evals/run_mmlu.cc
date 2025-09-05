@@ -126,7 +126,6 @@ void Run(GemmaEnv& env, JsonArgs& json) {
     gcpp::RuntimeConfig runtime_config = {
         .max_generated_tokens = 30,
         .temperature = 0.0f,
-        .gen = &env.MutableGen(),
         .verbosity = env.Verbosity(),
         .stream_token = stream_token,
     };

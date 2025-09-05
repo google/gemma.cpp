@@ -24,7 +24,7 @@
 
 namespace gcpp {
 
-RNG::RNG(bool deterministic) {
+AesCtrEngine::AesCtrEngine(bool deterministic) {
   // Pi-based nothing up my sleeve numbers from Randen.
   key_[0] = 0x243F6A8885A308D3ull;
   key_[1] = 0x13198A2E03707344ull;
@@ -54,9 +54,10 @@ static V Load(const uint64_t* ptr) {
   return hn::Load(D(), reinterpret_cast<const uint8_t*>(ptr));
 }
 
-RNG::result_type RNG::operator()() {
-  V state = Load(counter_);
-  counter_[0]++;
+uint64_t AesCtrEngine::operator()(uint64_t stream, uint64_t counter) const {
+  const hn::Repartition<uint64_t, D> d64;
+
+  V state = hn::BitCast(D(), hn::Dup128VecFromValues(d64, counter, stream));
   state = hn::Xor(state, Load(key_));  // initial whitening
 
   static_assert(kRounds == 5 && sizeof(key_) == 12 * sizeof(uint64_t));
@@ -68,7 +69,6 @@ RNG::result_type RNG::operator()() {
   state = hn::AESRound(state, Load(key_ + 10));
 
   // Return lower 64 bits of the u8 vector.
-  const hn::Repartition<uint64_t, D> d64;
   return hn::GetLane(hn::BitCast(d64, state));
 }
 

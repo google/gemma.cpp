@@ -18,7 +18,6 @@
 
 #include <stddef.h>
 
-#include <random>
 #include <string>
 #include <vector>
 
@@ -31,8 +30,6 @@
 #include "hwy/base.h"
 
 namespace gcpp {
-
-void InitGenerator(const InferenceArgs& inference, std::mt19937& gen);
 
 // Return type for query model calls.
 struct QueryResult {
@@ -107,7 +104,6 @@ class GemmaEnv {
 
   int Verbosity() const { return runtime_config_.verbosity; }
   RuntimeConfig& MutableConfig() { return runtime_config_; }
-  std::mt19937& MutableGen() { return gen_; }
   KVCache& MutableKVCache() { return kv_caches_[0]; }
   MatMulEnv& MutableEnv() { return env_; }
 
@@ -115,7 +111,6 @@ class GemmaEnv {
   ThreadingContext ctx_;
   MatMulEnv env_;
   Gemma gemma_;
-  std::mt19937 gen_;                // Random number generator.
   std::vector<KVCache> kv_caches_;  // Same number as query batch.
   RuntimeConfig runtime_config_;
 };

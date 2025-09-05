@@ -17,7 +17,6 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_CONTEXT_H_
 
 #include <memory>  // For std::shared_ptr, std::make_shared
-#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -107,10 +106,6 @@ class GemmaContext {
   // Set deterministic flag
   void SetDeterministic(bool value) {
     inference_args.deterministic = value;
-    // Reset the random number generator for deterministic generation
-    if (value) {
-      gen.seed(0x87654321);
-    }
     LogDebug("Setting deterministic flag to configured value");
   }
 
@@ -288,9 +283,6 @@ class GemmaContext {
 
   // Model itself (don't move this, needs to be below the args above)
   Gemma model;
-
-  // Random generator (remains global for the context)
-  std::mt19937 gen;
 
   // Static members for logging
   static GemmaLogCallback s_log_callback;

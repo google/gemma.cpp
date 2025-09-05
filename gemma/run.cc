@@ -18,7 +18,6 @@
 #include <stdio.h>
 
 #include <iostream>
-#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -98,9 +97,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   size_t prompt_size = 0;
   const ModelConfig& config = gemma.Config();
 
-  std::mt19937 gen;
-  InitGenerator(inference, gen);
-
   const bool have_image = !inference.image_file.path.empty();
   Image image;
   const size_t pool_dim = config.vit_config.pool_dim;
@@ -117,8 +113,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     HWY_ASSERT(image.ReadPPM(inference.image_file.path));
     const size_t image_size = config.vit_config.image_size;
     image.Resize(image_size, image_size);
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
+    RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
                                     .use_spinning = threading.spin};
     double image_tokens_start = hwy::platform::Now();
     gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,
@@ -188,8 +183,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
 
     // Set up runtime config.
     TimingInfo timing_info = {.verbosity = inference.verbosity};
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
+    RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
                                     .batch_stream_token = batch_stream_token,
                                     .use_spinning = threading.spin};
     inference.CopyTo(runtime_config);
@@ -239,7 +233,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     // Prepare for the next turn. Works only for PaliGemma.
     if (!inference.multiturn || config.wrapping == PromptWrapping::PALIGEMMA) {
       abs_pos = 0;  // Start a new turn at position 0.
-      InitGenerator(inference, gen);
     } else {
       // The last token was either EOS, then it should be ignored because it is
       // never part of the dialog, see Table 5 in the Gemma-2 paper:

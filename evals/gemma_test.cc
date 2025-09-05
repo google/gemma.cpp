@@ -115,7 +115,6 @@ TEST_F(GemmaTest, Multiturn) {
   RuntimeConfig runtime_config{
       .max_generated_tokens = 64,
       .temperature = 0.0f,
-      .gen = &s_env->MutableGen(),
       .verbosity = 2,
       .batch_stream_token = stream_token,
   };

@@ -20,7 +20,6 @@
 
 #include <iostream>
 #include <ostream>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -37,17 +36,6 @@
 
 namespace gcpp {
 
-void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
-  if (inference.deterministic) {
-    // Nothing up my sleeve number, at least some upper bits set.
-    gen.seed(0x12345678);
-  } else {
-    // Depending on the library implementation, this may still be deterministic.
-    std::random_device rd;  // NOLINT
-    gen.seed(rd());
-  }
-}
-
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
     : ctx_(threading), env_(ctx_), gemma_(loader, inference, ctx_) {
@@ -60,12 +48,9 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                ctx_);
   }
 
-  InitGenerator(inference, gen_);
-
   runtime_config_ = {
       .max_generated_tokens = inference.max_generated_tokens,
       .temperature = inference.temperature,
-      .gen = &gen_,
       .verbosity = inference.verbosity,
   };
   inference.CopyTo(runtime_config_);

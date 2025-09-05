@@ -60,18 +60,18 @@ struct ServerState {
   std::unique_ptr<Gemma> gemma;
   MatMulEnv* env;
   ThreadingContext* ctx;
-  
+
   // Session-based KV cache storage
   struct Session {
     std::unique_ptr<KVCache> kv_cache;
     size_t abs_pos = 0;
     std::chrono::steady_clock::time_point last_access;
   };
-  
+
   std::unordered_map<std::string, Session> sessions;
   std::mutex sessions_mutex;
   std::mutex inference_mutex;
-  
+
   // Cleanup old sessions after 30 minutes of inactivity
   void CleanupOldSessions() {
     std::lock_guard<std::mutex> lock(sessions_mutex);
@@ -84,7 +84,7 @@ struct ServerState {
       }
     }
   }
-  
+
   // Get or create session with KV cache
   Session& GetOrCreateSession(const std::string& session_id) {
     std::lock_guard<std::mutex> lock(sessions_mutex);
@@ -101,24 +101,25 @@ struct ServerState {
 std::string GenerateSessionId() {
   static std::atomic<uint64_t> counter{0};
   std::stringstream ss;
-  ss << "session_" << std::hex << std::chrono::steady_clock::now().time_since_epoch().count() 
-     << "_" << counter.fetch_add(1);
+  ss << "session_" << std::hex
+     << std::chrono::steady_clock::now().time_since_epoch().count() << "_"
+     << counter.fetch_add(1);
   return ss.str();
 }
 
 // Wraps messages with start_of_turn markers - handles both with and without roles
 std::string WrapMessagesWithTurnMarkers(const json& contents) {
   std::string prompt;
-  
+
   for (const auto& content : contents) {
     if (content.contains("parts")) {
       // Check if role is specified (public API format) or not (local format)
       std::string role = content.value("role", "");
-      
+
       for (const auto& part : content["parts"]) {
         if (part.contains("text")) {
           std::string text = part["text"];
-          
+
           if (role == "user") {
             prompt += "<start_of_turn>user\n" + text + "\n<start_of_turn>model\n";
           } else if (role == "model") {
@@ -131,24 +132,23 @@ std::string WrapMessagesWithTurnMarkers(const json& contents) {
       }
     }
   }
-  
+
   return prompt;
 }
 
 // Parse generation config
-RuntimeConfig ParseGenerationConfig(const json& request, std::mt19937& gen) {
+RuntimeConfig ParseGenerationConfig(const json& request) {
   RuntimeConfig config;
-  config.gen = &gen;
   config.verbosity = 0;
-  
+
   // Set defaults matching public API
   config.temperature = 1.0f;
   config.top_k = 1;
   config.max_generated_tokens = 8192;
-  
+
   if (request.contains("generationConfig")) {
     auto& gen_config = request["generationConfig"];
-    
+
     if (gen_config.contains("temperature")) {
       config.temperature = gen_config["temperature"].get<float>();
     }
@@ -159,7 +159,7 @@ RuntimeConfig ParseGenerationConfig(const json& request, std::mt19937& gen) {
       config.max_generated_tokens = gen_config["maxOutputTokens"].get<size_t>();
     }
   }
-  
+
   return config;
 }
 
@@ -175,12 +175,12 @@ json CreateAPIResponse(const std::string& text, bool is_streaming_chunk = false)
     }}},
     {"promptFeedback", {{"safetyRatings", json::array()}}}
   };
-  
+
   // Only add finishReason for non-streaming chunks
   if (!is_streaming_chunk) {
     response["candidates"][0]["finishReason"] = "STOP";
   }
-  
+
   return response;
 }
 
@@ -188,11 +188,11 @@ json CreateAPIResponse(const std::string& text, bool is_streaming_chunk = false)
 void HandleGenerateContentNonStreaming(ServerState& state, const httplib::Request& req, httplib::Response& res) {
   try {
     json request = json::parse(req.body);
-    
+
     // Get or create session
     std::string session_id = request.value("sessionId", GenerateSessionId());
     auto& session = state.GetOrCreateSession(session_id);
-    
+
     // Extract prompt from API format
     std::string prompt;
     if (request.contains("contents")) {
@@ -202,32 +202,29 @@ void HandleGenerateContentNonStreaming(ServerState& state, const httplib::Reques
       res.set_content(json{{"error", {{"message", "Missing 'contents' field"}}}}.dump(), "application/json");
       return;
     }
-    
+
     // Lock for inference
     std::lock_guard<std::mutex> lock(state.inference_mutex);
-    
+
     // Set up runtime config
-    std::mt19937 gen;
-    RuntimeConfig runtime_config = ParseGenerationConfig(request, gen);
-    
+    RuntimeConfig runtime_config = ParseGenerationConfig(request);
+
     // Collect full response
     std::string full_response;
     runtime_config.stream_token = [&full_response](int token, float) {
       // Skip EOS token
       return true;
     };
-    
+
     // Tokenize prompt
-    std::vector<int> tokens = WrapAndTokenize(state.gemma->Tokenizer(), 
-                                             state.gemma->ChatTemplate(),
-                                             state.gemma->Config().wrapping,
-                                             session.abs_pos,
-                                             prompt);
-    
+    std::vector<int> tokens = WrapAndTokenize(
+        state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
+        state.gemma->Config().wrapping, session.abs_pos, prompt);
+
     // Run inference with KV cache
     TimingInfo timing_info = {.verbosity = 0};
     size_t prefix_end = 0;
-    
+
     // Temporarily redirect output to capture response
     std::stringstream output;
     runtime_config.stream_token = [&output, &state, &session, &tokens](int token, float) {
@@ -236,25 +233,25 @@ void HandleGenerateContentNonStreaming(ServerState& state, const httplib::Reques
         session.abs_pos++;
         return true;
       }
-      
+
       session.abs_pos++;
-      
+
       // Check for EOS
       if (state.gemma->Config().IsEOS(token)) {
         return true;
       }
-      
+
       // Decode token
       std::string token_text;
       state.gemma->Tokenizer().Decode(std::vector<int>{token}, &token_text);
       output << token_text;
-      
+
       return true;
     };
-    
-    state.gemma->Generate(runtime_config, tokens, session.abs_pos, prefix_end, 
-                         *session.kv_cache, *state.env, timing_info);
-    
+
+    state.gemma->Generate(runtime_config, tokens, session.abs_pos, prefix_end,
+                          *session.kv_cache, *state.env, timing_info);
+
     // Create response
     json response = CreateAPIResponse(output.str(), false);
     response["usageMetadata"] = {
@@ -262,17 +259,22 @@ void HandleGenerateContentNonStreaming(ServerState& state, const httplib::Reques
       {"candidatesTokenCount", session.abs_pos - tokens.size()},
       {"totalTokenCount", session.abs_pos}
     };
-    
+
     res.set_content(response.dump(), "application/json");
-    
+
   } catch (const json::exception& e) {
     res.status = 400;
-    res.set_content(json{{"error", {{"message", std::string("JSON parsing error: ") + e.what()}}}}.dump(), 
-                    "application/json");
+    res.set_content(
+        json{{"error",
+              {{"message", std::string("JSON parsing error: ") + e.what()}}}}
+            .dump(),
+        "application/json");
   } catch (const std::exception& e) {
     res.status = 500;
-    res.set_content(json{{"error", {{"message", std::string("Server error: ") + e.what()}}}}.dump(), 
-                    "application/json");
+    res.set_content(
+        json{{"error", {{"message", std::string("Server error: ") + e.what()}}}}
+            .dump(),
+        "application/json");
   }
 }
 
@@ -280,11 +282,11 @@ void HandleGenerateContentNonStreaming(ServerState& state, const httplib::Reques
 void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& req, httplib::Response& res) {
   try {
     json request = json::parse(req.body);
-    
+
     // Get or create session
     std::string session_id = request.value("sessionId", GenerateSessionId());
     auto& session = state.GetOrCreateSession(session_id);
-    
+
     // Extract prompt from API format
     std::string prompt;
     if (request.contains("contents")) {
@@ -294,13 +296,13 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
       res.set_content(json{{"error", {{"message", "Missing 'contents' field"}}}}.dump(), "application/json");
       return;
     }
-    
+
     // Set up SSE headers
     res.set_header("Content-Type", "text/event-stream");
     res.set_header("Cache-Control", "no-cache");
     res.set_header("Connection", "keep-alive");
     res.set_header("X-Session-Id", session_id);
-    
+
     // Set up chunked content provider for SSE
     res.set_chunked_content_provider(
       "text/event-stream",
@@ -309,18 +311,15 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
           // Lock for inference
           std::lock_guard<std::mutex> lock(state.inference_mutex);
           auto& session = state.GetOrCreateSession(session_id);
-          
+
           // Set up runtime config
-          std::mt19937 gen;
-          RuntimeConfig runtime_config = ParseGenerationConfig(request, gen);
-          
+          RuntimeConfig runtime_config = ParseGenerationConfig(request);
+
           // Tokenize prompt
-          std::vector<int> tokens = WrapAndTokenize(state.gemma->Tokenizer(), 
-                                                   state.gemma->ChatTemplate(),
-                                                   state.gemma->Config().wrapping,
-                                                   session.abs_pos,
-                                                   prompt);
-          
+          std::vector<int> tokens = WrapAndTokenize(
+              state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
+              state.gemma->Config().wrapping, session.abs_pos, prompt);
+
           // Stream token callback
           std::string accumulated_text;
           auto stream_token = [&](int token, float) {
@@ -329,37 +328,38 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
               session.abs_pos++;
               return true;
             }
-            
+
             session.abs_pos++;
-            
+
             // Check for EOS
             if (state.gemma->Config().IsEOS(token)) {
               return true;
             }
-            
+
             // Decode token
             std::string token_text;
             state.gemma->Tokenizer().Decode(std::vector<int>{token}, &token_text);
             accumulated_text += token_text;
-            
+
             // Send SSE event using unified formatter
             json event = CreateAPIResponse(token_text, true);
-            
+
             std::string sse_data = "data: " + event.dump() + "\n\n";
             sink.write(sse_data.data(), sse_data.size());
-            
+
             return true;
           };
-          
+
           runtime_config.stream_token = stream_token;
-          
+
           // Run inference with KV cache
           TimingInfo timing_info = {.verbosity = 0};
           size_t prefix_end = 0;
-          
-          state.gemma->Generate(runtime_config, tokens, session.abs_pos, prefix_end, 
-                               *session.kv_cache, *state.env, timing_info);
-          
+
+          state.gemma->Generate(runtime_config, tokens, session.abs_pos,
+                                prefix_end, *session.kv_cache, *state.env,
+                                timing_info);
+
           // Send final event using unified formatter
           json final_event = CreateAPIResponse("", false);
           final_event["usageMetadata"] = {
@@ -367,18 +367,18 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
             {"candidatesTokenCount", session.abs_pos - tokens.size()},
             {"totalTokenCount", session.abs_pos}
           };
-          
+
           std::string final_sse = "data: " + final_event.dump() + "\n\n";
           sink.write(final_sse.data(), final_sse.size());
-          
+
           // Send done event
           sink.write("data: [DONE]\n\n", 15);
-          
+
           // Ensure all data is sent
           sink.done();
-          
+
           return false; // End streaming
-          
+
         } catch (const std::exception& e) {
           json error_event = {{"error", {{"message", e.what()}}}};
           std::string error_sse = "data: " + error_event.dump() + "\n\n";
@@ -387,11 +387,14 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
         }
       }
     );
-    
+
   } catch (const json::exception& e) {
     res.status = 400;
-    res.set_content(json{{"error", {{"message", std::string("JSON parsing error: ") + e.what()}}}}.dump(), 
-                    "application/json");
+    res.set_content(
+        json{{"error",
+              {{"message", std::string("JSON parsing error: ") + e.what()}}}}
+            .dump(),
+        "application/json");
   }
 }
 
@@ -410,7 +413,7 @@ void HandleListModels(ServerState& state, const InferenceArgs& inference, const 
       {"topK", 1}
     }}}
   };
-  
+
   res.set_content(response.dump(), "application/json");
 }
 
@@ -419,40 +422,40 @@ void HandleListModels(ServerState& state, const InferenceArgs& inference, const 
 //   server_running = false;
 // }
 
-void RunServer(const LoaderArgs& loader, const ThreadingArgs& threading, 
+void RunServer(const LoaderArgs& loader, const ThreadingArgs& threading,
                const InferenceArgs& inference) {
   std::cerr << "Loading model..." << std::endl;
-  
+
   // Initialize model
   ThreadingContext ctx(threading);
   MatMulEnv env(ctx);
-  
+
   ServerState state;
   state.gemma = std::make_unique<Gemma>(loader, inference, ctx);
   state.env = &env;
   state.ctx = &ctx;
-  
+
   httplib::Server server;
-  
+
   // Set up routes
   server.Get("/", [&inference](const httplib::Request&, httplib::Response& res) {
     res.set_content("API Server (gemma.cpp) - Use POST /v1beta/models/" + inference.model + ":generateContent", "text/plain");
   });
-  
+
   // API endpoints
   server.Get("/v1beta/models", [&state, &inference](const httplib::Request& req, httplib::Response& res) {
     HandleListModels(state, inference, req, res);
   });
-  
+
   std::string model_endpoint = "/v1beta/models/" + inference.model;
   server.Post(model_endpoint + ":generateContent", [&state](const httplib::Request& req, httplib::Response& res) {
     HandleGenerateContentNonStreaming(state, req, res);
   });
-  
+
   server.Post(model_endpoint + ":streamGenerateContent", [&state](const httplib::Request& req, httplib::Response& res) {
     HandleGenerateContentStreaming(state, req, res);
   });
-  
+
   // Periodic cleanup of old sessions
   std::thread cleanup_thread([&state]() {
     while (server_running) {
@@ -460,18 +463,18 @@ void RunServer(const LoaderArgs& loader, const ThreadingArgs& threading,
       state.CleanupOldSessions();
     }
   });
-  
+
   std::cerr << "Starting API server on port " << inference.port << std::endl;
   std::cerr << "Model loaded successfully" << std::endl;
   std::cerr << "Endpoints:" << std::endl;
   std::cerr << "  POST /v1beta/models/" << inference.model << ":generateContent" << std::endl;
   std::cerr << "  POST /v1beta/models/" << inference.model << ":streamGenerateContent (SSE)" << std::endl;
   std::cerr << "  GET  /v1beta/models" << std::endl;
-  
+
   if (!server.listen("0.0.0.0", inference.port)) {
     std::cerr << "Failed to start server on port " << inference.port << std::endl;
   }
-  
+
   cleanup_thread.join();
 }
 
@@ -479,11 +482,11 @@ void RunServer(const LoaderArgs& loader, const ThreadingArgs& threading,
 
 int main(int argc, char** argv) {
   gcpp::InternalInit();
-  
+
   gcpp::LoaderArgs loader(argc, argv);
   gcpp::ThreadingArgs threading(argc, argv);
   gcpp::InferenceArgs inference(argc, argv);
-  
+
   if (gcpp::HasHelp(argc, argv)) {
     std::cerr << "\n\nAPI server for gemma.cpp\n";
     std::cout << "========================\n\n";
@@ -501,14 +504,14 @@ int main(int argc, char** argv) {
     std::cerr << "\n";
     return 0;
   }
-  
+
   // Arguments are now handled by InferenceArgs
-  
+
   // // Set up signal handler
   // signal(SIGINT, gcpp::HandleShutdown);
   // signal(SIGTERM, gcpp::HandleShutdown);
-  
+
   gcpp::RunServer(loader, threading, inference);
-  
+
   return 0;
 }

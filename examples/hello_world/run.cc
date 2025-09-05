@@ -17,8 +17,8 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
-#include <random>
 #include <set>
 #include <string>
 #include <vector>
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
   for (int arg = 0; arg < argc; ++arg) {
     // Find a --reject flag and consume everything after it.
     if (strcmp(argv[arg], "--reject") == 0) {
-      while (++arg < argc) reject_tokens.insert(atoi(argv[arg]));
+      while (++arg < argc) reject_tokens.insert(atoi(argv[arg]));  // NOLINT
     }
   }
 
@@ -54,11 +54,6 @@ int main(int argc, char** argv) {
   gcpp::Gemma gemma(loader, inference, ctx);
   gcpp::KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
   size_t generated = 0;
-
-  // Initialize random number generator
-  std::mt19937 gen;
-  std::random_device rd;  // NOLINT
-  gen.seed(rd());
 
   // Tokenize instructions.
   std::string prompt = "Write a greeting to the world.";
@@ -84,7 +79,6 @@ int main(int argc, char** argv) {
   gcpp::RuntimeConfig runtime_config = {
       .max_generated_tokens = 1024,
       .temperature = 1.0,
-      .gen = &gen,
       .verbosity = 0,
       .stream_token = stream_token,
       .accept_token =

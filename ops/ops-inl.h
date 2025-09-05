@@ -29,7 +29,7 @@
 
 #include "ops/matmul.h"
 #include "util/allocator.h"
-#include "util/basics.h"  // TokenAndProb
+#include "util/basics.h"  // TokenAndProb, RngStream
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -614,12 +614,12 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
 }
 
 // See below for a specialized version for top-1 sampling.
-static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
-                                 hwy::Profiler& p, const size_t worker,
+static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
+                                 const size_t worker,
                                  float temperature = 1.0f) {
   static const auto zone = p.AddZone("Ops.Softmax");
   PROFILER_ZONE3(p, worker, zone);
-  HWY_DASSERT(size != 0);
+  HWY_DASSERT(logits.size() != 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -629,24 +629,25 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   const V vmin = hn::Set(d, hwy::LowestValue<float>());
   V vmax = vmin;
   V* pmax = &vmax;  // workaround for SVE: cannot capture &vector directly
-  hn::Foreach(d, x, size, vmin, [pmax](const auto d, const V value) HWY_ATTR {
-    *pmax = hn::Max(*pmax, value);
-  });
+  hn::Foreach(d, logits.data(), logits.size(), vmin,
+              [pmax](const auto d, const V value)
+                  HWY_ATTR { *pmax = hn::Max(*pmax, value); });
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, x, size, [pmax](const auto d, const V value) HWY_ATTR {
-    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
-      return hn::CallExp(d, hn::Sub(value, *pmax));
-    } else {
-      return hn::Exp(d, hn::Sub(value, *pmax));
-    }
-  });
+  hn::Transform(d, logits.data(), logits.size(),
+                [pmax](const auto d, const V value) HWY_ATTR {
+                  if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+                    // Workaround for buggy SVE codegen: avoid inlined Exp().
+                    return hn::CallExp(d, hn::Sub(value, *pmax));
+                  } else {
+                    return hn::Exp(d, hn::Sub(value, *pmax));
+                  }
+                });
 
   if (temperature != 1.0f) {
     const float temperature_inv = 1.0f / temperature;
-    hn::Transform(d, x, size,
+    hn::Transform(d, logits.data(), logits.size(),
                   [temperature_inv](const auto d, const V value) HWY_ATTR {
                     return hn::Mul(value, hn::Set(d, temperature_inv));
                   });
@@ -656,10 +657,10 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   // not make a huge difference. It halves the standard deviation of the sum of
   // the normalized probabilities from 1E-7 to 5E-8, but actually also changes
   // the generated text after a few hundred tokens.
-  const float sum_exp = Sum(d, x, size);
+  const float sum_exp = Sum(d, logits.data(), logits.size());
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
-  MulByConst(mul, x, size, p, worker);
+  MulByConst(mul, logits.data(), logits.size(), p, worker);
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /
@@ -669,8 +670,7 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 // which already knows the max value which top-1 sampling would again seek.
 
 // Returns the argmax and x[argmax].
-static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
-                                            const size_t num) {
+static HWY_INLINE TokenAndProb ArgmaxAndMax(Logits logits) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   using V = hn::Vec<D>;
@@ -680,16 +680,16 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
   using TI = hn::TFromD<decltype(di)>;
   using VI = hn::Vec<decltype(di)>;
   const size_t N = hn::Lanes(d);
-  HWY_ASSERT(num % (2 * N) == 0);
+  HWY_ASSERT(logits.size() % (2 * N) == 0);
 
   V max0 = hn::Set(d, hwy::LowestValue<float>());
   V max1 = max0;
   VI argmax0 = hn::Zero(di);
   VI argmax1 = argmax0;
 
-  for (size_t i = 0; i < num; i += 2 * N) {
-    const V v0 = hn::LoadU(d, x + i);
-    const V v1 = hn::LoadU(d, x + i + N);
+  for (size_t i = 0; i < logits.size(); i += 2 * N) {
+    const V v0 = hn::LoadU(d, &logits[i]);
+    const V v1 = hn::LoadU(d, &logits[i + N]);
     const VI vi0 = hn::Iota(di, static_cast<TI>(i));
     const VI vi1 = hn::Iota(di, static_cast<TI>(i + N));
     const M gt0 = hn::Gt(v0, max0);
@@ -714,43 +714,43 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
   return TokenAndProb{.token = argmax, .prob = hn::GetLane(max)};
 }
 
-// Returns argmax of softmax and its probability. This overwrites `x`, but not
-// with normalized probabilities. Only equivalent to `Softmax` + `sample_func`
-// if `kTopK` == 1. This is worthwhile because `num` is typically `kVocabSize`
-// == 256K, and this avoids writing and then scanning again for the max.
-// However, this is not enough to make parallelization worthwhile.
-static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
-                                                   const size_t num) {
+// Returns argmax of softmax and its probability. This overwrites `logits`, but
+// not with normalized probabilities. Only equivalent to `Softmax` +
+// `sample_func` if `kTopK` == 1. This is worthwhile because `logits.size()` is
+// typically `kVocabSize == 256K`, and this avoids writing and then scanning
+// again for the max.
+static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> d;
   using V = hn::Vec<decltype(d)>;
 
-  const TokenAndProb argmax = ArgmaxAndMax(x, num);
+  const TokenAndProb argmax = ArgmaxAndMax(logits);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
   const V max = hn::Set(d, argmax.prob);
   const V* pmax = &max;
-  hn::Transform(d, x, num, [pmax](const auto d, const V value) HWY_ATTR {
-    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
-      return hn::CallExp(d, hn::Sub(value, *pmax));
-    } else {
-      return hn::Exp(d, hn::Sub(value, *pmax));
-    }
-  });
+  hn::Transform(d, logits.data(), logits.size(),
+                [pmax](const auto d, const V value) HWY_ATTR {
+                  if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+                    // Temporary workaround for buggy SVE codegen: avoid inlined
+                    // Exp().
+                    return hn::CallExp(d, hn::Sub(value, *pmax));
+                  } else {
+                    return hn::Exp(d, hn::Sub(value, *pmax));
+                  }
+                });
 
   // Normalize to a single probability. The exact sum seems like it should not
   // make a huge difference. It halves the standard deviation of the sum of the
   // normalized probabilities from 1E-7 to 5E-8, but actually also changes the
   // generated text after a few hundred tokens.
-  const float sum_exp = Sum(d, x, num);
-  const float prob = x[argmax.token] / sum_exp;
+  const float sum_exp = Sum(d, logits.data(), logits.size());
+  const float prob = logits[argmax.token] / sum_exp;
   return TokenAndProb{.token = argmax.token, .prob = prob};
 }
 
-static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
-                                       const size_t size, hwy::Profiler& p,
-                                       const size_t worker) {
+static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
+                                       hwy::Profiler& p, const size_t worker) {
   static const auto zone = p.AddZone("Ops.LogitsSoftCap");
   PROFILER_ZONE3(p, worker, zone);
 
@@ -763,18 +763,18 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
   const VF* HWY_RESTRICT pcap = &vcap;
   const VF* HWY_RESTRICT pinv_cap = &vinv_cap;
 
-  DecompressAndCompressInplace(
-      DF(), x, size, [pcap, pinv_cap](DF d, VF v) HWY_ATTR -> VF {
-        return hn::Mul(*pcap, hn::Tanh(d, hn::Mul(v, *pinv_cap)));
-      });
+  DecompressAndCompressInplace(DF(), logits.data(), logits.size(),
+                               [pcap, pinv_cap](DF d, VF v) HWY_ATTR -> VF {
+                                 return hn::Mul(
+                                     *pcap, hn::Tanh(d, hn::Mul(v, *pinv_cap)));
+                               });
 }
 
 // Calls LogitsSoftCap if cap != 0.0f.
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
-    const float cap, float* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
-    const size_t worker) {
+    const float cap, Logits logits, hwy::Profiler& p, const size_t worker) {
   if (cap != 0.0f) {
-    LogitsSoftCap(cap, x, size, p, worker);
+    LogitsSoftCap(cap, logits, p, worker);
   }
 }
 
@@ -785,20 +785,18 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
   ParallelFor(ParallelismStrategy::kFlat, x.Rows(), ctx, cluster_idx,
               [&](uint64_t task, size_t worker) {
                 if (non_eos.Get(task)) {
-                  LogitsSoftCap(cap, x.Row(task), x.Cols(), ctx.profiler,
-                                worker);
+                  LogitsSoftCap(cap, x.RowSpan(task), ctx.profiler, worker);
                 }
               });
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
-SampleArgmax(const float* probabilities, size_t vocab_size) {
+static HWY_NOINLINE HWY_MAYBE_UNUSED size_t SampleArgmax(Logits logits) {
   size_t max_index = 0;
-  float max_prob = probabilities[0];
-  for (size_t i = 1; i < vocab_size; ++i) {
-    if (probabilities[i] > max_prob) {
+  float max_prob = logits[0];
+  for (size_t i = 1; i < logits.size(); ++i) {
+    if (logits[i] > max_prob) {
       max_index = i;
-      max_prob = probabilities[i];
+      max_prob = logits[i];
     }
   }
   return max_index;
@@ -828,16 +826,15 @@ HWY_INLINE HWY_MAYBE_UNUSED std::discrete_distribution<int> create_distribution(
 
 template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
-    const float* HWY_RESTRICT probabilities, size_t vocab_size, size_t k,
-    TAcceptToken& accept_token) {
+    Logits logits, size_t k, TAcceptToken& accept_token) {
   HWY_ASSERT(k != 0);
-  HWY_ASSERT(k <= vocab_size);
+  HWY_ASSERT(k <= logits.size());
   std::vector<double> packed_token_probs;
-  for (int32_t i = 0; i < static_cast<int32_t>(vocab_size); ++i) {
-    if (accept_token && !accept_token(i, probabilities[i])) {
+  for (int32_t i = 0; i < static_cast<int32_t>(logits.size()); ++i) {
+    if (accept_token && !accept_token(i, logits[i])) {
       continue;
     }
-    packed_token_probs.push_back(PackTokenAndProb(i, probabilities[i]));
+    packed_token_probs.push_back(PackTokenAndProb(i, logits[i]));
   }
 
   hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), k,
@@ -853,11 +850,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
 }
 
 template <typename TAcceptToken>
-HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
-    const float* HWY_RESTRICT probabilities, size_t k, size_t vocab_size,
-    std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
-  std::vector<TokenAndProb> token_probs =
-      TopK(probabilities, vocab_size, k, accept_token);
+HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(Logits logits, size_t k,
+                                             RngStream& gen, float temperature,
+                                             TAcceptToken& accept_token) {
+  std::vector<TokenAndProb> token_probs = TopK(logits, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_probs(k);
   for (size_t i = 0; i < k; ++i) {
@@ -869,14 +865,12 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
 
 template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
-    const float* HWY_RESTRICT logits, size_t k, size_t vocab_size,
-    std::mt19937& gen, float temperature, TAcceptToken& accept_token,
-    hwy::Profiler& p, size_t worker) {
+    Logits logits, size_t k, RngStream& gen, float temperature,
+    TAcceptToken& accept_token, hwy::Profiler& p, size_t worker) {
   // Softmax and sample top-K is equivalent to taking the top-K logits and
   // sampling from the softmax of the top-K logits. The latter is faster as it
   // avoids computing the softmax of all logits.
-  std::vector<TokenAndProb> token_logits =
-      TopK(logits, vocab_size, k, accept_token);
+  std::vector<TokenAndProb> token_logits = TopK(logits, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_logits(k);
   for (size_t i = 0; i < token_logits.size(); ++i) {
@@ -884,8 +878,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
     topk_logits[i] = token_logits[i].prob;
   }
 
-  size_t mask = token_logits.size();
-  Softmax(topk_logits.data(), mask, p, worker, temperature);
+  const size_t mask = token_logits.size();
+  Softmax(Logits(topk_logits.data(), mask), p, worker, temperature);
   auto distribution = std::discrete_distribution<int>(
       std::begin(topk_logits), std::begin(topk_logits) + mask);
   int topk_sampled_index = distribution(gen);

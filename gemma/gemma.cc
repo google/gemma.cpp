@@ -440,8 +440,7 @@ static void SampleAndStream(
 
   // TODO: parallelize
   non_eos.Foreach([&](size_t qi) {
-    float* HWY_RESTRICT logits = activations.logits.Row(qi);
-    const TokenAndProb tp = sample_token(logits, config.vocab_size);
+    const TokenAndProb tp = sample_token(qi, activations.logits.RowSpan(qi));
 
     // We streamed all prefill tokens, but pos is still one behind because we
     // started generation at pos = prompt.size() - 1. We want the pos argument
@@ -453,7 +452,8 @@ static void SampleAndStream(
 }
 
 static HWY_INLINE SampleFunc
-ChooseSampleFunc(const RuntimeConfig& runtime_config, ThreadingContext& ctx) {
+ChooseSampleFunc(const RuntimeConfig& runtime_config,
+                 const AesCtrEngine& engine, ThreadingContext& ctx) {
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
@@ -462,27 +462,28 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config, ThreadingContext& ctx) {
 
   // Fast path for top-1 with no accept_token.
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
-    return [&](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
+    return [&](size_t /*qi*/, Logits logits) HWY_ATTR -> TokenAndProb {
       PROFILER_ZONE3(ctx.profiler, worker, zone);
-      return Top1OfSoftmax(logits, vocab_size);
+      return Top1OfSoftmax(logits);
     };
   }
 
   // General case: Softmax with top-k sampling.
-  return [&](float* logits, size_t vocab_size) HWY_ATTR -> TokenAndProb {
+  return [&](size_t qi, Logits logits) HWY_ATTR -> TokenAndProb {
     PROFILER_ZONE("Gen.Sample general");
+    RngStream gen(engine, qi);
     return FusedSoftmaxAndSampleTopK(
-        logits, runtime_config.top_k, vocab_size, *runtime_config.gen,
-        runtime_config.temperature, runtime_config.accept_token, ctx.profiler,
-        worker);
+        logits, runtime_config.top_k, gen, runtime_config.temperature,
+        runtime_config.accept_token, ctx.profiler, worker);
   };
 }
 
 // Decode: generates one continuation token for each query in `qbatch`.
 static void GenerateT(const ModelConfig& config,
                       const RuntimeConfig& runtime_config,
-                      const WeightsPtrs& weights, Activations& activations,
-                      QBatch& qbatch, MatMulEnv& env, TimingInfo& timing_info) {
+                      const AesCtrEngine& engine, const WeightsPtrs& weights,
+                      Activations& activations, QBatch& qbatch, MatMulEnv& env,
+                      TimingInfo& timing_info) {
   // Griffin assumes that the recurrent block cache is zero-initialized.
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     if (qbatch.MutablePos(qi) == 0) {
@@ -554,7 +555,8 @@ static void GenerateT(const ModelConfig& config,
     max_gen_steps = seq_len - max_prompt_size;
   }
 
-  const SampleFunc sample_token = ChooseSampleFunc(runtime_config, env.ctx);
+  const SampleFunc sample_token =
+      ChooseSampleFunc(runtime_config, engine, env.ctx);
 
   timing_info.generate_start = hwy::platform::Now();
   for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
@@ -568,15 +570,16 @@ static void GenerateT(const ModelConfig& config,
 void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      const ModelConfig& config,
                      const RuntimeConfig& runtime_config,
-                     const WeightsPtrs& weights, KVCache& kv_cache,
-                     MatMulEnv& env, TimingInfo& timing_info) {
+                     const AesCtrEngine& engine, const WeightsPtrs& weights,
+                     KVCache& kv_cache, MatMulEnv& env,
+                     TimingInfo& timing_info) {
   Activations activations(config, runtime_config.prefill_tbatch_size,
                           kv_cache.SeqLen(), env.ctx, env.row_ptrs);
 
   AllQueries all_queries(prompt, pos, prefix_end,
                          hwy::Span<KVCache>(&kv_cache, 1));
   QBatch qbatch(/*start=*/0, /*max_size=*/1, all_queries);
-  GenerateT(config, runtime_config, weights, activations, qbatch, env,
+  GenerateT(config, runtime_config, engine, weights, activations, qbatch, env,
             timing_info);
 }
 
@@ -584,8 +587,9 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
 // queries, and calls `GenerateT` on each batch.
 void GenerateBatchT(const ModelConfig& config,
                     const RuntimeConfig& runtime_config,
-                    const WeightsPtrs& weights, AllQueries& all_queries,
-                    MatMulEnv& env, TimingInfo& timing_info) {
+                    const AesCtrEngine& engine, const WeightsPtrs& weights,
+                    AllQueries& all_queries, MatMulEnv& env,
+                    TimingInfo& timing_info) {
   const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
                                         runtime_config.prefill_tbatch_size);
   Activations activations(config, max_batch_size,
@@ -596,7 +600,7 @@ void GenerateBatchT(const ModelConfig& config,
        start += runtime_config.decode_qbatch_size) {
     QBatch qbatch(start, runtime_config.decode_qbatch_size, all_queries);
     // Generate a batch of one token for each of `qbatch.Size()` queries.
-    GenerateT(config, runtime_config, weights, activations, qbatch, env,
+    GenerateT(config, runtime_config, engine, weights, activations, qbatch, env,
               timing_info);
   }
 }
@@ -637,7 +641,8 @@ Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
       model_(reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model),
-      inference_(inference) {
+      inference_(inference),
+      aes_ctr_engine_(inference.deterministic) {
   // Negligible CPU time in the ctor body (except ReadFromBlobs).
   weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, loader, inference,
                                              mat_owners_, ctx);
@@ -661,9 +666,9 @@ void Gemma::Generate(const RuntimeConfig& runtime_config,
                      TimingInfo& timing_info) const {
   env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
-  HWY_DYNAMIC_DISPATCH(GenerateSingleT)(prompt, pos, prefix_end,
-                                        model_.Config(), runtime_config,
-                                        weights_, kv_cache, env, timing_info);
+  HWY_DYNAMIC_DISPATCH(GenerateSingleT)(
+      prompt, pos, prefix_end, model_.Config(), runtime_config, aes_ctr_engine_,
+      weights_, kv_cache, env, timing_info);
 
   env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }
@@ -674,7 +679,8 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
   env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   HWY_DYNAMIC_DISPATCH(GenerateBatchT)(model_.Config(), runtime_config,
-                                       weights_, all_queries, env, timing_info);
+                                       aes_ctr_engine_, weights_, all_queries,
+                                       env, timing_info);
 
   env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }

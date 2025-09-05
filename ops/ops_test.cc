@@ -57,6 +57,12 @@ namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
+static RngStream MakeRng() {
+  static AesCtrEngine engine(/*deterministic=*/true);
+  static uint64_t stream = 0;
+  return RngStream(engine, ++stream);
+}
+
 template <class Test>
 struct ForeachCountAndMisalign {
   template <typename T, class D>
@@ -304,7 +310,7 @@ class TestSoftmax {
     }
 
     SimpleSoftmax(e, count);
-    Softmax(x, count, hwy::Profiler::Get(), /*worker=*/0);
+    Softmax(Logits(x, count), hwy::Profiler::Get(), /*worker=*/0);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {
@@ -438,10 +444,9 @@ void TestRopeAndMulBy() {
   const size_t dim_qkv = config.layer_configs[0].qkv_dim;
   MatStorageT<float> x("x", dim_qkv, ctx.allocator);
 
-  std::mt19937 gen;
-  gen.seed(0x12345678);
+  RngStream rng = MakeRng();
   std::normal_distribution<float> r{0.0, 5.0};
-  auto random_float = [&r, &gen] { return r(gen); };
+  auto random_float = [&r, &rng] { return r(rng); };
 
   for (size_t i = 0; i < dim_qkv; ++i) {
     x.Row(0)[i] = random_float();
@@ -704,38 +709,34 @@ void TestSampleTopK() {
   hwy::Profiler& p = hwy::Profiler::Get();
   const size_t worker = 0;
   const size_t kSize = 52;
-  std::vector<float> logits(kSize);
+  std::vector<float> logits_vec(kSize);
+  Logits logits(logits_vec.data(), kSize);
   // Create a vector going from -100 to -100+51=49 and take Softmax.
   std::iota(logits.begin(), logits.end(), -100.0f);
-  Softmax(logits.data(), kSize, p, worker);
-  std::mt19937 gen;
-  gen.seed(0x12345678);
+  Softmax(logits, p, worker);
+  RngStream rng = MakeRng();
   float temperature = 1.0f;
   // SampleTopK<1> should return the argmax.
   std::function<bool(int, float)> accept_token;
-  int sample =
-      SampleTopK(logits.data(), /*k=*/1, kSize, gen, temperature, accept_token);
+  int sample = SampleTopK(logits, /*k=*/1, rng, temperature, accept_token);
   EXPECT_EQ(sample, 51);  // Last is largest.
   // Only accept even tokens, expect the last (largest) even index.
   accept_token = [](int i, float) { return i % 2 == 0; };
-  sample =
-      SampleTopK(logits.data(), /*k=*/1, kSize, gen, temperature, accept_token);
+  sample = SampleTopK(logits, /*k=*/1, rng, temperature, accept_token);
   EXPECT_EQ(sample, 50);  // Last even index.
   // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
-  Softmax(logits.data(), kSize, p, worker);
+  Softmax(logits, p, worker);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
-    sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,
-                        accept_token);
+    sample = SampleTopK(logits, /*k=*/3, rng, temperature, accept_token);
     EXPECT_TRUE(sample == 50 || sample == 48 || sample == 46);
   }
   // Now set the temperature to 0.0f, which should always return the argmax,
   // even for k=3.
   temperature = 0.0f;
   for (int i = 0; i < 100; ++i) {
-    sample = SampleTopK(logits.data(), /*k=*/3, kSize, gen, temperature,
-                        accept_token);
+    sample = SampleTopK(logits, /*k=*/3, rng, temperature, accept_token);
     EXPECT_EQ(sample, 50);
   }
 }

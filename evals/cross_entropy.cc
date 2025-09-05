@@ -56,11 +56,10 @@ static std::string TokenString(const GemmaTokenizer& tokenizer, int token) {
   return "'" + std::regex_replace(token_str, std::regex("\n"), "\\n") + "'";
 }
 
-void LogTopK(const GemmaTokenizer& tokenizer, const float* dist, size_t len,
-             size_t k) {
-  std::vector<std::pair<float, int>> sorted(len);
-  for (size_t i = 0; i < len; ++i) {
-    sorted[i] = std::make_pair(dist[i], static_cast<int>(i));
+void LogTopK(const GemmaTokenizer& tokenizer, Logits logits, size_t k) {
+  std::vector<std::pair<float, int>> sorted(logits.size());
+  for (size_t i = 0; i < logits.size(); ++i) {
+    sorted[i] = std::make_pair(logits[i], static_cast<int>(i));
   }
   std::sort(sorted.begin(), sorted.end(),
             [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
@@ -84,9 +83,8 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-void CallSoftmax(float* HWY_RESTRICT logits, size_t vocab_size,
-                 hwy::Profiler& p) {
-  Softmax(logits, vocab_size, p, hwy::Profiler::Thread());
+void CallSoftmax(Logits logits, hwy::Profiler& p) {
+  Softmax(logits, p, hwy::Profiler::Thread());
 }
 
 }  // namespace HWY_NAMESPACE
@@ -107,19 +105,19 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
   float cross_entropy = std::log(vocab_size);  // first token; == -log(1/v_s)
   size_t pos = 1;
 
-  const SampleFunc sample_token = [&](float* probs,
-                                      size_t vocab_size) -> TokenAndProb {
+  const SampleFunc sample_token = [&](size_t qi,
+                                      Logits logits) -> TokenAndProb {
     // input is logits, not yet probabilities
-    HWY_DYNAMIC_DISPATCH(CallSoftmax)(probs, vocab_size, env.ctx.profiler);
+    HWY_DYNAMIC_DISPATCH(CallSoftmax)(logits, env.ctx.profiler);
     // We are called for each token, but pos starts at 1. Clamping
     // max_generated_tokens to prompt.size() should prevent overrun.
     HWY_ASSERT(pos < prompt.size());
     const int token = prompt[pos];
-    const float prob = probs[token];
+    const float prob = logits[token];
     cross_entropy -= std::max(std::log(prob), -64.0f);
 
     if (verbosity >= 4) {
-      LogTopK(gemma.Tokenizer(), probs, vocab_size, 10);
+      LogTopK(gemma.Tokenizer(), logits, 10);
     }
     if (verbosity >= 3) {
       printf("pos %4zu token %6d = %-12s  %.10e  %14.10f bits\n", pos, token,
@@ -139,7 +137,6 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
   RuntimeConfig runtime = {
       .max_generated_tokens = max_generated_tokens - 1,
       .temperature = 0.0f,
-      .gen = nullptr,
       .verbosity = verbosity,
       .stream_token = stream_token,
       .sample_func = sample_token,

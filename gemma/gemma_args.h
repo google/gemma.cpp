@@ -22,7 +22,6 @@
 #include <stdio.h>
 
 #include <functional>
-#include <random>
 #include <string>
 
 #include "io/io.h"       // Path
@@ -90,10 +89,10 @@ using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int, float)>;
-// If not empty, SampleFunc is called with the logits for the next token, which
-// it may modify/overwrite, and its return value is the next generated token
-// together with its probability.
-using SampleFunc = std::function<TokenAndProb(float*, size_t)>;
+// If not empty, SampleFunc is called with the query_idx and logits for the
+// next token, which it may modify/overwrite. It returns the next generated
+// token together with its probability.
+using SampleFunc = std::function<TokenAndProb(size_t, Logits)>;
 // If not empty, LayersOutputFunc is called for layer outputs, specified with:
 // - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence
@@ -136,8 +135,7 @@ struct RuntimeConfig {
   // Sampling-related parameters.
   float temperature;  // Temperature for sampling.
 
-  size_t top_k = 1;           // Top-k for sampling.
-  std::mt19937* gen;          // Random number generator used for sampling.
+  size_t top_k = 1;  // Top-k for sampling.
 
   int verbosity;  // Controls verbosity of printed messages.
 
