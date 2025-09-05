@@ -507,14 +507,12 @@ cc_library(
     srcs = [
         "gemma/attention.cc",
         "gemma/gemma.cc",
-        "gemma/griffin.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
         "gemma/activations.h",
         "gemma/attention.h",
         "gemma/gemma.h",
-        "gemma/griffin.h",
         "gemma/vit.h",
     ],
     exec_properties = {

@@ -158,9 +158,6 @@ TEST_F(GemmaTest, CrossEntropySmall) {
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
   switch (config.model) {
-    case gcpp::Model::GRIFFIN_2B:
-      EXPECT_NEAR(entropy, 2.61f, 0.02f);
-      break;
     case gcpp::Model::GEMMA2_2B:
       EXPECT_NEAR(entropy, 1.14f, 0.02f);
       break;

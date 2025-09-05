@@ -124,8 +124,6 @@ class TensorInfoRegistry {
   void AddModelTensors(const ModelConfig& config);
   void AddLayerTensors(const ModelConfig& config,
                        const LayerConfig& layer_config, size_t layer_idx);
-  void AddGriffinLayerTensors(const LayerConfig& layer_config,
-                              size_t layer_idx);
 
   void AddImageLayerTensors(const ModelConfig& config,
                             const LayerConfig& layer_config,

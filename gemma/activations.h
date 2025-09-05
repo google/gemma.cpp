@@ -31,32 +31,6 @@
 
 namespace gcpp {
 
-struct GriffinActivations {
-  GriffinActivations(const ModelConfig& config, size_t batch_size,
-                     const Allocator& allocator)
-      : griffin_x(
-            MatFactory("griffin_x", batch_size, config.model_dim, allocator)),
-        griffin_y(
-            MatFactory("griffin_y", batch_size, config.model_dim, allocator)),
-        griffin_gate_x(MatFactory("griffin_gate_x", batch_size,
-                                  config.model_dim, allocator)),
-        griffin_multiplier(MatFactory("griffin_mul", batch_size,
-                                      config.model_dim, allocator)) {}
-
-  void SetBatchSize(size_t batch_size) {
-    if (griffin_x.Rows() == 0) return;
-    griffin_x.OverrideRows(batch_size);
-    griffin_y.OverrideRows(batch_size);
-    griffin_gate_x.OverrideRows(batch_size);
-    griffin_multiplier.OverrideRows(batch_size);
-  }
-
-  MatStorageT<float> griffin_x;
-  MatStorageT<float> griffin_y;
-  MatStorageT<float> griffin_gate_x;
-  MatStorageT<float> griffin_multiplier;
-};
-
 struct AttentionActivations {
   // Returns the scale value to use for the query in the attention computation.
   // Also called by ops_test.
@@ -143,7 +117,7 @@ struct AttentionActivations {
   MatStorageT<float> inv_timescale_global;
 
   hwy::Divisor div_seq_len;
-  // Unfortunately, some models (Griffin) have non-power-of-two heads.
+  // Unfortunately, some models have had non-power-of-two heads.
   hwy::Divisor div_heads;
   float query_scale;
 };
@@ -169,9 +143,7 @@ struct Activations {
             MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
 
         attention(config, layer_config, batch_size, seq_len, ctx.allocator,
-                  row_ptrs),
-        griffin(config, config.model == Model::GRIFFIN_2B ? batch_size : 0,
-                ctx.allocator) {
+                  row_ptrs) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -199,7 +171,6 @@ struct Activations {
     ffw_out.OverrideRows(batch_size);
 
     attention.SetBatchSize(batch_size);
-    griffin.SetBatchSize(batch_size);
   }
 
   const LayerConfig& layer_config;
@@ -215,7 +186,6 @@ struct Activations {
   MatStorageT<float> ffw_out;
 
   AttentionActivations attention;
-  GriffinActivations griffin;
 };
 
 }  // namespace gcpp

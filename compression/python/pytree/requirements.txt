@@ -1,4 +1,0 @@
-immutabledict>=4.2.0
-numpy>=1.26.4
-orbax-checkpoint>=0.0.0
-

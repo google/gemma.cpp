@@ -34,7 +34,6 @@
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
-#include "gemma/griffin.h"  // includes highway.h
 #include "gemma/vit.h"      // includes highway.h
 
 #ifndef GEMMA_CC_ONCE
@@ -77,14 +76,6 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
     GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
                    env,
                    /*flags=*/0);
-  } else {
-    HWY_DASSERT(type == LayerAttentionType::kGriffinRecurrentBlock);
-    // KVCache conv1d_cache and rglru_cache have one row per *Griffin* layer,
-    // so map `layer` to the Griffin layer index.
-    const size_t griffin_layer =
-        activations.attention.config.NumLayersOfTypeBefore(type, layer_idx);
-    GriffinRecurrent(num_tokens, griffin_layer, &layer, activations, qbatch,
-                     env);
   }
 }
 
@@ -484,13 +475,6 @@ static void GenerateT(const ModelConfig& config,
                       const AesCtrEngine& engine, const WeightsPtrs& weights,
                       Activations& activations, QBatch& qbatch, MatMulEnv& env,
                       TimingInfo& timing_info) {
-  // Griffin assumes that the recurrent block cache is zero-initialized.
-  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    if (qbatch.MutablePos(qi) == 0) {
-      qbatch.KV(qi).ZeroGriffinCache();  // No-op for non-Griffin models.
-    }
-  }
-
   size_t max_prompt_size = 0;
   bool all_prefix_end_are_zero = true;
   size_t total_prefill_tokens = 0;  // only for throughput stats.

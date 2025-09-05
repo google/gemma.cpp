@@ -88,7 +88,7 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
 
 // For FFN. Fast, only updates pointers.
 void LayerWeightsPtrs::SplitW1() {
-  // Used for Gemma and Griffin layers; FFWVit uses different tensors.
+  // Used for Gemma layers; FFWVit uses different tensors.
   if (layer_config.type == LayerAttentionType::kVit) return;
 
   // Files have both or neither of w1 and w2.

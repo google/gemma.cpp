@@ -83,8 +83,6 @@ set(SOURCES
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
-  gemma/griffin.cc
-  gemma/griffin.h
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/model_store.cc

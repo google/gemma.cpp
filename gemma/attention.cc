@@ -327,6 +327,7 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
                                 MatMulEnv& env) {
   PROFILER_ZONE("Gen.Attention.SumHeads");
   const LayerConfig& layer_config = layer.layer_config;
+  (void)layer_config;  // For HWY_DASSERT
   // att_weights and att_out are concatenated heads, each of length
   // layer_config.qkv_dim. Thus the [num_interleaved,
   // layer_config.model_dim] matmul output is the sum over heads. Compare
@@ -334,10 +335,7 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
   // encoded)
   HWY_DASSERT(layer_config.model_dim != 0 && layer_config.heads != 0 &&
               layer_config.qkv_dim != 0);
-  const float* add = layer_config.softmax_attn_output_biases
-                         ? layer.attention_output_biases.PackedScale1()
-                         : nullptr;
-  CallMatMul(activations.att_out, layer.att_weights, add, env,
+  CallMatMul(activations.att_out, layer.att_weights, /*add=*/nullptr, env,
              activations.att_sums);
 }
 

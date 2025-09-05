@@ -57,8 +57,7 @@ struct TensorArgs {
     // the _w1/_w2 tensors are not always present.
     kMaybeRead = 1,
 
-    // Avoid padding tensor rows when reading. Used for some Griffin tensors
-    // whose index computations do not use Row() accessors.
+    // Avoid padding tensor rows when reading.
     kPacked = 2,
   };
   const int flags;
@@ -102,17 +101,6 @@ struct LayerWeightsPtrs {
         qkv_einsum_w1(finder_("qkv1_w")),
         qkv_einsum_w2(finder_("qkv2_w")),
         attention_output_biases(finder_("attn_ob")),
-        griffin({.linear_x_w = finder_("gr_lin_x_w"),
-                 .linear_x_biases = finder_("gr_lin_x_b"),
-                 .linear_y_w = finder_("gr_lin_y_w"),
-                 .linear_y_biases = finder_("gr_lin_y_b"),
-                 .linear_out_w = finder_("gr_lin_out_w"),
-                 .linear_out_biases = finder_("gr_lin_out_b"),
-                 .conv_w = finder_("gr_conv_w"),
-                 .conv_biases = finder_("gr_conv_b"),
-                 .gate_w = finder_("gr_gate_w"),
-                 .gate_biases = finder_("gr_gate_b"),
-                 .a = finder_("gr_a")}),
         // MultiHeadDotProductAttention.
         vit({.attn_out_w = finder_("attn_out_w"),
              .attn_out_b = finder_("attn_out_b"),
@@ -155,20 +143,6 @@ struct LayerWeightsPtrs {
   MatPtr qkv_einsum_w1;
   MatPtr qkv_einsum_w2;
   MatPtrT<float> attention_output_biases;
-
-  struct {
-    MatPtr linear_x_w;
-    MatPtrT<float> linear_x_biases;
-    MatPtr linear_y_w;
-    MatPtrT<float> linear_y_biases;
-    MatPtr linear_out_w;
-    MatPtrT<float> linear_out_biases;
-    MatPtrT<float> conv_w;
-    MatPtrT<float> conv_biases;
-    MatPtr gate_w;
-    MatPtrT<float> gate_biases;
-    MatPtrT<float> a;
-  } griffin;
 
   struct {
     // MultiHeadDotProductAttention.
@@ -244,20 +218,6 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(qkv_einsum_w, kMaybeRead));
       func(TENSOR_ARGS(qkv_einsum_w1, kMaybeRead));
       func(TENSOR_ARGS(qkv_einsum_w2, kMaybeRead));
-    } else {
-      func(TENSOR_ARGS(griffin.linear_x_w, kMustRead));
-      func(TENSOR_ARGS(griffin.linear_x_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.linear_y_w, kMustRead));
-      func(TENSOR_ARGS(griffin.linear_y_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.linear_out_w, kMustRead));
-      func(TENSOR_ARGS(griffin.linear_out_biases, kMustRead));
-      // conv_w and gate_w are not accessed via Row(), hence must not be padded.
-      // Note that *biases are 1D, hence packing/padding does not matter.
-      func(TENSOR_ARGS(griffin.conv_w, kMustRead | TensorArgs::kPacked));
-      func(TENSOR_ARGS(griffin.conv_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.gate_w, kMustRead | TensorArgs::kPacked));
-      func(TENSOR_ARGS(griffin.gate_biases, kMustRead));
-      func(TENSOR_ARGS(griffin.a, kMustRead));
     }
     {
       func(TENSOR_ARGS(gating_einsum_w, kMaybeRead));
@@ -280,11 +240,6 @@ struct LayerWeightsPtrs {
     if (layer_config.ff_biases) {
       func(TENSOR_ARGS(ffw_gating_biases, kMustRead));
       func(TENSOR_ARGS(ffw_output_biases, kMustRead));
-    }
-
-    if (layer_config.softmax_attn_output_biases &&
-        layer_config.type == LayerAttentionType::kGemma) {
-      func(TENSOR_ARGS(attention_output_biases, kMustRead));
     }
   }  // `ForEachTensor`
 

@@ -91,7 +91,7 @@ class CompressionTest(absltest.TestCase):
     )
 
     config = configs.ModelConfig(
-        configs.Model.GEMMA_TINY,
+        configs.Model.GEMMA2_2B,
         configs.Type.kSFP,
         configs.PromptWrapping.GEMMA_IT,
     )
@@ -101,7 +101,7 @@ class CompressionTest(absltest.TestCase):
     print("Ignore next two warnings; test does not enable model deduction.")
     reader = compression.SbsReader(temp_file.full_path)
 
-    self.assertEqual(reader.config.model, configs.Model.GEMMA_TINY)
+    self.assertEqual(reader.config.model, configs.Model.GEMMA2_2B)
     self.assertEqual(reader.config.weight, configs.Type.kSFP)
 
     mat = reader.find_mat("tensor0")

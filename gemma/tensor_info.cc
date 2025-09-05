@@ -277,122 +277,6 @@ void TensorInfoRegistry::AddImageLayerTensors(const ModelConfig& config,
       });
 }
 
-void TensorInfoRegistry::AddGriffinLayerTensors(const LayerConfig& layer_config,
-                                                const size_t layer_idx) {
-  const std::string suffix = LayerSuffix(layer_idx);
-  Add(suffix, {
-                  .base_name = "gr_lin_x_w",
-                  .source_names = {"recurrent_block/linear_x/kernel"},
-                  .axes = {1, 0},
-                  .shape = {layer_config.griffin_dim, layer_config.griffin_dim},
-              });
-  Add(suffix, {
-                  .base_name = "gr_lin_x_b",
-                  .source_names = {"recurrent_block/linear_x/bias"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr_lin_y_w",
-                  .source_names = {"recurrent_block/linear_y/kernel"},
-                  .axes = {1, 0},
-                  .shape = {layer_config.griffin_dim, layer_config.griffin_dim},
-              });
-  Add(suffix, {
-                  .base_name = "gr_lin_y_b",
-                  .source_names = {"recurrent_block/linear_y/bias"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr_lin_out_w",
-                  .source_names = {"recurrent_block/linear_out/kernel"},
-                  .axes = {1, 0},
-                  .shape = {layer_config.griffin_dim, layer_config.griffin_dim},
-              });
-  Add(suffix, {
-                  .base_name = "gr_lin_out_b",
-                  .source_names = {"recurrent_block/linear_out/bias"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix,
-      {
-          .base_name = "gr_conv_w",
-          .source_names = {"recurrent_block/conv_1d/w"},
-          .axes = {0, 1},
-          .shape = {layer_config.conv1d_width, layer_config.griffin_dim},
-          .min_size = Type::kF32,
-      });
-  Add(suffix, {
-                  .base_name = "gr_conv_b",
-                  .source_names = {"recurrent_block/conv_1d/b"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr1_gate_w",
-                  .source_names = {"recurrent_block/rg_lru/input_gate/w"},
-                  .axes = {0, 2, 1},
-                  .shape = {layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads},
-                  .concat_names = {"gr_gate_w", "gr2_gate_w"},
-              });
-  Add(suffix, {
-                  .base_name = "gr2_gate_w",
-                  .source_names = {"recurrent_block/rg_lru/a_gate/w"},
-                  .axes = {0, 2, 1},
-                  .shape = {layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads},
-                  .concat_names = {""},
-              });
-  Add(suffix, {
-                  .base_name = "gr_gate_w",
-                  .source_names = {"recurrent_block/rg_lru/gate/w"},
-                  .axes = {0, 2, 1},
-                  .shape = {2 * layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads,
-                            layer_config.griffin_dim / layer_config.heads},
-              });
-  Add(suffix, {
-                  .base_name = "gr1_gate_b",
-                  .source_names = {"recurrent_block/rg_lru/input_gate/b"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .concat_names = {"gr_gate_b", "gr2_gate_b"},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr2_gate_b",
-                  .source_names = {"recurrent_block/rg_lru/a_gate/b"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .concat_names = {""},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr_gate_b",
-                  .source_names = {"recurrent_block/rg_lru/input_gate/b"},
-                  .axes = {0, 1},
-                  .shape = {2 * layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-              });
-  Add(suffix, {
-                  .base_name = "gr_a",
-                  .source_names = {"recurrent_block/rg_lru/a_param"},
-                  .axes = {0},
-                  .shape = {layer_config.griffin_dim},
-                  .min_size = Type::kF32,
-                  .scaled_softplus = true,
-              });
-}
-
 void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                                          const LayerConfig& layer_config,
                                          const size_t layer_idx) {
@@ -553,10 +437,6 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
           .shape = {config.model_dim, layer_config.heads, layer_config.qkv_dim},
           .cols_take_extra_dims = true,
       });
-
-  if (config.model == Model::GRIFFIN_2B) {
-    AddGriffinLayerTensors(layer_config, layer_idx);
-  }
 }
 
 TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
