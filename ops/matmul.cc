@@ -62,22 +62,19 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 // and holds most of their arguments in member variables.
 class GenerateCandidates {
  public:
-  GenerateCandidates(const Allocator& allocator, size_t M, size_t K, size_t N,
-                     size_t sizeof_TC, size_t max_mr, size_t nr,
-                     bool print_config)
-      : allocator_(allocator),
+  GenerateCandidates(const CacheInfo& cache, size_t M, size_t K, size_t N,
+                     size_t sizeof_TC, bool print_config)
+      : cache_(cache),
         M_(M),
         K_(K),
         N_(N),
         sizeof_TC_(sizeof_TC),
-        max_mr_(max_mr),
-        nr_(nr),
         // These influence kc/nc, but are also stored in `MMConfig` for
         // `RangesOf*`. Must be a vector multiple. The previous/next cache line
         // is likely still in L1, but we expect K > 1000 and might as well round
         // up to the line size. Both A and B are BF16.
-        kc_multiple_(HWY_MIN(K, allocator.LineBytes() / sizeof(BF16))),
-        nc_multiple_(allocator.StepBytes() / sizeof_TC),
+        kc_multiple_(HWY_MIN(K, cache.LineBytes() / sizeof(BF16))),
+        nc_multiple_(cache.StepBytes() / sizeof_TC),
         print_config_(print_config) {}
 
   std::vector<MMConfig> operator()() const {
@@ -127,10 +124,10 @@ class GenerateCandidates {
     SizeVec all_mr;
     all_mr.reserve(3);
     // AVX2's 16 registers are not enough for four rows, but SSE4 may benefit.
-    if (M_ >= max_mr_ && !is_avx2) all_mr.push_back(max_mr_);
+    if (M_ >= kMaxMR && !is_avx2) all_mr.push_back(kMaxMR);
     // Allow for AVX-512 but not SSE4 (for which 4 are usually better). Also
     // enable if not enough rows for 4.
-    if (M_ >= 2 && (M_ < max_mr_ || (!is_sse && !is_wasm))) {
+    if (M_ >= 2 && (M_ < kMaxMR || (!is_sse && !is_wasm))) {
       all_mr.push_back(size_t{2});
     }
     // Even SSE4 usually prefers 2 rows; only enable for single rows.
@@ -172,8 +169,8 @@ class GenerateCandidates {
     // size. This results in an overestimate, and the loop below will propose
     // the next few smaller values for the autotuner to evaluate.
     const size_t bytes_ab =
-        allocator_.L1Bytes() * (sizeof(BF16) + sizeof(SfpStream));
-    const size_t col_bytes = rows_a * sizeof(BF16) + nr_ * sizeof(BF16);
+        cache_.L1Bytes() * (sizeof(BF16) + sizeof(SfpStream));
+    const size_t col_bytes = rows_a * sizeof(BF16) + kNR * sizeof(BF16);
     size_t kc_max = hwy::DivCeil(bytes_ab, col_bytes);
     kc_max = RoundDownWithFloor(HWY_MIN(kc_max, kMaxKC), kc_multiple_);
     kc_max = HWY_MIN(kc_max, K_);
@@ -213,14 +210,14 @@ class GenerateCandidates {
   SizeVec MC(size_t mr, size_t kc, MMOrder order) const {
     // Typically 12-24K. The B rows are pinned in L1, but also occupy L2 because
     // it is typically inclusive.
-    const size_t bytes_b = nr_ * kc * (sizeof(SfpStream) + sizeof(BF16));
+    const size_t bytes_b = kNR * kc * (sizeof(SfpStream) + sizeof(BF16));
 
     // Choose the largest feasible `mc_max` (A/C rows) to maximize reuse of the
     // packed B. We want `mc * kc` elements of A to fit in L2, alongside
     // `bytes_b` plus `mc` cache lines because resident-A updates `mc` rows of
     // partial.
-    const size_t bytes_per_mc = kc * sizeof(BF16) + allocator_.LineBytes();
-    size_t mc_max = hwy::DivCeil(allocator_.L2Bytes() - bytes_b, bytes_per_mc);
+    const size_t bytes_per_mc = kc * sizeof(BF16) + cache_.LineBytes();
+    size_t mc_max = hwy::DivCeil(cache_.L2Bytes() - bytes_b, bytes_per_mc);
     mc_max = HWY_MIN(mc_max, kMaxBatchSize);
     HWY_DASSERT(mc_max != 0);
     mc_max = HWY_MIN(mc_max, M_);
@@ -261,7 +258,7 @@ class GenerateCandidates {
     // Otherwise, leave it unbounded.
     if (M_ > mr) {
       const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * sizeof_TC_);
-      nc_max = HWY_MIN(hwy::DivCeil(allocator_.L3Bytes(), bytes_per_nc), N_);
+      nc_max = HWY_MIN(hwy::DivCeil(cache_.L3Bytes(), bytes_per_nc), N_);
     }
     HWY_DASSERT(nc_max != 0);
     nc_max = RoundDownWithFloor(nc_max, nc_multiple_);
@@ -328,14 +325,11 @@ class GenerateCandidates {
     return inner_tasks;
   }
 
-  const Allocator& allocator_;
+  const CacheInfo& cache_;
   const size_t M_;
   const size_t K_;
   const size_t N_;
   const size_t sizeof_TC_;
-
-  const size_t max_mr_;
-  const size_t nr_;
 
   const size_t kc_multiple_;
   const size_t nc_multiple_;
@@ -346,12 +340,10 @@ class GenerateCandidates {
 }  // namespace
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
-std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
-                                   size_t K, size_t N, size_t sizeof_TC,
-                                   size_t max_mr, size_t nr,
+std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
+                                   size_t N, size_t sizeof_TC,
                                    bool print_config) {
-  return GenerateCandidates(allocator, M, K, N, sizeof_TC, max_mr, nr,
-                            print_config)();
+  return GenerateCandidates(cache, M, K, N, sizeof_TC, print_config)();
 }
 
 MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx) {

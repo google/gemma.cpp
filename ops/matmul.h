@@ -477,9 +477,9 @@ class MMConfig {
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
-std::vector<MMConfig> MMCandidates(const Allocator& allocator, size_t M,
-                                   size_t K, size_t N, size_t sizeof_TC,
-                                   size_t max_mr, size_t nr, bool print_config);
+std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
+                                   size_t N, size_t sizeof_TC,
+                                   bool print_config);
 
 // State machine for choosing the best `TConfig`, which is `MMConfig` for the
 // main MatMul autotuner.
@@ -619,11 +619,11 @@ class MMKeys {
   }
 
   // Must only be called if not already present in `Keys()`.
-  void Append(Key key, const Allocator& allocator) {
+  void Append(Key key, size_t vector_bytes) {
     // Dynamic allocation because the test checks many more dimensions than
     // would be reasonable to pre-allocate. DIY for alignment and padding.
     if (HWY_UNLIKELY(num_unique_ >= capacity_)) {
-      const size_t NU64 = allocator.VectorBytes() / sizeof(Key);
+      const size_t NU64 = vector_bytes / sizeof(Key);
       // Start at one vector so the size is always a multiple of N.
       if (HWY_UNLIKELY(capacity_ == 0)) {
         capacity_ = hwy::DivCeil(NU64, 2);  // will be doubled below
@@ -704,7 +704,7 @@ struct MMArgs {
         scale(scale),
         add(add),
         options(options),
-        line_bytes(env.ctx.allocator.LineBytes()) {}
+        line_bytes(env.ctx.cache_info.LineBytes()) {}
 
   MatMulEnv* env;
   MMPerKey* per_key;

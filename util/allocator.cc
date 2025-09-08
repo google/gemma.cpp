@@ -130,7 +130,7 @@ size_t DetectTotalMiB(size_t page_bytes) {
 
 }  // namespace
 
-Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
+CacheInfo::CacheInfo(const BoundedTopology& topology) {
   line_bytes_ = DetectLineBytes();
   // Ensure MaxLineBytes() is an upper bound.
   HWY_ASSERT(MaxLineBytes() >= LineBytes());
@@ -138,8 +138,6 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   vector_bytes_ = hwy::VectorBytes();
 
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
-  base_page_bytes_ = DetectPageSize();
-  quantum_bytes_ = step_bytes_;  // may overwrite below
 
   const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
   if (const hwy::Cache* caches = hwy::DataCaches()) {
@@ -153,8 +151,14 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   if (l3_bytes_ == 0) {
     l3_bytes_ = (cluster.SharedKiB() ? cluster.SharedKiB() : 1024) << 10;
   }
+}
 
-  total_mib_ = DetectTotalMiB(base_page_bytes_);
+Allocator::Allocator(const BoundedTopology& topology,
+                     const CacheInfo& cache_info, bool enable_bind)
+    : line_bytes_(cache_info.LineBytes()),
+      base_page_bytes_(DetectPageSize()),
+      total_mib_(DetectTotalMiB(base_page_bytes_)) {
+  quantum_bytes_ = cache_info.StepBytes();  // may overwrite below
 
   // Prerequisites for binding:
   // - supported by the OS (currently Linux only),

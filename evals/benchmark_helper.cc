@@ -241,8 +241,8 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
             dt, cpu100, static_cast<int>(threading.bind),
             ctx.topology.TopologyString(), ctx.pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
-            ctx.allocator.VectorBytes() * 8, CompiledConfig(), PROFILER_ENABLED,
-            ctx.allocator.TotalMiB());
+            ctx.cache_info.VectorBytes() * 8, CompiledConfig(),
+            PROFILER_ENABLED, ctx.allocator.TotalMiB());
   }
 }
 

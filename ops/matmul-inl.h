@@ -21,7 +21,7 @@
 
 #include "compression/types.h"
 #include "ops/matmul.h"  // IWYU pragma: export
-#include "util/allocator.h"
+#include "util/allocator.h"  // CacheInfo
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
@@ -566,7 +566,7 @@ class MMKernel {
 };
 
 // Miscellaneous stateless helper functions.
-struct MMImpl {
+class MMImpl {
   // Returns existing entry for the given key or -1.
   static HWY_INLINE intptr_t IndexOfKey(MMKeys::Key key, const MMKeys& keys) {
     const hwy::Span<const uint64_t> all_keys = keys.Keys();
@@ -594,6 +594,63 @@ struct MMImpl {
     }
 
     return -1;
+  }
+
+ public:
+  static MMPerKey& FindOrAddPerKey(size_t M, size_t K, size_t N,
+                                   size_t vector_bytes,
+                                   MatMulEnv::PerCluster& per_cluster) {
+    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
+    intptr_t index = MMImpl::IndexOfKey(key, per_cluster.keys);
+    // First time we see this shape/key.
+    if (HWY_UNLIKELY(index < 0)) {
+      per_cluster.keys.Append(key, vector_bytes);
+
+      // Invalidates `MMAutoTune::Best()`.
+      std::vector<MMPerKey>& per_keys = per_cluster.per_key;
+      index = per_keys.size();
+      per_keys.push_back(MMPerKey());
+    }
+    return per_cluster.per_key[index];
+  }
+
+  static void NotifyAutotuneResult(size_t M, size_t K, size_t N, double t0,
+                                   const MMConfig& cfg, MatMulEnv& env,
+                                   MMAutoTune<MMConfig>& tuner) {
+    const uint64_t t1 =
+        env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+    const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /
+                               hwy::platform::InvariantTicksPerSecond();
+    const double flops = 2 * M * K * N / min_elapsed;  // * 2 for FMA
+    if (HWY_UNLIKELY(env.print_measurement && tuner.ShouldPrint())) {
+      fprintf(stderr, "%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n", flops * 1E-9,
+              min_elapsed * 1E3, cfg.MR(), cfg.MC(), cfg.KC(), cfg.NC(),
+              StringFromOrder(cfg.Order()), cfg.InnerTasks());
+    }
+    if (HWY_UNLIKELY(env.print_best && tuner.Best())) {
+      const auto ratio = [&tuner](uint64_t ticks) -> double {
+        return static_cast<double>(ticks) /
+               static_cast<double>(tuner.BestTicks());
+      };
+      const MMConfig& best = *tuner.Best();
+      fprintf(stderr,
+              "\n%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n",
+              M, K, N, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
+              best.KC(), best.NC(), StringFromOrder(best.Order()),
+              best.InnerTasks(), ratio(tuner.WorstMinTicks()),
+              ratio(tuner.FirstConfigTicks()));
+    }
+  }
+
+  static void EnsureAligned(const MatPtr& A, const size_t vector_bytes) {
+    // Ensure A rows are vector-aligned. Neither `Stride` nor `IsPacked` are
+    // reliable: the latter returns true for single rows, and the former may
+    // match `Cols` if the width matches the padding.
+    // Note that B is packed in matmul_test, but otherwise generally padded.
+    HWY_ASSERT(hwy::IsAligned(A.RowBytes(0), vector_bytes));
+    if (A.Rows() > 1) {
+      HWY_ASSERT(hwy::IsAligned(A.RowBytes(1), vector_bytes));
+    }
   }
 
   static size_t Worker(const MMArgs& args) {
@@ -753,14 +810,14 @@ struct MMImpl {
 // loops over the inner KC and MC. Member variables avoid long argument lists.
 class MMState {
  public:
-  MMState(const Extents2D A, const size_t B_rows, const MMArgs& args,
+  MMState(size_t M, size_t K, size_t N, const MMArgs& args,
           const MMConfig& config)
       : args_(args),
-        range_n_(0, B_rows),
+        range_n_(0, N),
         mr_(config.MR()),
-        ranges_mc_(config.RangesOfMC(A.rows)),
-        ranges_kc_(config.RangesOfKC(A.cols)),
-        ranges_nc_(config.RangesOfNC(B_rows)),
+        ranges_mc_(config.RangesOfMC(M)),
+        ranges_kc_(config.RangesOfKC(K)),
+        ranges_nc_(config.RangesOfNC(N)),
         order_(config.Order()),
         inner_tasks_(config.InnerTasks()) {}
 
@@ -783,7 +840,7 @@ class MMState {
   // Compute size of per-worker storage for `kNR` row ranges of B. Stack
   // allocation avoids passing a worker index.
   static constexpr size_t B_stride_max_ =
-      kMaxKC + 2 * Allocator::MaxLineBytes() / sizeof(BF16);
+      kMaxKC + 2 * CacheInfo::MaxLineBytes() / sizeof(BF16);
   static constexpr size_t B_storage_max_ = kNR * B_stride_max_;
 
   // Granularity of `ForN`. B rows produce C columns, so we
@@ -1056,88 +1113,48 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                  options.cluster_idx * env.ctx.pools.MaxWorkersPerCluster(),
                  zone);
 
-  const Allocator& allocator = env.ctx.allocator;
   HWY_DASSERT(options.cluster_idx < env.row_ptrs.size());
-  MatMulEnv::PerCluster& per_cluster = env.per_cluster[options.cluster_idx];
   RowPtrs<TC> C_rows =
       GetOrSetTempRowPtrs(C, env.row_ptrs[options.cluster_idx]);
 
   const size_t M = A.Rows();
   const size_t K = A.Cols();
   const size_t N = B.Rows();
-  const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
-  intptr_t index = MMImpl::IndexOfKey(key, per_cluster.keys);
-  // First time we see this shape/key.
-  if (HWY_UNLIKELY(index < 0)) {
-    per_cluster.keys.Append(key, allocator);
 
-    // invalidates `MMAutoTune::Best()`
-    std::vector<MMPerKey>& per_keys = per_cluster.per_key;
-    index = per_keys.size();
-    per_keys.push_back(MMPerKey());
-  }
-  MMPerKey& per_key = per_cluster.per_key[index];
+  const CacheInfo& cache = env.ctx.cache_info;
+  MMPerKey& per_key = MMImpl::FindOrAddPerKey(
+      M, K, N, cache.VectorBytes(), env.per_cluster[options.cluster_idx]);
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
 
   const MMArgs args(env, per_key, static_cast<double>(A.Scale()) * B.Scale(),
                     add, options);
   if (HWY_LIKELY(tuner.Best())) {
-    const MMState state(A.Extents(), B.Rows(), args, *tuner.Best());
+    const MMState state(M, K, N, args, *tuner.Best());
     const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
     state.DispatchParallelism(A_view, B, C_rows);
     return &per_key;
   }
 
-  // From here, CPU time is negligible except DoMatMul.
-
-  // First call: enumerate all feasible configs.
+  // Autotuning, first call: enumerate all feasible configs.
   if (HWY_UNLIKELY(!tuner.HasCandidates())) {
-    // Ensure matrix dimensions match each other.
+    // Ensure matrix dimensions match each other (off the hot path).
     HWY_ASSERT(K == B.Cols());
     HWY_ASSERT(M <= kMaxBatchSize);
     HWY_ASSERT(K <= MMStorage::kMaxK);
     HWY_ASSERT(N % kNR == 0);
-    // Ensure A rows are vector-aligned. Neither `Stride` nor `IsPacked` are
-    // reliable: the latter returns true for single rows, and the former may
-    // match `Cols` if the width matches the padding.
-    // Note that B is packed in matmul_test, but otherwise generally padded.
-    HWY_ASSERT(hwy::IsAligned(A.Row(0), env.ctx.allocator.LineBytes()));
-    if (A.Rows() > 1) {
-      HWY_ASSERT(hwy::IsAligned(A.Row(1), env.ctx.allocator.LineBytes()));
-    }
-
-    tuner.SetCandidates(MMCandidates(allocator, M, K, N, sizeof(TC), kMaxMR,
-                                     kNR, env.print_config));
+    MMImpl::EnsureAligned(A, cache.VectorBytes());
+    tuner.SetCandidates(
+        MMCandidates(cache, M, K, N, sizeof(TC), env.print_config));
   }
+
+  // (Also auto-tunes, hence outside the timed section to prevent interference.)
+  const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
 
   const MMConfig& cfg = tuner.NextConfig();
   const uint64_t t0 = hwy::timer::Start();
-  MMState state(A.Extents(), B.Rows(), args, cfg);
-  const StridedViewBF A_view = MMImpl::MaybeDecompressA(A, args);
+  MMState state(M, K, N, args, cfg);
   state.DispatchParallelism(A_view, B, C_rows);
-  const uint64_t t1 =
-      env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
-  const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /
-                             hwy::platform::InvariantTicksPerSecond();
-  const double flops = 2 * M * K * N / min_elapsed;  // * 2 for FMA
-  if (HWY_UNLIKELY(env.print_measurement && tuner.ShouldPrint())) {
-    fprintf(stderr, "%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n", flops * 1E-9,
-            min_elapsed * 1E3, cfg.MR(), cfg.MC(), cfg.KC(), cfg.NC(),
-            StringFromOrder(cfg.Order()), cfg.InnerTasks());
-  }
-  if (HWY_UNLIKELY(env.print_best && tuner.Best())) {
-    const auto ratio = [per_key](uint64_t ticks) -> double {
-      return static_cast<double>(ticks) /
-             static_cast<double>(per_key.autotune.BestTicks());
-    };
-    const MMConfig& best = *tuner.Best();
-    fprintf(stderr,
-            "\n%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n", M,
-            K, N, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
-            best.KC(), best.NC(), StringFromOrder(best.Order()),
-            best.InnerTasks(), ratio(tuner.WorstMinTicks()),
-            ratio(tuner.FirstConfigTicks()));
-  }
+  MMImpl::NotifyAutotuneResult(M, K, N, t0, cfg, env, tuner);
 
   return &per_key;
 }

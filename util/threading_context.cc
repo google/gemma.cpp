@@ -76,7 +76,8 @@ ThreadingContext::ThreadingContext(const ThreadingArgs& args)
       topology(BoundedSlice(args.skip_packages, args.max_packages),
                BoundedSlice(args.skip_clusters, args.max_clusters),
                BoundedSlice(args.skip_lps, args.max_lps)),
-      allocator(topology, args.bind != Tristate::kFalse),
+      cache_info(topology),
+      allocator(topology, cache_info, args.bind != Tristate::kFalse),
       pools(topology, allocator, args.max_threads, args.pin) {
   PROFILER_ZONE("Startup.ThreadingContext autotune");
   TunePool(pools.AllPackages());

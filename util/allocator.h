@@ -77,26 +77,48 @@ using AlignedPtr = std::unique_ptr<T, DeleterFunc>;
 template <typename T>
 using AlignedClassPtr = std::unique_ptr<T, DeleterDtor>;
 
-// Both allocation, binding, and row accessors depend on the sizes of memory
-// pages and cache lines. To avoid having to pass `Allocator&` everywhere, we
-// wrap this in a singleton. A monostate requires explicit initialization,
-// which we prefer to avoid because there are many main() functions.
-class Allocator {
+// Holds cache line size/capacity and vector size. Stored in `ThreadingContext`.
+class CacheInfo {
  public:
-  // Must be called at least once before any other function. Not thread-safe,
-  // hence only call this from the main thread.
-  Allocator(const BoundedTopology& topology, bool enable_bind);
+  CacheInfo(const BoundedTopology& topology);
 
   // Bytes per cache line, or a reasonable guess if unknown. Used to choose
   // ranges such that there will be no false sharing.
   size_t LineBytes() const { return line_bytes_; }
   // Upper bound on `LineBytes()`, for stack allocations.
   static constexpr size_t MaxLineBytes() { return 256; }
+
   // Bytes per full vector. Used to compute loop steps.
   size_t VectorBytes() const { return vector_bytes_; }
   // Work granularity that avoids false sharing and partial vectors.
   // = HWY_MAX(LineBytes(), VectorBytes())
   size_t StepBytes() const { return step_bytes_; }
+
+  // L1 and L2 are typically per core.
+  size_t L1Bytes() const { return l1_bytes_; }
+  size_t L2Bytes() const { return l2_bytes_; }
+  // Clusters often share an L3. We return the total size per package.
+  size_t L3Bytes() const { return l3_bytes_; }
+
+ private:
+  size_t line_bytes_;
+  size_t vector_bytes_;
+  size_t step_bytes_;
+
+  size_t l1_bytes_ = 0;
+  size_t l2_bytes_ = 0;
+  size_t l3_bytes_ = 0;
+};
+
+// NUMA-aware allocation and memory binding. Stored in `ThreadingContext`.
+class Allocator {
+ public:
+  Allocator(const BoundedTopology& topology, const CacheInfo& cache_info,
+            bool enable_bind);
+
+  // Used by `AllocateFor`, which only takes an `Allocator` argument,
+  // hence copy from `CacheInfo`.
+  size_t LineBytes() const { return line_bytes_; }
 
   // File size multiple required for memory mapping. Also used when binding
   // memory to NUMA nodes (see `BindB/BindC`).
@@ -104,12 +126,6 @@ class Allocator {
 
   // Desired allocator alignment: Either StepBytes, or BasePageBytes if NUMA.
   size_t QuantumBytes() const { return quantum_bytes_; }
-
-  // L1 and L2 are typically per core.
-  size_t L1Bytes() const { return l1_bytes_; }
-  size_t L2Bytes() const { return l2_bytes_; }
-  // Clusters often share an L3. We return the total size per package.
-  size_t L3Bytes() const { return l3_bytes_; }
 
   size_t TotalMiB() const { return total_mib_; }
   size_t FreeMiB() const;
@@ -159,18 +175,11 @@ class Allocator {
   bool BindMemory(void* p, size_t bytes, size_t node) const;
 
  private:
-  size_t line_bytes_;
-  size_t vector_bytes_;
-  size_t step_bytes_;
-  size_t base_page_bytes_;
+  const size_t line_bytes_;
+  const size_t base_page_bytes_;
+  const size_t total_mib_;
+
   size_t quantum_bytes_;
-
-  size_t l1_bytes_ = 0;
-  size_t l2_bytes_ = 0;
-  size_t l3_bytes_ = 0;
-
-  size_t total_mib_;
-
   bool should_bind_ = false;
 };
 

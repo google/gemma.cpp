@@ -105,7 +105,10 @@ struct ThreadingContext {
   // will be 1 regardless of the actual system topology.
   BoundedTopology topology;
 
-  // Ctor depends on `topology` for deciding whether to enable NUMA.
+  // Ctor depends on `topology` for per-cluster cache sizes.
+  CacheInfo cache_info;
+
+  // Ctor depends on `topology` (for NUMA) and `cache_info` (for step size).
   Allocator allocator;
 
   // Per-package/cluster/within cluster pools of threads, matching `topology`.
