@@ -770,11 +770,9 @@ class MMState {
   HWY_NOINLINE void DispatchParallelism(const StridedViewBF A,
                                         const MatPtrT<TB>& B,
                                         RowPtrs<TC> C_rows) const {
-    /* Disabled due to unknown thread-safety issue:
     static const auto zone =
         args_.env->ctx.profiler.AddZone("MM.DispatchParallelism");
     PROFILER_ZONE3(args_.env->ctx.profiler, MMImpl::Worker(args_), zone);
-    */
 
     MMImpl::DispatchParallelism(
         args_.options.parallelism,
@@ -1053,6 +1051,11 @@ template <typename TA, typename TB, typename TC>
 HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               const float* HWY_RESTRICT add, MatMulEnv& env,
                               MatPtrT<TC>& C, MMOptions options = MMOptions()) {
+  static const auto zone = env.ctx.profiler.AddZone("MM.MatMul");
+  PROFILER_ZONE3(env.ctx.profiler,
+                 options.cluster_idx * env.ctx.pools.MaxWorkersPerCluster(),
+                 zone);
+
   const Allocator& allocator = env.ctx.allocator;
   HWY_DASSERT(options.cluster_idx < env.row_ptrs.size());
   MatMulEnv::PerCluster& per_cluster = env.per_cluster[options.cluster_idx];
