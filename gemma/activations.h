@@ -56,7 +56,11 @@ struct AttentionActivations {
                          ? layer_config.heads * 3 * layer_config.qkv_dim
                          : layer_config.heads * layer_config.qkv_dim,
                      allocator)),
-
+        q_T(MatFactory("q_T", layer_config.qkv_dim,
+                       config.vocab_size == 0
+                           ? batch_size * layer_config.heads * 3
+                           : batch_size * layer_config.heads,
+                       allocator)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
                                    config.model_dim, allocator)),
         att(MatFactory("att", batch_size, layer_config.heads * seq_len,
@@ -90,11 +94,13 @@ struct AttentionActivations {
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
     q.AllocateAndAttachRowPtrs(row_ptrs);
+    q_T.AllocateAndAttachRowPtrs(row_ptrs);
     att_sums.AllocateAndAttachRowPtrs(row_ptrs);
   }
 
   void SetBatchSize(size_t batch_size) {
     q.OverrideRows(batch_size);
+    q_T.OverrideRows(batch_size);
 
     pre_att_rms_out.OverrideRows(batch_size);
     att.OverrideRows(batch_size);
@@ -105,6 +111,7 @@ struct AttentionActivations {
   const ModelConfig& config;
 
   MatStorageT<float> q;  // query
+  MatStorageT<float> q_T;  // Transposed to maximize attention speed.
 
   MatStorageT<float> pre_att_rms_out;
   MatStorageT<float> att;      // attention vector

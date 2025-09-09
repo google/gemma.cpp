@@ -28,6 +28,14 @@ namespace gcpp {
 // Passed to HWY_VISIT_TARGETS; declares for one target.
 #define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                              \
   namespace NAMESPACE {                                                      \
+  void PositionalEncodingQK(float* qk, size_t layer_idx,                     \
+                            const LayerWeightsPtrs& layer,                   \
+                            const AttentionActivations& activations,         \
+                            hwy::Profiler& p, size_t worker, size_t pos,     \
+                            float mul);                                      \
+                                                                             \
+  size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx);  \
+                                                                             \
   void SingleDotSoftmaxWeightedSum(                                          \
       const size_t pos, const size_t start_pos, const size_t last_pos,       \
       float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v, \

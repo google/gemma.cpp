@@ -118,6 +118,27 @@ cc_library(
 )
 
 cc_test(
+    name = "flash_attention_test",
+    srcs = ["gemma/flash_attention_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":matmul",
+        ":ops",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_test(
     name = "threading_test",
     srcs = ["util/threading_test.cc"],
     deps = [
@@ -526,12 +547,14 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/attention.cc",
+        "gemma/flash_attention.cc",
         "gemma/gemma.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
         "gemma/activations.h",
         "gemma/attention.h",
+        "gemma/flash_attention.h",
         "gemma/gemma.h",
         "gemma/vit.h",
     ],

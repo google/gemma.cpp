@@ -41,11 +41,15 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "gemma/flash_attention.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
+
+constexpr int kFlagReserved = 1;  // LINTER: unused, reserved for future use.
+constexpr int kUseOldAttention = 2;
 
 // Computes Q.K scores, which are "logits" (or scores) stored to att.
 // `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
@@ -71,11 +75,11 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
   }
 }
 
-static void PositionalEncodingQK(float* qk, const size_t layer_idx,
-                                 const LayerWeightsPtrs& layer,
-                                 const AttentionActivations& activations,
-                                 hwy::Profiler& p, const size_t worker,
-                                 const size_t pos, const float mul = 1.0f) {
+void PositionalEncodingQK(float* qk, const size_t layer_idx,
+                          const LayerWeightsPtrs& layer,
+                          const AttentionActivations& activations,
+                          hwy::Profiler& p, const size_t worker,
+                          const size_t pos, const float mul) {
   const size_t qkv_dim = layer.layer_config.qkv_dim;
   const PostQKType& post_qk = layer.layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
@@ -165,8 +169,7 @@ void SingleDotSoftmaxWeightedSum(
 
 // The attention window usually starts at 0 unless `pos` is larger than
 // the attention window size, then it is `pos` - window_size + 1.
-static HWY_INLINE size_t StartPos(size_t pos, const ModelConfig& config,
-                                  size_t layer_idx) {
+size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx) {
   const size_t att_window_size = config.attention_window_sizes[layer_idx];
   return pos - HWY_MIN(att_window_size - 1, pos);
 }
@@ -314,7 +317,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         }
 
         PositionalEncodingQK(kv_f32, layer_idx, layer, activations,
-                             env.ctx.profiler, worker, pos);
+                             env.ctx.profiler, worker, pos, /*mul=*/1.0f);
         CompressPerThread tls;
         Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
       });
@@ -354,8 +357,12 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
   (void)layer_config;  // only used in HWY_DASSERT
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
-  DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
-                        env.ctx);
+  if (flags & kUseOldAttention) {
+    DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
+                          env.ctx);
+  } else {
+    FlashAttention(num_tokens, layer_idx, layer, activations, qbatch, env.ctx);
+  }
   SumHeads(layer, activations, env);
 }
 

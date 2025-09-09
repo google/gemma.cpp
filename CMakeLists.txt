@@ -79,6 +79,8 @@ set(SOURCES
   gemma/attention.h
   gemma/configs.cc
   gemma/configs.h
+  gemma/flash_attention.cc
+  gemma/flash_attention.h
   gemma/gemma_args.h
   gemma/gemma-inl.h
   gemma/gemma.cc
@@ -216,6 +218,7 @@ set(GEMMA_TEST_FILES
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
+  gemma/flash_attention_test.cc
   gemma/tensor_info_test.cc
   io/blob_store_test.cc
   io/fields_test.cc

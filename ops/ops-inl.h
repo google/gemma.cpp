@@ -613,6 +613,351 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
                                 });
 }
 
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd16(
+    DF df, const VF common, const VF split, VF& sum0, VF& sum1, VF& sum2,
+    VF& sum3, VF& sum4, VF& sum5, VF& sum6, VF& sum7, VF& sum8, VF& sum9,
+    VF& sum10, VF& sum11, VF& sum12, VF& sum13, VF& sum14, VF& sum15) {
+  sum0 = hn::MulAdd(common, hn::Set(df, split.raw[0]), sum0);
+  sum1 = hn::MulAdd(common, hn::Set(df, split.raw[1]), sum1);
+  sum2 = hn::MulAdd(common, hn::Set(df, split.raw[2]), sum2);
+  sum3 = hn::MulAdd(common, hn::Set(df, split.raw[3]), sum3);
+  sum4 = hn::MulAdd(common, hn::Set(df, split.raw[4]), sum4);
+  sum5 = hn::MulAdd(common, hn::Set(df, split.raw[5]), sum5);
+  sum6 = hn::MulAdd(common, hn::Set(df, split.raw[6]), sum6);
+  sum7 = hn::MulAdd(common, hn::Set(df, split.raw[7]), sum7);
+  sum8 = hn::MulAdd(common, hn::Set(df, split.raw[8]), sum8);
+  sum9 = hn::MulAdd(common, hn::Set(df, split.raw[9]), sum9);
+  sum10 = hn::MulAdd(common, hn::Set(df, split.raw[10]), sum10);
+  sum11 = hn::MulAdd(common, hn::Set(df, split.raw[11]), sum11);
+  sum12 = hn::MulAdd(common, hn::Set(df, split.raw[12]), sum12);
+  sum13 = hn::MulAdd(common, hn::Set(df, split.raw[13]), sum13);
+  sum14 = hn::MulAdd(common, hn::Set(df, split.raw[14]), sum14);
+  sum15 = hn::MulAdd(common, hn::Set(df, split.raw[15]), sum15);
+}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd8(DF df, const VF common, const VF split,
+                                         VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                                         VF& sum4, VF& sum5, VF& sum6,
+                                         VF& sum7) {
+  sum0 = hn::MulAdd(common, hn::Set(df, split.raw[0]), sum0);
+  sum1 = hn::MulAdd(common, hn::Set(df, split.raw[1]), sum1);
+  sum2 = hn::MulAdd(common, hn::Set(df, split.raw[2]), sum2);
+  sum3 = hn::MulAdd(common, hn::Set(df, split.raw[3]), sum3);
+  sum4 = hn::MulAdd(common, hn::Set(df, split.raw[4]), sum4);
+  sum5 = hn::MulAdd(common, hn::Set(df, split.raw[5]), sum5);
+  sum6 = hn::MulAdd(common, hn::Set(df, split.raw[6]), sum6);
+  sum7 = hn::MulAdd(common, hn::Set(df, split.raw[7]), sum7);
+}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4(DF df, const VF common, const VF split,
+                                         VF& sum0, VF& sum1, VF& sum2,
+                                         VF& sum3) {
+  sum0 = hn::MulAdd(common, hn::Set(df, split.raw[0]), sum0);
+  sum1 = hn::MulAdd(common, hn::Set(df, split.raw[1]), sum1);
+  sum2 = hn::MulAdd(common, hn::Set(df, split.raw[2]), sum2);
+  sum3 = hn::MulAdd(common, hn::Set(df, split.raw[3]), sum3);
+}
+
+// For an 8xNF tile of float values in 8xNF-lane registers, multiplies 8 rows
+// of V by the corresponding values in c0-c7 and adds them to NF rows of out,
+// after first prescaling out by scale.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
+    DF df, const VF scale, const VF c0, const VF c1, const VF c2, const VF c3,
+    const VF c4, const VF c5, const VF c6, const VF c7, const MatPtrT<float>& v,
+    const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
+    hwy::Profiler& p, const size_t worker) {
+  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
+  PROFILER_ZONE3(p, worker, zone);
+  namespace hn = hwy::HWY_NAMESPACE;
+  HWY_LANES_CONSTEXPR size_t NF = hn::MaxLanes(df);
+
+  size_t i = 0;
+  while (i + NF <= size) {
+    if HWY_LANES_CONSTEXPR (NF == 16) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      VF out8, out9, out10, out11, out12, out13, out14, out15;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out8 = hn::Load(df, out + i + out_offsets[8]);
+      out9 = hn::Load(df, out + i + out_offsets[9]);
+      out10 = hn::Load(df, out + i + out_offsets[10]);
+      out11 = hn::Load(df, out + i + out_offsets[11]);
+      out12 = hn::Load(df, out + i + out_offsets[12]);
+      out13 = hn::Load(df, out + i + out_offsets[13]);
+      out14 = hn::Load(df, out + i + out_offsets[14]);
+      out15 = hn::Load(df, out + i + out_offsets[15]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      out4 = hn::Mul(out4, hn::Set(df, scale.raw[4]));
+      out5 = hn::Mul(out5, hn::Set(df, scale.raw[5]));
+      out6 = hn::Mul(out6, hn::Set(df, scale.raw[6]));
+      out7 = hn::Mul(out7, hn::Set(df, scale.raw[7]));
+      out8 = hn::Mul(out8, hn::Set(df, scale.raw[8]));
+      out9 = hn::Mul(out9, hn::Set(df, scale.raw[9]));
+      out10 = hn::Mul(out10, hn::Set(df, scale.raw[10]));
+      out11 = hn::Mul(out11, hn::Set(df, scale.raw[11]));
+      out12 = hn::Mul(out12, hn::Set(df, scale.raw[12]));
+      out13 = hn::Mul(out13, hn::Set(df, scale.raw[13]));
+      out14 = hn::Mul(out14, hn::Set(df, scale.raw[14]));
+      out15 = hn::Mul(out15, hn::Set(df, scale.raw[15]));
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd16(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd16(df, x1, c1, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd16(df, x2, c2, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd16(df, x3, c3, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd16(df, x4, c4, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd16(df, x5, c5, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd16(df, x6, c6, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd16(df, x7, c7, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+      hn::Store(out8, df, out + i + out_offsets[8]);
+      hn::Store(out9, df, out + i + out_offsets[9]);
+      hn::Store(out10, df, out + i + out_offsets[10]);
+      hn::Store(out11, df, out + i + out_offsets[11]);
+      hn::Store(out12, df, out + i + out_offsets[12]);
+      hn::Store(out13, df, out + i + out_offsets[13]);
+      hn::Store(out14, df, out + i + out_offsets[14]);
+      hn::Store(out15, df, out + i + out_offsets[15]);
+    }
+    if HWY_LANES_CONSTEXPR (NF == 8) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      out4 = hn::Mul(out4, hn::Set(df, scale.raw[4]));
+      out5 = hn::Mul(out5, hn::Set(df, scale.raw[5]));
+      out6 = hn::Mul(out6, hn::Set(df, scale.raw[6]));
+      out7 = hn::Mul(out7, hn::Set(df, scale.raw[7]));
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd8(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd8(df, x1, c1, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd8(df, x2, c2, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd8(df, x3, c3, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd8(df, x4, c4, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd8(df, x5, c5, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd8(df, x6, c6, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd8(df, x7, c7, out0, out1, out2, out3, out4, out5, out6, out7);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+    }
+    if HWY_LANES_CONSTEXPR (NF == 4) {
+      VF out0, out1, out2, out3;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd4(df, x0, c0, out0, out1, out2, out3);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd4(df, x1, c1, out0, out1, out2, out3);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd4(df, x2, c2, out0, out1, out2, out3);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd4(df, x3, c3, out0, out1, out2, out3);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd4(df, x4, c4, out0, out1, out2, out3);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd4(df, x5, c5, out0, out1, out2, out3);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd4(df, x6, c6, out0, out1, out2, out3);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd4(df, x7, c7, out0, out1, out2, out3);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+    }
+    i += NF;
+  }
+  const size_t remaining = size - i;
+  HWY_DASSERT(remaining == 0);
+}
+
+// Prescales NF rows of out by scale, then multiplies 1 row of V by the
+// corresponding values in c0 and adds them to the NF rows of out.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
+    DF df, const VF scale, const VF c0, const MatPtrT<float>& v,
+    const size_t pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
+    hwy::Profiler& p, const size_t worker) {
+  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
+  PROFILER_ZONE3(p, worker, zone);
+  namespace hn = hwy::HWY_NAMESPACE;
+  const size_t NF = hn::MaxLanes(df);
+
+  size_t i = 0;
+  while (i + NF <= size) {
+    if constexpr (NF == 16) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      VF out8, out9, out10, out11, out12, out13, out14, out15;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out8 = hn::Load(df, out + i + out_offsets[8]);
+      out9 = hn::Load(df, out + i + out_offsets[9]);
+      out10 = hn::Load(df, out + i + out_offsets[10]);
+      out11 = hn::Load(df, out + i + out_offsets[11]);
+      out12 = hn::Load(df, out + i + out_offsets[12]);
+      out13 = hn::Load(df, out + i + out_offsets[13]);
+      out14 = hn::Load(df, out + i + out_offsets[14]);
+      out15 = hn::Load(df, out + i + out_offsets[15]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      out4 = hn::Mul(out4, hn::Set(df, scale.raw[4]));
+      out5 = hn::Mul(out5, hn::Set(df, scale.raw[5]));
+      out6 = hn::Mul(out6, hn::Set(df, scale.raw[6]));
+      out7 = hn::Mul(out7, hn::Set(df, scale.raw[7]));
+      out8 = hn::Mul(out8, hn::Set(df, scale.raw[8]));
+      out9 = hn::Mul(out9, hn::Set(df, scale.raw[9]));
+      out10 = hn::Mul(out10, hn::Set(df, scale.raw[10]));
+      out11 = hn::Mul(out11, hn::Set(df, scale.raw[11]));
+      out12 = hn::Mul(out12, hn::Set(df, scale.raw[12]));
+      out13 = hn::Mul(out13, hn::Set(df, scale.raw[13]));
+      out14 = hn::Mul(out14, hn::Set(df, scale.raw[14]));
+      out15 = hn::Mul(out15, hn::Set(df, scale.raw[15]));
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd16(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+      hn::Store(out8, df, out + i + out_offsets[8]);
+      hn::Store(out9, df, out + i + out_offsets[9]);
+      hn::Store(out10, df, out + i + out_offsets[10]);
+      hn::Store(out11, df, out + i + out_offsets[11]);
+      hn::Store(out12, df, out + i + out_offsets[12]);
+      hn::Store(out13, df, out + i + out_offsets[13]);
+      hn::Store(out14, df, out + i + out_offsets[14]);
+      hn::Store(out15, df, out + i + out_offsets[15]);
+    } else if constexpr (NF == 8) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      out4 = hn::Mul(out4, hn::Set(df, scale.raw[4]));
+      out5 = hn::Mul(out5, hn::Set(df, scale.raw[5]));
+      out6 = hn::Mul(out6, hn::Set(df, scale.raw[6]));
+      out7 = hn::Mul(out7, hn::Set(df, scale.raw[7]));
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd8(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+    } else if constexpr (NF == 4) {
+      VF out0, out1, out2, out3;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out0 = hn::Mul(out0, hn::Set(df, scale.raw[0]));
+      out1 = hn::Mul(out1, hn::Set(df, scale.raw[1]));
+      out2 = hn::Mul(out2, hn::Set(df, scale.raw[2]));
+      out3 = hn::Mul(out3, hn::Set(df, scale.raw[3]));
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd4(df, x0, c0, out0, out1, out2, out3);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+    } else {
+      HWY_DASSERT(false);
+    }
+    i += NF;
+  }
+  const size_t remaining = size - i;
+  HWY_DASSERT(remaining == 0);
+}
+
 // See below for a specialized version for top-1 sampling.
 // TODO: support bf16 logits using Decompress2.
 static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
