@@ -127,7 +127,7 @@ class QBatch {
         max_size_(max_size),
         queries_(queries),
         size_(HWY_MIN(max_size_, queries_.NumQueries() - start_)) {
-    HWY_ASSERT(max_size_ <= 4096);  // non_eos uses `BitSet4096`.
+    HWY_ASSERT(max_size_ <= kMaxBatchSize);
     HWY_DASSERT(size_ != 0);
     HWY_DASSERT(start_ + size_ <= queries_.NumQueries());
   }

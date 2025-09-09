@@ -179,7 +179,7 @@ struct Activations {
 
   MatStorageT<float> x;  // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
-  MatStorageT<float> logits;
+  MatStorageT<float> logits;      // TODO: BF16 after Softmax supports that.
   MatStorageT<uint32_t> sampled;  // batch_size x 3 (padded)
 
   // Gated FFW

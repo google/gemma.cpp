@@ -306,11 +306,11 @@ using StridedViewD = StridedView<double>;
 class MMStorage {
  public:
   // Compile-time bounds on matrix columns to enable pre-allocating storage
-  // and reusing it across `MatMul` calls.
-  static constexpr size_t kMaxK = 64 * 1024;
+  // and reusing it across `MatMul` calls. Sufficient for Gemma 2 27B.
+  static constexpr size_t kMaxK = 36 * 1024;
 
   MMStorage(const Allocator& allocator)
-      // 0.5 GiB. Must be padded, see `DoDecompressA`.
+      // 288 MiB. Must be padded, see `DoDecompressA`.
       : A_("A_bf", Extents2D(kMaxBatchSize, kMaxK), allocator,
            MatPadding::kOdd) {}
 
@@ -673,7 +673,7 @@ struct MatMulEnv {
   // Whether to print the best config immediately after autotuning finished.
   bool print_best = false;
 
-  std::vector<MMStorage> storage;
+  MMStorage storage;
 
   struct PerCluster {
     MMKeys keys;

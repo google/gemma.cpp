@@ -346,14 +346,10 @@ std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
   return GenerateCandidates(cache, M, K, N, sizeof_TC, print_config)();
 }
 
-MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx) {
-  // Create storage per cluster. This only applies to in-cluster parallelism.
-  // For nested and sequential parallelism, a single MMStorage is used.
+MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx), storage(ctx.allocator) {
   const size_t num_clusters = ctx.pools.AllClusters(/*pkg_idx=*/0).NumWorkers();
   per_cluster.resize(num_clusters);
-  storage.reserve(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-    storage.push_back(MMStorage(ctx.allocator));
     row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(kMaxBatchSize));  // C
   }
 

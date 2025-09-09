@@ -30,7 +30,7 @@
 
 namespace gcpp {
 
-// TODO: extend to 16k after updating non_eos.
+// For hwy::BitSet4096. Note that KVs are extremely large for such batches.
 HWY_INLINE_VAR constexpr size_t kMaxBatchSize = 4096;
 
 enum class Tristate : int32_t { kFalse = 0, kTrue = 1, kDefault = -1 };

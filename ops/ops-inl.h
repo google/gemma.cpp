@@ -614,6 +614,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
 }
 
 // See below for a specialized version for top-1 sampling.
+// TODO: support bf16 logits using Decompress2.
 static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
                                  const size_t worker,
                                  float temperature = 1.0f) {

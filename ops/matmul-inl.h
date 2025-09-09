@@ -797,9 +797,10 @@ class MMImpl {
       return View(A, 0, 0, A.Cols());
     } else {
       // Always decompress. To reduce code size/compile time, we no longer
-      // support a separate F32 kernel; most A are already BF16.
-      const StridedViewBF A_view =
-          args.env->storage[args.options.cluster_idx].A(A.Extents());
+      // support a separate F32 kernel; most A are already BF16. We also only
+      // have a single MMStorage.
+      HWY_ASSERT(args.options.cluster_idx == 0);
+      const StridedViewBF A_view = args.env->storage.A(A.Extents());
       DecompressA(A, A_view, args);
       return A_view;
     }
