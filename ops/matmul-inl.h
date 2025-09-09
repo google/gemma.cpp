@@ -132,7 +132,7 @@ class MMStoreHorizontalSumsIntoC {
     // Adding N consecutive V4 yields horizontal sums of Cr0, Cr1, Cr2, Cr3 in
     // the elements of one V4. We have four independent rows `r`, hence the
     // code is effectively unrolled, which increases throughput.
-    // Store to four elements per row of `partial`.
+    // Store to four elements per row of `C`.
     // No loop is required because vectors are at least 4*32 bits.
     const D4 d4;
     sum0 = MaybeLoad<0>(d4, N, buf);
@@ -370,7 +370,7 @@ class MMKernel {
   // Innermost loop over `kc` columns (typically 1024-4096, not necessarily a
   // multiple of `NBF`) in steps of one vector, for `kRowsAC` rows of `A_view`
   // from range_mc-relative `imc` and `B_view` from row 0 (both at column 0).
-  // Updates a `kRowsAC x kNR` tile with top-left `partial.Row(row_ac) + col_c`.
+  // Updates a `kRowsAC x kNR` tile with top-left `C.Row(row_ac) + col_c`.
   // `A` and `B` are always BF16, `C` can be F32 or BF16.
   template <size_t kRowsAC, /*deduced:*/ class Tag, typename TC>
   static HWY_INLINE void LoopKC(const StridedViewBF A_view,
@@ -966,8 +966,7 @@ class MMState {
     const size_t B_stride =
         Stride(MatPadding::kOdd, K, sizeof(BF16), args_.line_bytes);
 
-    // Sequential loop over NC/MC/KC, similar to `loop_nc` below
-    // except for the profiler strings and `out_tag`.
+    // Similar to `loop_nc` below except for the profiler zone and `MMSetC`.
     parallel.ForRangesMC_NC(
         args_.env->ctx, ranges_mc_, ranges_nc_, args_.options.cluster_idx,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
@@ -990,7 +989,7 @@ class MMState {
   }
 
   // Parallel loops over mc/nc blocks of M/range_np, sequential K.
-  // Fills `mc x nc` sections of `partial`, then `C`, in parallel.
+  // Accumulates into `mc x nc` sections of `C`.
   template <typename TB, typename TC, class ParallelT>
   HWY_INLINE void DoNT_MT_K(ParallelT parallel, const StridedViewBF A,
                             const MatPtrT<TB>& B, RowPtrs<TC> C_rows) const {
@@ -1001,7 +1000,7 @@ class MMState {
         Stride(MatPadding::kOdd, kc_max, sizeof(BF16), args_.line_bytes);
     // Sequential loop over NC/MC/KC, for when the M/N loops are
     // already parallel. This is B3A2C0 in MOMMS terminology: we read
-    // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `partial`.
+    // `mc x kc` of A, `nc x kc` of B, update `mc x nc` of `C`.
     const auto loop_nc = [&](const StridedViewBF B_storage_view,
                              const IndexRange& range_mc,
                              const IndexRange& range_kc,

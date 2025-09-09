@@ -332,8 +332,7 @@ class MMStorage {
 // Autotuning
 
 // Naming convention: outer loop first, T suffix means threaded. This refers to
-// the loops *around* `A2C0`, which contains loops over mc/kc. The outermost
-// `ranges_np` loop across packages is implicit and applies to all of these.
+// the loops *around* `A2C0`, which contains loops over mc/kc.
 //
 // Parallelizing across K (A/B columns) is undesirable because the resulting
 // partial dot products require synchronization or reduction across threads.
@@ -341,18 +340,18 @@ enum class MMOrder : uint8_t {
   // Single M, parallel N, sequential K (inside the parallel section to
   // reduce fork-joins). Similar to GotoBLAS, good for large N vs. M and K.
   kNT_K,
-  // Specialization of `kNT_K` for a single K task with `kDirect`.
+  // Specialization of `kNT_K` for a single K task with `MMSetC`.
   kNT,
 
   // Parallelize over blocks of M and N: good when both are large. We no longer
   // support `kMT_NT_K`: no advantage on Skylake, and `kNT_MT_K` is 1.5x as
   // fast on Zen4.
   kNT_MT_K,
-  kNT_MT,  // Specialization of `kNT_MT_K` for a single K task with `kDirect`.
+  kNT_MT,  // Specialization of `kNT_MT_K` for a single K task with `MMSetC`.
 
   // Resident C (`kK_M_NT`) should be good for large K relative to M and N.
   // However, it does not (much) outperform `kNT_K` on SKX and Zen4. There are
-  // no kN* because we expect M (batch size) to be small relative to K and N.
+  // no kM* because we expect M (batch size) to be small relative to K and N.
 };
 
 static inline bool IsBlock(MMOrder order) {
