@@ -93,7 +93,8 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
     if (qpos == questions.size()) qpos = 0;
   }
   std::vector<std::string> responses = BatchGemmaReply(inputs);
-  for (size_t i = 0; i < hwy::Unpredictable1() * 3; ++i) {
+  for (size_t i = 0; i < HWY_MIN(hwy::Unpredictable1() * 3, responses.size());
+       ++i) {
     fprintf(stderr, "Batch answer %zu '%s'\n\n", i, responses[i].c_str());
   }
 

@@ -21,7 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <memory>  // std::unique_ptr
+#include <functional>
 #include <vector>
 
 // IWYU pragma: begin_exports
@@ -54,13 +54,58 @@ HWY_INLINE_VAR constexpr size_t kNR = 4;
 // or less on ISAs with fewer registers, or for the last few rows of A.
 HWY_INLINE_VAR constexpr size_t kMaxMR = 4;
 
+HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;  // TODO: shrink?
+
 // Upper bound for per-worker B storage on the stack. Chosen such that one row
 // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
 HWY_INLINE_VAR constexpr size_t kMaxKC = 8 * 1024;
 
+// Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
+// Also used to decompress B, hence non-const.
+#pragma pack(push, 1)  // power of two size
+template <typename T>
+class StridedView {
+ public:
+  StridedView(T* HWY_RESTRICT row0, size_t cols, size_t stride)
+      : row0_(row0),
+        cols_(static_cast<uint32_t>(cols)),
+        stride_(static_cast<uint32_t>(stride)) {
+    HWY_DASSERT(stride >= cols);
+  }
+
+  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
+  size_t Cols() const { return static_cast<size_t>(cols_); }
+
+  size_t Stride() const { return static_cast<size_t>(stride_); }
+  void SetStride(size_t stride) {
+    HWY_DASSERT(stride >= Cols());
+    stride_ = stride;
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  StridedView<T> View(size_t r, size_t c, size_t cols) const {
+    HWY_DASSERT(c < Cols());
+    HWY_DASSERT(cols <= Cols() - c);
+    return StridedView<T>(Row(r) + c, cols, stride_);
+  }
+
+ private:
+  T* HWY_RESTRICT row0_;
+  uint32_t cols_;
+  uint32_t stride_;
+};
+#pragma pack(pop)
+
+using StridedViewBF = StridedView<BF16>;
+using StridedViewD = StridedView<double>;
+
+using MMFused = std::function<void(StridedViewBF, size_t, size_t)>;
+
 struct MMOptions {
   uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
   ParallelismStrategy parallelism = ParallelismStrategy::kHierarchical;
+
+  MMFused fused;
 };
 
 // Policy classes for parallelism, implementing some of `ParallelismStrategy`.
@@ -260,49 +305,26 @@ struct MMParallelHierarchical {
   }
 };
 
+template <class Func, typename... Args>
+void DispatchParallelism(ParallelismStrategy parallelism, const Func& func,
+                         Args&&... args) {
+  switch (parallelism) {
+    case ParallelismStrategy::kNone:
+      return func(MMParallelNone(), std::forward<Args>(args)...);
+    case ParallelismStrategy::kWithinCluster:
+      return func(MMParallelWithinCluster(), std::forward<Args>(args)...);
+    case ParallelismStrategy::kHierarchical:
+      return func(MMParallelHierarchical(), std::forward<Args>(args)...);
+    default:
+      HWY_UNREACHABLE;
+  }
+}
+
 void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC);
 // C is BF16/float.
 void BindC(ThreadingContext& ctx, MatPtr& C);
 
-// Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
-// Also used to decompress B, hence non-const.
-#pragma pack(push, 1)  // power of two size
-template <typename T>
-class StridedView {
- public:
-  StridedView(T* HWY_RESTRICT row0, size_t cols, size_t stride)
-      : row0_(row0),
-        cols_(static_cast<uint32_t>(cols)),
-        stride_(static_cast<uint32_t>(stride)) {
-    HWY_DASSERT(stride >= cols);
-  }
-
-  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
-  size_t Cols() const { return static_cast<size_t>(cols_); }
-
-  size_t Stride() const { return static_cast<size_t>(stride_); }
-  void SetStride(size_t stride) {
-    HWY_DASSERT(stride >= Cols());
-    stride_ = stride;
-  }
-
-  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  StridedView<T> View(size_t r, size_t c, size_t cols) const {
-    HWY_DASSERT(c < Cols());
-    HWY_DASSERT(cols <= Cols() - c);
-    return StridedView<T>(Row(r) + c, cols, stride_);
-  }
-
- private:
-  T* HWY_RESTRICT row0_;
-  uint32_t cols_;
-  uint32_t stride_;
-};
-#pragma pack(pop)
-
-using StridedViewBF = StridedView<BF16>;
-using StridedViewD = StridedView<double>;
-
+// For A.
 class MMStorage {
  public:
   // Compile-time bounds on matrix columns to enable pre-allocating storage
@@ -353,6 +375,28 @@ enum class MMOrder : uint8_t {
   // However, it does not (much) outperform `kNT_K` on SKX and Zen4. There are
   // no kM* because we expect M (batch size) to be small relative to K and N.
 };
+
+// Tag types for `DispatchOrder`.
+struct MMOrderNT_K {};
+struct MMOrderNT {};
+struct MMOrderNT_MT_K {};
+struct MMOrderNT_MT {};
+
+template <class Func, typename... Args>
+void DispatchOrder(MMOrder order, const Func& func, Args&&... args) {
+  switch (order) {
+    case MMOrder::kNT_K:
+      return func(MMOrderNT_K(), std::forward<Args>(args)...);
+    case MMOrder::kNT:
+      return func(MMOrderNT(), std::forward<Args>(args)...);
+    case MMOrder::kNT_MT_K:
+      return func(MMOrderNT_MT_K(), std::forward<Args>(args)...);
+    case MMOrder::kNT_MT:
+      return func(MMOrderNT_MT(), std::forward<Args>(args)...);
+    default:
+      HWY_UNREACHABLE;
+  }
+}
 
 static inline bool IsBlock(MMOrder order) {
   return order == MMOrder::kNT_MT_K || order == MMOrder::kNT_MT;
@@ -693,26 +737,46 @@ struct MatMulEnv {
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
-// Arguments to MatMul() that are independent of the A/B/C types.
-// Reduces register pressure compared to individual values/references.
+// Arguments to MatMul() that are independent of the A/B/C types. Reduces
+// register pressure compared to individual values/references. Also used for
+// passing through `DispatchOrder`.
 struct MMArgs {
-  MMArgs(MatMulEnv& env, MMPerKey& per_key, double scale,
-         const float* HWY_RESTRICT add, MMOptions options)
-      : env(&env),
-        per_key(&per_key),
+  MMArgs(MatMulEnv& env, size_t M, size_t K, size_t N, double scale,
+         const float* HWY_RESTRICT add, MMOptions options,
+         const MMAutoTune<MMConfig>& autotune, const MMConfig& config)
+      : env(env),
+        line_bytes(env.ctx.cache_info.LineBytes()),
+
+        range_n(0, N),
         scale(scale),
         add(add),
         options(options),
-        line_bytes(env.ctx.cache_info.LineBytes()) {}
 
-  MatMulEnv* env;
-  MMPerKey* per_key;
+        autotune(autotune),
+        mr(config.MR()),
+        ranges_mc(config.RangesOfMC(M)),
+        ranges_kc(config.RangesOfKC(K)),
+        ranges_nc(config.RangesOfNC(N)),
+        order(config.Order()),
+        inner_tasks(config.InnerTasks()) {}
 
-  double scale;
+  MatMulEnv& env;
+  const size_t line_bytes;  // from `env`, for `Stride`.
+
+  // MatMul arguments:
+  const IndexRange range_n;  // entire N
+  const double scale;
   const float* HWY_RESTRICT add;
+  const MMOptions options;
 
-  MMOptions options;
-  size_t line_bytes;
+  const MMAutoTune<MMConfig>& autotune;  // for `MaybeEnter`
+  // From `MMConfig`:
+  const size_t mr;
+  const IndexRangePartition ranges_mc;
+  const IndexRangePartition ranges_kc;
+  const IndexRangePartition ranges_nc;
+  const MMOrder order;
+  const size_t inner_tasks;
 };
 
 // Wrapper over hwy::Zone that is only enabled when autotuning finished.
@@ -729,11 +793,12 @@ class MMZone {
     }
   }
 
-  // `name` must be a string literal.
+  template <class AutoTune>
   void MaybeEnter(size_t thread, hwy::profiler::ZoneHandle zone,
-                  const MMArgs& args) {
-    if (args.per_key->WantProfile()) {
-      new (&data_) Zone(args.env->ctx.profiler, thread, zone);
+                  const MatMulEnv& env, const AutoTune* auto_tune) {
+    // Only if enabled and autotuning finished.
+    if (PROFILER_ENABLED && auto_tune->Best()) {
+      new (&data_) Zone(env.ctx.profiler, thread, zone);
       HWY_DASSERT(data_ != 0);
     }
   }
@@ -744,7 +809,8 @@ class MMZone {
 };
 #else
 struct MMZone {
-  void MaybeEnter(size_t, hwy::profiler::ZoneHandle, const MMArgs&) {}
+  void MaybeEnter(size_t, hwy::profiler::ZoneHandle, const MatMulEnv&,
+                  const void*) {}
 };
 #endif  // PROFILER_ENABLED
 

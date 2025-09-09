@@ -40,9 +40,10 @@ class RowPtrs {
  public:
   RowPtrs(uint8_t** row_ptrs) : row_ptrs_(row_ptrs) {}
 
-  T* HWY_RESTRICT operator[](size_t row_idx) const {
+  T* HWY_RESTRICT Row(size_t row_idx) const {
     return HWY_RCAST_ALIGNED(T*, row_ptrs_[row_idx]);
   }
+  T* HWY_RESTRICT operator[](size_t row_idx) const { return Row(row_idx); }
 
  private:
   uint8_t** row_ptrs_;

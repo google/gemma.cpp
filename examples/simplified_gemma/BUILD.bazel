@@ -15,7 +15,7 @@ cc_library(
     deps = [
         "//:gemma_args",
         "//:gemma_lib",
-        "//:matmul",
+        "//:matmul_env",
         "//:threading_context",
         "//:tokenizer",
         "@highway//:hwy",

@@ -30,7 +30,6 @@
 #include "gemma/gemma_args.h"
 #include "gemma/model_store.h"
 #include "io/blob_store.h"
-#include "ops/matmul.h"  // MMParallel
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -338,7 +337,6 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
 
         owners[start + task].AllocateFor(*tensor.mat, ctx.allocator,
                                          tensor.padding);
-        BindB(ctx, *tensor.mat, tensor.mat->ElementBytes());
       });
 }
 

@@ -37,7 +37,6 @@
 
 #include "compression/compress-inl.h"
 #include "ops/dot-inl.h"
-#include "ops/matmul.h"
 #include "util/mat.h"  // MatPtrT
 #include "hwy/contrib/math/math-inl.h"
 #include "hwy/contrib/matvec/matvec-inl.h"

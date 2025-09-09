@@ -24,8 +24,7 @@
 #include <functional>
 #include <string>
 
-#include "io/io.h"       // Path
-#include "ops/matmul.h"  // MMStorage::kMax*
+#include "io/io.h"  // Path
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"
