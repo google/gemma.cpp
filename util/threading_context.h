@@ -97,6 +97,13 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
 struct ThreadingContext {
   explicit ThreadingContext(const ThreadingArgs& args);
 
+  // Returns a worker index compatible with those from `ParallelFor`, assuming
+  // the current thread is running on one thread per cluster, which happens
+  // when `ParallelismStrategy` is `kAcrossClusters`.
+  size_t Worker(size_t cluster_idx) const {
+    return cluster_idx * pools.MaxWorkersPerCluster();
+  }
+
   // Singleton; pass around a reference to reduce overhead.
   hwy::Profiler& profiler;
 
@@ -158,7 +165,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
 
   switch (parallelism) {
     case ParallelismStrategy::kNone: {
-      const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+      const size_t worker = ctx.Worker(cluster_idx);
       for (size_t task = 0; task < num_tasks; ++task) {
         func(task, worker);
       }
@@ -173,7 +180,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
     case ParallelismStrategy::kWithinCluster: {
       // Ensure the worker argument is unique across clusters, because it is
       // used for TLS indexing for example in profiler.h.
-      const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+      const size_t base = ctx.Worker(cluster_idx);
       return ctx.pools.Cluster(pkg_idx, cluster_idx)
           .Run(0, num_tasks, [&](uint64_t task, size_t worker) {
             func(task, base + worker);
@@ -193,8 +200,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
 
       return ctx.pools.AllClusters(pkg_idx).Run(
           0, num_tasks, [&](uint64_t task, size_t cluster_idx) {
-            const size_t worker =
-                cluster_idx * ctx.pools.MaxWorkersPerCluster();
+            const size_t worker = ctx.Worker(cluster_idx);
             func(task, worker);
           });
     }

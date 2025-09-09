@@ -116,7 +116,7 @@ struct MMParallelNone {
             size_t /*n_multiple*/, size_t inner_tasks, size_t cluster_idx,
             const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
-    const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t worker = ctx.Worker(cluster_idx);
     func(range_n, worker);
   }
 
@@ -125,7 +125,7 @@ struct MMParallelNone {
                       const IndexRangePartition& ranges_mc,
                       const IndexRangePartition& ranges_nc, size_t cluster_idx,
                       const Func& func) const {
-    const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t worker = ctx.Worker(cluster_idx);
 
     for (size_t i = 0; i < ranges_mc.NumTasks(); ++i) {
       const IndexRange range_mc = ranges_mc.Range(i);
@@ -139,7 +139,7 @@ struct MMParallelNone {
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t cluster_idx, const Func& func) const {
-    const size_t worker = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t worker = ctx.Worker(cluster_idx);
     for (uint64_t row_a = range_mc.begin(); row_a < range_mc.end(); ++row_a) {
       func(row_a, worker);
     }
@@ -154,7 +154,7 @@ struct MMParallelWithinCluster {
 
     const size_t pkg_idx = 0;
     hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
-    const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t base = ctx.Worker(cluster_idx);
 
     const IndexRangePartition worker_ranges = StaticPartition(
         range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
@@ -171,7 +171,7 @@ struct MMParallelWithinCluster {
                       const Func& func) const {
     const size_t pkg_idx = 0;
     hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
-    const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t base = ctx.Worker(cluster_idx);
 
     // Low-batch: avoid Divide/Remainder.
     if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
@@ -192,7 +192,7 @@ struct MMParallelWithinCluster {
                   size_t cluster_idx, const Func& func) const {
     const size_t pkg_idx = 0;
     hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
-    const size_t base = cluster_idx * ctx.pools.MaxWorkersPerCluster();
+    const size_t base = ctx.Worker(cluster_idx);
 
     cluster.Run(
         range_mc.begin(), range_mc.end(),
@@ -233,8 +233,7 @@ struct MMParallelHierarchical {
         n_ranges, all_clusters,
         [&](const IndexRange& n_range, const size_t cluster_idx) {
           hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
-          const size_t cluster_base =
-              cluster_idx * ctx.pools.MaxWorkersPerCluster();
+          const size_t cluster_base = ctx.Worker(cluster_idx);
           // Parallel-for over sub-ranges of `cluster_range` within the cluster.
           const IndexRangePartition worker_ranges = StaticPartition(
               n_range, cluster.NumWorkers() * inner_tasks, n_multiple);
@@ -284,8 +283,7 @@ struct MMParallelHierarchical {
     ParallelizeOneRange(
         ranges_nc, all_clusters,
         [&](const IndexRange range_nc, size_t cluster_idx) {
-          const size_t cluster_base =
-              cluster_idx * ctx.pools.MaxWorkersPerCluster();
+          const size_t cluster_base = ctx.Worker(cluster_idx);
           hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
           ParallelizeOneRange(ranges_mc, cluster,
                               [&](const IndexRange& range_mc, size_t worker) {
