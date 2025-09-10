@@ -98,6 +98,11 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
     fprintf(stderr, "Batch answer %zu '%s'\n\n", i, responses[i].c_str());
   }
 
+  // Run again: prefill will be faster due to autotuning. Fewer decode steps
+  // because those are already fast.
+  s_env->SetMaxGeneratedTokens(3);
+  responses = BatchGemmaReply(inputs);
+
   PROFILER_PRINT_RESULTS();
 }
 }  // namespace

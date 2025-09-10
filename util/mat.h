@@ -186,7 +186,10 @@ class MatPtr : public IFields {
   // will return this value. Used to set the actual number of rows for
   // activations preallocated according to the batch size.
   void OverrideRows(size_t rows) {
-    HWY_ASSERT(rows <= private_rows_);
+    if (HWY_UNLIKELY(rows > private_rows_)) {
+      HWY_ABORT("%s: rows %zu > private_rows_ %u\n", name_.c_str(), rows,
+                private_rows_);
+    }
     override_rows_ = static_cast<uint32_t>(rows);
   }
 

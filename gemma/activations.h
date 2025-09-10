@@ -100,7 +100,7 @@ struct AttentionActivations {
 
   void SetBatchSize(size_t batch_size) {
     q.OverrideRows(batch_size);
-    q_T.OverrideRows(batch_size);
+    // q_T rows are always qkv_dim!
 
     pre_att_rms_out.OverrideRows(batch_size);
     att.OverrideRows(batch_size);
