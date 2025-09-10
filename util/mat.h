@@ -38,16 +38,26 @@ namespace gcpp {
 template <typename T>
 class RowPtrs {
  public:
-  RowPtrs(uint8_t** row_ptrs) : row_ptrs_(row_ptrs) {}
+  RowPtrs(uint8_t** row_ptrs) : row_ptrs_(row_ptrs), r0_(0), c0_(0) {}
+
+  RowPtrs View(size_t r, size_t c) {
+    RowPtrs<T> view(row_ptrs_);
+    view.r0_ = static_cast<uint32_t>(r);
+    view.c0_ = static_cast<uint32_t>(c);
+    return view;
+  }
 
   T* HWY_RESTRICT Row(size_t row_idx) const {
-    return HWY_RCAST_ALIGNED(T*, row_ptrs_[row_idx]);
+    return HWY_RCAST_ALIGNED(T*, row_ptrs_[r0_ + row_idx]) + c0_;
   }
-  T* HWY_RESTRICT operator[](size_t row_idx) const { return Row(row_idx); }
 
  private:
   uint8_t** row_ptrs_;
+  uint32_t r0_;
+  uint32_t c0_;
 };
+
+using RowPtrsBF = RowPtrs<BF16>;
 
 // Type-erased, non-owning pointer and metadata for rank-1 or 2 tensors (vector
 // or matrix). Base class of the non-type-erased `MatPtrT`. Use this class
@@ -349,12 +359,12 @@ RowPtrs<T> GetOrSetTempRowPtrs(
 template <class Func, typename... Args>
 decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
                             Args&&... args) {
-#if GEMMA_ENABLE_NUQ
-  if (base->GetType() == Type::kNUQ) {
-    const MatPtrT<NuqStream> mat(*base);
-    return func(&mat, std::forward<Args>(args)...);
+  if constexpr (GEMMA_ENABLE_NUQ) {
+    if (base->GetType() == Type::kNUQ) {
+      const MatPtrT<NuqStream> mat(*base);
+      return func(&mat, std::forward<Args>(args)...);
+    }
   }
-#endif  // GEMMA_ENABLE_NUQ
 
   if (base->GetType() == Type::kF32) {
     const MatPtrT<float> mat(*base);
@@ -376,13 +386,13 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
                                 const Func& func, Args&&... args) {
   HWY_DASSERT(base1->GetType() == base2->GetType());
 
-#if GEMMA_ENABLE_NUQ
-  if (base1->GetType() == Type::kNUQ) {
-    const MatPtrT<NuqStream> mat1(*base1);
-    const MatPtrT<NuqStream> mat2(*base2);
-    return func(&mat1, &mat2, std::forward<Args>(args)...);
+  if constexpr (GEMMA_ENABLE_NUQ) {
+    if (base1->GetType() == Type::kNUQ) {
+      const MatPtrT<NuqStream> mat1(*base1);
+      const MatPtrT<NuqStream> mat2(*base2);
+      return func(&mat1, &mat2, std::forward<Args>(args)...);
+    }
   }
-#endif  // GEMMA_ENABLE_NUQ
 
   if (base1->GetType() == Type::kF32) {
     const MatPtrT<float> mat1(*base1);
@@ -507,6 +517,52 @@ class MatFactory {
   const Allocator& allocator_;
   MatPadding padding_;
 };
+
+// Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
+// Also used to decompress B, hence non-const.
+#pragma pack(push, 1)  // power of two size
+template <typename T>
+class StridedView {
+ public:
+  StridedView(T* HWY_RESTRICT row0, size_t cols, size_t stride)
+      : row0_(row0),
+        cols_(static_cast<uint32_t>(cols)),
+        stride_(static_cast<uint32_t>(stride)) {
+    HWY_DASSERT(stride >= cols);
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  StridedView(const MatPtrT<T>& mat, size_t r, size_t c, size_t cols)
+      : StridedView(const_cast<T*>(mat.Row(r)) + c, cols, mat.Stride()) {
+    HWY_DASSERT(c < mat.Cols());
+    HWY_DASSERT(cols <= mat.Cols() - c);
+  }
+
+  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
+  StridedView<T> View(size_t r, size_t c, size_t cols) const {
+    HWY_DASSERT(c < Cols());
+    HWY_DASSERT(cols <= Cols() - c);
+    return StridedView<T>(Row(r) + c, cols, stride_);
+  }
+
+  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
+  size_t Cols() const { return static_cast<size_t>(cols_); }
+
+  size_t Stride() const { return static_cast<size_t>(stride_); }
+  void SetStride(size_t stride) {
+    HWY_DASSERT(stride >= Cols());
+    stride_ = stride;
+  }
+
+ private:
+  T* HWY_RESTRICT row0_;
+  uint32_t cols_;
+  uint32_t stride_;
+};
+#pragma pack(pop)
+
+using StridedViewBF = StridedView<BF16>;
+using StridedViewD = StridedView<double>;
 
 }  // namespace gcpp
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_MAT_H_

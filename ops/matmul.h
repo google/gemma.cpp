@@ -60,54 +60,6 @@ HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;  // TODO: shrink?
 // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
 HWY_INLINE_VAR constexpr size_t kMaxKC = 8 * 1024;
 
-// Lightweight view into `MatStorageT`, with a fixed pitch/stride between rows.
-// Also used to decompress B, hence non-const.
-#pragma pack(push, 1)  // power of two size
-template <typename T>
-class StridedView {
- public:
-  StridedView(T* HWY_RESTRICT row0, size_t cols, size_t stride)
-      : row0_(row0),
-        cols_(static_cast<uint32_t>(cols)),
-        stride_(static_cast<uint32_t>(stride)) {
-    HWY_DASSERT(stride >= cols);
-  }
-
-  T* HWY_RESTRICT Row(size_t r) const { return row0_ + stride_ * r; }
-  size_t Cols() const { return static_cast<size_t>(cols_); }
-
-  size_t Stride() const { return static_cast<size_t>(stride_); }
-  void SetStride(size_t stride) {
-    HWY_DASSERT(stride >= Cols());
-    stride_ = stride;
-  }
-
-  // Returns 2D subrange whose top-left is `r, c` and width is `cols`.
-  StridedView<T> View(size_t r, size_t c, size_t cols) const {
-    HWY_DASSERT(c < Cols());
-    HWY_DASSERT(cols <= Cols() - c);
-    return StridedView<T>(Row(r) + c, cols, stride_);
-  }
-
- private:
-  T* HWY_RESTRICT row0_;
-  uint32_t cols_;
-  uint32_t stride_;
-};
-#pragma pack(pop)
-
-using StridedViewBF = StridedView<BF16>;
-using StridedViewD = StridedView<double>;
-
-using MMFused = std::function<void(StridedViewBF, size_t, size_t)>;
-
-struct MMOptions {
-  uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
-  ParallelismStrategy parallelism = ParallelismStrategy::kHierarchical;
-
-  MMFused fused;
-};
-
 // Policy classes for parallelism, implementing some of `ParallelismStrategy`.
 
 struct MMParallelNone {
@@ -733,6 +685,19 @@ struct MatMulEnv {
   // likelier that asan detects bugs such as use after free, overrun, and
   // dangling references.
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
+};
+
+// Called with the entire C matrix, the sub-ranges of M (rows) and N (cols)
+// that this thread has just filled, a view into a second tile (only for the
+// upcoming `GatedMatmul`), and the worker thread index (see `ParallelFor`).
+using MMFused = std::function<void(RowPtrsBF, IndexRange, IndexRange,
+                                   StridedViewBF, size_t)>;
+
+struct MMOptions {
+  uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
+  ParallelismStrategy parallelism = ParallelismStrategy::kHierarchical;
+
+  MMFused fused;  // called if non-null and `TC` is BF16.
 };
 
 // Arguments to MatMul() that are independent of the A/B/C types. Reduces
