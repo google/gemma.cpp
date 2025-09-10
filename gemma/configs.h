@@ -32,8 +32,9 @@
 
 namespace gcpp {
 
-static constexpr size_t kMaxConv1DWidth = 4;
-static constexpr size_t kMaxQKVDim = 1024;
+HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
+
+HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class PromptWrapping {

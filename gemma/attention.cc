@@ -48,9 +48,6 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-constexpr int kFlagReserved = 1;  // LINTER: unused, reserved for future use.
-constexpr int kUseOldAttention = 2;
-
 // Computes Q.K scores, which are "logits" (or scores) stored to att.
 // `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
 static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
@@ -357,7 +354,7 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
   (void)layer_config;  // only used in HWY_DASSERT
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
-  if (flags & kUseOldAttention) {
+  if (flags & kAttentionUseOld) {
     DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
                           env.ctx);
   } else {

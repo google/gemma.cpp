@@ -73,9 +73,9 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   if (type == LayerAttentionType::kGemma) {
+    // TODO: remove flag to enable FlashAttention.
     GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
-                   env,
-                   /*flags=*/0);
+                   env, kAttentionUseOld);
   }
 }
 
