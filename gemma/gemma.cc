@@ -75,7 +75,7 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
   if (type == LayerAttentionType::kGemma) {
     // TODO: remove flag to enable FlashAttention.
     GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
-                   env, kAttentionUseOld);
+                   env, HWY_NATIVE_DOT_BF16 ? kAttentionUseOld : 0);
   }
 }
 

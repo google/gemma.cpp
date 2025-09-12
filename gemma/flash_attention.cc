@@ -256,6 +256,11 @@ void TileFlashAttention(
   using DI = hn::ScalableTag<uint32_t>;
   const DI di;
   using VI = hn::Vec<DI>;
+  const int kVTileSize = hn::MaxLanes(df);
+  for (int i = 0; i < kVTileSize; ++i) {
+    hwy::ZeroBytes(att_out.Row(0) + out_offsets[i],
+                   v.Cols() * sizeof(att_out.Row(0)[0]));
+  }
   VI lasts = hn::LoadU(di, last_pos);
   VF old_m = hn::Set(df, -std::numeric_limits<float>::max() / 2.0f);
   VF old_d = hn::Zero(df);
