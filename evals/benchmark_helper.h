@@ -68,7 +68,7 @@ class GemmaEnv {
     return tokens;
   }
 
-  std::vector<int> WrapAndTokenize(std::string& input) const {
+  std::vector<int> WrapAndTokenize(const std::string& input) const {
     return gcpp::WrapAndTokenize(gemma_.Tokenizer(), gemma_.ChatTemplate(),
                                  gemma_.Config().wrapping, 0, input);
   }
@@ -87,7 +87,7 @@ class GemmaEnv {
       const QueriesPromptTokens& queries_prompt,
       const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>());
   // Adds turn structure to input, tokenizes and calls the above overload.
-  QueryResult QueryModel(std::string& input);
+  QueryResult QueryModel(const std::string& input);
   std::vector<QueryResult> BatchQueryModel(
       const std::vector<std::string>& inputs);
 

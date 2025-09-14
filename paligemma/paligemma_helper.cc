@@ -43,8 +43,7 @@ std::string PaliGemmaHelper::GemmaReply(const std::string& prompt_text) const {
     return true;
   };
 
-  std::string mutable_prompt = prompt_text;
-  std::vector<int> tokens = env_->WrapAndTokenize(mutable_prompt);
+  std::vector<int> tokens = env_->WrapAndTokenize(prompt_text);
   tokens.insert(tokens.begin(), image_tokens_->Rows(), 0);
 
   RuntimeConfig runtime_config = {.max_generated_tokens = 512,

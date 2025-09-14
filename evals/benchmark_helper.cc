@@ -137,24 +137,21 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   return res;
 }
 
-QueryResult GemmaEnv::QueryModel(std::string& input) {
+QueryResult GemmaEnv::QueryModel(const std::string& input) {
   const std::vector<int> prompt = WrapAndTokenize(input);
   return QueryModel(prompt);
 }
 
 std::vector<QueryResult> GemmaEnv::BatchQueryModel(
     const std::vector<std::string>& inputs) {
-  std::vector<std::vector<int>> prompts;
-  prompts.reserve(inputs.size());
-  for (auto& input : inputs) {
-    std::string mutable_prompt = input;
-    prompts.push_back(WrapAndTokenize(mutable_prompt));
-  }
   std::vector<PromptTokens> prompt_vector;
-  prompt_vector.reserve(prompts.size());
-  for (auto& prompt : prompts) {
+  prompt_vector.reserve(inputs.size());
+
+  for (auto& input : inputs) {
+    std::vector<int> prompt = WrapAndTokenize(input);
     prompt_vector.push_back(PromptTokens(prompt.data(), prompt.size()));
   }
+
   QueriesPromptTokens prompt_span(prompt_vector.data(), prompt_vector.size());
   return BatchQueryModel(prompt_span);
 }

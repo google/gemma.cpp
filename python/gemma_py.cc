@@ -52,7 +52,7 @@ class GemmaModel {
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
-  void GenerateEx(std::string prompt, gcpp::StreamFunc stream,
+  void GenerateEx(const std::string& prompt, gcpp::StreamFunc stream,
                   size_t max_generated_tokens, float temperature,
                   float /*seed*/, gcpp::AcceptFunc accept, bool skip_prompt) {
     std::vector<int> prompt_tokens = env_.WrapAndTokenize(prompt);
@@ -75,7 +75,7 @@ class GemmaModel {
   }
 
   // Generates a single example, given a prompt, and returns the result.
-  std::string Generate(std::string prompt, size_t max_generated_tokens,
+  std::string Generate(const std::string& prompt, size_t max_generated_tokens,
                        float temperature, float /*seed*/,
                        const std::vector<std::string>& accept,
                        const std::vector<std::string>& end) {
@@ -192,7 +192,7 @@ class GemmaModel {
   // Generates a response to the given prompt, using the last set image.
   // Uses the prompt_tokens if provided, otherwise tokenizes the prompt string.
   std::pair<std::string, std::vector<int>> GenerateWithImage(
-      std::string prompt, size_t max_generated_tokens, float temperature,
+      const std::string& prompt, size_t max_generated_tokens, float temperature,
       float /*seed*/, gcpp::AcceptFunc accept, std::vector<int> prompt_tokens) {
     if (!image_tokens_) throw std::invalid_argument("No image set.");
     const gcpp::Gemma& model = *env_.GetGemma();
