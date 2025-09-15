@@ -43,6 +43,7 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
+// For use by Vit even if !GEMMA_FUSED_FFN.
 template <typename T1, typename T2>
 void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
                 const T2* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
@@ -64,7 +65,7 @@ void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
                                 });
 }
 
-// No C2 multiplier.
+// No C2 multiplier - used by Vit.
 template <class Mat>
 void ActivationBatched(
     ActivationType activation, Mat& c1, ThreadingContext& ctx,
@@ -79,6 +80,34 @@ void ActivationBatched(
                            ctx.profiler, worker);
               });
 }
+
+#if GEMMA_FUSED_FFN
+
+// Called during `TwoMatMul`.
+static inline void Activation(ActivationType activation, const RowPtrsBF C1,
+                              const IndexRange range_r,
+                              const IndexRange range_c, const StridedViewBF C2,
+                              hwy::Profiler& p, const size_t worker) {
+  static const auto zone = p.AddZone("Gen.ActivationFused");
+  PROFILER_ZONE3(p, worker, zone);
+
+  const size_t cols = range_c.Num();
+  HWY_DASSERT(C2.Cols() == cols);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+  // ActivationType::Gelu
+  // Gated: Gelu(c1) * c2.
+  for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+    Decompress1AndCompressInplace(
+        DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols, C2.Row(ir),
+        [](DF df, VF v1, VF v2)
+            HWY_ATTR -> VF { return hn::Mul(v2, Gelu(df, v1)); });
+  }
+}
+
+#else
 
 template <class Mat1, class Mat2>
 HWY_NOINLINE void ActivationBatched(
@@ -101,6 +130,8 @@ HWY_NOINLINE void ActivationBatched(
                 });
   }
 }
+
+#endif  // GEMMA_FUSED_FFN
 
 template <typename T2, class LayerWeights>
 HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
@@ -126,28 +157,32 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
       env.ctx.profiler.AddZone("Gen.FFW", hwy::ProfilerFlags::kInclusive);
   PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
   const LayerConfig& layer_config = layer.layer_config;
-  const size_t ffh_hidden_dim = layer_config.ff_hidden_dim;
 
-  const bool add_bias = layer_config.ff_biases;
-  const float* bias1 =
-      add_bias ? layer.ffw_gating_biases.PackedScale1() : nullptr;
-  const float* bias2 = add_bias ? bias1 + ffh_hidden_dim : nullptr;
-  const float* output_bias =
-      add_bias ? layer.ffw_output_biases.PackedScale1() : nullptr;
+  HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
 
+#if GEMMA_FUSED_FFN
+  const auto fused = [&](RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
+                         StridedViewBF C2, size_t worker) {
+    Activation(layer_config.activation, C1, range_r, range_c, C2,
+               env.ctx.profiler, worker);
+  };
+  MMOptions options;
+  options.SetFunc(fused);
+  CallTwoMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w1,
+                layer.gating_einsum_w2, env, activations.C1, options);
+#else
   // Compute the hidden layer activations.
-  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w1, bias1, env,
+  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w1, nullptr, env,
              activations.C1);
-  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w2, bias2, env,
+  CallMatMul(activations.pre_ffw_rms_out, layer.gating_einsum_w2, nullptr, env,
              activations.C2);
-
   // Activation (Gelu) and maybe multiply by gate. Store activations in act.
   ActivationBatched(layer_config.activation, activations.C1, &activations.C2,
                     env.ctx);
+#endif
 
   // Hidden layer -> output layer.
-  CallMatMul(activations.C1, layer.linear_w, output_bias, env,
-             activations.ffw_out);
+  CallMatMul(activations.C1, layer.linear_w, nullptr, env, activations.ffw_out);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

@@ -37,13 +37,19 @@
                          const float* HWY_RESTRICT add, MatMulEnv& env, \
                          MatPtrT<TC>& C, MMOptions options);
 
+#define GEMMA_MATMUL_FOR_B(TB)                                        \
+  GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DECL_ONE, TB)                  \
+  void TwoMatMulStatic(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1, \
+                       const MatPtrT<TB>& B2, MatMulEnv& env,         \
+                       MatPtrT<BF16>& C, MMOptions options);
+
 // Passed to HWY_VISIT_TARGETS; declares all overloads for all targets.
 #define GEMMA_MATMUL_DECL(TARGET, NAMESPACE)                  \
   namespace NAMESPACE {                                       \
-  GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DECL_ONE, BF16)        \
-  GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DECL_ONE, float)       \
-  GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DECL_ONE, NuqStream)   \
-  GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DECL_ONE, SfpStream)   \
+  GEMMA_MATMUL_FOR_B(BF16)                                    \
+  GEMMA_MATMUL_FOR_B(float)                                   \
+  GEMMA_MATMUL_FOR_B(NuqStream)                               \
+  GEMMA_MATMUL_FOR_B(SfpStream)                               \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */ \
   }  // namespace NAMESPACE
 

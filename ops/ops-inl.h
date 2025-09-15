@@ -69,6 +69,14 @@ MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
   });
 }
 
+static inline void CallTwoMatMul(const MatPtrT<BF16>& A, const MatPtr& B1,
+                                 const MatPtr& B2, MatMulEnv& env,
+                                 MatPtrT<BF16>& C, const MMOptions& options) {
+  return CallUpcastedSame(&B1, &B2, [&](const auto* B1_t, const auto* B2_t) {
+    return TwoMatMulStatic(A, *B1_t, *B2_t, env, C, options);
+  });
+}
+
 HWY_INLINE double PackTokenAndProb(int32_t token, float prob) {
   // casting prob from float to double just makes some changes to the
   // exponent bias and pads zeros in the mantissa.

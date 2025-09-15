@@ -63,11 +63,12 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 class GenerateCandidates {
  public:
   GenerateCandidates(const CacheInfo& cache, size_t M, size_t K, size_t N,
-                     size_t sizeof_TC, bool print_config)
+                     size_t num_B, size_t sizeof_TC, bool print_config)
       : cache_(cache),
         M_(M),
         K_(K),
         N_(N),
+        num_B_(num_B),
         sizeof_TC_(sizeof_TC),
         // These influence kc/nc, but are also stored in `MMConfig` for
         // `RangesOf*`. Must be a vector multiple. The previous/next cache line
@@ -150,7 +151,7 @@ class GenerateCandidates {
     }
   }
 
-  // The number of A and B columns to read between updating `partial`.
+  // The number of A and B columns to read between updating `C`.
   SizeVec KC(size_t mr, MMOrder order) const {
     // `LoopKC` handles up to `mr` rows of A.
     const size_t rows_a = HWY_MIN(M_, mr);
@@ -164,7 +165,7 @@ class GenerateCandidates {
     // TB=NUQ due to less amortization of the table loads. Due to the low L1
     // latency, the packing is still effectively fused into `LoopKC`. It may
     // be better to round up and accept a few L2 accesses in exchange for
-    // fewer loops over K, and thus fewer writes to `partial`. Hence we do not
+    // fewer loops over K, and thus fewer writes to `C`. Hence we do not
     // subtract the output and buf, and allow using more than the actual L1
     // size. This results in an overestimate, and the loop below will propose
     // the next few smaller values for the autotuner to evaluate.
@@ -179,7 +180,7 @@ class GenerateCandidates {
 
     // Avoid proposing kc > K.
     if (K_ > kc_multiple_) {
-      // Generally it is best to use the full `kc` (fewer writes to `partial`),
+      // Generally it is best to use the full `kc` (fewer writes to `C`),
       // but a bit less can be better if it evenly divides `K`, or enables an
       // `mc` that evenly divides `M`. Try several smaller values.
 
@@ -196,7 +197,7 @@ class GenerateCandidates {
     }
 
     if (print_config_ && all_kc.size() > 1) {
-      fprintf(stderr, "KC: ");
+      fprintf(stderr, "num_B %zu: KC: ", num_B_);
       for (size_t kc : all_kc) {
         fprintf(stderr, "%zu ", kc);
       }
@@ -214,18 +215,18 @@ class GenerateCandidates {
 
     // Choose the largest feasible `mc_max` (A/C rows) to maximize reuse of the
     // packed B. We want `mc * kc` elements of A to fit in L2, alongside
-    // `bytes_b` plus `mc` cache lines because resident-A updates `mc` rows of
-    // partial.
+    // `bytes_b` plus `mc` cache lines because resident-A updates `mc` C rows.
     const size_t bytes_per_mc = kc * sizeof(BF16) + cache_.LineBytes();
     size_t mc_max = hwy::DivCeil(cache_.L2Bytes() - bytes_b, bytes_per_mc);
-    mc_max = HWY_MIN(mc_max, kMaxBatchSize);
+    mc_max = HWY_MIN(mc_max, HWY_MIN(kMaxBatchSize, kMaxMC));
     HWY_DASSERT(mc_max != 0);
     mc_max = HWY_MIN(mc_max, M_);
     mc_max = hwy::RoundDownTo(mc_max, mr);
 
     SizeVec all_mc(1, mc_max);
-    // Larger MC is better for non-blocks, otherwise we want more small options.
-    const size_t reps = !IsBlock(order) ? 2 : 3;
+    // Larger MC is better for non-blocks, otherwise we want more small options,
+    // especially for two B.
+    const size_t reps = !IsBlock(order) ? 2 : (2 + num_B_);
 
     size_t prev = mc_max;
     for (size_t rep = 0; rep < reps; ++rep) {
@@ -240,7 +241,7 @@ class GenerateCandidates {
     }
 
     if (print_config_ && all_mc.size() > 1) {
-      fprintf(stderr, "MC: ");
+      fprintf(stderr, "num_B %zu: MC: ", num_B_);
       for (size_t mc : all_mc) {
         fprintf(stderr, "%zu ", mc);
       }
@@ -252,14 +253,15 @@ class GenerateCandidates {
 
   // The number of (possibly L3 resident) B rows per `NT_MT` task.
   SizeVec NC(size_t mr, size_t mc, size_t kc, MMOrder order) const {
-    size_t nc_max = N_;
+    size_t nc_max = kMaxNC;
     // Only if there will be reuse of B: choose the largest `nc_max` (C cols)
-    // such that `nc x kc` of B and `mc x nc` of `partial` or `C` fit in L3.
-    // Otherwise, leave it unbounded.
+    // such that `nc x kc` of B and `mc x nc` of `C` fit in L3. Otherwise,
+    // leave it unbounded.
     if (M_ > mr) {
       const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * sizeof_TC_);
-      nc_max = HWY_MIN(hwy::DivCeil(cache_.L3Bytes(), bytes_per_nc), N_);
+      nc_max = HWY_MIN(hwy::DivCeil(cache_.L3Bytes(), bytes_per_nc), kMaxNC);
     }
+    nc_max = HWY_MIN(nc_max, N_);
     HWY_DASSERT(nc_max != 0);
     nc_max = RoundDownWithFloor(nc_max, nc_multiple_);
 
@@ -278,7 +280,7 @@ class GenerateCandidates {
     if (N_ > nc_multiple_) {
       // Large L3, but its behavior and characteristics varies across platforms,
       // hence autotune a wider range of nc than the other dimensions.
-      size_t reps = 10;
+      size_t reps = 9 + num_B_;
       // For small M, we can afford larger NC, hence allow fewer small options.
       if (M_ <= 2 * mr) reps -= 1;
 
@@ -301,7 +303,7 @@ class GenerateCandidates {
     }
 
     if (print_config_ && all_nc.size() > 1) {
-      fprintf(stderr, "NC: ");
+      fprintf(stderr, "num_B %zu: NC: ", num_B_);
       for (size_t nc : all_nc) {
         fprintf(stderr, "%zu ", nc);
       }
@@ -329,6 +331,7 @@ class GenerateCandidates {
   const size_t M_;
   const size_t K_;
   const size_t N_;
+  const size_t num_B_;
   const size_t sizeof_TC_;
 
   const size_t kc_multiple_;
@@ -341,12 +344,13 @@ class GenerateCandidates {
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
 std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
-                                   size_t N, size_t sizeof_TC,
+                                   size_t N, size_t num_B, size_t sizeof_TC,
                                    bool print_config) {
-  return GenerateCandidates(cache, M, K, N, sizeof_TC, print_config)();
+  return GenerateCandidates(cache, M, K, N, num_B, sizeof_TC, print_config)();
 }
 
-MatMulEnv::MatMulEnv(ThreadingContext& ctx) : ctx(ctx), storage(ctx.allocator) {
+MatMulEnv::MatMulEnv(ThreadingContext& ctx)
+    : ctx(ctx), A_BF(ctx.allocator), C_tiles(ctx) {
   const size_t num_clusters = ctx.pools.AllClusters(/*pkg_idx=*/0).NumWorkers();
   per_cluster.resize(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {

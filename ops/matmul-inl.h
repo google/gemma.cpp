@@ -155,14 +155,14 @@ class MMStoreHorizontalSumsIntoC {
   template <class D4, class V4 = hn::Vec<D4>, class Tag, class CView>
   HWY_INLINE void Store(D4 d4, V4 sum0, V4 sum1, V4 sum2, V4 sum3,
                         const float scale, const float* HWY_RESTRICT add,
-                        const size_t imc, Tag tag, CView C_rows) const {
+                        const size_t imc, Tag tag, CView C_MC_NR) const {
     const V4 vscale = hn::Set(d4, scale);
     HWY_ALIGN static constexpr float kZero[4] = {};
     const V4 vadd = hn::Load(d4, add ? add : kZero);
-    MaybeScaleAndStore<0>(d4, sum0, vscale, vadd, tag, imc, C_rows);
-    MaybeScaleAndStore<1>(d4, sum1, vscale, vadd, tag, imc, C_rows);
-    MaybeScaleAndStore<2>(d4, sum2, vscale, vadd, tag, imc, C_rows);
-    MaybeScaleAndStore<3>(d4, sum3, vscale, vadd, tag, imc, C_rows);
+    MaybeScaleAndStore<0>(d4, sum0, vscale, vadd, tag, imc, C_MC_NR);
+    MaybeScaleAndStore<1>(d4, sum1, vscale, vadd, tag, imc, C_MC_NR);
+    MaybeScaleAndStore<2>(d4, sum2, vscale, vadd, tag, imc, C_MC_NR);
+    MaybeScaleAndStore<3>(d4, sum3, vscale, vadd, tag, imc, C_MC_NR);
   }
 
  private:
@@ -202,10 +202,10 @@ class MMStoreHorizontalSumsIntoC {
             class Tag, class CView>
   static HWY_INLINE void MaybeScaleAndStore(DF4 df4, VF4 sum, VF4 vscale,
                                             VF4 vadd, Tag, const size_t imc,
-                                            CView C_view) {
+                                            CView C_MC_NR) {
     if constexpr (kRow < kRowsAC) {
-      using TC = hwy::RemoveCvRef<decltype(C_view.Row(0)[0])>;
-      TC* HWY_RESTRICT pos = C_view.Row(imc + kRow);
+      using TC = hwy::RemoveCvRef<decltype(C_MC_NR.Row(0)[0])>;
+      TC* HWY_RESTRICT pos = C_MC_NR.Row(imc + kRow);
       const hn::Rebind<TC, DF4> dc4;
       if constexpr (hwy::IsSame<Tag, MMAddC>()) {
         vadd = F32FromTC(dc4, hn::Load(dc4, pos));  // load prior value
@@ -268,9 +268,9 @@ class MMDecompress {
     } else {
       // Always decompress. To reduce code size/compile time, we no longer
       // support a separate F32 kernel; most A are already BF16. We also only
-      // have a single MMStorage.
+      // have a single MMEntireA.
       HWY_ASSERT(options.cluster_idx == 0);
-      const StridedViewBF A_view = env.storage.A(A.Extents());
+      const StridedViewBF A_view = env.A_BF.A(A.Extents());
       AutotuneDecompressA(A, A_view, autotune, env, options);
       return A_view;
     }
@@ -387,111 +387,52 @@ class MMDecompress {
 
 // Stateless, wraps member functions. Contains the innermost 2-4 loops.
 class MMKernel {
-  // Compute size of per-worker storage for `kNR` row ranges of B. Stack
-  // allocation avoids passing a worker index.
-  static constexpr size_t B_stride_max =
-      kMaxKC + 2 * CacheInfo::MaxLineBytes() / sizeof(BF16);
-
  public:
-  // A2C0 in MOMMS terminology updates a `mc x kNR` slice of the output.
-  // Calls `LoopKC` for each of `mc` rows of A in steps of `mr`. `A_view` is
-  // `mc x kc` and `B_view` is `(kNR x kc)`. All views, including `add`, start
-  // at row/col 0. `CView` is either `RowPtrs<TC>` or `StridedView<TC>`.
-  // Called by B3A2C0 and by callers that hoist `A_view`.
-  template <class Tag, class CView>
-  static HWY_INLINE void A2C0(const StridedViewBF A_view,
-                              const StridedViewBF B_view, size_t mr,
-                              const IndexRange& range_mc, size_t kc,
-                              const float scale, const float* HWY_RESTRICT add,
-                              Tag tag, CView C_view) {
-    HWY_DASSERT(1 <= mr && mr <= kMaxMR);
-
-    const size_t mc = range_mc.Num();
-    size_t imc = 0;
-
-    // M == 1, or x86 with 8 SIMD registers:
-    if (HWY_UNLIKELY(mr == 1)) {
-      for (; imc < mc; ++imc) {
-        LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-      }
-      return;
-    }
-
-    // AVX2 (16 registers)
-    if (HWY_UNLIKELY(mr == 2)) {
-      if (HWY_LIKELY(mc >= 2)) {
-        for (; imc <= mc - 2; imc += 2) {
-          LoopKC<2>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-        }
-      }
-      if (HWY_UNLIKELY(imc != mc)) {
-        LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-      }
-      return;
-    }
-
-    HWY_DASSERT(mr == 4);
-    if (HWY_LIKELY(mc >= 4)) {
-      for (; imc <= mc - 4; imc += 4) {
-        LoopKC<4>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-      }
-    }
-    const size_t remainder_mc = mc - imc;
-    HWY_DASSERT(remainder_mc < 4);
-    if (HWY_UNLIKELY(remainder_mc & 2)) {
-      LoopKC<2>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-      imc += 2;
-    }
-    if (HWY_UNLIKELY(remainder_mc & 1)) {
-      LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_view);
-      imc += 1;
-    }
-    HWY_DASSERT(imc == mc);
-  }
-
-  static constexpr size_t B_storage_max = kNR * B_stride_max;
-
   // Loop over NC/MC/KC, called from the outer loops. The MOMMS B3A2C0 reads
-  // `mc x kc` of A, `nc x kc` of B, and updates `mc x nc` of C. Called by
-  // `ForeachKC` and when there is only a single KC task.
-  template <typename TB, typename TC, typename Tag>
+  // `mc x kc` of A, `nc x kc` of B, and updates the `mc x nc` `C_MC_NC`.
+  // `CView` is either `RowPtrs<TC>` or `StridedView<TC>`.
+  template <typename TB, typename Tag, class CView>
   static void B3A2C0(const StridedViewBF A, const MatPtrT<TB>& B,
                      const IndexRange& range_mc, const IndexRange& range_kc,
                      const IndexRange& range_nc, const MMArgs& args,
-                     Tag out_tag, RowPtrs<TC> C) {
-    HWY_ALIGN BF16 B_storage[B_storage_max];
-
+                     Tag out_tag, CView C_MC_NC) {
     const size_t kc = range_kc.Num();
     const StridedViewBF A_view = A.View(range_mc.begin(), range_kc.begin(), kc);
 
+    // Upper bound on per-worker storage for `kNR` row ranges of B. Stack
+    // allocation avoids passing a worker index.
+    constexpr size_t B_stride_max =
+        kMaxKC + 2 * CacheInfo::MaxLineBytes() / sizeof(BF16);
+    HWY_ALIGN BF16 B_storage[kNR * B_stride_max];
     const size_t B_stride =
         Stride(MatPadding::kOdd, kc, sizeof(BF16), args.line_bytes);
     const StridedViewBF B_storage_view(B_storage, kc, B_stride);
 
-    for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
-         row_b += kNR) {
+    const float scale = args.scale_A * B.Scale();
+    for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
+      // For `add` and `B`, which are global, unlike `C_MC_NC`.
+      const size_t row_b = range_nc.begin() + inc;
       const StridedViewBF B_view =
           MMDecompress::DecompressB(B, row_b, range_kc, B_storage_view);
-      const RowPtrs<TC> C_view = C.View(range_mc.begin(), row_b);
+      const CView C_MC_NR = C_MC_NC.View(0, inc, kNR);
       const float* HWY_RESTRICT add = args.add ? args.add + row_b : nullptr;
-      A2C0(A_view, B_view, args.mr, range_mc, kc, args.scale, add, out_tag,
-           C_view);
+      A2C0(A_view, B_view, args.mr, range_mc, kc, scale, add, out_tag, C_MC_NR);
     }
   }
 
-  template <typename TB, typename TC>
+  template <typename TB, class CView>
   static void ForeachKC(const StridedViewBF A, const MatPtrT<TB>& B,
                         const IndexRange& range_mc,
                         const IndexRangePartition& ranges_kc,
                         const IndexRange& range_nc, const MMArgs& args,
-                        RowPtrs<TC> C) {
+                        CView C_MC_NC) {
     // Peel off the first iteration of the kc loop: avoid zero-initializing `C`
     // by writing directly into it, and later accumulating into it.
     ranges_kc.VisitFirst([&](const IndexRange& range_kc) {
-      B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(), C);
+      B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(), C_MC_NC);
     });
     ranges_kc.VisitRemaining([&](const IndexRange& range_kc) {
-      B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMAddC(), C);
+      B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMAddC(), C_MC_NC);
     });
   }
 
@@ -585,15 +526,15 @@ class MMKernel {
   // Innermost loop over `kc` columns (typically 1024-4096, not necessarily a
   // multiple of `NBF`) in steps of one vector, for `kRowsAC` rows of `A_view`
   // from range_mc-relative `imc` and `B_view` from row 0 (both at column 0).
-  // Updates a `kRowsAC x kNR` tile in `C_view` starting at row `imc`, column 0.
-  // `A` and `B` are always BF16, `C` can be F32 or BF16. `add` is also
+  // Updates a `kRowsAC x kNR` tile in `C_MC_NR` starting at row `imc`, column
+  // 0. `A` and `B` are always BF16, `C` can be F32 or BF16. `add` is also
   // relative to the C column.
   template <size_t kRowsAC, /*deduced:*/ class Tag, class CView>
   static HWY_INLINE void LoopKC(const StridedViewBF A_view,
                                 const StridedViewBF B_view, size_t imc,
                                 size_t kc, const float scale,
                                 const float* HWY_RESTRICT add, Tag tag,
-                                CView C_view) {
+                                CView C_MC_NR) {
     const hn::ScalableTag<BF16> dbf;
     using VBF = hn::Vec<decltype(dbf)>;
     HWY_LANES_CONSTEXPR const size_t NBF = hn::Lanes(dbf);
@@ -777,7 +718,62 @@ class MMKernel {
     hn::Vec<decltype(d4)> sum0, sum1, sum2, sum3;
     horz.Reduce4x4(df, C00, C01, C02, C03, C10, C11, C12, C13, C20, C21, C22,
                    C23, C30, C31, C32, C33, sum0, sum1, sum2, sum3);
-    horz.Store(d4, sum0, sum1, sum2, sum3, scale, add, imc, tag, C_view);
+    horz.Store(d4, sum0, sum1, sum2, sum3, scale, add, imc, tag, C_MC_NR);
+  }
+
+  // A2C0 in MOMMS terminology updates a `mc x kNR` slice of the output.
+  // Calls `LoopKC` for each of `mc` rows of A in steps of `mr`. `A_view` is
+  // `mc x kc` and `B_view` is `(kNR x kc)`. All views, including `add`, start
+  // at row/col 0.
+  template <class Tag, class CView>
+  static HWY_INLINE void A2C0(const StridedViewBF A_view,
+                              const StridedViewBF B_view, size_t mr,
+                              const IndexRange& range_mc, size_t kc,
+                              const float scale, const float* HWY_RESTRICT add,
+                              Tag tag, CView C_MC_NR) {
+    HWY_DASSERT(1 <= mr && mr <= kMaxMR);
+
+    const size_t mc = range_mc.Num();
+    size_t imc = 0;
+
+    // M == 1, or x86 with 8 SIMD registers:
+    if (HWY_UNLIKELY(mr == 1)) {
+      for (; imc < mc; ++imc) {
+        LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+      }
+      return;
+    }
+
+    // AVX2 (16 registers)
+    if (HWY_UNLIKELY(mr == 2)) {
+      if (HWY_LIKELY(mc >= 2)) {
+        for (; imc <= mc - 2; imc += 2) {
+          LoopKC<2>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+        }
+      }
+      if (HWY_UNLIKELY(imc != mc)) {
+        LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+      }
+      return;
+    }
+
+    HWY_DASSERT(mr == 4);
+    if (HWY_LIKELY(mc >= 4)) {
+      for (; imc <= mc - 4; imc += 4) {
+        LoopKC<4>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+      }
+    }
+    const size_t remainder_mc = mc - imc;
+    HWY_DASSERT(remainder_mc < 4);
+    if (HWY_UNLIKELY(remainder_mc & 2)) {
+      LoopKC<2>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+      imc += 2;
+    }
+    if (HWY_UNLIKELY(remainder_mc & 1)) {
+      LoopKC<1>(A_view, B_view, imc, kc, scale, add, tag, C_MC_NR);
+      imc += 1;
+    }
+    HWY_DASSERT(imc == mc);
   }
 };
 
@@ -813,10 +809,10 @@ class MMImpl {
   }
 
  public:
-  static MMPerKey& FindOrAddPerKey(size_t M, size_t K, size_t N,
+  static MMPerKey& FindOrAddPerKey(size_t M, size_t K, size_t N, size_t num_B,
                                    size_t vector_bytes,
                                    MatMulEnv::PerCluster& per_cluster) {
-    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N);
+    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N, num_B);
     intptr_t index = IndexOfKey(key, per_cluster.keys);
     // First time we see this shape/key.
     if (HWY_UNLIKELY(index < 0)) {
@@ -831,17 +827,19 @@ class MMImpl {
   }
 
   static void NotifyAutotuneResult(MatMulEnv& env, size_t M, size_t K, size_t N,
-                                   double t0, MMAutoTune<MMConfig>& tuner,
+                                   size_t num_B, double t0,
+                                   MMAutoTune<MMConfig>& tuner,
                                    const MMConfig& cfg) {
     const uint64_t t1 =
         env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
     const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /
                                hwy::platform::InvariantTicksPerSecond();
-    const double flops = 2 * M * K * N / min_elapsed;  // * 2 for FMA
+    const double flops = 2 * M * K * N * num_B / min_elapsed;  // * 2 for FMA
     if (HWY_UNLIKELY(env.print_measurement && tuner.ShouldPrint())) {
-      fprintf(stderr, "%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n", flops * 1E-9,
-              min_elapsed * 1E3, cfg.MR(), cfg.MC(), cfg.KC(), cfg.NC(),
-              StringFromOrder(cfg.Order()), cfg.InnerTasks());
+      fprintf(stderr, "%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n",
+              M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, cfg.MR(),
+              cfg.MC(), cfg.KC(), cfg.NC(), StringFromOrder(cfg.Order()),
+              cfg.InnerTasks());
     }
     if (HWY_UNLIKELY(env.print_best && tuner.Best())) {
       const auto ratio = [&tuner](uint64_t ticks) -> double {
@@ -849,12 +847,13 @@ class MMImpl {
                static_cast<double>(tuner.BestTicks());
       };
       const MMConfig& best = *tuner.Best();
-      fprintf(stderr,
-              "\n%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n",
-              M, K, N, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
-              best.KC(), best.NC(), StringFromOrder(best.Order()),
-              best.InnerTasks(), ratio(tuner.WorstMinTicks()),
-              ratio(tuner.FirstConfigTicks()));
+      fprintf(
+          stderr,
+          "\n%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n",
+          M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
+          best.KC(), best.NC(), StringFromOrder(best.Order()),
+          best.InnerTasks(), ratio(tuner.WorstMinTicks()),
+          ratio(tuner.FirstConfigTicks()));
     }
   }
 
@@ -874,10 +873,11 @@ class MMImpl {
 class MMLoops {
  public:
   // Called from `MatMul` from two places: either with the next autotune config,
-  // or with the best config.
+  // or with the best config. `B2` is null unless called from `TwoMatMul`.
   template <typename TB, typename TC>
   static HWY_NOINLINE void Dispatch(const StridedViewBF A, const MatPtrT<TB>& B,
-                                    RowPtrs<TC> C, const MMArgs& args) {
+                                    const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                                    const MMArgs& args) {
     static const auto zone = args.env.ctx.profiler.AddZone("MM.Dispatch");
     PROFILER_ZONE3(args.env.ctx.profiler,
                    args.env.ctx.Worker(args.options.cluster_idx), zone);
@@ -885,7 +885,7 @@ class MMLoops {
     DispatchParallelism(
         args.options.parallelism, [&](const auto& parallel) HWY_ATTR {
           DispatchOrder(args.order, [&](const auto& order) HWY_ATTR {
-            Loop(order, parallel, A, B, C, args);
+            Loop(order, parallel, A, B, B2, C, args);
           });
         });
   }
@@ -901,18 +901,14 @@ class MMLoops {
   template <typename TB, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT, Parallel parallel,
                               const StridedViewBF A, const MatPtrT<TB>& B,
-                              RowPtrs<TC> C, const MMArgs& args) {
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
     static const auto zone = args.env.ctx.profiler.AddZone("MM.NT");
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_M = args.ranges_mc.Range(0);
-    const IndexRange& range_K = args.ranges_kc.Range(0);
-    const size_t K = range_K.Num();
-    const StridedViewBF A_view = A.View(range_M.begin(), 0, K);
-    const size_t B_stride =
-        Stride(MatPadding::kOdd, K, sizeof(BF16), args.line_bytes);
+    const IndexRange& range_mc = args.ranges_mc.Range(0);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);
 
-    // Similar to `B3A2C0`, but here we hoisted `A_view`.
     parallel.ForN(
         args.env.ctx, args.range_n, MultipleN(sizeof(TC), args.line_bytes),
         args.inner_tasks, args.options.cluster_idx,
@@ -920,26 +916,19 @@ class MMLoops {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
 
-          HWY_ALIGN BF16 B_storage[MMKernel::B_storage_max];  // TLS
-          const StridedViewBF B_storage_view(B_storage, K, B_stride);
+          MMKernel::B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(),
+                           C.View(0, range_nc.begin(), range_nc.Num()));
 
-          for (size_t row_b = range_nc.begin(); row_b < range_nc.end();
-               row_b += kNR) {
-            const StridedViewBF B_view =
-                MMDecompress::DecompressB(B, row_b, range_K, B_storage_view);
-            const RowPtrs<TC> C_view = C.View(range_M.begin(), row_b);
-            const float* HWY_RESTRICT add =
-                args.add ? args.add + row_b : nullptr;
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
-            MMKernel::A2C0(A_view, B_view, args.mr, range_M, K, args.scale, add,
-                           MMSetC(), C_view);
+          if (B2 != nullptr) {
+            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                             MMSetC(), C2);
           }
 
           if constexpr (IsBF16<TC>()) {
-            if (args.options.fused) {
-              StridedViewBF C2(nullptr, 0, 0);
-              args.options.fused(C, range_M, range_nc, C2, worker);
-            }
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
           }
         });
   }
@@ -948,7 +937,8 @@ class MMLoops {
   template <typename TB, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_K, Parallel parallel,
                               const StridedViewBF A, const MatPtrT<TB>& B,
-                              RowPtrs<TC> C, const MMArgs& args) {
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
     static const auto zone = args.env.ctx.profiler.AddZone("MM.NT_K");
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     const IndexRange& range_mc = args.ranges_mc.Range(0);
@@ -959,14 +949,21 @@ class MMLoops {
                   [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
                     MMZone mm_zone;
                     mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-                    MMKernel::ForeachKC(A, B, range_mc, args.ranges_kc,
-                                        range_nc, args, C);
+                    MMKernel::ForeachKC(
+                        A, B, range_mc, args.ranges_kc, range_nc, args,
+                        C.View(0, range_nc.begin(), range_nc.Num()));
+
+                    const StridedViewBF C2 = args.env.C_tiles.C(
+                        Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+                    if (B2 != nullptr) {
+                      MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
+                                          range_nc, args, C2);
+                    }
 
                     if constexpr (IsBF16<TC>()) {
-                      if (args.options.fused) {
-                        StridedViewBF C2(nullptr, 0, 0);
-                        args.options.fused(C, range_mc, range_nc, C2, worker);
-                      }
+                      args.options.MaybeCallFunc(C, range_mc, range_nc, C2,
+                                                 worker);
                     }
                   });
   }
@@ -976,10 +973,11 @@ class MMLoops {
   template <typename TB, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_MT, Parallel parallel,
                               const StridedViewBF A, const MatPtrT<TB>& B,
-                              RowPtrs<TC> C, const MMArgs& args) {
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
     static const auto zone = args.env.ctx.profiler.AddZone("MM.NT_MT");
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_K = args.ranges_kc.Range(0);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);
 
     parallel.ForRangesMC_NC(
         args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
@@ -987,14 +985,19 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::B3A2C0(A, B, range_mc, range_K, range_nc, args, MMSetC(),
-                           C);
+          MMKernel::B3A2C0(
+              A, B, range_mc, range_kc, range_nc, args, MMSetC(),
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                             MMSetC(), C2);
+          }
           if constexpr (IsBF16<TC>()) {
-            if (args.options.fused) {
-              StridedViewBF C2(nullptr, 0, 0);
-              args.options.fused(C, range_mc, range_nc, C2, worker);
-            }
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
           }
         });
   }
@@ -1004,7 +1007,8 @@ class MMLoops {
   template <typename TB, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_MT_K, Parallel parallel,
                               const StridedViewBF A, const MatPtrT<TB>& B,
-                              RowPtrs<TC> C, const MMArgs& args) {
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
     static const auto zone = args.env.ctx.profiler.AddZone("MM.NT_MT_K");
 
     parallel.ForRangesMC_NC(
@@ -1013,14 +1017,20 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::ForeachKC(A, B, range_mc, args.ranges_kc, range_nc, args,
-                              C);
+          MMKernel::ForeachKC(
+              A, B, range_mc, args.ranges_kc, range_nc, args,
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
+
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                args, C2);
+          }
 
           if constexpr (IsBF16<TC>()) {
-            if (args.options.fused) {
-              StridedViewBF C2(nullptr, 0, 0);
-              args.options.fused(C, range_mc, range_nc, C2, worker);
-            }
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
           }
         });
   }
@@ -1060,20 +1070,23 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const size_t M = A.Rows();
   const size_t K = A.Cols();
   const size_t N = B.Rows();
+  const size_t num_B = 1;
 
   const CacheInfo& cache = env.ctx.cache_info;
-  MMPerKey& per_key = MMImpl::FindOrAddPerKey(M, K, N, cache.VectorBytes(),
-                                              env.per_cluster[cluster_idx]);
+  MMPerKey& per_key = MMImpl::FindOrAddPerKey(
+      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
   const StridedViewBF A_view =
       MMDecompress::MaybeDecompressA(A, per_key.autotune_par_a, env, options);
 
+  MatPtrT<TB>* B2 = nullptr;  // required for type matching
+
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
   if (HWY_LIKELY(tuner.Best())) {
-    const MMArgs args(env, M, K, N, static_cast<double>(A.Scale()) * B.Scale(),
-                      add, options, tuner, *tuner.Best());
-    MMLoops::Dispatch(A_view, B, C_rows, args);
+    const MMArgs args(env, M, K, N, A.Scale(), add, options, tuner,
+                      *tuner.Best());
+    MMLoops::Dispatch(A_view, B, B2, C_rows, args);
     return &per_key;
   }
 
@@ -1082,20 +1095,83 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     // Ensure matrix dimensions match each other (off the hot path).
     HWY_ASSERT(K == B.Cols());
     HWY_ASSERT(M <= kMaxBatchSize);
-    HWY_ASSERT(K <= MMStorage::kMaxK);
+    HWY_ASSERT(K <= MMEntireA::kMaxK);
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
     tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, sizeof(TC), env.print_config));
+        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();
-  const MMArgs args(env, M, K, N, static_cast<double>(A.Scale()) * B.Scale(),
-                    add, options, tuner, cfg);
+  const MMArgs args(env, M, K, N, A.Scale(), add, options, tuner, cfg);
 
   const uint64_t t0 = hwy::timer::Start();
-  MMLoops::Dispatch(A_view, B, C_rows, args);
-  MMImpl::NotifyAutotuneResult(env, M, K, N, t0, tuner, cfg);
+  MMLoops::Dispatch(A_view, B, B2, C_rows, args);
+  MMImpl::NotifyAutotuneResult(env, M, K, N, num_B, t0, tuner, cfg);
+
+  return &per_key;
+}
+
+// Performs A*B1 and A*B2 in parallel. This is useful for gated FFNs.
+// Differences vs MatMul: The second result matrix is not materialized, it is
+// only passed to the `options.func` callback. There is no `add` argument
+// because it is not required for this use case. There is no default `options`
+// argument because `options.func` must be set by the caller.
+template <typename TB>
+HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
+                                 const MatPtrT<TB>& B2, MatMulEnv& env,
+                                 MatPtrT<BF16>& C, MMOptions options) {
+  static const auto zone = env.ctx.profiler.AddZone("MM.TwoMatMul");
+  const size_t cluster_idx = options.cluster_idx;
+  HWY_DASSERT(cluster_idx < env.row_ptrs.size());
+  PROFILER_ZONE3(env.ctx.profiler, env.ctx.Worker(cluster_idx), zone);
+
+  HWY_DASSERT(options.func != nullptr);  // no other way to get access to C2.
+
+  RowPtrs<BF16> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[cluster_idx]);
+
+  const size_t M = A.Rows();
+  const size_t K = A.Cols();
+  const size_t N = B1.Rows();
+  const size_t num_B = 2;
+
+  const CacheInfo& cache = env.ctx.cache_info;
+  MMPerKey& per_key = MMImpl::FindOrAddPerKey(
+      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
+
+  // (Also auto-tunes, hence outside the timed section to prevent interference.)
+  const StridedViewBF A_view(A, 0, 0, A.Cols());
+
+  MMAutoTune<MMConfig>& tuner = per_key.autotune;
+  if (HWY_LIKELY(tuner.Best())) {
+    // Only A scale - B1/B2 may differ, and are passed separately.
+    const MMArgs args(env, M, K, N, A.Scale(),
+                      /*add=*/nullptr, options, tuner, *tuner.Best());
+    MMLoops::Dispatch(A_view, B1, &B2, C_rows, args);
+    return &per_key;
+  }
+
+  // Autotuning, first call: enumerate all feasible configs.
+  if (HWY_UNLIKELY(!tuner.HasCandidates())) {
+    // Ensure matrix dimensions match each other (off the hot path).
+    HWY_ASSERT(K == B1.Cols());
+    HWY_ASSERT(K == B2.Cols());
+    HWY_ASSERT(M <= kMaxBatchSize);
+    HWY_ASSERT(K <= MMEntireA::kMaxK);
+    HWY_ASSERT(N % kNR == 0);
+    MMImpl::EnsureAligned(A, cache.VectorBytes());
+    tuner.SetCandidates(
+        MMCandidates(cache, M, K, N, num_B, sizeof(BF16), env.print_config));
+  }
+
+  const MMConfig& cfg = tuner.NextConfig();
+  // Only A scale - B1/B2 may differ, and are passed separately.
+  const MMArgs args(env, M, K, N, A.Scale(), /*add=*/nullptr, options, tuner,
+                    cfg);
+
+  const uint64_t t0 = hwy::timer::Start();
+  MMLoops::Dispatch(A_view, B1, &B2, C_rows, args);
+  MMImpl::NotifyAutotuneResult(env, M, K, N, num_B, t0, tuner, cfg);
 
   return &per_key;
 }

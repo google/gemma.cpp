@@ -40,10 +40,11 @@ class RowPtrs {
  public:
   RowPtrs(uint8_t** row_ptrs) : row_ptrs_(row_ptrs), r0_(0), c0_(0) {}
 
-  RowPtrs View(size_t r, size_t c) {
+  // Extra argument is for compatibility with `StridedView`.
+  RowPtrs View(size_t r, size_t c, size_t /*cols*/) {
     RowPtrs<T> view(row_ptrs_);
-    view.r0_ = static_cast<uint32_t>(r);
-    view.c0_ = static_cast<uint32_t>(c);
+    view.r0_ = static_cast<uint32_t>(r0_ + r);
+    view.c0_ = static_cast<uint32_t>(c0_ + c);
     return view;
   }
 
@@ -531,7 +532,11 @@ class StridedView {
       : row0_(row0),
         cols_(static_cast<uint32_t>(cols)),
         stride_(static_cast<uint32_t>(stride)) {
-    HWY_DASSERT(stride >= cols);
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (stride < cols) {
+        HWY_ABORT("stride %zu < cols %zu", stride, cols);
+      }
+    }
   }
 
   // Returns 2D subrange whose top-left is `r, c` and width is `cols`.

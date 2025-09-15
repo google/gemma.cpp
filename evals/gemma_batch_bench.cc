@@ -37,7 +37,6 @@ class GemmaBatchBench : public ::testing::Test {
  protected:
   std::vector<std::string> BatchGemmaReply(
       const std::vector<std::string>& inputs) {
-    s_env->SetMaxGeneratedTokens(24);
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 2;
     std::vector<std::string> replies;
@@ -92,15 +91,18 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
     inputs.push_back(questions[qpos++]);
     if (qpos == questions.size()) qpos = 0;
   }
+  s_env->SetMaxGeneratedTokens(24);
   std::vector<std::string> responses = BatchGemmaReply(inputs);
   for (size_t i = 0; i < HWY_MIN(hwy::Unpredictable1() * 3, responses.size());
        ++i) {
     fprintf(stderr, "Batch answer %zu '%s'\n\n", i, responses[i].c_str());
   }
 
+  PROFILER_PRINT_RESULTS();
+
   // Run again: prefill will be faster due to autotuning. Fewer decode steps
   // because those are already fast.
-  s_env->SetMaxGeneratedTokens(3);
+  s_env->SetMaxGeneratedTokens(2);
   responses = BatchGemmaReply(inputs);
 
   PROFILER_PRINT_RESULTS();

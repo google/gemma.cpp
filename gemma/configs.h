@@ -36,6 +36,10 @@ HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
 
 HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
 
+#ifndef GEMMA_FUSED_FFN
+#define GEMMA_FUSED_FFN 1
+#endif  // !GEMMA_FUSED_FFN
+
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class PromptWrapping {
   GEMMA_IT,

@@ -21,7 +21,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <functional>
 #include <vector>
 
 // IWYU pragma: begin_exports
@@ -54,7 +53,9 @@ HWY_INLINE_VAR constexpr size_t kNR = 4;
 // or less on ISAs with fewer registers, or for the last few rows of A.
 HWY_INLINE_VAR constexpr size_t kMaxMR = 4;
 
-HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;  // TODO: shrink?
+// For `MMTilesC`.
+HWY_INLINE_VAR constexpr size_t kMaxMC = 512;
+HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;
 
 // Upper bound for per-worker B storage on the stack. Chosen such that one row
 // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
@@ -108,9 +109,9 @@ struct MMParallelWithinCluster {
     hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
     const size_t base = ctx.Worker(cluster_idx);
 
-    const IndexRangePartition worker_ranges = StaticPartition(
+    const IndexRangePartition ranges_n = StaticPartition(
         range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
-    ParallelizeOneRange(worker_ranges, cluster,
+    ParallelizeOneRange(ranges_n, cluster,
                         [&](const IndexRange& worker_range, size_t worker) {
                           func(worker_range, base + worker);
                         });
@@ -169,20 +170,20 @@ struct MMParallelHierarchical {
     if (num_clusters == 1) {
       const size_t cluster_idx = 0;
       hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
-      const IndexRangePartition worker_ranges = StaticPartition(
+      const IndexRangePartition ranges_n = StaticPartition(
           range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
       return ParallelizeOneRange(
-          worker_ranges, cluster,
+          ranges_n, cluster,
           [&](const IndexRange& worker_range, size_t worker) {
             func(worker_range, worker);
           });
     }
 
     // Assign each cluster a sub-range of `range_n` (typically hundreds).
-    const IndexRangePartition n_ranges =
+    const IndexRangePartition ranges_n =
         StaticPartition(range_n, num_clusters, n_multiple);
     ParallelizeOneRange(
-        n_ranges, all_clusters,
+        ranges_n, all_clusters,
         [&](const IndexRange& n_range, const size_t cluster_idx) {
           hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
           const size_t cluster_base = ctx.Worker(cluster_idx);
@@ -274,30 +275,49 @@ void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC);
 // C is BF16/float.
 void BindC(ThreadingContext& ctx, MatPtr& C);
 
-// For A.
-class MMStorage {
+// Space for converting A=F32 to BF16 before the matmul. This is faster than
+// on-the-fly when native BF16 is available: it only happens once, not per B
+// tile row, and the cache footprint is smaller.
+class MMEntireA {
  public:
   // Compile-time bounds on matrix columns to enable pre-allocating storage
   // and reusing it across `MatMul` calls. Sufficient for Gemma 2 27B.
   static constexpr size_t kMaxK = 36 * 1024;
 
-  MMStorage(const Allocator& allocator)
+  explicit MMEntireA(const Allocator& allocator)
       // 288 MiB. Must be padded, see `DoDecompressA`.
       : A_("A_bf", Extents2D(kMaxBatchSize, kMaxK), allocator,
            MatPadding::kOdd) {}
 
-  // Returns matrix view. Converting A=F32 to BF16 up-front is faster than
-  // on-the-fly when native BF16 is available: it only happens once, not per B
-  // tile row, and the cache footprint is smaller.
   StridedViewBF A(const Extents2D& extents) const {
     HWY_DASSERT(extents.rows <= kMaxBatchSize);
-    HWY_DASSERT(extents.cols <= kMaxK);
-    return StridedViewBF(const_cast<BF16*>(A_.Row(0)), extents.cols,
-                         A_.Stride());
+    return StridedViewBF(A_, 0, 0, extents.cols);
   }
 
  private:
   MatStorageT<BF16> A_;
+};
+
+// One tile of C per *worker* (required for `kNT_MT*`).
+class MMTilesC {
+ public:
+  explicit MMTilesC(const ThreadingContext& ctx) {
+    const size_t max_workers = ctx.pools.MaxWorkers();
+    C_.reserve(max_workers);
+    for (size_t worker = 0; worker < max_workers; ++worker) {
+      C_.push_back(MatStorageT<BF16>("Ctile", Extents2D(kMaxBatchSize, kMaxNC),
+                                     ctx.allocator, MatPadding::kOdd));
+    }
+  }
+
+  StridedViewBF C(const Extents2D& extents, size_t worker) const {
+    HWY_DASSERT(extents.rows <= kMaxBatchSize);
+    HWY_DASSERT(worker < C_.size());
+    return StridedViewBF(C_[worker], 0, 0, extents.cols);
+  }
+
+ private:
+  std::vector<MatStorageT<BF16>> C_;
 };
 
 //------------------------------------------------------------------------------
@@ -471,7 +491,7 @@ static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
 std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
-                                   size_t N, size_t sizeof_TC,
+                                   size_t N, size_t num_B, size_t sizeof_TC,
                                    bool print_config);
 
 // State machine for choosing the best `TConfig`, which is `MMConfig` for the
@@ -595,12 +615,14 @@ class MMKeys {
   static constexpr Key kPadding = 0;
 
   // Compresses the dimensions into a single Key for faster comparison.
-  static Key KeyFromDims(size_t M, size_t K, size_t N) {
+  static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B) {
     HWY_DASSERT(M < (Key{1} << 16));  // batch sizes are smaller
-    HWY_DASSERT(K < (Key{1} << 24));
-    HWY_DASSERT(N < (Key{1} << 24));
+    HWY_DASSERT(K < (Key{1} << 20));
+    HWY_DASSERT(N < (Key{1} << 20));
+    HWY_DASSERT(num_B == 1 || num_B == 2);
     const Key key = static_cast<Key>(BucketM(M)) | (static_cast<Key>(K) << 16) |
-                    (static_cast<Key>(N) << 40);
+                    (static_cast<Key>(N) << 40) |
+                    (static_cast<Key>(num_B) << 60);
     HWY_DASSERT(key != kPadding);
     return key;
   }
@@ -643,10 +665,6 @@ class MMKeys {
 
 // Per-MatMul-shape state.
 struct MMPerKey {
-  // Only profile if enabled and the main autotuner finished. `autotune_par_a`
-  // might not be active if inputs are all BF16.
-  bool WantProfile() const { return PROFILER_ENABLED != 0 && autotune.Best(); }
-
   MMAutoTune<MMConfig> autotune;
   MMAutoTune<MMParA> autotune_par_a;
 };
@@ -666,12 +684,15 @@ struct MatMulEnv {
   // Whether to print the best config immediately after autotuning finished.
   bool print_best = false;
 
-  MMStorage storage;
+  MMEntireA A_BF;
+  MMTilesC C_tiles;
 
   struct PerCluster {
     MMKeys keys;
     std::vector<MMPerKey> per_key;
-    HWY_MAYBE_UNUSED uint8_t padding[HWY_ALIGNMENT];  // prevent false sharing
+    // Prevents false sharing.
+    HWY_MAYBE_UNUSED uint8_t
+        padding[HWY_ALIGNMENT - sizeof(MMKeys) - sizeof(per_key)];
   };
   std::vector<PerCluster> per_cluster;
 
@@ -687,31 +708,57 @@ struct MatMulEnv {
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
 };
 
-// Called with the entire C matrix, the sub-ranges of M (rows) and N (cols)
-// that this thread has just filled, a view into a second tile (only for the
-// upcoming `GatedMatmul`), and the worker thread index (see `ParallelFor`).
-using MMFused = std::function<void(RowPtrsBF, IndexRange, IndexRange,
-                                   StridedViewBF, size_t)>;
+// Called via `CallClosure`, which consumes the first (opaque) argument. User
+// functions are called with the entire C matrix, the sub-ranges of M (rows)
+// and N (cols) that this thread has just filled, a view into a second tile
+// (only for `TwoMatmul`), and the worker thread index (see `ParallelFor`).
+typedef void (*MMFunc)(const void* opaque, RowPtrsBF, IndexRange, IndexRange,
+                       StridedViewBF, size_t);
 
-struct MMOptions {
+class MMOptions {
+  // Same technique as in `hwy::ThreadPool` and C++23 `std::function_ref`:
+  // type-erasure without allocation.
+  template <class Closure>
+  static void CallClosure(const void* opaque, RowPtrsBF C1, IndexRange range_r,
+                          IndexRange range_c, StridedViewBF C2, size_t worker) {
+    (*reinterpret_cast<const Closure*>(opaque))(C1, range_r, range_c, C2,
+                                                worker);
+  }
+
+ public:
+  // `closure` must remain alive until the end of (Two)MatMul.
+  template <class Closure>
+  void SetFunc(const Closure& closure) {
+    func = static_cast<MMFunc>(&CallClosure<Closure>);
+    opaque = &closure;
+  }
+
+  void MaybeCallFunc(RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
+                     StridedViewBF C2, size_t worker) const {
+    if (func != nullptr) {
+      func(opaque, C1, range_r, range_c, C2, worker);
+    }
+  }
+
+  MMFunc func = nullptr;  // called if non-null and `TC` is BF16.
+  const void* opaque = nullptr;
+
   uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
   ParallelismStrategy parallelism = ParallelismStrategy::kHierarchical;
-
-  MMFused fused;  // called if non-null and `TC` is BF16.
 };
 
 // Arguments to MatMul() that are independent of the A/B/C types. Reduces
 // register pressure compared to individual values/references. Also used for
 // passing through `DispatchOrder`.
 struct MMArgs {
-  MMArgs(MatMulEnv& env, size_t M, size_t K, size_t N, double scale,
+  MMArgs(MatMulEnv& env, size_t M, size_t K, size_t N, float scale_A,
          const float* HWY_RESTRICT add, MMOptions options,
          const MMAutoTune<MMConfig>& autotune, const MMConfig& config)
       : env(env),
         line_bytes(env.ctx.cache_info.LineBytes()),
 
         range_n(0, N),
-        scale(scale),
+        scale_A(scale_A),
         add(add),
         options(options),
 
@@ -728,7 +775,8 @@ struct MMArgs {
 
   // MatMul arguments:
   const IndexRange range_n;  // entire N
-  const double scale;
+  // There can be two B, so do not yet multiply together the A and B scales.
+  const float scale_A;
   const float* HWY_RESTRICT add;
   const MMOptions options;
 

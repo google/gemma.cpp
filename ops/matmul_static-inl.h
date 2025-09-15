@@ -53,6 +53,14 @@ namespace HWY_NAMESPACE {
 // included from matmul_static_*.cc.
 GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DEFINE_ONE, GEMMA_MATMUL_TB)  // NOLINT
 
+HWY_MAYBE_UNUSED void TwoMatMulStatic(const MatPtrT<BF16>& A,  // NOLINT
+                                      const MatPtrT<GEMMA_MATMUL_TB>& B1,
+                                      const MatPtrT<GEMMA_MATMUL_TB>& B2,
+                                      MatMulEnv& env, MatPtrT<BF16>& C,
+                                      MMOptions options) {
+  TwoMatMul(A, B1, B2, env, C, options);
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();

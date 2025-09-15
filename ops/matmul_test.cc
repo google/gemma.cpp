@@ -29,6 +29,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include <atomic>
+
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"
@@ -246,7 +248,9 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   MatStorageT<TC> C_slow("C_slow", C_extents, env.ctx.allocator,
                          MatPadding::kOdd);
   MatStorageT<TC> C("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
+  MatStorageT<TC> C2("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
+  C2.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
       add ? GenerateMat<float>(Extents2D(1, cols_bc), env.ctx.allocator,
@@ -262,7 +266,48 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   for (size_t rep = 0; rep < 16; ++rep) {
     MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C, options);
     AssertClose(A, BT, C_slow, C, env, line);
-    if (per_key->autotune.Best()) break;
+    // Check before TwoMatMulStatic(), which can invalidate per_key.
+    const bool autotune_done = !!per_key->autotune.Best();
+
+    // Ensure the tiled view returns the same result as C.
+    if constexpr (IsBF16<TA>() && IsBF16<TC>()) {
+      // The total view area should match the entire C matrix.
+      std::atomic<size_t> total_view_area = 0;
+
+      const auto fused = [&](RowPtrsBF C2_rows, IndexRange range_r,
+                             IndexRange range_c, StridedViewBF C2_view,
+                             size_t worker) {
+        total_view_area.fetch_add(range_r.Num() * range_c.Num());
+        HWY_ASSERT(range_c.Num() <= C2_view.Cols());
+        HWY_ASSERT(worker < env.ctx.pools.MaxWorkers());
+        for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+          const size_t r = range_r.begin() + ir;
+          for (size_t ic = 0; ic < range_c.Num(); ++ic) {
+            const size_t c = range_c.begin() + ic;
+            const float expected =
+                hwy::ConvertScalarTo<float>(C2_rows.Row(r)[c]);
+            const float actual =
+                hwy::ConvertScalarTo<float>(C2_view.Row(ir)[ic]);
+            const float L1 = hwy::ScalarAbs(actual - expected);
+            if (L1 > 1E-6f) {
+              HWY_ABORT("%zu: ir %zu ic %zu L1 %f expected %f actual %f.",
+                        worker, ir, ic, L1, expected, actual);
+            }
+          }
+        }
+      };
+      options.SetFunc(fused);
+      TwoMatMulStatic(A, BT, BT, env, C2, options);
+      HWY_ASSERT_EQ(C.Extents().Area(), total_view_area.load());
+      options.func = nullptr;  // reset for next call
+
+      // TwoMatMulStatic() does not support adding a bias vector.
+      if (!add) {
+        AssertClose(A, BT, C, C2, env, line);
+      }
+    }
+
+    if (autotune_done) break;
   }
 }
 
