@@ -89,7 +89,7 @@ class GemmaEnv {
   // Adds turn structure to input, tokenizes and calls the above overload.
   QueryResult QueryModel(const std::string& input);
   std::vector<QueryResult> BatchQueryModel(
-      const std::vector<std::string>& inputs);
+      const std::vector<std::string>& prompt_strings);
 
   // Runs inference on the given input and calls the callback for each token.
   void QueryModel(const std::vector<int>& tokens,
