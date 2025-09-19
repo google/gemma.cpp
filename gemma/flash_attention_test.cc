@@ -51,7 +51,6 @@
 #include "gemma/attention.h"
 #include "gemma/configs.h"
 #include "gemma/flash_attention.h"
-#include "ops/matvec-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();

@@ -366,7 +366,6 @@ cc_library(
         "ops/dot-inl.h",
         "ops/sum-inl.h",
         "ops/fp_arith-inl.h",
-        "ops/matvec-inl.h",
         "ops/ops-inl.h",
     ],
     deps = [
@@ -381,7 +380,6 @@ cc_library(
         "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:math",
-        "@highway//:matvec",
         "@highway//:profiler",
         "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
@@ -439,27 +437,6 @@ cc_test(
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",  #buildcleaner: keep
         "@highway//:profiler",
-    ],
-)
-
-cc_test(
-    name = "gemma_matvec_test",
-    size = "small",
-    timeout = "long",
-    srcs = ["ops/gemma_matvec_test.cc"],
-    linkstatic = True,
-    local_defines = ["HWY_IS_TEST"],
-    # for test_suite.
-    tags = ["ops_tests"],
-    deps = [
-        ":mat",
-        ":ops",
-        ":threading_context",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:compress",
-        "@highway//:hwy",
-        "@highway//:hwy_test_util",
-        "@highway//:thread_pool",
     ],
 )
 

@@ -112,7 +112,6 @@ set(SOURCES
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
-  ops/matvec-inl.h
   ops/ops-inl.h
   ops/ops.h
   ops/sum-inl.h
@@ -224,7 +223,6 @@ set(GEMMA_TEST_FILES
   io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
-  ops/gemma_matvec_test.cc
   ops/matmul_test.cc
   ops/ops_test.cc
   paligemma/image_test.cc
