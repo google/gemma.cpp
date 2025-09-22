@@ -107,8 +107,10 @@ static inline void Activation(ActivationType activation, const RowPtrsBF C1,
   }
 }
 
-#else
+#endif  // GEMMA_FUSED_FFN
 
+// Only used if !GEMMA_FUSED_FFN, but define anyway so that we can check
+// using if constexpr rather than #if, which interferes with code folding.
 template <class Mat1, class Mat2>
 HWY_NOINLINE void ActivationBatched(
     ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
@@ -130,8 +132,6 @@ HWY_NOINLINE void ActivationBatched(
                 });
   }
 }
-
-#endif  // GEMMA_FUSED_FFN
 
 template <typename T2, class LayerWeights>
 HWY_NOINLINE void ResidualConnection(const MatPtrT<T2>& other,
