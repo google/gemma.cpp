@@ -39,6 +39,14 @@ struct QueryResult {
   size_t response_start_pos = 0;
 };
 
+// Return type for batch query model calls with metrics.
+struct QueryResultAndMetrics {
+  // The query results for each query in the batch.
+  std::vector<QueryResult> query_results;
+  // The timing information for the batch query.
+  TimingInfo timing_info;
+};
+
 // Convenience class to load a model and run inference.
 class GemmaEnv {
  public:
@@ -79,21 +87,30 @@ class GemmaEnv {
     return string;
   }
 
+  // Adds turn structure to input, tokenizes and calls the below overload.
+  QueryResult QueryModel(const std::string& input);
   // Runs inference on the given input and returns the top-1 result string and
   // the number of tokens that were generated.
   QueryResult QueryModel(const std::vector<int>& tokens);
+  // Runs inference on the given input and calls the callback for each token.
+  void QueryModel(const std::vector<int>& tokens,
+                  const StreamFunc& stream_token);
+
+  // Similar to the above, but runs inference on a batch of inputs.
+  std::vector<QueryResult> BatchQueryModel(
+      const std::vector<std::string>& inputs);
   // The default prefix_end means "causal attention".
   std::vector<QueryResult> BatchQueryModel(
       const QueriesPromptTokens& queries_prompt,
       const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>());
-  // Adds turn structure to input, tokenizes and calls the above overload.
-  QueryResult QueryModel(const std::string& input);
-  std::vector<QueryResult> BatchQueryModel(
-      const std::vector<std::string>& prompt_strings);
 
-  // Runs inference on the given input and calls the callback for each token.
-  void QueryModel(const std::vector<int>& tokens,
-                  const StreamFunc& stream_token);
+  // Similar to the above, but returns timing information in addition to the
+  // query results.
+  QueryResultAndMetrics BatchQueryModelWithMetrics(
+      const std::vector<std::string>& prompt_strings);
+  QueryResultAndMetrics BatchQueryModelWithMetrics(
+      const QueriesPromptTokens& queries_prompt,
+      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>());
 
   // Runs inference on the given input and returns the cross entropy, a measure
   // of how well the model predicts the correct output. It is the average

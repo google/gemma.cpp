@@ -178,6 +178,7 @@ struct TimingInfo {
   // be sure to populate prefill_start and generate_start before calling
   // NotifyGenerated.
   void NotifyGenerated(size_t batch_size) {
+    generation_steps += 1;
     const bool is_first = (tokens_generated == 0);
     tokens_generated += batch_size;
     if (HWY_UNLIKELY(is_first)) {
@@ -224,6 +225,7 @@ struct TimingInfo {
   double time_to_first_token = 0;
   double generate_duration = 0;
   size_t tokens_generated = 0;
+  size_t generation_steps = 0;
 };
 
 // After construction, all methods are const and thread-compatible if using

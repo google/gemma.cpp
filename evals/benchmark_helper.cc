@@ -78,16 +78,16 @@ QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
               << runtime_config_.max_generated_tokens
               << "\ttemperature: " << runtime_config_.temperature << "\n";
   }
-  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
+  gcpp::TimingInfo timing_info{.verbosity = runtime_config_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
                   timing_info);
   return result;
 }
 
-void GemmaEnv::QueryModel(
-    const std::vector<int>& tokens, const StreamFunc& stream_token) {
-  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
+void GemmaEnv::QueryModel(const std::vector<int>& tokens,
+                          const StreamFunc& stream_token) {
+  gcpp::TimingInfo timing_info{.verbosity = runtime_config_.verbosity};
   const StreamFunc previous_stream_token = runtime_config_.stream_token;
   runtime_config_.stream_token = stream_token;
   gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
@@ -95,7 +95,7 @@ void GemmaEnv::QueryModel(
   runtime_config_.stream_token = previous_stream_token;
 }
 
-std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+QueryResultAndMetrics GemmaEnv::BatchQueryModelWithMetrics(
     const QueriesPromptTokens& queries_prompt,
     const hwy::Span<const size_t>& prefix_end) {
   const size_t num_queries = queries_prompt.size();
@@ -140,7 +140,13 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   gcpp::AllQueries all_queries(queries_prompt, kv_caches, prefix_end);
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
   gemma_.GenerateBatch(runtime_config_, all_queries, env_, timing_info);
-  return res;
+  return {res, timing_info};
+}
+
+std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+    const QueriesPromptTokens& queries_prompt,
+    const hwy::Span<const size_t>& prefix_end) {
+  return BatchQueryModelWithMetrics(queries_prompt, prefix_end).query_results;
 }
 
 QueryResult GemmaEnv::QueryModel(const std::string& input) {
@@ -148,7 +154,7 @@ QueryResult GemmaEnv::QueryModel(const std::string& input) {
   return QueryModel(prompt);
 }
 
-std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+QueryResultAndMetrics GemmaEnv::BatchQueryModelWithMetrics(
     const std::vector<std::string>& prompt_strings) {
   std::vector<PromptTokens> views;
   views.reserve(prompt_strings.size());
@@ -161,7 +167,12 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   }
 
   QueriesPromptTokens span_of_views(views.data(), views.size());
-  return BatchQueryModel(span_of_views);
+  return BatchQueryModelWithMetrics(span_of_views);
+}
+
+std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+    const std::vector<std::string>& inputs) {
+  return BatchQueryModelWithMetrics(inputs).query_results;
 }
 
 float GemmaEnv::CrossEntropy(const std::string& input) {
