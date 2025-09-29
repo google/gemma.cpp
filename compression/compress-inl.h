@@ -55,12 +55,6 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-#ifdef HWY_IS_TEST
-static constexpr bool kIsTest = true;
-#else
-static constexpr bool kIsTest = false;
-#endif
-
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
@@ -485,9 +479,6 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     }
   }
 
-  const bool want_bench = COMPRESS_STATS || !kIsTest;
-  const double t0 = want_bench ? hwy::platform::Now() : 0.0;
-
   using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   constexpr size_t kBatch = 8192;
   const size_t num_batches = hwy::DivCeil(num, kBatch);
@@ -501,13 +492,6 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
              Traits::Compress(df, raw + my_pos, my_num, work.tls[thread],
                               packed, packed_ofs + my_pos);
            });
-
-  if (want_bench) {  // Avoids log spam in tests
-    const double t1 = hwy::platform::Now();
-    const double mb = static_cast<double>(num) * sizeof(raw[0]) * 1E-6;
-    const double mbps = mb / (t1 - t0);
-    fprintf(stderr, "Compress %.1f MB/s\n", mbps);
-  }
 
   if constexpr (COMPRESS_STATS) {
     for (size_t i = 1; i < work.tls.size(); ++i) {
