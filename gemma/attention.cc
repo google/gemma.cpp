@@ -358,7 +358,8 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
     DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
                           env.ctx);
   } else {
-    FlashAttention(num_tokens, layer_idx, layer, activations, qbatch, env.ctx);
+    FlashAttention(num_tokens, /*target_parallelism=*/64, layer_idx, layer,
+                   activations, qbatch, env.ctx);
   }
   SumHeads(layer, activations, env);
 }

@@ -42,8 +42,8 @@ namespace gcpp {
                             float* HWY_RESTRICT att_out, hwy::Profiler& p,   \
                             size_t worker);                                  \
                                                                              \
-  void FlashAttention(size_t num_tokens, size_t layer_idx,                   \
-                      const LayerWeightsPtrs& layer,                         \
+  void FlashAttention(size_t num_tokens, size_t target_parallelism,          \
+                      size_t layer_idx, const LayerWeightsPtrs& layer,       \
                       AttentionActivations& activations, QBatch& qbatch,     \
                       ThreadingContext& ctx);                                \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                \

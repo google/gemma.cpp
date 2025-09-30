@@ -98,13 +98,14 @@ void AssertClose(const MatPtrT<float>& a, const MatPtrT<float>& b) {
   }
 }
 
-void TestAttention() {
+void TestFlashAttention(size_t target_parallelism) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   // hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 1024;
   constexpr size_t kInner = 256;
   ModelConfig config(Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT);
+  config.att_cap = 1024.0f;
   TensorInfoRegistry tensor_info_registry(config);
   const LayerConfig& layer_config = config.layer_configs[0];
   const LayerWeightsPtrs layers(0, layer_config, tensor_info_registry);
@@ -149,8 +150,15 @@ void TestAttention() {
   // Copy the output to saved_att to allow for comparison.
   auto saved_att = MakeCopyOfMat(attention.att_out, ctx.allocator);
   SetMat(1, attention.q);
-  FlashAttention(tokens.size(), 0, layers, attention, qbatch, ctx);
+  FlashAttention(tokens.size(), target_parallelism, 0, layers, attention,
+                 qbatch, ctx);
   AssertClose(attention.att_out, *saved_att);
+}
+
+void TestAttention() {
+  TestFlashAttention(8192);
+  TestFlashAttention(2048);
+  TestFlashAttention(256);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

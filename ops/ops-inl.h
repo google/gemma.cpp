@@ -747,7 +747,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
   static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
   PROFILER_ZONE3(p, worker, zone);
   namespace hn = hwy::HWY_NAMESPACE;
-  HWY_LANES_CONSTEXPR size_t NF = hn::MaxLanes(df);
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
   size_t i = 0;
   while (i + NF <= size) {
@@ -882,8 +882,162 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
     }
     i += NF;
   }
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining == 0);
+  HWY_DASSERT(size == i);
+}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4(DF df, const VF common, const VF c0,
+                                         const VF c1, const VF c2, const VF c3,
+                                         VF& sum0, VF& sum1, VF& sum2,
+                                         VF& sum3) {
+  sum0 = hn::MulAdd(common, c0, sum0);
+  sum1 = hn::MulAdd(common, c1, sum1);
+  sum2 = hn::MulAdd(common, c2, sum2);
+  sum3 = hn::MulAdd(common, c3, sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4Lanes(DF df, const MatPtrT<float>& v,
+                                              const size_t* HWY_RESTRICT pos,
+                                              const size_t offset, const VF c0,
+                                              const VF c1, const VF c2,
+                                              const VF c3, VF& sum0, VF& sum1,
+                                              VF& sum2, VF& sum3) {
+  // TODO(rays): Check whether a transpose of c0-c3 is applicable and faster.
+  VF x0 = hn::Load(df, v.Row(pos[0]) + offset);
+  MulAdd4(df, x0, hn::BroadcastLane<0>(c0), hn::BroadcastLane<0>(c1),
+          hn::BroadcastLane<0>(c2), hn::BroadcastLane<0>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x1 = hn::Load(df, v.Row(pos[1]) + offset);
+  MulAdd4(df, x1, hn::BroadcastLane<1>(c0), hn::BroadcastLane<1>(c1),
+          hn::BroadcastLane<1>(c2), hn::BroadcastLane<1>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x2 = hn::Load(df, v.Row(pos[2]) + offset);
+  MulAdd4(df, x2, hn::BroadcastLane<2>(c0), hn::BroadcastLane<2>(c1),
+          hn::BroadcastLane<2>(c2), hn::BroadcastLane<2>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x3 = hn::Load(df, v.Row(pos[3]) + offset);
+  MulAdd4(df, x3, hn::BroadcastLane<3>(c0), hn::BroadcastLane<3>(c1),
+          hn::BroadcastLane<3>(c2), hn::BroadcastLane<3>(c3), sum0, sum1, sum2,
+          sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond4Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {
+  VF x4 = hn::Load(df, v.Row(pos[4]) + offset);
+  MulAdd4(df, x4, hn::BroadcastLane<4>(c0), hn::BroadcastLane<4>(c1),
+          hn::BroadcastLane<4>(c2), hn::BroadcastLane<4>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x5 = hn::Load(df, v.Row(pos[5]) + offset);
+  MulAdd4(df, x5, hn::BroadcastLane<5>(c0), hn::BroadcastLane<5>(c1),
+          hn::BroadcastLane<5>(c2), hn::BroadcastLane<5>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x6 = hn::Load(df, v.Row(pos[6]) + offset);
+  MulAdd4(df, x6, hn::BroadcastLane<6>(c0), hn::BroadcastLane<6>(c1),
+          hn::BroadcastLane<6>(c2), hn::BroadcastLane<6>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x7 = hn::Load(df, v.Row(pos[7]) + offset);
+  MulAdd4(df, x7, hn::BroadcastLane<7>(c0), hn::BroadcastLane<7>(c1),
+          hn::BroadcastLane<7>(c2), hn::BroadcastLane<7>(c3), sum0, sum1, sum2,
+          sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond4Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond8Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {
+  VF x8 = hn::Load(df, v.Row(pos[8]) + offset);
+  MulAdd4(df, x8, hn::BroadcastLane<8>(c0), hn::BroadcastLane<8>(c1),
+          hn::BroadcastLane<8>(c2), hn::BroadcastLane<8>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x9 = hn::Load(df, v.Row(pos[9]) + offset);
+  MulAdd4(df, x9, hn::BroadcastLane<9>(c0), hn::BroadcastLane<9>(c1),
+          hn::BroadcastLane<9>(c2), hn::BroadcastLane<9>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x10 = hn::Load(df, v.Row(pos[10]) + offset);
+  MulAdd4(df, x10, hn::BroadcastLane<10>(c0), hn::BroadcastLane<10>(c1),
+          hn::BroadcastLane<10>(c2), hn::BroadcastLane<10>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x11 = hn::Load(df, v.Row(pos[11]) + offset);
+  MulAdd4(df, x11, hn::BroadcastLane<11>(c0), hn::BroadcastLane<11>(c1),
+          hn::BroadcastLane<11>(c2), hn::BroadcastLane<11>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x12 = hn::Load(df, v.Row(pos[12]) + offset);
+  MulAdd4(df, x12, hn::BroadcastLane<12>(c0), hn::BroadcastLane<12>(c1),
+          hn::BroadcastLane<12>(c2), hn::BroadcastLane<12>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x13 = hn::Load(df, v.Row(pos[13]) + offset);
+  MulAdd4(df, x13, hn::BroadcastLane<13>(c0), hn::BroadcastLane<13>(c1),
+          hn::BroadcastLane<13>(c2), hn::BroadcastLane<13>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x14 = hn::Load(df, v.Row(pos[14]) + offset);
+  MulAdd4(df, x14, hn::BroadcastLane<14>(c0), hn::BroadcastLane<14>(c1),
+          hn::BroadcastLane<14>(c2), hn::BroadcastLane<14>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x15 = hn::Load(df, v.Row(pos[15]) + offset);
+  MulAdd4(df, x15, hn::BroadcastLane<15>(c0), hn::BroadcastLane<15>(c1),
+          hn::BroadcastLane<15>(c2), hn::BroadcastLane<15>(c3), sum0, sum1,
+          sum2, sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond8Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {}
+
+// For an NFx4 tile of float values in 4xNF-lane registers, multiplies NF rows
+// of V by the corresponding values in c0-c3 and adds them to NF rows of out,
+// after first prescaling out by scale.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile4(
+    DF df, const float* HWY_RESTRICT scales, const VF c0, const VF c1,
+    const VF c2, const VF c3, const MatPtrT<float>& v,
+    const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
+    hwy::Profiler& p, const size_t worker) {
+  static const auto zone = p.AddZone("Ops.MulByConstAndAddTile4");
+  PROFILER_ZONE3(p, worker, zone);
+  namespace hn = hwy::HWY_NAMESPACE;
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
+
+  size_t i = 0;
+  while (i + NF <= size) {
+    VF out0, out1, out2, out3;
+    out0 = hn::Load(df, out + i + out_offsets[0]);
+    out1 = hn::Load(df, out + i + out_offsets[1]);
+    out2 = hn::Load(df, out + i + out_offsets[2]);
+    out3 = hn::Load(df, out + i + out_offsets[3]);
+    out0 = hn::Mul(out0, hn::Set(df, scales[0]));
+    out1 = hn::Mul(out1, hn::Set(df, scales[1]));
+    out2 = hn::Mul(out2, hn::Set(df, scales[2]));
+    out3 = hn::Mul(out3, hn::Set(df, scales[3]));
+    MulAdd4Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2, out3);
+    if HWY_LANES_CONSTEXPR (NF >= 8) {
+      MulAddSecond4Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2, out3);
+      if HWY_LANES_CONSTEXPR (NF >= 16) {
+        MulAddSecond8Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2,
+                           out3);
+      }
+    }
+    hn::Store(out0, df, out + i + out_offsets[0]);
+    hn::Store(out1, df, out + i + out_offsets[1]);
+    hn::Store(out2, df, out + i + out_offsets[2]);
+    hn::Store(out3, df, out + i + out_offsets[3]);
+    i += NF;
+  }
+  HWY_DASSERT(size == i);
 }
 
 // Prescales NF rows of out by scale, then multiplies 1 row of V by the
@@ -898,11 +1052,11 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
   static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
   PROFILER_ZONE3(p, worker, zone);
   namespace hn = hwy::HWY_NAMESPACE;
-  const size_t NF = hn::MaxLanes(df);
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
   size_t i = 0;
   while (i + NF <= size) {
-    if constexpr (NF == 16) {
+    if HWY_LANES_CONSTEXPR (NF == 16) {
       VF out0, out1, out2, out3, out4, out5, out6, out7;
       VF out8, out9, out10, out11, out12, out13, out14, out15;
       out0 = hn::Load(df, out + i + out_offsets[0]);
@@ -921,22 +1075,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
       out13 = hn::Load(df, out + i + out_offsets[13]);
       out14 = hn::Load(df, out + i + out_offsets[14]);
       out15 = hn::Load(df, out + i + out_offsets[15]);
-      out0 = hn::Mul(out0, hn::BroadcastLane<0>(scale));
-      out1 = hn::Mul(out1, hn::BroadcastLane<1>(scale));
-      out2 = hn::Mul(out2, hn::BroadcastLane<2>(scale));
-      out3 = hn::Mul(out3, hn::BroadcastLane<3>(scale));
-      out4 = hn::Mul(out4, hn::BroadcastLane<4>(scale));
-      out5 = hn::Mul(out5, hn::BroadcastLane<5>(scale));
-      out6 = hn::Mul(out6, hn::BroadcastLane<6>(scale));
-      out7 = hn::Mul(out7, hn::BroadcastLane<7>(scale));
-      out8 = hn::Mul(out8, hn::BroadcastLane<8>(scale));
-      out9 = hn::Mul(out9, hn::BroadcastLane<9>(scale));
-      out10 = hn::Mul(out10, hn::BroadcastLane<10>(scale));
-      out11 = hn::Mul(out11, hn::BroadcastLane<11>(scale));
-      out12 = hn::Mul(out12, hn::BroadcastLane<12>(scale));
-      out13 = hn::Mul(out13, hn::BroadcastLane<13>(scale));
-      out14 = hn::Mul(out14, hn::BroadcastLane<14>(scale));
-      out15 = hn::Mul(out15, hn::BroadcastLane<15>(scale));
+      Mul16(df, scale, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+            out9, out10, out11, out12, out13, out14, out15);
       VF x0 = hn::Load(df, v.Row(pos) + i);
       MulAdd16(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7, out8,
                out9, out10, out11, out12, out13, out14, out15);
@@ -956,7 +1096,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
       hn::Store(out13, df, out + i + out_offsets[13]);
       hn::Store(out14, df, out + i + out_offsets[14]);
       hn::Store(out15, df, out + i + out_offsets[15]);
-    } else if constexpr (NF == 8) {
+    }
+    if HWY_LANES_CONSTEXPR (NF == 8) {
       VF out0, out1, out2, out3, out4, out5, out6, out7;
       out0 = hn::Load(df, out + i + out_offsets[0]);
       out1 = hn::Load(df, out + i + out_offsets[1]);
@@ -966,14 +1107,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
       out5 = hn::Load(df, out + i + out_offsets[5]);
       out6 = hn::Load(df, out + i + out_offsets[6]);
       out7 = hn::Load(df, out + i + out_offsets[7]);
-      out0 = hn::Mul(out0, hn::BroadcastLane<0>(scale));
-      out1 = hn::Mul(out1, hn::BroadcastLane<1>(scale));
-      out2 = hn::Mul(out2, hn::BroadcastLane<2>(scale));
-      out3 = hn::Mul(out3, hn::BroadcastLane<3>(scale));
-      out4 = hn::Mul(out4, hn::BroadcastLane<4>(scale));
-      out5 = hn::Mul(out5, hn::BroadcastLane<5>(scale));
-      out6 = hn::Mul(out6, hn::BroadcastLane<6>(scale));
-      out7 = hn::Mul(out7, hn::BroadcastLane<7>(scale));
+      Mul8(df, scale, out0, out1, out2, out3, out4, out5, out6, out7);
       VF x0 = hn::Load(df, v.Row(pos) + i);
       MulAdd8(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7);
       hn::Store(out0, df, out + i + out_offsets[0]);
@@ -984,7 +1118,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
       hn::Store(out5, df, out + i + out_offsets[5]);
       hn::Store(out6, df, out + i + out_offsets[6]);
       hn::Store(out7, df, out + i + out_offsets[7]);
-    } else if constexpr (NF == 4) {
+    }
+    if HWY_LANES_CONSTEXPR (NF == 4) {
       VF out0, out1, out2, out3;
       out0 = hn::Load(df, out + i + out_offsets[0]);
       out1 = hn::Load(df, out + i + out_offsets[1]);
@@ -1000,13 +1135,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
       hn::Store(out1, df, out + i + out_offsets[1]);
       hn::Store(out2, df, out + i + out_offsets[2]);
       hn::Store(out3, df, out + i + out_offsets[3]);
-    } else {
-      HWY_DASSERT(false);
     }
     i += NF;
   }
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining == 0);
+  HWY_DASSERT(size == i);
 }
 
 // See below for a specialized version for top-1 sampling.
