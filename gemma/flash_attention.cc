@@ -61,22 +61,31 @@ static constexpr size_t kNFx8HTileSize = 8;
 static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
                        const size_t qbatch_size, ThreadingContext& ctx) {
   static const auto zone = ctx.profiler.AddZone("Gen.Attention.TransposeQ");
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  const size_t kNF = hn::Lanes(df);
   const size_t num_heads = q.Cols() / q_t.Rows();
   const size_t batch_size = q.Rows() / qbatch_size;
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     PROFILER_ZONE3(ctx.profiler, worker, zone);
-    float* HWY_RESTRICT qt_row = q_t.Row(task);
-    for (size_t qi = 0; qi < qbatch_size; ++qi)
-      for (size_t h = 0; h < num_heads; ++h) {
-        for (size_t b = 0; b < batch_size; ++b) {
-          qt_row[(qi * num_heads + h) * batch_size + b] =
-              q.Row(b * qbatch_size + qi)[h * q_t.Rows() + task];
+    for (size_t lane = 0; lane < kNF; ++lane) {
+      size_t q_row = task * kNF + lane;
+      if (q_row >= q_t.Rows()) break;
+      float* HWY_RESTRICT qt_row = q_t.Row(q_row);
+      for (size_t qi = 0; qi < qbatch_size; ++qi) {
+        for (size_t h = 0; h < num_heads; ++h) {
+          for (size_t b = 0; b < batch_size; ++b) {
+            qt_row[(qi * num_heads + h) * batch_size + b] =
+                q.Row(b * qbatch_size + qi)[h * q_t.Rows() + q_row];
+          }
         }
       }
+    }
   };
   {
     // Better than kFlat.
-    ParallelFor(ParallelismStrategy::kHierarchical, q_t.Rows(), ctx,
+    size_t num_tasks = hwy::DivCeil(q_t.Rows(), kNF);
+    ParallelFor(ParallelismStrategy::kHierarchical, num_tasks, ctx,
                 /*cluster_idx=*/0, func);
   }
 }
@@ -589,6 +598,11 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
       static_cast<size_t>(activations.div_seq_len.GetDivisor());
   const size_t token_batch = num_tokens * div_qbatch.GetDivisor();
   const size_t total_tasks = token_batch * layer_config.heads;
+  // fprintf(stderr, "token_batch: %zu, total_tasks: %zu, target_parallelism:
+  // %zu\n", token_batch, total_tasks, target_parallelism); fprintf(stderr,
+  // "heads: %d, kv_heads: %d, qkv_dim: %zu, cache_layer_size: %zu, seq_len:
+  // %zu\n", layer_config.heads, layer_config.kv_heads, qkv_dim,
+  // cache_layer_size, seq_len);
 
   using DF = hn::ScalableTag<float>;
   const DF df;
@@ -606,6 +620,9 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
       (kNF <= kMaxEqualK && total_tasks / kNF >= target_parallelism)
           ? kNF
           : std::min(kMinTileSize, kMaxEqualK);
+  fprintf(stderr,
+          "kNF: %zu, kMaxEqualK: %zu, kMinTileSize: %zu, kVTileSize: %zu\n",
+          kNF, kMaxEqualK, kMinTileSize, kVTileSize);
   // Only transpose Q if we are using tiling.
   if (kVTileSize == kNF) {
     size_t max_last = 0, min_start = std::numeric_limits<size_t>::max();
