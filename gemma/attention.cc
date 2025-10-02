@@ -252,7 +252,10 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   AttentionActivations& activations,
                                   const QBatch& qbatch, const int flags,
                                   MatMulEnv& env) {
-  PROFILER_ZONE("Gen.Attention.QKV");
+  static const auto zone = env.ctx.profiler.AddZone(
+      "Gen.Attention.ComputeQKV", hwy::ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+
   const hwy::Divisor div_qbatch(qbatch.Size());
   const size_t num_interleaved = num_tokens * div_qbatch.GetDivisor();
   const LayerConfig& layer_config = layer.layer_config;
@@ -325,7 +328,9 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
 static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
                                 AttentionActivations& activations,
                                 MatMulEnv& env) {
-  PROFILER_ZONE("Gen.Attention.SumHeads");
+  static const auto zone = env.ctx.profiler.AddZone(
+      "Gen.Attention.SumHeads", hwy::ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
   const LayerConfig& layer_config = layer.layer_config;
   (void)layer_config;  // For HWY_DASSERT
   // att_weights and att_out are concatenated heads, each of length
@@ -358,8 +363,10 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
     DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
                           env.ctx);
   } else {
-    FlashAttention(num_tokens, /*target_parallelism=*/64, layer_idx, layer,
-                   activations, qbatch, env.ctx);
+    // * 2 does not help on Turin.
+    FlashAttention(num_tokens,
+                   /*target_parallelism=*/env.ctx.pools.MaxWorkers() * 1,
+                   layer_idx, layer, activations, qbatch, env.ctx);
   }
   SumHeads(layer, activations, env);
 }

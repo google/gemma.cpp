@@ -73,8 +73,9 @@ static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
       }
   };
   {
-    // Full parallelism is helpful, SmallParallelFor is insufficient.
-    HierarchicalParallelFor(q_t.Rows(), ctx.pools, func);
+    // Better than kFlat.
+    ParallelFor(ParallelismStrategy::kHierarchical, q_t.Rows(), ctx,
+                /*cluster_idx=*/0, func);
   }
 }
 
@@ -111,8 +112,10 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
     }
   };
   {
-    // Full parallelism is helpful, SmallParallelFor is insufficient.
-    HierarchicalParallelFor(num_tokens * qbatch.Size(), ctx.pools, func);
+    // kHierarchical is not worth the extra sync overhead because the tasks are
+    // very lightweight.
+    ParallelFor(ParallelismStrategy::kFlat, num_tokens * qbatch.Size(), ctx,
+                /*cluster_idx=*/0, func);
   }
 }
 
@@ -722,7 +725,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   };
 
   {
-    PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
+    PROFILER_ZONE("Gen.FlashAttention.ForkJoin");
     // Full parallelism is helpful, SmallParallelFor is insufficient.
     HierarchicalParallelFor(num_thread_tasks, ctx.pools, func);
   }
