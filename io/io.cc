@@ -106,7 +106,13 @@ class FilePosix : public File {
     for (;;) {
       // pread seems to be faster than lseek + read when parallelized.
       const auto bytes_read = pread(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_read <= 0) break;
+      if (bytes_read <= 0) {
+        HWY_WARN(
+            "Read failure at pos %zu within size %zu with offset %zu and "
+            "errno %d\n",
+            pos, size, offset, errno);
+        break;
+      }
       pos += bytes_read;
       HWY_ASSERT(pos <= size);
       if (pos == size) break;
@@ -120,7 +126,13 @@ class FilePosix : public File {
     for (;;) {
       const auto bytes_written =
           pwrite(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_written <= 0) break;
+      if (bytes_written <= 0) {
+        HWY_WARN(
+            "Write failure at pos %zu within size %zu with offset %zu and "
+            "errno %d\n",
+            pos, size, offset, errno);
+        break;
+      }
       pos += bytes_written;
       HWY_ASSERT(pos <= size);
       if (pos == size) break;
