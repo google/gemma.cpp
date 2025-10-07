@@ -139,7 +139,7 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
              size_t image_token_position = 0) {
   static const auto zone =
       ctx.profiler.AddZone("Gen.Embed", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(ctx.profiler, hwy::Profiler::Thread(), zone);
+  PROFILER_ZONE3(ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
 
   // Image tokens just need to be copied.
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&

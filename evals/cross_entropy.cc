@@ -84,7 +84,7 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 
 void CallSoftmax(Logits logits, hwy::Profiler& p) {
-  Softmax(logits, p, hwy::Profiler::Thread());
+  Softmax(logits, p, hwy::Profiler::GlobalIdx());
 }
 
 }  // namespace HWY_NAMESPACE

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "hwy/aligned_allocator.h"
+#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/tests/test_util.h"  // RandomState
 
@@ -28,7 +29,11 @@ namespace gcpp {
 
 // Invokes `pool.Run` with varying task counts until auto-tuning completes, or
 // an upper bound just in case.
-static void TunePool(hwy::ThreadPool& pool) {
+static void TunePool(hwy::PoolWaitMode wait_mode, hwy::ThreadPool& pool) {
+  pool.SetWaitMode(wait_mode);
+
+// TODO(janwas): re-enable after investigating potential deadlock.
+#if 0
   const size_t num_workers = pool.NumWorkers();
   // pool.Run would just be a serial loop without auto-tuning, so skip.
   if (num_workers == 1) return;
@@ -69,6 +74,22 @@ static void TunePool(hwy::ThreadPool& pool) {
     HWY_ASSERT(total == prev_total + expected);
     prev_total += expected;
   }
+#endif
+}
+
+static void TunePools(hwy::PoolWaitMode wait_mode, NestedPools& pools) {
+  TunePool(wait_mode, pools.AllPackages());
+  for (size_t pkg_idx = 0; pkg_idx < pools.NumPackages(); ++pkg_idx) {
+    hwy::ThreadPool& clusters = pools.AllClusters(pkg_idx);
+    TunePool(wait_mode, clusters);
+
+    // Run in parallel because Turin CPUs have 16, and in real usage, we often
+    // run all at the same time.
+    clusters.Run(0, clusters.NumWorkers(),
+                 [&](uint64_t cluster_idx, size_t /*thread*/) {
+                   TunePool(wait_mode, pools.Cluster(pkg_idx, cluster_idx));
+                 });
+  }
 }
 
 ThreadingContext::ThreadingContext(const ThreadingArgs& args)
@@ -80,18 +101,9 @@ ThreadingContext::ThreadingContext(const ThreadingArgs& args)
       allocator(topology, cache_info, args.bind != Tristate::kFalse),
       pools(topology, allocator, args.max_threads, args.pin) {
   PROFILER_ZONE("Startup.ThreadingContext autotune");
-  TunePool(pools.AllPackages());
-  for (size_t pkg_idx = 0; pkg_idx < pools.NumPackages(); ++pkg_idx) {
-    hwy::ThreadPool& clusters = pools.AllClusters(pkg_idx);
-    TunePool(clusters);
-
-    // Run in parallel because Turin CPUs have 16, and in real usage, we often
-    // run all at the same time.
-    clusters.Run(0, clusters.NumWorkers(),
-                 [&](uint64_t cluster_idx, size_t /*thread*/) {
-                   TunePool(pools.Cluster(pkg_idx, cluster_idx));
-                 });
-  }
+  TunePools(hwy::PoolWaitMode::kSpin, pools);
+  // kBlock is the default, hence set/tune it last.
+  TunePools(hwy::PoolWaitMode::kBlock, pools);
 }
 
 }  // namespace gcpp

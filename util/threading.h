@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
 #include <vector>
 
 // IWYU pragma: begin_exports
@@ -40,6 +41,30 @@ namespace gcpp {
 // moving because it is a typedef to `std::unique_ptr`.
 using PoolPtr = AlignedClassPtr<hwy::ThreadPool>;
 
+class PinningPolicy {
+ public:
+  explicit PinningPolicy(Tristate pin);
+
+  bool Want() const { return want_pin_; }
+  void NotifyFailed() { (void)any_error_.test_and_set(); }
+
+  // Called ONCE after all MaybePin because it invalidates the error status.
+  bool AllPinned(const char** pin_string) {
+    // If !want_pin_, MaybePin will return without setting any_error_, but in
+    // that case we still want to return false to avoid spinning.
+    // .test() was only added in C++20, so we use .test_and_set() instead.
+    const bool all_pinned = want_pin_ && !any_error_.test_and_set();
+    *pin_string = all_pinned  ? "pinned"
+                  : want_pin_ ? "pinning failed"
+                              : "pinning skipped";
+    return all_pinned;
+  }
+
+ private:
+  std::atomic_flag any_error_ = ATOMIC_FLAG_INIT;
+  bool want_pin_;  // set in SetPolicy
+};  // PinningPolicy
+
 // Creates a hierarchy of thread pools according to `BoundedTopology`: one with
 // a thread per enabled package; for each of those, one with a thread per
 // enabled cluster (CCX/shared L3), and for each of those, the remaining
@@ -56,7 +81,12 @@ using PoolPtr = AlignedClassPtr<hwy::ThreadPool>;
 // Useful when there are tasks which should be parallelized by workers sharing a
 // cache, or on the same NUMA node. In both cases, individual pools have lower
 // barrier synchronization latency than one large pool. However, to utilize all
-// cores, call sites will have to use nested parallel-for loops.
+// cores, call sites will have to use nested parallel-for loops as in
+// `HierarchicalParallelFor`. To allow switching modes easily, prefer using the
+// `ParallelFor` abstraction in threading_context.h).
+//
+// Note that this was previously intended to use all cores, but we are now
+// moving toward also allowing concurrent construction with subsets of cores.
 class NestedPools {
  public:
   // Neither move nor copy.
@@ -151,7 +181,8 @@ class NestedPools {
    public:
     Package() = default;  // for vector
     Package(const BoundedTopology& topology, const Allocator& allocator,
-            size_t pkg_idx, size_t max_workers_per_package);
+            PinningPolicy& pinning, size_t pkg_idx,
+            size_t max_workers_per_package);
 
     size_t NumClusters() const { return clusters_.size(); }
     size_t MaxWorkersPerCluster() const {
@@ -184,8 +215,10 @@ class NestedPools {
     }
 
    private:
-    std::vector<PoolPtr> clusters_;
+    // Must be freed after `clusters_` because it reserves threads which are
+    // the main threads of `clusters_`.
     PoolPtr all_clusters_;
+    std::vector<PoolPtr> clusters_;
   };  // Package
 
   void SetWaitMode(hwy::PoolWaitMode wait_mode) {
@@ -195,6 +228,7 @@ class NestedPools {
     }
   }
 
+  PinningPolicy pinning_;
   bool all_pinned_;
   const char* pin_string_;
 

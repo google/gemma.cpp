@@ -376,8 +376,7 @@ void HandleGenerateContentStreaming(ServerState& state, const httplib::Request& 
 
           // Ensure all data is sent
           sink.done();
-
-          return false; // End streaming
+          return false;  // End streaming
 
         } catch (const std::exception& e) {
           json error_event = {{"error", {{"message", e.what()}}}};

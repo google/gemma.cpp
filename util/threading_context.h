@@ -41,7 +41,7 @@ class ThreadingArgs : public ArgsBase<ThreadingArgs> {
 
   // For BoundedTopology:
   size_t skip_packages;
-  size_t max_packages = 1;
+  size_t max_packages = 1;  // some users assign 1 to this, hence non-const.
   size_t skip_clusters;
   size_t max_clusters;
   size_t skip_lps;

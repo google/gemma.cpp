@@ -452,7 +452,7 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp GIT_TAG origin/main)
 FetchContent_MakeAvailable(gemma)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 92d327e841d78e11ae888757a3e16d291951cf64)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9781a1698ee0756ef1eaaf96930113ed7cb6d3ee)
 FetchContent_MakeAvailable(highway)
 ```
 

@@ -45,10 +45,11 @@ namespace gcpp {
 // as NEON_WITHOUT_AES. Also skip SVE because SVE2_128 and SVE_256 cover most.
 #define GEMMA_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON | HWY_SVE)
 #elif HWY_ARCH_X86
-// Skip anything older than Haswell (2013); also use Zen4 for recent CPUs,
-// because we do not use anything added by SPR (e.g. FP16) nor AVX 10.2.
+// Skip anything older than Haswell (2013); use Zen4/SPR for recent CPUs.
+// Although we do not use SPR's F16, Zen4 is only enabled for AMD. We do not
+// yet use any AVX 10.2 features.
 #define GEMMA_DISABLED_TARGETS \
-  (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX3_SPR | HWY_AVX10_2)
+  (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX10_2)
 #endif  // HWY_ARCH_*
 
 #endif  // GEMMA_DISABLED_TARGETS

@@ -114,6 +114,7 @@ cc_library(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 

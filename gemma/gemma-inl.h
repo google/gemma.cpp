@@ -155,7 +155,7 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
   static const auto zone =
       env.ctx.profiler.AddZone("Gen.FFW", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
   const LayerConfig& layer_config = layer.layer_config;
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.

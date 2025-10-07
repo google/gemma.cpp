@@ -335,7 +335,8 @@ void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights,
     // Apply soft embedding norm before input projection.
     CallUpcasted(&weights.mm_embed_norm, [&](const auto* weights_t) {
       RMSNormInplace(weights_t->PackedScale1(), activations.x.Row(0),
-                     vit_model_dim, env.ctx.profiler, hwy::Profiler::Thread());
+                     vit_model_dim, env.ctx.profiler,
+                     hwy::Profiler::GlobalIdx());
     });
   }
 

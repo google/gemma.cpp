@@ -254,7 +254,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   MatMulEnv& env) {
   static const auto zone = env.ctx.profiler.AddZone(
       "Gen.Attention.ComputeQKV", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
 
   const hwy::Divisor div_qbatch(qbatch.Size());
   const size_t num_interleaved = num_tokens * div_qbatch.GetDivisor();
@@ -330,7 +330,7 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
                                 MatMulEnv& env) {
   static const auto zone = env.ctx.profiler.AddZone(
       "Gen.Attention.SumHeads", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
   const LayerConfig& layer_config = layer.layer_config;
   (void)layer_config;  // For HWY_DASSERT
   // att_weights and att_out are concatenated heads, each of length
@@ -350,7 +350,7 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     MatMulEnv& env, int flags) {
   static const auto zone =
       env.ctx.profiler.AddZone("Gen.Attention", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::Thread(), zone);
+  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
 
   const LayerConfig& layer_config = layer.layer_config;
   HWY_DASSERT(!layer_config.IsMHA());  // No longer supported.
