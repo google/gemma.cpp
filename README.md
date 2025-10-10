@@ -87,10 +87,12 @@ Guidelines](https://opensource.google.com/conduct/).
 
 Before starting, you should have installed:
 
-- [CMake](https://cmake.org/)
+- [CMake](https://cmake.org/) ( version 3.10 and above but below version 4.x )
 - [Clang C++ compiler](https://clang.llvm.org/get_started.html), supporting at
   least C++17.
 - `tar` for extracting archives from Kaggle.
+
+You can manually download the older versions of cmake [ v3.10 < required version < v4.x ] [`here`](https://cmake.org/files/) * *preferably v3.31.x*
 
 Building natively on Windows requires the Visual Studio 2012 Build Tools with the
 optional Clang/LLVM C++ frontend (`clang-cl`). This can be installed from the
@@ -98,7 +100,6 @@ command line with
 [`winget`](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
 
 ```sh
-winget install --id Kitware.CMake
 winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools;installRecommended --add Microsoft.VisualStudio.Component.VC.Llvm.Clang --add Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
 ```
 
