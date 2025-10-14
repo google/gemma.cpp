@@ -32,6 +32,7 @@
 #include "io/blob_store.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
+#include "util/zones.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
@@ -379,8 +380,7 @@ static void DecompressToBF16(MatPtr& mat,
 
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                           const BlobReader& reader, ThreadingContext& ctx) {
-  static const auto zone =
-      ctx.profiler.AddZone("Startup.Weights.ReadAllToBF16");
+  const auto zone = GetProfilerZone(Zones::kStartupWeightsReadAllToBF16);
   // Especially TSAN is slow enough to warrant hierarchical parallelism.
   const ParallelismStrategy strategy = HWY_IS_DEBUG_BUILD
                                            ? ParallelismStrategy::kHierarchical
@@ -463,7 +463,7 @@ static std::vector<IOBatch> MakeBatches(
 static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
                         ThreadingContext& ctx) {
-  static const auto zone = ctx.profiler.AddZone("Startup.Weights.ReadBatches");
+  const auto zone = GetProfilerZone(Zones::kStartupWeightsReadBatches);
   // >5x speedup from parallel reads when cached.
   ParallelFor(ParallelismStrategy::kHierarchical,
               batches.size(), ctx, /*cluster_idx=*/0,

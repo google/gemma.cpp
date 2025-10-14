@@ -42,6 +42,9 @@ namespace gcpp {
                             float* HWY_RESTRICT att_out, hwy::Profiler& p,   \
                             size_t worker);                                  \
                                                                              \
+  size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens, \
+                      size_t total_tasks, size_t target_parallelism);        \
+                                                                             \
   void FlashAttention(size_t num_tokens, size_t target_parallelism,          \
                       size_t layer_idx, const LayerWeightsPtrs& layer,       \
                       AttentionActivations& activations, QBatch& qbatch,     \

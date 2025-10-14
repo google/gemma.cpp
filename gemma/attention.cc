@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -55,8 +56,7 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
                              const float* HWY_RESTRICT q,
                              const MatPtrT<KV_t>& k, float* HWY_RESTRICT att,
                              hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Gen.Attention.QDotK");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kGenAttentionQDotK));
   if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
     // Slightly faster: no wraparound.
     for (size_t pos = start_pos; pos <= last_pos; ++pos) {
@@ -175,7 +175,12 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
                            const LayerWeightsPtrs& layer,
                            AttentionActivations& activations, QBatch& qbatch,
                            ThreadingContext& ctx) {
-  static const auto zone = ctx.profiler.AddZone("Gen.Attention.DotSoftmax.par");
+  static const auto root_zone =
+      ctx.profiler.AddZone("Gen.Attention.DotSoftmaxWeightedSumInclusive",
+                           hwy::ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(ctx.profiler, 0, root_zone);
+  const auto zone =
+      GetProfilerZone(Zones::kGenAttentionDotSoftmaxWeightedSumPar);
 
   const hwy::Divisor div_qbatch(qbatch.Size());
   const LayerConfig& layer_config = layer.layer_config;

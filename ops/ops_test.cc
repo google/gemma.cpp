@@ -14,6 +14,7 @@
 // limitations under the License.
 
 #include "compression/types.h"
+#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -132,6 +133,7 @@ class TestAddFrom {
     }
 
     SimpleAddFrom(o, e, count);
+    InitProfilerZones(hwy::Profiler::Get());
     AddFrom(o, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -180,6 +182,7 @@ class TestMulByConstAndAdd {
     T constant = Random<T>(rng);
 
     SimpleMulByConstAndAdd(constant, o, e, count);
+    InitProfilerZones(hwy::Profiler::Get());
     MulByConstAndAdd(constant, o, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -228,6 +231,7 @@ class TestMulByConst {
     T constant = Random<T>(rng);
 
     SimpleMulByConst(constant, e, count);
+    InitProfilerZones(hwy::Profiler::Get());
     MulByConst(constant, x, count, hwy::Profiler::Get(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -274,6 +278,7 @@ struct TestMulByConstTo {
                                      hwy::ConvertScalarTo<float>(constant));
     }
 
+    InitProfilerZones(hwy::Profiler::Get());
     MulByConstTo(constant, x, actual, count, hwy::Profiler::Get(),
                  /*worker=*/0);
 
@@ -310,6 +315,7 @@ class TestSoftmax {
     }
 
     SimpleSoftmax(e, count);
+    InitProfilerZones(hwy::Profiler::Get());
     Softmax(Logits(x, count), hwy::Profiler::Get(), /*worker=*/0);
 
     T sum = 0.0f;
@@ -437,6 +443,7 @@ void TestRopeAndMulBy() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   hwy::Profiler& p = ctx.profiler;
+  InitProfilerZones(p);
   const size_t worker = 0;
 
   const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
@@ -551,6 +558,7 @@ struct TestRMSNorm {
     }
 
     ScalarRMSNorm(vec, weight, expected, kSize);
+    InitProfilerZones(hwy::Profiler::Get());
     RMSNorm(vec, weight, actual, kSize, hwy::Profiler::Get(), /*worker=*/0);
 
     for (size_t i = 0; i < kSize; i++) {
@@ -585,6 +593,7 @@ struct TestRMSNormInplace {
     }
 
     ScalarRMSNorm(expected, weight, expected, kSize);
+    InitProfilerZones(hwy::Profiler::Get());
     RMSNormInplace(weight, actual, kSize, hwy::Profiler::Get(),
                    /*worker=*/0);
 
@@ -707,6 +716,7 @@ void TestAllLayerNorm() {
 
 void TestSampleTopK() {
   hwy::Profiler& p = hwy::Profiler::Get();
+  InitProfilerZones(p);
   const size_t worker = 0;
   const size_t kSize = 52;
   std::vector<float> logits_vec(kSize);

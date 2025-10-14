@@ -24,6 +24,7 @@
 #include "ops/matmul.h"
 #include "util/mat.h"
 #include "util/threading.h"
+#include "util/zones.h"
 #include "hwy/profiler.h"
 
 // Include guard (still compiled once per target)
@@ -48,8 +49,7 @@ template <typename T1, typename T2>
 void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
                 const T2* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
                 const size_t worker) {
-  static const auto zone = p.AddZone("Gen.Activation");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kGenActivation));
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -88,8 +88,7 @@ static inline void Activation(ActivationType activation, const RowPtrsBF C1,
                               const IndexRange range_r,
                               const IndexRange range_c, const StridedViewBF C2,
                               hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Gen.ActivationFused");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kGenActivationFused));
 
   const size_t cols = range_c.Num();
   HWY_DASSERT(C2.Cols() == cols);

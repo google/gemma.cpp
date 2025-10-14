@@ -101,7 +101,6 @@ void AssertClose(const MatPtrT<float>& a, const MatPtrT<float>& b) {
 void TestFlashAttention(size_t target_parallelism) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
-  // hwy::ThreadPool& pool = ctx.pools.Pool();
   constexpr size_t kOuter = 1024;
   constexpr size_t kInner = 256;
   ModelConfig config(Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT);
@@ -150,9 +149,19 @@ void TestFlashAttention(size_t target_parallelism) {
   // Copy the output to saved_att to allow for comparison.
   auto saved_att = MakeCopyOfMat(attention.att_out, ctx.allocator);
   SetMat(1, attention.q);
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  const size_t kNF = hn::Lanes(df);
+  const size_t total_tasks =
+      tokens.size() * div_qbatch.GetDivisor() * layer_config.heads;
+  const size_t kVTileSize = GetVTileSize(kNF, kHeadGroups, tokens.size(),
+                                         total_tasks, target_parallelism);
+  printf("FlashAttention: target_parallelism=%zu, kNF=%zu, kVTileSize=%zu\n",
+         target_parallelism, kNF, kVTileSize);
   FlashAttention(tokens.size(), target_parallelism, 0, layers, attention,
                  qbatch, ctx);
   AssertClose(attention.att_out, *saved_att);
+  ctx.profiler.PrintResults();
 }
 
 void TestAttention() {

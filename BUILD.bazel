@@ -111,10 +111,20 @@ cc_library(
         ":basics",
         ":threading",
         ":topology",
+        ":zones",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:profiler",
         "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "zones",
+    srcs = ["util/zones.cc"],
+    hdrs = ["util/zones.h"],
+    deps = [
+        "@highway//:profiler",
     ],
 )
 
@@ -263,6 +273,7 @@ cc_library(
         ":model_store",
         ":tensor_info",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "//io:blob_store",
         "@highway//:hwy",
@@ -321,6 +332,7 @@ cc_library(
         ":matmul_env",
         ":threading",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "@highway//:bit_set",
         "@highway//:hwy",
@@ -352,6 +364,7 @@ cc_library(
         ":matmul",
         ":matmul_env",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "//compression:types",
         "@highway//:hwy",
@@ -376,6 +389,7 @@ cc_library(
         ":matmul_env",  # MMOptions
         ":matmul_static",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "@highway//:algo",
         "@highway//:bit_set",
@@ -431,6 +445,7 @@ cc_test(
         ":ops",
         ":test_util",
         ":threading_context",
+        ":zones",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:test_util",
         "//compression:types",
@@ -556,6 +571,7 @@ cc_library(
         ":threading",
         ":threading_context",
         ":weights",
+        ":zones",
         "//compression:compress",
         "//compression:types",
         "//io",

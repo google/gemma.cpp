@@ -19,6 +19,7 @@
 #include "gemma/gemma.h"
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -466,14 +467,12 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   // If user provided a sample_func, use it.
   if (runtime_config.sample_func) return runtime_config.sample_func;
 
-  static const auto zone_top1 = ctx.profiler.AddZone("Gen.Sample Top1");
-  static const auto zone_topK = ctx.profiler.AddZone("Gen.Sample general");
-
   // Fast path for top-1 with no accept_token.
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
     return [&](size_t /*qi*/, size_t /*pos*/, Logits logits, size_t worker)
                HWY_ATTR -> TokenAndProb {
-                 PROFILER_ZONE3(ctx.profiler, worker, zone_top1);
+                 PROFILER_ZONE3(ctx.profiler, worker,
+                                GetProfilerZone(Zones::kGenSampleTop1));
                  return Top1OfSoftmax(logits);
                };
   }
@@ -481,7 +480,8 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   // General case: Softmax with top-k sampling.
   return [&](size_t qi, size_t pos, Logits logits,
              size_t worker) HWY_ATTR -> TokenAndProb {
-    PROFILER_ZONE3(ctx.profiler, worker, zone_topK);
+    PROFILER_ZONE3(ctx.profiler, worker,
+                   GetProfilerZone(Zones::kGenSampleTopK));
     // We want a different sequence for each batch element and position.
     const uint64_t stream = (static_cast<uint64_t>(qi) << 32) | pos;
     RngStream gen(engine, stream);

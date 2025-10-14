@@ -32,6 +32,7 @@
 #include "util/basics.h"  // TokenAndProb, RngStream
 #include "util/mat.h"
 #include "util/threading_context.h"
+#include "util/zones.h"
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/contrib/sort/order.h"
@@ -206,8 +207,7 @@ namespace detail {
 template <typename VT>
 float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
                  const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormMul");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormMul));
 
   const hn::ScalableTag<float> d;
   const float l2 = DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault());
@@ -223,8 +223,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
                                            OT* HWY_RESTRICT out,
                                            const size_t size, hwy::Profiler& p,
                                            const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNorm");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNorm));
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
@@ -248,8 +247,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(const WT* HWY_RESTRICT weight,
                                                   const size_t size,
                                                   hwy::Profiler& p,
                                                   const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormInplace");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormInplace));
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
@@ -365,8 +363,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
     const size_t worker) {
-  static const auto zone = p.AddZone("Ops.Rope");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRope));
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -425,8 +422,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
     const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RopeAndMulBy");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRopeAndMulBy));
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -488,8 +484,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
                                                   const size_t size,
                                                   hwy::Profiler& p,
                                                   const size_t worker) {
-  static const auto zone = p.AddZone("Ops.AddFrom");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsAddFrom));
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
@@ -568,8 +563,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
                                               const size_t size,
                                               hwy::Profiler& p,
                                               const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConst");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConst));
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -587,8 +581,7 @@ template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
     const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstTo");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstTo));
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -606,8 +599,7 @@ template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
     const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAdd));
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -744,8 +736,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
     const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
     const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
     hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddTile));
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -1007,8 +998,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile4(
     const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
     const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
     hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAddTile4");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddTile4));
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -1049,8 +1039,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
     const size_t pos, float* HWY_RESTRICT out,
     const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
     hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddVector));
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -1146,8 +1135,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
 static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
                                  const size_t worker,
                                  float temperature = 1.0f) {
-  static const auto zone = p.AddZone("Ops.Softmax");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsSoftmax));
   HWY_DASSERT(logits.size() != 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
@@ -1280,8 +1268,7 @@ static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
                                        hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.LogitsSoftCap");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsLogitsSoftCap));
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;

@@ -130,6 +130,8 @@ set(SOURCES
   util/threading.h
   util/topology.cc
   util/topology.h
+  util/zones.cc
+  util/zones.h
 )
 
 # Add C API sources only when building DLL

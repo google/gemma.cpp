@@ -22,6 +22,7 @@
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "util/threading_context.h"
+#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -60,7 +61,7 @@ static constexpr size_t kNFx8HTileSize = 8;
 // possible consecutive elements have the same KV.
 static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
                        const size_t qbatch_size, ThreadingContext& ctx) {
-  static const auto zone = ctx.profiler.AddZone("Gen.Attention.TransposeQ");
+  const auto zone = GetProfilerZone(Zones::kFlashAttentionTransposeQ);
   // Group floats by the number of floats in a cache line.
   const size_t kNF = ctx.cache_info.LineBytes() / sizeof(float);
   const size_t num_heads = q.Cols() / q_t.Rows();
@@ -95,8 +96,8 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
                                   const LayerWeightsPtrs& layer,
                                   const AttentionActivations& activations,
                                   ThreadingContext& ctx) {
-  static const auto zone =
-      ctx.profiler.AddZone("Gen.Attention.RMSNormAndPositionalEncoding");
+  const auto zone =
+      GetProfilerZone(Zones::kFlashAttentionRmsNormAndPositionalEncoding);
   const float query_scale = activations.query_scale;
   const hwy::Divisor div_qbatch(qbatch.Size());
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
@@ -158,8 +159,8 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
                           const AttentionActivations& activations,
                           float* HWY_RESTRICT att_out, hwy::Profiler& p,
                           const size_t worker) {
-  static const auto zone = p.AddZone("Gen.Attention.SingleFlashAttention");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker,
+                 GetProfilerZone(Zones::kFlashAttentionSingleFlashAttention));
   const size_t pos_mod = activations.div_seq_len.Remainder(start_pos);
   float m = Dot(q, k.Row(pos_mod), k.Cols());
   if (float cap = activations.config.att_cap; cap > 0.0f) {
@@ -276,8 +277,8 @@ void TileFlashAttention(
     const LayerWeightsPtrs& layer, const AttentionActivations& activations,
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
     hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Gen.Attention.TileFlashAttention");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker,
+                 GetProfilerZone(Zones::kFlashAttentionTileFlashAttention));
   constexpr int kHTileSize = kNFx8HTileSize;
   using DF = hn::ScalableTag<float>;
   const DF df;
@@ -430,8 +431,8 @@ void TileFlashAttention4(
     const LayerWeightsPtrs& layer, const AttentionActivations& activations,
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
     hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Gen.Attention.TileFlashAttention4");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker,
+                 GetProfilerZone(Zones::kFlashAttentionTileFlashAttention4));
   using DF = hn::ScalableTag<float>;
   const DF df;
   using VF = hn::Vec<DF>;
@@ -524,6 +525,21 @@ static size_t RoundToSuitablePowerOf2(size_t n) {
   return 32;
 }
 
+// The vertical tile size is determined by the ability to use tiling and the
+// target_parallelism. In practice the possible tile sizes in order of
+// preference for efficiency are kNF, 4, 1, where kNF is likely to be 4 8 or
+// 16. The final tile size is chosen to be the largest possible that allows
+// for target_parallelism parallel tasks.
+size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens,
+                    size_t total_tasks, size_t target_parallelism) {
+  const size_t kMaxEqualK =
+      RoundToSuitablePowerOf2(num_head_groups * num_tokens);
+  const size_t kMinTileSize = (total_tasks / 4 >= target_parallelism) ? 4 : 1;
+  return (kNF <= kMaxEqualK && total_tasks / kNF >= target_parallelism)
+             ? kNF
+             : std::min(kMinTileSize, kMaxEqualK);
+}
+
 // The nominal aim of attention is to combine 3 inputs Q[L,D], K[L,D], V[L,D]
 // into a single output O[L,D].
 // Conventional attention first computes A[L,L] = Q . KT
@@ -582,7 +598,10 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                     const size_t layer_idx, const LayerWeightsPtrs& layer,
                     AttentionActivations& activations, QBatch& qbatch,
                     ThreadingContext& ctx) {
-  static const auto zone = ctx.profiler.AddZone("Gen.Attention.FlashAttention");
+  static const auto root_zone = ctx.profiler.AddZone(
+      "FlashAttention.Inclusive", hwy::ProfilerFlags::kInclusive);
+  PROFILER_ZONE3(ctx.profiler, 0, root_zone);
+  const auto zone = GetProfilerZone(Zones::kFlashAttentionFlashAttention);
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q, layer_idx,
                                layer, activations, ctx);
   const hwy::Divisor div_qbatch(qbatch.Size());
@@ -603,17 +622,8 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   const size_t kNF = hn::Lanes(df);
   constexpr size_t kMaxNF = hn::MaxLanes(df);
   HWY_DASSERT(kNF <= kMaxNF);
-  // The vertical tile size is determined by the ability to use tiling and the
-  // target_parallelism. In practice the possible tile sizes in order of
-  // preference for efficiency are kNF, 4, 1, where kNF is likely to be 4 8 or
-  // 16. The final tile size is chosen to be the largest possible that allows
-  // for target_parallelism parallel tasks.
-  const size_t kMaxEqualK = RoundToSuitablePowerOf2(kHeadGroups * num_tokens);
-  const size_t kMinTileSize = (total_tasks / 4 >= target_parallelism) ? 4 : 1;
-  const size_t kVTileSize =
-      (kNF <= kMaxEqualK && total_tasks / kNF >= target_parallelism)
-          ? kNF
-          : std::min(kMinTileSize, kMaxEqualK);
+  const size_t kVTileSize = GetVTileSize(kNF, kHeadGroups, num_tokens,
+                                         total_tasks, target_parallelism);
   // Only transpose Q if we are using tiling.
   if (kVTileSize == kNF) {
     size_t max_last = 0, min_start = std::numeric_limits<size_t>::max();
