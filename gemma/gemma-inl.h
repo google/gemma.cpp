@@ -59,7 +59,7 @@ void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
     return;
   };
   // Has multiplier, Gelu(c1) * c2.
-  Decompress1AndCompressInplace(DF(), c1, count, c2,
+  Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
                                 [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
                                   return hn::Mul(v2, Gelu(df, v1));
                                 });
@@ -101,8 +101,9 @@ static inline void Activation(ActivationType activation, const RowPtrsBF C1,
   for (size_t ir = 0; ir < range_r.Num(); ++ir) {
     Decompress1AndCompressInplace(
         DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols, C2.Row(ir),
-        [](DF df, VF v1, VF v2)
-            HWY_ATTR -> VF { return hn::Mul(v2, Gelu(df, v1)); });
+        /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+          return hn::Mul(v2, Gelu(df, v1));
+        });
   }
 }
 

@@ -112,6 +112,8 @@ class TypePrefix {
         return Type::kSFP;
       case '2':
         return Type::kNUQ;
+      case 'I':
+        return Type::kI8;
       default:
         // The other types were not written to pre-2025 files, hence no need to
         // encode and check for them here.

@@ -90,6 +90,13 @@ class CompressionTest(absltest.TestCase):
         info_256,
     )
 
+    writer.insert(
+        "tensor_i8",
+        np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32),
+        configs.Type.kI8,
+        info_256,
+    )
+
     config = configs.ModelConfig(
         configs.Model.GEMMA2_2B,
         configs.Type.kSFP,
@@ -140,6 +147,11 @@ class CompressionTest(absltest.TestCase):
     self.assertEqual(mat.type, configs.Type.kF32)
     self.assertAlmostEqual(mat.scale, 1.0)
 
+    mat = reader.find_mat("tensor_i8")
+    self.assertEqual(mat.cols, 256)
+    self.assertEqual(mat.rows, 1)
+    self.assertEqual(mat.type, configs.Type.kI8)
+    self.assertAlmostEqual(mat.scale, 1.0)
 
 if __name__ == "__main__":
   absltest.main()

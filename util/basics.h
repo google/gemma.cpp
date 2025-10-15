@@ -59,6 +59,25 @@ static inline void MaybeCheckInitialized(const void* ptr, size_t size) {
 #endif
 }
 
+static inline void MaybePrintInitialized(const void* ptr, size_t size) {
+#if HWY_IS_MSAN
+  __msan_print_shadow(ptr, size);
+#else
+  (void)ptr;
+  (void)size;
+#endif
+}
+
+static inline intptr_t MaybeTestInitialized(const void* ptr, size_t size) {
+#if HWY_IS_MSAN
+  return __msan_test_shadow(ptr, size);
+#else
+  (void)ptr;
+  (void)size;
+  return 0;
+#endif
+}
+
 // Shared between gemma.h and ops-inl.h.
 #pragma pack(push, 1)
 struct TokenAndProb {

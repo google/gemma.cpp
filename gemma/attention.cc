@@ -143,8 +143,8 @@ void SingleDotSoftmaxWeightedSum(
   // Apply rope and scaling to Q.
   if (layer.query_norm_scale.HasPtr()) {
     CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
-      RMSNormInplace(weights_t->PackedScale1(), q, layer.layer_config.qkv_dim,
-                     p, worker);
+      RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q,
+                     layer.layer_config.qkv_dim, p, worker);
     });
   }
 
@@ -315,8 +315,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         // Apply further processing to K.
         if (layer.key_norm_scale.HasPtr()) {
           CallUpcasted(&layer.key_norm_scale, [&](const auto* weights_t) {
-            RMSNormInplace(weights_t->PackedScale1(), kv_f32, qkv_dim,
-                           env.ctx.profiler, worker);
+            RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, kv_f32,
+                           qkv_dim, env.ctx.profiler, worker);
           });
         }
 

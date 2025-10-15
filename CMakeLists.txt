@@ -68,6 +68,7 @@ set(SOURCES
   compression/compress.h
   compression/nuq-inl.h
   compression/sfp-inl.h
+  compression/int-inl.h
   compression/types.h
   compression/test_util-inl.h
   evals/benchmark_helper.cc
@@ -109,6 +110,7 @@ set(SOURCES
   ops/matmul_static_f32.cc
   ops/matmul_static_nuq.cc
   ops/matmul_static_sfp.cc
+  ops/matmul_static_i8.cc
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h

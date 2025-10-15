@@ -147,15 +147,222 @@ void LayerWeightsPtrs::SplitAttW1() {
   qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
 }
 
+static void HWY_MAYBE_UNUSED InitAttWeightsI8(
+    const LayerConfig& layer_config, MatPtrT<I8Stream>& attn_vec_einsum_w,
+    MatPtrT<I8Stream>& att_weights, std::vector<MatOwner>& mat_owners,
+    const Allocator& allocator) {
+  if (!attn_vec_einsum_w.HasPtr()) return;
+  HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kI8);
+
+  att_weights.SetType(Type::kI8);
+
+  {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kPacked);
+  }
+
+  const size_t model_dim = layer_config.model_dim;
+  const size_t heads = layer_config.heads;
+  const size_t qkv_dim = layer_config.qkv_dim;
+
+  // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
+  hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
+      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
+  hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
+      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
+
+  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  HWY_NAMESPACE::DecompressAndZeroPad(df, attn_vec_einsum_w.Span(), 0,
+                                      attn_vec_einsum_w_tmp.get(),
+                                      model_dim * heads * qkv_dim);
+
+  for (size_t m = 0; m < model_dim; ++m) {
+    float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
+    for (size_t h = 0; h < heads; ++h) {
+      hwy::CopyBytes(
+          attn_vec_einsum_w_tmp.get() + h * model_dim * qkv_dim + m * qkv_dim,
+          out_row + h * qkv_dim, qkv_dim * sizeof(float));
+    }
+  }
+
+  CompressWorkingSet work;
+  hwy::ThreadPool pool(0);
+  HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
+                          work, att_weights.Span(),
+                          /*packed_ofs=*/0, pool);
+
+  att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
+                                       MatPtrT<I8Stream>& gating_einsum_w,
+                                       MatPtrT<I8Stream>& gating_einsum_w1,
+                                       MatPtrT<I8Stream>& gating_einsum_w2,
+                                       std::vector<MatOwner>& mat_owners,
+                                       const Allocator& allocator) {
+  // Files have both or neither of w1 and w2.
+  HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
+  // w is mutually exclusive with w1 and w2 in the file.
+  HWY_ASSERT(gating_einsum_w.HasPtr() ^ gating_einsum_w1.HasPtr());
+  // Done if we already read split tensors.
+  if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
+  // Nothing to do if w is not present.
+  if (!gating_einsum_w.HasPtr()) return;
+
+  HWY_ASSERT(gating_einsum_w.GetType() == Type::kI8);
+
+  const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+  const size_t model_dim = gating_einsum_w.Cols();
+  HWY_ASSERT(gating_einsum_w.Rows() == 2 * ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w1.Rows() == ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w2.Rows() == ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w1.Cols() == model_dim);
+  HWY_ASSERT(gating_einsum_w2.Cols() == model_dim);
+
+  gating_einsum_w1.SetType(Type::kI8);
+  gating_einsum_w2.SetType(Type::kI8);
+
+  {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(gating_einsum_w1, allocator,
+                                  MatPadding::kPacked);
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(gating_einsum_w2, allocator,
+                                  MatPadding::kPacked);
+  }
+
+  const size_t total_size = gating_einsum_w.Rows() * gating_einsum_w.Cols();
+  hwy::AlignedFreeUniquePtr<float[]> w_tmp =
+      hwy::AllocateAligned<float>(total_size);
+
+  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  HWY_NAMESPACE::DecompressAndZeroPad(df, gating_einsum_w.Span(), 0,
+                                      w_tmp.get(), total_size);
+
+  const size_t split_size = ff_hidden_dim * model_dim;
+  float* w1_tmp = w_tmp.get();
+  float* w2_tmp = w_tmp.get() + split_size;
+
+  CompressWorkingSet work;
+  hwy::ThreadPool pool(0);
+  HWY_NAMESPACE::Compress(w1_tmp, split_size, work, gating_einsum_w1.Span(), 0,
+                          pool);
+  HWY_NAMESPACE::Compress(w2_tmp, split_size, work, gating_einsum_w2.Span(), 0,
+                          pool);
+
+  gating_einsum_w1.SetScale(1.0f);
+  gating_einsum_w2.SetScale(1.0f);
+
+  gating_einsum_w.SetPtr(nullptr, gating_einsum_w.Cols());
+}
+
+static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
+                                          MatPtrT<I8Stream>& qkv_einsum_w,
+                                          MatPtrT<I8Stream>& qkv_einsum_w1,
+                                          MatPtrT<I8Stream>& qkv_einsum_w2,
+                                          std::vector<MatOwner>& mat_owners,
+                                          const Allocator& allocator) {
+  // w is mutually exclusive with w1 in the file.
+  HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
+  // Done if we already read split tensors.
+  if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
+  // Nothing to do if w is not present.
+  if (!qkv_einsum_w.HasPtr()) return;
+
+  HWY_ASSERT(qkv_einsum_w.GetType() == Type::kI8);
+
+  const size_t model_dim = qkv_einsum_w.Cols();
+  const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
+  const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
+  HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
+  HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+  HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
+  HWY_ASSERT(qkv_einsum_w1.Cols() == model_dim);
+  HWY_ASSERT(qkv_einsum_w2.Cols() == model_dim);
+
+  qkv_einsum_w1.SetType(Type::kI8);
+  qkv_einsum_w2.SetType(Type::kI8);
+
+  {
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(qkv_einsum_w1, allocator,
+                                  MatPadding::kPacked);
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(qkv_einsum_w2, allocator,
+                                  MatPadding::kPacked);
+  }
+
+  const size_t total_size = qkv_einsum_w.Rows() * qkv_einsum_w.Cols();
+  hwy::AlignedFreeUniquePtr<float[]> w_tmp =
+      hwy::AllocateAligned<float>(total_size);
+
+  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  HWY_NAMESPACE::DecompressAndZeroPad(df, qkv_einsum_w.Span(), 0, w_tmp.get(),
+                                      total_size);
+
+  const size_t w1_size = w1_rows * model_dim;
+  const size_t w2_size = w2_rows * model_dim;
+  float* w1_tmp = w_tmp.get();
+  float* w2_tmp = w_tmp.get() + w1_size;
+
+  CompressWorkingSet work;
+  hwy::ThreadPool pool(0);
+  HWY_NAMESPACE::Compress(w1_tmp, w1_size, work, qkv_einsum_w1.Span(), 0, pool);
+  HWY_NAMESPACE::Compress(w2_tmp, w2_size, work, qkv_einsum_w2.Span(), 0, pool);
+
+  qkv_einsum_w1.SetScale(1.0f);
+  qkv_einsum_w2.SetScale(1.0f);
+
+  qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
+}
+
 // Must be called after reading weights via `ForEachTensor`.
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
 void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                              const Allocator& allocator) {
-  // TODO(janwas): handle NUQ
-  InitAttWeights(mat_owners, allocator);
-  SplitW1();
-  SplitAttW1();
+  if (attn_vec_einsum_w.GetType() == Type::kI8) {
+    MatPtrT<I8Stream> attn_vec_einsum_w_i8(attn_vec_einsum_w);
+    MatPtrT<I8Stream> att_weights_i8(att_weights);
+    InitAttWeightsI8(layer_config, attn_vec_einsum_w_i8, att_weights_i8,
+                     mat_owners, allocator);
+    attn_vec_einsum_w = attn_vec_einsum_w_i8;
+    att_weights = att_weights_i8;
+  } else {
+    InitAttWeights(mat_owners, allocator);
+  }
+
+  if (gating_einsum_w.GetType() == Type::kI8) {
+    MatPtrT<I8Stream> gating_einsum_w_i8(gating_einsum_w);
+    MatPtrT<I8Stream> gating_einsum_w1_i8(gating_einsum_w1);
+    MatPtrT<I8Stream> gating_einsum_w2_i8(gating_einsum_w2);
+    SplitW1I8(layer_config, gating_einsum_w_i8, gating_einsum_w1_i8,
+              gating_einsum_w2_i8, mat_owners, allocator);
+    gating_einsum_w = gating_einsum_w_i8;
+    gating_einsum_w1 = gating_einsum_w1_i8;
+    gating_einsum_w2 = gating_einsum_w2_i8;
+  } else {
+    SplitW1();
+  }
+
+  if (qkv_einsum_w.GetType() == Type::kI8) {
+    MatPtrT<I8Stream> qkv_einsum_w_i8(qkv_einsum_w);
+    MatPtrT<I8Stream> qkv_einsum_w1_i8(qkv_einsum_w1);
+    MatPtrT<I8Stream> qkv_einsum_w2_i8(qkv_einsum_w2);
+    SplitAttW1I8(layer_config, qkv_einsum_w_i8, qkv_einsum_w1_i8,
+                 qkv_einsum_w2_i8, mat_owners, allocator);
+    qkv_einsum_w = qkv_einsum_w_i8;
+    qkv_einsum_w1 = qkv_einsum_w1_i8;
+    qkv_einsum_w2 = qkv_einsum_w2_i8;
+  } else {
+    SplitAttW1();
+  }
 }
 
 static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
@@ -427,8 +634,6 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
 static std::vector<IOBatch> MakeBatches(
     const std::vector<TensorToRead>& tensors, const uint64_t file_bytes) {
   PROFILER_ZONE("Startup.Weights.MakeBatches");
-  // Batches must be contiguous but blobs are padded, hence at least one
-  // batch per tensor, and more when tensor rows exceed the batch size.
   std::vector<IOBatch> batches;
   batches.reserve(tensors.size());
 
@@ -439,17 +644,28 @@ static std::vector<IOBatch> MakeBatches(
     HWY_ASSERT(range.End() <= file_bytes);
 
     batches.emplace_back(offset, range.key_idx);
-    const size_t file_bytes_per_row = mat.Cols() * mat.ElementBytes();
-    const size_t mem_stride_bytes = mat.Stride() * mat.ElementBytes();
-    uint8_t* row_bytes = mat.RowBytes(0);
-    for (size_t r = 0; r < mat.Rows(); ++r) {
-      if (!batches.back().Add(row_bytes, file_bytes_per_row)) {  // Full batch.
-        batches.emplace_back(offset, range.key_idx);
-        // Adding to an empty batch is always successful.
-        HWY_ASSERT(batches.back().Add(row_bytes, file_bytes_per_row));
+    if (mat.IsPacked()) {
+      HWY_ASSERT(range.bytes == mat.PackedBytes());
+      if (!batches.back().Add(mat.Packed(), range.bytes)) {
+        // This should not happen if tensors are < 2GB.
+        // If it does, we need to chunk. For now, let's assume it doesn't.
+        HWY_ABORT("Packed tensor too large for a single IO batch.");
       }
-      offset += file_bytes_per_row;
-      row_bytes += mem_stride_bytes;
+      offset += range.bytes;
+    } else {
+      const size_t file_bytes_per_row = mat.Cols() * mat.ElementBytes();
+      const size_t mem_stride_bytes = mat.Stride() * mat.ElementBytes();
+      uint8_t* row_bytes = mat.RowBytes(0);
+      for (size_t r = 0; r < mat.Rows(); ++r) {
+        if (!batches.back().Add(row_bytes,
+                                file_bytes_per_row)) {  // Full batch.
+          batches.emplace_back(offset, range.key_idx);
+          // Adding to an empty batch is always successful.
+          HWY_ASSERT(batches.back().Add(row_bytes, file_bytes_per_row));
+        }
+        offset += file_bytes_per_row;
+        row_bytes += mem_stride_bytes;
+      }
     }
     HWY_ASSERT(offset == range.End());
   }

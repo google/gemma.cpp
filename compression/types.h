@@ -89,6 +89,26 @@ struct SfpStream {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct I8Stream {
+  static constexpr size_t kGroupSize = 128;
+  using ScaleT = hwy::bfloat16_t;
+
+  // Returns number of I8Stream to allocate for the stream, which matches its
+  // size in bytes.
+  // TODO: should support other types beyond hwy::float32_t for scale and
+  // zero-point.
+  static constexpr size_t PackedEnd(size_t capacity) {
+    const size_t num_groups = hwy::DivCeil(capacity, kGroupSize);
+    return (sizeof(ScaleT) * num_groups) +  // scale
+           (sizeof(ScaleT) * num_groups) +  // zero-point
+           capacity;                        // 1 value per byte
+  }
+
+  int8_t i;
+};
+#pragma pack(pop)
+
 // Non-uniform quantization: a compressed representation of f32 inputs that
 // supports seeking at a granularity of 1 (for `DecompressAndZeroPad`) or
 // two vectors (for `Decompress2`), and decoding to bf16/f32.
@@ -188,17 +208,22 @@ constexpr bool IsNuqStream() {
 }
 
 template <typename Packed>
+constexpr bool IsI8Stream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>();
+}
+
+template <typename Packed>
 constexpr bool SupportsPointerArithmetic() {
-  return !IsNuqStream<Packed>();
+  return !IsNuqStream<Packed>() && !IsI8Stream<Packed>();
 }
 
 // Tensor types for loading weights. Not all of these are supported weight
 // types, some are only used for `Activations`.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kU32, kU64 };
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kU32, kU64, kI8 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
-static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16", "sfp",
-                                               "nuq",     "f64", "u32",  "u64"};
+static constexpr const char* kTypeStrings[] = {
+    "unknown", "f32", "bf16", "sfp", "nuq", "f64", "u32", "u64", "i8"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -210,6 +235,7 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(double),
     8 * sizeof(uint32_t),
     8 * sizeof(uint64_t),
+    8 * sizeof(I8Stream),
 };
 
 static inline bool EnumValid(Type type) {
@@ -234,6 +260,8 @@ Type TypeEnum() {
     return Type::kU32;
   } else if constexpr (hwy::IsSame<Packed, uint64_t>()) {
     return Type::kU64;
+  } else if constexpr (hwy::IsSame<Packed, I8Stream>()) {
+    return Type::kI8;
   } else {
     HWY_DASSERT(false);
     return Type::kUnknown;
@@ -254,7 +282,9 @@ const char* TypeName() {
 
 template <typename Packed>
 constexpr bool IsCompressed() {
-  return hwy::IsSameEither<hwy::RemoveCvRef<Packed>, SfpStream, NuqStream>();
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, SfpStream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>();
 }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
@@ -265,6 +295,8 @@ template <typename Packed>
 constexpr size_t CompressedArrayElements(size_t capacity) {
   if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
     return NuqStream::PackedEnd(capacity);
+  } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>()) {
+    return I8Stream::PackedEnd(capacity);
   } else {
     return capacity;
   }

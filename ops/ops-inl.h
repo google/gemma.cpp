@@ -220,6 +220,7 @@ float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
 template <typename XT, typename WT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
                                            const WT* HWY_RESTRICT weight,
+                                           const size_t w_ofs,
                                            OT* HWY_RESTRICT out,
                                            const size_t size, hwy::Profiler& p,
                                            const size_t worker) {
@@ -232,7 +233,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
   const VF mul = hn::Set(DF(), detail::RMSNormMul(x, size, p, worker));
   const VF* HWY_RESTRICT pmul = &mul;
 
-  Decompress2AndCompressTo(DF(), out, size, x, weight,
+  Decompress2AndCompressTo(DF(), out, size, x, weight, w_ofs,
                            [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
                              const VF m = hn::Mul(*pmul, vx);
                              // (1+weight) * m = m + weight*m = one FMA.
@@ -242,13 +243,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
 
 // Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
 template <typename WT, typename XT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(const WT* HWY_RESTRICT weight,
-                                                  XT* HWY_RESTRICT inout,
-                                                  const size_t size,
-                                                  hwy::Profiler& p,
-                                                  const size_t worker) {
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
+    const WT* HWY_RESTRICT weight, const size_t w_ofs, XT* HWY_RESTRICT inout,
+    const size_t size, hwy::Profiler& p, const size_t worker) {
   PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormInplace));
-
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -256,7 +254,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(const WT* HWY_RESTRICT weight,
   const VF mul = hn::Set(DF(), detail::RMSNormMul(inout, size, p, worker));
   const VF* HWY_RESTRICT pmul = &mul;
 
-  Decompress1AndCompressInplace(DF(), inout, size, weight,
+  Decompress1AndCompressInplace(DF(), inout, size, weight, w_ofs,
                                 [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
                                   const VF m = hn::Mul(*pmul, vx);
                                   // (1+weight) * m = m + weight*m = one FMA.
@@ -489,7 +487,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  Decompress1AndCompressInplace(DF(), out, size, x,
+  Decompress1AndCompressInplace(DF(), out, size, x, /*p1_ofs=*/0,
                                 [&](DF /*df*/, VF out, VF x)
                                     HWY_ATTR -> VF { return hn::Add(x, out); });
 }
@@ -507,8 +505,8 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
     ParallelFor(ParallelismStrategy::kFlat, activations.Rows(), ctx,
                 cluster_idx, [&](uint64_t token_idx, size_t worker) {
                   RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
-                          out.Row(token_idx), activations.Cols(), ctx.profiler,
-                          worker);
+                          /*w_ofs=*/0, out.Row(token_idx), activations.Cols(),
+                          ctx.profiler, worker);
                 });
   });
 }
@@ -522,7 +520,7 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
   CallUpcasted(&weights, [&](const auto* weights_t) {
     ParallelFor(ParallelismStrategy::kFlat, inout.Rows(), ctx, cluster_idx,
                 [&](uint64_t token_idx, size_t worker) {
-                  RMSNormInplace(weights_t->PackedScale1(),
+                  RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
                                  inout.Row(token_idx), inout.Cols(),
                                  ctx.profiler, worker);
                 });
@@ -604,7 +602,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(const float c,
   const VF vc = hn::Set(DF(), c);
   const VF* HWY_RESTRICT pc = &vc;
 
-  Decompress1AndCompressInplace(DF(), out, size, x,
+  Decompress1AndCompressInplace(DF(), out, size, x, /*p1_ofs=*/0,
                                 [&](DF /*df*/, VF out, VF x) HWY_ATTR -> VF {
                                   return hn::MulAdd(x, *pc, out);
                                 });

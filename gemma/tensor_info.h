@@ -46,7 +46,7 @@ struct TensorInfo {
   // The highest permissible compression for this tensor. The default is
   // kNUQ, which provides maximum compression. Other values such as kBF16
   // or kF32 can be used to limit the compression to a specific type.
-  Type min_size = Type::kNUQ;
+  Type min_size = Type::kI8;
   // Whether to apply scaled softplus to the data.
   bool scaled_softplus = false;
   // Whether the columns or the rows take any extra dimensions.

@@ -113,6 +113,9 @@ class SbsWriterImpl : public ISbsWriter {
       case Type::kF32:
         InsertT<float>(name, weights, tensor_info);
         break;
+      case Type::kI8:
+        InsertT<I8Stream>(name, weights, tensor_info);
+        break;
       default:
         HWY_ABORT("Unsupported destination (compressed) type %s",
                   TypeName(type));

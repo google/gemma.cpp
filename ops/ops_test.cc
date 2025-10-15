@@ -558,7 +558,8 @@ struct TestRMSNorm {
 
     ScalarRMSNorm(vec, weight, expected, kSize);
     InitProfilerZones(hwy::Profiler::Get());
-    RMSNorm(vec, weight, actual, kSize, hwy::Profiler::Get(), /*worker=*/0);
+    RMSNorm(vec, weight, /*w_ofs=*/0, actual, kSize, hwy::Profiler::Get(),
+            /*worker=*/0);
 
     for (size_t i = 0; i < kSize; i++) {
       const float e = hwy::ConvertScalarTo<float>(expected[i]);
@@ -593,7 +594,7 @@ struct TestRMSNormInplace {
 
     ScalarRMSNorm(expected, weight, expected, kSize);
     InitProfilerZones(hwy::Profiler::Get());
-    RMSNormInplace(weight, actual, kSize, hwy::Profiler::Get(),
+    RMSNormInplace(weight, /*w_ofs=*/0, actual, kSize, hwy::Profiler::Get(),
                    /*worker=*/0);
 
     for (size_t i = 0; i < kSize; i++) {

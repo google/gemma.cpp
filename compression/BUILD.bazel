@@ -81,6 +81,37 @@ cc_library(
 )
 
 cc_library(
+    name = "int",
+    textual_hdrs = ["int-inl.h"],
+    deps = [
+        ":types",
+        "//:basics",
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
+    name = "int_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["int_test.cc"],
+    features = ["fully_static_link"],
+    linkstatic = True,
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":distortion",
+        ":int",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
+    ],
+)
+
+cc_library(
     name = "test_util",
     textual_hdrs = [
         "test_util-inl.h",
@@ -144,6 +175,7 @@ cc_library(
     textual_hdrs = ["compress-inl.h"],
     deps = [
         ":distortion",
+        ":int",
         ":nuq",
         ":sfp",
         "//:basics",
@@ -182,6 +214,7 @@ cc_library(
     name = "analyze",
     textual_hdrs = ["analyze.h"],
     deps = [
+        ":int",
         ":nuq",
         ":sfp",
         ":types",
