@@ -20,6 +20,7 @@
 
 #include <vector>
 
+#include "util/zones.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
@@ -100,6 +101,7 @@ ThreadingContext::ThreadingContext(const ThreadingArgs& args)
       cache_info(topology),
       allocator(topology, cache_info, args.bind != Tristate::kFalse),
       pools(topology, allocator, args.max_threads, args.pin) {
+  InitProfilerZones(profiler);
   PROFILER_ZONE("Startup.ThreadingContext autotune");
   TunePools(hwy::PoolWaitMode::kSpin, pools);
   // kBlock is the default, hence set/tune it last.
