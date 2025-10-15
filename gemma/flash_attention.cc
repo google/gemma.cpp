@@ -131,10 +131,11 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
 }
 
 // Handles a single v row of flash attention for a single q.k dot product.
-void HWY_INLINE SingleFlashAttentionStep(
-    float x, float cap, float& old_max, float& old_d,
-    const float* HWY_RESTRICT v, const size_t v_cols,
-    float* HWY_RESTRICT att_out, hwy::Profiler& p, const size_t worker) {
+void HWY_INLINE SingleFlashAttentionStep(float x, float cap, float& old_max,
+                                         float& old_d,
+                                         const float* HWY_RESTRICT v,
+                                         const size_t v_cols,
+                                         float* HWY_RESTRICT att_out) {
   if (cap > 0.0f) {
     // Compute tanh(x / cap) * cap, being LogitsSoftCap on the scalar x.
     x = cap * std::tanh(x / cap);
@@ -147,8 +148,8 @@ void HWY_INLINE SingleFlashAttentionStep(
   float one_over_d = 1.0f / old_d;
   scale *= one_over_d;
   x *= one_over_d;
-  MulByConst(scale, att_out, v_cols, p, worker);
-  MulByConstAndAdd(x, v, att_out, v_cols, p, worker);
+  MulByConst(scale, att_out, v_cols);
+  MulByConstAndAdd(x, v, att_out, v_cols);
 }
 
 // Calculates the complete attention outputs for a single row of q.
@@ -174,7 +175,7 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
     const size_t pos_mod = activations.div_seq_len.Remainder(pos);
     float x = Dot(q, k.Row(pos_mod), k.Cols());
     SingleFlashAttentionStep(x, activations.config.att_cap, m, d,
-                             v.Row(pos_mod), v.Cols(), att_out, p, worker);
+                             v.Row(pos_mod), v.Cols(), att_out);
   }
 }
 
@@ -183,7 +184,7 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
 template <class DF, class VF = hn::Vec<DF>>
 VF QDotKVector(DF df, const uint32_t* HWY_RESTRICT q_offsets,
                const size_t k_pos, const MatPtrT<KV_t>& q,
-               const MatPtrT<KV_t>& k, hwy::Profiler& p, const size_t worker) {
+               const MatPtrT<KV_t>& k) {
   hn::TFromD<DF> results[hn::MaxLanes(df)];
   for (size_t i = 0; i < hn::Lanes(df); ++i) {
     results[i] = Dot(q.Row(0) + q_offsets[i], k.Row(k_pos), k.Cols());
@@ -198,9 +199,8 @@ VF QDotKVector(DF df, const uint32_t* HWY_RESTRICT q_offsets,
 // consecutive elements, and other columns by adding q_stride.
 template <class DF, class VF = hn::Vec<DF>>
 void QDotKTileFloat(DF df, const float* HWY_RESTRICT q, const size_t q_stride,
-                    const MatPtrT<KV_t>& k, const size_t* k_pos,
-                    hwy::Profiler& p, const size_t worker, VF& sum0, VF& sum1,
-                    VF& sum2, VF& sum3, VF& sum4, VF& sum5, VF& sum6,
+                    const MatPtrT<KV_t>& k, const size_t* k_pos, VF& sum0,
+                    VF& sum1, VF& sum2, VF& sum3, VF& sum4, VF& sum5, VF& sum6,
                     VF& sum7) {
   constexpr size_t kHTileSize = kNFx8HTileSize;
   sum0 = hn::Zero(df);
@@ -303,8 +303,8 @@ void TileFlashAttention(
       k_pos[i] = activations.div_seq_len.Remainder(position + i);
     }
     VF x0, x1, x2, x3, x4, x5, x6, x7;
-    QDotKTileFloat(df, qT_row, qT_stride, k, k_pos, p, worker, x0, x1, x2, x3,
-                   x4, x5, x6, x7);
+    QDotKTileFloat(df, qT_row, qT_stride, k, k_pos, x0, x1, x2, x3, x4, x5, x6,
+                   x7);
     if (activations.config.att_cap > 0.0f) {
       // Compute tanh(x / cap) * cap, being LogitsSoftCap on the tile.
       VF cap = hn::Set(df, activations.config.att_cap);
@@ -343,12 +343,12 @@ void TileFlashAttention(
     x6 = hn::Mul(x6, one_over_d);
     x7 = hn::Mul(x7, one_over_d);
     MulByConstAndAddTile(df, scale, x0, x1, x2, x3, x4, x5, x6, x7, v, k_pos,
-                         att_out.Row(0), out_offsets, v.Cols(), p, worker);
+                         att_out.Row(0), out_offsets, v.Cols());
     position += kHTileSize;
   }
   while (position <= max_last_pos) {
     size_t k_pos = activations.div_seq_len.Remainder(position);
-    VF x0 = QDotKVector(df, q_offsets, k_pos, q, k, p, worker);
+    VF x0 = QDotKVector(df, q_offsets, k_pos, q, k);
     if (activations.config.att_cap > 0.0f) {
       // Compute tanh(x / cap) * cap, being LogitsSoftCap on the vector.
       VF cap = hn::Set(df, activations.config.att_cap);
@@ -369,7 +369,7 @@ void TileFlashAttention(
     x0 = hn::Mul(x0, one_over_d);
     scale = hn::Mul(scale, one_over_d);
     MulByConstAndAddVector(df, scale, x0, v, k_pos, att_out.Row(0), out_offsets,
-                           v.Cols(), p, worker);
+                           v.Cols());
     ++position;
   }
 }
@@ -380,8 +380,8 @@ void TileFlashAttention(
 template <class DF, class VF = hn::Vec<DF>>
 void QDotKTilex4(DF df, const float* HWY_RESTRICT q,
                  const uint32_t* HWY_RESTRICT q_offsets, const MatPtrT<KV_t>& k,
-                 const int32_t* HWY_RESTRICT k_offsets, hwy::Profiler& p,
-                 const size_t worker, VF& sum0, VF& sum1, VF& sum2, VF& sum3) {
+                 const int32_t* HWY_RESTRICT k_offsets, VF& sum0, VF& sum1,
+                 VF& sum2, VF& sum3) {
   sum0 = hn::Zero(df);
   sum1 = hn::Zero(df);
   sum2 = hn::Zero(df);
@@ -462,8 +462,7 @@ void TileFlashAttention4(
       k_offsets[i] = k.Row(v_pos[i]) - k.Row(0);
     }
     VF x0, x1, x2, x3;
-    QDotKTilex4(df, q.Row(0), q_offsets, k, k_offsets, p, worker, x0, x1, x2,
-                x3);
+    QDotKTilex4(df, q.Row(0), q_offsets, k, k_offsets, x0, x1, x2, x3);
     if (activations.config.att_cap > 0.0f) {
       // Compute tanh(x / cap) * cap, being LogitsSoftCap on the tile.
       VF cap = hn::Set(df, activations.config.att_cap);
@@ -478,7 +477,7 @@ void TileFlashAttention4(
     scales[2] = SingleFlashAttentionRowVector(df, x2, old_m2, old_d2);
     scales[3] = SingleFlashAttentionRowVector(df, x3, old_m3, old_d3);
     MulByConstAndAddTile4(df, scales, x0, x1, x2, x3, v, v_pos, att_out.Row(0),
-                          out_offsets, v.Cols(), p, worker);
+                          out_offsets, v.Cols());
     position += kHTileSize;
   }
   while (position <= max_last_pos) {
@@ -488,28 +487,28 @@ void TileFlashAttention4(
       float x0 = Dot(q.Row(0) + q_offsets[0], k.Row(k_pos), k.Cols());
       SingleFlashAttentionStep(x0, activations.config.att_cap, old_m0, old_d0,
                                v.Row(k_pos), v.Cols(),
-                               att_out.Row(0) + out_offsets[0], p, worker);
+                               att_out.Row(0) + out_offsets[0]);
     }
     if (position <= last_pos[1]) {
       // Past the last position, x1 doesn't count.
       float x1 = Dot(q.Row(0) + q_offsets[1], k.Row(k_pos), k.Cols());
       SingleFlashAttentionStep(x1, activations.config.att_cap, old_m1, old_d1,
                                v.Row(k_pos), v.Cols(),
-                               att_out.Row(0) + out_offsets[1], p, worker);
+                               att_out.Row(0) + out_offsets[1]);
     }
     if (position <= last_pos[2]) {
       // Past the last position, x2 doesn't count.
       float x2 = Dot(q.Row(0) + q_offsets[2], k.Row(k_pos), k.Cols());
       SingleFlashAttentionStep(x2, activations.config.att_cap, old_m2, old_d2,
                                v.Row(k_pos), v.Cols(),
-                               att_out.Row(0) + out_offsets[2], p, worker);
+                               att_out.Row(0) + out_offsets[2]);
     }
     if (position <= last_pos[3]) {
       // Past the last position, x3 doesn't count.
       float x3 = Dot(q.Row(0) + q_offsets[3], k.Row(k_pos), k.Cols());
       SingleFlashAttentionStep(x3, activations.config.att_cap, old_m3, old_d3,
                                v.Row(k_pos), v.Cols(),
-                               att_out.Row(0) + out_offsets[3], p, worker);
+                               att_out.Row(0) + out_offsets[3]);
     }
     ++position;
   }

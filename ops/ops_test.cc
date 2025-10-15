@@ -183,7 +183,7 @@ class TestMulByConstAndAdd {
 
     SimpleMulByConstAndAdd(constant, o, e, count);
     InitProfilerZones(hwy::Profiler::Get());
-    MulByConstAndAdd(constant, o, x, count, hwy::Profiler::Get(), /*worker=*/0);
+    MulByConstAndAdd(constant, o, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -232,7 +232,7 @@ class TestMulByConst {
 
     SimpleMulByConst(constant, e, count);
     InitProfilerZones(hwy::Profiler::Get());
-    MulByConst(constant, x, count, hwy::Profiler::Get(), /*worker=*/0);
+    MulByConst(constant, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -443,7 +443,6 @@ void TestRopeAndMulBy() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   hwy::Profiler& p = ctx.profiler;
-  InitProfilerZones(p);
   const size_t worker = 0;
 
   const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,

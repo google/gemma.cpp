@@ -95,7 +95,7 @@ class VitAttention {
         float* HWY_RESTRICT q =
             activations_.attention.q.Row(token) + head * 3 * qkv_dim;
         // TODO: shift to MatMul with A.scale once MatMul is confirmed working
-        MulByConst(query_scale, q, qkv_dim, env_.ctx.profiler, worker);
+        MulByConst(query_scale, q, qkv_dim);
         hwy::CopyBytes(q, Q.Row(token), qkv_dim * sizeof(float));
       });
 
@@ -120,8 +120,7 @@ class VitAttention {
         for (size_t i = 0; i < seq_len; ++i) {
           float* HWY_RESTRICT v = activations_.attention.q.Row(i) +
                                   head * 3 * qkv_dim + 2 * qkv_dim;
-          MulByConstAndAdd(C.Row(token)[i], v, att_out, qkv_dim,
-                           env_.ctx.profiler, worker);
+          MulByConstAndAdd(C.Row(token)[i], v, att_out, qkv_dim);
         }
       });
     }
@@ -144,7 +143,7 @@ class VitAttention {
                 // Compute Q.K scores, which are "logits" stored in head_att.
                 float* HWY_RESTRICT q =
                     activations_.attention.q.Row(token) + head * 3 * qkv_dim;
-                MulByConst(query_scale, q, qkv_dim, env_.ctx.profiler, worker);
+                MulByConst(query_scale, q, qkv_dim);
                 float* HWY_RESTRICT head_att =
                     activations_.attention.att.Row(token) + head * seq_len;
                 for (size_t i = 0; i < seq_len; ++i) {
@@ -161,8 +160,7 @@ class VitAttention {
                 for (size_t i = 0; i < seq_len; ++i) {
                   float* HWY_RESTRICT v = activations_.attention.q.Row(i) +
                                           head * 3 * qkv_dim + 2 * qkv_dim;
-                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim,
-                                   env_.ctx.profiler, worker);
+                  MulByConstAndAdd(head_att[i], v, att_out, qkv_dim);
                 }
               });
   }

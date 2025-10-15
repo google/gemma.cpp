@@ -89,7 +89,7 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
   // PostQKType::Rope
   if (post_qk == PostQKType::HalfRope) {
     Rope(qk, qkv_dim / 2, inv_timescale, pos, p, worker);
-    if (mul != 1.0f) MulByConst(mul, qk, qkv_dim, p, worker);
+    if (mul != 1.0f) MulByConst(mul, qk, qkv_dim);
   } else {
     RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, p, worker);
   }
@@ -113,7 +113,7 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
     MulByConstTo(att[start_pos], v.Row(start_pos), att_out, v.Cols(), p,
                  worker);
     for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-      MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols(), p, worker);
+      MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols());
     }
   } else {
     {
@@ -122,8 +122,7 @@ static HWY_INLINE void WeightedSumV(const size_t start_pos,
     }
     for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
       const size_t pos_mod = div_seq_len.Remainder(pos);
-      MulByConstAndAdd(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), p,
-                       worker);
+      MulByConstAndAdd(att[pos_mod], v.Row(pos_mod), att_out, v.Cols());
     }
   }
 }

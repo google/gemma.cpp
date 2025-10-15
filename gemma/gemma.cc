@@ -160,7 +160,6 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
 
   const size_t model_dim = model_config.model_dim;
   const float emb_scaling = EmbeddingScaling(model_dim);
-  const size_t worker = 0;  // Not yet parallelized.
 
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
@@ -176,8 +175,7 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
     const hn::ScalableTag<float> df;
     DecompressAndZeroPad(df, embedding_span, embedding_ofs, x.Row(x_row),
                          model_dim);
-    MulByConst(emb_scaling * weights_t->Scale(), x.Row(x_row), model_dim,
-               ctx.profiler, worker);
+    MulByConst(emb_scaling * weights_t->Scale(), x.Row(x_row), model_dim);
   });
 
   if (model_config.absolute_pe) {

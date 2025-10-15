@@ -560,10 +560,7 @@ static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
 
 template <typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
-                                              const size_t size,
-                                              hwy::Profiler& p,
-                                              const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConst));
+                                              const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -596,10 +593,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
 
 // out[i] += x[i] * c.
 template <typename XT, typename OT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
-    const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAdd));
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(const float c,
+                                                    const XT* HWY_RESTRICT x,
+                                                    OT* HWY_RESTRICT out,
+                                                    const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -734,9 +731,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
     DF df, const VF scale, const VF c0, const VF c1, const VF c2, const VF c3,
     const VF c4, const VF c5, const VF c6, const VF c7, const MatPtrT<float>& v,
     const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
-    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
-    hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddTile));
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -996,9 +991,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile4(
     DF df, const float* HWY_RESTRICT scales, const VF c0, const VF c1,
     const VF c2, const VF c3, const MatPtrT<float>& v,
     const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
-    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
-    hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddTile4));
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -1037,9 +1030,7 @@ template <class DF, class VF = hn::Vec<DF>>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
     DF df, const VF scale, const VF c0, const MatPtrT<float>& v,
     const size_t pos, float* HWY_RESTRICT out,
-    const uint32_t* HWY_RESTRICT out_offsets, const size_t size,
-    hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstAndAddVector));
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
@@ -1177,7 +1168,7 @@ static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
   const float sum_exp = Sum(d, logits.data(), logits.size());
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
-  MulByConst(mul, logits.data(), logits.size(), p, worker);
+  MulByConst(mul, logits.data(), logits.size());
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /
