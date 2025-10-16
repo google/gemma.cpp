@@ -26,6 +26,9 @@
         "description": "Visual Studio 2022 with Clang/LLVM frontend",
         "generator": "Visual Studio 17 2022",
         "toolset": "ClangCL",
+        "cacheVariables": {
+          "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+        },
         "condition": {
           "type": "equals",
           "lhs": "${hostSystemName}",
