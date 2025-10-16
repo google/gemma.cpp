@@ -40,6 +40,7 @@ class BoundedSlice {
   BoundedSlice(size_t skip = 0, size_t max = 0) : skip_(skip), max_(max) {}
 
   size_t Begin() const { return skip_; }
+  size_t Max() const { return max_; }
 
   // STL-style one past the end.
   size_t End(size_t detected) const {
@@ -82,12 +83,11 @@ using LPS = hwy::LogicalProcessorSet;
 // back to a single package and cluster.
 class BoundedTopology {
  public:
-  // Defaults to "use all detected".
-  BoundedTopology(BoundedSlice package_slice = BoundedSlice(),
+  // `package_slice` must have `Max() == 1`. Others default to "use all".
+  BoundedTopology(BoundedSlice package_slice,
                   BoundedSlice cluster_slice = BoundedSlice(),
                   BoundedSlice lp_slice = BoundedSlice());
 
-  size_t NumPackages() const { return packages_.size(); }
   size_t NumNodes() const { return nodes_.Count(); }
   const char* TopologyString() const { return topology_string_; }
 
@@ -98,8 +98,7 @@ class BoundedTopology {
             const std::vector<hwy::Topology::LP>& all_lps,
             const hwy::Topology::Cluster& tcluster);
 
-    // For SortByDescendingSize.
-    size_t Size() const { return num_workers_; }
+    size_t NumWorkers() const { return num_workers_; }
 
     // Returns vector with all enabled LPs, used for pinning.
     std::vector<size_t> LPVector() const {
@@ -127,26 +126,11 @@ class BoundedTopology {
     size_t shared_kib_ = 0;
   };  // Cluster
 
-  size_t NumClusters(size_t pkg_idx) const {
-    HWY_ASSERT(pkg_idx < NumPackages());
-    return packages_[pkg_idx].clusters.size();
+  size_t NumClusters() const { return clusters_.size(); }
+  const Cluster& GetCluster(size_t cluster_idx) const {
+    HWY_ASSERT(cluster_idx < clusters_.size());
+    return clusters_[cluster_idx];
   }
-  const Cluster& GetCluster(size_t pkg_idx, size_t cluster_idx) const {
-    HWY_ASSERT(pkg_idx < NumPackages());
-    const Package& package = packages_[pkg_idx];
-    HWY_ASSERT(cluster_idx < package.clusters.size());
-    return package.clusters[cluster_idx];
-  }
-  Cluster& GetCluster(size_t pkg_idx, size_t cluster_idx) {
-    HWY_ASSERT(pkg_idx < NumPackages());
-    Package& package = packages_[pkg_idx];
-    HWY_ASSERT(cluster_idx < package.clusters.size());
-    return package.clusters[cluster_idx];
-  }
-
-#if !GEMMA_DISABLE_TOPOLOGY
-  const hwy::Topology& FullTopology() const { return topology_; }
-#endif
 
   // In case we are running with a subset of packages/clusters, these are added
   // to the package/cluster indices for purposes of the thread name, so that
@@ -155,26 +139,17 @@ class BoundedTopology {
   size_t SkippedClusters() const { return cluster_slice_.Begin(); }
 
  private:
-  struct Package {
-    explicit Package(const LPS& enabled_lps);
-    Package(const LPS& enabled_lps, const hwy::Topology& topology,
-            size_t pkg_idx, BoundedSlice cluster_slice);
-
-    // For SortByDescendingSize.
-    size_t Size() const { return clusters.size(); }
-
-    std::vector<Cluster> clusters;
-  };  // Package
-
-  void InitFromTopology(const LPS& enabled_lps);
+  void SplitLargeCluster(const LPS& enabled_lps,
+                         hwy::Topology::Cluster tcluster);
+  bool InitFromTopology(const LPS& enabled_lps);
   void InitFromLPs(const LPS& enabled_lps);
 
 #if !GEMMA_DISABLE_TOPOLOGY
   hwy::Topology topology_;
 #endif
-  BoundedSlice package_slice_;
+  BoundedSlice package_slice_;  // Within the entire detected topology.
   BoundedSlice cluster_slice_;
-  std::vector<Package> packages_;
+  std::vector<Cluster> clusters_;
   char topology_string_[96];
   LPS nodes_;
 };

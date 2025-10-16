@@ -351,7 +351,7 @@ std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
 
 MatMulEnv::MatMulEnv(ThreadingContext& ctx)
     : ctx(ctx), A_BF(ctx.allocator), C_tiles(ctx) {
-  const size_t num_clusters = ctx.pools.AllClusters(/*pkg_idx=*/0).NumWorkers();
+  const size_t num_clusters = ctx.pools.NumClusters();
   per_cluster.resize(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
     row_ptrs.push_back(hwy::AllocateAligned<uint8_t*>(kMaxBatchSize));  // C
@@ -368,7 +368,7 @@ void BindB(ThreadingContext& ctx, MatPtr& B, size_t sizeof_TC) {
 
   PROFILER_ZONE("Startup.BindB");
 
-  const size_t node = ctx.topology.GetCluster(/*pkg_idx=*/0, 0).Node();
+  const size_t node = ctx.topology.GetCluster(0).Node();
   uintptr_t begin = reinterpret_cast<uintptr_t>(B.RowBytes(0));
   uintptr_t end = begin + B.Rows() * B.Stride() * B.ElementBytes();
   // B row padding is less than the page size, so only bind the subset that
@@ -394,7 +394,7 @@ void BindC(ThreadingContext& ctx, MatPtr& C) {
   const size_t end = hwy::RoundDownTo(cols_c.end() * C.ElementBytes(),
                                       allocator.BasePageBytes());
 
-  const size_t node = ctx.topology.GetCluster(/*pkg_idx=*/0, 0).Node();
+  const size_t node = ctx.topology.GetCluster(0).Node();
   bool ok = true;
   for (size_t im = 0; im < C.Rows(); ++im) {
     ok &= allocator.BindMemory(C.RowBytes(im) + begin, end - begin, node);

@@ -139,7 +139,7 @@ CacheInfo::CacheInfo(const BoundedTopology& topology) {
 
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
 
-  const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
+  const BoundedTopology::Cluster& cluster = topology.GetCluster(0);
   if (const hwy::Cache* caches = hwy::DataCaches()) {
     l1_bytes_ = caches[1].size_kib << 10;
     l2_bytes_ = caches[2].size_kib << 10;

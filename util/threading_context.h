@@ -153,10 +153,7 @@ enum class ParallelismStrategy : uint8_t {
 template <class Func>
 void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
                  ThreadingContext& ctx, size_t cluster_idx, const Func& func) {
-  HWY_DASSERT(ctx.topology.NumPackages() == 1);
-  const size_t pkg_idx = 0;
-
-  HWY_DASSERT(cluster_idx < ctx.topology.NumClusters(pkg_idx));
+  HWY_DASSERT(cluster_idx < ctx.topology.NumClusters());
   if (cluster_idx != 0) {
     // If already running across clusters, only use within-cluster modes.
     HWY_DASSERT(parallelism == ParallelismStrategy::kNone ||
@@ -173,7 +170,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
     }
 
     case ParallelismStrategy::kAcrossClusters:
-      return ctx.pools.AllClusters(pkg_idx).Run(
+      return ctx.pools.AllClusters().Run(
           0, num_tasks,
           [&](uint64_t task, size_t cluster_idx) { func(task, cluster_idx); });
 
@@ -181,7 +178,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
       // Ensure the worker argument is unique across clusters, because it is
       // used for TLS indexing for example in profiler.h.
       const size_t base = ctx.Worker(cluster_idx);
-      return ctx.pools.Cluster(pkg_idx, cluster_idx)
+      return ctx.pools.Cluster(cluster_idx)
           .Run(0, num_tasks, [&](uint64_t task, size_t worker) {
             func(task, base + worker);
           });
@@ -190,15 +187,15 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
     case ParallelismStrategy::kFlat: {
       // Check for single cluster; if not, we must compute `cluster_base` for
       // consistent and non-overlapping worker indices.
-      hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
+      hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
       const size_t num_clusters = all_clusters.NumWorkers();
       if (num_clusters == 1) {
-        return ctx.pools.Cluster(pkg_idx, cluster_idx)
+        return ctx.pools.Cluster(cluster_idx)
             .Run(0, num_tasks,
                  [&](uint64_t task, size_t worker) { func(task, worker); });
       }
 
-      return ctx.pools.AllClusters(pkg_idx).Run(
+      return ctx.pools.AllClusters().Run(
           0, num_tasks, [&](uint64_t task, size_t cluster_idx) {
             const size_t worker = ctx.Worker(cluster_idx);
             func(task, worker);

@@ -1124,8 +1124,9 @@ void TestAllDot() {
                              MatPadding::kOdd);
     std::array<DotStats, kMaxWorkers> all_stats;
 
-    ctx.pools.Cluster(0, 0).Run(
-        0, kReps, [&](const uint32_t rep, size_t thread) {
+    ParallelFor(
+        ParallelismStrategy::kWithinCluster, kReps, ctx, 0,
+        [&](size_t rep, size_t thread) {
           float* HWY_RESTRICT pa = a.Row(thread);
           float* HWY_RESTRICT pb = b.Row(thread);
           double* HWY_RESTRICT buf = bufs.Row(thread);

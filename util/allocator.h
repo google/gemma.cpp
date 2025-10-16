@@ -169,7 +169,7 @@ class Allocator {
   bool ShouldBind() const { return should_bind_; }
 
   // Attempts to move(!) `[p, p + bytes)` to the given NUMA node, which is
-  // typically `BoundedTopology::GetCluster(package_idx, cluster_idx).node`.
+  // typically `BoundedTopology::GetCluster(cluster_idx).node`.
   // Writes zeros to SOME of the memory. Only call if `ShouldBind()`.
   // `p` and `bytes` must be multiples of `QuantumBytes()`.
   bool BindMemory(void* p, size_t bytes, size_t node) const;

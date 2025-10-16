@@ -191,29 +191,22 @@ HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
   const IndexRange all_cols_c(0, C.Cols());
 
   NestedPools& pools = env.ctx.pools;
-  hwy::ThreadPool& all_packages = pools.AllPackages();
-  const IndexRangePartition get_row_c =
-      StaticPartition(all_rows_c, all_packages.NumWorkers(), 1);
+  hwy::ThreadPool& all_clusters = pools.AllClusters();
+  const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
+  const IndexRangePartition get_col_c =
+      StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
   ParallelizeOneRange(
-      get_row_c, all_packages,
-      [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
-        hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
-        const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
-        const IndexRangePartition get_col_c =
-            StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
-        ParallelizeOneRange(
-            get_col_c, all_clusters,
-            [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
-              for (size_t r : rows_c) {
-                TC* HWY_RESTRICT C_row = C.Row(r);
-                for (size_t c : cols_c) {
-                  const float add = add_row ? add_row[c] : 0.0f;
-                  const float dot =
-                      Dot(df, b_span, c * B.Stride(), A.Row(r), A.Cols());
-                  C_row[c] = hwy::ConvertScalarTo<TC>(add + scale * dot);
-                }
-              }
-            });
+      get_col_c, all_clusters,
+      [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
+        for (size_t r : all_rows_c) {
+          TC* HWY_RESTRICT C_row = C.Row(r);
+          for (size_t c : cols_c) {
+            const float add = add_row ? add_row[c] : 0.0f;
+            const float dot =
+                Dot(df, b_span, c * B.Stride(), A.Row(r), A.Cols());
+            C_row[c] = hwy::ConvertScalarTo<TC>(add + scale * dot);
+          }
+        }
       });
 }
 

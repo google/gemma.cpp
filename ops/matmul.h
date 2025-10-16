@@ -105,8 +105,7 @@ struct MMParallelWithinCluster {
             size_t inner_tasks, size_t cluster_idx, const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
 
-    const size_t pkg_idx = 0;
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
     const size_t base = ctx.Worker(cluster_idx);
 
     const IndexRangePartition ranges_n = StaticPartition(
@@ -122,8 +121,7 @@ struct MMParallelWithinCluster {
                       const IndexRangePartition& ranges_mc,
                       const IndexRangePartition& ranges_nc, size_t cluster_idx,
                       const Func& func) const {
-    const size_t pkg_idx = 0;
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
     const size_t base = ctx.Worker(cluster_idx);
 
     // Low-batch: avoid Divide/Remainder.
@@ -143,8 +141,7 @@ struct MMParallelWithinCluster {
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t cluster_idx, const Func& func) const {
-    const size_t pkg_idx = 0;
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
     const size_t base = ctx.Worker(cluster_idx);
 
     cluster.Run(
@@ -164,12 +161,11 @@ struct MMParallelHierarchical {
     HWY_DASSERT(caller_cluster_idx == 0);
 
     // Single cluster: parallel-for over static partition of `range_n`.
-    const size_t pkg_idx = 0;
-    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
+    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
     const size_t num_clusters = all_clusters.NumWorkers();
     if (num_clusters == 1) {
       const size_t cluster_idx = 0;
-      hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+      hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
       const IndexRangePartition ranges_n = StaticPartition(
           range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
       return ParallelizeOneRange(
@@ -185,7 +181,7 @@ struct MMParallelHierarchical {
     ParallelizeOneRange(
         ranges_n, all_clusters,
         [&](const IndexRange& n_range, const size_t cluster_idx) {
-          hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+          hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
           const size_t cluster_base = ctx.Worker(cluster_idx);
           // Parallel-for over sub-ranges of `cluster_range` within the cluster.
           const IndexRangePartition worker_ranges = StaticPartition(
@@ -206,17 +202,16 @@ struct MMParallelHierarchical {
                       const IndexRangePartition& ranges_nc,
                       HWY_MAYBE_UNUSED size_t caller_cluster_idx,
                       const Func& func) const {
-    const size_t pkg_idx = 0;
     HWY_DASSERT(caller_cluster_idx == 0);
 
-    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters(pkg_idx);
+    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
     // `all_clusters` is a pool with one worker per cluster in a package.
     const size_t num_clusters = all_clusters.NumWorkers();
     // Single (big) cluster: collapse two range indices into one parallel-for
     // to reduce the number of fork-joins.
     if (num_clusters == 1) {
       const size_t cluster_idx = 0;
-      hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+      hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
       // Low-batch: avoid Divide/Remainder.
       if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
         return ParallelizeOneRange(
@@ -237,7 +232,7 @@ struct MMParallelHierarchical {
         ranges_nc, all_clusters,
         [&](const IndexRange range_nc, size_t cluster_idx) {
           const size_t cluster_base = ctx.Worker(cluster_idx);
-          hwy::ThreadPool& cluster = ctx.pools.Cluster(pkg_idx, cluster_idx);
+          hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
           ParallelizeOneRange(ranges_mc, cluster,
                               [&](const IndexRange& range_mc, size_t worker) {
                                 func(range_mc, range_nc, cluster_base + worker);

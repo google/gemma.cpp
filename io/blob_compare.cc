@@ -28,7 +28,6 @@
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -104,27 +103,31 @@ BlobVec ReserveMemory(const RangeVec& ranges, BytePtr& all_blobs, size_t& pos) {
 // Reads one set of blobs in parallel (helpful if in disk cache).
 // Aborts on error.
 void ReadBlobs(BlobReader& reader, const RangeVec& ranges, BlobVec& blobs,
-               hwy::ThreadPool& pool) {
+               ThreadingContext& ctx, size_t cluster_idx) {
   HWY_ASSERT(reader.Keys().size() == blobs.size());
   HWY_ASSERT(ranges.size() == blobs.size());
-  pool.Run(0, blobs.size(), [&](size_t i, size_t /*thread*/) {
-    HWY_ASSERT(ranges[i].bytes == blobs[i].size());
-    reader.file().Read(ranges[i].offset, ranges[i].bytes, blobs[i].data());
-  });
+  ParallelFor(ParallelismStrategy::kWithinCluster, blobs.size(), ctx,
+              cluster_idx, [&](size_t i, size_t /*thread*/) {
+                HWY_ASSERT(ranges[i].bytes == blobs[i].size());
+                reader.file().Read(ranges[i].offset, ranges[i].bytes,
+                                   blobs[i].data());
+              });
 }
 
 // Parallelizes ReadBlobs across (two) packages, if available.
 void ReadBothBlobs(BlobReader& reader1, BlobReader& reader2,
                    const RangeVec& ranges1, const RangeVec& ranges2,
                    size_t total_bytes, BlobVec& blobs1, BlobVec& blobs2,
-                   NestedPools& pools) {
+                   ThreadingContext& ctx) {
   const double t0 = hwy::platform::Now();
-  HWY_WARN("Reading %zu GiB, %zux%zu cores: ", total_bytes >> 30,
-           pools.AllPackages().NumWorkers(), pools.Pool().NumWorkers());
-  pools.AllPackages().Run(0, 2, [&](size_t task, size_t pkg_idx) {
-    ReadBlobs(task ? reader2 : reader1, task ? ranges2 : ranges1,
-              task ? blobs2 : blobs1, pools.Pool(pkg_idx));
-  });
+  HWY_WARN("Reading %zu GiB, %zu clusters: ", total_bytes >> 30,
+           ctx.pools.NumClusters());
+  ParallelFor(ParallelismStrategy::kAcrossClusters, 2, ctx, 0,
+              [&](const size_t task, size_t cluster_idx) {
+                ReadBlobs(task ? reader1 : reader2, task ? ranges1 : ranges2,
+                          task ? blobs1 : blobs2, ctx, cluster_idx);
+              });
+
   const double t1 = hwy::platform::Now();
   HWY_WARN("%.1f GB/s\n", total_bytes / (t1 - t0) * 1E-9);
 }
@@ -181,29 +184,23 @@ size_t BlobDifferences(const ByteSpan data1, const ByteSpan data2,
 }
 
 void CompareBlobs(const KeyVec& keys, BlobVec& blobs1, BlobVec& blobs2,
-                  size_t total_bytes, NestedPools& pools) {
+                  size_t total_bytes, ThreadingContext& ctx) {
   HWY_WARN("Comparing %zu blobs in parallel: ", keys.size());
   const double t0 = hwy::platform::Now();
   std::atomic<size_t> blobs_equal{};
   std::atomic<size_t> blobs_diff{};
-  const IndexRangePartition ranges = StaticPartition(
-      IndexRange(0, keys.size()), pools.AllPackages().NumWorkers(), 1);
-  ParallelizeOneRange(
-      ranges, pools.AllPackages(),
-      [&](const IndexRange& range, size_t pkg_idx) {
-        pools.Pool(pkg_idx).Run(
-            range.begin(), range.end(), [&](size_t i, size_t /*thread*/) {
-              const size_t mismatches =
-                  BlobDifferences(blobs1[i], blobs2[i], keys[i]);
-              if (mismatches != 0) {
-                HWY_WARN("key %s has %zu mismatches in %zu bytes!\n",
-                         keys[i].c_str(), mismatches, blobs1[i].size());
-                blobs_diff.fetch_add(1);
-              } else {
-                blobs_equal.fetch_add(1);
-              }
-            });
-      });
+  ParallelFor(ParallelismStrategy::kHierarchical, keys.size(), ctx, 0,
+              [&](size_t i, size_t /*thread*/) {
+                const size_t mismatches =
+                    BlobDifferences(blobs1[i], blobs2[i], keys[i]);
+                if (mismatches != 0) {
+                  HWY_WARN("key %s has %zu mismatches in %zu bytes!\n",
+                           keys[i].c_str(), mismatches, blobs1[i].size());
+                  blobs_diff.fetch_add(1);
+                } else {
+                  blobs_equal.fetch_add(1);
+                }
+              });
   const double t1 = hwy::platform::Now();
   HWY_WARN("%.1f GB/s; total blob matches=%zu, mismatches=%zu\n",
            total_bytes / (t1 - t0) * 1E-9, blobs_equal.load(),
@@ -230,9 +227,9 @@ void ReadAndCompareBlobs(const Path& path1, const Path& path2) {
   ThreadingArgs args;
   ThreadingContext ctx(args);
   ReadBothBlobs(reader1, reader2, ranges1, ranges2, total_bytes, blobs1, blobs2,
-                ctx.pools);
+                ctx);
 
-  CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, ctx.pools);
+  CompareBlobs(reader1.Keys(), blobs1, blobs2, total_bytes, ctx);
 }
 
 }  // namespace gcpp

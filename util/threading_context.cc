@@ -79,18 +79,15 @@ static void TunePool(hwy::PoolWaitMode wait_mode, hwy::ThreadPool& pool) {
 }
 
 static void TunePools(hwy::PoolWaitMode wait_mode, NestedPools& pools) {
-  TunePool(wait_mode, pools.AllPackages());
-  for (size_t pkg_idx = 0; pkg_idx < pools.NumPackages(); ++pkg_idx) {
-    hwy::ThreadPool& clusters = pools.AllClusters(pkg_idx);
-    TunePool(wait_mode, clusters);
+  hwy::ThreadPool& clusters = pools.AllClusters();
+  TunePool(wait_mode, clusters);
 
-    // Run in parallel because Turin CPUs have 16, and in real usage, we often
-    // run all at the same time.
-    clusters.Run(0, clusters.NumWorkers(),
-                 [&](uint64_t cluster_idx, size_t /*thread*/) {
-                   TunePool(wait_mode, pools.Cluster(pkg_idx, cluster_idx));
-                 });
-  }
+  // Run in parallel because Turin CPUs have 16, and in real usage, we often
+  // run all at the same time.
+  clusters.Run(0, clusters.NumWorkers(),
+               [&](uint64_t cluster_idx, size_t /*thread*/) {
+                 TunePool(wait_mode, pools.Cluster(cluster_idx));
+               });
 }
 
 ThreadingContext::ThreadingContext(const ThreadingArgs& args)

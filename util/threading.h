@@ -66,17 +66,14 @@ class PinningPolicy {
 };  // PinningPolicy
 
 // Creates a hierarchy of thread pools according to `BoundedTopology`: one with
-// a thread per enabled package; for each of those, one with a thread per
-// enabled cluster (CCX/shared L3), and for each of those, the remaining
-// enabled cores in that cluster.
+// a thread per enabled cluster (CCX/shared L3), and for each of those, the
+// remaining enabled cores in that cluster.
 //
 // Note that we support spin waits, thus it is important for each thread to be
 // responsive, hence we do not create more than one thread per enabled core.
-// For example, when there are two packages with four clusters of 8 cores,
-// `AllPackages` has the main thread plus one extra thread, each `AllClusters`
-// has one of the `AllPackages` threads plus three extras, each `Cluster` runs
-// on one `AllClusters` thread plus seven extra workers, for a total of
-// 1 + 2*3 + 2*(4*7) = 63 extras plus the main thread.
+// For example, when there are four clusters of 8 cores, `AllClusters` has the
+// main thread plus three extras, each `Cluster` runs on one of `AllClusters`
+// plus seven extras, for a total of 3 + (4*7) = 31 extras plus the main thread.
 //
 // Useful when there are tasks which should be parallelized by workers sharing a
 // cache, or on the same NUMA node. In both cases, individual pools have lower
@@ -96,6 +93,10 @@ class NestedPools {
   NestedPools(NestedPools&&) = delete;
   NestedPools& operator=(NestedPools&&) = delete;
 
+  // Because cross-package latency is high, this interface assumes only one
+  // package is used. The `skip_packages` argument to `BoundedTopology` selects
+  // which package that is for this `NestedPools` instance.
+  //
   // `max_threads` is the maximum number of threads to divide among all
   // clusters. This is more intuitive than a per-cluster limit for users who
   // may not be aware of the CPU topology. This should be zero (meaning no
@@ -104,8 +105,8 @@ class NestedPools {
   //
   // To ensure we do not create more threads than there are HW cores, which
   // would cause huge slowdowns when spinning, the `BoundedSlice` arguments
-  // only impose upper bounds on the number of detected packages and clusters
-  // rather than defining the actual number of threads.
+  // only impose upper bounds on the number of detected clusters rather than
+  // defining the actual number of threads.
   NestedPools(const BoundedTopology& topology, const Allocator& allocator,
               size_t max_threads = 0, Tristate pin = Tristate::kDefault);
 
@@ -133,98 +134,37 @@ class NestedPools {
     }
   }
 
-  size_t NumPackages() const { return packages_.size(); }
-  hwy::ThreadPool& AllPackages() { return *all_packages_; }
-  hwy::ThreadPool& AllClusters(size_t pkg_idx) {
-    HWY_DASSERT(pkg_idx < NumPackages());
-    return packages_[pkg_idx].AllClusters();
-  }
-  hwy::ThreadPool& Cluster(size_t pkg_idx, size_t cluster_idx) {
-    HWY_DASSERT(pkg_idx < NumPackages());
-    return packages_[pkg_idx].Cluster(cluster_idx);
+  size_t NumClusters() const { return clusters_.size(); }
+  hwy::ThreadPool& AllClusters() { return *all_clusters_; }
+  hwy::ThreadPool& Cluster(size_t cluster_idx) {
+    HWY_DASSERT(cluster_idx < clusters_.size());
+    return *clusters_[cluster_idx];
   }
 
   // Reasonably tight upper bounds for allocating thread-local storage (TLS).
   size_t MaxWorkersPerCluster() const { return max_workers_per_cluster_; }
-  size_t MaxWorkersPerPackage() const {
-    return max_clusters_per_package_ * MaxWorkersPerCluster();
-  }
-  size_t MaxWorkers() const { return NumPackages() * MaxWorkersPerPackage(); }
-
-  // Actual number of workers.
-  size_t TotalWorkers() const {
-    size_t total_workers = 0;
-    for (size_t pkg_idx = 0; pkg_idx < NumPackages(); ++pkg_idx) {
-      total_workers += packages_[pkg_idx].TotalWorkers();
-    }
-    return total_workers;
-  }
+  size_t MaxWorkers() const { return NumClusters() * MaxWorkersPerCluster(); }
 
   // For ShowConfig
   const char* PinString() const { return pin_string_; }
 
   // Returns a single pool on the given package: either one thread per cluster
   // if there is more than one, which maximizes available memory bandwidth, or
-  // the first cluster, which is typically the whole package. For use by callers
-  // that only have a single parallel-for.
+  // the first cluster, which is typically the whole package. For use by
+  // callers that only have a single parallel-for.
+  // DEPRECATED: use ParallelFor instead.
   hwy::ThreadPool& Pool(size_t pkg_idx = 0) {
     // Only one cluster: use its pool, typically a whole socket.
-    if (AllClusters(pkg_idx).NumWorkers() == 1) {
-      return Cluster(pkg_idx, 0);
-    }
+    if (NumClusters() == 1) return Cluster(0);
     // One worker per cluster to maximize bandwidth availability.
-    return AllClusters(pkg_idx);
+    return AllClusters();
   }
 
  private:
-  class Package {
-   public:
-    Package() = default;  // for vector
-    Package(const BoundedTopology& topology, const Allocator& allocator,
-            PinningPolicy& pinning, size_t pkg_idx,
-            size_t max_workers_per_package);
-
-    size_t NumClusters() const { return clusters_.size(); }
-    size_t MaxWorkersPerCluster() const {
-      size_t max_workers_per_cluster = 0;
-      for (const PoolPtr& cluster : clusters_) {
-        max_workers_per_cluster =
-            HWY_MAX(max_workers_per_cluster, cluster->NumWorkers());
-      }
-      return max_workers_per_cluster;
-    }
-    size_t TotalWorkers() const {
-      size_t total_workers = 0;
-      for (const PoolPtr& cluster : clusters_) {
-        total_workers += cluster->NumWorkers();
-      }
-      return total_workers;
-    }
-
-    hwy::ThreadPool& AllClusters() { return *all_clusters_; }
-    hwy::ThreadPool& Cluster(size_t cluster_idx) {
-      HWY_DASSERT(cluster_idx < clusters_.size());
-      return *clusters_[cluster_idx];
-    }
-
-    void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-      all_clusters_->SetWaitMode(wait_mode);
-      for (PoolPtr& cluster : clusters_) {
-        cluster->SetWaitMode(wait_mode);
-      }
-    }
-
-   private:
-    // Must be freed after `clusters_` because it reserves threads which are
-    // the main threads of `clusters_`.
-    PoolPtr all_clusters_;
-    std::vector<PoolPtr> clusters_;
-  };  // Package
-
   void SetWaitMode(hwy::PoolWaitMode wait_mode) {
-    all_packages_->SetWaitMode(wait_mode);
-    for (Package& package : packages_) {
-      package.SetWaitMode(wait_mode);
+    all_clusters_->SetWaitMode(wait_mode);
+    for (PoolPtr& cluster : clusters_) {
+      cluster->SetWaitMode(wait_mode);
     }
   }
 
@@ -232,12 +172,13 @@ class NestedPools {
   bool all_pinned_;
   const char* pin_string_;
 
-  std::vector<Package> packages_;
-  PoolPtr all_packages_;
+  // Must be freed after `clusters_` because it reserves threads which are
+  // the main threads of `clusters_`.
+  PoolPtr all_clusters_;
+  std::vector<PoolPtr> clusters_;
 
-  // For TLS indices. One might think this belongs in BoundedTopology, but it
-  // depends on max_threads, which is passed to the NestedPools constructor.
-  size_t max_clusters_per_package_ = 0;
+  // Used by `PoolWorkerMapping`. This depends on the `max_threads` argument,
+  // hence we can only compute this here, not in `BoundedTopology`.
   size_t max_workers_per_cluster_ = 0;
 };
 
@@ -362,14 +303,11 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
 template <class Func>
 void HierarchicalParallelFor(size_t num_tasks, NestedPools& pools,
                              const Func& func) {
-  // Even if there are multiple packages, we only use the first.
-  const size_t pkg_idx = 0;
-
   // If few tasks, run on a single cluster. Also avoids a bit of overhead if
   // there is only one cluster.
-  hwy::ThreadPool& all_clusters = pools.AllClusters(pkg_idx);
+  hwy::ThreadPool& all_clusters = pools.AllClusters();
   const size_t num_clusters = all_clusters.NumWorkers();
-  hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, 0);
+  hwy::ThreadPool& cluster = pools.Cluster(0);
   if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
     return cluster.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
       func(task, thread);
@@ -382,7 +320,7 @@ void HierarchicalParallelFor(size_t num_tasks, NestedPools& pools,
   ParallelizeOneRange(
       ranges, all_clusters,
       [&](const IndexRange& range, const size_t cluster_idx) {
-        hwy::ThreadPool& cluster = pools.Cluster(pkg_idx, cluster_idx);
+        hwy::ThreadPool& cluster = pools.Cluster(cluster_idx);
         const size_t cluster_base = cluster_idx * pools.MaxWorkersPerCluster();
         cluster.Run(range.begin(), range.end(),
                     [&](uint64_t task, size_t thread) {
