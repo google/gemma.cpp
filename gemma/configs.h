@@ -26,14 +26,19 @@
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFieldsVisitor
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFieldsVisitor
+#include "io/io.h"              // Path
 #include "util/basics.h"
 
 namespace gcpp {
 
-static constexpr size_t kMaxConv1DWidth = 4;
-static constexpr size_t kMaxQKVDim = 1024;
+HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
+
+HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
+
+#ifndef GEMMA_FUSED_FFN
+#define GEMMA_FUSED_FFN 1
+#endif  // !GEMMA_FUSED_FFN
 
 // Instruction-tuned models require extra 'turn structure' tokens in prompts.
 enum class PromptWrapping {
@@ -68,14 +73,11 @@ static inline bool EnumValid(PromptWrapping wrapping) {
 
 enum class LayerAttentionType {
   kGemma,
-  kGriffinRecurrentBlock,
   kVit,
 };
 
 static inline bool EnumValid(LayerAttentionType type) {
-  return type == LayerAttentionType::kGemma ||
-         type == LayerAttentionType::kGriffinRecurrentBlock ||
-         type == LayerAttentionType::kVit;
+  return type == LayerAttentionType::kGemma || type == LayerAttentionType::kVit;
 }
 
 // Post attention and ffw normalization type.
@@ -163,9 +165,8 @@ enum class Model {
   // 1 and 2 are obsolete.
   GEMMA2_9B = 3,
   GEMMA2_27B,
-  GRIFFIN_2B,
-  GEMMA_TINY,  // for testing only
-  GEMMA2_2B,
+  // 5 and 6 are obsolete.
+  GEMMA2_2B = 7,
   // 8 and 9 are obsolete.
   PALIGEMMA2_3B_224 = 10,
   PALIGEMMA2_3B_448,
@@ -199,13 +200,19 @@ static inline bool IsPaliGemma(Model model) {
   return false;
 }
 
+static inline bool IsObsolete(Model model) {
+  const size_t i = static_cast<size_t>(model);
+  if (i == 5 || i == 6 || i == 8 || i == 9) return true;
+  return false;
+}
+
 // Visits every valid model enum, skipping `UNKNOWN` and `kSentinel`.
 template <class Func>
 void ForEachModel(const Func& func) {
   for (size_t i = static_cast<size_t>(Model::GEMMA2_9B);
        i < static_cast<size_t>(Model::kSentinel); ++i) {
-    if (i == 8 || i == 9) continue;
-    func(static_cast<Model>(i));
+    const Model model = static_cast<Model>(i);
+    if (!IsObsolete(model)) func(model);
   }
 }
 
@@ -214,7 +221,7 @@ static inline bool EnumValid(Model model) {
   if (model == Model::UNKNOWN) return true;
   const size_t i = static_cast<size_t>(model);
   if (i >= static_cast<size_t>(Model::GEMMA2_9B) &&
-      i < static_cast<size_t>(Model::kSentinel) && i != 8 && i != 9) {
+      i < static_cast<size_t>(Model::kSentinel) && !IsObsolete(model)) {
     return true;
   }
   return false;
@@ -235,15 +242,20 @@ struct LayerConfig : public IFields {
 
   // Source of truth for field ordering.
   void VisitFields(IFieldsVisitor& visitor) override {
+    // Formerly used for Griffin.
+    uint32_t unused_griffin_dim = 0;
+    uint32_t unused_conv1d_width = 0;
+    bool unused_softmax_attn_output_biases = false;
+
     visitor(model_dim);
-    visitor(griffin_dim);
+    visitor(unused_griffin_dim);
     visitor(ff_hidden_dim);
     visitor(heads);
     visitor(kv_heads);
     visitor(qkv_dim);
-    visitor(conv1d_width);
+    visitor(unused_conv1d_width);
     visitor(ff_biases);
-    visitor(softmax_attn_output_biases);
+    visitor(unused_softmax_attn_output_biases);
     visitor(optimized_gating);
     visitor(post_norm);
     visitor(type);
@@ -263,14 +275,11 @@ struct LayerConfig : public IFields {
   bool IsMHA() const { return heads == kv_heads; }
 
   uint32_t model_dim = 0;
-  uint32_t griffin_dim = 0;
   uint32_t ff_hidden_dim = 0;
   uint32_t heads = 0;
   uint32_t kv_heads = 0;
-  uint32_t qkv_dim = 0;       // length of Q, K, V vectors (contiguous).
-  uint32_t conv1d_width = 0;  // Griffin only
+  uint32_t qkv_dim = 0;  // length of Q, K, V vectors (contiguous).
   bool ff_biases = false;
-  bool softmax_attn_output_biases = false;  // for Griffin
   bool optimized_gating = true;             // for Gemma3
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
@@ -358,7 +367,8 @@ struct ModelConfig : public IFields {
     visitor(final_cap);
 
     visitor(absolute_pe);
-    visitor(use_local_attention);
+    bool unused_use_local_attention = false;  // formerly used for Griffin
+    visitor(unused_use_local_attention);
     visitor(query_scale);
     visitor(layer_configs);
     visitor(attention_window_sizes);
@@ -421,7 +431,7 @@ struct ModelConfig : public IFields {
   }
 
   size_t KVCacheCols() const {
-    size_t num_layers = layer_configs.size();
+    const size_t num_layers = layer_configs.size();
     return num_layers * layer_configs[0].CacheLayerSize();
   }
 
@@ -454,7 +464,6 @@ struct ModelConfig : public IFields {
   float final_cap = 0.0f;
 
   bool absolute_pe = false;
-  bool use_local_attention = false;  // Griffin only
   QueryScaleType query_scale = QueryScaleType::SqrtKeySize;
   std::vector<LayerConfig> layer_configs;
   std::vector<uint32_t> attention_window_sizes;
@@ -478,7 +487,6 @@ struct ModelConfig : public IFields {
 ModelConfig GetVitConfig(const ModelConfig& config);
 
 enum DeducedLayerTypes {
-  kDeducedGriffin = 1,
   kDeducedViT = 2,
   kDeduced448 = 4,   // For ViT, 448x448 resolution instead of 224x224.
 };

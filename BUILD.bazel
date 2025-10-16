@@ -29,9 +29,24 @@ exports_files([
 
 cc_library(
     name = "basics",
+    srcs = ["util/basics.cc"],
     hdrs = ["util/basics.h"],
     deps = [
         "@highway//:hwy",
+        "@highway//:timer",
+        "@highway//hwy/contrib/sort:vqsort",
+    ],
+)
+
+cc_test(
+    name = "basics_test",
+    srcs = ["util/basics_test.cc"],
+    deps = [
+        ":basics",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:timer",
     ],
 )
 
@@ -96,9 +111,41 @@ cc_library(
         ":basics",
         ":threading",
         ":topology",
+        ":zones",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:profiler",
+        "@highway//:thread_pool",
+    ],
+)
+
+cc_library(
+    name = "zones",
+    srcs = ["util/zones.cc"],
+    hdrs = ["util/zones.h"],
+    deps = [
+        "@highway//:profiler",
+    ],
+)
+
+cc_test(
+    name = "flash_attention_test",
+    srcs = ["gemma/flash_attention_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":matmul",
+        ":ops",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )
 
@@ -223,10 +270,10 @@ cc_library(
         ":configs",
         ":gemma_args",
         ":mat",
-        ":matmul",
         ":model_store",
         ":tensor_info",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "//io:blob_store",
         "@highway//:hwy",
@@ -256,15 +303,36 @@ test_suite(
 )
 
 cc_library(
-    name = "matmul",
+    name = "matmul_env",
     srcs = ["ops/matmul.cc"],
+    hdrs = ["ops/matmul.h"],
+    deps = [
+        ":allocator",
+        ":basics",
+        ":configs",
+        ":mat",
+        ":threading",
+        ":threading_context",
+        "@highway//:bit_set",
+        "@highway//:hwy",
+        "@highway//:nanobenchmark",
+        "@highway//:profiler",
+    ],
+)
+
+cc_library(
+    name = "matmul",
+    # allow depending only on this target, without also matmul_env.
     hdrs = ["ops/matmul.h"],
     textual_hdrs = ["ops/matmul-inl.h"],
     deps = [
         ":allocator",
         ":basics",
         ":mat",
+        ":matmul_env",
+        ":threading",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "@highway//:bit_set",
         "@highway//:hwy",
@@ -281,6 +349,7 @@ cc_library(
         "ops/matmul_static_f32.cc",
         "ops/matmul_static_nuq.cc",
         "ops/matmul_static_sfp.cc",
+        "ops/matmul_static_i8.cc",
     ],
     hdrs = [
         "ops/matmul_static.h",
@@ -294,7 +363,9 @@ cc_library(
         ":basics",
         ":mat",
         ":matmul",
+        ":matmul_env",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "//compression:types",
         "@highway//:hwy",
@@ -310,21 +381,21 @@ cc_library(
         "ops/dot-inl.h",
         "ops/sum-inl.h",
         "ops/fp_arith-inl.h",
-        "ops/matvec-inl.h",
         "ops/ops-inl.h",
     ],
     deps = [
         ":allocator",
         ":basics",
         ":mat",
-        ":matmul",
+        ":matmul_env",  # MMOptions
         ":matmul_static",
         ":threading_context",
+        ":zones",
         "//compression:compress",
         "@highway//:algo",
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:math",
-        "@highway//:matvec",
         "@highway//:profiler",
         "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
@@ -375,33 +446,14 @@ cc_test(
         ":ops",
         ":test_util",
         ":threading_context",
+        ":zones",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:test_util",
         "//compression:types",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",  #buildcleaner: keep
         "@highway//:profiler",
-    ],
-)
-
-cc_test(
-    name = "gemma_matvec_test",
-    size = "small",
-    timeout = "long",
-    srcs = ["ops/gemma_matvec_test.cc"],
-    linkstatic = True,
-    local_defines = ["HWY_IS_TEST"],
-    # for test_suite.
-    tags = ["ops_tests"],
-    deps = [
-        ":mat",
-        ":ops",
-        ":threading_context",
-        "@googletest//:gtest_main",  # buildcleaner: keep
-        "//compression:compress",
-        "@highway//:hwy",
-        "@highway//:hwy_test_util",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -417,7 +469,7 @@ cc_test(
     deps = [
         ":basics",
         ":mat",
-        ":matmul",
+        ":matmul_env",
         ":matmul_static",
         ":ops",
         ":threading_context",
@@ -445,7 +497,8 @@ cc_test(
     ],
     deps = [
         ":basics",
-        ":matmul",
+        ":matmul_env",
+        ":matmul_static",
         ":threading_context",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
@@ -478,7 +531,6 @@ cc_library(
         ":args",
         ":basics",
         ":mat",
-        ":matmul",
         "//io",
         "@highway//:hwy",
         "@highway//:profiler",
@@ -489,15 +541,15 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/attention.cc",
+        "gemma/flash_attention.cc",
         "gemma/gemma.cc",
-        "gemma/griffin.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
         "gemma/activations.h",
         "gemma/attention.h",
+        "gemma/flash_attention.h",
         "gemma/gemma.h",
-        "gemma/griffin.h",
         "gemma/vit.h",
     ],
     exec_properties = {
@@ -508,27 +560,30 @@ cc_library(
         "gemma/gemma-inl.h",
     ],
     deps = [
-        ":allocator",
         ":basics",
         ":configs",
         ":gemma_args",
         ":kv_cache",
         ":mat",
         ":matmul",
+        ":matmul_env",
         ":model_store",
         ":ops",
         ":threading",
         ":threading_context",
         ":weights",
+        ":zones",
         "//compression:compress",
         "//compression:types",
-        "//io:blob_store",
         "//io",
+        "//io:blob_store",
         "//paligemma:image",
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
         "@highway//:thread_pool",
+        "@highway//hwy/contrib/sort:vqsort",
     ],
 )
 
@@ -553,7 +608,7 @@ cc_library(
         ":cross_entropy",
         ":gemma_args",
         ":gemma_lib",
-        ":matmul",
+        ":matmul_env",
         ":ops",
         ":threading_context",
         ":tokenizer",
@@ -584,7 +639,7 @@ cc_library(
         ":gemma_args",
         ":gemma_lib",
         ":kv_cache",
-        ":matmul",
+        ":matmul_env",
         ":threading",
         ":threading_context",
         ":tokenizer",
@@ -645,7 +700,7 @@ cc_binary(
         ":benchmark_helper",
         ":gemma_args",
         ":gemma_lib",
-        ":matmul",
+        ":matmul_env",
         ":tokenizer",
         "//compression:types",
         "//paligemma:image",

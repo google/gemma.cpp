@@ -100,22 +100,15 @@ TEST(ThreadingTest, TestBoundedTopology) {
   const BoundedSlice one(0, 1);
   // All
   {
-    BoundedTopology topology(all, all, all);
-    fprintf(stderr, "%s\n", topology.TopologyString());
-  }
-
-  // Max one package
-  {
     BoundedTopology topology(one, all, all);
     fprintf(stderr, "%s\n", topology.TopologyString());
-    ASSERT_EQ(1, topology.NumPackages());
   }
 
   // Max one cluster
   {
-    BoundedTopology topology(all, one, all);
+    BoundedTopology topology(one, one, all);
     fprintf(stderr, "%s\n", topology.TopologyString());
-    ASSERT_EQ(1, topology.NumClusters(0));
+    ASSERT_EQ(1, topology.NumClusters());
   }
 }
 
@@ -380,23 +373,31 @@ TEST(ThreadingTest, BenchJoin) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   NestedPools& pools = ctx.pools;
-  // Use last package because the main thread has been pinned to it.
-  const size_t pkg_idx = pools.NumPackages() - 1;
 
-  measure(pools.AllPackages(), false, "block packages");
-  if (pools.AllClusters(pkg_idx).NumWorkers() > 1) {
-    measure(pools.AllClusters(pkg_idx), false, "block clusters");
+  if (pools.NumClusters() > 1) {
+    measure(pools.AllClusters(), false, "block clusters");
   }
-  measure(pools.Cluster(pkg_idx, 0), false, "block in_cluster");
+  measure(pools.Cluster(0), false, "block in_cluster");
 
   if (pools.AllPinned()) {
     const bool kSpin = true;
-    measure(pools.AllPackages(), kSpin, "spin packages");
-    if (pools.AllClusters(pkg_idx).NumWorkers() > 1) {
-      measure(pools.AllClusters(pkg_idx), kSpin, "spin clusters");
+    if (pools.NumClusters() > 1) {
+      measure(pools.AllClusters(), kSpin, "spin clusters");
     }
-    measure(pools.Cluster(pkg_idx, 0), kSpin, "spin in_cluster");
+    measure(pools.Cluster(0), kSpin, "spin in_cluster");
   }
+}
+
+TEST(ThreadingTest, TestUnequalClusters) {
+  ThreadingArgs threading_args;
+  threading_args.max_lps = 13;
+  ThreadingContext ctx(threading_args);
+  const size_t last_workers =
+      ctx.pools.Cluster(ctx.topology.NumClusters() - 1).NumWorkers();
+  const size_t max_workers = ctx.pools.MaxWorkersPerCluster();
+  fprintf(stderr, "%zu clusters, last with %zu (max %zu)\n",
+          ctx.topology.NumClusters(), last_workers, max_workers);
+  HWY_ASSERT(last_workers <= max_workers);
 }
 
 }  // namespace

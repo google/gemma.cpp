@@ -45,10 +45,11 @@ namespace gcpp {
 // as NEON_WITHOUT_AES. Also skip SVE because SVE2_128 and SVE_256 cover most.
 #define GEMMA_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON | HWY_SVE)
 #elif HWY_ARCH_X86
-// Skip anything older than Haswell (2013); also use Zen4 for recent CPUs,
-// because we do not use anything added by SPR (e.g. FP16) nor AVX 10.2.
+// Skip anything older than Haswell (2013); use Zen4/SPR for recent CPUs.
+// Although we do not use SPR's F16, Zen4 is only enabled for AMD. We do not
+// yet use any AVX 10.2 features.
 #define GEMMA_DISABLED_TARGETS \
-  (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX3_SPR | HWY_AVX10_2)
+  (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX10_2)
 #endif  // HWY_ARCH_*
 
 #endif  // GEMMA_DISABLED_TARGETS
@@ -85,6 +86,26 @@ struct SfpStream {
   static constexpr float kMax = 1.875f;
 
   uint8_t byte;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct I8Stream {
+  static constexpr size_t kGroupSize = 128;
+  using ScaleT = hwy::bfloat16_t;
+
+  // Returns number of I8Stream to allocate for the stream, which matches its
+  // size in bytes.
+  // TODO: should support other types beyond hwy::float32_t for scale and
+  // zero-point.
+  static constexpr size_t PackedEnd(size_t capacity) {
+    const size_t num_groups = hwy::DivCeil(capacity, kGroupSize);
+    return (sizeof(ScaleT) * num_groups) +  // scale
+           (sizeof(ScaleT) * num_groups) +  // zero-point
+           capacity;                        // 1 value per byte
+  }
+
+  int8_t i;
 };
 #pragma pack(pop)
 
@@ -186,12 +207,23 @@ constexpr bool IsNuqStream() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>();
 }
 
-// Tensor types for loading weights.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64 };
+template <typename Packed>
+constexpr bool IsI8Stream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>();
+}
+
+template <typename Packed>
+constexpr bool SupportsPointerArithmetic() {
+  return !IsNuqStream<Packed>() && !IsI8Stream<Packed>();
+}
+
+// Tensor types for loading weights. Not all of these are supported weight
+// types, some are only used for `Activations`.
+enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kU32, kU64, kI8 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
-static constexpr const char* kTypeStrings[] = {"unknown", "f32", "bf16",
-                                               "sfp",     "nuq", "f64"};
+static constexpr const char* kTypeStrings[] = {
+    "unknown", "f32", "bf16", "sfp", "nuq", "f64", "u32", "u64", "i8"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -201,6 +233,9 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(SfpStream),
     4 /* NuqStream, actually 4.5 */,
     8 * sizeof(double),
+    8 * sizeof(uint32_t),
+    8 * sizeof(uint64_t),
+    8 * sizeof(I8Stream),
 };
 
 static inline bool EnumValid(Type type) {
@@ -221,6 +256,12 @@ Type TypeEnum() {
     return Type::kNUQ;
   } else if constexpr (hwy::IsSame<Packed, double>()) {
     return Type::kF64;
+  } else if constexpr (hwy::IsSame<Packed, uint32_t>()) {
+    return Type::kU32;
+  } else if constexpr (hwy::IsSame<Packed, uint64_t>()) {
+    return Type::kU64;
+  } else if constexpr (hwy::IsSame<Packed, I8Stream>()) {
+    return Type::kI8;
   } else {
     HWY_DASSERT(false);
     return Type::kUnknown;
@@ -241,7 +282,9 @@ const char* TypeName() {
 
 template <typename Packed>
 constexpr bool IsCompressed() {
-  return hwy::IsSameEither<hwy::RemoveCvRef<Packed>, SfpStream, NuqStream>();
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, SfpStream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>();
 }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
@@ -252,6 +295,8 @@ template <typename Packed>
 constexpr size_t CompressedArrayElements(size_t capacity) {
   if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
     return NuqStream::PackedEnd(capacity);
+  } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>()) {
+    return I8Stream::PackedEnd(capacity);
   } else {
     return capacity;
   }

@@ -18,20 +18,11 @@
 #include <stdio.h>
 
 #include <algorithm>  // std::sort
-#include <utility>  // std::move
 #include <vector>
 
 #include "hwy/base.h"
 
 namespace gcpp {
-
-// Sort T := packages/clusters by descending 'size' so that users who only use
-// one Group get the largest.
-template <class T>
-static void SortByDescendingSize(std::vector<T>& groups) {
-  std::sort(groups.begin(), groups.end(),
-            [](const T& a, const T& b) { return a.Size() > b.Size(); });
-}
 
 // Returns set of LPs available for use.
 static LPS EnabledLPs(const BoundedSlice& lp_slice) {
@@ -88,21 +79,23 @@ BoundedTopology::BoundedTopology(BoundedSlice package_slice,
                                  BoundedSlice cluster_slice,
                                  BoundedSlice lp_slice)
     : package_slice_(package_slice), cluster_slice_(cluster_slice) {
+  HWY_ASSERT(package_slice_.Max() == 1);
   const LPS enabled_lps = EnabledLPs(lp_slice);
 
+  bool topology_ok = false;
 #if !GEMMA_DISABLE_TOPOLOGY
   if (HWY_LIKELY(!topology_.packages.empty())) {
-    InitFromTopology(enabled_lps);
+    topology_ok = InitFromTopology(enabled_lps);
   }
 #endif
 
   // Topology unknown or no packages with enabled LPs: create a single
   // package with one cluster, and one node.
-  if (HWY_UNLIKELY(NumPackages() == 0)) {
+  if (HWY_UNLIKELY(!topology_ok)) {
     InitFromLPs(enabled_lps);
   }
 
-  HWY_ASSERT(NumPackages() != 0 && NumClusters(0) != 0 && NumNodes() != 0);
+  HWY_ASSERT(NumClusters() != 0 && NumNodes() != 0);
 }
 
 // Topology is unknown, take the given set of LPs.
@@ -161,9 +154,113 @@ constexpr bool kSplitLargeClusters = false;
 constexpr size_t kMaxClusters = 8;
 constexpr size_t kMaxLPsPerCluster = 6;
 
-// Topology is unknown, use only the given LPs which derive from OS affinity
-// and `lp_slice`.
-BoundedTopology::Package::Package(const LPS& enabled_lps) {
+#if !GEMMA_DISABLE_TOPOLOGY
+
+static size_t CoresFromLPs(const LPS& lps, const hwy::Topology& topology) {
+  LPS cores;
+  lps.Foreach([&](size_t lp) {
+    if (topology.lps[lp].smt == 0) cores.Set(lp);
+  });
+  return cores.Count();
+}
+
+// tcluster is a modifiable copy of the first cluster in the package.
+void BoundedTopology::SplitLargeCluster(const LPS& enabled_lps,
+                                        hwy::Topology::Cluster tcluster) {
+  const LPS lps = clusters_[0].LPSet();  // copy so we can clear
+  clusters_.clear();
+
+  // Split `lps` into several clusters.
+  LPS clusters_lps[kMaxClusters];
+  const size_t num_clusters =
+      HWY_MIN(kMaxClusters, hwy::DivCeil(lps.Count(), kMaxLPsPerCluster));
+  size_t num_lps = 0;
+  lps.Foreach(
+      [&](size_t lp) { clusters_lps[num_lps++ % num_clusters].Set(lp); });
+  HWY_DASSERT(num_lps == lps.Count());
+
+  // Create new clusters, just inserting the new LPS.
+  for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+    tcluster.lps = clusters_lps[cluster_idx];
+    // Keep same `private_kib` and `shared_kib`.
+    clusters_.push_back(Cluster(enabled_lps, topology_.lps, tcluster));
+  }
+}
+
+// Main part of ctor, called when topology is known.
+bool BoundedTopology::InitFromTopology(const LPS& enabled_lps) {
+  const size_t tpkg_idx = package_slice_.Begin();
+  HWY_ASSERT(tpkg_idx < topology_.packages.size());
+  const hwy::Topology::Package& tpackage = topology_.packages[tpkg_idx];
+  const std::vector<hwy::Topology::Cluster>& tclusters = tpackage.clusters;
+  if (HWY_UNLIKELY(tclusters.empty())) {
+    HWY_WARN("Topology: no clusters found in package %zu.", tpkg_idx);
+    return false;
+  }
+
+  size_t max_tcluster_cores = 0;
+  size_t max_tcluster_lps = 0;
+  for (const hwy::Topology::Cluster& tcluster : tclusters) {
+    const size_t cores = CoresFromLPs(tcluster.lps, topology_);
+    const size_t lps = tcluster.lps.Count();
+    max_tcluster_cores = HWY_MAX(max_tcluster_cores, cores);
+    max_tcluster_lps = HWY_MAX(max_tcluster_lps, lps);
+  }
+  HWY_ASSERT(max_tcluster_cores != 0);
+  HWY_ASSERT(max_tcluster_lps >= max_tcluster_cores);
+
+  // Populate `clusters` with the subset of clusters in `cluster_slice` that
+  // have any enabled LPs.
+  clusters_.reserve(cluster_slice_.Num(tclusters.size()));
+  cluster_slice_.Foreach("cluster", tclusters.size(), [&](size_t cluster_idx) {
+    const hwy::Topology::Cluster& tcluster = tpackage.clusters[cluster_idx];
+    Cluster cluster(enabled_lps, topology_.lps, tcluster);
+
+    // Skip if empty, i.e. too few `enabled_lps`.
+    if (HWY_LIKELY(cluster.NumWorkers() != 0)) {
+      clusters_.push_back(cluster);
+      // Remember NUMA nodes that we are actually using (not just enabled).
+      nodes_.Set(cluster.Node());
+    }
+  });
+  if (HWY_UNLIKELY(clusters_.empty())) {
+    HWY_WARN("Too restrictive cluster_slice or enabled_lps, no clusters left.");
+    return false;
+  }
+
+  if (kSplitLargeClusters && clusters_.size() == 1 &&
+      enabled_lps.Count() >= 16) {
+    SplitLargeCluster(enabled_lps, tpackage.clusters[0]);
+  }
+
+  // Sort by descending 'size' so that users who only use one get the largest.
+  std::sort(clusters_.begin(), clusters_.end(),
+            [](const Cluster& a, const Cluster& b) {
+              return a.NumWorkers() > b.NumWorkers();
+            });
+
+  // Largest number of enabled workers in any cluster, for `topology_string_`.
+  // This may be less than `max_tcluster_cores` if `enabled_lps` excludes some.
+  size_t max_cluster_workers = 0;
+  for (const Cluster& c : clusters_) {
+    max_cluster_workers = HWY_MAX(max_cluster_workers, c.NumWorkers());
+  }
+  HWY_ASSERT(max_cluster_workers <= max_tcluster_cores);
+  // Do not warn about large clusters: GNR has 40.
+
+  snprintf(topology_string_, sizeof(topology_string_),
+           "%zuS %zuX %zuC %zuH, using %zuX %zuC (nodes=%zu)",
+           topology_.packages.size(), tclusters.size(), max_tcluster_cores,
+           max_tcluster_lps / max_tcluster_cores, NumClusters(),
+           max_cluster_workers, nodes_.Count());
+  return true;
+}
+
+#endif  // !GEMMA_DISABLE_TOPOLOGY
+
+// Called when topology is unknown or `GEMMA_DISABLE_TOPOLOGY`. Uses only the
+// given LPs which derive from OS affinity and `lp_slice`.
+void BoundedTopology::InitFromLPs(const LPS& enabled_lps) {
   LPS clusters_lps[kMaxClusters];
   const size_t num_clusters =
       kSplitLargeClusters
@@ -178,157 +275,11 @@ BoundedTopology::Package::Package(const LPS& enabled_lps) {
   });
 
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-    clusters.push_back(Cluster(clusters_lps[cluster_idx]));
+    clusters_.push_back(Cluster(clusters_lps[cluster_idx]));
   }
-}
-
-// NOTE: caller is responsible for checking whether `clusters` is empty.
-BoundedTopology::Package::Package(const LPS& enabled_lps,
-                                  const hwy::Topology& topology, size_t pkg_idx,
-                                  BoundedSlice cluster_slice) {
-  const hwy::Topology::Package& tpackage = topology.packages[pkg_idx];
-  // Populate `clusters` with the subset of clusters in `cluster_slice` that
-  // have any enabled LPs. If `clusters` remains empty, the caller will
-  // skip this `Package`.
-  clusters.reserve(cluster_slice.Num(tpackage.clusters.size()));
-  cluster_slice.Foreach(
-      "cluster", tpackage.clusters.size(), [&](size_t cluster_idx) {
-        const hwy::Topology::Cluster& tcluster = tpackage.clusters[cluster_idx];
-        Cluster cluster(enabled_lps, topology.lps, tcluster);
-
-        // Skip if empty, i.e. too few `enabled_lps`.
-        if (HWY_LIKELY(cluster.Size() != 0)) {
-          clusters.push_back(cluster);
-        }
-      });
-  SortByDescendingSize(clusters);
-
-  // If there is only one large cluster, split it into smaller ones.
-  if (kSplitLargeClusters && clusters.size() == 1 &&
-      enabled_lps.Count() >= 16) {
-    const LPS lps = clusters[0].LPSet();  // copy so we can clear
-    clusters.clear();
-
-    // Split `lps` into several clusters.
-    LPS clusters_lps[kMaxClusters];
-    const size_t num_clusters =
-        HWY_MIN(kMaxClusters, hwy::DivCeil(lps.Count(), kMaxLPsPerCluster));
-    size_t num_lps = 0;
-    lps.Foreach(
-        [&](size_t lp) { clusters_lps[num_lps++ % num_clusters].Set(lp); });
-    HWY_DASSERT(num_lps == lps.Count());
-
-    // Create new clusters, just inserting the new LPS.
-    hwy::Topology::Cluster tcluster = tpackage.clusters[0];  // modifiable copy
-    for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-      tcluster.lps = clusters_lps[cluster_idx];
-      // Keep same `private_kib` and `shared_kib`.
-      clusters.push_back(Cluster(enabled_lps, topology.lps, tcluster));
-    }
-  }
-}
-
-#if !GEMMA_DISABLE_TOPOLOGY
-
-static size_t CoresFromLPs(const LPS& lps, const hwy::Topology& topology) {
-  LPS cores;
-  lps.Foreach([&](size_t lp) {
-    if (topology.lps[lp].smt == 0) cores.Set(lp);
-  });
-  return cores.Count();
-}
-
-// Scans hwy::Topology for clusters and their size, for use by topology_string_.
-static void ScanTClusters(hwy::Topology& topology_, size_t& max_tclusters,
-                          size_t& max_tcluster_cores,
-                          size_t& max_tcluster_lps) {
-  max_tclusters = 0;
-  max_tcluster_cores = 0;
-  max_tcluster_lps = 0;
-  for (size_t pkg_idx = 0; pkg_idx < topology_.packages.size(); ++pkg_idx) {
-    const std::vector<hwy::Topology::Cluster>& tclusters =
-        topology_.packages[pkg_idx].clusters;
-    max_tclusters = HWY_MAX(max_tclusters, tclusters.size());
-    size_t tcluster_cores = 0;
-    size_t tcluster_lps = 0;
-    for (size_t cluster_idx = 0; cluster_idx < tclusters.size();
-         ++cluster_idx) {
-      const size_t cores = CoresFromLPs(tclusters[cluster_idx].lps, topology_);
-      const size_t lps = tclusters[cluster_idx].lps.Count();
-      tcluster_cores = HWY_MAX(tcluster_cores, cores);
-      tcluster_lps = HWY_MAX(tcluster_lps, lps);
-    }
-
-    if (tclusters.size() > 1 && tcluster_cores > 8) {
-      HWY_WARN(
-          "Package %zu: multiple clusters with max size %zu, whereas CCX "
-          "only have 8, may indicate a bug in hwy::Topology.",
-          pkg_idx, tcluster_cores);
-    }
-    max_tcluster_cores = HWY_MAX(max_tcluster_cores, tcluster_cores);
-    max_tcluster_lps = HWY_MAX(max_tcluster_lps, tcluster_lps);
-  }
-  HWY_ASSERT(max_tclusters != 0);
-  HWY_ASSERT(max_tcluster_cores != 0);
-  HWY_ASSERT(max_tcluster_lps >= max_tcluster_cores);
-}
-
-// Main part of ctor, called when topology is known.
-void BoundedTopology::InitFromTopology(const LPS& enabled_lps) {
-  size_t max_tclusters, max_tcluster_cores, max_tcluster_lps;
-  ScanTClusters(topology_, max_tclusters, max_tcluster_cores, max_tcluster_lps);
-
-  // (Possibly empty) subset of `Topology` packages that have `enabled_lps`.
-  package_slice_.Foreach(
-      "package", topology_.packages.size(), [&](size_t pkg_idx) {
-        Package package(enabled_lps, topology_, pkg_idx, cluster_slice_);
-        // Skip if empty, i.e. too few `enabled_lps`.
-        if (HWY_LIKELY(!package.clusters.empty())) {
-          packages_.push_back(std::move(package));
-        }
-      });
-  if (NumPackages() == 0) return;
-  SortByDescendingSize(packages_);
-
-  // Remember NUMA nodes that we are actually using (not just enabled).
-  for (const Package& p : packages_) {
-    for (const Cluster& c : p.clusters) {
-      nodes_.Set(c.Node());
-    }
-  }
-
-  // Scan for max BoundedTopology clusters and their size, for topology_string_.
-  size_t all_max_cluster_size = 0;
-  for (size_t pkg_idx = 0; pkg_idx < NumPackages(); ++pkg_idx) {
-    size_t max_cluster_size = 0;
-    for (size_t cluster_idx = 0; cluster_idx < NumClusters(pkg_idx);
-         ++cluster_idx) {
-      max_cluster_size =
-          HWY_MAX(max_cluster_size, GetCluster(pkg_idx, cluster_idx).Size());
-    }
-    if (NumClusters(pkg_idx) > 1 && max_cluster_size > 8) {
-      HWY_WARN(
-          "Package %zu: multiple clusters with max size %zu, whereas CCX "
-          "only have 8, may indicate a bug in BoundedTopology.",
-          pkg_idx, max_cluster_size);
-    }
-    all_max_cluster_size = HWY_MAX(all_max_cluster_size, max_cluster_size);
-  }
-
-  snprintf(topology_string_, sizeof(topology_string_),
-           "%zuS %zuX %zuC %zuH, using %zuS %zuX %zuC (nodes=%zu)",
-           topology_.packages.size(), max_tclusters, max_tcluster_cores,
-           max_tcluster_lps / max_tcluster_cores, packages_.size(),
-           NumClusters(0), all_max_cluster_size, nodes_.Count());
-}
-
-#endif  // !GEMMA_DISABLE_TOPOLOGY
-
-void BoundedTopology::InitFromLPs(const LPS& enabled_lps) {
-  packages_.push_back(Package(enabled_lps));
 
   snprintf(topology_string_, sizeof(topology_string_), "LPs=%zu",
-           GetCluster(0, 0).Size());
+           GetCluster(0).NumWorkers());
 
   // Assume a single NUMA node.
   nodes_.Set(0);

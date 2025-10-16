@@ -22,11 +22,9 @@
 #include <stdio.h>
 
 #include <functional>
-#include <random>
 #include <string>
 
-#include "io/io.h"       // Path
-#include "ops/matmul.h"  // MMStorage::kMax*
+#include "io/io.h"  // Path
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"
@@ -90,10 +88,10 @@ using BatchStreamFunc = std::function<bool(size_t, size_t, int, float)>;
 // If not empty, AcceptFunc is called with token. It should return false for
 // tokens you don't want to generate and true for tokens you want to generate.
 using AcceptFunc = std::function<bool(int, float)>;
-// If not empty, SampleFunc is called with the logits for the next token, which
-// it may modify/overwrite, and its return value is the next generated token
-// together with its probability.
-using SampleFunc = std::function<TokenAndProb(float*, size_t)>;
+// If not empty, SampleFunc is called concurrently from worker thread(s) with
+// query_idx, pos, logits for the next token (which it may modify/overwrite),
+// and worker. It returns the next generated token and its probability.
+using SampleFunc = std::function<TokenAndProb(size_t, size_t, Logits, size_t)>;
 // If not empty, LayersOutputFunc is called for layer outputs, specified with:
 // - index of query within containing batch (if any); zero otherwise.
 // - position in the tokens sequence
@@ -116,6 +114,7 @@ using ActivationsObserverFunc =
 struct RuntimeConfig {
   // If non-null, `batch_stream_token` is called for each token in the batch,
   // otherwise `stream_token`. `query_idx` is absolute, not batch-relative.
+  // This is called sequentially from the main thread.
   bool StreamToken(size_t query_idx, size_t pos, int token, float prob) const {
     PROFILER_ZONE("Gen.StreamToken");
     if (batch_stream_token) {
@@ -136,8 +135,7 @@ struct RuntimeConfig {
   // Sampling-related parameters.
   float temperature;  // Temperature for sampling.
 
-  size_t top_k = 1;           // Top-k for sampling.
-  std::mt19937* gen;          // Random number generator used for sampling.
+  size_t top_k = 1;  // Top-k for sampling.
 
   int verbosity;  // Controls verbosity of printed messages.
 
@@ -183,6 +181,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool multiturn;
   Path image_file;
 
+  int port;            // Server port
+  std::string model;   // Model name for API endpoints
   std::string prompt;  // Bypasses std::getline
   // For prompts longer than the Linux terminal's 4K line edit buffer.
   Path prompt_file;
@@ -218,6 +218,12 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "resets every turn)");
     visitor(image_file, "image_file", Path(), "Image file to load.");
 
+    // Since it is not used in the CLI version, the print_verbosity is set
+    // higher than others.
+    visitor(port, "port", 8080, "Server port (default: 8080)", 3);
+    visitor(model, "model", std::string("gemma3-4b"),
+            "Model name for API endpoints (default: gemma3-4b)", 3);
+
     visitor(prompt, "prompt", std::string(""),
             "Initial prompt for non-interactive mode. When specified, "
             "generates a response and exits.",
@@ -240,21 +246,50 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     runtime_config.max_generated_tokens = max_generated_tokens;
     runtime_config.prefill_tbatch_size = prefill_tbatch_size;
     runtime_config.decode_qbatch_size = decode_qbatch_size;
-    if (prefill_tbatch_size > MMStorage::kMaxM) {
+    if (prefill_tbatch_size > kMaxBatchSize) {
       HWY_ABORT(
-          "prefill_tbatch_size %zu > kMaxM %zu: specify a smaller value, "
-          "or increase the constant in MMStorage.\n",
-          prefill_tbatch_size, MMStorage::kMaxM);
+          "prefill_tbatch_size %zu > kMaxBatchSize %zu: specify a "
+          "smaller value, or increase kMaxBatchSize.\n",
+          prefill_tbatch_size, kMaxBatchSize);
     }
-    if (decode_qbatch_size > MMStorage::kMaxM) {
+    if (decode_qbatch_size > kMaxBatchSize) {
       HWY_ABORT(
-          "decode_qbatch_size %zu > kMaxM %zu: specify a smaller value, "
-          "or increase the constant in MMStorage.\n",
-          decode_qbatch_size, MMStorage::kMaxM);
+          "decode_qbatch_size %zu > kMaxBatchSize %zu: specify a "
+          "smaller value, or increase kMaxBatchSize.\n",
+          decode_qbatch_size, kMaxBatchSize);
     }
 
     runtime_config.temperature = temperature;
     runtime_config.top_k = top_k;
+  }
+};
+
+struct ClientArgs : public ArgsBase<ClientArgs> {
+  ClientArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  ClientArgs() { Init(); };
+
+  std::string host;
+  int port;
+  std::string api_key;
+  std::string model;
+  std::string prompt;
+  bool interactive;
+
+  template <class Visitor>
+  void ForEach(const Visitor& visitor) {
+    visitor(host, "host", std::string("localhost"),
+            "Server host (default: localhost)");
+    visitor(port, "port", 8080,
+            "Server port (default: 8080)");
+    visitor(api_key, "api_key", std::string(""),
+            "Use public API with key (changes host to "
+            "generativelanguage.googleapis.com:443)");
+    visitor(model, "model", std::string("gemma3-4b"),
+            "Model name to use (default: gemma3-4b)");
+    visitor(prompt, "prompt", std::string("Hello! How are you?"),
+            "Prompt for generation (default: 'Hello! How are you?')");
+    visitor(interactive, "interactive", false,
+            "Start interactive chat mode (0 = no, 1 = yes)");
   }
 };
 

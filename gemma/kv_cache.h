@@ -35,15 +35,7 @@ struct KVCache {
   // copy ctor to make the cost explicit.
   KVCache Copy();
 
-  // Zero-initialize the Griffin recurrent block cache, i.e. the conv1d_cache
-  // and rglru_cache.
-  void ZeroGriffinCache();
-
   size_t SeqLen() const { return kv_cache.Rows(); }
-
-  // [griffin_layers, griffin_conv1d_cols * model_dim]
-  MatStorageT<float> conv1d_cache;
-  MatStorageT<float> rglru_cache;  // [griffin_layers, model_dim]
 
   MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
 
@@ -51,8 +43,7 @@ struct KVCache {
   const Allocator& allocator_;
 
   // For use by other ctor and Copy()
-  KVCache(const Extents2D& conv1d_extents, const Extents2D& rglru_extents,
-          const Extents2D& kv_extents, const Allocator& allocator);
+  KVCache(const Extents2D& kv_extents, const Allocator& allocator);
 };
 
 }  // namespace gcpp

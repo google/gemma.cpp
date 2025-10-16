@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 1d16731233de45a365b43867f27d0a5f73925300 EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9781a1698ee0756ef1eaaf96930113ed7cb6d3ee EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
@@ -32,6 +32,28 @@ FetchContent_MakeAvailable(sentencepiece)
 
 FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(json)
+
+# Find OpenSSL for HTTPS support
+find_package(OpenSSL)
+if(OPENSSL_FOUND)
+  message(STATUS "OpenSSL found, enabling HTTPS support")
+  set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE ON)
+else()
+  message(STATUS "OpenSSL not found, HTTPS support disabled")
+  set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF)
+endif()
+
+# HTTP library for API server
+FetchContent_Declare(httplib GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git GIT_TAG v0.18.1 EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(httplib)
+
+# Create interface target for httplib (header-only library)
+add_library(httplib_interface INTERFACE)
+target_include_directories(httplib_interface INTERFACE ${httplib_SOURCE_DIR})
+if(OPENSSL_FOUND)
+  target_link_libraries(httplib_interface INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(httplib_interface INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
+endif()
 
 set(BENCHMARK_ENABLE_TESTING OFF)
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
@@ -46,6 +68,7 @@ set(SOURCES
   compression/compress.h
   compression/nuq-inl.h
   compression/sfp-inl.h
+  compression/int-inl.h
   compression/types.h
   compression/test_util-inl.h
   evals/benchmark_helper.cc
@@ -57,12 +80,12 @@ set(SOURCES
   gemma/attention.h
   gemma/configs.cc
   gemma/configs.h
+  gemma/flash_attention.cc
+  gemma/flash_attention.h
   gemma/gemma_args.h
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
-  gemma/griffin.cc
-  gemma/griffin.h
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/model_store.cc
@@ -87,10 +110,10 @@ set(SOURCES
   ops/matmul_static_f32.cc
   ops/matmul_static_nuq.cc
   ops/matmul_static_sfp.cc
+  ops/matmul_static_i8.cc
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
-  ops/matvec-inl.h
   ops/ops-inl.h
   ops/ops.h
   ops/sum-inl.h
@@ -98,6 +121,7 @@ set(SOURCES
   paligemma/image.h
   util/allocator.cc
   util/allocator.h
+  util/basics.cc
   util/basics.h
   util/mat.cc
   util/mat.h
@@ -108,6 +132,8 @@ set(SOURCES
   util/threading.h
   util/topology.cc
   util/topology.h
+  util/zones.cc
+  util/zones.h
 )
 
 # Add C API sources only when building DLL
@@ -195,16 +221,17 @@ set(GEMMA_TEST_FILES
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
+  gemma/flash_attention_test.cc
   gemma/tensor_info_test.cc
   io/blob_store_test.cc
   io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
-  ops/gemma_matvec_test.cc
   ops/matmul_test.cc
   ops/ops_test.cc
   paligemma/image_test.cc
   paligemma/paligemma_test.cc
+  util/basics_test.cc
   util/threading_test.cc
 )
 
@@ -232,3 +259,12 @@ endif()  # GEMMA_ENABLE_TESTS
 
 add_executable(migrate_weights io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)
+
+
+# API server with SSE support
+add_executable(gemma_api_server gemma/api_server.cc)
+target_link_libraries(gemma_api_server libgemma hwy hwy_contrib nlohmann_json::nlohmann_json httplib_interface)
+
+# API client for testing
+add_executable(gemma_api_client gemma/api_client.cc)
+target_link_libraries(gemma_api_client libgemma hwy hwy_contrib nlohmann_json::nlohmann_json httplib_interface)

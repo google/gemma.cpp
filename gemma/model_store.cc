@@ -112,6 +112,8 @@ class TypePrefix {
         return Type::kSFP;
       case '2':
         return Type::kNUQ;
+      case 'I':
+        return Type::kI8;
       default:
         // The other types were not written to pre-2025 files, hence no need to
         // encode and check for them here.
@@ -221,9 +223,6 @@ static int DeduceLayerTypes(const BlobReader& reader) {
   int layer_types = 0;
   for (size_t key_idx = 0; key_idx < reader.Keys().size(); ++key_idx) {
     const std::string& key = reader.Keys()[key_idx];
-    if (key.find("gr_conv_w") != std::string::npos) {  // NOLINT
-      return kDeducedGriffin;
-    }
     if (key.find("qkv_ein_w") != std::string::npos) {  // NOLINT
       layer_types |= kDeducedViT;
     }
@@ -293,7 +292,7 @@ static std::vector<float> ReadScales(BlobReader& reader,
                                      const ModelConfig& config) {
   std::vector<float> scales;
   // Check first to prevent `CallWithSpan` from printing a warning. This blob is
-  // optional even in pre-2025 format; Griffin was the first to include it.
+  // optional even in pre-2025 format.
   if (reader.Find(kDecoratedScalesName)) {
     HWY_ASSERT(reader.CallWithSpan<float>(
         kDecoratedScalesName,

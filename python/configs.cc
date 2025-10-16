@@ -53,12 +53,14 @@ PYBIND11_MODULE(configs, py_module) {
       .value("kF32", Type::kF32)
       .value("kBF16", Type::kBF16)
       .value("kSFP", Type::kSFP)
-      .value("kNUQ", Type::kNUQ);
+      .value("kNUQ", Type::kNUQ)
+      .value("kF64", Type::kF64)
+      .value("kU32", Type::kU32)
+      .value("kU64", Type::kU64)
+      .value("kI8", Type::kI8);
 
   enum_<LayerAttentionType>(py_module, "LayerAttentionType")
       .value("kGemma", LayerAttentionType::kGemma)
-      .value("kGriffinRecurrentBlock",
-             LayerAttentionType::kGriffinRecurrentBlock)
       .value("kVit", LayerAttentionType::kVit);
 
   enum_<PostNormType>(py_module, "PostNormType")
@@ -84,8 +86,6 @@ PYBIND11_MODULE(configs, py_module) {
       .value("UNKNOWN", Model::UNKNOWN)
       .value("GEMMA2_9B", Model::GEMMA2_9B)
       .value("GEMMA2_27B", Model::GEMMA2_27B)
-      .value("GRIFFIN_2B", Model::GRIFFIN_2B)
-      .value("GEMMA_TINY", Model::GEMMA_TINY)
       .value("GEMMA2_2B", Model::GEMMA2_2B)
       .value("PALIGEMMA2_3B_224", Model::PALIGEMMA2_3B_224)
       .value("PALIGEMMA2_10B_224", Model::PALIGEMMA2_10B_224)
@@ -121,15 +121,11 @@ PYBIND11_MODULE(configs, py_module) {
   class_<LayerConfig>(py_module, "LayerConfig")
       .def(init())
       .def_readwrite("model_dim", &LayerConfig::model_dim)
-      .def_readwrite("griffin_dim", &LayerConfig::griffin_dim)
       .def_readwrite("ff_hidden_dim", &LayerConfig::ff_hidden_dim)
       .def_readwrite("heads", &LayerConfig::heads)
       .def_readwrite("kv_heads", &LayerConfig::kv_heads)
       .def_readwrite("qkv_dim", &LayerConfig::qkv_dim)
-      .def_readwrite("conv1d_width", &LayerConfig::conv1d_width)
       .def_readwrite("ff_biases", &LayerConfig::ff_biases)
-      .def_readwrite("softmax_attn_output_biases",
-                     &LayerConfig::softmax_attn_output_biases)
       .def_readwrite("optimized_gating", &LayerConfig::optimized_gating)
       .def_readwrite("post_norm", &LayerConfig::post_norm)
       .def_readwrite("type", &LayerConfig::type)
@@ -147,8 +143,7 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("image_size", &VitConfig::image_size)
       .def_readwrite("layer_configs", &VitConfig::layer_configs);
 
-  class_<InternalModelConfig>(py_module, "InternalModelConfig")
-      .def(init<>());
+  class_<InternalModelConfig>(py_module, "InternalModelConfig").def(init<>());
 
   class_<ModelConfig>(py_module, "ModelConfig")
       .def(init<>())
@@ -167,7 +162,6 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("att_cap", &ModelConfig::att_cap)
       .def_readwrite("final_cap", &ModelConfig::final_cap)
       .def_readwrite("absolute_pe", &ModelConfig::absolute_pe)
-      .def_readwrite("use_local_attention", &ModelConfig::use_local_attention)
       .def_readwrite("query_scale", &ModelConfig::query_scale)
       .def_readwrite("layer_configs", &ModelConfig::layer_configs)
       .def_readwrite("attention_window_sizes",

@@ -23,7 +23,6 @@
 #include <string>
 #include <vector>
 
-#include "evals/benchmark_helper.h"  // InitGenerator
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
 #include "gemma/tokenizer.h"  // WrapAndTokenize
@@ -135,8 +134,6 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
   std::stringstream ss;
   result_buffer.clear();
 
-  InitGenerator(inference_args, gen);
-
   // Ensure we have an active conversation
   if (!active_conversation || !active_conversation->kv_cache) {
     LogDebug("Generate called with null active_conversation or kv_cache");
@@ -174,8 +171,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
 
   // set up runtime config
   TimingInfo timing_info = {};
-  RuntimeConfig runtime_config = {.gen = &gen,
-                                  .stream_token = stream_token,
+  RuntimeConfig runtime_config = {.stream_token = stream_token,
                                   .use_spinning = threading_args.spin};
   inference_args.CopyTo(runtime_config);
   size_t prefix_end = 0;
@@ -256,7 +252,6 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     // If not multiturn, or Paligemma (which handles turns differently),
     // reset the *active* conversation's position.
     active_conversation->abs_pos = 0;
-    InitGenerator(inference_args, gen);
   } else {
     // Multi-turn Gemma: Rewind position in the active conversation
     // The last token was either EOS, then it should be ignored because it is

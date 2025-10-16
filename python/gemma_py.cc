@@ -52,10 +52,9 @@ class GemmaModel {
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
-  void GenerateEx(std::string prompt, gcpp::StreamFunc stream,
-                  size_t max_generated_tokens, float temperature, float seed,
-                  gcpp::AcceptFunc accept, bool skip_prompt) {
-    env_.MutableGen().seed(seed);
+  void GenerateEx(const std::string& prompt, gcpp::StreamFunc stream,
+                  size_t max_generated_tokens, float temperature,
+                  float /*seed*/, gcpp::AcceptFunc accept, bool skip_prompt) {
     std::vector<int> prompt_tokens = env_.WrapAndTokenize(prompt);
     gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
@@ -76,8 +75,8 @@ class GemmaModel {
   }
 
   // Generates a single example, given a prompt, and returns the result.
-  std::string Generate(std::string prompt, size_t max_generated_tokens,
-                       float temperature, float seed,
+  std::string Generate(const std::string& prompt, size_t max_generated_tokens,
+                       float temperature, float /*seed*/,
                        const std::vector<std::string>& accept,
                        const std::vector<std::string>& end) {
     std::set<int> end_token_set{};
@@ -124,7 +123,6 @@ class GemmaModel {
       }
     };
 
-    env_.MutableGen().seed(seed);
     gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
@@ -144,14 +142,13 @@ class GemmaModel {
   // results.
   std::vector<std::string> GenerateBatch(const std::vector<std::string>& inputs,
                                          size_t max_generated_tokens,
-                                         float temperature, float seed,
+                                         float temperature, float /*seed*/,
                                          size_t top_k) {
     gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
     config.top_k = top_k;
     config.verbosity = 0;
-    env_.MutableGen().seed(seed);
 
     std::vector<gcpp::QueryResult> outputs = env_.BatchQueryModel(inputs);
     std::vector<std::string> result;
@@ -187,8 +184,7 @@ class GemmaModel {
         "image_tokens",
         gcpp::Extents2D(config.vit_config.seq_len, config.model_dim),
         env_.MutableEnv().ctx.allocator, gcpp::MatPadding::kOdd));
-    gcpp::RuntimeConfig runtime_config = {.gen = &env_.MutableGen(),
-                                          .verbosity = 0};
+    gcpp::RuntimeConfig runtime_config = {.verbosity = 0};
     gemma.GenerateImageTokens(runtime_config, env_.MutableKVCache().SeqLen(),
                               c_image, *image_tokens_, env_.MutableEnv());
   }
@@ -196,11 +192,10 @@ class GemmaModel {
   // Generates a response to the given prompt, using the last set image.
   // Uses the prompt_tokens if provided, otherwise tokenizes the prompt string.
   std::pair<std::string, std::vector<int>> GenerateWithImage(
-      std::string prompt, size_t max_generated_tokens, float temperature,
-      float seed, gcpp::AcceptFunc accept, std::vector<int> prompt_tokens) {
+      const std::string& prompt, size_t max_generated_tokens, float temperature,
+      float /*seed*/, gcpp::AcceptFunc accept, std::vector<int> prompt_tokens) {
     if (!image_tokens_) throw std::invalid_argument("No image set.");
     const gcpp::Gemma& model = *env_.GetGemma();
-    env_.MutableGen().seed(seed);
     gcpp::RuntimeConfig& config = env_.MutableConfig();
     config.max_generated_tokens = max_generated_tokens;
     config.temperature = temperature;
@@ -273,6 +268,7 @@ PYBIND11_MODULE(gemma, mod) {
            }),
            py::arg("tokenizer_path"), py::arg("weights_path"),
            py::arg("max_threads") = 0)
+      // seed arguments are ignored.
       .def("generate_ex", &GemmaModel::GenerateEx, py::arg("prompt"),
            py::arg("stream"), py::arg("max_generated_tokens") = 1024,
            py::arg("temperature") = 0.9, py::arg("seed") = 123456789,

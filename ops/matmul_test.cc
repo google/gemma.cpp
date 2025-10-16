@@ -29,6 +29,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include <atomic>
+
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"
@@ -118,17 +120,26 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const float max_abs = MaxAbs(a_batch) * MaxAbs(b_trans_batch);
   const double eps_bf16 = hwy::ConvertScalarTo<double>(hwy::Epsilon<BF16>());
   const double eps_f32 = hwy::ConvertScalarTo<double>(hwy::Epsilon<float>());
-  double tolerance = 12 * norm * eps_f32;
-  // Dot() also rounds F32,BF16 to BF16, but not with F32,F32, so increase the
-  // tolerance there.
-  if (IsF32<TA>() && IsF32<TB>()) {
-    tolerance += 4 * max_abs * eps_bf16;
+  // Dot() uses double-precision summation.
+  double tolerance = 20 * norm * eps_f32;
+  // If either is F32, Dot() promotes F32 or even F64, but MatMul demotes the
+  // F32 to BF16, so add extra tolerance.
+  if (IsF32<TA>() || IsF32<TB>()) {
+    tolerance += 2 * max_abs * eps_bf16;
   }
+
   if (tolerance > 500.0) {
     HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);
   }
-  const double max_rel = 1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
+  const double rel_tolerance =
+      1.0 + hwy::ConvertScalarTo<double>(hwy::Epsilon<TC>());
 
+  double max_rel = 0.0;
+  size_t worst_r = 0;
+  size_t worst_c = 0;
+  double worst_actual = 0.0;
+  double worst_expected = 0.0;
+  size_t num_outside = 0;
   for (size_t r = 0; r < A.Rows(); r++) {
     const float* expected_row = c_slow_batch.Row(r);
     const float* actual_row = c_batch.Row(r);
@@ -143,14 +154,23 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
         const double min = HWY_MIN(expected_value, actual_value);
         const double rel = max / HWY_MAX(min, 1E-6);
         if (rel > max_rel) {
-          hwy::Abort(__FILE__, line,
-                     "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
-                     "tolerance %f rel %E max_rel %E\n",
-                     r, c, expected_value, actual_value, norm, max_abs,
-                     tolerance, rel, max_rel);
+          worst_expected = expected_value;
+          worst_actual = actual_value;
+          worst_r = r;
+          worst_c = c;
+          max_rel = rel;
+          ++num_outside;
         }
       }
     }
+  }
+
+  if (max_rel > rel_tolerance) {
+    hwy::Abort(__FILE__, line,
+               "(%zu,%zu): expected %f, actual %f, norm %f maxabs %f "
+               "tolerance %f rel %E max_rel %E num_outside %zu\n",
+               worst_r, worst_c, worst_expected, worst_actual, norm, max_abs,
+               tolerance, max_rel, rel_tolerance, num_outside);
   }
 }
 
@@ -171,29 +191,22 @@ HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
   const IndexRange all_cols_c(0, C.Cols());
 
   NestedPools& pools = env.ctx.pools;
-  hwy::ThreadPool& all_packages = pools.AllPackages();
-  const IndexRangePartition get_row_c =
-      StaticPartition(all_rows_c, all_packages.NumWorkers(), 1);
+  hwy::ThreadPool& all_clusters = pools.AllClusters();
+  const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
+  const IndexRangePartition get_col_c =
+      StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
   ParallelizeOneRange(
-      get_row_c, all_packages,
-      [&](const IndexRange& rows_c, size_t package_idx) HWY_ATTR {
-        hwy::ThreadPool& all_clusters = pools.AllClusters(package_idx);
-        const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
-        const IndexRangePartition get_col_c =
-            StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
-        ParallelizeOneRange(
-            get_col_c, all_clusters,
-            [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
-              for (size_t r : rows_c) {
-                TC* HWY_RESTRICT C_row = C.Row(r);
-                for (size_t c : cols_c) {
-                  const float add = add_row ? add_row[c] : 0.0f;
-                  C_row[c] = hwy::ConvertScalarTo<TC>(
-                      add + scale * Dot(df, b_span, c * B.Stride(), A.Row(r),
-                                        A.Cols()));
-                }
-              }
-            });
+      get_col_c, all_clusters,
+      [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
+        for (size_t r : all_rows_c) {
+          TC* HWY_RESTRICT C_row = C.Row(r);
+          for (size_t c : cols_c) {
+            const float add = add_row ? add_row[c] : 0.0f;
+            const float dot =
+                Dot(df, b_span, c * B.Stride(), A.Row(r), A.Cols());
+            C_row[c] = hwy::ConvertScalarTo<TC>(add + scale * dot);
+          }
+        }
       });
 }
 
@@ -228,7 +241,9 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   MatStorageT<TC> C_slow("C_slow", C_extents, env.ctx.allocator,
                          MatPadding::kOdd);
   MatStorageT<TC> C("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
+  MatStorageT<TC> C2("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
+  C2.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
       add ? GenerateMat<float>(Extents2D(1, cols_bc), env.ctx.allocator,
@@ -240,10 +255,52 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
 
   MatMulSlow(A, BT, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
+  MMOptions options;
   for (size_t rep = 0; rep < 16; ++rep) {
-    MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C);
+    MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C, options);
     AssertClose(A, BT, C_slow, C, env, line);
-    if (per_key->autotune.Best()) break;
+    // Check before TwoMatMulStatic(), which can invalidate per_key.
+    const bool autotune_done = !!per_key->autotune.Best();
+
+    // Ensure the tiled view returns the same result as C.
+    if constexpr (IsBF16<TA>() && IsBF16<TC>()) {
+      // The total view area should match the entire C matrix.
+      std::atomic<size_t> total_view_area = 0;
+
+      const auto fused = [&](RowPtrsBF C2_rows, IndexRange range_r,
+                             IndexRange range_c, StridedViewBF C2_view,
+                             size_t worker) {
+        total_view_area.fetch_add(range_r.Num() * range_c.Num());
+        HWY_ASSERT(range_c.Num() <= C2_view.Cols());
+        HWY_ASSERT(worker < env.ctx.pools.MaxWorkers());
+        for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+          const size_t r = range_r.begin() + ir;
+          for (size_t ic = 0; ic < range_c.Num(); ++ic) {
+            const size_t c = range_c.begin() + ic;
+            const float expected =
+                hwy::ConvertScalarTo<float>(C2_rows.Row(r)[c]);
+            const float actual =
+                hwy::ConvertScalarTo<float>(C2_view.Row(ir)[ic]);
+            const float L1 = hwy::ScalarAbs(actual - expected);
+            if (L1 > 1E-6f) {
+              HWY_ABORT("%zu: ir %zu ic %zu L1 %f expected %f actual %f.",
+                        worker, ir, ic, L1, expected, actual);
+            }
+          }
+        }
+      };
+      options.SetFunc(fused);
+      TwoMatMulStatic(A, BT, BT, env, C2, options);
+      HWY_ASSERT_EQ(C.Extents().Area(), total_view_area.load());
+      options.func = nullptr;  // reset for next call
+
+      // TwoMatMulStatic() does not support adding a bias vector.
+      if (!add) {
+        AssertClose(A, BT, C, C2, env, line);
+      }
+    }
+
+    if (autotune_done) break;
   }
 }
 
@@ -256,34 +313,28 @@ void TestTiny() {
   if (first_target == 0) first_target = HWY_TARGET;
   if (HWY_TARGET != first_target) return;
 
-  for (size_t max_packages : {1, 2}) {
-    ThreadingArgs threading_args;
-    threading_args.bind = Tristate::kTrue;
-    threading_args.max_packages = max_packages;
-    ThreadingContext ctx(threading_args);
-    MatMulEnv env(ctx);
-    NestedPools& pools = env.ctx.pools;
+  ThreadingArgs threading_args;
+  threading_args.bind = Tristate::kTrue;
+  ThreadingContext ctx(threading_args);
+  MatMulEnv env(ctx);
+  NestedPools& pools = env.ctx.pools;
 
-    if constexpr (GEMMA_DISABLE_TOPOLOGY || kMaxPackages == 1) {
-      if (max_packages == 2) break;  // we only have one package
-    } else {
-      // If less than the limit, we have already tested all num_packages.
-      if (env.ctx.topology.FullTopology().packages.size() < max_packages) break;
-    }
-    fprintf(stderr, "TestTiny %zu: %s %s\n", max_packages,
-            env.ctx.topology.TopologyString(), pools.PinString());
+  fprintf(stderr, "TestTiny: %s %s\n", env.ctx.topology.TopologyString(),
+          pools.PinString());
 
-    pools.MaybeStartSpinning(threading_args.spin);
+  pools.MaybeStartSpinning(threading_args.spin);
 
-    for (size_t M = 1; M <= 12; ++M) {
-      for (size_t K = 1; K <= 64; K *= 2) {
-        for (size_t N = 4; N <= 64; N += max_packages * 4) {
-          TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
-        }
+  for (size_t M = 1; M <= 12; ++M) {
+    for (size_t K = 1; K <= 64; K *= 2) {
+      for (size_t N = 4; N <= 64; N += 4) {
+        TestMatMul<F32, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<BF16, F32, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<F32, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
+        TestMatMul<BF16, BF16, F32>(M, K, N, /*add=*/false, env, __LINE__);
       }
     }
-    pools.MaybeStopSpinning(threading_args.spin);
   }
+  pools.MaybeStopSpinning(threading_args.spin);
 }
 
 void TestAllMatMul() {
@@ -297,6 +348,7 @@ void TestAllMatMul() {
 
   ThreadingArgs threading_args;
   threading_args.bind = Tristate::kTrue;
+
   ThreadingContext ctx(threading_args);
   MatMulEnv env(ctx);
   NestedPools& pools = env.ctx.pools;
@@ -333,6 +385,10 @@ void TestAllMatMul() {
 
   TestMatMul<F32, SFP>(256, 256, 256, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(256, 256, 256, /*add=*/true, env, __LINE__);
+
+  // Non-vector-multiple K.
+  TestMatMul<F32, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
 
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
   TestMatMul<F32>(35, 128, 32, /*add=*/false, env, __LINE__);

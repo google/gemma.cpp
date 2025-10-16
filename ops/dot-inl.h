@@ -157,15 +157,16 @@ HWY_MAYBE_UNUSED double ConditionNumber(const VT* HWY_RESTRICT v, size_t num) {
 // promoted or even DEMOTED to bf16. Runs at about half the speed of f32 FMA.
 struct DotKernelDouble {
   // Only `CompressTraits<float>` can `Decompress2` to `double`, so both have
-  // to be `float` in order to have `Raw = double`. Note that if either type is
-  // smaller than `float`, we may demote the other type from `float` to `BF16`.
+  // to be `float` in order to have `Raw = double`. To avoid loss of accuracy,
+  // if either is float, we decompress both to float, otherwise `BF16`.
   template <typename VT, typename WT>
-  using Raw = hwy::If<IsF32<VT>() && IsF32<WT>(), double, BF16>;
+  using Raw = hwy::If<IsF32<VT>() && IsF32<WT>(), double,
+                      hwy::If<IsF32<VT>() || IsF32<WT>(), float, BF16>>;
   using State = double;
 
   // Raw = double
   template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
-  HWY_INLINE void Update4(DRaw dd, const VR w0, const VR w1, const VR w2,
+  HWY_INLINE void Update4(DRaw dr, const VR w0, const VR w1, const VR w2,
                           const VR w3, const VR v0, const VR v1, const VR v2,
                           const VR v3, VR& sum0, VR& sum1, VR& sum2, VR& sum3,
                           VR&, VR&, VR&, VR&) const {
@@ -173,6 +174,41 @@ struct DotKernelDouble {
     sum1 = hn::MulAdd(w1, v1, sum1);
     sum2 = hn::MulAdd(w2, v2, sum2);
     sum3 = hn::MulAdd(w3, v3, sum3);
+  }
+
+  // Raw = float
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F32_D(DRaw),
+            class DS = hn::Repartition<double, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update4(DRaw dr, const VR w0, const VR w1, const VR w2,
+                          const VR w3, const VR v0, const VR v1, const VR v2,
+                          const VR v3, VS& sum0, VS& sum1, VS& sum2, VS& sum3,
+                          VS&, VS&, VS&, VS&) const {
+    const hn::Repartition<double, DRaw> dd;
+    using VD = hn::Vec<decltype(dd)>;
+    VD w0d = hn::PromoteLowerTo(dd, w0);
+    VD w1d = hn::PromoteLowerTo(dd, w1);
+    VD w2d = hn::PromoteLowerTo(dd, w2);
+    VD w3d = hn::PromoteLowerTo(dd, w3);
+    VD v0d = hn::PromoteLowerTo(dd, v0);
+    VD v1d = hn::PromoteLowerTo(dd, v1);
+    VD v2d = hn::PromoteLowerTo(dd, v2);
+    VD v3d = hn::PromoteLowerTo(dd, v3);
+    sum0 = hn::MulAdd(w0d, v0d, sum0);
+    sum1 = hn::MulAdd(w1d, v1d, sum1);
+    sum2 = hn::MulAdd(w2d, v2d, sum2);
+    sum3 = hn::MulAdd(w3d, v3d, sum3);
+    w0d = hn::PromoteUpperTo(dd, w0);
+    w1d = hn::PromoteUpperTo(dd, w1);
+    w2d = hn::PromoteUpperTo(dd, w2);
+    w3d = hn::PromoteUpperTo(dd, w3);
+    v0d = hn::PromoteUpperTo(dd, v0);
+    v1d = hn::PromoteUpperTo(dd, v1);
+    v2d = hn::PromoteUpperTo(dd, v2);
+    v3d = hn::PromoteUpperTo(dd, v3);
+    sum0 = hn::MulAdd(w0d, v0d, sum0);
+    sum1 = hn::MulAdd(w1d, v1d, sum1);
+    sum2 = hn::MulAdd(w2d, v2d, sum2);
+    sum3 = hn::MulAdd(w3d, v3d, sum3);
   }
 
   // Raw = BF16
@@ -217,9 +253,24 @@ struct DotKernelDouble {
 
   // Raw = double
   template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F64_D(DRaw)>
-  HWY_INLINE void Update1(DRaw dd, const VR w0, const VR v0, VR& sum0,
+  HWY_INLINE void Update1(DRaw dr, const VR w0, const VR v0, VR& sum0,
                           VR&) const {
     sum0 = hn::MulAdd(w0, v0, sum0);
+  }
+
+  // Raw = float
+  template <class DRaw, class VR = hn::Vec<DRaw>, HWY_IF_F32_D(DRaw),
+            class DS = hn::Repartition<double, DRaw>, class VS = hn::Vec<DS>>
+  HWY_INLINE void Update1(DRaw dr, const VR w0, const VR v0, VS& sum0,
+                          VS&) const {
+    const hn::Repartition<double, DRaw> dd;
+    using VD = hn::Vec<decltype(dd)>;
+    VD w0d = hn::PromoteLowerTo(dd, w0);
+    VD v0d = hn::PromoteLowerTo(dd, v0);
+    sum0 = hn::MulAdd(w0d, v0d, sum0);
+    w0d = hn::PromoteUpperTo(dd, w0);
+    v0d = hn::PromoteUpperTo(dd, v0);
+    sum0 = hn::MulAdd(w0d, v0d, sum0);
   }
 
   // Raw = BF16

@@ -46,6 +46,7 @@ jobs:
         -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -D CMAKE_C_COMPILER_LAUNCHER=ccache
         -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 
 
     - name: Build
       run: cmake --build ${{ github.workspace }}/build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }} -j 4

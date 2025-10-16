@@ -24,7 +24,6 @@
 
 #include <algorithm>  // std::shuffle
 #include <array>
-#include <random>
 
 #include "compression/distortion.h"
 #include "util/test_util.h"
@@ -104,8 +103,8 @@ struct TestPlateaus {
       HWY_ASSERT(-0.5f <= in[i] && in[i] < 0.5f);
     }
 
-    std::random_device rd;  // NOLINT
-    std::mt19937 rng(rd());
+    AesCtrEngine engine(/*deterministic=*/true);
+    RngStream rng(engine, 0);
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
     NuqStream::ClusterBuf buf;
@@ -151,8 +150,8 @@ struct TestRamp {
       HWY_ASSERT(-0.45f <= in[i] && in[i] < 0.55f);
     }
 
-    std::random_device rd;  // NOLINT
-    std::mt19937 rng(rd());
+    AesCtrEngine engine(/*deterministic=*/true);
+    RngStream rng(engine, 0);
     std::shuffle(in.get(), in.get() + kGroupSize, rng);
 
     NuqStream::ClusterBuf buf;

@@ -53,7 +53,7 @@ Guidelines](https://opensource.google.com/conduct/).
 
 -   LLM
 
-    -   CPU-only inference for: Gemma 2-3, Griffin(SSM), PaliGemma 2.
+    -   CPU-only inference for: Gemma 2-3, PaliGemma 2.
     -   Sampling with TopK and temperature.
     -   Backward pass (VJP) and Adam optimizer for Gemma research.
 
@@ -221,23 +221,6 @@ Example invocation for the following configuration:
 ./gemma \
 --tokenizer tokenizer.spm --weights gemma2-2b-it-sfp.sbs
 ```
-
-### RecurrentGemma
-
-This repository includes a version of Gemma based on Griffin
-([paper](https://arxiv.org/abs/2402.19427),
-[code](https://github.com/google-deepmind/recurrentgemma)). Its architecture
-includes both recurrent layers and local attention, thus it is more efficient
-for longer sequences and has a smaller memory footprint than standard Gemma. We
-here provide a C++ implementation of this model based on the paper.
-
-To use the recurrent version of Gemma included in this repository, build the
-gemma binary as noted above in Step 3. Download the compressed weights and
-tokenizer from the RecurrentGemma
-[Kaggle](https://www.kaggle.com/models/google/recurrentgemma/gemmaCpp) as in
-Step 1, and run the binary as follows:
-
-`./gemma --tokenizer tokenizer.spm --model gr2b-it --weights 2b-it-sfp.sbs`
 
 ### PaliGemma Vision-Language Model
 
@@ -469,7 +452,7 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp GIT_TAG origin/main)
 FetchContent_MakeAvailable(gemma)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 92d327e841d78e11ae888757a3e16d291951cf64)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9781a1698ee0756ef1eaaf96930113ed7cb6d3ee)
 FetchContent_MakeAvailable(highway)
 ```
 
@@ -535,7 +518,7 @@ gemma.cpp was started in fall 2023 by
 Griffin support was implemented in April 2024 thanks to contributions by Andrey
 Mikhaylov, Eugene Kliuchnikov, Jan Wassenberg, Jyrki Alakuijala, Lode
 Vandevenne, Luca Versari, Martin Bruse, Phil Culliton, Sami Boukortt, Thomas
-Fischbacher and Zoltan Szabadka.
+Fischbacher and Zoltan Szabadka. It was removed in 2025-09.
 
 Gemma-2 support was implemented in June/July 2024 with the help of several
 people.

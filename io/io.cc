@@ -106,7 +106,13 @@ class FilePosix : public File {
     for (;;) {
       // pread seems to be faster than lseek + read when parallelized.
       const auto bytes_read = pread(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_read <= 0) break;
+      if (bytes_read <= 0) {
+        HWY_WARN(
+            "Read failure at pos %zu within size %zu with offset %zu and "
+            "errno %d\n",
+            pos, size, offset, errno);
+        break;
+      }
       pos += bytes_read;
       HWY_ASSERT(pos <= size);
       if (pos == size) break;
@@ -120,7 +126,13 @@ class FilePosix : public File {
     for (;;) {
       const auto bytes_written =
           pwrite(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_written <= 0) break;
+      if (bytes_written <= 0) {
+        HWY_WARN(
+            "Write failure at pos %zu within size %zu with offset %zu and "
+            "errno %d\n",
+            pos, size, offset, errno);
+        break;
+      }
       pos += bytes_written;
       HWY_ASSERT(pos <= size);
       if (pos == size) break;
@@ -226,21 +238,26 @@ void InternalInit() {
 }
 
 uint64_t IOBatch::Read(const File& file) const {
-#if GEMMA_IO_PREADV
   HWY_ASSERT(!spans_.empty());
 
-  ssize_t bytes_read;
-  for (;;) {
-    bytes_read =
-        preadv(file.Handle(), reinterpret_cast<const iovec*>(spans_.data()),
-               static_cast<int>(spans_.size()), offset_);
-    if (bytes_read >= 0) break;
-    if (errno == EINTR) continue;  // signal: retry
-    HWY_WARN("preadv failed, errno %d.", errno);
-    return 0;
+#if GEMMA_IO_PREADV
+  if (file.Handle() != -1) {
+    ssize_t bytes_read;
+    for (;;) {
+      bytes_read =
+          preadv(file.Handle(), reinterpret_cast<const iovec*>(spans_.data()),
+                 static_cast<int>(spans_.size()), offset_);
+      if (bytes_read >= 0) break;
+      if (errno == EINTR) continue;  // signal: retry
+      HWY_WARN("preadv(%d) for %4zu spans from offset %12zu failed, errno %d.",
+               file.Handle(), spans_.size(), offset_, errno);
+      return 0;
+    }
+    return static_cast<uint64_t>(bytes_read);
   }
-  return static_cast<uint64_t>(bytes_read);
-#else
+#endif  // GEMMA_IO_PREADV
+
+  // preadv disabled or no handle: use normal reads (higher kernel overhead).
   uint64_t total = 0;
   uint64_t offset = offset_;
   for (const IOSpan& span : spans_) {
@@ -249,7 +266,6 @@ uint64_t IOBatch::Read(const File& file) const {
     offset += span.bytes;
   }
   return total;
-#endif
 }
 
 }  // namespace gcpp

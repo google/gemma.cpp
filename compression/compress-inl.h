@@ -47,6 +47,7 @@
 
 #include "hwy/highway.h"
 // After highway.h
+#include "compression/int-inl.h"
 #include "compression/nuq-inl.h"
 #include "compression/sfp-inl.h"
 
@@ -54,12 +55,6 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
-
-#ifdef HWY_IS_TEST
-static constexpr bool kIsTest = true;
-#else
-static constexpr bool kIsTest = false;
-#endif
 
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
@@ -422,6 +417,34 @@ struct CompressTraits<SfpStream> {
   }
 };
 
+// Integer quantization.
+template <>
+struct CompressTraits<I8Stream> {
+  using Packed = I8Stream;
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
+                                  size_t num, CompressPerThread& tls,
+                                  const PackedSpan<Packed>& packed,
+                                  const size_t packed_ofs) {
+    IntCodec::Enc(df, raw, num, packed, packed_ofs);
+  }
+
+  template <class D>  // Caller checks this is f32 or bf16
+  static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
+                               const size_t packed_ofs, hn::Vec<D>& raw0,
+                               hn::Vec<D>& raw1) {
+    IntCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
+  }
+
+  template <class D, typename Raw>
+  static HWY_INLINE void DecompressAndZeroPad(
+      D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      Raw* raw, const size_t num) {
+    IntCodec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
+  }
+};
+
 // Nonuniform quantization, 4.5 bits per element, two separate streams.
 template <>
 struct CompressTraits<NuqStream> {
@@ -485,9 +508,6 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     }
   }
 
-  const bool want_bench = COMPRESS_STATS || !kIsTest;
-  const double t0 = want_bench ? hwy::platform::Now() : 0.0;
-
   using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   constexpr size_t kBatch = 8192;
   const size_t num_batches = hwy::DivCeil(num, kBatch);
@@ -501,13 +521,6 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
              Traits::Compress(df, raw + my_pos, my_num, work.tls[thread],
                               packed, packed_ofs + my_pos);
            });
-
-  if (want_bench) {  // Avoids log spam in tests
-    const double t1 = hwy::platform::Now();
-    const double mb = static_cast<double>(num) * sizeof(raw[0]) * 1E-6;
-    const double mbps = mb / (t1 - t0);
-    fprintf(stderr, "Compress %.1f MB/s\n", mbps);
-  }
 
   if constexpr (COMPRESS_STATS) {
     for (size_t i = 1; i < work.tls.size(); ++i) {
@@ -707,6 +720,243 @@ HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
 
   return kernel.Reduce(d_state, sum0, sum1, sum2, sum3, comp0, comp1, comp2,
                        comp3);
+}
+
+// Similar to `hn::Transform*`, but for compressed `T`. Used by ops-inl.h.
+// `DF` is the decompressed type, typically `float`.
+template <class DF, typename T, class Func>
+HWY_INLINE void DecompressAndCompressInplace(DF df, T* HWY_RESTRICT inout,
+                                             size_t num, Func&& func) {
+  const auto packed_inout = MakeSpan(inout, num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v0, v1;
+      Decompress2(df, packed_inout, i, v0, v1);
+      const VF out0 = func(df, v0);
+      const VF out1 = func(df, v1);
+      Compress2(df, out0, out1, packed_inout, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_inout[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf_inout + NF);
+    DecompressAndZeroPad(df, packed_inout, i, buf_inout, remaining);
+    const VF v0 = hn::Load(df, buf_inout);
+    const VF v1 = hn::Load(df, buf_inout + NF);
+    const VF out0 = func(df, v0);
+    const VF out1 = func(df, v1);
+    Compress2(df, out0, out1, MakeSpan(buf_inout, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      inout[i + j] = hwy::ConvertScalarTo<T>(buf_inout[j]);
+    }
+  }
+}
+
+// One extra argument. `DF` is the decompressed type, typically `float`.
+template <class DF, typename T, typename T1, class Func>
+HWY_INLINE void Decompress1AndCompressInplace(DF df, T* HWY_RESTRICT inout,
+                                              size_t num,
+                                              const T1* HWY_RESTRICT p1,
+                                              const size_t p1_ofs,
+                                              Func&& func) {
+  const auto packed_inout = MakeSpan(inout, num);
+  const auto packed1 = MakeSpan(p1, p1_ofs + num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v0, v1;
+      Decompress2(df, packed_inout, i, v0, v1);
+      VF v10, v11;
+      Decompress2(df, packed1, p1_ofs + i, v10, v11);
+      const VF out0 = func(df, v0, v10);
+      const VF out1 = func(df, v1, v11);
+      Compress2(df, out0, out1, packed_inout, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_inout[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf1[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf_inout + NF);
+    hn::Store(hn::Zero(df), df, buf1 + NF);
+    DecompressAndZeroPad(df, packed_inout, i, buf_inout, remaining);
+    DecompressAndZeroPad(df, packed1, p1_ofs + i, buf1, remaining);
+    const VF v0 = hn::Load(df, buf_inout);
+    const VF v1 = hn::Load(df, buf_inout + NF);
+    const VF v10 = hn::Load(df, buf1);
+    const VF v11 = hn::Load(df, buf1 + NF);
+    const VF out0 = func(df, v0, v10);
+    const VF out1 = func(df, v1, v11);
+    Compress2(df, out0, out1, MakeSpan(buf_inout, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      inout[i + j] = hwy::ConvertScalarTo<T>(buf_inout[j]);
+    }
+  }
+}
+
+// Single input, separate output. `DF` is the decompressed type, typically
+// `float`.
+template <class DF, typename T, typename T1, class Func>
+HWY_INLINE void Decompress1AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
+                                         const T1* HWY_RESTRICT p1,
+                                         Func&& func) {
+  const auto packed_out = MakeSpan(out, num);
+  const auto packed1 = MakeSpan(p1, num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v10, v11;
+      Decompress2(df, packed1, i, v10, v11);
+      const VF out0 = func(df, v10);
+      const VF out1 = func(df, v11);
+      Compress2(df, out0, out1, packed_out, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf1[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf1 + NF);
+    DecompressAndZeroPad(df, packed1, i, buf1, remaining);
+    const VF v10 = hn::Load(df, buf1);
+    const VF v11 = hn::Load(df, buf1 + NF);
+    const VF out0 = func(df, v10);
+    const VF out1 = func(df, v11);
+    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      out[i + j] = hwy::ConvertScalarTo<T>(buf_out[j]);
+    }
+  }
+}
+
+// Two inputs. `DF` is the decompressed type, typically `float`.
+template <class DF, typename T, typename T1, typename T2, class Func>
+HWY_INLINE void Decompress2AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
+                                         const T1* HWY_RESTRICT p1,
+                                         const T2* HWY_RESTRICT p2,
+                                         const size_t p2_ofs, Func&& func) {
+  const auto packed_out = MakeSpan(out, num);
+  const auto packed1 = MakeSpan(p1, num);
+  const auto packed2 = MakeSpan(p2, p2_ofs + num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v10, v11, v20, v21;
+      Decompress2(df, packed1, i, v10, v11);
+      Decompress2(df, packed2, p2_ofs + i, v20, v21);
+      const VF out0 = func(df, v10, v20);
+      const VF out1 = func(df, v11, v21);
+      Compress2(df, out0, out1, packed_out, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf1[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf2[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf1 + NF);
+    hn::Store(hn::Zero(df), df, buf2 + NF);
+    DecompressAndZeroPad(df, packed1, i, buf1, remaining);
+    DecompressAndZeroPad(df, packed2, p2_ofs + i, buf2, remaining);
+    const VF v10 = hn::Load(df, buf1);
+    const VF v11 = hn::Load(df, buf1 + NF);
+    const VF v20 = hn::Load(df, buf2);
+    const VF v21 = hn::Load(df, buf2 + NF);
+    const VF out0 = func(df, v10, v20);
+    const VF out1 = func(df, v11, v21);
+    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      out[i + j] = hwy::ConvertScalarTo<T>(buf_out[j]);
+    }
+  }
+}
+
+// Three inputs. `DF` is the decompressed type, typically `float`.
+template <class DF, typename T, typename T1, typename T2, typename T3,
+          class Func>
+HWY_INLINE void Decompress3AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
+                                         const T1* HWY_RESTRICT p1,
+                                         const T2* HWY_RESTRICT p2,
+                                         const T3* HWY_RESTRICT p3,
+                                         Func&& func) {
+  const auto packed_out = MakeSpan(out, num);
+  const auto packed1 = MakeSpan(p1, num);
+  const auto packed2 = MakeSpan(p2, num);
+  const auto packed3 = MakeSpan(p3, num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v10, v11, v20, v21, v30, v31;
+      Decompress2(df, packed1, i, v10, v11);
+      Decompress2(df, packed2, i, v20, v21);
+      Decompress2(df, packed3, i, v30, v31);
+      const VF out0 = func(df, v10, v20, v30);
+      const VF out1 = func(df, v11, v21, v31);
+      Compress2(df, out0, out1, packed_out, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf1[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf2[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf3[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf1 + NF);
+    hn::Store(hn::Zero(df), df, buf2 + NF);
+    hn::Store(hn::Zero(df), df, buf3 + NF);
+    DecompressAndZeroPad(df, packed1, i, buf1, remaining);
+    DecompressAndZeroPad(df, packed2, i, buf2, remaining);
+    DecompressAndZeroPad(df, packed3, i, buf3, remaining);
+    const VF v10 = hn::Load(df, buf1);
+    const VF v11 = hn::Load(df, buf1 + NF);
+    const VF v20 = hn::Load(df, buf2);
+    const VF v21 = hn::Load(df, buf2 + NF);
+    const VF v30 = hn::Load(df, buf3);
+    const VF v31 = hn::Load(df, buf3 + NF);
+    const VF out0 = func(df, v10, v20, v30);
+    const VF out1 = func(df, v11, v21, v31);
+    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      out[i + j] = hwy::ConvertScalarTo<T>(buf_out[j]);
+    }
+  }
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

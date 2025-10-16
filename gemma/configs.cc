@@ -133,78 +133,6 @@ static ModelConfig ConfigGemma2_2B() {
   return config;
 }
 
-static LayerConfig LayerConfigGemmaTiny(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.ff_hidden_dim = 256;
-  config.heads = 4;
-  config.kv_heads = 1;
-  config.qkv_dim = 16;
-  return config;
-}
-
-static ModelConfig ConfigGemmaTiny() {
-  ModelConfig config = ConfigNoSSM();
-  config.display_name = "GemmaTiny";
-  config.model = Model::GEMMA_TINY;
-  config.wrapping = PromptWrapping::GEMMA_IT;
-  config.model_dim = 32;
-  config.vocab_size = 32;  // at least two f32 vectors
-  config.max_seq_len = 32;
-  LayerConfig layer_config = LayerConfigGemmaTiny(config.model_dim);
-  config.num_layers = 2;
-  config.layer_configs = {config.num_layers, layer_config};
-  config.query_scale = QueryScaleType::SqrtKeySize;
-  config.attention_window_sizes = FixedAttentionWindowSizes<2>(32);
-  config.att_cap = 50.0f;
-  config.final_cap = 30.0f;
-  config.eos_id = 11;
-  config.secondary_eos_id = 11;
-  return config;
-}
-
-static LayerConfig LayerConfigGriffin2B(size_t model_dim) {
-  LayerConfig config;
-  config.model_dim = model_dim;
-  config.griffin_dim = model_dim;
-  config.ff_hidden_dim = 7680;
-  config.heads = 10;
-  config.kv_heads = 1;
-  config.qkv_dim = 256;
-  config.conv1d_width = 4;
-  HWY_DASSERT(config.conv1d_width <= kMaxConv1DWidth);
-  config.ff_biases = true;
-  config.softmax_attn_output_biases = true;
-  config.optimized_gating = false;
-  config.type = LayerAttentionType::kGriffinRecurrentBlock;
-  config.activation = ActivationType::Gelu;
-  config.post_qk = PostQKType::HalfRope;
-  return config;
-}
-
-static ModelConfig ConfigGriffin2B() {
-  ModelConfig config = ConfigNoSSM();
-  config.display_name = "Griffin2B";
-  config.model = Model::GRIFFIN_2B;
-  // Griffin uses local attention, so max_seq_len is actually the local
-  // attention window.
-  config.model_dim = 2560;
-  config.vocab_size = kVocabSize;
-  config.max_seq_len = 2048;
-  LayerConfig layer_config = LayerConfigGriffin2B(config.model_dim);
-  config.num_layers = 26;
-  config.layer_configs = {config.num_layers, layer_config};
-  for (size_t i = 2; i < config.num_layers; i += 3) {
-    config.layer_configs[i].type = LayerAttentionType::kGemma;
-    config.layer_configs[i].griffin_dim = 0;
-  }
-  config.attention_window_sizes =
-      FixedAttentionWindowSizes<26>(config.max_seq_len);
-  config.use_local_attention = true;
-  config.final_cap = 0.0f;
-  return config;
-}
-
 static LayerConfig LayerConfigVit(size_t model_dim) {
   LayerConfig config;
   config.model_dim = model_dim;
@@ -510,10 +438,6 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma2_9B();
     case Model::GEMMA2_27B:
       return ConfigGemma2_27B();
-    case Model::GRIFFIN_2B:
-      return ConfigGriffin2B();
-    case Model::GEMMA_TINY:
-      return ConfigGemmaTiny();
     case Model::PALIGEMMA2_3B_224:
       return ConfigPaliGemma2_3B_224();
     case Model::PALIGEMMA2_3B_448:
@@ -547,10 +471,6 @@ const char* ModelPrefix(Model model) {
       return "9b";
     case Model::GEMMA2_27B:
       return "27b";
-    case Model::GRIFFIN_2B:
-      return "gr2b";
-    case Model::GEMMA_TINY:
-      return "tiny";
     case Model::PALIGEMMA2_3B_224:
       return "paligemma2-3b-224";
     case Model::PALIGEMMA2_3B_448:
@@ -710,8 +630,10 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
   ModelConfig a = *this;
   ModelConfig b = other;
   // Called by `OverwriteWithCanonical`, so ignore the fields it will set.
-  a.display_name = b.display_name;
-  a.model = b.model;
+  // Order matters: overwrite `b` with `a` because that is the known-good config
+  // when called by `OverwriteWithCanonical`.
+  b.display_name = a.display_name;
+  b.model = a.model;
 
   // The following are not yet set by config_converter.py, so we here ignore
   // them for purposes of comparison, and there overwrite the converter's config
@@ -719,12 +641,12 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
   // these fields will be set.
   // `vit_config` is also not yet set, but we must not ignore it because
   // otherwise PaliGemma models will be indistinguishable for `configs_test`.
-  a.pool_dim = b.pool_dim;  // ViT
-  a.eos_id = b.eos_id;
-  a.secondary_eos_id = b.secondary_eos_id;
-  a.scale_base_names = b.scale_base_names;
-  for (size_t i = 0; i < a.layer_configs.size(); ++i) {
-    a.layer_configs[i].optimized_gating = b.layer_configs[i].optimized_gating;
+  b.pool_dim = a.pool_dim;  // ViT
+  b.eos_id = a.eos_id;
+  b.secondary_eos_id = a.secondary_eos_id;
+  b.scale_base_names = a.scale_base_names;
+  for (size_t i = 0; i < b.layer_configs.size(); ++i) {
+    b.layer_configs[i].optimized_gating = a.layer_configs[i].optimized_gating;
   }
 
   return AllEqual(a, b, print);
@@ -748,13 +670,10 @@ bool ModelConfig::OverwriteWithCanonical() {
 
 Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
-    case 2:
-      return Model::GEMMA_TINY;
     case 18:
       return Model::GEMMA3_270M;
 
     case 26:
-      if (layer_types & kDeducedGriffin) return Model::GRIFFIN_2B;
       if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
       return Model::GEMMA2_2B;
     case 27:

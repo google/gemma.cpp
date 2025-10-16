@@ -29,10 +29,12 @@
 
 #include "ops/matmul.h"
 #include "util/allocator.h"
-#include "util/basics.h"  // TokenAndProb
+#include "util/basics.h"  // TokenAndProb, RngStream
 #include "util/mat.h"
 #include "util/threading_context.h"
+#include "util/zones.h"
 #include "hwy/base.h"
+#include "hwy/bit_set.h"
 #include "hwy/contrib/sort/order.h"
 #include "hwy/contrib/sort/vqsort.h"
 #include "hwy/detect_targets.h"
@@ -62,9 +64,18 @@ namespace hn = hwy::HWY_NAMESPACE;
 template <typename TA, typename TC>
 MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
                      const float* HWY_RESTRICT add, MatMulEnv& env,
-                     MatPtrT<TC>& C) {
-  return CallUpcasted(
-      &B, [&](const auto* B_t) { return MatMulStatic(A, *B_t, add, env, C); });
+                     MatPtrT<TC>& C, const MMOptions& options = MMOptions()) {
+  return CallUpcasted(&B, [&](const auto* B_t) {
+    return MatMulStatic(A, *B_t, add, env, C, options);
+  });
+}
+
+static inline void CallTwoMatMul(const MatPtrT<BF16>& A, const MatPtr& B1,
+                                 const MatPtr& B2, MatMulEnv& env,
+                                 MatPtrT<BF16>& C, const MMOptions& options) {
+  return CallUpcastedSame(&B1, &B2, [&](const auto* B1_t, const auto* B2_t) {
+    return TwoMatMulStatic(A, *B1_t, *B2_t, env, C, options);
+  });
 }
 
 HWY_INLINE double PackTokenAndProb(int32_t token, float prob) {
@@ -126,12 +137,13 @@ HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
 }
 
 // Activation already has a profiler zone.
-static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(float* HWY_RESTRICT x,
-                                               size_t size) {
+template <typename T>
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Gelu(T* HWY_RESTRICT x, size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  hn::Transform(D(), x, size,
-                [](D d, hn::Vec<D> v) HWY_ATTR { return Gelu(d, v); });
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+  DecompressAndCompressInplace(
+      DF(), x, size, [](DF d, VF v) HWY_ATTR -> VF { return Gelu(d, v); });
 }
 
 template <class D, HWY_IF_F32_D(D)>
@@ -178,13 +190,15 @@ HWY_INLINE hn::Vec<D> Sigmoid(D d, hn::Vec<D> v) {
 }
 
 // Sigmoid using the logistic function 1 / (1 + exp(-x[i]))
-static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(float* HWY_RESTRICT x,
+template <typename T>
+static HWY_NOINLINE HWY_MAYBE_UNUSED void Sigmoid(T* HWY_RESTRICT x,
                                                   size_t size) {
   PROFILER_ZONE("ops.Sigmoid");
   namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  hn::Transform(D(), x, size,
-                [](D d, hn::Vec<D> v) HWY_ATTR { return Sigmoid(d, v); });
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+  DecompressAndCompressInplace(
+      DF(), x, size, [](DF d, VF v) HWY_ATTR -> VF { return Sigmoid(d, v); });
 }
 
 namespace detail {
@@ -193,8 +207,7 @@ namespace detail {
 template <typename VT>
 float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
                  const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormMul");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormMul));
 
   const hn::ScalableTag<float> d;
   const float l2 = DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault());
@@ -204,71 +217,49 @@ float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
 
 }  // namespace detail
 
-// `x_ofs` is the offset within `x`, required for NuqStream.
 template <typename XT, typename WT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
                                            const WT* HWY_RESTRICT weight,
-                                           size_t w_ofs, OT* HWY_RESTRICT out,
+                                           const size_t w_ofs,
+                                           OT* HWY_RESTRICT out,
                                            const size_t size, hwy::Profiler& p,
                                            const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNorm");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNorm));
 
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  using VF = hn::Vec<decltype(df)>;
-  const size_t NF = hn::Lanes(df);
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const VF mul = hn::Set(df, detail::RMSNormMul(x, size, p, worker));
+  const VF mul = hn::Set(DF(), detail::RMSNormMul(x, size, p, worker));
+  const VF* HWY_RESTRICT pmul = &mul;
 
-  const auto packed_x = MakeSpan(x, size);
-  const auto packed_w = MakeSpan(weight, w_ofs + size);
-  const auto packed_out = MakeSpan(out, size);
-
-  HWY_DASSERT(size % (2 * NF) == 0);
-  for (size_t i = 0; i < size; i += 2 * NF) {
-    VF x0, x1, w0, w1;
-    Decompress2(df, packed_x, i, x0, x1);
-    Decompress2(df, packed_w, w_ofs + i, w0, w1);
-    const VF m0 = hn::Mul(mul, x0);
-    const VF m1 = hn::Mul(mul, x1);
-    // (1+weight) * m = m + weight*m = one FMA.
-    const VF out0 = hn::MulAdd(m0, w0, m0);
-    const VF out1 = hn::MulAdd(m1, w1, m1);
-    Compress2(df, out0, out1, packed_out, i);
-  }
+  Decompress2AndCompressTo(DF(), out, size, x, weight, w_ofs,
+                           [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
+                             const VF m = hn::Mul(*pmul, vx);
+                             // (1+weight) * m = m + weight*m = one FMA.
+                             return hn::MulAdd(m, vw, m);
+                           });
 }
 
 // Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
 template <typename WT, typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
-    const WT* HWY_RESTRICT weight, size_t w_ofs, XT* HWY_RESTRICT inout,
+    const WT* HWY_RESTRICT weight, const size_t w_ofs, XT* HWY_RESTRICT inout,
     const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RMSNormInplace");
-  PROFILER_ZONE3(p, worker, zone);
-
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormInplace));
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  using VF = hn::Vec<decltype(df)>;
-  const size_t NF = hn::Lanes(df);
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const VF mul = hn::Set(df, detail::RMSNormMul(inout, size, p, worker));
+  const VF mul = hn::Set(DF(), detail::RMSNormMul(inout, size, p, worker));
+  const VF* HWY_RESTRICT pmul = &mul;
 
-  const auto packed_w = MakeSpan(weight, w_ofs + size);
-  const auto packed_x = MakeSpan(inout, size);
-
-  HWY_DASSERT(size % (2 * NF) == 0);
-  for (size_t i = 0; i < size; i += 2 * NF) {
-    VF x0, x1, w0, w1;
-    Decompress2(df, packed_x, i, x0, x1);
-    Decompress2(df, packed_w, w_ofs + i, w0, w1);
-    const VF m0 = hn::Mul(mul, x0);
-    const VF m1 = hn::Mul(mul, x1);
-    // (1+weight) * m = m + weight*m = one FMA.
-    const VF out0 = hn::MulAdd(m0, w0, m0);
-    const VF out1 = hn::MulAdd(m1, w1, m1);
-    Compress2(df, out0, out1, packed_x, i);
-  }
+  Decompress1AndCompressInplace(DF(), inout, size, weight, w_ofs,
+                                [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
+                                  const VF m = hn::Mul(*pmul, vx);
+                                  // (1+weight) * m = m + weight*m = one FMA.
+                                  return hn::MulAdd(m, vw, m);
+                                });
 }
 
 // Computes mean mu and mean of squares mu2 of a vector. Used in LayerNorm.
@@ -300,9 +291,9 @@ HWY_NOINLINE void LayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
   PROFILER_ZONE("ops.LayerNorm");
 
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  using VF = hn::Vec<decltype(df)>;
-  const size_t NF = hn::Lanes(df);
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  using VF = hn::Vec<DF>;
 
   double mu, mu2;
   ComputeMoments(x, size, mu, mu2);
@@ -314,56 +305,13 @@ HWY_NOINLINE void LayerNorm(const XT* x, const WT* HWY_RESTRICT scale,
   const VF* HWY_RESTRICT pmu = &vmu;
   const VF* HWY_RESTRICT pvar = &vvar;
 
-  const auto packed_x = MakeSpan(x, size);
-  const auto packed_scale = MakeSpan(scale, size);
-  const auto packed_bias = MakeSpan(bias, size);
-  const auto packed_out = MakeSpan(out, size);
-
-  // Loop body for one vector, called from main loop and remainder loop.
-  const auto norm = [pmu, pvar](VF x, VF s, VF add) HWY_ATTR -> VF {
-    const VF centered = hn::Sub(x, *pmu);
-    const VF mul = hn::Mul(s, *pvar);
-    return hn::MulAdd(centered, mul, add);
-  };
-
-  size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      VF x0, x1, s0, s1, add0, add1;
-      Decompress2(df, packed_x, i, x0, x1);
-      Decompress2(df, packed_scale, i, s0, s1);
-      Decompress2(df, packed_bias, i, add0, add1);
-      const VF n0 = norm(x0, s0, add0);
-      const VF n1 = norm(x1, s1, add1);
-      Compress2(df, n0, n1, packed_out, i);
-    }
-  }
-
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining < 2 * NF);
-  if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
-    HWY_ALIGN float buf_scale[2 * hn::MaxLanes(df)];
-    HWY_ALIGN float buf_bias[2 * hn::MaxLanes(df)];
-    // Ensure the second vectors are zeroed even if remaining <= NF.
-    hn::Store(hn::Zero(df), df, buf_x + NF);
-    hn::Store(hn::Zero(df), df, buf_scale + NF);
-    hn::Store(hn::Zero(df), df, buf_bias + NF);
-    HWY_ALIGN OT buf_out[2 * hn::MaxLanes(df)];
-    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
-    DecompressAndZeroPad(df, packed_scale, i, buf_scale, remaining);
-    DecompressAndZeroPad(df, packed_bias, i, buf_bias, remaining);
-    const VF x0 = hn::Load(df, buf_x);
-    const VF x1 = hn::Load(df, buf_x + NF);
-    const VF s0 = hn::Load(df, buf_scale);
-    const VF s1 = hn::Load(df, buf_scale + NF);
-    const VF add0 = hn::Load(df, buf_bias);
-    const VF add1 = hn::Load(df, buf_bias + NF);
-    const VF n0 = norm(x0, s0, add0);
-    const VF n1 = norm(x1, s1, add1);
-    Compress2(df, n0, n1, MakeSpan(buf_out, 2 * NF), 0);
-    hwy::CopyBytes(buf_out, out + i, remaining * sizeof(OT));
-  }
+  Decompress3AndCompressTo(DF(), out, size, x, scale, bias,
+                           [pmu, pvar](DF /*df*/, VF x, VF s, VF add)
+                               HWY_ATTR -> VF {
+                                 const VF centered = hn::Sub(x, *pmu);
+                                 const VF mul = hn::Mul(s, *pvar);
+                                 return hn::MulAdd(centered, mul, add);
+                               });
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
@@ -413,8 +361,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
     const size_t worker) {
-  static const auto zone = p.AddZone("Ops.Rope");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRope));
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -473,8 +420,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
     const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
     const size_t worker) {
-  static const auto zone = p.AddZone("Ops.RopeAndMulBy");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRopeAndMulBy));
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -536,75 +482,48 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
                                                   const size_t size,
                                                   hwy::Profiler& p,
                                                   const size_t worker) {
-  static const auto zone = p.AddZone("Ops.AddFrom");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsAddFrom));
 
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  const size_t NF = hn::Lanes(df);
-  using VF = hn::Vec<decltype(df)>;
-
-  const auto packed_x = MakeSpan(x, size);
-
-  size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      VF x0, x1;
-      Decompress2(df, packed_x, i, x0, x1);
-      VF out0 = hn::Load(df, out + i);
-      VF out1 = hn::Load(df, out + i + NF);
-      hn::Store(hn::Add(x0, out0), df, out + i);
-      hn::Store(hn::Add(x1, out1), df, out + i + NF);
-    }
-  }
-
-  const size_t remaining = size - i;
-  const size_t remaining1 = remaining - HWY_MIN(remaining, NF);
-  HWY_DASSERT(remaining < 2 * NF);
-  HWY_DASSERT(remaining1 < NF);
-  if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
-    // Ensure the second vector is zeroed even if remaining <= NF.
-    hn::Store(hn::Zero(df), df, buf_x + NF);
-    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
-    const VF x0 = hn::Load(df, buf_x);
-    const VF x1 = hn::Load(df, buf_x + NF);
-    const VF out0 = hn::LoadN(df, out + i, remaining);
-    const VF out1 = hn::LoadN(df, out + i + NF, remaining1);
-    hn::StoreN(hn::Add(x0, out0), df, out + i, remaining);
-    hn::StoreN(hn::Add(x1, out1), df, out + i + NF, remaining1);
-  }
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+  Decompress1AndCompressInplace(DF(), out, size, x, /*p1_ofs=*/0,
+                                [&](DF /*df*/, VF out, VF x)
+                                    HWY_ATTR -> VF { return hn::Add(x, out); });
 }
 
 // Simple loops unless/until batch sizes are large enough to parallelize.
 template <typename XT, typename OT>
 void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
-                    MatPtrT<OT>& out, ThreadingContext& ctx) {
+                    MatPtrT<OT>& out, ThreadingContext& ctx,
+                    size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
   HWY_DASSERT(weights.Cols() == activations.Cols());
   HWY_DASSERT(activations.SameShape(out));
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        activations.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
-          RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(), 0,
-                  out.Row(token_idx), activations.Cols(), ctx.profiler, worker);
-        });
+    ParallelFor(ParallelismStrategy::kFlat, activations.Rows(), ctx,
+                cluster_idx, [&](uint64_t token_idx, size_t worker) {
+                  RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
+                          /*w_ofs=*/0, out.Row(token_idx), activations.Cols(),
+                          ctx.profiler, worker);
+                });
   });
 }
 
 template <typename XT>
 void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
-                           ThreadingContext& ctx) {
+                           ThreadingContext& ctx, size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
   HWY_DASSERT(weights.Cols() == inout.Cols());
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    SmallParallelFor(
-        inout.Rows(), ctx.pools, [&](uint64_t token_idx, size_t worker) {
-          RMSNormInplace(weights_t->PackedScale1(), 0, inout.Row(token_idx),
-                         inout.Cols(), ctx.profiler, worker);
-        });
+    ParallelFor(ParallelismStrategy::kFlat, inout.Rows(), ctx, cluster_idx,
+                [&](uint64_t token_idx, size_t worker) {
+                  RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
+                                 inout.Row(token_idx), inout.Cols(),
+                                 ctx.profiler, worker);
+                });
   });
 }
 
@@ -627,156 +546,586 @@ void LayerNormBatched(const MatPtrT<XT>& x, const MatPtr& weight,
 
 template <typename XT>
 static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
-                                      ThreadingContext& ctx) {
+                                      ThreadingContext& ctx,
+                                      size_t cluster_idx = 0) {
   HWY_DASSERT(out.SameShape(x));
-  SmallParallelFor(out.Rows(), ctx.pools,
-                   [&](uint64_t token_idx, size_t worker) {
-                     AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
-                             ctx.profiler, worker);
-                   });
+  ParallelFor(ParallelismStrategy::kFlat, out.Rows(), ctx, cluster_idx,
+              [&](uint64_t token_idx, size_t worker) {
+                AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
+                        ctx.profiler, worker);
+              });
 }
 
 template <typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
-                                              const size_t size,
-                                              hwy::Profiler& p,
-                                              const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConst");
-  PROFILER_ZONE3(p, worker, zone);
+                                              const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  const size_t NF = hn::Lanes(df);
-  using VF = hn::Vec<decltype(df)>;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const VF v_c = hn::Set(df, c);
-  const auto packed_x = MakeSpan(x, size);
+  const VF vc = hn::Set(DF(), c);
+  const VF* HWY_RESTRICT pc = &vc;
 
-  size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      VF x0, x1;
-      Decompress2(df, packed_x, i, x0, x1);
-      x0 = hn::Mul(x0, v_c);
-      x1 = hn::Mul(x1, v_c);
-      Compress2(df, x0, x1, packed_x, i);
-    }
-  }
-
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining < 2 * NF);
-  if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
-    // Ensure the second vector is zeroed even if remaining <= NF.
-    hn::Store(hn::Zero(df), df, buf_x + NF);
-    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
-    VF x0 = hn::Load(df, buf_x);
-    VF x1 = hn::Load(df, buf_x + NF);
-    x0 = hn::Mul(x0, v_c);
-    x1 = hn::Mul(x1, v_c);
-    Compress2(df, x0, x1, MakeSpan(buf_x, 2 * NF), 0);
-    hwy::CopyBytes(buf_x, x + i, remaining * sizeof(XT));
-  }
+  DecompressAndCompressInplace(DF(), x, size,
+                               [pc](DF /*df*/, VF x)
+                                   HWY_ATTR -> VF { return hn::Mul(x, *pc); });
 }
 
-// Same as above, but without a separate output. Same as below without the add.
+// Same as above, but with a separate output. Same as below without the add.
 template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
     const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstTo");
-  PROFILER_ZONE3(p, worker, zone);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstTo));
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  const size_t NF = hn::Lanes(df);
-  using VF = hn::Vec<decltype(df)>;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const VF v_c = hn::Set(df, c);
-  const auto packed_x = MakeSpan(x, size);
-  const auto packed_out = MakeSpan(out, size);
+  const VF vc = hn::Set(DF(), c);
+  const VF* HWY_RESTRICT pc = &vc;
 
-  size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      VF x0, x1;
-      Decompress2(df, packed_x, i, x0, x1);
-      const VF out0 = hn::Mul(x0, v_c);
-      const VF out1 = hn::Mul(x1, v_c);
-      Compress2(df, out0, out1, packed_out, i);
-    }
-  }
-
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining < 2 * NF);
-  if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
-    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
-    // Ensure the second vector is zeroed even if remaining <= NF.
-    hn::Store(hn::Zero(df), df, buf_x + NF);
-    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
-    const VF x0 = hn::Load(df, buf_x);
-    const VF x1 = hn::Load(df, buf_x + NF);
-    const VF out0 = hn::Mul(x0, v_c);
-    const VF out1 = hn::Mul(x1, v_c);
-    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
-    hwy::CopyBytes(buf_out, out + i, remaining * sizeof(OT));
-  }
+  Decompress1AndCompressTo(DF(), out, size, x,
+                           [pc](DF /*df*/, VF x)
+                               HWY_ATTR -> VF { return hn::Mul(x, *pc); });
 }
 
+// out[i] += x[i] * c.
 template <typename XT, typename OT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(
-    const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  static const auto zone = p.AddZone("Ops.MulByConstAndAdd");
-  PROFILER_ZONE3(p, worker, zone);
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(const float c,
+                                                    const XT* HWY_RESTRICT x,
+                                                    OT* HWY_RESTRICT out,
+                                                    const size_t size) {
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::ScalableTag<float> df;
-  const size_t NF = hn::Lanes(df);
-  using VF = hn::Vec<decltype(df)>;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const VF v_c = hn::Set(df, c);
-  const auto packed_x = MakeSpan(x, size);
-  const auto packed_out = MakeSpan(out, size);
+  const VF vc = hn::Set(DF(), c);
+  const VF* HWY_RESTRICT pc = &vc;
+
+  Decompress1AndCompressInplace(DF(), out, size, x, /*p1_ofs=*/0,
+                                [&](DF /*df*/, VF out, VF x) HWY_ATTR -> VF {
+                                  return hn::MulAdd(x, *pc, out);
+                                });
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void Mul16(DF df, const VF scale, VF& sum0,
+                                       VF& sum1, VF& sum2, VF& sum3, VF& sum4,
+                                       VF& sum5, VF& sum6, VF& sum7, VF& sum8,
+                                       VF& sum9, VF& sum10, VF& sum11,
+                                       VF& sum12, VF& sum13, VF& sum14,
+                                       VF& sum15) {
+  sum0 = hn::Mul(sum0, hn::BroadcastLane<0>(scale));
+  sum1 = hn::Mul(sum1, hn::BroadcastLane<1>(scale));
+  sum2 = hn::Mul(sum2, hn::BroadcastLane<2>(scale));
+  sum3 = hn::Mul(sum3, hn::BroadcastLane<3>(scale));
+  sum4 = hn::Mul(sum4, hn::BroadcastLane<4>(scale));
+  sum5 = hn::Mul(sum5, hn::BroadcastLane<5>(scale));
+  sum6 = hn::Mul(sum6, hn::BroadcastLane<6>(scale));
+  sum7 = hn::Mul(sum7, hn::BroadcastLane<7>(scale));
+  sum8 = hn::Mul(sum8, hn::BroadcastLane<8>(scale));
+  sum9 = hn::Mul(sum9, hn::BroadcastLane<9>(scale));
+  sum10 = hn::Mul(sum10, hn::BroadcastLane<10>(scale));
+  sum11 = hn::Mul(sum11, hn::BroadcastLane<11>(scale));
+  sum12 = hn::Mul(sum12, hn::BroadcastLane<12>(scale));
+  sum13 = hn::Mul(sum13, hn::BroadcastLane<13>(scale));
+  sum14 = hn::Mul(sum14, hn::BroadcastLane<14>(scale));
+  sum15 = hn::Mul(sum15, hn::BroadcastLane<15>(scale));
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void Mul16(DF df, const VF scale, VF& sum0,
+                                       VF& sum1, VF& sum2, VF& sum3, VF& sum4,
+                                       VF& sum5, VF& sum6, VF& sum7, VF& sum8,
+                                       VF& sum9, VF& sum10, VF& sum11,
+                                       VF& sum12, VF& sum13, VF& sum14,
+                                       VF& sum15) {}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void Mul8(DF df, const VF scale, VF& sum0, VF& sum1,
+                                      VF& sum2, VF& sum3, VF& sum4, VF& sum5,
+                                      VF& sum6, VF& sum7) {
+  sum0 = hn::Mul(sum0, hn::BroadcastLane<0>(scale));
+  sum1 = hn::Mul(sum1, hn::BroadcastLane<1>(scale));
+  sum2 = hn::Mul(sum2, hn::BroadcastLane<2>(scale));
+  sum3 = hn::Mul(sum3, hn::BroadcastLane<3>(scale));
+  sum4 = hn::Mul(sum4, hn::BroadcastLane<4>(scale));
+  sum5 = hn::Mul(sum5, hn::BroadcastLane<5>(scale));
+  sum6 = hn::Mul(sum6, hn::BroadcastLane<6>(scale));
+  sum7 = hn::Mul(sum7, hn::BroadcastLane<7>(scale));
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void Mul8(DF df, const VF scale, VF& sum0, VF& sum1,
+                                      VF& sum2, VF& sum3, VF& sum4, VF& sum5,
+                                      VF& sum6, VF& sum7) {}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd16(
+    DF df, const VF common, const VF split, VF& sum0, VF& sum1, VF& sum2,
+    VF& sum3, VF& sum4, VF& sum5, VF& sum6, VF& sum7, VF& sum8, VF& sum9,
+    VF& sum10, VF& sum11, VF& sum12, VF& sum13, VF& sum14, VF& sum15) {
+  sum0 = hn::MulAdd(common, hn::BroadcastLane<0>(split), sum0);
+  sum1 = hn::MulAdd(common, hn::BroadcastLane<1>(split), sum1);
+  sum2 = hn::MulAdd(common, hn::BroadcastLane<2>(split), sum2);
+  sum3 = hn::MulAdd(common, hn::BroadcastLane<3>(split), sum3);
+  sum4 = hn::MulAdd(common, hn::BroadcastLane<4>(split), sum4);
+  sum5 = hn::MulAdd(common, hn::BroadcastLane<5>(split), sum5);
+  sum6 = hn::MulAdd(common, hn::BroadcastLane<6>(split), sum6);
+  sum7 = hn::MulAdd(common, hn::BroadcastLane<7>(split), sum7);
+  sum8 = hn::MulAdd(common, hn::BroadcastLane<8>(split), sum8);
+  sum9 = hn::MulAdd(common, hn::BroadcastLane<9>(split), sum9);
+  sum10 = hn::MulAdd(common, hn::BroadcastLane<10>(split), sum10);
+  sum11 = hn::MulAdd(common, hn::BroadcastLane<11>(split), sum11);
+  sum12 = hn::MulAdd(common, hn::BroadcastLane<12>(split), sum12);
+  sum13 = hn::MulAdd(common, hn::BroadcastLane<13>(split), sum13);
+  sum14 = hn::MulAdd(common, hn::BroadcastLane<14>(split), sum14);
+  sum15 = hn::MulAdd(common, hn::BroadcastLane<15>(split), sum15);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd16(
+    DF df, const VF common, const VF split, VF& sum0, VF& sum1, VF& sum2,
+    VF& sum3, VF& sum4, VF& sum5, VF& sum6, VF& sum7, VF& sum8, VF& sum9,
+    VF& sum10, VF& sum11, VF& sum12, VF& sum13, VF& sum14, VF& sum15) {}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd8(DF df, const VF common, const VF split,
+                                         VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                                         VF& sum4, VF& sum5, VF& sum6,
+                                         VF& sum7) {
+  sum0 = hn::MulAdd(common, hn::BroadcastLane<0>(split), sum0);
+  sum1 = hn::MulAdd(common, hn::BroadcastLane<1>(split), sum1);
+  sum2 = hn::MulAdd(common, hn::BroadcastLane<2>(split), sum2);
+  sum3 = hn::MulAdd(common, hn::BroadcastLane<3>(split), sum3);
+  sum4 = hn::MulAdd(common, hn::BroadcastLane<4>(split), sum4);
+  sum5 = hn::MulAdd(common, hn::BroadcastLane<5>(split), sum5);
+  sum6 = hn::MulAdd(common, hn::BroadcastLane<6>(split), sum6);
+  sum7 = hn::MulAdd(common, hn::BroadcastLane<7>(split), sum7);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd8(DF df, const VF common, const VF split,
+                                         VF& sum0, VF& sum1, VF& sum2, VF& sum3,
+                                         VF& sum4, VF& sum5, VF& sum6,
+                                         VF& sum7) {}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4(DF df, const VF common, const VF split,
+                                         VF& sum0, VF& sum1, VF& sum2,
+                                         VF& sum3) {
+  sum0 = hn::MulAdd(common, hn::BroadcastLane<0>(split), sum0);
+  sum1 = hn::MulAdd(common, hn::BroadcastLane<1>(split), sum1);
+  sum2 = hn::MulAdd(common, hn::BroadcastLane<2>(split), sum2);
+  sum3 = hn::MulAdd(common, hn::BroadcastLane<3>(split), sum3);
+}
+
+// For an 8xNF tile of float values in 8xNF-lane registers, multiplies 8 rows
+// of V by the corresponding values in c0-c7 and adds them to NF rows of out,
+// after first prescaling out by scale.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile(
+    DF df, const VF scale, const VF c0, const VF c1, const VF c2, const VF c3,
+    const VF c4, const VF c5, const VF c6, const VF c7, const MatPtrT<float>& v,
+    const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
   size_t i = 0;
-  if (size >= 2 * NF) {
-    for (; i <= size - 2 * NF; i += 2 * NF) {
-      VF x0, x1, out0, out1;
-      Decompress2(df, packed_x, i, x0, x1);
-      Decompress2(df, packed_out, i, out0, out1);
-      out0 = hn::MulAdd(x0, v_c, out0);
-      out1 = hn::MulAdd(x1, v_c, out1);
-      Compress2(df, out0, out1, packed_out, i);
+  while (i + NF <= size) {
+    if HWY_LANES_CONSTEXPR (NF == 16) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      VF out8, out9, out10, out11, out12, out13, out14, out15;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out8 = hn::Load(df, out + i + out_offsets[8]);
+      out9 = hn::Load(df, out + i + out_offsets[9]);
+      out10 = hn::Load(df, out + i + out_offsets[10]);
+      out11 = hn::Load(df, out + i + out_offsets[11]);
+      out12 = hn::Load(df, out + i + out_offsets[12]);
+      out13 = hn::Load(df, out + i + out_offsets[13]);
+      out14 = hn::Load(df, out + i + out_offsets[14]);
+      out15 = hn::Load(df, out + i + out_offsets[15]);
+      Mul16(df, scale, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+            out9, out10, out11, out12, out13, out14, out15);
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd16(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd16(df, x1, c1, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd16(df, x2, c2, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd16(df, x3, c3, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd16(df, x4, c4, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd16(df, x5, c5, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd16(df, x6, c6, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd16(df, x7, c7, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+      hn::Store(out8, df, out + i + out_offsets[8]);
+      hn::Store(out9, df, out + i + out_offsets[9]);
+      hn::Store(out10, df, out + i + out_offsets[10]);
+      hn::Store(out11, df, out + i + out_offsets[11]);
+      hn::Store(out12, df, out + i + out_offsets[12]);
+      hn::Store(out13, df, out + i + out_offsets[13]);
+      hn::Store(out14, df, out + i + out_offsets[14]);
+      hn::Store(out15, df, out + i + out_offsets[15]);
     }
+    if HWY_LANES_CONSTEXPR (NF == 8) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      Mul8(df, scale, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd8(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd8(df, x1, c1, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd8(df, x2, c2, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd8(df, x3, c3, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd8(df, x4, c4, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd8(df, x5, c5, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd8(df, x6, c6, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd8(df, x7, c7, out0, out1, out2, out3, out4, out5, out6, out7);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+    }
+    if HWY_LANES_CONSTEXPR (NF == 4) {
+      VF out0, out1, out2, out3;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out0 = hn::Mul(out0, hn::BroadcastLane<0>(scale));
+      out1 = hn::Mul(out1, hn::BroadcastLane<1>(scale));
+      out2 = hn::Mul(out2, hn::BroadcastLane<2>(scale));
+      out3 = hn::Mul(out3, hn::BroadcastLane<3>(scale));
+      VF x0 = hn::Load(df, v.Row(pos[0]) + i);
+      MulAdd4(df, x0, c0, out0, out1, out2, out3);
+      VF x1 = hn::Load(df, v.Row(pos[1]) + i);
+      MulAdd4(df, x1, c1, out0, out1, out2, out3);
+      VF x2 = hn::Load(df, v.Row(pos[2]) + i);
+      MulAdd4(df, x2, c2, out0, out1, out2, out3);
+      VF x3 = hn::Load(df, v.Row(pos[3]) + i);
+      MulAdd4(df, x3, c3, out0, out1, out2, out3);
+      VF x4 = hn::Load(df, v.Row(pos[4]) + i);
+      MulAdd4(df, x4, c4, out0, out1, out2, out3);
+      VF x5 = hn::Load(df, v.Row(pos[5]) + i);
+      MulAdd4(df, x5, c5, out0, out1, out2, out3);
+      VF x6 = hn::Load(df, v.Row(pos[6]) + i);
+      MulAdd4(df, x6, c6, out0, out1, out2, out3);
+      VF x7 = hn::Load(df, v.Row(pos[7]) + i);
+      MulAdd4(df, x7, c7, out0, out1, out2, out3);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+    }
+    i += NF;
   }
+  HWY_DASSERT(size == i);
+}
 
-  const size_t remaining = size - i;
-  HWY_DASSERT(remaining < 2 * NF);
-  if (HWY_UNLIKELY(remaining != 0)) {
-    HWY_ALIGN float buf_x[2 * hn::MaxLanes(df)];
-    HWY_ALIGN float buf_out[2 * hn::MaxLanes(df)];
-    // Ensure the second vectors are zeroed even if remaining <= NF.
-    hn::Store(hn::Zero(df), df, buf_x + NF);
-    hn::Store(hn::Zero(df), df, buf_out + NF);
-    DecompressAndZeroPad(df, packed_x, i, buf_x, remaining);
-    DecompressAndZeroPad(df, packed_out, i, buf_out, remaining);
-    const VF x0 = hn::Load(df, buf_x);
-    const VF x1 = hn::Load(df, buf_x + NF);
-    VF out0 = hn::Load(df, buf_out);
-    VF out1 = hn::Load(df, buf_out + NF);
-    out0 = hn::MulAdd(x0, v_c, out0);
-    out1 = hn::MulAdd(x1, v_c, out1);
-    Compress2(df, out0, out1, MakeSpan(buf_out, 2 * NF), 0);
-    hwy::CopyBytes(buf_out, out + i, remaining * sizeof(OT));
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4(DF df, const VF common, const VF c0,
+                                         const VF c1, const VF c2, const VF c3,
+                                         VF& sum0, VF& sum1, VF& sum2,
+                                         VF& sum3) {
+  sum0 = hn::MulAdd(common, c0, sum0);
+  sum1 = hn::MulAdd(common, c1, sum1);
+  sum2 = hn::MulAdd(common, c2, sum2);
+  sum3 = hn::MulAdd(common, c3, sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4Lanes(DF df, const MatPtrT<float>& v,
+                                              const size_t* HWY_RESTRICT pos,
+                                              const size_t offset, const VF c0,
+                                              const VF c1, const VF c2,
+                                              const VF c3, VF& sum0, VF& sum1,
+                                              VF& sum2, VF& sum3) {
+  // TODO(rays): Check whether a transpose of c0-c3 is applicable and faster.
+  VF x0 = hn::Load(df, v.Row(pos[0]) + offset);
+  MulAdd4(df, x0, hn::BroadcastLane<0>(c0), hn::BroadcastLane<0>(c1),
+          hn::BroadcastLane<0>(c2), hn::BroadcastLane<0>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x1 = hn::Load(df, v.Row(pos[1]) + offset);
+  MulAdd4(df, x1, hn::BroadcastLane<1>(c0), hn::BroadcastLane<1>(c1),
+          hn::BroadcastLane<1>(c2), hn::BroadcastLane<1>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x2 = hn::Load(df, v.Row(pos[2]) + offset);
+  MulAdd4(df, x2, hn::BroadcastLane<2>(c0), hn::BroadcastLane<2>(c1),
+          hn::BroadcastLane<2>(c2), hn::BroadcastLane<2>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x3 = hn::Load(df, v.Row(pos[3]) + offset);
+  MulAdd4(df, x3, hn::BroadcastLane<3>(c0), hn::BroadcastLane<3>(c1),
+          hn::BroadcastLane<3>(c2), hn::BroadcastLane<3>(c3), sum0, sum1, sum2,
+          sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond4Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {
+  VF x4 = hn::Load(df, v.Row(pos[4]) + offset);
+  MulAdd4(df, x4, hn::BroadcastLane<4>(c0), hn::BroadcastLane<4>(c1),
+          hn::BroadcastLane<4>(c2), hn::BroadcastLane<4>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x5 = hn::Load(df, v.Row(pos[5]) + offset);
+  MulAdd4(df, x5, hn::BroadcastLane<5>(c0), hn::BroadcastLane<5>(c1),
+          hn::BroadcastLane<5>(c2), hn::BroadcastLane<5>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x6 = hn::Load(df, v.Row(pos[6]) + offset);
+  MulAdd4(df, x6, hn::BroadcastLane<6>(c0), hn::BroadcastLane<6>(c1),
+          hn::BroadcastLane<6>(c2), hn::BroadcastLane<6>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x7 = hn::Load(df, v.Row(pos[7]) + offset);
+  MulAdd4(df, x7, hn::BroadcastLane<7>(c0), hn::BroadcastLane<7>(c1),
+          hn::BroadcastLane<7>(c2), hn::BroadcastLane<7>(c3), sum0, sum1, sum2,
+          sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 31)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond4Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_GT_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond8Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {
+  VF x8 = hn::Load(df, v.Row(pos[8]) + offset);
+  MulAdd4(df, x8, hn::BroadcastLane<8>(c0), hn::BroadcastLane<8>(c1),
+          hn::BroadcastLane<8>(c2), hn::BroadcastLane<8>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x9 = hn::Load(df, v.Row(pos[9]) + offset);
+  MulAdd4(df, x9, hn::BroadcastLane<9>(c0), hn::BroadcastLane<9>(c1),
+          hn::BroadcastLane<9>(c2), hn::BroadcastLane<9>(c3), sum0, sum1, sum2,
+          sum3);
+  VF x10 = hn::Load(df, v.Row(pos[10]) + offset);
+  MulAdd4(df, x10, hn::BroadcastLane<10>(c0), hn::BroadcastLane<10>(c1),
+          hn::BroadcastLane<10>(c2), hn::BroadcastLane<10>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x11 = hn::Load(df, v.Row(pos[11]) + offset);
+  MulAdd4(df, x11, hn::BroadcastLane<11>(c0), hn::BroadcastLane<11>(c1),
+          hn::BroadcastLane<11>(c2), hn::BroadcastLane<11>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x12 = hn::Load(df, v.Row(pos[12]) + offset);
+  MulAdd4(df, x12, hn::BroadcastLane<12>(c0), hn::BroadcastLane<12>(c1),
+          hn::BroadcastLane<12>(c2), hn::BroadcastLane<12>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x13 = hn::Load(df, v.Row(pos[13]) + offset);
+  MulAdd4(df, x13, hn::BroadcastLane<13>(c0), hn::BroadcastLane<13>(c1),
+          hn::BroadcastLane<13>(c2), hn::BroadcastLane<13>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x14 = hn::Load(df, v.Row(pos[14]) + offset);
+  MulAdd4(df, x14, hn::BroadcastLane<14>(c0), hn::BroadcastLane<14>(c1),
+          hn::BroadcastLane<14>(c2), hn::BroadcastLane<14>(c3), sum0, sum1,
+          sum2, sum3);
+  VF x15 = hn::Load(df, v.Row(pos[15]) + offset);
+  MulAdd4(df, x15, hn::BroadcastLane<15>(c0), hn::BroadcastLane<15>(c1),
+          hn::BroadcastLane<15>(c2), hn::BroadcastLane<15>(c3), sum0, sum1,
+          sum2, sum3);
+}
+
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_V_SIZE_LE_D(DF, 63)>
+HWY_INLINE HWY_MAYBE_UNUSED void MulAddSecond8Lanes(
+    DF df, const MatPtrT<float>& v, const size_t* HWY_RESTRICT pos,
+    const size_t offset, const VF c0, const VF c1, const VF c2, const VF c3,
+    VF& sum0, VF& sum1, VF& sum2, VF& sum3) {}
+
+// For an NFx4 tile of float values in 4xNF-lane registers, multiplies NF rows
+// of V by the corresponding values in c0-c3 and adds them to NF rows of out,
+// after first prescaling out by scale.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddTile4(
+    DF df, const float* HWY_RESTRICT scales, const VF c0, const VF c1,
+    const VF c2, const VF c3, const MatPtrT<float>& v,
+    const size_t* HWY_RESTRICT pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
+
+  size_t i = 0;
+  while (i + NF <= size) {
+    VF out0, out1, out2, out3;
+    out0 = hn::Load(df, out + i + out_offsets[0]);
+    out1 = hn::Load(df, out + i + out_offsets[1]);
+    out2 = hn::Load(df, out + i + out_offsets[2]);
+    out3 = hn::Load(df, out + i + out_offsets[3]);
+    out0 = hn::Mul(out0, hn::Set(df, scales[0]));
+    out1 = hn::Mul(out1, hn::Set(df, scales[1]));
+    out2 = hn::Mul(out2, hn::Set(df, scales[2]));
+    out3 = hn::Mul(out3, hn::Set(df, scales[3]));
+    MulAdd4Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2, out3);
+    if HWY_LANES_CONSTEXPR (NF >= 8) {
+      MulAddSecond4Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2, out3);
+      if HWY_LANES_CONSTEXPR (NF >= 16) {
+        MulAddSecond8Lanes(df, v, pos, i, c0, c1, c2, c3, out0, out1, out2,
+                           out3);
+      }
+    }
+    hn::Store(out0, df, out + i + out_offsets[0]);
+    hn::Store(out1, df, out + i + out_offsets[1]);
+    hn::Store(out2, df, out + i + out_offsets[2]);
+    hn::Store(out3, df, out + i + out_offsets[3]);
+    i += NF;
   }
+  HWY_DASSERT(size == i);
+}
+
+// Prescales NF rows of out by scale, then multiplies 1 row of V by the
+// corresponding values in c0 and adds them to the NF rows of out.
+// The depth (size) must be a multiple of NF.
+template <class DF, class VF = hn::Vec<DF>>
+HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
+    DF df, const VF scale, const VF c0, const MatPtrT<float>& v,
+    const size_t pos, float* HWY_RESTRICT out,
+    const uint32_t* HWY_RESTRICT out_offsets, const size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
+
+  size_t i = 0;
+  while (i + NF <= size) {
+    if HWY_LANES_CONSTEXPR (NF == 16) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      VF out8, out9, out10, out11, out12, out13, out14, out15;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      out8 = hn::Load(df, out + i + out_offsets[8]);
+      out9 = hn::Load(df, out + i + out_offsets[9]);
+      out10 = hn::Load(df, out + i + out_offsets[10]);
+      out11 = hn::Load(df, out + i + out_offsets[11]);
+      out12 = hn::Load(df, out + i + out_offsets[12]);
+      out13 = hn::Load(df, out + i + out_offsets[13]);
+      out14 = hn::Load(df, out + i + out_offsets[14]);
+      out15 = hn::Load(df, out + i + out_offsets[15]);
+      Mul16(df, scale, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+            out9, out10, out11, out12, out13, out14, out15);
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd16(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7, out8,
+               out9, out10, out11, out12, out13, out14, out15);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+      hn::Store(out8, df, out + i + out_offsets[8]);
+      hn::Store(out9, df, out + i + out_offsets[9]);
+      hn::Store(out10, df, out + i + out_offsets[10]);
+      hn::Store(out11, df, out + i + out_offsets[11]);
+      hn::Store(out12, df, out + i + out_offsets[12]);
+      hn::Store(out13, df, out + i + out_offsets[13]);
+      hn::Store(out14, df, out + i + out_offsets[14]);
+      hn::Store(out15, df, out + i + out_offsets[15]);
+    }
+    if HWY_LANES_CONSTEXPR (NF == 8) {
+      VF out0, out1, out2, out3, out4, out5, out6, out7;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out4 = hn::Load(df, out + i + out_offsets[4]);
+      out5 = hn::Load(df, out + i + out_offsets[5]);
+      out6 = hn::Load(df, out + i + out_offsets[6]);
+      out7 = hn::Load(df, out + i + out_offsets[7]);
+      Mul8(df, scale, out0, out1, out2, out3, out4, out5, out6, out7);
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd8(df, x0, c0, out0, out1, out2, out3, out4, out5, out6, out7);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+      hn::Store(out4, df, out + i + out_offsets[4]);
+      hn::Store(out5, df, out + i + out_offsets[5]);
+      hn::Store(out6, df, out + i + out_offsets[6]);
+      hn::Store(out7, df, out + i + out_offsets[7]);
+    }
+    if HWY_LANES_CONSTEXPR (NF == 4) {
+      VF out0, out1, out2, out3;
+      out0 = hn::Load(df, out + i + out_offsets[0]);
+      out1 = hn::Load(df, out + i + out_offsets[1]);
+      out2 = hn::Load(df, out + i + out_offsets[2]);
+      out3 = hn::Load(df, out + i + out_offsets[3]);
+      out0 = hn::Mul(out0, hn::BroadcastLane<0>(scale));
+      out1 = hn::Mul(out1, hn::BroadcastLane<1>(scale));
+      out2 = hn::Mul(out2, hn::BroadcastLane<2>(scale));
+      out3 = hn::Mul(out3, hn::BroadcastLane<3>(scale));
+      VF x0 = hn::Load(df, v.Row(pos) + i);
+      MulAdd4(df, x0, c0, out0, out1, out2, out3);
+      hn::Store(out0, df, out + i + out_offsets[0]);
+      hn::Store(out1, df, out + i + out_offsets[1]);
+      hn::Store(out2, df, out + i + out_offsets[2]);
+      hn::Store(out3, df, out + i + out_offsets[3]);
+    }
+    i += NF;
+  }
+  HWY_DASSERT(size == i);
 }
 
 // See below for a specialized version for top-1 sampling.
-static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
-                                 hwy::Profiler& p, const size_t worker,
+// TODO: support bf16 logits using Decompress2.
+static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
+                                 const size_t worker,
                                  float temperature = 1.0f) {
-  static const auto zone = p.AddZone("Ops.Softmax");
-  PROFILER_ZONE3(p, worker, zone);
-  HWY_DASSERT(size != 0);
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsSoftmax));
+  HWY_DASSERT(logits.size() != 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -786,24 +1135,25 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   const V vmin = hn::Set(d, hwy::LowestValue<float>());
   V vmax = vmin;
   V* pmax = &vmax;  // workaround for SVE: cannot capture &vector directly
-  hn::Foreach(d, x, size, vmin, [pmax](const auto d, const V value) HWY_ATTR {
-    *pmax = hn::Max(*pmax, value);
-  });
+  hn::Foreach(d, logits.data(), logits.size(), vmin,
+              [pmax](const auto d, const V value)
+                  HWY_ATTR { *pmax = hn::Max(*pmax, value); });
   vmax = hn::MaxOfLanes(d, vmax);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, x, size, [pmax](const auto d, const V value) HWY_ATTR {
-    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
-      return hn::CallExp(d, hn::Sub(value, *pmax));
-    } else {
-      return hn::Exp(d, hn::Sub(value, *pmax));
-    }
-  });
+  hn::Transform(d, logits.data(), logits.size(),
+                [pmax](const auto d, const V value) HWY_ATTR {
+                  if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+                    // Workaround for buggy SVE codegen: avoid inlined Exp().
+                    return hn::CallExp(d, hn::Sub(value, *pmax));
+                  } else {
+                    return hn::Exp(d, hn::Sub(value, *pmax));
+                  }
+                });
 
   if (temperature != 1.0f) {
     const float temperature_inv = 1.0f / temperature;
-    hn::Transform(d, x, size,
+    hn::Transform(d, logits.data(), logits.size(),
                   [temperature_inv](const auto d, const V value) HWY_ATTR {
                     return hn::Mul(value, hn::Set(d, temperature_inv));
                   });
@@ -813,10 +1163,10 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
   // not make a huge difference. It halves the standard deviation of the sum of
   // the normalized probabilities from 1E-7 to 5E-8, but actually also changes
   // the generated text after a few hundred tokens.
-  const float sum_exp = Sum(d, x, size);
+  const float sum_exp = Sum(d, logits.data(), logits.size());
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
-  MulByConst(mul, x, size, p, worker);
+  MulByConst(mul, logits.data(), logits.size());
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /
@@ -826,8 +1176,7 @@ static HWY_NOINLINE void Softmax(float* HWY_RESTRICT x, const size_t size,
 // which already knows the max value which top-1 sampling would again seek.
 
 // Returns the argmax and x[argmax].
-static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
-                                            const size_t num) {
+static HWY_INLINE TokenAndProb ArgmaxAndMax(Logits logits) {
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
   using V = hn::Vec<D>;
@@ -837,16 +1186,16 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
   using TI = hn::TFromD<decltype(di)>;
   using VI = hn::Vec<decltype(di)>;
   const size_t N = hn::Lanes(d);
-  HWY_ASSERT(num % (2 * N) == 0);
+  HWY_ASSERT(logits.size() % (2 * N) == 0);
 
   V max0 = hn::Set(d, hwy::LowestValue<float>());
   V max1 = max0;
   VI argmax0 = hn::Zero(di);
   VI argmax1 = argmax0;
 
-  for (size_t i = 0; i < num; i += 2 * N) {
-    const V v0 = hn::LoadU(d, x + i);
-    const V v1 = hn::LoadU(d, x + i + N);
+  for (size_t i = 0; i < logits.size(); i += 2 * N) {
+    const V v0 = hn::LoadU(d, &logits[i]);
+    const V v1 = hn::LoadU(d, &logits[i + N]);
     const VI vi0 = hn::Iota(di, static_cast<TI>(i));
     const VI vi1 = hn::Iota(di, static_cast<TI>(i + N));
     const M gt0 = hn::Gt(v0, max0);
@@ -871,75 +1220,88 @@ static HWY_INLINE TokenAndProb ArgmaxAndMax(const float* HWY_RESTRICT x,
   return TokenAndProb{.token = argmax, .prob = hn::GetLane(max)};
 }
 
-// Returns argmax of softmax and its probability. This overwrites `x`, but not
-// with normalized probabilities. Only equivalent to `Softmax` + `sample_func`
-// if `kTopK` == 1. This is worthwhile because `num` is typically `kVocabSize`
-// == 256K, and this avoids writing and then scanning again for the max.
-// However, this is not enough to make parallelization worthwhile.
-static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(float* HWY_RESTRICT x,
-                                                   const size_t num) {
+// Returns argmax of softmax and its probability. This overwrites `logits`, but
+// not with normalized probabilities. Only equivalent to `Softmax` +
+// `sample_func` if `kTopK` == 1. This is worthwhile because `logits.size()` is
+// typically `kVocabSize == 256K`, and this avoids writing and then scanning
+// again for the max.
+static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::ScalableTag<float> d;
   using V = hn::Vec<decltype(d)>;
 
-  const TokenAndProb argmax = ArgmaxAndMax(x, num);
+  const TokenAndProb argmax = ArgmaxAndMax(logits);
 
   // Subtract max (avoid precision loss for large exponents) and exponentiate.
   const V max = hn::Set(d, argmax.prob);
   const V* pmax = &max;
-  hn::Transform(d, x, num, [pmax](const auto d, const V value) HWY_ATTR {
-    if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-      // Temporary workaround for buggy SVE codegen: avoid inlined Exp().
-      return hn::CallExp(d, hn::Sub(value, *pmax));
-    } else {
-      return hn::Exp(d, hn::Sub(value, *pmax));
-    }
-  });
+  hn::Transform(d, logits.data(), logits.size(),
+                [pmax](const auto d, const V value) HWY_ATTR {
+                  if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+                    // Temporary workaround for buggy SVE codegen: avoid inlined
+                    // Exp().
+                    return hn::CallExp(d, hn::Sub(value, *pmax));
+                  } else {
+                    return hn::Exp(d, hn::Sub(value, *pmax));
+                  }
+                });
 
   // Normalize to a single probability. The exact sum seems like it should not
   // make a huge difference. It halves the standard deviation of the sum of the
   // normalized probabilities from 1E-7 to 5E-8, but actually also changes the
   // generated text after a few hundred tokens.
-  const float sum_exp = Sum(d, x, num);
-  const float prob = x[argmax.token] / sum_exp;
+  const float sum_exp = Sum(d, logits.data(), logits.size());
+  const float prob = logits[argmax.token] / sum_exp;
   return TokenAndProb{.token = argmax.token, .prob = prob};
 }
 
-static HWY_NOINLINE void LogitsSoftCap(const float cap, float* HWY_RESTRICT x,
-                                       const size_t size, hwy::Profiler& p,
-                                       const size_t worker) {
-  static const auto zone = p.AddZone("Ops.LogitsSoftCap");
-  PROFILER_ZONE3(p, worker, zone);
+static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
+                                       hwy::Profiler& p, const size_t worker) {
+  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsLogitsSoftCap));
 
   namespace hn = hwy::HWY_NAMESPACE;
-  using D = hn::ScalableTag<float>;
-  using V = hn::Vec<D>;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
 
-  const float inv_cap = 1.0f / cap;
+  const VF vcap = hn::Set(DF(), cap);
+  const VF vinv_cap = hn::Set(DF(), 1.0f / cap);
+  const VF* HWY_RESTRICT pcap = &vcap;
+  const VF* HWY_RESTRICT pinv_cap = &vinv_cap;
 
-  hn::Transform(D(), x, size, [cap, inv_cap](D d, V v) HWY_ATTR {
-    return hn::Mul(hn::Set(d, cap),
-                   hn::Tanh(d, hn::Mul(v, hn::Set(d, inv_cap))));
-  });
+  DecompressAndCompressInplace(DF(), logits.data(), logits.size(),
+                               [pcap, pinv_cap](DF d, VF v) HWY_ATTR -> VF {
+                                 return hn::Mul(
+                                     *pcap, hn::Tanh(d, hn::Mul(v, *pinv_cap)));
+                               });
 }
 
 // Calls LogitsSoftCap if cap != 0.0f.
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
-    const float cap, float* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
-    const size_t worker) {
+    const float cap, Logits logits, hwy::Profiler& p, const size_t worker) {
   if (cap != 0.0f) {
-    LogitsSoftCap(cap, x, size, p, worker);
+    LogitsSoftCap(cap, logits, p, worker);
   }
 }
 
-static HWY_NOINLINE HWY_MAYBE_UNUSED size_t
-SampleArgmax(const float* probabilities, size_t vocab_size) {
+static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
+    const float cap, MatPtrT<float>& x, const hwy::BitSet4096<>& non_eos,
+    ThreadingContext& ctx, size_t cluster_idx = 0) {
+  if (cap == 0.0f) return;
+  ParallelFor(ParallelismStrategy::kFlat, x.Rows(), ctx, cluster_idx,
+              [&](uint64_t task, size_t worker) {
+                if (non_eos.Get(task)) {
+                  LogitsSoftCap(cap, x.RowSpan(task), ctx.profiler, worker);
+                }
+              });
+}
+
+static HWY_NOINLINE HWY_MAYBE_UNUSED size_t SampleArgmax(Logits logits) {
   size_t max_index = 0;
-  float max_prob = probabilities[0];
-  for (size_t i = 1; i < vocab_size; ++i) {
-    if (probabilities[i] > max_prob) {
+  float max_prob = logits[0];
+  for (size_t i = 1; i < logits.size(); ++i) {
+    if (logits[i] > max_prob) {
       max_index = i;
-      max_prob = probabilities[i];
+      max_prob = logits[i];
     }
   }
   return max_index;
@@ -969,16 +1331,15 @@ HWY_INLINE HWY_MAYBE_UNUSED std::discrete_distribution<int> create_distribution(
 
 template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
-    const float* HWY_RESTRICT probabilities, size_t vocab_size, size_t k,
-    TAcceptToken& accept_token) {
+    Logits logits, size_t k, TAcceptToken& accept_token) {
   HWY_ASSERT(k != 0);
-  HWY_ASSERT(k <= vocab_size);
+  HWY_ASSERT(k <= logits.size());
   std::vector<double> packed_token_probs;
-  for (int32_t i = 0; i < static_cast<int32_t>(vocab_size); ++i) {
-    if (accept_token && !accept_token(i, probabilities[i])) {
+  for (int32_t i = 0; i < static_cast<int32_t>(logits.size()); ++i) {
+    if (accept_token && !accept_token(i, logits[i])) {
       continue;
     }
-    packed_token_probs.push_back(PackTokenAndProb(i, probabilities[i]));
+    packed_token_probs.push_back(PackTokenAndProb(i, logits[i]));
   }
 
   hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), k,
@@ -994,11 +1355,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
 }
 
 template <typename TAcceptToken>
-HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
-    const float* HWY_RESTRICT probabilities, size_t k, size_t vocab_size,
-    std::mt19937& gen, float temperature, TAcceptToken& accept_token) {
-  std::vector<TokenAndProb> token_probs =
-      TopK(probabilities, vocab_size, k, accept_token);
+HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(Logits logits, size_t k,
+                                             RngStream& gen, float temperature,
+                                             TAcceptToken& accept_token) {
+  std::vector<TokenAndProb> token_probs = TopK(logits, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_probs(k);
   for (size_t i = 0; i < k; ++i) {
@@ -1010,14 +1370,12 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(
 
 template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
-    const float* HWY_RESTRICT logits, size_t k, size_t vocab_size,
-    std::mt19937& gen, float temperature, TAcceptToken& accept_token,
-    hwy::Profiler& p, size_t worker) {
+    Logits logits, size_t k, RngStream& gen, float temperature,
+    TAcceptToken& accept_token, hwy::Profiler& p, size_t worker) {
   // Softmax and sample top-K is equivalent to taking the top-K logits and
   // sampling from the softmax of the top-K logits. The latter is faster as it
   // avoids computing the softmax of all logits.
-  std::vector<TokenAndProb> token_logits =
-      TopK(logits, vocab_size, k, accept_token);
+  std::vector<TokenAndProb> token_logits = TopK(logits, k, accept_token);
   std::vector<int> topk_indices(k);
   std::vector<float> topk_logits(k);
   for (size_t i = 0; i < token_logits.size(); ++i) {
@@ -1025,8 +1383,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
     topk_logits[i] = token_logits[i].prob;
   }
 
-  size_t mask = token_logits.size();
-  Softmax(topk_logits.data(), mask, p, worker, temperature);
+  const size_t mask = token_logits.size();
+  Softmax(Logits(topk_logits.data(), mask), p, worker, temperature);
   auto distribution = std::discrete_distribution<int>(
       std::begin(topk_logits), std::begin(topk_logits) + mask);
   int topk_sampled_index = distribution(gen);

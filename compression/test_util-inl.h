@@ -67,6 +67,35 @@ void ForeachPackedAndRawType() {
   }
 }
 
+template <class Test, class D>
+void ForeachActivationType1(D d) {
+  Test test;
+  test(float(), d);
+  test(BF16(), d);
+}
+
+template <class Test, class D>
+void ForeachActivationType2(D d) {
+  Test test;
+  test(float(), float(), d);
+  test(float(), BF16(), d);
+  test(BF16(), float(), d);
+  test(BF16(), BF16(), d);
+}
+
+template <class Test, class D>
+void ForeachActivationType3(D d) {
+  Test test;
+  test(float(), float(), float(), d);
+  test(float(), float(), BF16(), d);
+  test(float(), BF16(), float(), d);
+  test(float(), BF16(), BF16(), d);
+  test(BF16(), float(), float(), d);
+  test(BF16(), float(), BF16(), d);
+  test(BF16(), BF16(), float(), d);
+  test(BF16(), BF16(), BF16(), d);
+}
+
 // Generates inputs: deterministic, within max SfpStream range.
 template <typename MatT>
 MatStorageT<MatT> GenerateMat(const Extents2D& extents,
@@ -85,7 +114,7 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents,
       row[c] = f;
     }
     Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
-             MakeSpan(compressed.Row(r), compressed.Cols()),
+             MakeSpan(compressed.Row(r), extents.cols),
              /*packed_ofs=*/0);
   });
 
@@ -93,7 +122,8 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents,
   return compressed;
 }
 
-// Same, but `extents` describes the transposed matrix.
+// Same, but `extents` describes the transposed matrix and the computation of
+// `f` swaps `r` and `c`.
 template <typename MatT>
 MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
                                         const Allocator& allocator,
@@ -112,7 +142,7 @@ MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
       row[c] = f;
     }
     Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
-             MakeSpan(compressed.Row(r), compressed.Cols()),
+             MakeSpan(compressed.Row(r), extents.cols),
              /*packed_ofs=*/0);
   });
 

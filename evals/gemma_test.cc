@@ -115,7 +115,6 @@ TEST_F(GemmaTest, Multiturn) {
   RuntimeConfig runtime_config{
       .max_generated_tokens = 64,
       .temperature = 0.0f,
-      .gen = &s_env->MutableGen(),
       .verbosity = 2,
       .batch_stream_token = stream_token,
   };
@@ -138,6 +137,10 @@ TEST_F(GemmaTest, Multiturn) {
   // Reset the `response` string here, then check that the model actually has
   // access to the previous turn by asking to reproduce.
   response.clear();
+  // -1 because our prefill does not generate KVs for the last token. Do not
+  // just pass abs_pos - 1 because our callback checks pos == abs_pos.
+  HWY_ASSERT(abs_pos > 0);
+  --abs_pos;
   model->Generate(runtime_config, tokens, abs_pos, s_env->MutableKVCache(),
                   s_env->MutableEnv(), timing_info);
   fprintf(stderr, "decoded: '%s'\n", response.c_str());
@@ -155,9 +158,6 @@ TEST_F(GemmaTest, CrossEntropySmall) {
   float entropy = s_env->CrossEntropy(kSmall);
   fprintf(stderr, "per-token entropy: %f\n", entropy);
   switch (config.model) {
-    case gcpp::Model::GRIFFIN_2B:
-      EXPECT_NEAR(entropy, 2.61f, 0.02f);
-      break;
     case gcpp::Model::GEMMA2_2B:
       EXPECT_NEAR(entropy, 1.14f, 0.02f);
       break;

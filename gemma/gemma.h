@@ -127,7 +127,7 @@ class QBatch {
         max_size_(max_size),
         queries_(queries),
         size_(HWY_MIN(max_size_, queries_.NumQueries() - start_)) {
-    HWY_ASSERT(max_size_ <= 4096);  // non_eos uses `BitSet4096`.
+    HWY_ASSERT(max_size_ <= kMaxBatchSize);
     HWY_DASSERT(size_ != 0);
     HWY_DASSERT(start_ + size_ <= queries_.NumQueries());
   }
@@ -177,9 +177,11 @@ struct TimingInfo {
 
   // be sure to populate prefill_start and generate_start before calling
   // NotifyGenerated.
-  void NotifyGenerated() {
-    ++tokens_generated;
-    if (HWY_UNLIKELY(tokens_generated == 1)) {
+  void NotifyGenerated(size_t batch_size) {
+    generation_steps += 1;
+    const bool is_first = (tokens_generated == 0);
+    tokens_generated += batch_size;
+    if (HWY_UNLIKELY(is_first)) {
       time_to_first_token = hwy::platform::Now() - prefill_start;
       if (verbosity >= 1) {
         double prefill_tok_sec =
@@ -191,7 +193,7 @@ struct TimingInfo {
                 prefill_tok_sec, static_cast<int>(time_to_first_token * 1000));
       }
     }
-    if (verbosity >= 2 && tokens_generated % 128 == 0) {
+    if (HWY_UNLIKELY(verbosity >= 2 && tokens_generated % 1024 == 0)) {
       double gen_tok_sec = static_cast<double>(tokens_generated) /
                            (hwy::platform::Now() - generate_start);
       fprintf(stderr,
@@ -223,15 +225,16 @@ struct TimingInfo {
   double time_to_first_token = 0;
   double generate_duration = 0;
   size_t tokens_generated = 0;
+  size_t generation_steps = 0;
 };
 
 // After construction, all methods are const and thread-compatible if using
-// separate ThreadingContext for each thread.
+// separate `ThreadingContext` and `MatMulEnv` for each concurrent `Generate`.
 class Gemma {
  public:
   // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
-  // `ctx` is only used to read tensors, but it is typically also referenced
-  // by the `MatMulEnv` passed to the Generate* methods.
+  // `ctx` is only used to read tensors and not stored. Calls to `Generate*`
+  // may reference the same, or other `ThreadingContext` via `MatMulEnv`.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
         ThreadingContext& ctx);
   ~Gemma();
@@ -247,6 +250,8 @@ class Gemma {
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.
+  // All `Generate*` may be called concurrently if `env` and the
+  // `ThreadingContext` it references are both distinct.
   void Generate(const RuntimeConfig& runtime_config, const PromptTokens& prompt,
                 size_t pos, KVCache& kv_cache, MatMulEnv& env,
                 TimingInfo& timing_info) const {
@@ -275,6 +280,7 @@ class Gemma {
   WeightsPtrs::Mode weight_read_mode_;
   GemmaChatTemplate chat_template_;
   InferenceArgs inference_;
+  AesCtrEngine aes_ctr_engine_;
 };
 
 }  // namespace gcpp

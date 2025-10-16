@@ -28,8 +28,8 @@
 #define GEMMA_MATMUL_DEFINE_ONE(TA, TB, TC)                             \
   MMPerKey* MatMulStatic(const MatPtrT<TA>& A, const MatPtrT<TB>& B,    \
                          const float* HWY_RESTRICT add, MatMulEnv& env, \
-                         MatPtrT<TC>& C) {                              \
-    return MatMul(A, B, add, env, C);                                   \
+                         MatPtrT<TC>& C, MMOptions options) {           \
+    return MatMul(A, B, add, env, C, options);                          \
   }
 
 #if defined(THIRD_PARTY_GEMMA_CPP_GEMMA_OPS_MATMUL_STATIC_INL_H_) == \
@@ -52,6 +52,14 @@ namespace HWY_NAMESPACE {
 // Ignore warning that we are defining a function in a header; this is only
 // included from matmul_static_*.cc.
 GEMMA_MATMUL_FOREACH_AC(GEMMA_MATMUL_DEFINE_ONE, GEMMA_MATMUL_TB)  // NOLINT
+
+HWY_MAYBE_UNUSED void TwoMatMulStatic(const MatPtrT<BF16>& A,  // NOLINT
+                                      const MatPtrT<GEMMA_MATMUL_TB>& B1,
+                                      const MatPtrT<GEMMA_MATMUL_TB>& B2,
+                                      MatMulEnv& env, MatPtrT<BF16>& C,
+                                      MMOptions options) {
+  TwoMatMul(A, B1, B2, env, C, options);
+}
 
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp

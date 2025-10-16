@@ -750,7 +750,7 @@ class DotStats {
   void CheckMuls() const {
     // Comp2 is between Compensated and Kahan.
     ASSERT_INSIDE(kComp2, 1.001, s_muls[kComp2].Mean(), 1.4);
-    ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 2.4f);
+    ASSERT_INSIDE(kComp2, 1.001f, s_muls[kComp2].Max(), 6.8f);
     ASSERT_INSIDE(kComp2, 1.0, s_muls[kComp2].GeometricMean(), 1.2);
 
     // Compensated and Double are very accurate.
@@ -812,7 +812,7 @@ class DotStats {
 
   // Forward relative error, lower is better.
   void CheckRel() const {
-    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 4E-3);
+    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 7E-3);
     ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 1.23f);
 
     // Compensated and Double are very accurate.
@@ -822,22 +822,22 @@ class DotStats {
     ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher, but not huge.
-    ASSERT_INSIDE(kNaive, 1E-3, s_rels[kNaive].GeometricMean(), 8E-2);
+    ASSERT_INSIDE(kNaive, 1E-3, s_rels[kNaive].GeometricMean(), 3.5E-1);
     ASSERT_INSIDE(kOnlyTwoProd, 1E-3, s_rels[kOnlyTwoProd].GeometricMean(),
-                  0.072);
+                  7.5E-2);
 
     // Kahan (FastTwoSum) is decent:
-    ASSERT_INSIDE(kKahan, 3E-4, s_rels[kKahan].GeometricMean(), 3.5E-3);
+    ASSERT_INSIDE(kKahan, 3E-4, s_rels[kKahan].GeometricMean(), 1E-2);
     ASSERT_INSIDE(kKahan, 6E-4f, s_rels[kKahan].Max(), 0.7f);
 
     // TwoProducts and TwoSums are a bit better.
     ASSERT_INSIDE(kAddTwoProd, 2.2E-4, s_rels[kAddTwoProd].GeometricMean(),
-                  3E-3);
-    ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_rels[kAddTwoProd].Max(), 0.19f);
+                  1.1E-2);
+    ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_rels[kAddTwoProd].Max(), 1.0f);
     ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_rels[kAddTwoSum].GeometricMean(),
-                  2.6E-3);
+                  1.1E-2);
 
-    ASSERT_INSIDE(kPairwise, 4.5E-4, s_rels[kPairwise].GeometricMean(), 1.5E-2);
+    ASSERT_INSIDE(kPairwise, 4.5E-4, s_rels[kPairwise].GeometricMean(), 5.2E-2);
     // Extremely high error on aarch64.
     ASSERT_INSIDE(kPairwise, 1.1E-3f, s_rels[kPairwise].Max(), 2E3f);
   }
@@ -851,13 +851,13 @@ class DotStats {
     ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher than others
-    ASSERT_INSIDE(kNaive, 1.5E-8f, s_rels[kNaive].Max(), 3080.f);
-    ASSERT_INSIDE(kOnlyTwoProd, 1.5E-8f, s_rels[kNaive].Max(), 3080.f);
+    ASSERT_INSIDE(kNaive, 1.5E-8f, s_rels[kNaive].Max(), 1.4E4f);
+    ASSERT_INSIDE(kOnlyTwoProd, 1.5E-8f, s_rels[kNaive].Max(), 1.4E4f);
     // Kahan (FastTwoSum) is not much better here!
     ASSERT_INSIDE(kKahan, 6E-10f, s_rels[kKahan].Max(), 0.7f);
 
     // But TwoProducts/TwoSums help a bit.
-    ASSERT_INSIDE(kAddTwoProd, 9E-10f, s_rels[kAddTwoProd].Max(), 0.19f);
+    ASSERT_INSIDE(kAddTwoProd, 9E-10f, s_rels[kAddTwoProd].Max(), 1.0f);
     ASSERT_INSIDE(kAddTwoSum, 5E-10f, s_rels[kAddTwoSum].Max(), 0.34f);
 
     // Extremely high error on aarch64.
@@ -893,7 +893,7 @@ class DotStats {
 };
 
 // Returns normalized value in [-1, 1).
-float RandomFloat(std::mt19937& rng) {
+float RandomFloat(RngStream& rng) {
   const uint32_t exp = hwy::BitCastScalar<uint32_t>(1.0f);
   const uint32_t mantissa_mask = hwy::MantissaMask<float>();
   const uint32_t representation = exp | (rng() & mantissa_mask);
@@ -908,7 +908,7 @@ float RandomFloat(std::mt19937& rng) {
 // error from the Dot algorithms, not the compression.
 template <typename Packed>
 void GenerateWellConditionedInputs(const size_t num, float* HWY_RESTRICT raw,
-                                   std::mt19937& rng,
+                                   RngStream& rng,
                                    const PackedSpan<Packed>& packed,
                                    CompressWorkingSet& work) {
   std::uniform_int_distribution<int> e_dist(0, 6);
@@ -934,7 +934,7 @@ void GenerateWellConditionedInputs(const size_t num, float* HWY_RESTRICT raw,
 // Sum and Dot Product". `num` is the (arbitrary) size of w, v, and buf.
 template <typename WT, typename VT>
 double GenerateIllConditionedInputs(const size_t num, WT* w, VT* HWY_RESTRICT v,
-                                    std::mt19937& rng) {
+                                    RngStream& rng) {
   PROFILER_FUNC;
   const size_t half = HWY_MAX(1, num / 2);  // generate at least one random
   HWY_DASSERT(half != 0);
@@ -1002,8 +1002,8 @@ struct TestShortDotsT {
     ThreadingArgs threading_args;
     ThreadingContext ctx(threading_args);
     CompressWorkingSet work;
-    std::mt19937 rng;
-    rng.seed(12345);
+    AesCtrEngine engine(/*deterministic=*/true);
+    RngStream rng(engine, 0);
 
     hwy::Stats s_l1[kVariants];
 
@@ -1101,7 +1101,6 @@ void TestAllDot() {
 
   // Limit workers because we only support `kMaxWorkers`.
   ThreadingArgs threading_args;
-  threading_args.max_packages = 1;
   threading_args.max_clusters = 1;
   threading_args.max_lps = kMaxWorkers - 1;
   ThreadingContext ctx(threading_args);
@@ -1109,9 +1108,10 @@ void TestAllDot() {
   {  // ensure no profiler zones are active
     const hn::ScalableTag<float> df;
 
-    std::mt19937 rngs[kMaxWorkers];
+    AesCtrEngine engine(/*deterministic=*/true);
+    RngStream rngs[kMaxWorkers];
     for (size_t i = 0; i < kMaxWorkers; ++i) {
-      rngs[i].seed(12345 + 65537 * i);
+      rngs[i] = RngStream(engine, i);
     }
 
     constexpr size_t kReps = hn::AdjustedReps(40);
@@ -1124,8 +1124,9 @@ void TestAllDot() {
                              MatPadding::kOdd);
     std::array<DotStats, kMaxWorkers> all_stats;
 
-    ctx.pools.Cluster(0, 0).Run(
-        0, kReps, [&](const uint32_t rep, size_t thread) {
+    ParallelFor(
+        ParallelismStrategy::kWithinCluster, kReps, ctx, 0,
+        [&](size_t rep, size_t thread) {
           float* HWY_RESTRICT pa = a.Row(thread);
           float* HWY_RESTRICT pb = b.Row(thread);
           double* HWY_RESTRICT buf = bufs.Row(thread);

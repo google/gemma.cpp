@@ -87,9 +87,6 @@ class SbsWriterImpl : public ISbsWriter {
       return;
     }
 
-    fprintf(stderr, "Compressing %s (%zu x %zu = %zuM) to %s, please wait\n",
-            name, mat.Rows(), mat.Cols(), weights.size() / (1000 * 1000),
-            TypeName(TypeEnum<Packed>()));
     HWY_ASSERT(weights.size() == mat.Extents().Area());
     Compress(weights.data(), weights.size(), working_set_, mat.Span(),
              /*packed_ofs=*/0, pool);
@@ -115,6 +112,9 @@ class SbsWriterImpl : public ISbsWriter {
         break;
       case Type::kF32:
         InsertT<float>(name, weights, tensor_info);
+        break;
+      case Type::kI8:
+        InsertT<I8Stream>(name, weights, tensor_info);
         break;
       default:
         HWY_ABORT("Unsupported destination (compressed) type %s",

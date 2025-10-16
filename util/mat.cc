@@ -80,11 +80,13 @@ size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,
 
 void MatOwner::AllocateFor(MatPtr& mat, const Allocator& allocator,
                            MatPadding padding) {
-  const bool is_nuq = mat.GetType() == Type::kNUQ;
-  if (is_nuq) padding = MatPadding::kPacked;
+  const bool is_compressed_and_packed =
+      mat.GetType() == Type::kNUQ || mat.GetType() == Type::kI8;
+  if (is_compressed_and_packed) padding = MatPadding::kPacked;
   const size_t stride =
       Stride(padding, mat.Cols(), mat.ElementBytes(), allocator.LineBytes());
-  const size_t num = is_nuq ? mat.PackedBytes() : mat.Rows() * stride;
+  const size_t num =
+      is_compressed_and_packed ? mat.PackedBytes() : mat.Rows() * stride;
   // `compress-inl` requires up to 2 BF16 vectors of padding. `MatPadding`
   // might not be enough, hence add extra. `MatT` is at least one byte, which
   // is half of BF16, hence adding `VectorBytes` *elements* is enough.

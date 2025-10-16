@@ -20,7 +20,6 @@
 
 #include <iostream>
 #include <ostream>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -37,17 +36,6 @@
 
 namespace gcpp {
 
-void InitGenerator(const InferenceArgs& inference, std::mt19937& gen) {
-  if (inference.deterministic) {
-    // Nothing up my sleeve number, at least some upper bits set.
-    gen.seed(0x12345678);
-  } else {
-    // Depending on the library implementation, this may still be deterministic.
-    std::random_device rd;  // NOLINT
-    gen.seed(rd());
-  }
-}
-
 GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                    const InferenceArgs& inference)
     : ctx_(threading), env_(ctx_), gemma_(loader, inference, ctx_) {
@@ -60,12 +48,9 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
                ctx_);
   }
 
-  InitGenerator(inference, gen_);
-
   runtime_config_ = {
       .max_generated_tokens = inference.max_generated_tokens,
       .temperature = inference.temperature,
-      .gen = &gen_,
       .verbosity = inference.verbosity,
   };
   inference.CopyTo(runtime_config_);
@@ -93,16 +78,16 @@ QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
               << runtime_config_.max_generated_tokens
               << "\ttemperature: " << runtime_config_.temperature << "\n";
   }
-  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
+  gcpp::TimingInfo timing_info{.verbosity = runtime_config_.verbosity};
   runtime_config_.batch_stream_token = batch_stream_token;
   gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
                   timing_info);
   return result;
 }
 
-void GemmaEnv::QueryModel(
-    const std::vector<int>& tokens, const StreamFunc& stream_token) {
-  gcpp::TimingInfo timing_info { .verbosity = runtime_config_.verbosity };
+void GemmaEnv::QueryModel(const std::vector<int>& tokens,
+                          const StreamFunc& stream_token) {
+  gcpp::TimingInfo timing_info{.verbosity = runtime_config_.verbosity};
   const StreamFunc previous_stream_token = runtime_config_.stream_token;
   runtime_config_.stream_token = stream_token;
   gemma_.Generate(runtime_config_, tokens, /*start_pos=*/0, kv_caches_[0], env_,
@@ -110,7 +95,7 @@ void GemmaEnv::QueryModel(
   runtime_config_.stream_token = previous_stream_token;
 }
 
-std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+QueryResultAndMetrics GemmaEnv::BatchQueryModelWithMetrics(
     const QueriesPromptTokens& queries_prompt,
     const hwy::Span<const size_t>& prefix_end) {
   const size_t num_queries = queries_prompt.size();
@@ -120,8 +105,14 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
                                                        const size_t pos,
                                                        const int token, float) {
     HWY_ASSERT(query_index < num_queries);
+    if (token >= gemma_.Config().vocab_size) {
+      HWY_ABORT("Token %d >= vocab size %d", token, gemma_.Config().vocab_size);
+    }
     std::string token_text;
-    HWY_ASSERT(gemma_.Tokenizer().Decode(std::vector<int>{token}, &token_text));
+    if (!gemma_.Tokenizer().Decode(std::vector<int>{token}, &token_text)) {
+      HWY_ABORT("Failed to decode token %d, tokenizer bytes %s\n", token,
+                gemma_.Tokenizer().Serialize().substr(0, 10).c_str());
+    }
     res[query_index].response.append(token_text);
     HWY_ASSERT(pos == res[query_index].tokens_generated);
     res[query_index].tokens_generated += 1;
@@ -149,29 +140,39 @@ std::vector<QueryResult> GemmaEnv::BatchQueryModel(
   gcpp::AllQueries all_queries(queries_prompt, kv_caches, prefix_end);
   gcpp::TimingInfo timing_info = {.verbosity = runtime_config_.verbosity};
   gemma_.GenerateBatch(runtime_config_, all_queries, env_, timing_info);
-  return res;
+  return {res, timing_info};
 }
 
-QueryResult GemmaEnv::QueryModel(std::string& input) {
+std::vector<QueryResult> GemmaEnv::BatchQueryModel(
+    const QueriesPromptTokens& queries_prompt,
+    const hwy::Span<const size_t>& prefix_end) {
+  return BatchQueryModelWithMetrics(queries_prompt, prefix_end).query_results;
+}
+
+QueryResult GemmaEnv::QueryModel(const std::string& input) {
   const std::vector<int> prompt = WrapAndTokenize(input);
   return QueryModel(prompt);
 }
 
+QueryResultAndMetrics GemmaEnv::BatchQueryModelWithMetrics(
+    const std::vector<std::string>& prompt_strings) {
+  std::vector<PromptTokens> views;
+  views.reserve(prompt_strings.size());
+
+  std::vector<std::vector<int>> storage;
+  storage.reserve(prompt_strings.size());
+  for (auto& input : prompt_strings) {
+    storage.push_back(WrapAndTokenize(input));
+    views.push_back(PromptTokens(storage.back().data(), storage.back().size()));
+  }
+
+  QueriesPromptTokens span_of_views(views.data(), views.size());
+  return BatchQueryModelWithMetrics(span_of_views);
+}
+
 std::vector<QueryResult> GemmaEnv::BatchQueryModel(
     const std::vector<std::string>& inputs) {
-  std::vector<std::vector<int>> prompts;
-  prompts.reserve(inputs.size());
-  for (auto& input : inputs) {
-    std::string mutable_prompt = input;
-    prompts.push_back(WrapAndTokenize(mutable_prompt));
-  }
-  std::vector<PromptTokens> prompt_vector;
-  prompt_vector.reserve(prompts.size());
-  for (auto& prompt : prompts) {
-    prompt_vector.push_back(PromptTokens(prompt.data(), prompt.size()));
-  }
-  QueriesPromptTokens prompt_span(prompt_vector.data(), prompt_vector.size());
-  return BatchQueryModel(prompt_span);
+  return BatchQueryModelWithMetrics(inputs).query_results;
 }
 
 float GemmaEnv::CrossEntropy(const std::string& input) {
@@ -256,8 +257,8 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
             dt, cpu100, static_cast<int>(threading.bind),
             ctx.topology.TopologyString(), ctx.pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
-            ctx.allocator.VectorBytes() * 8, CompiledConfig(), PROFILER_ENABLED,
-            ctx.allocator.TotalMiB());
+            ctx.cache_info.VectorBytes() * 8, CompiledConfig(),
+            PROFILER_ENABLED, ctx.allocator.TotalMiB());
   }
 }
 

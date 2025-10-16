@@ -18,7 +18,6 @@
 #include <stdio.h>
 
 #include <iostream>
-#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -98,9 +97,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   size_t prompt_size = 0;
   const ModelConfig& config = gemma.Config();
 
-  std::mt19937 gen;
-  InitGenerator(inference, gen);
-
   const bool have_image = !inference.image_file.path.empty();
   Image image;
   const size_t pool_dim = config.vit_config.pool_dim;
@@ -117,8 +113,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     HWY_ASSERT(image.ReadPPM(inference.image_file.path));
     const size_t image_size = config.vit_config.image_size;
     image.Resize(image_size, image_size);
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
+    RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
                                     .use_spinning = threading.spin};
     double image_tokens_start = hwy::platform::Now();
     gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,
@@ -132,7 +127,12 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   }
 
   // callback function invoked for each generated token.
-  auto stream_token = [&](int token, float) {
+  auto batch_stream_token = [&](size_t query_idx, size_t pos, int token,
+                                float) {
+    std::string token_text;
+    HWY_ASSERT(gemma.Tokenizer().Decode(std::vector<int>{token}, &token_text));
+
+    HWY_ASSERT(pos == abs_pos);
     ++abs_pos;
     const bool in_prompt = tokens_generated_this_turn < prompt_size;
     const bool first_response_token = tokens_generated_this_turn == prompt_size;
@@ -148,8 +148,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
       }
       return true;
     }
-    std::string token_text;
-    HWY_ASSERT(gemma.Tokenizer().Decode(std::vector<int>{token}, &token_text));
     if (first_response_token) {
       token_text.erase(0, token_text.find_first_not_of(" \t\n"));
       if (inference.verbosity >= 1) {
@@ -185,9 +183,8 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
 
     // Set up runtime config.
     TimingInfo timing_info = {.verbosity = inference.verbosity};
-    RuntimeConfig runtime_config = {.gen = &gen,
-                                    .verbosity = inference.verbosity,
-                                    .stream_token = stream_token,
+    RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
+                                    .batch_stream_token = batch_stream_token,
                                     .use_spinning = threading.spin};
     inference.CopyTo(runtime_config);
     std::vector<int> prompt;
@@ -223,6 +220,9 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     if (inference.verbosity >= 1) {
       std::cerr << "\n[ Reading prompt ] " << std::flush;
     }
+    // -1 because our prefill does not generate KVs for the last token. Do not
+    // just pass abs_pos - 1 because our callback checks pos == abs_pos.
+    if (abs_pos > 0) --abs_pos;
     gemma.Generate(runtime_config, prompt, abs_pos, prefix_end, kv_cache, env,
                    timing_info);
     std::cout << "\n\n";
@@ -233,7 +233,6 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     // Prepare for the next turn. Works only for PaliGemma.
     if (!inference.multiturn || config.wrapping == PromptWrapping::PALIGEMMA) {
       abs_pos = 0;  // Start a new turn at position 0.
-      InitGenerator(inference, gen);
     } else {
       // The last token was either EOS, then it should be ignored because it is
       // never part of the dialog, see Table 5 in the Gemma-2 paper:
@@ -255,7 +254,7 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
 
   ThreadingContext ctx(threading);
   MatMulEnv env(ctx);
-  if (inference.verbosity >= 2) env.print_best = true;
+  if (inference.verbosity >= 3) env.print_best = true;
   const Gemma gemma(loader, inference, ctx);
   KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
 

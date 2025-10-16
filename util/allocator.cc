@@ -130,7 +130,7 @@ size_t DetectTotalMiB(size_t page_bytes) {
 
 }  // namespace
 
-Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
+CacheInfo::CacheInfo(const BoundedTopology& topology) {
   line_bytes_ = DetectLineBytes();
   // Ensure MaxLineBytes() is an upper bound.
   HWY_ASSERT(MaxLineBytes() >= LineBytes());
@@ -138,10 +138,8 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   vector_bytes_ = hwy::VectorBytes();
 
   step_bytes_ = HWY_MAX(line_bytes_, vector_bytes_);
-  base_page_bytes_ = DetectPageSize();
-  quantum_bytes_ = step_bytes_;  // may overwrite below
 
-  const BoundedTopology::Cluster& cluster = topology.GetCluster(0, 0);
+  const BoundedTopology::Cluster& cluster = topology.GetCluster(0);
   if (const hwy::Cache* caches = hwy::DataCaches()) {
     l1_bytes_ = caches[1].size_kib << 10;
     l2_bytes_ = caches[2].size_kib << 10;
@@ -153,18 +151,23 @@ Allocator::Allocator(const BoundedTopology& topology, bool enable_bind) {
   if (l3_bytes_ == 0) {
     l3_bytes_ = (cluster.SharedKiB() ? cluster.SharedKiB() : 1024) << 10;
   }
+}
 
-  total_mib_ = DetectTotalMiB(base_page_bytes_);
+Allocator::Allocator(const BoundedTopology& topology,
+                     const CacheInfo& cache_info, bool enable_bind)
+    : line_bytes_(cache_info.LineBytes()),
+      base_page_bytes_(DetectPageSize()),
+      total_mib_(DetectTotalMiB(base_page_bytes_)) {
+  quantum_bytes_ = cache_info.StepBytes();  // may overwrite below
 
   // Prerequisites for binding:
   // - supported by the OS (currently Linux only),
   // - the page size is known and 'reasonably small', preferably less than
   //   a fraction of MatMul row/col sizes, which for 27B are up to 144 KiB.
-  // - we successfully detected topology and there are multiple nodes;
-  // - there are multiple packages, because we shard by package_idx.
+  // - we successfully detected topology and there are multiple nodes.
   if constexpr (GEMMA_BIND) {
     if ((base_page_bytes_ != 0 && base_page_bytes_ <= 16 * 1024) &&
-        topology.NumNodes() > 1 && topology.NumPackages() > 1) {
+        topology.NumNodes() > 1) {
       if (enable_bind) {
         // Ensure pages meet the alignment requirements of `AllocBytes`.
         HWY_ASSERT(base_page_bytes_ >= quantum_bytes_);
