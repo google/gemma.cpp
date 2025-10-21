@@ -176,6 +176,7 @@ class Allocator {
 
  private:
   const size_t line_bytes_;
+  const size_t step_bytes_;
   const size_t base_page_bytes_;
   const size_t total_mib_;
 
