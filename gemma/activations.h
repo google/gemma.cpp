@@ -111,7 +111,7 @@ struct AttentionActivations {
   const ModelConfig& config;
 
   MatStorageT<float> q;  // query
-  MatStorageT<float> q_T;  // Transposed to maximize attention speed.
+  MatStorageT<BF16> q_T;  // Transposed to maximize attention speed.
 
   MatStorageT<float> pre_att_rms_out;
   MatStorageT<float> att;      // attention vector
