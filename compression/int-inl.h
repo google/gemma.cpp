@@ -159,7 +159,6 @@ class IntCodec {
     const hn::Rebind<int32_t, decltype(df)> di32;
     const hn::Rebind<int16_t, decltype(di32)> di16;
     const hn::Rebind<int8_t, decltype(di16)> di8;
-    const hn::Rebind<int8_t, decltype(df)> df8;
 
     const size_t N = hn::Lanes(di8);
     const size_t N32 = hn::Lanes(df);
@@ -387,7 +386,6 @@ class IntCodec {
     const hn::Rebind<int32_t, decltype(df)> di32;
     const hn::Rebind<int16_t, decltype(di32)> di16;
     const hn::Rebind<int8_t, decltype(di16)> di8;
-    const hn::Rebind<int8_t, decltype(df)> df8;
 
     const size_t N = hn::Lanes(di8);
     using VI8 = hn::Vec<decltype(di8)>;

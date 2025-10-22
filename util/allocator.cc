@@ -156,6 +156,7 @@ CacheInfo::CacheInfo(const BoundedTopology& topology) {
 Allocator::Allocator(const BoundedTopology& topology,
                      const CacheInfo& cache_info, bool enable_bind)
     : line_bytes_(cache_info.LineBytes()),
+      step_bytes_(cache_info.StepBytes()),
       base_page_bytes_(DetectPageSize()),
       total_mib_(DetectTotalMiB(base_page_bytes_)) {
   quantum_bytes_ = cache_info.StepBytes();  // may overwrite below
@@ -239,9 +240,8 @@ AlignedPtr<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
       static_cast<uint8_t*>(p),
       DeleterFunc([bytes](void* ptr) { HWY_ASSERT(munmap(ptr, bytes) == 0); }));
 #elif HWY_OS_WIN
-  const size_t alignment = HWY_MAX(vector_bytes_, line_bytes_);
   return AlignedPtr<uint8_t[]>(
-      static_cast<uint8_t*>(_aligned_malloc(bytes, alignment)),
+      static_cast<uint8_t*>(_aligned_malloc(bytes, step_bytes_)),
       DeleterFunc([](void* ptr) { _aligned_free(ptr); }));
 #else
   return AlignedPtr<uint8_t[]>(nullptr, DeleterFunc());
