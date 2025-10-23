@@ -39,8 +39,8 @@ namespace gcpp {
                             const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,  \
                             size_t layer_idx, const LayerWeightsPtrs& layer, \
                             const AttentionActivations& activations,         \
-                            float* HWY_RESTRICT att_out, hwy::Profiler& p,   \
-                            size_t worker);                                  \
+                            float* HWY_RESTRICT att_out,                     \
+                            ThreadingContext& ctx, size_t worker);           \
                                                                              \
   size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens, \
                       size_t total_tasks, size_t target_parallelism);        \

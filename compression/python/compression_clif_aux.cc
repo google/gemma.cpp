@@ -37,7 +37,6 @@
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
@@ -57,9 +56,6 @@ class SbsWriterImpl : public ISbsWriter {
   template <typename Packed>
   void InsertT(const char* name, F32Span weights,
                const TensorInfo& tensor_info) {
-    // TODO(janwas): 1D parallel-for.
-    hwy::ThreadPool& pool = ctx_.pools.Pool();
-
     MatPtrT<Packed> mat(name, ExtentsFromInfo(&tensor_info));
     // SFP and NUQ (which uses SFP for cluster centers) have a limited range
     // and depending on the input values may require rescaling. Scaling is
@@ -82,21 +78,20 @@ class SbsWriterImpl : public ISbsWriter {
     // succeeds, but we only have 10 floats, not the full tensor.
     if (weights.size() == 10 && mat.Extents().Area() != 10) {
       Compress(weights.data(), weights.size(), working_set_, mat.Span(),
-               /*packed_ofs=*/0, pool);
+               /*packed_ofs=*/0, ctx_);
       writer_.Add(name, mat.Packed(), mat.ElementBytes() * 10);
       return;
     }
 
     HWY_ASSERT(weights.size() == mat.Extents().Area());
     Compress(weights.data(), weights.size(), working_set_, mat.Span(),
-             /*packed_ofs=*/0, pool);
+             /*packed_ofs=*/0, ctx_);
     writer_.Add(name, mat.Packed(), mat.PackedBytes());
   }
 
  public:
   SbsWriterImpl(const std::string& sbs_path)
-      : ctx_(ThreadingArgs()),
-        writer_(gcpp::Path(sbs_path), ctx_.pools.Pool()) {}
+      : ctx_(ThreadingArgs()), writer_(gcpp::Path(sbs_path), ctx_) {}
 
   void Insert(const char* name, F32Span weights, Type type,
               const TensorInfo& tensor_info) override {

@@ -30,7 +30,6 @@
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/profiler.h"
 #include "hwy/timer.h"
@@ -72,7 +71,6 @@ void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
 // M = A rows, K = A cols, N = C cols.
 template <typename TA, typename TB = TA, typename TC = float>
 void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
-  hwy::ThreadPool& pool = env.ctx.pools.Pool(0);
   if (env.print_config || env.print_measurement) {
     fprintf(stderr, "\n");
   }
@@ -91,15 +89,14 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   MatStorageT<float> add_storage("add", Extents2D(), env.ctx.allocator,
                                  MatPadding::kPacked);
   if (add) {
-    add_storage = GenerateMat<float>(Extents2D(1, N), env.ctx.allocator,
-                                     MatPadding::kPacked, pool);
+    add_storage =
+        GenerateMat<float>(Extents2D(1, N), MatPadding::kPacked, env.ctx);
     add_storage.SetScale(1.0f);
   }
 
-  MatStorageT<TA> a =
-      GenerateMat<TA>(A_extents, env.ctx.allocator, MatPadding::kOdd, pool);
-  MatStorageT<TB> b_trans = GenerateTransposedMat<TB>(
-      B_extents, env.ctx.allocator, MatPadding::kOdd, pool);
+  MatStorageT<TA> a = GenerateMat<TA>(A_extents, MatPadding::kOdd, env.ctx);
+  MatStorageT<TB> b_trans =
+      GenerateTransposedMat<TB>(B_extents, MatPadding::kOdd, env.ctx);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 

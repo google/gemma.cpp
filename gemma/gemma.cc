@@ -55,7 +55,7 @@
 #include "io/io.h"  // Path
 #include "ops/matmul.h"
 #include "paligemma/image.h"
-#include "util/basics.h"  // PROFILER_ZONE3
+#include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
@@ -138,9 +138,7 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
              MatStorageT<float>& x, ThreadingContext& ctx,
              const ImageTokens* image_tokens = nullptr,
              size_t image_token_position = 0) {
-  static const auto zone =
-      ctx.profiler.AddZone("Gen.Embed", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
+  GCPP_ZONE(ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbed);
 
   // Image tokens just need to be copied.
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
@@ -415,9 +413,7 @@ static void SampleAndStream(const ModelConfig& config,
   MaybeObserve(runtime_config, activations, qbatch, -1);
 
   {
-    static const auto zone = env.ctx.profiler.AddZone(
-        "Gen.EmbeddingMatmul", hwy::ProfilerFlags::kInclusive);
-    PROFILER_ZONE3(env.ctx.profiler, /*worker=*/0, zone);
+    GCPP_ZONE(env.ctx, /*worker=*/0, Zones::kGenEmbeddingMatmul);
     // Compute logits from last layer activations.
     CallMatMul(activations.x_bf, weights.embedder_input_embedding,
                /*add=*/nullptr, env, activations.logits);
@@ -431,7 +427,8 @@ static void SampleAndStream(const ModelConfig& config,
 
   ParallelFor(
       ParallelismStrategy::kFlat, qbatch.Size(), env.ctx,
-      /*cluster_idx=*/0, [&](size_t qi, size_t worker) {
+      /*cluster_idx=*/0, Callers::kSampleAndStream,
+      [&](size_t qi, size_t worker) {
         if (!non_eos.Get(qi)) return;
 
         // We streamed all prefill tokens, but pos is still one behind
@@ -469,8 +466,7 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
     return [&](size_t /*qi*/, size_t /*pos*/, Logits logits, size_t worker)
                HWY_ATTR -> TokenAndProb {
-                 PROFILER_ZONE3(ctx.profiler, worker,
-                                GetProfilerZone(Zones::kGenSampleTop1));
+                 GCPP_ZONE(ctx, worker, Zones::kGenSampleTop1);
                  return Top1OfSoftmax(logits);
                };
   }
@@ -478,14 +474,13 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   // General case: Softmax with top-k sampling.
   return [&](size_t qi, size_t pos, Logits logits,
              size_t worker) HWY_ATTR -> TokenAndProb {
-    PROFILER_ZONE3(ctx.profiler, worker,
-                   GetProfilerZone(Zones::kGenSampleTopK));
+    GCPP_ZONE(ctx, worker, Zones::kGenSampleTopK);
     // We want a different sequence for each batch element and position.
     const uint64_t stream = (static_cast<uint64_t>(qi) << 32) | pos;
     RngStream gen(engine, stream);
-    return FusedSoftmaxAndSampleTopK(
-        logits, runtime_config.top_k, gen, runtime_config.temperature,
-        runtime_config.accept_token, ctx.profiler, worker);
+    return FusedSoftmaxAndSampleTopK(logits, runtime_config.top_k, gen,
+                                     runtime_config.temperature,
+                                     runtime_config.accept_token, ctx, worker);
   };
 }
 
@@ -657,8 +652,8 @@ Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
 
 Gemma::~Gemma() = default;
 
-void Gemma::Save(const Path& weights_path, NestedPools& pools) const {
-  BlobWriter writer(weights_path, pools.Pool());
+void Gemma::Save(const Path& weights_path, ThreadingContext& ctx) const {
+  BlobWriter writer(weights_path, ctx);
   const std::vector<uint32_t> serialized_mat_ptrs =
       weights_.AddTensorDataToWriter(writer);
   WriteSingleFile(model_.Config(), model_.Tokenizer(), serialized_mat_ptrs,

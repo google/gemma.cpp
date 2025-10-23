@@ -49,9 +49,10 @@ PinningPolicy::PinningPolicy(Tristate pin) {
 static void MaybePin(const BoundedTopology& topology, size_t cluster_idx,
                      const BoundedTopology::Cluster& cluster,
                      PinningPolicy& pinning, hwy::ThreadPool& pool) {
+  static hwy::pool::Caller caller = hwy::ThreadPool::AddCaller("MaybePin");
   const std::vector<size_t> lps = cluster.LPVector();
   HWY_ASSERT(pool.NumWorkers() <= lps.size());
-  pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
+  pool.Run(0, pool.NumWorkers(), caller, [&](uint64_t task, size_t thread) {
     HWY_ASSERT(task == thread);  // each worker has one task
 
     char buf[16];  // Linux limitation
@@ -141,17 +142,20 @@ NestedPools::NestedPools(const BoundedTopology& topology,
 
   // Parallel so we also pin the calling worker in `all_clusters` to
   // `cluster.lps`.
-  all_clusters_->Run(0, num_clusters, [&](size_t cluster_idx, size_t thread) {
-    HWY_ASSERT(cluster_idx == thread);  // each thread has one task
-    const BoundedTopology::Cluster& tcluster = topology.GetCluster(cluster_idx);
-    clusters_[cluster_idx] =
-        MakePool(allocator, workers_per_cluster[cluster_idx],
-                 hwy::PoolWorkerMapping(cluster_idx, max_workers_per_cluster_),
-                 tcluster.Node());
-    // Pin workers AND the calling thread from `all_clusters_`.
-    MaybePin(topology, cluster_idx, tcluster, pinning_,
-             *clusters_[cluster_idx]);
-  });
+  static hwy::pool::Caller caller = hwy::ThreadPool::AddCaller("NestedPools");
+  all_clusters_->Run(
+      0, num_clusters, caller, [&](size_t cluster_idx, size_t thread) {
+        HWY_ASSERT(cluster_idx == thread);  // each thread has one task
+        const BoundedTopology::Cluster& tcluster =
+            topology.GetCluster(cluster_idx);
+        clusters_[cluster_idx] = MakePool(
+            allocator, workers_per_cluster[cluster_idx],
+            hwy::PoolWorkerMapping(cluster_idx, max_workers_per_cluster_),
+            tcluster.Node());
+        // Pin workers AND the calling thread from `all_clusters_`.
+        MaybePin(topology, cluster_idx, tcluster, pinning_,
+                 *clusters_[cluster_idx]);
+      });
   all_pinned_ = pinning_.AllPinned(&pin_string_);
 }
 

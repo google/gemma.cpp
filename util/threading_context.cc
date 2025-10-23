@@ -78,31 +78,33 @@ static void TunePool(hwy::PoolWaitMode wait_mode, hwy::ThreadPool& pool) {
 #endif
 }
 
-static void TunePools(hwy::PoolWaitMode wait_mode, NestedPools& pools) {
-  hwy::ThreadPool& clusters = pools.AllClusters();
+static void TunePools(hwy::PoolWaitMode wait_mode, ThreadingContext& ctx) {
+  hwy::ThreadPool& clusters = ctx.pools.AllClusters();
   TunePool(wait_mode, clusters);
 
   // Run in parallel because Turin CPUs have 16, and in real usage, we often
   // run all at the same time.
   clusters.Run(0, clusters.NumWorkers(),
+               ctx.pool_callers.Get(Callers::kTunePool),
                [&](uint64_t cluster_idx, size_t /*thread*/) {
-                 TunePool(wait_mode, pools.Cluster(cluster_idx));
+                 TunePool(wait_mode, ctx.pools.Cluster(cluster_idx));
                });
 }
 
 ThreadingContext::ThreadingContext(const ThreadingArgs& args)
     : profiler(hwy::Profiler::Get()),
+      profiler_zones(profiler),
+      pool_callers(),
       topology(BoundedSlice(args.skip_packages, args.max_packages),
                BoundedSlice(args.skip_clusters, args.max_clusters),
                BoundedSlice(args.skip_lps, args.max_lps)),
       cache_info(topology),
       allocator(topology, cache_info, args.bind != Tristate::kFalse),
       pools(topology, allocator, args.max_threads, args.pin) {
-  InitProfilerZones(profiler);
   PROFILER_ZONE("Startup.ThreadingContext autotune");
-  TunePools(hwy::PoolWaitMode::kSpin, pools);
+  TunePools(hwy::PoolWaitMode::kSpin, *this);
   // kBlock is the default, hence set/tune it last.
-  TunePools(hwy::PoolWaitMode::kBlock, pools);
+  TunePools(hwy::PoolWaitMode::kBlock, *this);
 }
 
 }  // namespace gcpp

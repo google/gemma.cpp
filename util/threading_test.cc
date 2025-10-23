@@ -37,6 +37,8 @@ namespace {
 
 using ::testing::ElementsAre;
 
+static const hwy::pool::Caller kCaller = hwy::ThreadPool::AddCaller("Test");
+
 TEST(ThreadingTest, TestBoundedSlice) {
   const char* name = "test";
   // No args = no limit.
@@ -205,7 +207,7 @@ TEST(ThreadingTest, TestParallelizeOneRange) {
   const IndexRangePartition partition = StaticPartition(range, 2, 4);
   hwy::ThreadPool null_pool(0);
   size_t calls = 0;
-  ParallelizeOneRange(partition, null_pool,
+  ParallelizeOneRange(partition, null_pool, kCaller,
                       [&](const IndexRange& range, size_t) {
                         if (++calls == 1) {
                           HWY_ASSERT(range.begin() == 0 && range.end() == 8);
@@ -226,7 +228,7 @@ TEST(ThreadingTest, TestParallelizeTwoRanges) {
   {
     size_t calls = 0;
     ParallelizeTwoRanges(
-        partition1, partition2, null_pool,
+        partition1, partition2, null_pool, kCaller,
         [&](const IndexRange& range1, const IndexRange& range2, size_t) {
           ++calls;
           HWY_ASSERT(range1.begin() == 0 || range1.begin() == 8);
@@ -240,7 +242,7 @@ TEST(ThreadingTest, TestParallelizeTwoRanges) {
   {
     size_t calls = 0;
     ParallelizeTwoRanges(
-        partition2, partition1, null_pool,
+        partition2, partition1, null_pool, kCaller,
         [&](const IndexRange& range2, const IndexRange& range1, size_t) {
           ++calls;
           HWY_ASSERT(range1.begin() == 0 || range1.begin() == 8);
@@ -265,7 +267,7 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
 
   const double t0 = hwy::platform::Now();
   for (size_t reps = 0; reps < 1200; ++reps) {
-    pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
+    pool.Run(0, pool.NumWorkers(), kCaller, [&](uint64_t task, size_t thread) {
       outputs[thread * kU64PerThread] = base + thread;
     });
     hwy::PreventElision(outputs[base]);
@@ -305,18 +307,20 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
   if (have_stop) {
     for (size_t rep = 0; rep < max_reps; ++rep) {
       const uint64_t t0 = hwy::timer::Start();
-      pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
-        outputs[thread * kU64PerThread] = base + thread;
-      });
+      pool.Run(0, pool.NumWorkers(), kCaller,
+               [&](uint64_t task, size_t thread) {
+                 outputs[thread * kU64PerThread] = base + thread;
+               });
       const uint64_t t1 = hwy::timer::Stop();
       times.push_back(t1 - t0);
     }
   } else {
     for (size_t rep = 0; rep < max_reps; ++rep) {
       const uint64_t t0 = hwy::timer::Start();
-      pool.Run(0, pool.NumWorkers(), [&](uint64_t task, size_t thread) {
-        outputs[thread * kU64PerThread] = base + thread;
-      });
+      pool.Run(0, pool.NumWorkers(), kCaller,
+               [&](uint64_t task, size_t thread) {
+                 outputs[thread * kU64PerThread] = base + thread;
+               });
       const uint64_t t1 = hwy::timer::Start();
       times.push_back(t1 - t0);
     }

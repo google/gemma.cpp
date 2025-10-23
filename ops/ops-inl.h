@@ -205,9 +205,9 @@ namespace detail {
 
 // Shared by RMSNorm and RMSNormInplace.
 template <typename VT>
-float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
-                 const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormMul));
+float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size,
+                 ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRmsNormMul);
 
   const hn::ScalableTag<float> d;
   const float l2 = DecompressAndCall(d, MakeSpan(x, size), DotKernelDefault());
@@ -218,19 +218,17 @@ float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size, hwy::Profiler& p,
 }  // namespace detail
 
 template <typename XT, typename WT, typename OT>
-HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
-                                           const WT* HWY_RESTRICT weight,
-                                           const size_t w_ofs,
-                                           OT* HWY_RESTRICT out,
-                                           const size_t size, hwy::Profiler& p,
-                                           const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNorm));
+HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
+    const XT* HWY_RESTRICT x, const WT* HWY_RESTRICT weight, const size_t w_ofs,
+    OT* HWY_RESTRICT out, const size_t size, ThreadingContext& ctx,
+    const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRmsNorm);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
 
-  const VF mul = hn::Set(DF(), detail::RMSNormMul(x, size, p, worker));
+  const VF mul = hn::Set(DF(), detail::RMSNormMul(x, size, ctx, worker));
   const VF* HWY_RESTRICT pmul = &mul;
 
   Decompress2AndCompressTo(DF(), out, size, x, weight, w_ofs,
@@ -245,13 +243,13 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(const XT* HWY_RESTRICT x,
 template <typename WT, typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const WT* HWY_RESTRICT weight, const size_t w_ofs, XT* HWY_RESTRICT inout,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRmsNormInplace));
+    const size_t size, ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRmsNormInplace);
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
 
-  const VF mul = hn::Set(DF(), detail::RMSNormMul(inout, size, p, worker));
+  const VF mul = hn::Set(DF(), detail::RMSNormMul(inout, size, ctx, worker));
   const VF* HWY_RESTRICT pmul = &mul;
 
   Decompress1AndCompressInplace(DF(), inout, size, weight, w_ofs,
@@ -359,9 +357,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddAbsolutePositionalEmbeddings(
 // This overload is called if `post_qk == PostQKType::HalfRope`.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
     float* HWY_RESTRICT x, const size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
-    const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRope));
+    const float* HWY_RESTRICT inv_timescale, const int pos,
+    ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRope);
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -418,9 +416,9 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void Rope(
 // `inv_timescale[dim_qkv / 2]` is precomputed in AttentionActivations.
 static HWY_NOINLINE HWY_MAYBE_UNUSED void RopeAndMulBy(
     const float mul, float* HWY_RESTRICT x, const size_t dim_qkv,
-    const float* HWY_RESTRICT inv_timescale, const int pos, hwy::Profiler& p,
-    const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsRopeAndMulBy));
+    const float* HWY_RESTRICT inv_timescale, const int pos,
+    ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRopeAndMulBy);
   HWY_DASSERT(dim_qkv % 2 == 0);
   const size_t half_dim_qkv = dim_qkv / 2;
 
@@ -480,9 +478,9 @@ template <typename XT>
 static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
                                                   float* HWY_RESTRICT out,
                                                   const size_t size,
-                                                  hwy::Profiler& p,
+                                                  ThreadingContext& ctx,
                                                   const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsAddFrom));
+  GCPP_ZONE(ctx, worker, Zones::kOpsAddFrom);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
@@ -503,10 +501,11 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
     ParallelFor(ParallelismStrategy::kFlat, activations.Rows(), ctx,
-                cluster_idx, [&](uint64_t token_idx, size_t worker) {
+                cluster_idx, Callers::kOpsRMSNormBatched,
+                [&](uint64_t token_idx, size_t worker) {
                   RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
                           /*w_ofs=*/0, out.Row(token_idx), activations.Cols(),
-                          ctx.profiler, worker);
+                          ctx, worker);
                 });
   });
 }
@@ -519,10 +518,11 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
     ParallelFor(ParallelismStrategy::kFlat, inout.Rows(), ctx, cluster_idx,
+                Callers::kOpsRMSNormInplaceBatched,
                 [&](uint64_t token_idx, size_t worker) {
                   RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
-                                 inout.Row(token_idx), inout.Cols(),
-                                 ctx.profiler, worker);
+                                 inout.Row(token_idx), inout.Cols(), ctx,
+                                 worker);
                 });
   });
 }
@@ -549,13 +549,14 @@ static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
                                       ThreadingContext& ctx,
                                       size_t cluster_idx = 0) {
   HWY_DASSERT(out.SameShape(x));
-  ParallelFor(ParallelismStrategy::kFlat, out.Rows(), ctx, cluster_idx,
-              [&](uint64_t token_idx, size_t worker) {
-                AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(),
-                        ctx.profiler, worker);
-              });
+  ParallelFor(
+      ParallelismStrategy::kFlat, out.Rows(), ctx, cluster_idx,
+      Callers::kOpsAddFromBatched, [&](uint64_t token_idx, size_t worker) {
+        AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(), ctx, worker);
+      });
 }
 
+// No profiler zone because this is short and frequently called.
 template <typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
                                               const size_t size) {
@@ -575,8 +576,8 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConst(const float c, XT* HWY_RESTRICT x,
 template <typename XT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstTo(
     const float c, const XT* HWY_RESTRICT x, OT* HWY_RESTRICT out,
-    const size_t size, hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsMulByConstTo));
+    const size_t size, ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsMulByConstTo);
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -1121,10 +1122,10 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
 
 // See below for a specialized version for top-1 sampling.
 // TODO: support bf16 logits using Decompress2.
-static HWY_NOINLINE void Softmax(Logits logits, hwy::Profiler& p,
+static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
                                  const size_t worker,
                                  float temperature = 1.0f) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsSoftmax));
+  GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
@@ -1256,8 +1257,9 @@ static HWY_MAYBE_UNUSED TokenAndProb Top1OfSoftmax(Logits logits) {
 }
 
 static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
-                                       hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kOpsLogitsSoftCap));
+                                       ThreadingContext& ctx,
+                                       const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsLogitsSoftCap);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
@@ -1277,9 +1279,10 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
 
 // Calls LogitsSoftCap if cap != 0.0f.
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
-    const float cap, Logits logits, hwy::Profiler& p, const size_t worker) {
+    const float cap, Logits logits, ThreadingContext& ctx,
+    const size_t worker) {
   if (cap != 0.0f) {
-    LogitsSoftCap(cap, logits, p, worker);
+    LogitsSoftCap(cap, logits, ctx, worker);
   }
 }
 
@@ -1288,9 +1291,10 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
     ThreadingContext& ctx, size_t cluster_idx = 0) {
   if (cap == 0.0f) return;
   ParallelFor(ParallelismStrategy::kFlat, x.Rows(), ctx, cluster_idx,
+              Callers::kOpsMaybeLogitsSoftCapBatched,
               [&](uint64_t task, size_t worker) {
                 if (non_eos.Get(task)) {
-                  LogitsSoftCap(cap, x.RowSpan(task), ctx.profiler, worker);
+                  LogitsSoftCap(cap, x.RowSpan(task), ctx, worker);
                 }
               });
 }
@@ -1371,7 +1375,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(Logits logits, size_t k,
 template <typename TAcceptToken>
 HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
     Logits logits, size_t k, RngStream& gen, float temperature,
-    TAcceptToken& accept_token, hwy::Profiler& p, size_t worker) {
+    TAcceptToken& accept_token, ThreadingContext& ctx, size_t worker) {
   // Softmax and sample top-K is equivalent to taking the top-K logits and
   // sampling from the softmax of the top-K logits. The latter is faster as it
   // avoids computing the softmax of all logits.
@@ -1384,7 +1388,7 @@ HWY_NOINLINE HWY_MAYBE_UNUSED TokenAndProb FusedSoftmaxAndSampleTopK(
   }
 
   const size_t mask = token_logits.size();
-  Softmax(Logits(topk_logits.data(), mask), p, worker, temperature);
+  Softmax(Logits(topk_logits.data(), mask), ctx, worker, temperature);
   auto distribution = std::discrete_distribution<int>(
       std::begin(topk_logits), std::begin(topk_logits) + mask);
   int topk_sampled_index = distribution(gen);

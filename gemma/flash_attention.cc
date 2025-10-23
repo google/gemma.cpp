@@ -61,13 +61,12 @@ static constexpr size_t kNFx8HTileSize = 8;
 // possible consecutive elements have the same KV.
 static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
                        const size_t qbatch_size, ThreadingContext& ctx) {
-  const auto zone = GetProfilerZone(Zones::kFlashAttentionTransposeQ);
   // Group floats by the number of floats in a cache line.
   const size_t kNF = ctx.cache_info.LineBytes() / sizeof(float);
   const size_t num_heads = q.Cols() / q_t.Rows();
   const size_t batch_size = q.Rows() / qbatch_size;
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    PROFILER_ZONE3(ctx.profiler, worker, zone);
+    GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTransposeQ);
     for (size_t lane = 0; lane < kNF; ++lane) {
       size_t q_row = task * kNF + lane;
       if (q_row >= q_t.Rows()) break;
@@ -83,10 +82,10 @@ static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
     }
   };
   {
+    const size_t num_tasks = hwy::DivCeil(q_t.Rows(), kNF);
     // Better than kFlat.
-    size_t num_tasks = hwy::DivCeil(q_t.Rows(), kNF);
     ParallelFor(ParallelismStrategy::kHierarchical, num_tasks, ctx,
-                /*cluster_idx=*/0, func);
+                /*cluster_idx=*/0, Callers::kFlashTransposeQ, func);
   }
 }
 
@@ -96,12 +95,10 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
                                   const LayerWeightsPtrs& layer,
                                   const AttentionActivations& activations,
                                   ThreadingContext& ctx) {
-  const auto zone =
-      GetProfilerZone(Zones::kFlashAttentionRmsNormAndPositionalEncoding);
   const float query_scale = activations.query_scale;
   const hwy::Divisor div_qbatch(qbatch.Size());
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    PROFILER_ZONE3(ctx.profiler, worker, zone);
+    GCPP_ZONE(ctx, worker, Zones::kFlashAttentionRmsNormAndPositionalEncoding);
     size_t qi = div_qbatch.Remainder(task);
     size_t batch_idx = div_qbatch.Divide(task);
     for (size_t h = 0; h < layer.layer_config.heads; ++h) {
@@ -115,18 +112,19 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
       if (layer.query_norm_scale.HasPtr()) {
         CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
           RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q_row,
-                         layer.layer_config.qkv_dim, ctx.profiler, worker);
+                         layer.layer_config.qkv_dim, ctx, worker);
         });
       }
-      PositionalEncodingQK(q_row, layer_idx, layer, activations, ctx.profiler,
-                            worker, pos, query_scale);
+      PositionalEncodingQK(q_row, layer_idx, layer, activations, ctx, worker,
+                           pos, query_scale);
     }
   };
   {
     // kHierarchical is not worth the extra sync overhead because the tasks are
     // very lightweight.
     ParallelFor(ParallelismStrategy::kFlat, num_tokens * qbatch.Size(), ctx,
-                /*cluster_idx=*/0, func);
+                /*cluster_idx=*/0, Callers::kFlashRMSNormAndPositionalEncoding,
+                func);
   }
 }
 
@@ -158,10 +156,9 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
                           const MatPtrT<KV_t>& v, const size_t layer_idx,
                           const LayerWeightsPtrs& layer,
                           const AttentionActivations& activations,
-                          float* HWY_RESTRICT att_out, hwy::Profiler& p,
+                          float* HWY_RESTRICT att_out, ThreadingContext& ctx,
                           const size_t worker) {
-  PROFILER_ZONE3(p, worker,
-                 GetProfilerZone(Zones::kFlashAttentionSingleFlashAttention));
+  GCPP_ZONE(ctx, worker, Zones::kFlashAttentionSingleFlashAttention);
   const size_t pos_mod = activations.div_seq_len.Remainder(start_pos);
   float m = Dot(q, k.Row(pos_mod), k.Cols());
   if (float cap = activations.config.att_cap; cap > 0.0f) {
@@ -170,7 +167,7 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
   }
   float d = 1.0f;
   // This is just a copy of the first token.
-  MulByConstTo(d, v.Row(pos_mod), att_out, v.Cols(), p, worker);
+  MulByConstTo(d, v.Row(pos_mod), att_out, v.Cols(), ctx, worker);
   for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
     const size_t pos_mod = activations.div_seq_len.Remainder(pos);
     float x = Dot(q, k.Row(pos_mod), k.Cols());
@@ -276,9 +273,8 @@ void TileFlashAttention(
     const MatPtrT<KV_t>& v, const size_t layer_idx,
     const LayerWeightsPtrs& layer, const AttentionActivations& activations,
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
-    hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker,
-                 GetProfilerZone(Zones::kFlashAttentionTileFlashAttention));
+    ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention);
   constexpr int kHTileSize = kNFx8HTileSize;
   using DF = hn::ScalableTag<float>;
   const DF df;
@@ -430,9 +426,8 @@ void TileFlashAttention4(
     const size_t max_last_pos, const MatPtrT<KV_t>& v, const size_t layer_idx,
     const LayerWeightsPtrs& layer, const AttentionActivations& activations,
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
-    hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker,
-                 GetProfilerZone(Zones::kFlashAttentionTileFlashAttention4));
+    ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention4);
   using DF = hn::ScalableTag<float>;
   const DF df;
   using VF = hn::Vec<DF>;
@@ -597,10 +592,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                     const size_t layer_idx, const LayerWeightsPtrs& layer,
                     AttentionActivations& activations, QBatch& qbatch,
                     ThreadingContext& ctx) {
-  static const auto root_zone = ctx.profiler.AddZone(
-      "FlashAttention.Inclusive", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(ctx.profiler, 0, root_zone);
-  const auto zone = GetProfilerZone(Zones::kFlashAttentionFlashAttention);
+  GCPP_ZONE(ctx, 0, Zones::kFlashAttentionInclusive);
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q, layer_idx,
                                layer, activations, ctx);
   const hwy::Divisor div_qbatch(qbatch.Size());
@@ -653,7 +645,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
 
   // For each head/token/query, compute fused flash Q.K, softmax and weighted V.
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    PROFILER_ZONE3(ctx.profiler, worker, zone);
+    GCPP_ZONE(ctx, worker, Zones::kFlashAttentionFlashAttention);
     // Offsets into original Q for each row in the tile.
     uint32_t q_offsets[kMaxNF];
     // Offsets into att_out for each row in the tile.
@@ -741,13 +733,12 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
           TileFlashAttention(activations.q, q_offsets, qT, k,
                              start_positions[offset], last_pos, min_last_pos,
                              max_last_pos, v, layer_idx, layer, activations,
-                             activations.att_out, out_offsets, ctx.profiler,
-                             worker);
+                             activations.att_out, out_offsets, ctx, worker);
         } else if (kVTileSize == 4) {
-          TileFlashAttention4(
-              activations.q, q_offsets, k, start_positions[offset], last_pos,
-              min_last_pos, max_last_pos, v, layer_idx, layer, activations,
-              activations.att_out, out_offsets, ctx.profiler, worker);
+          TileFlashAttention4(activations.q, q_offsets, k,
+                              start_positions[offset], last_pos, min_last_pos,
+                              max_last_pos, v, layer_idx, layer, activations,
+                              activations.att_out, out_offsets, ctx, worker);
         } else {
           HWY_UNREACHABLE;
         }
@@ -757,7 +748,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                              activations.q.Row(0) + q_offsets[offset], k, v,
                              layer_idx, layer, activations,
                              activations.att_out.Row(0) + out_offsets[offset],
-                             ctx.profiler, worker);
+                             ctx, worker);
       }
     }
   };
@@ -765,7 +756,8 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   {
     PROFILER_ZONE("Gen.FlashAttention.ForkJoin");
     // Full parallelism is helpful, SmallParallelFor is insufficient.
-    HierarchicalParallelFor(num_thread_tasks, ctx.pools, func);
+    HierarchicalParallelFor(num_thread_tasks, ctx, Callers::kFlashAttention,
+                            func);
   }
 }
 

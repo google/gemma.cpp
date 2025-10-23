@@ -107,7 +107,7 @@ void ReadBlobs(BlobReader& reader, const RangeVec& ranges, BlobVec& blobs,
   HWY_ASSERT(reader.Keys().size() == blobs.size());
   HWY_ASSERT(ranges.size() == blobs.size());
   ParallelFor(ParallelismStrategy::kWithinCluster, blobs.size(), ctx,
-              cluster_idx, [&](size_t i, size_t /*thread*/) {
+              cluster_idx, Callers::kTest, [&](size_t i, size_t /*thread*/) {
                 HWY_ASSERT(ranges[i].bytes == blobs[i].size());
                 reader.file().Read(ranges[i].offset, ranges[i].bytes,
                                    blobs[i].data());
@@ -122,7 +122,7 @@ void ReadBothBlobs(BlobReader& reader1, BlobReader& reader2,
   const double t0 = hwy::platform::Now();
   HWY_WARN("Reading %zu GiB, %zu clusters: ", total_bytes >> 30,
            ctx.pools.NumClusters());
-  ParallelFor(ParallelismStrategy::kAcrossClusters, 2, ctx, 0,
+  ParallelFor(ParallelismStrategy::kAcrossClusters, 2, ctx, 0, Callers::kTest,
               [&](const size_t task, size_t cluster_idx) {
                 ReadBlobs(task ? reader1 : reader2, task ? ranges1 : ranges2,
                           task ? blobs1 : blobs2, ctx, cluster_idx);
@@ -190,7 +190,7 @@ void CompareBlobs(const KeyVec& keys, BlobVec& blobs1, BlobVec& blobs2,
   std::atomic<size_t> blobs_equal{};
   std::atomic<size_t> blobs_diff{};
   ParallelFor(ParallelismStrategy::kHierarchical, keys.size(), ctx, 0,
-              [&](size_t i, size_t /*thread*/) {
+              Callers::kTest, [&](size_t i, size_t /*thread*/) {
                 const size_t mismatches =
                     BlobDifferences(blobs1[i], blobs2[i], keys[i]);
                 if (mismatches != 0) {

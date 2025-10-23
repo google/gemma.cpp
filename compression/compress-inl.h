@@ -26,10 +26,10 @@
 
 #include "compression/compress.h"  // IWYU pragma: export
 #include "compression/distortion.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 #include "hwy/contrib/thread_pool/thread_pool.h"
-#include "hwy/timer.h"
 
 #if COMPRESS_STATS
 #include <cmath>  // lroundf
@@ -493,13 +493,13 @@ struct CompressTraits<NuqStream> {
   }
 };
 
-// Compresses `num` elements of `raw` to `packed` starting at `packed_ofs`,
-// which is useful for compressing sub-regions of an array.
+// DEPRECATED: Use the overload with ThreadingContext instead.
 template <typename Packed>
 HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
                            CompressWorkingSet& work,
                            const PackedSpan<Packed>& packed,
-                           const size_t packed_ofs, hwy::ThreadPool& pool) {
+                           const size_t packed_ofs, hwy::ThreadPool& pool,
+                           hwy::pool::Caller caller = hwy::pool::Caller()) {
   packed.BoundsCheck(packed_ofs, num);
   work.tls.resize(pool.NumWorkers());
   if constexpr (COMPRESS_STATS) {
@@ -511,7 +511,7 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
   using Traits = CompressTraits<hwy::RemoveConst<Packed>>;
   constexpr size_t kBatch = 8192;
   const size_t num_batches = hwy::DivCeil(num, kBatch);
-  pool.Run(0, num_batches,
+  pool.Run(0, num_batches, caller,
            [&](const uint32_t idx_batch, size_t thread) HWY_ATTR {
              const hn::ScalableTag<float> df;
 
@@ -528,6 +528,17 @@ HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
     }
     work.tls[0].stats.PrintAll();
   }
+}
+
+// Compresses `num` elements of `raw` to `packed` starting at `packed_ofs`,
+// which is useful for compressing sub-regions of an array.
+template <typename Packed>
+HWY_NOINLINE void Compress(const float* HWY_RESTRICT raw, size_t num,
+                           CompressWorkingSet& work,
+                           const PackedSpan<Packed>& packed,
+                           const size_t packed_ofs, ThreadingContext& ctx) {
+  Compress(raw, num, work, packed, packed_ofs, ctx.pools.Pool(),
+           ctx.pool_callers.Get(Callers::kCompress));
 }
 
 // Same as above, but without parallelization nor benchmarking.

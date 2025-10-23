@@ -120,9 +120,9 @@ cc_library(
         ":compress",
         ":distortion",
         "//:mat",
+        "//:threading_context",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -180,6 +180,7 @@ cc_library(
         ":sfp",
         "//:basics",
         "//:mat",
+        "//:threading_context",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
@@ -203,9 +204,9 @@ cc_test(
         ":test_util",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
+        "//:threading_context",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
-        "@highway//:thread_pool",
     ],
 )
 

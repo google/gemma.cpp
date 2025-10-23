@@ -196,7 +196,7 @@ HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
   const IndexRangePartition get_col_c =
       StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
   ParallelizeOneRange(
-      get_col_c, all_clusters,
+      get_col_c, all_clusters, env.ctx.pool_callers.Get(Callers::kTest),
       [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
         for (size_t r : all_rows_c) {
           TC* HWY_RESTRICT C_row = C.Row(r);
@@ -221,7 +221,6 @@ void PrintSpeed(const char* algo, const Extents2D& A_extents,
 template <typename TA, typename TB = TA, typename TC = float>
 void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
                 MatMulEnv& env, int line) {
-  hwy::ThreadPool& pool = env.ctx.pools.Pool();
   fprintf(stderr, "TestMatMul %zu, K=%zu, %zu, add=%d, TA=%s, TB=%s, TC=%s\n",
           rows_ac, cols_a_rows_b, cols_bc, add, TypeName<TA>(), TypeName<TB>(),
           TypeName<TC>());
@@ -233,11 +232,10 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   const Extents2D B_extents(cols_bc, cols_a_rows_b);  // already transposed
   const Extents2D C_extents(rows_ac, cols_bc);
 
-  MatStorageT<TA> A(
-      GenerateMat<TA>(A_extents, env.ctx.allocator, MatPadding::kOdd, pool));
+  MatStorageT<TA> A(GenerateMat<TA>(A_extents, MatPadding::kOdd, env.ctx));
   // Must be packed because we call Span() on it.
-  MatStorageT<TB> BT(GenerateTransposedMat<TB>(B_extents, env.ctx.allocator,
-                                               MatPadding::kPacked, pool));
+  MatStorageT<TB> BT(
+      GenerateTransposedMat<TB>(B_extents, MatPadding::kPacked, env.ctx));
   MatStorageT<TC> C_slow("C_slow", C_extents, env.ctx.allocator,
                          MatPadding::kOdd);
   MatStorageT<TC> C("C", C_extents, env.ctx.allocator, MatPadding::kOdd);
@@ -246,8 +244,8 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   C2.AllocateAndAttachRowPtrs(env.row_ptrs);
 
   MatStorageT<float> add_storage =
-      add ? GenerateMat<float>(Extents2D(1, cols_bc), env.ctx.allocator,
-                               MatPadding::kPacked, pool)
+      add ? GenerateMat<float>(Extents2D(1, cols_bc), MatPadding::kPacked,
+                               env.ctx)
           : MatStorageT<float>("add", Extents2D(), env.ctx.allocator,
                                MatPadding::kPacked);
   add_storage.SetScale(1.0f);

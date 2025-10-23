@@ -47,9 +47,9 @@ namespace HWY_NAMESPACE {
 // For use by Vit even if !GEMMA_FUSED_FFN.
 template <typename T1, typename T2>
 void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
-                const T2* HWY_RESTRICT c2, const size_t count, hwy::Profiler& p,
-                const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kGenActivation));
+                const T2* HWY_RESTRICT c2, const size_t count,
+                ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kGenActivation);
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
@@ -73,11 +73,11 @@ void ActivationBatched(
     ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
   using T = typename Mat::T;
   ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
-              [&](uint64_t task, size_t worker) {
+              Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
                 // Cast to correct type so type deduction works.
                 Activation(activation, c1.Row(task),
-                           static_cast<const T*>(nullptr), c1.Cols(),
-                           ctx.profiler, worker);
+                           static_cast<const T*>(nullptr), c1.Cols(), ctx,
+                           worker);
               });
 }
 
@@ -87,8 +87,8 @@ void ActivationBatched(
 static inline void Activation(ActivationType activation, const RowPtrsBF C1,
                               const IndexRange range_r,
                               const IndexRange range_c, const StridedViewBF C2,
-                              hwy::Profiler& p, const size_t worker) {
-  PROFILER_ZONE3(p, worker, GetProfilerZone(Zones::kGenActivationFused));
+                              ThreadingContext& ctx, const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kGenActivationFused);
 
   const size_t cols = range_c.Num();
   HWY_DASSERT(C2.Cols() == cols);
@@ -119,16 +119,16 @@ HWY_NOINLINE void ActivationBatched(
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
-                [&](uint64_t task, size_t worker) {
+                Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
                   Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),
-                             ctx.profiler, worker);
+                             ctx, worker);
                 });
   } else {  // No multiplier
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
-                [&](uint64_t task, size_t worker) {
+                Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
                   Activation(activation, c1.Row(task),
                              static_cast<const typename Mat2::T*>(nullptr),
-                             c1.Cols(), ctx.profiler, worker);
+                             c1.Cols(), ctx, worker);
                 });
   }
 }
@@ -153,9 +153,7 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
 
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
-  static const auto zone =
-      env.ctx.profiler.AddZone("Gen.FFW", hwy::ProfilerFlags::kInclusive);
-  PROFILER_ZONE3(env.ctx.profiler, hwy::Profiler::GlobalIdx(), zone);
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& layer_config = layer.layer_config;
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
@@ -163,8 +161,8 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
 #if GEMMA_FUSED_FFN
   const auto fused = [&](RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
                          StridedViewBF C2, size_t worker) {
-    Activation(layer_config.activation, C1, range_r, range_c, C2,
-               env.ctx.profiler, worker);
+    Activation(layer_config.activation, C1, range_r, range_c, C2, env.ctx,
+               worker);
   };
   MMOptions options;
   options.SetFunc(fused);

@@ -79,7 +79,6 @@ cc_library(
         "//:threading_context",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -108,7 +107,6 @@ cc_binary(
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
-        "@highway//:thread_pool",
     ],
 )
 

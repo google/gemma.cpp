@@ -28,7 +28,6 @@
 #include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/detect_compiler_arch.h"
 #include "hwy/profiler.h"
 
@@ -469,8 +468,8 @@ static void EnqueueChunks(size_t key_idx, uint64_t offset, uint64_t bytes,
   }
 }
 
-BlobWriter::BlobWriter(const Path& filename, hwy::ThreadPool& pool)
-    : file_(OpenFileOrNull(filename, "w+")), pool_(pool) {
+BlobWriter::BlobWriter(const Path& filename, ThreadingContext& ctx)
+    : file_(OpenFileOrNull(filename, "w+")), ctx_(ctx) {
   if (!file_) HWY_ABORT("Failed to open for writing %s", filename.path.c_str());
   // Write a placeholder header to the beginning of the file. If append-only,
   // we will later write a footer, else we will update the header.
@@ -489,10 +488,13 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
   EnqueueChunks(keys_.size() - 1, curr_offset_, bytes,
                 static_cast<const uint8_t*>(data), writes);
 
-  hwy::ThreadPool null_pool(0);
-  hwy::ThreadPool& pool_or_serial = file_->IsAppendOnly() ? null_pool : pool_;
-  pool_or_serial.Run(
-      0, writes.size(), [this, &writes](uint64_t i, size_t /*thread*/) {
+  const ParallelismStrategy strategy = file_->IsAppendOnly()
+                                           ? ParallelismStrategy::kNone
+                                           : ParallelismStrategy::kFlat;
+  ParallelFor(
+      strategy, writes.size(), ctx_,
+      /*cluster_idx=*/0, Callers::kBlobWriter,
+      [this, &writes](uint64_t i, size_t /*thread*/) {
         const BlobRange& range = writes[i].range;
         if (!file_->Write(writes[i].data, range.bytes, range.offset)) {
           const std::string& key = StringFromKey(keys_[range.key_idx]);

@@ -24,9 +24,9 @@
 #include "compression/compress.h"
 #include "compression/distortion.h"
 #include "util/test_util.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/tests/hwy_gtest.h"
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -42,6 +42,17 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+static ThreadingArgs SingleThreadArgs() {
+  ThreadingArgs args;
+  args.max_lps = 1;
+  return args;
+}
+
+static ThreadingContext& Ctx() {
+  static ThreadingContext* ctx = new ThreadingContext(SingleThreadArgs());
+  return *ctx;
+}
+
 // Calls Compress and Decompress2 and verifies the distortion/error.
 template <typename Packed>
 struct TestDecompress2 {
@@ -49,7 +60,9 @@ struct TestDecompress2 {
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const size_t N = hn::Lanes(d);
     CompressWorkingSet work;
-    hwy::ThreadPool pool(0);
+    ThreadingArgs args;
+    args.max_lps = 1;
+    ThreadingContext ctx(args);
     hwy::RandomState rng;
 
     const size_t num = 2 * N;
@@ -68,7 +81,7 @@ struct TestDecompress2 {
     // Short inputs fail VerifyGaussian.
 
     const size_t packed_ofs = 0;
-    Compress(raw.get(), num, work, packed_span, packed_ofs, pool);
+    Compress(raw.get(), num, work, packed_span, packed_ofs, ctx);
     hn::Vec<D> raw0, raw1;
     Decompress2(d, MakeConst(packed_span), packed_ofs, raw0, raw1);
     hn::Store(raw0, d, dec.get());
@@ -129,7 +142,6 @@ struct TestShortLengths {
   HWY_INLINE void operator()(T /*unused*/, D d) {
     const size_t N = hn::Lanes(d);
     CompressWorkingSet work;
-    hwy::ThreadPool pool(0);
     hwy::RandomState rng;
 
     for (size_t num = 1; num < 5 * hn::Lanes(d); ++num) {
@@ -149,7 +161,7 @@ struct TestShortLengths {
       // Short inputs fail VerifyGaussian.
 
       const size_t packed_ofs = 0;
-      Compress(raw.get(), num, work, packed_span, packed_ofs, pool);
+      Compress(raw.get(), num, work, packed_span, packed_ofs, Ctx());
       DecompressAndZeroPad(d, MakeConst(packed_span), packed_ofs, dec.get(),
                            num);
 

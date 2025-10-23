@@ -111,6 +111,7 @@ struct MMParallelWithinCluster {
     const IndexRangePartition ranges_n = StaticPartition(
         range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
     ParallelizeOneRange(ranges_n, cluster,
+                        ctx.pool_callers.Get(Callers::kMMClusterForN),
                         [&](const IndexRange& worker_range, size_t worker) {
                           func(worker_range, base + worker);
                         });
@@ -127,12 +128,14 @@ struct MMParallelWithinCluster {
     // Low-batch: avoid Divide/Remainder.
     if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
       ParallelizeOneRange(ranges_nc, cluster,
+                          ctx.pool_callers.Get(Callers::kMMClusterForMCNC),
                           [&](const IndexRange& range_nc, size_t worker) {
                             func(ranges_mc.Range(0), range_nc, base + worker);
                           });
     } else {
       ParallelizeTwoRanges(
           ranges_mc, ranges_nc, cluster,
+          ctx.pool_callers.Get(Callers::kMMClusterForMCNC),
           [&](const IndexRange& range_mc, const IndexRange& range_nc,
               size_t worker) { func(range_mc, range_nc, base + worker); });
     }
@@ -146,6 +149,7 @@ struct MMParallelWithinCluster {
 
     cluster.Run(
         range_mc.begin(), range_mc.end(),
+        ctx.pool_callers.Get(Callers::kMMClusterForMC),
         [&](uint64_t row_a, size_t worker) { func(row_a, base + worker); });
   }
 };
@@ -159,6 +163,7 @@ struct MMParallelHierarchical {
             const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     HWY_DASSERT(caller_cluster_idx == 0);
+    const hwy::pool::Caller caller = ctx.pool_callers.Get(Callers::kMMHierForN);
 
     // Single cluster: parallel-for over static partition of `range_n`.
     hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
@@ -169,7 +174,7 @@ struct MMParallelHierarchical {
       const IndexRangePartition ranges_n = StaticPartition(
           range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
       return ParallelizeOneRange(
-          ranges_n, cluster,
+          ranges_n, cluster, caller,
           [&](const IndexRange& worker_range, size_t worker) {
             func(worker_range, worker);
           });
@@ -179,7 +184,7 @@ struct MMParallelHierarchical {
     const IndexRangePartition ranges_n =
         StaticPartition(range_n, num_clusters, n_multiple);
     ParallelizeOneRange(
-        ranges_n, all_clusters,
+        ranges_n, all_clusters, caller,
         [&](const IndexRange& n_range, const size_t cluster_idx) {
           hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
           const size_t cluster_base = ctx.Worker(cluster_idx);
@@ -187,7 +192,7 @@ struct MMParallelHierarchical {
           const IndexRangePartition worker_ranges = StaticPartition(
               n_range, cluster.NumWorkers() * inner_tasks, n_multiple);
           ParallelizeOneRange(
-              worker_ranges, cluster,
+              worker_ranges, cluster, caller,
               [&](const IndexRange& worker_range, size_t worker) {
                 func(worker_range, cluster_base + worker);
               });
@@ -203,6 +208,8 @@ struct MMParallelHierarchical {
                       HWY_MAYBE_UNUSED size_t caller_cluster_idx,
                       const Func& func) const {
     HWY_DASSERT(caller_cluster_idx == 0);
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMHierForMCNC);
 
     hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
     // `all_clusters` is a pool with one worker per cluster in a package.
@@ -215,12 +222,13 @@ struct MMParallelHierarchical {
       // Low-batch: avoid Divide/Remainder.
       if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
         return ParallelizeOneRange(
-            ranges_nc, cluster, [&](const IndexRange& range_nc, size_t worker) {
+            ranges_nc, cluster, caller,
+            [&](const IndexRange& range_nc, size_t worker) {
               func(ranges_mc.Range(0), range_nc, worker);
             });
       } else {
         return ParallelizeTwoRanges(
-            ranges_mc, ranges_nc, cluster,
+            ranges_mc, ranges_nc, cluster, caller,
             [&](const IndexRange& range_mc, const IndexRange& range_nc,
                 size_t worker) { func(range_mc, range_nc, worker); });
       }
@@ -229,11 +237,11 @@ struct MMParallelHierarchical {
     // Multiple clusters: N across clusters (both are usually the larger), and
     // M within each cluster. We assume auto-tuning finds small MC/NC tasks.
     ParallelizeOneRange(
-        ranges_nc, all_clusters,
+        ranges_nc, all_clusters, caller,
         [&](const IndexRange range_nc, size_t cluster_idx) {
           const size_t cluster_base = ctx.Worker(cluster_idx);
           hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-          ParallelizeOneRange(ranges_mc, cluster,
+          ParallelizeOneRange(ranges_mc, cluster, caller,
                               [&](const IndexRange& range_mc, size_t worker) {
                                 func(range_mc, range_nc, cluster_base + worker);
                               });
@@ -244,7 +252,7 @@ struct MMParallelHierarchical {
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t caller_cluster_idx, const Func& func) const {
-    HierarchicalParallelFor(range_mc.Num(), ctx.pools,
+    HierarchicalParallelFor(range_mc.Num(), ctx, Callers::kMMHierForMC,
                             [&](size_t task, size_t worker) {
                               func(range_mc.begin() + task, worker);
                             });
@@ -811,7 +819,7 @@ class MMZone {
 
  private:
   uint64_t data_ = 0;
-  uint64_t data2_ = 0;
+  HWY_MEMBER_VAR_MAYBE_UNUSED uint64_t data2_ = 0;
 };
 #else
 struct MMZone {

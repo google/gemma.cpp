@@ -291,7 +291,7 @@ class MMDecompress {
     const hn::ScalableTag<BF16> dbf;
     const size_t NBF = hn::Lanes(dbf);
 
-    const auto zone = GetProfilerZone(Zones::kMMDecompressA);
+    const auto zone = env.ctx.profiler_zones.Get(Zones::kMMDecompressA);
 
     const auto do_range =
         [&](const IndexRange& range_M, const IndexRange& range_K, size_t worker)
@@ -879,9 +879,8 @@ class MMLoops {
   static HWY_NOINLINE void Dispatch(const StridedViewBF A, const MatPtrT<TB>& B,
                                     const MatPtrT<TB>* B2, RowPtrs<TC> C,
                                     const MMArgs& args) {
-    PROFILER_ZONE3(args.env.ctx.profiler,
-                   args.env.ctx.Worker(args.options.cluster_idx),
-                   GetProfilerZone(Zones::kMMDispatch));
+    GCPP_ZONE(args.env.ctx, args.env.ctx.Worker(args.options.cluster_idx),
+              Zones::kMMDispatch);
 
     DispatchParallelism(
         args.options.parallelism, [&](const auto& parallel) HWY_ATTR {
@@ -904,7 +903,7 @@ class MMLoops {
                               const StridedViewBF A, const MatPtrT<TB>& B,
                               const MatPtrT<TB>* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
-    const auto zone = GetProfilerZone(Zones::kMMNT);
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
     const IndexRange& range_mc = args.ranges_mc.Range(0);
@@ -940,7 +939,7 @@ class MMLoops {
                               const StridedViewBF A, const MatPtrT<TB>& B,
                               const MatPtrT<TB>* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
-    const auto zone = GetProfilerZone(Zones::kMMNT_K);
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_K);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     const IndexRange& range_mc = args.ranges_mc.Range(0);
 
@@ -976,7 +975,7 @@ class MMLoops {
                               const StridedViewBF A, const MatPtrT<TB>& B,
                               const MatPtrT<TB>* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
-    const auto zone = GetProfilerZone(Zones::kMMNT_MT);
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
     const IndexRange& range_kc = args.ranges_kc.Range(0);
 
@@ -1010,7 +1009,7 @@ class MMLoops {
                               const StridedViewBF A, const MatPtrT<TB>& B,
                               const MatPtrT<TB>* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
-    const auto zone = GetProfilerZone(Zones::kMMNT_MT_K);
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT_K);
 
     parallel.ForRangesMC_NC(
         args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
@@ -1063,8 +1062,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
                               MatPtrT<TC>& C, MMOptions options = MMOptions()) {
   const size_t cluster_idx = options.cluster_idx;
   HWY_DASSERT(cluster_idx < env.row_ptrs.size());
-  PROFILER_ZONE3(env.ctx.profiler, env.ctx.Worker(cluster_idx),
-                 GetProfilerZone(Zones::kMMMatMul));
+  GCPP_ZONE(env.ctx, env.ctx.Worker(cluster_idx), Zones::kMMMatMul);
 
   RowPtrs<TC> C_rows = GetOrSetTempRowPtrs(C, env.row_ptrs[cluster_idx]);
 
@@ -1124,8 +1122,7 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
                                  MatPtrT<BF16>& C, MMOptions options) {
   const size_t cluster_idx = options.cluster_idx;
   HWY_DASSERT(cluster_idx < env.row_ptrs.size());
-  PROFILER_ZONE3(env.ctx.profiler, env.ctx.Worker(cluster_idx),
-                 GetProfilerZone(Zones::kMMTwoMatMul));
+  GCPP_ZONE(env.ctx, env.ctx.Worker(cluster_idx), Zones::kMMTwoMatMul);
 
   HWY_DASSERT(options.func != nullptr);  // no other way to get access to C2.
 

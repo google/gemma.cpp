@@ -95,7 +95,6 @@ cc_library(
         ":topology",
         # Placeholder for container detection, do not remove
         "@highway//:hwy",
-        "@highway//:profiler",
         "@highway//:thread_pool",
         "@highway//:topology",
     ],
@@ -124,7 +123,9 @@ cc_library(
     srcs = ["util/zones.cc"],
     hdrs = ["util/zones.h"],
     deps = [
+        "@highway//:hwy",
         "@highway//:profiler",
+        "@highway//:thread_pool",
     ],
 )
 
@@ -258,7 +259,6 @@ cc_library(
         "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -278,7 +278,6 @@ cc_library(
         "//io:blob_store",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -309,7 +308,6 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
-        ":configs",
         ":mat",
         ":threading",
         ":threading_context",
@@ -397,7 +395,6 @@ cc_library(
         "@highway//:hwy",
         "@highway//:math",
         "@highway//:profiler",
-        "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
     ],
 )
@@ -424,7 +421,6 @@ cc_test(
         "@highway//:nanobenchmark",  #buildcleaner: keep
         "@highway//:profiler",
         "@highway//:stats",
-        "@highway//:thread_pool",
     ],
 )
 
@@ -507,7 +503,6 @@ cc_test(
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
-        "@highway//:thread_pool",
     ],
 )
 

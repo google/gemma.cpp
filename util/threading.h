@@ -266,9 +266,9 @@ static inline IndexRangePartition StaticPartition(const IndexRange& range,
 // index to a range.
 template <class Func>
 void ParallelizeOneRange(const IndexRangePartition& get1, hwy::ThreadPool& pool,
-                         const Func& func) {
+                         hwy::pool::Caller caller, const Func& func) {
   const size_t num_tasks = get1.NumTasks();
-  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+  pool.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
     const IndexRange range1 = get1.Range(task);
     func(range1, thread);
   });
@@ -282,11 +282,12 @@ void ParallelizeOneRange(const IndexRangePartition& get1, hwy::ThreadPool& pool,
 template <class Func>
 void ParallelizeTwoRanges(const IndexRangePartition& get1,
                           const IndexRangePartition& get2,
-                          hwy::ThreadPool& pool, const Func& func) {
+                          hwy::ThreadPool& pool, hwy::pool::Caller caller,
+                          const Func& func) {
   const hwy::Divisor div1(static_cast<uint32_t>(get1.NumTasks()));
 
   const size_t num_tasks = get1.NumTasks() * get2.NumTasks();
-  pool.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
+  pool.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
     HWY_DASSERT(task < (uint64_t{1} << 32));
     const size_t idx2 = div1.Divide(static_cast<uint32_t>(task));
     const size_t idx1 = div1.Remainder(static_cast<uint32_t>(task));
@@ -296,37 +297,6 @@ void ParallelizeTwoRanges(const IndexRangePartition& get1,
     const IndexRange range2 = get2.Range(idx2);
     func(range1, range2, thread);
   });
-}
-
-// Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
-// over clusters of ONE package, then within each cluster.
-template <class Func>
-void HierarchicalParallelFor(size_t num_tasks, NestedPools& pools,
-                             const Func& func) {
-  // If few tasks, run on a single cluster. Also avoids a bit of overhead if
-  // there is only one cluster.
-  hwy::ThreadPool& all_clusters = pools.AllClusters();
-  const size_t num_clusters = all_clusters.NumWorkers();
-  hwy::ThreadPool& cluster = pools.Cluster(0);
-  if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
-    return cluster.Run(0, num_tasks, [&](uint64_t task, size_t thread) {
-      func(task, thread);
-    });
-  }
-
-  // Assign each cluster a sub-range.
-  const IndexRangePartition ranges =
-      StaticPartition(IndexRange(0, num_tasks), num_clusters, 1);
-  ParallelizeOneRange(
-      ranges, all_clusters,
-      [&](const IndexRange& range, const size_t cluster_idx) {
-        hwy::ThreadPool& cluster = pools.Cluster(cluster_idx);
-        const size_t cluster_base = cluster_idx * pools.MaxWorkersPerCluster();
-        cluster.Run(range.begin(), range.end(),
-                    [&](uint64_t task, size_t thread) {
-                      func(task, cluster_base + thread);
-                    });
-      });
 }
 
 }  // namespace gcpp

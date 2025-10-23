@@ -28,6 +28,7 @@
 #include "util/basics.h"  // Tristate
 #include "util/threading.h"
 #include "util/topology.h"
+#include "util/zones.h"
 #include "hwy/profiler.h"
 // IWYU pragma: end_exports
 
@@ -107,6 +108,9 @@ struct ThreadingContext {
   // Singleton; pass around a reference to reduce overhead.
   hwy::Profiler& profiler;
 
+  ProfilerZones profiler_zones;
+  PoolCallers pool_callers;
+
   // Detects topology, subject to limits imposed by user-specified `args`.
   // For example, if `args.max_clusters` is 1, then `topology.NumClusters()`
   // will be 1 regardless of the actual system topology.
@@ -121,6 +125,9 @@ struct ThreadingContext {
   // Per-package/cluster/within cluster pools of threads, matching `topology`.
   NestedPools pools;
 };
+
+#define GCPP_ZONE(ctx, global_idx, zone_enum) \
+  PROFILER_ZONE3(ctx.profiler, global_idx, ctx.profiler_zones.Get(zone_enum))
 
 // Describes the strategy for distributing parallel work across cores.
 enum class ParallelismStrategy : uint8_t {
@@ -147,18 +154,53 @@ enum class ParallelismStrategy : uint8_t {
   kHierarchical,
 };
 
+// Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
+// over clusters of ONE package, then within each cluster.
+template <class Func>
+void HierarchicalParallelFor(size_t num_tasks, ThreadingContext& ctx,
+                             Callers callers, const Func& func) {
+  const hwy::pool::Caller caller = ctx.pool_callers.Get(callers);
+  // If few tasks, run on a single cluster. Also avoids a bit of overhead if
+  // there is only one cluster.
+  hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
+  const size_t num_clusters = all_clusters.NumWorkers();
+  hwy::ThreadPool& cluster = ctx.pools.Cluster(0);
+  if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
+    return cluster.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
+      func(task, thread);
+    });
+  }
+
+  // Assign each cluster a sub-range.
+  const IndexRangePartition ranges =
+      StaticPartition(IndexRange(0, num_tasks), num_clusters, 1);
+  ParallelizeOneRange(ranges, all_clusters, caller,
+                      [&](const IndexRange& range, const size_t cluster_idx) {
+                        hwy::ThreadPool& cluster =
+                            ctx.pools.Cluster(cluster_idx);
+                        const size_t cluster_base =
+                            cluster_idx * ctx.pools.MaxWorkersPerCluster();
+                        cluster.Run(range.begin(), range.end(), caller,
+                                    [&](uint64_t task, size_t thread) {
+                                      func(task, cluster_base + thread);
+                                    });
+                      });
+}
+
 // Calls `func(task, worker)` for each `task` in `[0, num_tasks)`, with the
 // number/type of workers determined by `parallelism`. `cluster_idx` is for
 // `parallelism == kWithinCluster`, and should be 0 if unknown.
 template <class Func>
 void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
-                 ThreadingContext& ctx, size_t cluster_idx, const Func& func) {
+                 ThreadingContext& ctx, size_t cluster_idx, Callers callers,
+                 const Func& func) {
   HWY_DASSERT(cluster_idx < ctx.topology.NumClusters());
   if (cluster_idx != 0) {
     // If already running across clusters, only use within-cluster modes.
     HWY_DASSERT(parallelism == ParallelismStrategy::kNone ||
                 parallelism == ParallelismStrategy::kWithinCluster);
   }
+  const hwy::pool::Caller caller = ctx.pool_callers.Get(callers);
 
   switch (parallelism) {
     case ParallelismStrategy::kNone: {
@@ -171,7 +213,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
 
     case ParallelismStrategy::kAcrossClusters:
       return ctx.pools.AllClusters().Run(
-          0, num_tasks,
+          0, num_tasks, caller,
           [&](uint64_t task, size_t cluster_idx) { func(task, cluster_idx); });
 
     case ParallelismStrategy::kWithinCluster: {
@@ -179,7 +221,7 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
       // used for TLS indexing for example in profiler.h.
       const size_t base = ctx.Worker(cluster_idx);
       return ctx.pools.Cluster(cluster_idx)
-          .Run(0, num_tasks, [&](uint64_t task, size_t worker) {
+          .Run(0, num_tasks, caller, [&](uint64_t task, size_t worker) {
             func(task, base + worker);
           });
     }
@@ -191,19 +233,19 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
       const size_t num_clusters = all_clusters.NumWorkers();
       if (num_clusters == 1) {
         return ctx.pools.Cluster(cluster_idx)
-            .Run(0, num_tasks,
+            .Run(0, num_tasks, caller,
                  [&](uint64_t task, size_t worker) { func(task, worker); });
       }
 
-      return ctx.pools.AllClusters().Run(
-          0, num_tasks, [&](uint64_t task, size_t cluster_idx) {
-            const size_t worker = ctx.Worker(cluster_idx);
-            func(task, worker);
-          });
+      return all_clusters.Run(0, num_tasks, caller,
+                              [&](uint64_t task, size_t cluster_idx) {
+                                const size_t worker = ctx.Worker(cluster_idx);
+                                func(task, worker);
+                              });
     }
 
     case ParallelismStrategy::kHierarchical:
-      return HierarchicalParallelFor(num_tasks, ctx.pools, func);
+      return HierarchicalParallelFor(num_tasks, ctx, callers, func);
   }
 }
 

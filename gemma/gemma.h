@@ -246,7 +246,7 @@ class Gemma {
   const GemmaChatTemplate& ChatTemplate() const { return chat_template_; }
   const InferenceArgs& Inference() const { return inference_; }
 
-  void Save(const Path& weights_path, NestedPools& pools) const;
+  void Save(const Path& weights_path, ThreadingContext& ctx) const;
 
   // `pos` is the position in the KV cache. Users are responsible for
   // incrementing it in the `*StreamFunc`, or setting to zero for single-turn.

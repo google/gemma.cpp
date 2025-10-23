@@ -34,7 +34,6 @@
 #include "util/threading_context.h"
 #include "util/zones.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 
@@ -150,7 +149,7 @@ void LayerWeightsPtrs::SplitAttW1() {
 static void HWY_MAYBE_UNUSED InitAttWeightsI8(
     const LayerConfig& layer_config, MatPtrT<I8Stream>& attn_vec_einsum_w,
     MatPtrT<I8Stream>& att_weights, std::vector<MatOwner>& mat_owners,
-    const Allocator& allocator) {
+    ThreadingContext& ctx) {
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kI8);
 
@@ -160,7 +159,8 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
     mat_owners.emplace_back();
-    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kPacked);
+    mat_owners.back().AllocateFor(att_weights, ctx.allocator,
+                                  MatPadding::kPacked);
   }
 
   const size_t model_dim = layer_config.model_dim;
@@ -188,10 +188,9 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
   }
 
   CompressWorkingSet work;
-  hwy::ThreadPool pool(0);
   HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
                           work, att_weights.Span(),
-                          /*packed_ofs=*/0, pool);
+                          /*packed_ofs=*/0, ctx);
 
   att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
@@ -201,7 +200,7 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
                                        MatPtrT<I8Stream>& gating_einsum_w1,
                                        MatPtrT<I8Stream>& gating_einsum_w2,
                                        std::vector<MatOwner>& mat_owners,
-                                       const Allocator& allocator) {
+                                       ThreadingContext& ctx) {
   // Files have both or neither of w1 and w2.
   HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
   // w is mutually exclusive with w1 and w2 in the file.
@@ -228,10 +227,10 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
     mat_owners.emplace_back();
-    mat_owners.back().AllocateFor(gating_einsum_w1, allocator,
+    mat_owners.back().AllocateFor(gating_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
     mat_owners.emplace_back();
-    mat_owners.back().AllocateFor(gating_einsum_w2, allocator,
+    mat_owners.back().AllocateFor(gating_einsum_w2, ctx.allocator,
                                   MatPadding::kPacked);
   }
 
@@ -248,11 +247,10 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
   float* w2_tmp = w_tmp.get() + split_size;
 
   CompressWorkingSet work;
-  hwy::ThreadPool pool(0);
   HWY_NAMESPACE::Compress(w1_tmp, split_size, work, gating_einsum_w1.Span(), 0,
-                          pool);
+                          ctx);
   HWY_NAMESPACE::Compress(w2_tmp, split_size, work, gating_einsum_w2.Span(), 0,
-                          pool);
+                          ctx);
 
   gating_einsum_w1.SetScale(1.0f);
   gating_einsum_w2.SetScale(1.0f);
@@ -265,7 +263,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
                                           MatPtrT<I8Stream>& qkv_einsum_w1,
                                           MatPtrT<I8Stream>& qkv_einsum_w2,
                                           std::vector<MatOwner>& mat_owners,
-                                          const Allocator& allocator) {
+                                          ThreadingContext& ctx) {
   // w is mutually exclusive with w1 in the file.
   HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
   // Done if we already read split tensors.
@@ -291,10 +289,10 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
     mat_owners.emplace_back();
-    mat_owners.back().AllocateFor(qkv_einsum_w1, allocator,
+    mat_owners.back().AllocateFor(qkv_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
     mat_owners.emplace_back();
-    mat_owners.back().AllocateFor(qkv_einsum_w2, allocator,
+    mat_owners.back().AllocateFor(qkv_einsum_w2, ctx.allocator,
                                   MatPadding::kPacked);
   }
 
@@ -312,9 +310,8 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
   float* w2_tmp = w_tmp.get() + w1_size;
 
   CompressWorkingSet work;
-  hwy::ThreadPool pool(0);
-  HWY_NAMESPACE::Compress(w1_tmp, w1_size, work, qkv_einsum_w1.Span(), 0, pool);
-  HWY_NAMESPACE::Compress(w2_tmp, w2_size, work, qkv_einsum_w2.Span(), 0, pool);
+  HWY_NAMESPACE::Compress(w1_tmp, w1_size, work, qkv_einsum_w1.Span(), 0, ctx);
+  HWY_NAMESPACE::Compress(w2_tmp, w2_size, work, qkv_einsum_w2.Span(), 0, ctx);
 
   qkv_einsum_w1.SetScale(1.0f);
   qkv_einsum_w2.SetScale(1.0f);
@@ -326,16 +323,16 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
 void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
-                             const Allocator& allocator) {
+                             ThreadingContext& ctx) {
   if (attn_vec_einsum_w.GetType() == Type::kI8) {
     MatPtrT<I8Stream> attn_vec_einsum_w_i8(attn_vec_einsum_w);
     MatPtrT<I8Stream> att_weights_i8(att_weights);
     InitAttWeightsI8(layer_config, attn_vec_einsum_w_i8, att_weights_i8,
-                     mat_owners, allocator);
+                     mat_owners, ctx);
     attn_vec_einsum_w = attn_vec_einsum_w_i8;
     att_weights = att_weights_i8;
   } else {
-    InitAttWeights(mat_owners, allocator);
+    InitAttWeights(mat_owners, ctx.allocator);
   }
 
   if (gating_einsum_w.GetType() == Type::kI8) {
@@ -343,7 +340,7 @@ void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
     MatPtrT<I8Stream> gating_einsum_w1_i8(gating_einsum_w1);
     MatPtrT<I8Stream> gating_einsum_w2_i8(gating_einsum_w2);
     SplitW1I8(layer_config, gating_einsum_w_i8, gating_einsum_w1_i8,
-              gating_einsum_w2_i8, mat_owners, allocator);
+              gating_einsum_w2_i8, mat_owners, ctx);
     gating_einsum_w = gating_einsum_w_i8;
     gating_einsum_w1 = gating_einsum_w1_i8;
     gating_einsum_w2 = gating_einsum_w2_i8;
@@ -356,7 +353,7 @@ void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
     MatPtrT<I8Stream> qkv_einsum_w1_i8(qkv_einsum_w1);
     MatPtrT<I8Stream> qkv_einsum_w2_i8(qkv_einsum_w2);
     SplitAttW1I8(layer_config, qkv_einsum_w_i8, qkv_einsum_w1_i8,
-                 qkv_einsum_w2_i8, mat_owners, allocator);
+                 qkv_einsum_w2_i8, mat_owners, ctx);
     qkv_einsum_w = qkv_einsum_w_i8;
     qkv_einsum_w1 = qkv_einsum_w1_i8;
     qkv_einsum_w2 = qkv_einsum_w2_i8;
@@ -367,7 +364,8 @@ void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
 
 static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
     const LayerConfig& layer_config, MatPtrT<NuqStream>& attn_vec_einsum_w,
-    MatPtrT<NuqStream>& att_weights, std::vector<MatOwner>& mat_owners) {
+    MatPtrT<NuqStream>& att_weights, std::vector<MatOwner>& mat_owners,
+    ThreadingContext& ctx) {
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
 
@@ -399,10 +397,9 @@ static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
   }
 
   CompressWorkingSet work;
-  hwy::ThreadPool pool(0);
   HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
                           work, att_weights.Span(),
-                          /*packed_ofs=*/0, pool);
+                          /*packed_ofs=*/0, ctx);
 
   att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
@@ -435,13 +432,13 @@ void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                         ThreadingContext& ctx) {
   const size_t cluster_idx = 0;
   ParallelFor(ParallelismStrategy::kFlat, c_layers.size(), ctx, cluster_idx,
-              [&](uint64_t layer, size_t /*worker*/) {
-                GetLayer(layer)->Fixup(mat_owners, ctx.allocator);
+              Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
+                GetLayer(layer)->Fixup(mat_owners, ctx);
               });
 
   ParallelFor(ParallelismStrategy::kFlat, vit_layers.size(), ctx, cluster_idx,
-              [&](uint64_t layer, size_t /*worker*/) {
-                VitLayer(layer)->Fixup(mat_owners, ctx.allocator);
+              Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
+                VitLayer(layer)->Fixup(mat_owners, ctx);
               });
 }
 
@@ -529,8 +526,9 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
   owners.resize(start + tensors.size());
 
   // Allocate in parallel because faulting in large tensors is slow.
-  ctx.pools.Pool().Run(
-      0, tensors.size(), [&](uint64_t task, size_t /*thread*/) {
+  ParallelFor(
+      ParallelismStrategy::kFlat, tensors.size(), ctx, /*cluster_idx=*/0,
+      Callers::kAllocateAndBindAll, [&](uint64_t task, size_t /*thread*/) {
         TensorToRead& tensor = tensors[task];
         MatPtr& mat = *tensor.mat;
 
@@ -587,14 +585,13 @@ static void DecompressToBF16(MatPtr& mat,
 
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                           const BlobReader& reader, ThreadingContext& ctx) {
-  const auto zone = GetProfilerZone(Zones::kStartupWeightsReadAllToBF16);
   // Especially TSAN is slow enough to warrant hierarchical parallelism.
   const ParallelismStrategy strategy = HWY_IS_DEBUG_BUILD
                                            ? ParallelismStrategy::kHierarchical
                                            : ParallelismStrategy::kFlat;
   ParallelFor(strategy, tensors.size(), ctx, /*cluster_idx=*/0,
-              [&](uint64_t task, size_t thread) {
-                PROFILER_ZONE3(ctx.profiler, thread, zone);
+              Callers::kReadAllToBF16, [&](uint64_t task, size_t thread) {
+                GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToBF16);
                 const TensorToRead& tensor = tensors[task];
                 MatPtr& mat = *tensor.mat;
 
@@ -679,12 +676,11 @@ static std::vector<IOBatch> MakeBatches(
 static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
                         ThreadingContext& ctx) {
-  const auto zone = GetProfilerZone(Zones::kStartupWeightsReadBatches);
   // >5x speedup from parallel reads when cached.
-  ParallelFor(ParallelismStrategy::kHierarchical,
-              batches.size(), ctx, /*cluster_idx=*/0,
+  ParallelFor(ParallelismStrategy::kHierarchical, batches.size(), ctx,
+              /*cluster_idx=*/0, Callers::kReadBatches,
               [&](uint64_t task, size_t thread) {
-                PROFILER_ZONE3(ctx.profiler, thread, zone);
+                GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadBatches);
                 const IOBatch& batch = batches[task];
                 const std::string& key = reader.Keys()[batch.KeyIdx()];
                 const uint64_t bytes_read = batch.Read(reader.file());

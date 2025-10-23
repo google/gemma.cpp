@@ -58,6 +58,11 @@ namespace HWY_NAMESPACE {
 
 namespace hn = hwy::HWY_NAMESPACE;
 
+static ThreadingContext& Ctx() {
+  static ThreadingContext* ctx = new ThreadingContext(ThreadingArgs());
+  return *ctx;
+}
+
 static RngStream MakeRng() {
   static AesCtrEngine engine(/*deterministic=*/true);
   static uint64_t stream = 0;
@@ -133,8 +138,7 @@ class TestAddFrom {
     }
 
     SimpleAddFrom(o, e, count);
-    InitProfilerZones(hwy::Profiler::Get());
-    AddFrom(o, x, count, hwy::Profiler::Get(), /*worker=*/0);
+    AddFrom(o, x, count, Ctx(), /*worker=*/0);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
                             __LINE__);
@@ -182,7 +186,6 @@ class TestMulByConstAndAdd {
     T constant = Random<T>(rng);
 
     SimpleMulByConstAndAdd(constant, o, e, count);
-    InitProfilerZones(hwy::Profiler::Get());
     MulByConstAndAdd(constant, o, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -231,7 +234,6 @@ class TestMulByConst {
     T constant = Random<T>(rng);
 
     SimpleMulByConst(constant, e, count);
-    InitProfilerZones(hwy::Profiler::Get());
     MulByConst(constant, x, count);
 
     hwy::AssertArraySimilar(e, x, count, hwy::TargetName(HWY_TARGET), __FILE__,
@@ -278,8 +280,7 @@ struct TestMulByConstTo {
                                      hwy::ConvertScalarTo<float>(constant));
     }
 
-    InitProfilerZones(hwy::Profiler::Get());
-    MulByConstTo(constant, x, actual, count, hwy::Profiler::Get(),
+    MulByConstTo(constant, x, actual, count, Ctx(),
                  /*worker=*/0);
 
     hwy::AssertArraySimilar(e, actual, count, hwy::TargetName(HWY_TARGET),
@@ -315,8 +316,7 @@ class TestSoftmax {
     }
 
     SimpleSoftmax(e, count);
-    InitProfilerZones(hwy::Profiler::Get());
-    Softmax(Logits(x, count), hwy::Profiler::Get(), /*worker=*/0);
+    Softmax(Logits(x, count), Ctx(), /*worker=*/0);
 
     T sum = 0.0f;
     for (size_t i = 0; i < count; ++i) {
@@ -440,9 +440,7 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
 }
 
 void TestRopeAndMulBy() {
-  ThreadingArgs threading_args;
-  ThreadingContext ctx(threading_args);
-  hwy::Profiler& p = ctx.profiler;
+  ThreadingContext& ctx = Ctx();
   const size_t worker = 0;
 
   const ModelConfig config(Model::GEMMA2_9B, Type::kSFP,
@@ -476,7 +474,7 @@ void TestRopeAndMulBy() {
     CopyMat(x, qactual);
     ScalarRopeAndMulBy(qmul, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p,
+    RopeAndMulBy(qmul, qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, ctx,
                  worker);
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
@@ -487,7 +485,7 @@ void TestRopeAndMulBy() {
     CopyMat(x, qactual);
     ScalarRopeAndMulBy(1.0f, qexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    Rope(qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p, worker);
+    Rope(qactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, ctx, worker);
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(qexpected.Row(0)[i], qactual.Row(0)[i], 1e-4) << " " << i;
     }
@@ -498,10 +496,10 @@ void TestRopeAndMulBy() {
     CopyMat(x, kactual2);
     ScalarRopeAndMulBy(kmul, kexpected.Row(0), dim_qkv, inv_timescale.Row(0),
                        pos);
-    RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, p,
+    RopeAndMulBy(kmul, kactual.Row(0), dim_qkv, inv_timescale.Row(0), pos, ctx,
                  worker);
     static_assert(kmul == 1.0f, "");
-    Rope(kactual2.Row(0), dim_qkv, inv_timescale.Row(0), pos, p, worker);
+    Rope(kactual2.Row(0), dim_qkv, inv_timescale.Row(0), pos, ctx, worker);
 
     for (size_t i = 0; i < dim_qkv; ++i) {
       EXPECT_NEAR(kexpected.Row(0)[i], kactual.Row(0)[i], 1e-4) << " " << i;
@@ -557,8 +555,7 @@ struct TestRMSNorm {
     }
 
     ScalarRMSNorm(vec, weight, expected, kSize);
-    InitProfilerZones(hwy::Profiler::Get());
-    RMSNorm(vec, weight, /*w_ofs=*/0, actual, kSize, hwy::Profiler::Get(),
+    RMSNorm(vec, weight, /*w_ofs=*/0, actual, kSize, Ctx(),
             /*worker=*/0);
 
     for (size_t i = 0; i < kSize; i++) {
@@ -593,8 +590,7 @@ struct TestRMSNormInplace {
     }
 
     ScalarRMSNorm(expected, weight, expected, kSize);
-    InitProfilerZones(hwy::Profiler::Get());
-    RMSNormInplace(weight, /*w_ofs=*/0, actual, kSize, hwy::Profiler::Get(),
+    RMSNormInplace(weight, /*w_ofs=*/0, actual, kSize, Ctx(),
                    /*worker=*/0);
 
     for (size_t i = 0; i < kSize; i++) {
@@ -715,15 +711,14 @@ void TestAllLayerNorm() {
 }
 
 void TestSampleTopK() {
-  hwy::Profiler& p = hwy::Profiler::Get();
-  InitProfilerZones(p);
+  ThreadingContext& ctx = Ctx();
   const size_t worker = 0;
   const size_t kSize = 52;
   std::vector<float> logits_vec(kSize);
   Logits logits(logits_vec.data(), kSize);
   // Create a vector going from -100 to -100+51=49 and take Softmax.
   std::iota(logits.begin(), logits.end(), -100.0f);
-  Softmax(logits, p, worker);
+  Softmax(logits, ctx, worker);
   RngStream rng = MakeRng();
   float temperature = 1.0f;
   // SampleTopK<1> should return the argmax.
@@ -736,7 +731,7 @@ void TestSampleTopK() {
   EXPECT_EQ(sample, 50);  // Last even index.
   // Reset the logits to a positive, increasing sequence and take Softmax.
   std::iota(logits.begin(), logits.end(), 1.0f);
-  Softmax(logits, p, worker);
+  Softmax(logits, ctx, worker);
   // Sample from the top 3, expect one of the top 3 even indices.
   for (int i = 0; i < 100; ++i) {
     sample = SampleTopK(logits, /*k=*/3, rng, temperature, accept_token);

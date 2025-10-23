@@ -31,7 +31,6 @@
 #include "util/test_util.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
-#include "hwy/contrib/thread_pool/thread_pool.h"
 #include "hwy/profiler.h"
 #include "hwy/stats.h"
 #include "hwy/timer.h"
@@ -922,9 +921,11 @@ void GenerateWellConditionedInputs(const size_t num, float* HWY_RESTRICT raw,
     (void)ScaleWeights(raw, num);
   }
 
-  hwy::ThreadPool pool(0);  // num is too small for parallelization
+  ThreadingArgs threading_args;
+  threading_args.max_lps = 1;  // num is too small for parallelization
+  ThreadingContext ctx(threading_args);
   const size_t packed_ofs = 0;
-  Compress(raw, num, work, packed, packed_ofs, pool);
+  Compress(raw, num, work, packed, packed_ofs, ctx);
 
   const hn::ScalableTag<float> df;
   DecompressAndZeroPad(df, MakeConst(packed), packed_ofs, raw, num);
@@ -1125,7 +1126,7 @@ void TestAllDot() {
     std::array<DotStats, kMaxWorkers> all_stats;
 
     ParallelFor(
-        ParallelismStrategy::kWithinCluster, kReps, ctx, 0,
+        ParallelismStrategy::kWithinCluster, kReps, ctx, 0, Callers::kTest,
         [&](size_t rep, size_t thread) {
           float* HWY_RESTRICT pa = a.Row(thread);
           float* HWY_RESTRICT pb = b.Row(thread);

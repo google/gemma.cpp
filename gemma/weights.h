@@ -254,7 +254,7 @@ struct LayerWeightsPtrs {
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
-  void Fixup(std::vector<MatOwner>& mat_owners, const Allocator& allocator);
+  void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
 
  private:
   // Copies att_weights from `attn_vec_einsum_w`.

@@ -28,9 +28,9 @@
 
 #include "io/io.h"                // File, Path, MapPtr
 #include "util/basics.h"          // Tristate
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"               // HWY_ASSERT
-#include "hwy/contrib/thread_pool/thread_pool.h"
 
 namespace gcpp {
 
@@ -117,7 +117,7 @@ class BlobReader {
 // does not make sense to call the methods concurrently.
 class BlobWriter {
  public:
-  BlobWriter(const Path& filename, hwy::ThreadPool& pool);
+  BlobWriter(const Path& filename, ThreadingContext& ctx);
 
   // Writes the blob to disk with padding for alignment. Aborts on error.
   void Add(const std::string& key, const void* data, size_t bytes);
@@ -129,7 +129,7 @@ class BlobWriter {
   std::unique_ptr<File> file_;
   std::vector<hwy::uint128_t> keys_;
   std::vector<size_t> blob_sizes_;
-  hwy::ThreadPool& pool_;
+  ThreadingContext& ctx_;
   // Current offset in the file used for writing.
   int64_t curr_offset_ = 0;
 };

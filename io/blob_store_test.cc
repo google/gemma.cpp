@@ -38,7 +38,6 @@ class BlobStoreTest : public testing::Test {};
 TEST(BlobStoreTest, TestReadWrite) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
-  hwy::ThreadPool& pool = ctx.pools.Pool();
 
   static const std::array<float, 4> kOriginalData = {-1, 0, 3.14159, 2.71828};
 
@@ -52,7 +51,7 @@ TEST(BlobStoreTest, TestReadWrite) {
 
   const std::string keyA("0123456789abcdef");  // max 16 characters
   const std::string keyB("q");
-  BlobWriter writer(path, pool);
+  BlobWriter writer(path, ctx);
   writer.Add(keyA, "DATA", 5);
   writer.Add(keyB, buffer.data(), sizeof(buffer));
   writer.Finalize();
@@ -96,7 +95,6 @@ TEST(BlobStoreTest, TestReadWrite) {
 TEST(BlobStoreTest, TestNumBlobs) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
-  hwy::ThreadPool& pool = ctx.pools.Pool();
   hwy::RandomState rng;
 
   for (size_t num_blobs = 1; num_blobs <= 512; ++num_blobs) {
@@ -106,7 +104,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT(fd > 0);
     const Path path(path_str);
 
-    BlobWriter writer(path, pool);
+    BlobWriter writer(path, ctx);
     std::vector<std::string> keys;
     keys.reserve(num_blobs);
     std::vector<std::vector<uint8_t>> blobs;
@@ -130,26 +128,31 @@ TEST(BlobStoreTest, TestNumBlobs) {
 
     BlobReader reader(path);
     HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);
-    pool.Run(0, num_blobs, [&](uint64_t i, size_t /*thread*/) {
-      HWY_ASSERT_STRING_EQ(reader.Keys()[i].c_str(), std::to_string(i).c_str());
-      const BlobRange* range = reader.Find(keys[i]);
-      HWY_ASSERT(range);
-      HWY_ASSERT_EQ(blobs[i].size(), range->bytes);
-      HWY_ASSERT(reader.CallWithSpan<uint8_t>(
-          keys[i], [path_str, num_blobs, i, range,
-                    &blobs](const hwy::Span<const uint8_t> span) {
-            HWY_ASSERT_EQ(blobs[i].size(), span.size());
-            const bool match1 = span[0] == static_cast<uint8_t>(i & 255);
-            // If size == 1, we don't have a second byte to check.
-            const bool match2 =
-                span.size() == 1 ||
-                span[span.size() - 1] == static_cast<uint8_t>(i >> 8);
-            if (!match1 || !match2) {
-              HWY_ABORT("%s num_blobs %zu blob %zu offset %zu is corrupted.",
-                        path_str, num_blobs, i, range->offset);
-            }
-          }));
-    });
+
+    ParallelFor(
+        ParallelismStrategy::kFlat, num_blobs, ctx, /*cluster_idx=*/0,
+        Callers::kTest, [&](uint64_t i, size_t /*thread*/) {
+          HWY_ASSERT_STRING_EQ(reader.Keys()[i].c_str(),
+                               std::to_string(i).c_str());
+          const BlobRange* range = reader.Find(keys[i]);
+          HWY_ASSERT(range);
+          HWY_ASSERT_EQ(blobs[i].size(), range->bytes);
+          HWY_ASSERT(reader.CallWithSpan<uint8_t>(
+              keys[i], [path_str, num_blobs, i, range,
+                        &blobs](const hwy::Span<const uint8_t> span) {
+                HWY_ASSERT_EQ(blobs[i].size(), span.size());
+                const bool match1 = span[0] == static_cast<uint8_t>(i & 255);
+                // If size == 1, we don't have a second byte to check.
+                const bool match2 =
+                    span.size() == 1 ||
+                    span[span.size() - 1] == static_cast<uint8_t>(i >> 8);
+                if (!match1 || !match2) {
+                  HWY_ABORT(
+                      "%s num_blobs %zu blob %zu offset %zu is corrupted.",
+                      path_str, num_blobs, i, range->offset);
+                }
+              }));
+        });
 
     close(fd);
     unlink(path_str);
