@@ -139,7 +139,6 @@ cc_test(
         ":kv_cache",
         ":mat",
         ":matmul",
-        ":ops",
         ":threading_context",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep

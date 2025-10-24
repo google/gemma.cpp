@@ -31,26 +31,24 @@
 
 namespace gcpp {
 
-struct AttentionActivations {
-  // Returns the scale value to use for the query in the attention computation.
-  // Also called by ops_test.
-  static inline float ChooseQueryScale(const ModelConfig& config) {
-    const LayerConfig& layer_config = config.layer_configs[0];
-    if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
-      return 1.0f /
-             sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
-    // QueryScaleType::SqrtKeySize
-    return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
-  }
+// Returns the scale value to use for the query in the attention computation.
+// Also called by ops_test.
+static inline float ChooseQueryScale(const ModelConfig& config) {
+  const LayerConfig& layer_config = config.layer_configs[0];
+  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
+    return 1.0f /
+           sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
+  // QueryScaleType::SqrtKeySize
+  return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
+}
 
+struct AttentionActivations {
   AttentionActivations(
       const ModelConfig& config, const LayerConfig& layer_config,
       size_t batch_size, size_t seq_len, const Allocator& allocator,
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : config(config),
-
-        // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
-        // and does not use an external KV cache.
+      :  // `vocab_size == 0` means it is for Vit part, VitAttention is still
+         // MHA and does not use an external KV cache.
         q(MatFactory("q", batch_size,
                      config.vocab_size == 0
                          ? layer_config.heads * 3 * layer_config.qkv_dim
@@ -76,11 +74,7 @@ struct AttentionActivations {
                                layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
             allocator, layer_config.qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
-
-        div_seq_len(static_cast<uint32_t>(seq_len)),
-        div_heads(static_cast<uint32_t>(layer_config.heads)),
-        query_scale(ChooseQueryScale(config)) {
+            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -108,9 +102,7 @@ struct AttentionActivations {
     att_sums.OverrideRows(batch_size);
   }
 
-  const ModelConfig& config;
-
-  MatStorageT<float> q;  // query
+  MatStorageT<float> q;    // query
   MatStorageT<float> q_T;  // Transposed to maximize attention speed.
 
   MatStorageT<float> pre_att_rms_out;
@@ -122,9 +114,41 @@ struct AttentionActivations {
   // Rope
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
+};
 
+// A non-owning view of AttentionActivations.
+struct AttentionActivationsPtrs {
+  AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len)
+      : config(config),
+        div_seq_len(static_cast<uint32_t>(seq_len)),
+        div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
+        query_scale(ChooseQueryScale(config)) {}
+
+  AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len,
+                           const AttentionActivations& activations)
+      : config(config),
+        q(activations.q),
+        q_T(activations.q_T),
+        pre_att_rms_out(activations.pre_att_rms_out),
+        att(activations.att),
+        att_out(activations.att_out),
+        att_sums(activations.att_sums),
+        inv_timescale(activations.inv_timescale),
+        inv_timescale_global(activations.inv_timescale_global),
+        div_seq_len(static_cast<uint32_t>(seq_len)),
+        div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
+        query_scale(ChooseQueryScale(config)) {}
+
+  const ModelConfig& config;
+  MatPtrT<float> q;
+  MatPtrT<float> q_T;
+  MatPtrT<float> pre_att_rms_out;
+  MatPtrT<float> att;
+  MatPtrT<float> att_out;
+  MatPtrT<BF16> att_sums;
+  MatPtrT<float> inv_timescale;
+  MatPtrT<float> inv_timescale_global;
   hwy::Divisor div_seq_len;
-  // Unfortunately, some models have had non-power-of-two heads.
   hwy::Divisor div_heads;
   float query_scale;
 };
@@ -150,8 +174,9 @@ struct Activations {
         ffw_out(
             MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
 
-        attention(config, layer_config, batch_size, seq_len, ctx.allocator,
-                  row_ptrs) {
+        attention_storage(config, layer_config, batch_size, seq_len,
+                          ctx.allocator, row_ptrs),
+        attention(config, seq_len, attention_storage) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -179,12 +204,12 @@ struct Activations {
     C2.OverrideRows(batch_size);
     ffw_out.OverrideRows(batch_size);
 
-    attention.SetBatchSize(batch_size);
+    attention_storage.SetBatchSize(batch_size);
   }
 
   const LayerConfig& layer_config;
 
-  MatStorageT<float> x;  // input
+  MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
   MatStorageT<float> logits;      // TODO: BF16 after Softmax supports that.
   MatStorageT<uint32_t> sampled;  // batch_size x 3 (padded)
@@ -195,7 +220,8 @@ struct Activations {
   MatStorageT<BF16> C2;
   MatStorageT<float> ffw_out;
 
-  AttentionActivations attention;
+  AttentionActivations attention_storage;
+  AttentionActivationsPtrs attention;
 };
 
 }  // namespace gcpp

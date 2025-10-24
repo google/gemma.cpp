@@ -284,6 +284,9 @@ class MatPtrT : public MatPtr {
  public:
   using T = MatT;
 
+  // Default constructor for use with uninitialized views.
+  MatPtrT() = default;
+
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}

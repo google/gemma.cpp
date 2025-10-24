@@ -28,17 +28,16 @@ namespace gcpp {
 // Passed to HWY_VISIT_TARGETS; declares for one target.
 #define GEMMA_DECL_FLASH_ATTENTION(TARGET, NAMESPACE)                        \
   namespace NAMESPACE {                                                      \
-  void RMSNormAndPositionalEncoding(size_t num_tokens, const QBatch& qbatch, \
-                                    MatPtrT<KV_t>& q, size_t layer_idx,      \
-                                    const LayerWeightsPtrs& layer,           \
-                                    const AttentionActivations& activations, \
-                                    ThreadingContext& ctx);                  \
+  void RMSNormAndPositionalEncoding(                                         \
+      size_t num_tokens, const QBatch& qbatch, MatPtrT<float>& q,            \
+      const MatPtrT<float>& query_norm_scale, size_t layer_idx,              \
+      const AttentionActivationsPtrs& activations, ThreadingContext& ctx);   \
                                                                              \
   void SingleFlashAttention(size_t start_pos, size_t last_pos,               \
                             const float* HWY_RESTRICT q,                     \
                             const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,  \
-                            size_t layer_idx, const LayerWeightsPtrs& layer, \
-                            const AttentionActivations& activations,         \
+                            size_t layer_idx,                                \
+                            const AttentionActivationsPtrs& activations,     \
                             float* HWY_RESTRICT att_out,                     \
                             ThreadingContext& ctx, size_t worker);           \
                                                                              \
@@ -46,8 +45,9 @@ namespace gcpp {
                       size_t total_tasks, size_t target_parallelism);        \
                                                                              \
   void FlashAttention(size_t num_tokens, size_t target_parallelism,          \
-                      size_t layer_idx, const LayerWeightsPtrs& layer,       \
-                      AttentionActivations& activations, QBatch& qbatch,     \
+                      size_t layer_idx,                                      \
+                      const MatPtrT<float>& query_norm_scale,                \
+                      AttentionActivationsPtrs& activations, QBatch& qbatch, \
                       ThreadingContext& ctx);                                \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                \
   }  // namespace NAMESPACE

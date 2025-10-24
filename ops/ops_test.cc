@@ -456,7 +456,7 @@ void TestRopeAndMulBy() {
     x.Row(0)[i] = random_float();
   }
 
-  const float qmul = AttentionActivations::ChooseQueryScale(config);
+  const float qmul = ChooseQueryScale(config);
   constexpr float kmul = 1.0f;
 
   MatStorageT<float> qexpected("qexpected", dim_qkv, ctx.allocator);
