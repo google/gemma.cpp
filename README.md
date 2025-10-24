@@ -55,7 +55,6 @@ Guidelines](https://opensource.google.com/conduct/).
 
     -   CPU-only inference for: Gemma 2-3, PaliGemma 2.
     -   Sampling with TopK and temperature.
-    -   Backward pass (VJP) and Adam optimizer for Gemma research.
 
 -   Optimizations
 
