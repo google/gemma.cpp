@@ -47,6 +47,9 @@ GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
     ShowConfig(loader, threading, inference, config, gemma_.WeightReadMode(),
                ctx_);
   }
+  if (inference.verbosity >= 3) {
+    env_.print_config = env_.print_best = true;
+  }
 
   runtime_config_ = {
       .max_generated_tokens = inference.max_generated_tokens,
