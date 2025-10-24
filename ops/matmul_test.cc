@@ -195,9 +195,10 @@ HWY_INLINE void MatMulSlow(const MatPtrT<TA> A, const MatPtrT<TB> B,
   const size_t multiple = env.ctx.allocator.QuantumBytes() / sizeof(TB);
   const IndexRangePartition get_col_c =
       StaticPartition(all_cols_c, all_clusters.NumWorkers(), multiple);
-  ParallelizeOneRange(
-      get_col_c, all_clusters, env.ctx.pool_callers.Get(Callers::kTest),
-      [&](const IndexRange& cols_c, size_t cluster_idx) HWY_ATTR {
+  ParallelForAcrossClusters(
+      get_col_c.NumTasks(), env.ctx, env.ctx.pool_callers.Get(Callers::kTest),
+      [&](size_t range_idx, size_t cluster_idx) HWY_ATTR {
+        const IndexRange cols_c = get_col_c.Range(range_idx);
         for (size_t r : all_rows_c) {
           TC* HWY_RESTRICT C_row = C.Row(r);
           for (size_t c : cols_c) {

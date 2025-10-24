@@ -262,43 +262,6 @@ static inline IndexRangePartition StaticPartition(const IndexRange& range,
   return IndexRangePartition(range, size);
 }
 
-// Parallel-for over a single range. This takes care of translating the task
-// index to a range.
-template <class Func>
-void ParallelizeOneRange(const IndexRangePartition& get1, hwy::ThreadPool& pool,
-                         hwy::pool::Caller caller, const Func& func) {
-  const size_t num_tasks = get1.NumTasks();
-  pool.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
-    const IndexRange range1 = get1.Range(task);
-    func(range1, thread);
-  });
-}
-
-// Parallel-for over the Cartesian product of the two sets of ranges. This
-// combines their indices into a single 'task' so they can be executed by one
-// `pool.Run`, which increases the amount of work available to workers and
-// reduces fork-join overhead vs. nested parallel-for loops. Calls `func` with
-// the two ranges and the thread index within `pool`.
-template <class Func>
-void ParallelizeTwoRanges(const IndexRangePartition& get1,
-                          const IndexRangePartition& get2,
-                          hwy::ThreadPool& pool, hwy::pool::Caller caller,
-                          const Func& func) {
-  const hwy::Divisor div1(static_cast<uint32_t>(get1.NumTasks()));
-
-  const size_t num_tasks = get1.NumTasks() * get2.NumTasks();
-  pool.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
-    HWY_DASSERT(task < (uint64_t{1} << 32));
-    const size_t idx2 = div1.Divide(static_cast<uint32_t>(task));
-    const size_t idx1 = div1.Remainder(static_cast<uint32_t>(task));
-    HWY_DASSERT(idx1 < get1.NumTasks());
-    HWY_DASSERT(idx2 < get2.NumTasks());
-    const IndexRange range1 = get1.Range(idx1);
-    const IndexRange range2 = get2.Range(idx2);
-    func(range1, range2, thread);
-  });
-}
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_UTIL_THREADING_H_

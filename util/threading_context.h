@@ -154,42 +154,96 @@ enum class ParallelismStrategy : uint8_t {
   kHierarchical,
 };
 
-// Calls `func(task, worker)` for each task in `[0, num_tasks)`. Parallelizes
-// over clusters of ONE package, then within each cluster.
+// Helper functions used to implement `ParallelFor`, also reused in multiple
+// places. User code should call `ParallelFor` instead, which accepts the more
+// convenient `Callers` enum.
+//
+// These call `func(task, worker)` for each task in `[0, num_tasks)`.
+
+// NOTE: the worker argument is actually the `cluster_idx`, so that `Func` can
+// pass that to `ParallelForWithinCluster`.
+template <class Func>
+void ParallelForAcrossClusters(size_t num_tasks, ThreadingContext& ctx,
+                               hwy::pool::Caller caller, const Func& func) {
+  ctx.pools.AllClusters().Run(
+      0, num_tasks, caller,
+      [&](uint64_t task, size_t cluster_idx) { func(task, cluster_idx); });
+}
+
+template <class Func>
+void ParallelForWithinCluster(size_t num_tasks, ThreadingContext& ctx,
+                              size_t cluster_idx, hwy::pool::Caller caller,
+                              const Func& func) {
+  const size_t cluster_base = ctx.Worker(cluster_idx);
+  ctx.pools.Cluster(cluster_idx)
+      .Run(0, num_tasks, caller, [&](uint64_t task, size_t worker) {
+        func(task, cluster_base + worker);
+      });
+}
+
+// Calls `func(range, cluster_idx)`, for passing to `*WithinCluster`.
+template <class Func>
+void ParallelPartitionAcrossClusters(const IndexRange range,
+                                     size_t task_multiple, size_t inner_tasks,
+                                     ThreadingContext& ctx,
+                                     hwy::pool::Caller caller,
+                                     const Func& func) {
+  HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+  const IndexRangePartition ranges = StaticPartition(
+      range, ctx.pools.NumClusters() * inner_tasks, task_multiple);
+  ParallelForAcrossClusters(ranges.NumTasks(), ctx, caller,
+                            [&](uint64_t task, size_t cluster_idx) {
+                              func(ranges.Range(task), cluster_idx);
+                            });
+}
+
+// Calls `func(range, worker)`.
+template <class Func>
+void ParallelPartitionWithinCluster(const IndexRange range,
+                                    size_t task_multiple, size_t inner_tasks,
+                                    ThreadingContext& ctx, size_t cluster_idx,
+                                    hwy::pool::Caller caller,
+                                    const Func& func) {
+  HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+  const size_t num_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+  const IndexRangePartition ranges =
+      StaticPartition(range, num_workers * inner_tasks, task_multiple);
+  ParallelForWithinCluster(
+      ranges.NumTasks(), ctx, cluster_idx, caller,
+      [&](uint64_t task, size_t worker) { func(ranges.Range(task), worker); });
+}
+
+// Parallelizes across clusters, then within each cluster.
 template <class Func>
 void HierarchicalParallelFor(size_t num_tasks, ThreadingContext& ctx,
                              Callers callers, const Func& func) {
   const hwy::pool::Caller caller = ctx.pool_callers.Get(callers);
-  // If few tasks, run on a single cluster. Also avoids a bit of overhead if
-  // there is only one cluster.
-  hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
-  const size_t num_clusters = all_clusters.NumWorkers();
-  hwy::ThreadPool& cluster = ctx.pools.Cluster(0);
-  if (num_clusters == 1 || num_tasks <= cluster.NumWorkers()) {
-    return cluster.Run(0, num_tasks, caller, [&](uint64_t task, size_t thread) {
-      func(task, thread);
-    });
+
+  // If at most one task per cluster worker, run on a single cluster to avoid
+  // the expensive cross-cluster barrier.
+  {
+    const size_t cluster_idx = 0;
+    const size_t cluster_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+    if (HWY_UNLIKELY(num_tasks <= cluster_workers)) {
+      return ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
+                                      func);
+    }
   }
 
-  // Assign each cluster a sub-range.
-  const IndexRangePartition ranges =
-      StaticPartition(IndexRange(0, num_tasks), num_clusters, 1);
-  ParallelizeOneRange(ranges, all_clusters, caller,
-                      [&](const IndexRange& range, const size_t cluster_idx) {
-                        hwy::ThreadPool& cluster =
-                            ctx.pools.Cluster(cluster_idx);
-                        const size_t cluster_base =
-                            cluster_idx * ctx.pools.MaxWorkersPerCluster();
-                        cluster.Run(range.begin(), range.end(), caller,
-                                    [&](uint64_t task, size_t thread) {
-                                      func(task, cluster_base + thread);
-                                    });
-                      });
+  ParallelPartitionAcrossClusters(
+      IndexRange(0, num_tasks), /*task_multiple=*/1, /*inner_tasks=*/1, ctx,
+      caller, [&](const IndexRange& cluster_range, size_t cluster_idx) {
+        ParallelForWithinCluster(cluster_range.Num(), ctx, cluster_idx, caller,
+                                 [&](uint64_t i, size_t worker) {
+                                   func(cluster_range.begin() + i, worker);
+                                 });
+      });
 }
 
 // Calls `func(task, worker)` for each `task` in `[0, num_tasks)`, with the
-// number/type of workers determined by `parallelism`. `cluster_idx` is for
-// `parallelism == kWithinCluster`, and should be 0 if unknown.
+// number/type of workers determined by `parallelism`. NOTE: worker is actually
+// `cluster_idx` for `kAcrossClusters`. The `cluster_idx` argument is for
+// `parallelism == {kWithinCluster, kNone}`, and should be 0 if unknown.
 template <class Func>
 void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
                  ThreadingContext& ctx, size_t cluster_idx, Callers callers,
@@ -212,37 +266,25 @@ void ParallelFor(ParallelismStrategy parallelism, size_t num_tasks,
     }
 
     case ParallelismStrategy::kAcrossClusters:
-      return ctx.pools.AllClusters().Run(
-          0, num_tasks, caller,
+      return ParallelForAcrossClusters(
+          num_tasks, ctx, caller,
           [&](uint64_t task, size_t cluster_idx) { func(task, cluster_idx); });
 
-    case ParallelismStrategy::kWithinCluster: {
-      // Ensure the worker argument is unique across clusters, because it is
-      // used for TLS indexing for example in profiler.h.
-      const size_t base = ctx.Worker(cluster_idx);
-      return ctx.pools.Cluster(cluster_idx)
-          .Run(0, num_tasks, caller, [&](uint64_t task, size_t worker) {
-            func(task, base + worker);
-          });
-    }
+    case ParallelismStrategy::kWithinCluster:
+      return ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
+                                      func);
 
-    case ParallelismStrategy::kFlat: {
-      // Check for single cluster; if not, we must compute `cluster_base` for
-      // consistent and non-overlapping worker indices.
-      hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
-      const size_t num_clusters = all_clusters.NumWorkers();
-      if (num_clusters == 1) {
-        return ctx.pools.Cluster(cluster_idx)
-            .Run(0, num_tasks, caller,
-                 [&](uint64_t task, size_t worker) { func(task, worker); });
+    case ParallelismStrategy::kFlat:
+      // Choose a single pool: the only cluster, or across all clusters
+      // (slower synchronization, but more memory bandwidth)
+      if (HWY_UNLIKELY(ctx.pools.NumClusters() == 1)) {
+        return ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
+                                        func);
       }
-
-      return all_clusters.Run(0, num_tasks, caller,
-                              [&](uint64_t task, size_t cluster_idx) {
-                                const size_t worker = ctx.Worker(cluster_idx);
-                                func(task, worker);
-                              });
-    }
+      return ParallelForAcrossClusters(num_tasks, ctx, caller,
+                                       [&](uint64_t task, size_t cluster_idx) {
+                                         func(task, ctx.Worker(cluster_idx));
+                                       });
 
     case ParallelismStrategy::kHierarchical:
       return HierarchicalParallelFor(num_tasks, ctx, callers, func);
