@@ -413,7 +413,8 @@ using DotKernelDefault =
 template <class D, typename WT, typename VT>
 HWY_INLINE float Dot(D d, const PackedSpan<const WT>& w, size_t w_ofs,
                      const VT* HWY_RESTRICT vec, size_t num) {
-  return DecompressAndCall(d, w, w_ofs, MakeSpan(vec, num), DotKernelDefault());
+  return DecompressAndCall(d, w, w_ofs, MakeConstSpan(vec, num),
+                           DotKernelDefault());
 }
 
 // Adapter for two pointers, no bounds checking.
