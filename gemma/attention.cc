@@ -82,8 +82,7 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
   const bool is_global_layer = activations.config.IsGlobalLayer(layer_idx);
-  // TODO: add a config flag instead of hardcoding the model.
-  if (is_global_layer && IsVLM(activations.config.model)) {
+  if (is_global_layer && activations.config.use_global_timescale) {
     inv_timescale = activations.inv_timescale_global.PackedScale1();
   }
   // PostQKType::Rope

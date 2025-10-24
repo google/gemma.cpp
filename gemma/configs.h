@@ -184,13 +184,6 @@ enum class Model {
 // in Specifier and thus does not change.
 const char* ModelPrefix(Model model);
 
-// Gemma3 is multimodal and has a different prompt wrapping than PaliGemma.
-// This is used for deducing the PromptWrapping for pre-2025 BlobStore.
-static inline bool IsVLM(Model model) {
-  return model == Model::GEMMA3_4B || model == Model::GEMMA3_1B ||
-         model == Model::GEMMA3_12B || model == Model::GEMMA3_27B;
-}
-
 static inline bool IsPaliGemma(Model model) {
   if (model == Model::PALIGEMMA2_3B_224 || model == Model::PALIGEMMA2_3B_448 ||
       model == Model::PALIGEMMA2_10B_224 ||
@@ -280,7 +273,7 @@ struct LayerConfig : public IFields {
   uint32_t kv_heads = 0;
   uint32_t qkv_dim = 0;  // length of Q, K, V vectors (contiguous).
   bool ff_biases = false;
-  bool optimized_gating = true;             // for Gemma3
+  bool optimized_gating = true;  // for Gemma3
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
@@ -383,6 +376,8 @@ struct ModelConfig : public IFields {
 
     internal.VisitFields(visitor);
 
+    visitor(use_global_timescale);
+
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -481,6 +476,7 @@ struct ModelConfig : public IFields {
   std::vector<std::string> scale_base_names;
 
   InternalModelConfig internal;
+  bool use_global_timescale = false;  // for Gemma 3
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.

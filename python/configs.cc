@@ -173,6 +173,8 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("secondary_eos_id", &ModelConfig::secondary_eos_id)
       .def_readwrite("scale_base_names", &ModelConfig::scale_base_names)
       .def_readwrite("internal", &ModelConfig::internal)
+      .def_readwrite("use_global_timescale",
+                     &ModelConfig::use_global_timescale)
 
       .def("add_layer_config", &ModelConfig::AddLayerConfig,
            arg("layer_config"))

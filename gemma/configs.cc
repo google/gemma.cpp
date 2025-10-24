@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFields
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFields
+#include "io/io.h"              // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -238,6 +238,7 @@ static ModelConfig ConfigGemma3_1B() {
   config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   config.model_dim = 1152;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -288,6 +289,7 @@ static ModelConfig ConfigGemma3_4B() {
   config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -337,6 +339,7 @@ static ModelConfig ConfigGemma3_12B() {
   config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -386,6 +389,7 @@ static ModelConfig ConfigGemma3_27B() {
   config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -495,19 +499,19 @@ const char* ModelPrefix(Model model) {
 }
 
 PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
-  if (IsPaliGemma(model)) {
+  const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
+
+  // For models with a fixed wrapping mode, ignore user override.
+  if (config_wrapping == PromptWrapping::PALIGEMMA ||
+      config_wrapping == PromptWrapping::GEMMA_VLM) {
     if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
+      HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
+               ModelPrefix(model));
     }
-    return PromptWrapping::PALIGEMMA;
+    return config_wrapping;
   }
-  if (IsVLM(model)) {
-    if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
-    }
-    return PromptWrapping::GEMMA_VLM;
-  }
-  // Default to IT unless --wrapping=0.
+
+  // For other models, default to IT unless --wrapping=0 is passed.
   return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
                                       : PromptWrapping::GEMMA_IT;
 }
