@@ -30,7 +30,6 @@
 #include "gemma/activations.h"
 #include "gemma/configs.h"  // kMaxQKVDim
 #include "gemma/gemma.h"
-#include "gemma/weights.h"
 #include "util/threading.h"
 #include "hwy/profiler.h"
 
@@ -91,32 +90,33 @@ static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
 
 // Updates q in place for RMSNorm and positional encoding.
 void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
-                                  MatPtrT<KV_t>& q, const size_t layer_idx,
-                                  const LayerWeightsPtrs& layer,
-                                  const AttentionActivations& activations,
+                                  MatPtrT<float>& q,
+                                  const MatPtrT<float>& query_norm_scale,
+                                  const size_t layer_idx,
+                                  const AttentionActivationsPtrs& activations,
                                   ThreadingContext& ctx) {
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const float query_scale = activations.query_scale;
   const hwy::Divisor div_qbatch(qbatch.Size());
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     GCPP_ZONE(ctx, worker, Zones::kFlashAttentionRmsNormAndPositionalEncoding);
     size_t qi = div_qbatch.Remainder(task);
     size_t batch_idx = div_qbatch.Divide(task);
-    for (size_t h = 0; h < layer.layer_config.heads; ++h) {
+    for (size_t h = 0; h < layer_config.heads; ++h) {
       const size_t tq_idx = qbatch.Size() * batch_idx + qi;
       // Find the token position in the query and calculate
       // the range of cache positions to attend to.
       const size_t pos = qbatch.Pos(qi) + batch_idx;
-      float* HWY_RESTRICT q_row =
-          q.Row(tq_idx) + h * layer.layer_config.qkv_dim;
+      float* HWY_RESTRICT q_row = q.Row(tq_idx) + h * layer_config.qkv_dim;
       // Apply rope and scaling to Q.
-      if (layer.query_norm_scale.HasPtr()) {
-        CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
+      if (query_norm_scale.HasPtr()) {
+        CallUpcasted(&query_norm_scale, [&](const auto* weights_t) {
           RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q_row,
-                         layer.layer_config.qkv_dim, ctx, worker);
+                         layer_config.qkv_dim, ctx, worker);
         });
       }
-      PositionalEncodingQK(q_row, layer_idx, layer, activations, ctx, worker,
-                           pos, query_scale);
+      PositionalEncodingQK(q_row, layer_idx, activations, ctx, worker, pos,
+                           query_scale);
     }
   };
   {
@@ -154,8 +154,7 @@ void HWY_INLINE SingleFlashAttentionStep(float x, float cap, float& old_max,
 void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
                           const float* HWY_RESTRICT q, const MatPtrT<KV_t>& k,
                           const MatPtrT<KV_t>& v, const size_t layer_idx,
-                          const LayerWeightsPtrs& layer,
-                          const AttentionActivations& activations,
+                          const AttentionActivationsPtrs& activations,
                           float* HWY_RESTRICT att_out, ThreadingContext& ctx,
                           const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionSingleFlashAttention);
@@ -265,15 +264,17 @@ VF HWY_INLINE ElementwiseSumOf8(DF df, const VF& x0, const VF& x1, const VF& x2,
 // Sweeps a tile of NF Q rows by 8 K timesteps accumulators from start_pos to
 // min_last_pos, then sweeps the remaining timesteps in the range (min_last_pos,
 // max_last_pos].
-void TileFlashAttention(
-    const MatPtrT<float>& q, const uint32_t* HWY_RESTRICT q_offsets,
-    const StridedView<float>& qT, const MatPtrT<KV_t>& k,
-    const size_t start_pos, const uint32_t* HWY_RESTRICT last_pos,
-    const size_t min_last_pos, const size_t max_last_pos,
-    const MatPtrT<KV_t>& v, const size_t layer_idx,
-    const LayerWeightsPtrs& layer, const AttentionActivations& activations,
-    MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
-    ThreadingContext& ctx, const size_t worker) {
+void TileFlashAttention(const MatPtrT<float>& q,
+                        const uint32_t* HWY_RESTRICT q_offsets,
+                        const StridedView<float>& qT, const MatPtrT<KV_t>& k,
+                        const size_t start_pos,
+                        const uint32_t* HWY_RESTRICT last_pos,
+                        const size_t min_last_pos, const size_t max_last_pos,
+                        const MatPtrT<KV_t>& v, const size_t layer_idx,
+                        const AttentionActivationsPtrs& activations,
+                        MatPtrT<float>& att_out,
+                        const uint32_t* HWY_RESTRICT out_offsets,
+                        ThreadingContext& ctx, const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention);
   constexpr int kHTileSize = kNFx8HTileSize;
   using DF = hn::ScalableTag<float>;
@@ -419,14 +420,16 @@ float HWY_INLINE SingleFlashAttentionRowVector(DF df, VF& x, float& old_max,
 // Sweeps a tile of 4 Q rows by NF K timesteps accumulators from start_pos to
 // min_last_pos, then sweeps the remaining timesteps in the range (min_last_pos,
 // max_last_pos].
-void TileFlashAttention4(
-    const MatPtrT<float>& q, const uint32_t* HWY_RESTRICT q_offsets,
-    const MatPtrT<KV_t>& k, const size_t start_pos,
-    const uint32_t* HWY_RESTRICT last_pos, const size_t min_last_pos,
-    const size_t max_last_pos, const MatPtrT<KV_t>& v, const size_t layer_idx,
-    const LayerWeightsPtrs& layer, const AttentionActivations& activations,
-    MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
-    ThreadingContext& ctx, const size_t worker) {
+void TileFlashAttention4(const MatPtrT<float>& q,
+                         const uint32_t* HWY_RESTRICT q_offsets,
+                         const MatPtrT<KV_t>& k, const size_t start_pos,
+                         const uint32_t* HWY_RESTRICT last_pos,
+                         const size_t min_last_pos, const size_t max_last_pos,
+                         const MatPtrT<KV_t>& v, const size_t layer_idx,
+                         const AttentionActivationsPtrs& activations,
+                         MatPtrT<float>& att_out,
+                         const uint32_t* HWY_RESTRICT out_offsets,
+                         ThreadingContext& ctx, const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention4);
   using DF = hn::ScalableTag<float>;
   const DF df;
@@ -589,14 +592,15 @@ size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens,
 // grouped together so that mode 1 or 2 can be used, and choosing which of the
 // 3 modes to use for best efficiency.
 void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
-                    const size_t layer_idx, const LayerWeightsPtrs& layer,
-                    AttentionActivations& activations, QBatch& qbatch,
+                    const size_t layer_idx,
+                    const MatPtrT<float>& query_norm_scale,
+                    AttentionActivationsPtrs& activations, QBatch& qbatch,
                     ThreadingContext& ctx) {
   GCPP_ZONE(ctx, 0, Zones::kFlashAttentionInclusive);
-  RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q, layer_idx,
-                               layer, activations, ctx);
+  RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q,
+                               query_norm_scale, layer_idx, activations, ctx);
   const hwy::Divisor div_qbatch(qbatch.Size());
-  const LayerConfig& layer_config = layer.layer_config;
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const size_t qkv_dim = layer_config.qkv_dim;
 
   // A "head group" in the context of GQA refers to a collection of query
@@ -732,12 +736,12 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
           // is used above to catch all cases where qT will be used.
           TileFlashAttention(activations.q, q_offsets, qT, k,
                              start_positions[offset], last_pos, min_last_pos,
-                             max_last_pos, v, layer_idx, layer, activations,
+                             max_last_pos, v, layer_idx, activations,
                              activations.att_out, out_offsets, ctx, worker);
         } else if (kVTileSize == 4) {
           TileFlashAttention4(activations.q, q_offsets, k,
                               start_positions[offset], last_pos, min_last_pos,
-                              max_last_pos, v, layer_idx, layer, activations,
+                              max_last_pos, v, layer_idx, activations,
                               activations.att_out, out_offsets, ctx, worker);
         } else {
           HWY_UNREACHABLE;
@@ -746,7 +750,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
       } else {
         SingleFlashAttention(start_positions[offset], last_pos[offset],
                              activations.q.Row(0) + q_offsets[offset], k, v,
-                             layer_idx, layer, activations,
+                             layer_idx, activations,
                              activations.att_out.Row(0) + out_offsets[offset],
                              ctx, worker);
       }

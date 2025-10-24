@@ -73,12 +73,12 @@ static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
 }
 
 void PositionalEncodingQK(float* qk, const size_t layer_idx,
-                          const LayerWeightsPtrs& layer,
-                          const AttentionActivations& activations,
+                          const AttentionActivationsPtrs& activations,
                           ThreadingContext& ctx, const size_t worker,
                           const size_t pos, const float mul) {
-  const size_t qkv_dim = layer.layer_config.qkv_dim;
-  const PostQKType& post_qk = layer.layer_config.post_qk;
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
+  const size_t qkv_dim = layer_config.qkv_dim;
+  const PostQKType& post_qk = layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
   const bool is_global_layer = activations.config.IsGlobalLayer(layer_idx);
@@ -130,23 +130,23 @@ static HWY_INLINE void WeightedSumV(
 void SingleDotSoftmaxWeightedSum(
     const size_t pos, const size_t start_pos, const size_t last_pos,
     float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
-    const size_t layer_idx, const LayerWeightsPtrs& layer,
-    const AttentionActivations& activations, float* HWY_RESTRICT att,
+    const MatPtrT<float>& query_norm_scale, const size_t layer_idx,
+    const AttentionActivationsPtrs& activations, float* HWY_RESTRICT att,
     float* HWY_RESTRICT att_out, ThreadingContext& ctx, const size_t worker) {
   const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   const size_t seq_len =
       static_cast<size_t>(activations.div_seq_len.GetDivisor());
-
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   // Apply rope and scaling to Q.
-  if (layer.query_norm_scale.HasPtr()) {
-    CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
+  if (query_norm_scale.HasPtr()) {
+    CallUpcasted(&query_norm_scale, [&](const auto* weights_t) {
       RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q,
-                     layer.layer_config.qkv_dim, ctx, worker);
+                     layer_config.qkv_dim, ctx, worker);
     });
   }
 
-  PositionalEncodingQK(q, layer_idx, layer, activations, ctx, worker, pos,
+  PositionalEncodingQK(q, layer_idx, activations, ctx, worker, pos,
                        query_scale);
 
   QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att, ctx, worker);
@@ -169,13 +169,13 @@ size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx) {
 }
 
 void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
-                           const LayerWeightsPtrs& layer,
-                           AttentionActivations& activations, QBatch& qbatch,
-                           ThreadingContext& ctx) {
+                           const MatPtrT<float>& query_norm_scale,
+                           AttentionActivationsPtrs& activations,
+                           QBatch& qbatch, ThreadingContext& ctx) {
   GCPP_ZONE(ctx, 0, Zones::kGenAttentionDotSoftmaxWeightedSumInclusive);
 
   const hwy::Divisor div_qbatch(qbatch.Size());
-  const LayerConfig& layer_config = layer.layer_config;
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const size_t qkv_dim = layer_config.qkv_dim;
 
   // A "head group" in the context of GQA refers to a collection of query
@@ -223,8 +223,9 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
     MatPtrT<KV_t> v("v_view", Extents2D(seq_len, qkv_dim));
     v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim, kv_cache.Stride());
 
-    SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v, layer_idx,
-                                layer, activations, att, att_out, ctx, worker);
+    SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v,
+                                query_norm_scale, layer_idx, activations, att,
+                                att_out, ctx, worker);
   };
 
   {
@@ -245,7 +246,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 // Fills activations.q and writes to KV cache.
 static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   const LayerWeightsPtrs& layer,
-                                  AttentionActivations& activations,
+                                  AttentionActivationsPtrs& activations,
                                   const QBatch& qbatch, const int flags,
                                   MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(),
@@ -312,8 +313,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
           });
         }
 
-        PositionalEncodingQK(kv_f32, layer_idx, layer, activations, env.ctx,
-                             worker, pos, /*mul=*/1.0f);
+        PositionalEncodingQK(kv_f32, layer_idx, activations, env.ctx, worker,
+                             pos, /*mul=*/1.0f);
         CompressPerThread tls;
         Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
       });
@@ -322,7 +323,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
 // Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
 // head_dim (`qkv_dim`) into output (`layer_out`).
 static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
-                                AttentionActivations& activations,
+                                AttentionActivationsPtrs& activations,
                                 MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttentionSumHeads);
   const LayerConfig& layer_config = layer.layer_config;
@@ -340,7 +341,7 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
 
 void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     const LayerWeightsPtrs& layer,
-                    AttentionActivations& activations, QBatch& qbatch,
+                    AttentionActivationsPtrs& activations, QBatch& qbatch,
                     MatMulEnv& env, int flags) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttention);
 
@@ -352,13 +353,14 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
   if (flags & kAttentionUseOld) {
-    DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
-                          env.ctx);
+    DotSoftmaxWeightedSum(num_tokens, layer_idx, layer.query_norm_scale,
+                          activations, qbatch, env.ctx);
   } else {
     // * 2 does not help on Turin.
     FlashAttention(num_tokens,
                    /*target_parallelism=*/env.ctx.pools.MaxWorkers() * 1,
-                   layer_idx, layer, activations, qbatch, env.ctx);
+                   layer_idx, layer.query_norm_scale, activations, qbatch,
+                   env.ctx);
   }
   SumHeads(layer, activations, env);
 }
