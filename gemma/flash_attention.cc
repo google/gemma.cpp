@@ -91,7 +91,7 @@ static void TransposeQ(const MatPtrT<float>& q, MatPtrT<float>& q_t,
 // Updates q in place for RMSNorm and positional encoding.
 void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
                                   MatPtrT<float>& q,
-                                  const MatPtrT<float>& query_norm_scale,
+                                  const MatPtr& query_norm_scale,
                                   const size_t layer_idx,
                                   const AttentionActivationsPtrs& activations,
                                   ThreadingContext& ctx) {
@@ -592,8 +592,7 @@ size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens,
 // grouped together so that mode 1 or 2 can be used, and choosing which of the
 // 3 modes to use for best efficiency.
 void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
-                    const size_t layer_idx,
-                    const MatPtrT<float>& query_norm_scale,
+                    const size_t layer_idx, const MatPtr& query_norm_scale,
                     AttentionActivationsPtrs& activations, QBatch& qbatch,
                     ThreadingContext& ctx) {
   GCPP_ZONE(ctx, 0, Zones::kFlashAttentionInclusive);

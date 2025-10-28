@@ -30,7 +30,7 @@ namespace gcpp {
   namespace NAMESPACE {                                                      \
   void RMSNormAndPositionalEncoding(                                         \
       size_t num_tokens, const QBatch& qbatch, MatPtrT<float>& q,            \
-      const MatPtrT<float>& query_norm_scale, size_t layer_idx,              \
+      const MatPtr& query_norm_scale, size_t layer_idx,                      \
       const AttentionActivationsPtrs& activations, ThreadingContext& ctx);   \
                                                                              \
   void SingleFlashAttention(size_t start_pos, size_t last_pos,               \
@@ -45,8 +45,7 @@ namespace gcpp {
                       size_t total_tasks, size_t target_parallelism);        \
                                                                              \
   void FlashAttention(size_t num_tokens, size_t target_parallelism,          \
-                      size_t layer_idx,                                      \
-                      const MatPtrT<float>& query_norm_scale,                \
+                      size_t layer_idx, const MatPtr& query_norm_scale,      \
                       AttentionActivationsPtrs& activations, QBatch& qbatch, \
                       ThreadingContext& ctx);                                \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                \

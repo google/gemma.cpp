@@ -203,6 +203,12 @@ struct Activations {
     ffw_out.OverrideRows(batch_size);
 
     attention_storage.SetBatchSize(batch_size);
+    attention.q = attention_storage.q;
+    attention.q_T = attention_storage.q_T;
+    attention.pre_att_rms_out = attention_storage.pre_att_rms_out;
+    attention.att = attention_storage.att;
+    attention.att_out = attention_storage.att_out;
+    attention.att_sums = attention_storage.att_sums;
   }
 
   const LayerConfig& layer_config;
