@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ops/matmul.h"
+#include "ops/ops.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // TokenAndProb, RngStream
 #include "util/mat.h"
@@ -1125,9 +1126,25 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
 
 // See below for a specialized version for top-1 sampling.
 // TODO: support bf16 logits using Decompress2.
+// Computes softmax probabilities for the given logits, normalizing in-place.
+// The calculation is numerically stable, using the max-subtraction trick to
+// compute exp(logits[i] - max(logits)) before normalizing by the sum.
+// If temperature is provided and not 1.0, each intermediate exp() result is
+// divided by temperature before normalization; however, this division by
+// temperature cancels out during the final normalization step, meaning
+// temperature currently has no effect on the output probabilities.
+// @param logits In-out: on input, contains logits; on output, overwritten with
+// probabilities.
+// @param ctx Input: threading context for parallelism and profiling.
+// @param worker Input: worker thread index.
+// @param temperature Input: softmax temperature.
+// @param softmax_max_out Optional output: if not null, stores the max logit
+// value.
+// @param softmax_d_out Optional output: if softmax_max is not null, this must
+// not be null and stores the sum of exp(logit - max).
 static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
-                                 const size_t worker,
-                                 float temperature = 1.0f) {
+                                 const size_t worker, float temperature = 1.0f,
+                                 const SMOptions& sm_options = {}) {
   GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
 
@@ -1171,6 +1188,10 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
   MulByConst(mul, logits.data(), logits.size());
+  if (sm_options.max_out) {
+    *sm_options.max_out = hn::GetLane(vmax);
+    *sm_options.d_out = sum_exp;
+  }
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /

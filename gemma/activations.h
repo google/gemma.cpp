@@ -73,6 +73,10 @@ struct AttentionActivations {
         att_out(MatFactory("att_out", batch_size,
                            layer_config.heads * layer_config.qkv_dim,
                            allocator)),
+        softmax_max(MatFactory("softmax_max", batch_size, layer_config.heads,
+                               allocator)),
+        softmax_d(
+            MatFactory("softmax_d", batch_size, layer_config.heads, allocator)),
         att_sums(
             MatFactory("att_sums", batch_size, config.model_dim, allocator)),
 
@@ -108,6 +112,8 @@ struct AttentionActivations {
     pre_att_rms_out.OverrideRows(batch_size);
     att.OverrideRows(batch_size);
     att_out.OverrideRows(batch_size);
+    softmax_max.OverrideRows(batch_size);
+    softmax_d.OverrideRows(batch_size);
     att_sums.OverrideRows(batch_size);
 
     // `inv_timescale*` are not batched.
@@ -120,6 +126,8 @@ struct AttentionActivations {
   MatStorageT<float> pre_att_rms_out;
   MatStorageT<float> att;      // attention vector
   MatStorageT<float> att_out;  // attention output
+  MatStorageT<float> softmax_max;  // see OnlineSoftmaxState
+  MatStorageT<float> softmax_d;    // see OnlineSoftmaxState
   // Accumulation of attention outputs over heads
   MatStorageT<BF16> att_sums;
 
@@ -145,6 +153,8 @@ struct AttentionActivationsPtrs {
     pre_att_rms_out = activations.pre_att_rms_out;
     att = activations.att;
     att_out = activations.att_out;
+    softmax_max = activations.softmax_max;
+    softmax_d = activations.softmax_d;
     att_sums = activations.att_sums;
     inv_timescale = activations.inv_timescale;
     inv_timescale_global = activations.inv_timescale_global;
@@ -157,6 +167,8 @@ struct AttentionActivationsPtrs {
     pre_att_rms_out.OverrideRows(batch_size);
     att.OverrideRows(batch_size);
     att_out.OverrideRows(batch_size);
+    softmax_max.OverrideRows(batch_size);
+    softmax_d.OverrideRows(batch_size);
     att_sums.OverrideRows(batch_size);
     // `inv_timescale*` are not batched.
   }
@@ -180,6 +192,14 @@ struct AttentionActivationsPtrs {
   // Attention output computed from att * V, size batch_size x (q_heads *
   // qkv_dim).
   MatPtrT<float> att_out;
+  // The maximum logit value encountered when computing att_out from att,
+  // size batch_size x q_heads . See OnlineSoftmaxState for details.
+  // WARNING: Only filled in for AttentionImpl::kOld.
+  MatPtrT<float> softmax_max;
+  // The sum of scaled exponentials when computing att_out from att,
+  // size batch_size x q_heads . See OnlineSoftmaxState for details.
+  // WARNING: Only filled in for AttentionImpl::kOld.
+  MatPtrT<float> softmax_d;
   // Accumulation of attention outputs over heads, size batch_size x
   // model_dim.
   MatPtrT<BF16> att_sums;

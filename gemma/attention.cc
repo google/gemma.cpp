@@ -123,7 +123,8 @@ void SingleDotSoftmaxWeightedSum(
     float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
     const MatPtr& query_norm_scale, const size_t layer_idx,
     const AttentionActivationsPtrs& activations, float* HWY_RESTRICT att,
-    float* HWY_RESTRICT att_out, ThreadingContext& ctx, const size_t worker) {
+    float* HWY_RESTRICT att_out, const SMOptions& sm_options,
+    ThreadingContext& ctx, const size_t worker) {
   const float att_cap = activations.config.att_cap;
   const float query_scale = activations.query_scale;
   // --seq_len must be large enough to avoid wraparound.
@@ -146,7 +147,7 @@ void SingleDotSoftmaxWeightedSum(
   // SoftMax with optional SoftCap yields "probabilities" in att.
   const Logits logits(att, last_pos + 1);
   MaybeLogitsSoftCap(att_cap, logits, ctx, worker);
-  Softmax(logits, ctx, worker, /*temperature=*/1.0f);
+  Softmax(logits, ctx, worker, /*temperature=*/1.0f, sm_options);
 
   WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out,
                ctx, worker);
@@ -203,6 +204,8 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
     float* HWY_RESTRICT att = activations.att.Row(tq_idx) + head * seq_len;
     float* HWY_RESTRICT att_out =
         activations.att_out.Row(tq_idx) + head * qkv_dim;
+    SMOptions sm_options{.max_out = activations.softmax_max.Row(tq_idx) + head,
+                         .d_out = activations.softmax_d.Row(tq_idx) + head};
 
     // Make strided read-only views into the kv cache for
     // this query and head.
@@ -215,7 +218,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 
     SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v,
                                 query_norm_scale, layer_idx, activations, att,
-                                att_out, ctx, worker);
+                                att_out, sm_options, ctx, worker);
   };
 
   {
