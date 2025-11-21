@@ -60,6 +60,7 @@ namespace gcpp {
                       size_t layer_idx, const MatPtr& query_norm_scale,       \
                       AttentionActivationsPtrs& activations, QBatch& qbatch,  \
                       ThreadingContext& ctx);                                 \
+                                                                              \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                 \
   }  // namespace NAMESPACE
 

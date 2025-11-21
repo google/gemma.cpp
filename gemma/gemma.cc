@@ -513,8 +513,10 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
   if (max_prompt_size > seq_len) {
-    HWY_ABORT("max_prompt_size = %zu, increase --seq_len to at least that.",
-              max_prompt_size);
+    HWY_ABORT(
+        "max_prompt_size = %zu, seq_len = %zu, increase --seq_len to at least "
+        "that.",
+        max_prompt_size, seq_len);
   }
   HWY_ASSERT(activations.attention.div_seq_len.GetDivisor() == seq_len);
 
