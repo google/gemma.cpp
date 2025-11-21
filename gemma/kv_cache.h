@@ -17,9 +17,11 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_KV_CACHE_H_
 
 #include <stddef.h>
+
+#include <optional>
 #include <vector>
 
-#include "gemma/configs.h"  // ModelConfig
+#include "gemma/configs.h"     // ModelConfig
 #include "gemma/gemma_args.h"  // InferenceArgs
 #include "util/basics.h"       // BF16
 #include "util/mat.h"
@@ -31,12 +33,13 @@ using KV_t = float;
 struct KVCache {
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const Allocator& allocator);
-
   // Returns a deep copy of the KVCache. Use explicit function instead of
   // copy ctor to make the cost explicit.
   KVCache Copy();
 
-  size_t SeqLen() const { return kv_cache.Rows(); }
+  size_t SeqLen() const {
+    return kv_cache.Rows();
+  }
 
   MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
 
@@ -49,7 +52,9 @@ struct KVCache {
 
 // A non-owning view of a KVCache.
 struct KVCachePtr {
-  size_t SeqLen() const { return kv_cache.Rows(); }
+  size_t SeqLen() const {
+    return kv_cache.Rows();
+  }
   MatPtrT<KV_t> kv_cache;
 };
 

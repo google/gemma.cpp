@@ -17,7 +17,9 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
