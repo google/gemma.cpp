@@ -135,8 +135,8 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":compress",
         ":distortion",
-        ":sfp",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@highway//:hwy",
@@ -182,7 +182,6 @@ cc_library(
         "//:mat",
         "//:threading_context",
         "@highway//:hwy",
-        "@highway//:nanobenchmark",
         "@highway//:profiler",
         "@highway//:stats",
         "@highway//:thread_pool",
