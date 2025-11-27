@@ -891,18 +891,6 @@ class DotStats {
   hwy::Stats s_times[kVariants];
 };
 
-// Returns normalized value in [-1, 1).
-float RandomFloat(RngStream& rng) {
-  const uint32_t exp = hwy::BitCastScalar<uint32_t>(1.0f);
-  const uint32_t mantissa_mask = hwy::MantissaMask<float>();
-  const uint32_t representation = exp | (rng() & mantissa_mask);
-  const float f12 = hwy::BitCastScalar<float>(representation);
-  HWY_DASSERT(1.0f <= f12 && f12 < 2.0f);  // exponent is 2^0, only mantissa
-  const float f = (2.0f * (f12 - 1.0f)) - 1.0f;
-  HWY_DASSERT(-1.0f <= f && f < 1.0f);
-  return f;
-}
-
 // `raw` holds the decompressed values, so that the test measures only the
 // error from the Dot algorithms, not the compression.
 template <typename Packed>

@@ -82,6 +82,8 @@ struct CompressTraits<float> {
     hn::StoreU(raw1, df, packed.ptr + packed_ofs + NF);
   }
 
+  static float ToFloatSlow(const Packed x) { return x; }
+
   template <class DBF16, HWY_IF_BF16_D(DBF16), class VBF16 = hn::Vec<DBF16>>
   static HWY_INLINE void Load2(DBF16 dbf16,
                                const PackedSpan<const Packed>& packed,
@@ -254,6 +256,10 @@ struct CompressTraits<BF16> {
                packed.ptr + packed_ofs);
   }
 
+  static float ToFloatSlow(const Packed x) {
+    return hwy::ConvertScalarTo<float>(x);
+  }
+
   template <class DBF16, HWY_IF_BF16_D(DBF16)>
   static HWY_INLINE void Load2(DBF16 dbf16,
                                const PackedSpan<const Packed>& packed,
@@ -397,6 +403,27 @@ struct CompressTraits<SfpStream> {
     }
   }
 
+  // NOTE: this does not take into account the per-tensor scale.
+  static float ToFloatSlow(const Packed x) {
+    uint32_t sfp = x.byte;
+    HWY_ASSERT(sfp != 0x80);  // -0 is reserved
+
+    const uint32_t sign32 = (sfp & 0x80) << 24;
+    sfp &= 0x7F;
+    const bool large_e = sfp >= 64;
+    const size_t m_bits = large_e ? 3 : 2;
+    uint32_t m = sfp & ((1u << m_bits) - 1u);
+    size_t e = sfp >> m_bits;
+    if (sfp == 0) return 0.0f;
+    const uint32_t e_bias = large_e ? 15 : 23;
+    const uint32_t exp32 = static_cast<uint32_t>(127 + e - e_bias) << 23;
+    const uint32_t mnt32 = m << (23 - m_bits);
+    const uint32_t binary32 = sign32 | exp32 | mnt32;
+    float result;
+    hwy::CopySameSize(&binary32, &result);
+    return result;
+  }
+
   template <class D>  // Caller checks this is f32 or bf16
   static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, hn::Vec<D>& raw0,
@@ -436,6 +463,12 @@ struct CompressTraits<I8Stream> {
                                hn::Vec<D>& raw1) {
     IntCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
   }
+
+  static float ToFloatSlow(const Packed x) {
+    HWY_DASSERT(!"Not supported - requires a stream");
+    return 0.0f;
+  }
+  // Store2 is not yet implemented.
 
   template <class D, typename Raw>
   static HWY_INLINE void DecompressAndZeroPad(
@@ -483,6 +516,10 @@ struct CompressTraits<NuqStream> {
     NuqCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
   }
 
+  static float ToFloatSlow(const Packed x) {
+    HWY_DASSERT(!"Not supported - requires a stream");
+    return 0.0f;
+  }
   // Store2 is not yet implemented.
 
   template <class D, typename Raw>

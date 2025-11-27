@@ -171,6 +171,7 @@ cc_library(
     name = "test_util",
     hdrs = ["util/test_util.h"],
     deps = [
+        ":basics",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:stats",
@@ -575,6 +576,7 @@ cc_library(
         ":mat",
         ":matmul",
         ":matmul_env",
+        ":test_util",
         ":model_store",
         ":ops",
         ":threading",
