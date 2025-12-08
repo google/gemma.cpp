@@ -66,6 +66,7 @@ cc_library(
     srcs = ["util/topology.cc"],
     hdrs = ["util/topology.h"],
     deps = [
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:topology",
     ],
