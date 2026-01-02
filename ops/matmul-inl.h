@@ -837,10 +837,11 @@ class MMImpl {
                                hwy::platform::InvariantTicksPerSecond();
     const double flops = 2 * M * K * N * num_B / min_elapsed;  // * 2 for FMA
     if (HWY_UNLIKELY(env.print_measurement && tuner.ShouldPrint())) {
-      fprintf(stderr, "%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n",
-              M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, cfg.MR(),
-              cfg.MC(), cfg.KC(), cfg.NC(), StringFromOrder(cfg.Order()),
-              cfg.InnerTasks());
+      fprintf(
+          stderr,
+          "%4zu,%4zu,%4zu,B%zu,%7.1f,%.2f ms, MR%zu,%4zu,%4zu,%5zu,%-7s,%zu\n",
+          M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, cfg.MR(), cfg.MC(),
+          cfg.KC(), cfg.NC(), StringFromOrder(cfg.Order()), cfg.InnerTasks());
     }
     if (HWY_UNLIKELY(env.print_best && tuner.Best())) {
       const auto ratio = [&tuner](uint64_t ticks) -> double {
@@ -850,7 +851,8 @@ class MMImpl {
       const MMConfig& best = *tuner.Best();
       fprintf(
           stderr,
-          "\n%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n",
+          "\n%4zu,%4zu,%4zu,B%zu,%7.1f,%.2f ms, MR%zu,%4zu,%4zu,%5zu,%-7s,%zu, "
+          "%.2fx,%.2fx\n",
           M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
           best.KC(), best.NC(), StringFromOrder(best.Order()),
           best.InnerTasks(), ratio(tuner.WorstMinTicks()),
@@ -906,8 +908,8 @@ class MMLoops {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_mc = args.ranges_mc.Range(0);
-    const IndexRange& range_kc = args.ranges_kc.Range(0);
+    const IndexRange& range_mc = args.ranges_mc.Range(0);  // whole M
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
 
     parallel.ForN(
         args.env.ctx, args.range_n, MultipleN(sizeof(TC), args.line_bytes),
@@ -941,7 +943,7 @@ class MMLoops {
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_K);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
-    const IndexRange& range_mc = args.ranges_mc.Range(0);
+    const IndexRange& range_mc = args.ranges_mc.Range(0);  // whole M
 
     parallel.ForN(args.env.ctx, args.range_n,
                   MultipleN(sizeof(TC), args.line_bytes), args.inner_tasks,
@@ -977,7 +979,7 @@ class MMLoops {
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_kc = args.ranges_kc.Range(0);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
 
     parallel.ForRangesMC_NC(
         args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
@@ -1158,8 +1160,9 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
     HWY_ASSERT(K <= MMEntireA::kMaxK);
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
-    tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(BF16), env.print_config));
+    const size_t max_M = MMKeys::BucketM(M);
+    tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16),
+                                     env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();

@@ -78,13 +78,9 @@ class VitAttention {
     const float query_scale = 1.0f / sqrtf(static_cast<float>(qkv_dim));
     PROFILER_ZONE("Gen.VitAttention.DotSoftmax");
 
-    // Shift Q, K, VT to MatStorageT.
-    MatStorageT<float> Q("Q2", Extents2D(num_tokens_, qkv_dim),
-                         env_.ctx.allocator, MatPadding::kPacked);
-    MatStorageT<float> K("K2", Extents2D(seq_len, qkv_dim), env_.ctx.allocator,
-                         MatPadding::kPacked);
-    MatStorageT<float> C("C2", Extents2D(num_tokens_, seq_len),
-                         env_.ctx.allocator, MatPadding::kPacked);
+    MatPtrT<float>& Q = activations_.attention.vit_Q;
+    MatPtrT<float>& K = activations_.attention.vit_K;
+    MatPtrT<float>& C = activations_.attention.vit_C;
 
     // Initialize att_out to zero prior to head loop.
     ZeroInit(activations_.attention.att_out);
@@ -295,19 +291,20 @@ static HWY_NOINLINE void EmbedImagePatches(const Image& image,
   const size_t model_dim = model_config.vit_config.model_dim;
   const size_t patch_width = model_config.vit_config.patch_width;
   const size_t num_tokens = model_config.vit_config.seq_len;
-  const size_t patch_size = patch_width * patch_width * 3;
+  const size_t patch_area = patch_width * patch_width * 3;
+  const hwy::Divisor div_patch_dim(patch_width);
   HWY_DASSERT(weights.vit_img_embedding_kernel.Rows() == model_dim);
-  HWY_DASSERT(weights.vit_img_embedding_kernel.Cols() == patch_size);
+  HWY_DASSERT(weights.vit_img_embedding_kernel.Cols() == patch_area);
   HWY_DASSERT(activations.x.Cols() == model_dim);
   (void)model_dim;
   // img/embedding/kernel has original shape (14, 14, 3, 1152)
   // H x W x C x D transposed to D x (H x W x C) so here (1152, 14 * 14 * 3)
   // image_patches is (256, 14 * 14 * 3)
   // Must be padded, see `DoDecompressA`.
-  MatStorageT<float> image_patches("patches", Extents2D(num_tokens, patch_size),
+  MatStorageT<float> image_patches("patches", Extents2D(num_tokens, patch_area),
                                    env.ctx.allocator, MatPadding::kOdd);
   for (size_t i = 0; i < num_tokens; ++i) {
-    image.GetPatch(i, image_patches.Row(i));
+    image.GetPatch(i, div_patch_dim, image_patches.Row(i));
   }
   CallMatMul(image_patches, weights.vit_img_embedding_kernel,
              weights.vit_img_embedding_bias.PackedScale1(), env, activations.x);

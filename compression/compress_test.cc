@@ -259,6 +259,13 @@ class TestDecompressAndCompress {
             [](DF, VF v, VF v1) HWY_ATTR -> VF { return hn::Add(v, v1); });
         HWY_ASSERT_ARRAY_EQ(expected2.get(), out.get(), num);
 
+        // `out` already contains v + v1.
+        Decompress2AndCompressInplace(
+            df, out.get(), num, p1.get(), p2.get(), /*p2_ofs=*/0,
+            [](DF, VF v, VF /*v1*/, VF v2)
+                HWY_ATTR -> VF { return hn::Add(v, v2); });
+        HWY_ASSERT_ARRAY_EQ(expected3.get(), out.get(), num);
+
         Decompress1AndCompressTo(df, out.get(), num, p.get(),
                                  [](DF, VF v) HWY_ATTR -> VF { return v; });
         HWY_ASSERT_ARRAY_EQ(expected1.get(), out.get(), num);

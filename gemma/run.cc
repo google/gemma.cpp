@@ -89,9 +89,11 @@ std::string GetPrompt(const InferenceArgs& inference) {
 }
 
 // The main Read-Eval-Print Loop.
-void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
-               const Gemma& gemma, KVCache& kv_cache, MatMulEnv& env) {
+void ReplGemma(const GemmaArgs& args, const Gemma& gemma, KVCache& kv_cache,
+               MatMulEnv& env) {
   PROFILER_ZONE("Gen.misc");
+  const InferenceArgs& inference = args.inference;
+  const int verbosity = inference.verbosity;
   size_t abs_pos = 0;                     // across turns
   size_t tokens_generated_this_turn = 0;  // differentiates prefill from reply
   size_t prompt_size = 0;
@@ -113,12 +115,12 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     HWY_ASSERT(image.ReadPPM(inference.image_file.path));
     const size_t image_size = config.vit_config.image_size;
     image.Resize(image_size, image_size);
-    RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
-                                    .use_spinning = threading.spin};
+    RuntimeConfig runtime_config = {.verbosity = verbosity,
+                                    .use_spinning = args.threading.spin};
     double image_tokens_start = hwy::platform::Now();
     gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,
                               image_tokens, env);
-    if (inference.verbosity >= 1) {
+    if (verbosity >= 1) {
       double image_tokens_duration = hwy::platform::Now() - image_tokens_start;
       fprintf(stderr,
               "\n\n[ Timing info ] Image token generation took: %d ms\n",
@@ -129,11 +131,15 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   // callback function invoked for each generated token.
   auto batch_stream_token = [&](size_t query_idx, size_t pos, int token,
                                 float) {
-    std::string token_text;
-    HWY_ASSERT(gemma.Tokenizer().Decode(std::vector<int>{token}, &token_text));
-
     HWY_ASSERT(pos == abs_pos);
     ++abs_pos;
+
+    std::string token_text;
+    if (!gemma.Tokenizer().Decode(std::vector<int>{token}, &token_text)) {
+      if (token == -2) return true;  // Gemma 3 ViT?
+      HWY_WARN("Failed to decode token %d.", token);
+    }
+
     const bool in_prompt = tokens_generated_this_turn < prompt_size;
     const bool first_response_token = tokens_generated_this_turn == prompt_size;
     ++tokens_generated_this_turn;
@@ -185,7 +191,7 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
     TimingInfo timing_info = {.verbosity = inference.verbosity};
     RuntimeConfig runtime_config = {.verbosity = inference.verbosity,
                                     .batch_stream_token = batch_stream_token,
-                                    .use_spinning = threading.spin};
+                                    .use_spinning = args.threading.spin};
     inference.CopyTo(runtime_config);
     std::vector<int> prompt;
     size_t prefix_end = 0;
@@ -248,14 +254,14 @@ void ReplGemma(const ThreadingArgs& threading, const InferenceArgs& inference,
   }
 }
 
-void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
-         const InferenceArgs& inference) {
+void Run(const GemmaArgs& args) {
   PROFILER_ZONE("Run.misc");
 
-  ThreadingContext ctx(threading);
+  ThreadingContext ctx(args.threading);
   MatMulEnv env(ctx);
+  const InferenceArgs& inference = args.inference;
   if (inference.verbosity >= 3) env.print_best = true;
-  const Gemma gemma(loader, inference, ctx);
+  const Gemma gemma(args, ctx);
   KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
 
   if (inference.verbosity >= 1) {
@@ -283,13 +289,12 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
     if (inference.IsInteractive()) {
       std::cout << "\033[2J\033[1;1H"  // clear screen
                 << kAsciiArtBanner << "\n\n";
-      ShowConfig(loader, threading, inference, gemma.Config(),
-                 gemma.WeightReadMode(), ctx);
+      ShowConfig(args, gemma.Config(), gemma.WeightReadMode(), ctx);
       std::cout << "\n" << instructions << "\n";
     }
   }
 
-  ReplGemma(threading, inference, gemma, kv_cache, env);
+  ReplGemma(args, gemma, kv_cache, env);
 }
 
 }  // namespace gcpp
@@ -298,17 +303,24 @@ int main(int argc, char** argv) {
   gcpp::InternalInit();
   {
     // Negligible CPU time.
-    gcpp::LoaderArgs loader(argc, argv);
-    gcpp::ThreadingArgs threading(argc, argv);
-    gcpp::InferenceArgs inference(argc, argv);
+    gcpp::ConsumedArgs consumed(argc, argv);
+    gcpp::GemmaArgs args(argc, argv, consumed);
 
     if (gcpp::HasHelp(argc, argv)) {
       std::cerr << gcpp::kAsciiArtBanner;
-      gcpp::ShowHelp(loader, threading, inference);
+      fprintf(stderr,
+              "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
+              "==========================================================\n\n"
+              "*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
+              "--weights gemma2-2b-it-sfp.sbs\n\n");
+      args.Help();
       return 0;
     }
 
-    gcpp::Run(loader, threading, inference);
+    // After `HasHelp` so that we print --help even if unconsumed args remain.
+    consumed.AbortIfUnconsumed();
+
+    gcpp::Run(args);
   }
   PROFILER_PRINT_RESULTS();  // Must call outside the zone above.
   return 0;

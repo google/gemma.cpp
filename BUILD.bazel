@@ -8,7 +8,7 @@ load("@rules_license//rules:license.bzl", "license")
 
 package(
     default_applicable_licenses = [
-        "//:license",  # Placeholder comment, do not modify
+        ":license",  # Placeholder comment, do not modify
     ],
     # Placeholder for internal compatible_with
     default_visibility = ["//visibility:public"],
@@ -66,6 +66,7 @@ cc_library(
     srcs = ["util/topology.cc"],
     hdrs = ["util/topology.h"],
     deps = [
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:topology",
     ],
@@ -111,6 +112,7 @@ cc_library(
         ":threading",
         ":topology",
         ":zones",
+        "//io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:profiler",
@@ -133,13 +135,15 @@ cc_test(
     name = "flash_attention_test",
     srcs = ["gemma/flash_attention_test.cc"],
     deps = [
+        ":activations",
+        ":attention",
         ":configs",
         ":gemma_args",
         ":gemma_lib",
         ":kv_cache",
         ":mat",
         ":matmul",
-        ":ops",
+        ":test_util",
         ":threading_context",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
@@ -172,8 +176,11 @@ cc_library(
     name = "test_util",
     hdrs = ["util/test_util.h"],
     deps = [
+        ":basics",
+        ":mat",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",
         "@highway//:stats",
     ],
 )
@@ -434,15 +441,16 @@ cc_test(
     # for test_suite.
     tags = ["ops_tests"],
     deps = [
+        ":activations",
         ":allocator",
         ":basics",
         ":configs",
         ":gemma_lib",
         ":mat",
         ":ops",
+        ":query",
         ":test_util",
         ":threading_context",
-        ":zones",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:test_util",
         "//compression:types",
@@ -519,31 +527,130 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "kv_cache_test",
+    srcs = ["gemma/kv_cache_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":kv_cache",
+        ":threading_context",
+        "//testing/base/public:gunit_main",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
+    name = "activations",
+    hdrs = ["gemma/activations.h"],
+    deps = [
+        ":basics",
+        ":configs",
+        ":gemma_args",
+        ":kv_cache",
+        ":mat",
+        ":ops",
+        ":tensor_stats",
+        ":threading_context",
+    ],
+)
+
+cc_library(
+    name = "query",
+    hdrs = ["gemma/query.h"],
+    deps = [
+        ":basics",
+        ":gemma_args",
+        ":kv_cache",
+        "@highway//:hwy",
+    ],
+)
+
 cc_library(
     name = "gemma_args",
     hdrs = ["gemma/gemma_args.h"],
     deps = [
         ":args",
         ":basics",
+        ":configs",
         ":mat",
+        ":threading_context",
         "//io",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
 )
 
+cc_test(
+    name = "gemma_args_test",
+    srcs = ["gemma/gemma_args_test.cc"],
+    deps = [
+        ":gemma_args",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+    ],
+)
+
+INTERNAL_DEPS = []
+
 cc_library(
-    name = "gemma_lib",
+    name = "attention",
     srcs = [
         "gemma/attention.cc",
         "gemma/flash_attention.cc",
+    ],
+    hdrs = [
+        "gemma/attention.h",
+        "gemma/flash_attention.h",
+        "gemma/flash_structs.h",
+    ],
+    textual_hdrs = [
+        "gemma/gemma-inl.h",
+    ],
+    deps = [
+        ":activations",
+        ":configs",
+        ":mat",
+        ":matmul",
+        ":matmul_env",
+        ":ops",
+        ":query",
+        ":tensor_stats",
+        ":threading",
+        ":threading_context",
+        ":weights",
+        ":zones",
+        "//compression:compress",
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:profiler",
+    ],
+)
+
+cc_library(
+    name = "tensor_stats",
+    srcs = ["gemma/tensor_stats.cc"],
+    hdrs = ["gemma/tensor_stats.h"],
+    deps = [
+        ":basics",
+        ":mat",
+        ":ops",
+        ":threading_context",
+        ":zones",
+        "//compression:compress",
+        "//io",
+        "@highway//:hwy",
+        "@highway//:profiler",
+        "@highway//:stats",
+    ],
+)
+
+cc_library(
+    name = "gemma_lib",
+    srcs = [
         "gemma/gemma.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
-        "gemma/activations.h",
-        "gemma/attention.h",
-        "gemma/flash_attention.h",
         "gemma/gemma.h",
         "gemma/vit.h",
     ],
@@ -551,20 +658,20 @@ cc_library(
         # Avoid linker OOMs when building with sanitizer instrumentation.
         "mem": "28g",
     },
-    textual_hdrs = [
-        "gemma/gemma-inl.h",
-    ],
     deps = [
+        ":activations",
+        ":allocator",
+        ":attention",
         ":basics",
         ":configs",
         ":gemma_args",
         ":kv_cache",
         ":mat",
-        ":matmul",
         ":matmul_env",
         ":model_store",
         ":ops",
-        ":threading",
+        ":query",
+        ":tensor_stats",
         ":threading_context",
         ":weights",
         ":zones",
@@ -573,12 +680,37 @@ cc_library(
         "//io",
         "//io:blob_store",
         "//paligemma:image",
-        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",
+        "@highway//:stats",
         "@highway//:thread_pool",
         "@highway//hwy/contrib/sort:vqsort",
+    ] + INTERNAL_DEPS,
+)
+
+cc_test(
+    name = "gemma_lib_test",
+    srcs = ["gemma/attention_test.cc"],
+    # MatMulEnvs are up to 20GB large.
+    tags = ["requires-mem:28g"],
+    deps = [
+        ":activations",
+        ":attention",
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":matmul_env",
+        ":test_util",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
     ],
 )
 
@@ -604,7 +736,6 @@ cc_library(
         ":gemma_args",
         ":gemma_lib",
         ":matmul_env",
-        ":ops",
         ":threading_context",
         ":tokenizer",
         "@google_benchmark//:benchmark",

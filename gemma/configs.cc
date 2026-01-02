@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFields
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFields
+#include "io/io.h"              // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -238,6 +238,7 @@ static ModelConfig ConfigGemma3_1B() {
   config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   config.model_dim = 1152;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -288,6 +289,7 @@ static ModelConfig ConfigGemma3_4B() {
   config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -337,6 +339,7 @@ static ModelConfig ConfigGemma3_12B() {
   config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -386,6 +389,7 @@ static ModelConfig ConfigGemma3_27B() {
   config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -495,19 +499,19 @@ const char* ModelPrefix(Model model) {
 }
 
 PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
-  if (IsPaliGemma(model)) {
+  const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
+
+  // For models with a fixed wrapping mode, ignore user override.
+  if (config_wrapping == PromptWrapping::PALIGEMMA ||
+      config_wrapping == PromptWrapping::GEMMA_VLM) {
     if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
+      HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
+               ModelPrefix(model));
     }
-    return PromptWrapping::PALIGEMMA;
+    return config_wrapping;
   }
-  if (IsVLM(model)) {
-    if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
-    }
-    return PromptWrapping::GEMMA_VLM;
-  }
-  // Default to IT unless --wrapping=0.
+
+  // For other models, default to IT unless --wrapping=0 is passed.
   return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
                                       : PromptWrapping::GEMMA_IT;
 }
@@ -674,7 +678,9 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return Model::GEMMA3_270M;
 
     case 26:
-      if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
+      if (layer_types & (kDeducedViT|kDeducedKqNorm)) {
+        return Model::GEMMA3_1B;
+      }
       return Model::GEMMA2_2B;
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
@@ -704,6 +710,13 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
                blob_path.path.c_str(), layers, layer_types);
       return Model::UNKNOWN;
   }
+}
+
+AttentionImpl GetAttentionImpl(const std::string& impl) {
+  if (impl == "old") return AttentionImpl::kOld;
+  if (impl == "flash") return AttentionImpl::kFlash;
+  HWY_WARN("Unknown attention implementation: %s. Using kOld.\n", impl.c_str());
+  return AttentionImpl::kOld;
 }
 
 }  // namespace gcpp

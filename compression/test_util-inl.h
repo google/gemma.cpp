@@ -105,7 +105,7 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
   MatStorageT<float> raw("raw", extents, ctx.allocator, MatPadding::kPacked);
   MatStorageT<MatT> compressed("mat", extents, ctx.allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
-  ParallelFor(ParallelismStrategy::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
+  ParallelFor(Parallelism::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
               Callers::kTest, [&](size_t r, size_t thread) {
                 float* HWY_RESTRICT row = raw.Row(r);
                 for (size_t c = 0; c < extents.cols; c++) {
@@ -134,7 +134,7 @@ MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
   MatStorageT<float> raw("raw", extents, ctx.allocator, MatPadding::kPacked);
   MatStorageT<MatT> compressed("trans", extents, ctx.allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
-  ParallelFor(ParallelismStrategy::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
+  ParallelFor(Parallelism::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
               Callers::kTest, [&](size_t r, size_t thread) {
                 float* HWY_RESTRICT row = raw.Row(r);
                 for (size_t c = 0; c < extents.cols; c++) {

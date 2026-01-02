@@ -14,7 +14,6 @@
 // limitations under the License.
 
 #include "compression/types.h"
-#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -38,7 +37,6 @@
 #include "util/mat.h"     // MatStorageT
 #include "util/test_util.h"
 #include "util/threading_context.h"
-#include "hwy/profiler.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // clang-format off
@@ -348,6 +346,51 @@ void TestAllSoftmax() {
   hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
 }
 
+class TestSoftmaxState {
+ public:
+  template <class D>
+  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
+                  hwy::RandomState& rng) {
+    if (count == 0) return;  // *Softmax would assert
+    if (misalign_b == 0) return;
+    using T = hn::TFromD<D>;
+
+    hwy::AlignedFreeUniquePtr<T[]> px =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    hwy::AlignedFreeUniquePtr<T[]> pe =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    HWY_ASSERT(px && pe);
+
+    T* x = px.get() + misalign_a;
+    T* initial_logits = pe.get() + misalign_a;
+
+    for (size_t i = 0; i < count; ++i) {
+      x[i] = Random<T>(rng);
+      initial_logits[i] = x[i];
+    }
+
+    float softmax_max;
+    float softmax_d;
+    Softmax(Logits(x, count), Ctx(), /*worker=*/0, /*temperature=*/1.0f,
+            {.max_out = &softmax_max, .d_out = &softmax_d});
+
+    const float maxval =
+        *std::max_element(initial_logits, initial_logits + count);
+
+    float sum_exp = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+      sum_exp += std::exp(initial_logits[i] - maxval);
+    }
+
+    ASSERT_NEAR(softmax_max, maxval, 1e-6);
+    ASSERT_NEAR(softmax_d, sum_exp, 1e-6);
+  }
+};
+
+void TestAllSoftmaxState() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmaxState>>()(float());
+}
+
 template <size_t k>
 struct TestCreateDistribution {
   void operator()(hwy::RandomState& rng) {
@@ -456,7 +499,7 @@ void TestRopeAndMulBy() {
     x.Row(0)[i] = random_float();
   }
 
-  const float qmul = AttentionActivations::ChooseQueryScale(config);
+  const float qmul = ChooseQueryScale(config);
   constexpr float kmul = 1.0f;
 
   MatStorageT<float> qexpected("qexpected", dim_qkv, ctx.allocator);
@@ -771,6 +814,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstTo);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmaxState);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSigmoid);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllGelu);

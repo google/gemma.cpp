@@ -45,10 +45,7 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 // Wrapper around GemmaEnv to expose to Python.
 class GemmaModel {
  public:
-  GemmaModel(const gcpp::LoaderArgs& loader,
-             const gcpp::ThreadingArgs& threading,
-             const gcpp::InferenceArgs& inference)
-      : env_(loader, threading, inference), last_prob_(0.0f) {}
+  GemmaModel(const gcpp::GemmaArgs& args) : env_(args), last_prob_(0.0f) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
@@ -254,13 +251,15 @@ PYBIND11_MODULE(gemma, mod) {
   py::class_<GemmaModel>(mod, "GemmaModel")
       .def(py::init([](const std::string& tokenizer, const std::string& weights,
                        size_t max_threads) {
-             const gcpp::LoaderArgs loader(tokenizer, weights);
              gcpp::ThreadingArgs threading;
              threading.max_lps = max_threads;
+
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
-             auto gemma =
-                 std::make_unique<GemmaModel>(loader, threading, inference);
+
+             const gcpp::GemmaArgs args(gcpp::LoaderArgs(tokenizer, weights),
+                                        threading, inference);
+             auto gemma = std::make_unique<GemmaModel>(args);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }

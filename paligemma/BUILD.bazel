@@ -29,6 +29,7 @@ cc_test(
     deps = [
         ":image",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
     ],
 )
 

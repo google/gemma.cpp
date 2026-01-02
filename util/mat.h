@@ -181,7 +181,15 @@ class MatPtr : public IFields {
   Extents2D Extents() const { return Extents2D(Rows(), cols_); }
   bool IsEmpty() const { return Rows() == 0 || cols_ == 0; }
   bool SameShape(const MatPtr& other) const {
-    return Rows() == other.Rows() && cols_ == other.cols_;
+    return Rows() == other.Rows() && Cols() == other.Cols();
+  }
+  void DebugCheckSameShape(const MatPtr& other) const {
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (!SameShape(other)) {
+        HWY_ABORT("%s: shape mismatch %zu x %zu vs %zu x %zu\n", name_.c_str(),
+                  Rows(), Cols(), other.Rows(), Cols());
+      }
+    }
   }
   // Future calls to `Rows()` during this class' lifetime (not serialized)
   // will return this value. Used to set the actual number of rows for
@@ -284,6 +292,9 @@ class MatPtrT : public MatPtr {
  public:
   using T = MatT;
 
+  // Default constructor for use with uninitialized views.
+  MatPtrT() = default;
+
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
       : MatPtr(name, TypeEnum<MatT>(), extents) {}
@@ -296,7 +307,10 @@ class MatPtrT : public MatPtr {
     if (GetType() == Type::kUnknown) {
       SetType(TypeEnum<MatT>());
     } else {
-      HWY_ASSERT(other.GetType() == TypeEnum<MatT>());
+      if (HWY_UNLIKELY(other.GetType() != TypeEnum<MatT>())) {
+        HWY_ABORT("Type mismatch: MatT %s, constructing from %s",
+                  TypeName<MatT>(), TypeName(other.GetType()));
+      }
     }
   }
   MatPtrT& operator=(const MatPtr& other) {
@@ -428,6 +442,21 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
 // Like CallUpcasted, but only for activation types: kBF16 and kF32.
 template <class Func, typename... Args>
 decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
+                                      Args&&... args) {
+  if (base->GetType() == Type::kF32) {
+    const MatPtrT<float> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kBF16) {
+    const MatPtrT<BF16> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+  }
+}
+
+// Like CallUpcasted, but only for kv_cache types: kBF16 and kF32.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedKV(const MatPtr* base, const Func& func,
                                       Args&&... args) {
   if (base->GetType() == Type::kF32) {
     const MatPtrT<float> mat(*base);

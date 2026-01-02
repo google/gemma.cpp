@@ -18,7 +18,10 @@
 
 #include <stddef.h>
 
-#include "gemma/configs.h"  // ModelConfig
+#include <optional>
+#include <vector>
+
+#include "gemma/configs.h"     // ModelConfig
 #include "gemma/gemma_args.h"  // InferenceArgs
 #include "util/basics.h"       // BF16
 #include "util/mat.h"
@@ -27,17 +30,32 @@ namespace gcpp {
 
 using KV_t = float;
 
+// A non-owning view of a KVCache.
+struct KVCachePtr {
+  bool IsEmpty() const { return kv_cache.Rows() == 0; }
+  size_t SeqLen() const;
+
+  MatPtrT<KV_t> kv_cache;
+};
+
 struct KVCache {
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const Allocator& allocator);
-
   // Returns a deep copy of the KVCache. Use explicit function instead of
   // copy ctor to make the cost explicit.
   KVCache Copy();
 
-  size_t SeqLen() const { return kv_cache.Rows(); }
+  size_t SeqLen() const {
+    return kv_cache.Rows();
+  }
 
   MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
+
+  KVCachePtr ToPtr() {
+    return KVCachePtr{
+        .kv_cache = kv_cache,
+    };
+  }
 
  private:
   const Allocator& allocator_;
@@ -45,6 +63,13 @@ struct KVCache {
   // For use by other ctor and Copy()
   KVCache(const Extents2D& kv_extents, const Allocator& allocator);
 };
+
+inline size_t KVCachePtr::SeqLen() const {
+  return kv_cache.Rows();
+}
+
+// Convenience function to create views into KVCaches.
+std::vector<KVCachePtr> ToKVCachePtrs(const hwy::Span<KVCache>& kv_caches);
 
 }  // namespace gcpp
 

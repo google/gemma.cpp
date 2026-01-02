@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <string>
 #include <vector>
 
 #include "util/allocator.h"
@@ -46,7 +47,9 @@ size_t RoundDownWithFloor(size_t value, size_t multiple) {
 // multiple of `multiple`, or 0 if none exists.
 size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
                    const size_t multiple) {
-  HWY_DASSERT(end != 0 && dim != 0 && multiple != 0);
+  HWY_DASSERT(end != 0);
+  HWY_DASSERT(dim != 0);
+  HWY_DASSERT(multiple != 0);
   size_t prev = RoundDownWithFloor(end, multiple);
   // Avoid returning `end` if rounding down had no effect.
   if (prev == end) prev -= multiple;
@@ -62,10 +65,10 @@ size_t PrevDivisor(const size_t begin, const size_t end, const size_t dim,
 // and holds most of their arguments in member variables.
 class GenerateCandidates {
  public:
-  GenerateCandidates(const CacheInfo& cache, size_t M, size_t K, size_t N,
+  GenerateCandidates(const CacheInfo& cache, size_t max_M, size_t K, size_t N,
                      size_t num_B, size_t sizeof_TC, bool print_config)
       : cache_(cache),
-        M_(M),
+        max_M_(max_M),
         K_(K),
         N_(N),
         num_B_(num_B),
@@ -89,14 +92,14 @@ class GenerateCandidates {
           for (size_t mc : MC(mr, kc, order)) {
             for (size_t nc : NC(mr, mc, kc, order)) {
               for (int inner_tasks : all_inner_tasks) {
-                const MMConfig config(K_, N_, mr, mc, kc, nc, kc_multiple_,
-                                      nc_multiple_, order, inner_tasks);
-                const size_t M_tasks = config.RangesOfMC(M_).NumTasks();
+                const MMConfig config(max_M_, K_, N_, mr, mc, kc, nc,
+                                      kc_multiple_, nc_multiple_, order,
+                                      inner_tasks);
+                const size_t M_tasks = config.RangesOfMC(max_M_).NumTasks();
                 const size_t K_tasks = config.RangesOfKC(K_).NumTasks();
 
-                // Blocks only make sense when there are multiple M tasks.
-                if (IsBlock(order) != (M_tasks > 1)) continue;
-                // Single KC only makes sense when there is a single K task.
+                // Do not use single-MC/KC order if there are multiple.
+                if (IsOneMC(order) != (M_tasks == 1)) continue;
                 if (IsOneKC(order) != (K_tasks == 1)) continue;
 
                 candidates.push_back(config);
@@ -114,6 +117,25 @@ class GenerateCandidates {
  private:
   using SizeVec = std::vector<size_t>;
 
+  // Concatenate and print once because this can be called concurrently.
+  void MaybePrintSizes(size_t dim, size_t max, const char* caption,
+                       const SizeVec& sizes) const {
+    if (!print_config_ || sizes.empty()) return;
+    std::string out("num_B ");
+    out += std::to_string(num_B_);
+    out += " (";
+    out += std::to_string(dim);
+    out += ", max ";
+    out += std::to_string(max);
+    out += ") ";
+    out += caption;
+    out += ": ";
+    for (size_t size : sizes) {
+      out += std::to_string(size) + " ";
+    }
+    fprintf(stderr, "%s\n", out.c_str());
+  }
+
   // How many rows of A per call to `MMKernel::LoopKC`. Lower values may
   // be better for SIMD targets with fewer registers.
   SizeVec MR() const {
@@ -125,14 +147,14 @@ class GenerateCandidates {
     SizeVec all_mr;
     all_mr.reserve(3);
     // AVX2's 16 registers are not enough for four rows, but SSE4 may benefit.
-    if (M_ >= kMaxMR && !is_avx2) all_mr.push_back(kMaxMR);
+    if (max_M_ >= kMaxMR && !is_avx2) all_mr.push_back(kMaxMR);
     // Allow for AVX-512 but not SSE4 (for which 4 are usually better). Also
     // enable if not enough rows for 4.
-    if (M_ >= 2 && (M_ < kMaxMR || (!is_sse && !is_wasm))) {
+    if (max_M_ >= 2 && (max_M_ < kMaxMR || (!is_sse && !is_wasm))) {
       all_mr.push_back(size_t{2});
     }
     // Even SSE4 usually prefers 2 rows; only enable for single rows.
-    if (M_ == 1) all_mr.push_back(size_t{1});
+    if (max_M_ == 1) all_mr.push_back(size_t{1});
     HWY_ASSERT(!all_mr.empty());
     return all_mr;
   }
@@ -143,18 +165,26 @@ class GenerateCandidates {
     for (size_t order_idx = 0;; ++order_idx) {
       const MMOrder order = static_cast<MMOrder>(order_idx);
       if (StringFromOrder(order) == nullptr) return orders;  // done
-      // 2D blocking is useless for a single row of M.
-      if (IsBlock(order) && M_ <= mr) continue;
+      // Multiple-MC is useless for a single row of M.
+      if (!IsOneMC(order) && max_M_ <= mr) continue;
       // Conversely, N-only parallelism is uncompetitive for large M.
-      if (!IsBlock(order) && M_ >= kMaxTilesM * mr) continue;
+      if (IsOneMC(order) && max_M_ >= 8 * mr) continue;
       orders.push_back(order);
     }
   }
 
   // The number of A and B columns to read between updating `C`.
   SizeVec KC(size_t mr, MMOrder order) const {
+    if (IsOneKC(order)) {
+      // A single KC range is infeasible when K exceeds the max. The caller
+      // will skip all configs with `order`.
+      if (K_ > kMaxKC) return SizeVec();
+      // Must return the actual value: although ignored by `RangesOfKC`, this
+      // will be used in MC() and NC().
+      return SizeVec(1, K_);
+    }
     // `LoopKC` handles up to `mr` rows of A.
-    const size_t rows_a = HWY_MIN(M_, mr);
+    const size_t rows_a = HWY_MIN(max_M_, mr);
 
     // After looping over `kc` columns, we write `mr x 4` outputs and 16 vector
     // `buf`. To amortize the write cost, we want to maximize `kc`. However, it
@@ -186,7 +216,7 @@ class GenerateCandidates {
 
       // If we can afford a single K task, that's usually best; only try one
       // more. Otherwise, blocks may require smaller kc (more options).
-      const size_t reps = (kc_max == K_) ? 1 : IsBlock(order) ? 3 : 2;
+      const size_t reps = (kc_max == K_) ? 1 : IsOneMC(order) ? 2 : 3;
 
       size_t prev = kc_max;
       for (size_t rep = 0; rep < reps; ++rep) {
@@ -196,22 +226,27 @@ class GenerateCandidates {
       }
     }
 
-    if (print_config_ && all_kc.size() > 1) {
-      fprintf(stderr, "num_B %zu: KC: ", num_B_);
-      for (size_t kc : all_kc) {
-        fprintf(stderr, "%zu ", kc);
-      }
-      fprintf(stderr, "\n");
-    }
-
+    MaybePrintSizes(K_, kc_max, "KC", all_kc);
     return all_kc;
   }
 
   // The number of (L2 resident) A rows for `A2C0` to loop over.
   SizeVec MC(size_t mr, size_t kc, MMOrder order) const {
+    if (max_M_ <= mr) return SizeVec(1, max_M_);
+    if (IsOneMC(order)) {
+      // A single MC range is infeasible when M exceeds the max. The caller
+      // will skip all configs with `order`.
+      if (max_M_ > kMaxMC) return SizeVec();
+      // Must return the actual value: although ignored by `RangesOfMC`, this
+      // will be used in NC().
+      return SizeVec(1, max_M_);
+    }
+
     // Typically 12-24K. The B rows are pinned in L1, but also occupy L2 because
     // it is typically inclusive.
     const size_t bytes_b = kNR * kc * (sizeof(SfpStream) + sizeof(BF16));
+    // `kc` was chosen to fit in L1, hence this should not exceed L2.
+    HWY_ASSERT(bytes_b <= cache_.L2Bytes());
 
     // Choose the largest feasible `mc_max` (A/C rows) to maximize reuse of the
     // packed B. We want `mc * kc` elements of A to fit in L2, alongside
@@ -219,35 +254,45 @@ class GenerateCandidates {
     const size_t bytes_per_mc = kc * sizeof(BF16) + cache_.LineBytes();
     size_t mc_max = hwy::DivCeil(cache_.L2Bytes() - bytes_b, bytes_per_mc);
     mc_max = HWY_MIN(mc_max, HWY_MIN(kMaxBatchSize, kMaxMC));
-    HWY_DASSERT(mc_max != 0);
-    mc_max = HWY_MIN(mc_max, M_);
-    mc_max = hwy::RoundDownTo(mc_max, mr);
+    mc_max = HWY_MIN(mc_max, max_M_);
+    HWY_ASSERT(mc_max != 0);
 
-    SizeVec all_mc(1, mc_max);
-    // Larger MC is better for non-blocks, otherwise we want more small options,
-    // especially for two B.
-    const size_t reps = !IsBlock(order) ? 2 : (2 + num_B_);
+    SizeVec all_mc;
+    all_mc.reserve(6);
 
-    size_t prev = mc_max;
-    for (size_t rep = 0; rep < reps; ++rep) {
-      prev = PrevDivisor(1, prev, M_, mr);
-      if (prev >= mc_max || prev == 0) break;
+    const size_t rounded_M = HWY_MAX(mr, hwy::RoundDownTo(max_M_, mr));
+    size_t prev = hwy::RoundDownTo(mc_max, mr);
+
+    // If mc_max is large enough, allow using the whole range without rounding
+    // down (which may require two ranges).
+    if (mc_max == max_M_ && (max_M_ % mr) != 0) {
+      all_mc.push_back(max_M_);
+      // The next option should be considerably smaller than `max_M_`.
+      prev = HWY_MAX(mr, hwy::RoundDownTo(3 * prev / 4, mr));
+    } else {
       all_mc.push_back(prev);
     }
 
-    // Blocks: largest is not useful.
-    if (IsBlock(order) && all_mc.size() > 1) {
-      all_mc.erase(all_mc.begin(), all_mc.begin() + 1);
-    }
-
-    if (print_config_ && all_mc.size() > 1) {
-      fprintf(stderr, "num_B %zu: MC: ", num_B_);
-      for (size_t mc : all_mc) {
-        fprintf(stderr, "%zu ", mc);
+    // We know `order` is multiple MC, where more/smaller values of `mc` are
+    // helpful, especially for two B, hence add iterations.
+    const size_t reps = 2 + num_B_;
+    for (size_t rep = 0; rep < reps; ++rep) {
+      prev = PrevDivisor(mr, prev, rounded_M, mr);
+      if (prev == 0) break;  // none found
+      if (prev == mr) {
+        if (all_mc.back() != prev) all_mc.push_back(prev);
+        break;
       }
-      fprintf(stderr, "\n");
+      if (prev <= mc_max / 8) break;
+      all_mc.push_back(prev);
     }
 
+    if (all_mc.size() <= 2) {
+      if (max_M_ > mr) all_mc.push_back(max_M_ / 2);
+      if (mc_max > mr) all_mc.push_back(mc_max / 2);
+    }
+
+    MaybePrintSizes(max_M_, mc_max, "MC", all_mc);
     return all_mc;
   }
 
@@ -257,7 +302,7 @@ class GenerateCandidates {
     // Only if there will be reuse of B: choose the largest `nc_max` (C cols)
     // such that `nc x kc` of B and `mc x nc` of `C` fit in L3. Otherwise,
     // leave it unbounded.
-    if (M_ > mr) {
+    if (max_M_ > mr) {
       const size_t bytes_per_nc = (kc * sizeof(BF16) + mc * sizeof_TC_);
       nc_max = HWY_MIN(hwy::DivCeil(cache_.L3Bytes(), bytes_per_nc), kMaxNC);
     }
@@ -271,8 +316,8 @@ class GenerateCandidates {
       nc_max = RoundDownWithFloor(N_ / 2, nc_multiple_);
     }
 
-    // Non-block calls ForNP, which ignores `range_nc` and uses `range_np`.
-    if (!IsBlock(order)) return SizeVec(1, N_);
+    // Single-MC calls `ForNP`, which ignores `range_nc`.
+    if (IsOneMC(order)) return SizeVec(1, N_);
 
     SizeVec all_nc(1, nc_max);
 
@@ -282,7 +327,7 @@ class GenerateCandidates {
       // hence autotune a wider range of nc than the other dimensions.
       size_t reps = 9 + num_B_;
       // For small M, we can afford larger NC, hence allow fewer small options.
-      if (M_ <= 2 * mr) reps -= 1;
+      if (max_M_ <= 2 * mr) reps -= 1;
 
       size_t prev = nc_max;
       for (size_t rep = 0; rep < reps; ++rep) {
@@ -302,14 +347,7 @@ class GenerateCandidates {
                    all_nc.begin() + HWY_MIN(want_delete, max_delete));
     }
 
-    if (print_config_ && all_nc.size() > 1) {
-      fprintf(stderr, "num_B %zu: NC: ", num_B_);
-      for (size_t nc : all_nc) {
-        fprintf(stderr, "%zu ", nc);
-      }
-      fprintf(stderr, "\n");
-    }
-
+    MaybePrintSizes(N_, nc_max, "NC", all_nc);
     return all_nc;
   }
 
@@ -319,8 +357,8 @@ class GenerateCandidates {
     std::vector<int> inner_tasks;
     inner_tasks.reserve(3);
     inner_tasks.push_back(1);
-    // Blocks have one task per mc/nc range and ignore this parameter.
-    if (!IsBlock(order)) {
+    // Multiple-MC have one task per mc/nc range and ignore this parameter.
+    if (IsOneMC(order)) {
       inner_tasks.push_back(2);
       inner_tasks.push_back(4);
     }
@@ -328,7 +366,7 @@ class GenerateCandidates {
   }
 
   const CacheInfo& cache_;
-  const size_t M_;
+  const size_t max_M_;
   const size_t K_;
   const size_t N_;
   const size_t num_B_;
@@ -343,10 +381,11 @@ class GenerateCandidates {
 }  // namespace
 
 // Facade to avoid exposing `GenerateCandidates` in the header.
-std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
-                                   size_t N, size_t num_B, size_t sizeof_TC,
-                                   bool print_config) {
-  return GenerateCandidates(cache, M, K, N, num_B, sizeof_TC, print_config)();
+std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t max_M,
+                                   size_t K, size_t N, size_t num_B,
+                                   size_t sizeof_TC, bool print_config) {
+  return GenerateCandidates(cache, max_M, K, N, num_B, sizeof_TC,
+                            print_config)();
 }
 
 MatMulEnv::MatMulEnv(ThreadingContext& ctx)

@@ -20,7 +20,10 @@
 
 #include <stddef.h>
 
-#include "gemma/gemma.h"
+#include "gemma/activations.h"
+#include "gemma/query.h"
+#include "gemma/weights.h"
+#include "ops/matmul.h"
 #include "hwy/highway.h"
 
 namespace gcpp {
@@ -29,8 +32,7 @@ namespace gcpp {
 #define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                               \
   namespace NAMESPACE {                                                       \
   void PositionalEncodingQK(float* qk, size_t layer_idx,                      \
-                            const LayerWeightsPtrs& layer,                    \
-                            const AttentionActivations& activations,          \
+                            const AttentionActivationsPtrs& activations,      \
                             ThreadingContext& ctx, size_t worker, size_t pos, \
                             float mul);                                       \
                                                                               \
@@ -39,18 +41,18 @@ namespace gcpp {
   void SingleDotSoftmaxWeightedSum(                                           \
       const size_t pos, const size_t start_pos, const size_t last_pos,        \
       float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,  \
-      size_t layer_idx, const LayerWeightsPtrs& layer,                        \
-      const AttentionActivations& activations, float* HWY_RESTRICT att,       \
+      const MatPtr& query_norm_scale, size_t layer_idx,                       \
+      const AttentionActivationsPtrs& activations, float* HWY_RESTRICT att,   \
       float* HWY_RESTRICT att_out, ThreadingContext& ctx, size_t worker);     \
                                                                               \
   void DotSoftmaxWeightedSum(const size_t num_tokens, size_t layer_idx,       \
-                             const LayerWeightsPtrs& layer,                   \
-                             AttentionActivations& activations,               \
+                             const MatPtr& query_norm_scale,                  \
+                             AttentionActivationsPtrs& activations,           \
                              QBatch& qbatch, ThreadingContext& ctx);          \
                                                                               \
   void GemmaAttention(size_t num_tokens, const size_t layer_idx,              \
                       const LayerWeightsPtrs& layer,                          \
-                      AttentionActivations& activations, QBatch& qbatch,      \
+                      AttentionActivationsPtrs& activations, QBatch& qbatch,  \
                       MatMulEnv& env, int flags);                             \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                 \
   }  // namespace NAMESPACE

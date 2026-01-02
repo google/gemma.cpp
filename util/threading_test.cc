@@ -202,59 +202,7 @@ TEST(ThreadingTest, TestStaticPartition) {
   }
 }
 
-TEST(ThreadingTest, TestParallelizeOneRange) {
-  const IndexRange range(0, 10);
-  const IndexRangePartition partition = StaticPartition(range, 2, 4);
-  hwy::ThreadPool null_pool(0);
-  size_t calls = 0;
-  ParallelizeOneRange(partition, null_pool, kCaller,
-                      [&](const IndexRange& range, size_t) {
-                        if (++calls == 1) {
-                          HWY_ASSERT(range.begin() == 0 && range.end() == 8);
-                        } else {
-                          HWY_ASSERT(range.begin() == 8 && range.end() == 10);
-                        }
-                      });
-  HWY_ASSERT(calls == 2);
-}
-
-TEST(ThreadingTest, TestParallelizeTwoRanges) {
-  const IndexRangePartition partition1 =
-      StaticPartition(IndexRange(0, 10), 2, 4);
-  const IndexRangePartition partition2 =
-      MaxSizePartition(IndexRange(128, 256), 32, 32);
-  HWY_ASSERT(partition2.NumTasks() == 4);
-  hwy::ThreadPool null_pool(0);
-  {
-    size_t calls = 0;
-    ParallelizeTwoRanges(
-        partition1, partition2, null_pool, kCaller,
-        [&](const IndexRange& range1, const IndexRange& range2, size_t) {
-          ++calls;
-          HWY_ASSERT(range1.begin() == 0 || range1.begin() == 8);
-          HWY_ASSERT(range2.begin() % 32 == 0);
-          HWY_ASSERT(range2.Num() % 32 == 0);
-        });
-    HWY_ASSERT(calls == 2 * 4);
-  }
-
-  // Also swap order to test Remainder() logic.
-  {
-    size_t calls = 0;
-    ParallelizeTwoRanges(
-        partition2, partition1, null_pool, kCaller,
-        [&](const IndexRange& range2, const IndexRange& range1, size_t) {
-          ++calls;
-          HWY_ASSERT(range1.begin() == 0 || range1.begin() == 8);
-          HWY_ASSERT(range2.begin() % 32 == 0);
-          HWY_ASSERT(range2.Num() % 32 == 0);
-        });
-    HWY_ASSERT(calls == 2 * 4);
-  }
-}
-
-static constexpr size_t kU64PerThread = HWY_ALIGNMENT / sizeof(size_t);
-static uint64_t outputs[hwy::kMaxLogicalProcessors * kU64PerThread];
+static uint64_t outputs[hwy::kMaxLogicalProcessors * kU64PerLine];
 
 std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
   // Governs duration of test; avoid timeout in debug builds.
@@ -268,7 +216,7 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
   const double t0 = hwy::platform::Now();
   for (size_t reps = 0; reps < 1200; ++reps) {
     pool.Run(0, pool.NumWorkers(), kCaller, [&](uint64_t task, size_t thread) {
-      outputs[thread * kU64PerThread] = base + thread;
+      outputs[thread * kU64PerLine] = base + thread;
     });
     hwy::PreventElision(outputs[base]);
     if (pool.AutoTuneComplete()) break;
@@ -309,7 +257,7 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
       const uint64_t t0 = hwy::timer::Start();
       pool.Run(0, pool.NumWorkers(), kCaller,
                [&](uint64_t task, size_t thread) {
-                 outputs[thread * kU64PerThread] = base + thread;
+                 outputs[thread * kU64PerLine] = base + thread;
                });
       const uint64_t t1 = hwy::timer::Stop();
       times.push_back(t1 - t0);
@@ -319,7 +267,7 @@ std::vector<uint64_t> MeasureForkJoin(hwy::ThreadPool& pool) {
       const uint64_t t0 = hwy::timer::Start();
       pool.Run(0, pool.NumWorkers(), kCaller,
                [&](uint64_t task, size_t thread) {
-                 outputs[thread * kU64PerThread] = base + thread;
+                 outputs[thread * kU64PerLine] = base + thread;
                });
       const uint64_t t1 = hwy::timer::Start();
       times.push_back(t1 - t0);
@@ -366,10 +314,10 @@ TEST(ThreadingTest, BenchJoin) {
 
     // Verify outputs to ensure the measured code is not a no-op.
     for (size_t lp = 0; lp < pool.NumWorkers(); ++lp) {
-      HWY_ASSERT(outputs[lp * kU64PerThread] >= 1);
-      HWY_ASSERT(outputs[lp * kU64PerThread] <= 1 + pool.NumWorkers());
-      for (size_t i = 1; i < kU64PerThread; ++i) {
-        HWY_ASSERT(outputs[lp * kU64PerThread + i] == 0);
+      HWY_ASSERT(outputs[lp * kU64PerLine] >= 1);
+      HWY_ASSERT(outputs[lp * kU64PerLine] <= 1 + pool.NumWorkers());
+      for (size_t i = 1; i < kU64PerLine; ++i) {
+        HWY_ASSERT(outputs[lp * kU64PerLine + i] == 0);
       }
     }
   };

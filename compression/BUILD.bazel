@@ -1,4 +1,4 @@
-# Weight compression and analysis.
+# Compressed tensor types.
 
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
@@ -101,13 +101,11 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
-        ":distortion",
         ":int",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
-        "@highway//:nanobenchmark",
     ],
 )
 
@@ -135,8 +133,8 @@ cc_test(
     # for test_suite.
     tags = ["hwy_ops_test"],
     deps = [
+        ":compress",
         ":distortion",
-        ":sfp",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@highway//:hwy",
@@ -182,7 +180,6 @@ cc_library(
         "//:mat",
         "//:threading_context",
         "@highway//:hwy",
-        "@highway//:nanobenchmark",
         "@highway//:profiler",
         "@highway//:stats",
         "@highway//:thread_pool",
@@ -207,21 +204,5 @@ cc_test(
         "//:threading_context",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
-    ],
-)
-
-# For internal experimentation
-cc_library(
-    name = "analyze",
-    textual_hdrs = ["analyze.h"],
-    deps = [
-        ":int",
-        ":nuq",
-        ":sfp",
-        ":types",
-        "@highway//:hwy",
-        "@highway//:stats",
-        "@highway//:thread_pool",
-        "@highway//hwy/contrib/sort:vqsort",
     ],
 )

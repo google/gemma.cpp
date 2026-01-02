@@ -51,6 +51,8 @@ const char* ZoneName(Zones zone) {
       return "Gen.SampleTop1";
     case Zones::kGenSampleTopK:
       return "Gen.SampleTopK";
+    case Zones::kGenStats:
+      return "Gen.Stats";
     case Zones::kMMDecompressA:
       return "MM.DecompressA";
     case Zones::kMMDispatch:
@@ -163,6 +165,8 @@ const char* CallerName(Callers caller) {
       return "ReadBatches";
     case Callers::kSampleAndStream:
       return "SampleAndStream";
+    case Callers::kTensorStats:
+      return "TensorStats";
     case Callers::kTest:  // only for unit tests.
       return "Test-only!";
     case Callers::kTunePool:

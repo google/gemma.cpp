@@ -73,45 +73,38 @@ GemmaContext* GemmaContext::Create(const char* tokenizer_path,
   ThreadingArgs threading_args;
   threading_args.spin = gcpp::Tristate::kFalse;
 
-  LoaderArgs loader(tokenizer_path, weights_path);
-  LogDebug("LoaderArgs created");
+  threading_args.spin = gcpp::Tristate::kFalse;
+  GemmaArgs args(LoaderArgs(tokenizer_path, weights_path), threading_args);
 
   // Initialize cached args
   LogDebug("Initializing inference args");
-  InferenceArgs inference_args;
-  inference_args.Init();
-  inference_args.max_generated_tokens = max_generated_tokens;
-  inference_args.temperature = 0.7f;
-  inference_args.top_k = 1;
-  inference_args.deterministic = false;
+  args.inference.max_generated_tokens = max_generated_tokens;
+  args.inference.temperature = 0.7f;
+  args.inference.top_k = 1;
+  args.inference.deterministic = false;
 
   ss.str("");
   ss << "Inference args initialized with max_tokens: " << max_generated_tokens
-     << ", temperature: " << inference_args.temperature
-     << ", top_k: " << inference_args.top_k << ", deterministic: "
-     << (inference_args.deterministic ? "true" : "false");
+     << ", temperature: " << args.inference.temperature
+     << ", top_k: " << args.inference.top_k << ", deterministic: "
+     << (args.inference.deterministic ? "true" : "false");
   LogDebug(ss.str().c_str());
 
-  return new GemmaContext(loader, inference_args, threading_args,
-                          max_generated_tokens);
+  return new GemmaContext(args, max_generated_tokens);
 }
 
-GemmaContext::GemmaContext(const LoaderArgs& loader,
-                           const InferenceArgs& inference_args,
-                           const ThreadingArgs& threading_args,
-                           int max_generated_tokens)
-    : inference_args(inference_args),
-      threading_args(threading_args),
-      ctx(threading_args),
+GemmaContext::GemmaContext(const GemmaArgs& args, int max_generated_tokens)
+    : args(args),
+      ctx(args.threading),
       matmul_env(ctx),
       active_conversation_name("default"),
-      model(loader, inference_args, matmul_env.ctx) {
+      model(args, matmul_env.ctx) {
   std::stringstream ss;
 
   LogDebug("Creating initial ConversationData");
   // Create the initial ConversationData object using make_shared
   active_conversation = std::make_shared<ConversationData>(
-      model.Config(), inference_args, ctx.allocator);
+      model.Config(), args.inference, ctx.allocator);
 
   LogDebug(
       "Storing initial ConversationData in conversation_cache[\"default\"]");
@@ -172,8 +165,8 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
   // set up runtime config
   TimingInfo timing_info = {};
   RuntimeConfig runtime_config = {.stream_token = stream_token,
-                                  .use_spinning = threading_args.spin};
-  inference_args.CopyTo(runtime_config);
+                                  .use_spinning = args.threading.spin};
+  args.inference.CopyTo(runtime_config);
   size_t prefix_end = 0;
 
   const ModelConfig& model_config = model.Config();
@@ -247,7 +240,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
                  timing_info);
 
   // prepare for next turn
-  if (!inference_args.multiturn ||
+  if (!args.inference.multiturn ||
       model_config.wrapping == PromptWrapping::PALIGEMMA) {
     // If not multiturn, or Paligemma (which handles turns differently),
     // reset the *active* conversation's position.

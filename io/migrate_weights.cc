@@ -23,7 +23,9 @@ namespace gcpp {
 namespace {
 
 struct WriterArgs : public ArgsBase<WriterArgs> {
-  WriterArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  WriterArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
 
   Path output_weights;
 
@@ -38,12 +40,15 @@ struct WriterArgs : public ArgsBase<WriterArgs> {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  gcpp::WriterArgs args(argc, argv);
-  if (args.output_weights.Empty()) {
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
+  gcpp::WriterArgs writer_args(argc, argv, consumed);
+  if (writer_args.output_weights.Empty()) {
     HWY_ABORT("Missing --output_weights flag, a file for the model weights.");
   }
+  consumed.AbortIfUnconsumed();
 
-  gcpp::GemmaEnv env(argc, argv);
-  env.GetGemma()->Save(args.output_weights, env.Env().ctx);
+  gcpp::GemmaEnv env(args);
+  env.GetGemma()->Save(writer_args.output_weights, env.Env().ctx);
   return 0;
 }

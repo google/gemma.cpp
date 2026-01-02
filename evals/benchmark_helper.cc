@@ -36,29 +36,28 @@
 
 namespace gcpp {
 
-GemmaEnv::GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
-                   const InferenceArgs& inference)
-    : ctx_(threading), env_(ctx_), gemma_(loader, inference, ctx_) {
+GemmaEnv::GemmaEnv(const GemmaArgs& args)
+    : initializer_value_(gcpp::InternalInit()),
+      ctx_(args.threading),
+      env_(ctx_),
+      gemma_(args, ctx_) {
   const ModelConfig& config = gemma_.Config();
   // Only allocate one for starters because GenerateBatch might not be called.
-  kv_caches_.push_back(KVCache(config, inference, ctx_.allocator));
+  kv_caches_.push_back(KVCache(config, args.inference, ctx_.allocator));
 
-  if (inference.verbosity >= 2) {
-    ShowConfig(loader, threading, inference, config, gemma_.WeightReadMode(),
-               ctx_);
+  if (args.inference.verbosity >= 2) {
+    ShowConfig(args, config, gemma_.WeightReadMode(), ctx_);
   }
+  if (args.inference.verbosity >= 3) env_.print_best = true;
+  if (args.inference.verbosity >= 4) env_.print_config = true;
 
   runtime_config_ = {
-      .max_generated_tokens = inference.max_generated_tokens,
-      .temperature = inference.temperature,
-      .verbosity = inference.verbosity,
+      .max_generated_tokens = args.inference.max_generated_tokens,
+      .temperature = args.inference.temperature,
+      .verbosity = args.inference.verbosity,
   };
-  inference.CopyTo(runtime_config_);
+  args.inference.CopyTo(runtime_config_);
 }
-
-GemmaEnv::GemmaEnv(int argc, char** argv)
-    : GemmaEnv(LoaderArgs(argc, argv), ThreadingArgs(argc, argv),
-               InferenceArgs(argc, argv)) {}
 
 QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
   QueryResult result;
@@ -229,19 +228,19 @@ static constexpr const char* CompiledConfig() {
   }
 }
 
-void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
-                const InferenceArgs& inference, const ModelConfig& config,
+void ShowConfig(const GemmaArgs& args, const ModelConfig& config,
                 const WeightsPtrs::Mode weight_read_mode,
                 const ThreadingContext& ctx) {
-  threading.Print(inference.verbosity);
-  loader.Print(inference.verbosity);
-  inference.Print(inference.verbosity);
-  fprintf(
-      stderr, "Model                         : %s, to_bf16 %d, mmap %d => %s\n",
-      config.Specifier().c_str(), static_cast<int>(loader.to_bf16),
-      static_cast<int>(loader.map), WeightsPtrs::ToString(weight_read_mode));
+  args.threading.Print(args.inference.verbosity);
+  args.loader.Print(args.inference.verbosity);
+  args.inference.Print(args.inference.verbosity);
+  fprintf(stderr,
+          "Model                         : %s, to_bf16 %d, mmap %d => %s\n",
+          config.Specifier().c_str(), static_cast<int>(args.loader.to_bf16),
+          static_cast<int>(args.loader.map),
+          WeightsPtrs::ToString(weight_read_mode));
 
-  if (inference.verbosity >= 2) {
+  if (args.inference.verbosity >= 2) {
     time_t now = time(nullptr);
     char* dt = ctime(&now);  // NOLINT
     char cpu100[100] = "unknown";
@@ -254,30 +253,12 @@ void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
             "Instruction set               : %s (%zu bits)\n"
             "Compiled config               : %s, profiler %d\n"
             "Memory MiB                    : %4zu\n",
-            dt, cpu100, static_cast<int>(threading.bind),
+            dt, cpu100, static_cast<int>(args.threading.bind),
             ctx.topology.TopologyString(), ctx.pools.PinString(),
             CacheString().c_str(), hwy::TargetName(hwy::DispatchedTarget()),
             ctx.cache_info.VectorBytes() * 8, CompiledConfig(),
             PROFILER_ENABLED, ctx.allocator.TotalMiB());
   }
-}
-
-void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
-              const InferenceArgs& inference) {
-  std::cerr
-      << "\n\ngemma.cpp : a lightweight, standalone C++ inference engine\n"
-         "==========================================================\n\n"
-         "To run with pre-2025 weights, specify --tokenizer and --weights.\n"
-         "With the single-file weights format, specify just --weights.\n";
-  std::cerr << "\n*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
-               "--weights gemma2-2b-it-sfp.sbs\n";
-  std::cerr << "\n*Model Loading Arguments*\n\n";
-  loader.Help();
-  std::cerr << "\n*Threading Arguments*\n\n";
-  threading.Help();
-  std::cerr << "\n*Inference Arguments*\n\n";
-  inference.Help();
-  std::cerr << "\n";
 }
 
 }  // namespace gcpp

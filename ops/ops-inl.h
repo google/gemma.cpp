@@ -25,9 +25,11 @@
 #include <cstdint>
 #include <random>
 #include <type_traits>  // std::enable_if_t
+#include <utility>
 #include <vector>
 
 #include "ops/matmul.h"
+#include "ops/ops.h"
 #include "util/allocator.h"
 #include "util/basics.h"  // TokenAndProb, RngStream
 #include "util/mat.h"
@@ -61,6 +63,9 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+// Computes C = A * B + add via MatMulStatic.
+// This function uses CallUpcasted to dispatch to the correct MatMulStatic
+// instantiation based on the runtime type of B.
 template <typename TA, typename TC>
 MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
                      const float* HWY_RESTRICT add, MatMulEnv& env,
@@ -497,10 +502,10 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
                     size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
   HWY_DASSERT(weights.Cols() == activations.Cols());
-  HWY_DASSERT(activations.SameShape(out));
+  activations.DebugCheckSameShape(out);
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    ParallelFor(ParallelismStrategy::kFlat, activations.Rows(), ctx,
+    ParallelFor(Parallelism::kFlat, activations.Rows(), ctx,
                 cluster_idx, Callers::kOpsRMSNormBatched,
                 [&](uint64_t token_idx, size_t worker) {
                   RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
@@ -517,7 +522,7 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
   HWY_DASSERT(weights.Cols() == inout.Cols());
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    ParallelFor(ParallelismStrategy::kFlat, inout.Rows(), ctx, cluster_idx,
+    ParallelFor(Parallelism::kFlat, inout.Rows(), ctx, cluster_idx,
                 Callers::kOpsRMSNormInplaceBatched,
                 [&](uint64_t token_idx, size_t worker) {
                   RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
@@ -550,7 +555,7 @@ static HWY_INLINE void AddFromBatched(const MatPtrT<XT>& x, MatPtrT<float>& out,
                                       size_t cluster_idx = 0) {
   HWY_DASSERT(out.SameShape(x));
   ParallelFor(
-      ParallelismStrategy::kFlat, out.Rows(), ctx, cluster_idx,
+      Parallelism::kFlat, out.Rows(), ctx, cluster_idx,
       Callers::kOpsAddFromBatched, [&](uint64_t token_idx, size_t worker) {
         AddFrom(x.Row(token_idx), out.Row(token_idx), x.Cols(), ctx, worker);
       });
@@ -1122,9 +1127,25 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAddVector(
 
 // See below for a specialized version for top-1 sampling.
 // TODO: support bf16 logits using Decompress2.
+// Computes softmax probabilities for the given logits, normalizing in-place.
+// The calculation is numerically stable, using the max-subtraction trick to
+// compute exp(logits[i] - max(logits)) before normalizing by the sum.
+// If temperature is provided and not 1.0, each intermediate exp() result is
+// divided by temperature before normalization; however, this division by
+// temperature cancels out during the final normalization step, meaning
+// temperature currently has no effect on the output probabilities.
+// @param logits In-out: on input, contains logits; on output, overwritten with
+// probabilities.
+// @param ctx Input: threading context for parallelism and profiling.
+// @param worker Input: worker thread index.
+// @param temperature Input: softmax temperature.
+// @param softmax_max_out Optional output: if not null, stores the max logit
+// value.
+// @param softmax_d_out Optional output: if softmax_max is not null, this must
+// not be null and stores the sum of exp(logit - max).
 static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
-                                 const size_t worker,
-                                 float temperature = 1.0f) {
+                                 const size_t worker, float temperature = 1.0f,
+                                 const SMOptions& sm_options = {}) {
   GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
 
@@ -1168,6 +1189,10 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
   // Double-precision reciprocal does not appear to affect the results.
   const float mul = 1.0f / sum_exp;
   MulByConst(mul, logits.data(), logits.size());
+  if (sm_options.max_out) {
+    *sm_options.max_out = hn::GetLane(vmax);
+    *sm_options.d_out = sum_exp;
+  }
 }
 
 // Note: https://arxiv.org/pdf/2001.04438 proposes to replace the three max /
@@ -1290,7 +1315,7 @@ static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCapBatched(
     const float cap, MatPtrT<float>& x, const hwy::BitSet4096<>& non_eos,
     ThreadingContext& ctx, size_t cluster_idx = 0) {
   if (cap == 0.0f) return;
-  ParallelFor(ParallelismStrategy::kFlat, x.Rows(), ctx, cluster_idx,
+  ParallelFor(Parallelism::kFlat, x.Rows(), ctx, cluster_idx,
               Callers::kOpsMaybeLogitsSoftCapBatched,
               [&](uint64_t task, size_t worker) {
                 if (non_eos.Get(task)) {

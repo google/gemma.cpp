@@ -431,12 +431,12 @@ void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
 void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                         ThreadingContext& ctx) {
   const size_t cluster_idx = 0;
-  ParallelFor(ParallelismStrategy::kFlat, c_layers.size(), ctx, cluster_idx,
+  ParallelFor(Parallelism::kFlat, c_layers.size(), ctx, cluster_idx,
               Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
                 GetLayer(layer)->Fixup(mat_owners, ctx);
               });
 
-  ParallelFor(ParallelismStrategy::kFlat, vit_layers.size(), ctx, cluster_idx,
+  ParallelFor(Parallelism::kFlat, vit_layers.size(), ctx, cluster_idx,
               Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
                 VitLayer(layer)->Fixup(mat_owners, ctx);
               });
@@ -527,7 +527,7 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
 
   // Allocate in parallel because faulting in large tensors is slow.
   ParallelFor(
-      ParallelismStrategy::kFlat, tensors.size(), ctx, /*cluster_idx=*/0,
+      Parallelism::kFlat, tensors.size(), ctx, /*cluster_idx=*/0,
       Callers::kAllocateAndBindAll, [&](uint64_t task, size_t /*thread*/) {
         TensorToRead& tensor = tensors[task];
         MatPtr& mat = *tensor.mat;
@@ -586,10 +586,9 @@ static void DecompressToBF16(MatPtr& mat,
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                           const BlobReader& reader, ThreadingContext& ctx) {
   // Especially TSAN is slow enough to warrant hierarchical parallelism.
-  const ParallelismStrategy strategy = HWY_IS_DEBUG_BUILD
-                                           ? ParallelismStrategy::kHierarchical
-                                           : ParallelismStrategy::kFlat;
-  ParallelFor(strategy, tensors.size(), ctx, /*cluster_idx=*/0,
+  const Parallelism parallelism =
+      HWY_IS_DEBUG_BUILD ? Parallelism::kHierarchical : Parallelism::kFlat;
+  ParallelFor(parallelism, tensors.size(), ctx, /*cluster_idx=*/0,
               Callers::kReadAllToBF16, [&](uint64_t task, size_t thread) {
                 GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToBF16);
                 const TensorToRead& tensor = tensors[task];
@@ -677,7 +676,7 @@ static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
                         ThreadingContext& ctx) {
   // >5x speedup from parallel reads when cached.
-  ParallelFor(ParallelismStrategy::kHierarchical, batches.size(), ctx,
+  ParallelFor(Parallelism::kHierarchical, batches.size(), ctx,
               /*cluster_idx=*/0, Callers::kReadBatches,
               [&](uint64_t task, size_t thread) {
                 GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadBatches);

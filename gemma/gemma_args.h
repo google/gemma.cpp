@@ -24,10 +24,12 @@
 #include <functional>
 #include <string>
 
-#include "io/io.h"  // Path
-#include "util/args.h"
+#include "gemma/configs.h"
+#include "io/io.h"        // Path
+#include "util/args.h"    // IWYU pragma: export
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"               // HWY_ABORT
 #include "hwy/profiler.h"
@@ -35,7 +37,9 @@
 namespace gcpp {
 
 struct LoaderArgs : public ArgsBase<LoaderArgs> {
-  LoaderArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  LoaderArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
   LoaderArgs(const std::string& tokenizer_path,
              const std::string& weights_path) {
     Init();  // Init sets to defaults, so assignments must come after Init().
@@ -139,6 +143,9 @@ struct RuntimeConfig {
 
   int verbosity;  // Controls verbosity of printed messages.
 
+  // Which attention implementation to use.
+  AttentionImpl attention_impl = AttentionImpl::kFlash;
+
   // Functions operating on the generated tokens.
   StreamFunc stream_token;
   BatchStreamFunc batch_stream_token;
@@ -159,10 +166,15 @@ struct RuntimeConfig {
   // default decision is likely sufficient because it is based on whether
   // threads are successfully pinned.
   mutable Tristate use_spinning = Tristate::kDefault;
+
+  // Whether to use continuous batching.
+  bool use_continuous_batching = false;
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
-  InferenceArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  InferenceArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
   InferenceArgs() { Init(); };
 
   bool IsInteractive() const { return prompt.empty() && prompt_file.Empty(); }
@@ -187,6 +199,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   // For prompts longer than the Linux terminal's 4K line edit buffer.
   Path prompt_file;
   std::string eot_line;
+  std::string attention_impl;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -240,6 +253,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
         "before the line where only the given string appears.\n    Default = "
         "When a newline is encountered, that signals the end of the turn.",
         2);
+    visitor(attention_impl, "attention_impl", std::string("flash"),
+            "Attention implementation to use. See configs.cc for options.", 2);
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
@@ -261,36 +276,39 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
 
     runtime_config.temperature = temperature;
     runtime_config.top_k = top_k;
+    runtime_config.attention_impl = GetAttentionImpl(attention_impl);
   }
 };
 
-struct ClientArgs : public ArgsBase<ClientArgs> {
-  ClientArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
-  ClientArgs() { Init(); };
+// Bundles all args required to construct a `GemmaEnv` or the equivalent.
+struct GemmaArgs {
+  // For callers that do not parse command line args.
+  GemmaArgs(const LoaderArgs& loader,
+            const ThreadingArgs& threading = ThreadingArgs(),
+            const InferenceArgs& inference = InferenceArgs())
+      : loader(loader), threading(threading), inference(inference) {}
 
-  std::string host;
-  int port;
-  std::string api_key;
-  std::string model;
-  std::string prompt;
-  bool interactive;
+  GemmaArgs(int argc, char** argv, ConsumedArgs& consumed)
+      : loader(argc, argv, consumed),
+        threading(argc, argv, consumed),
+        inference(argc, argv, consumed) {}
 
-  template <class Visitor>
-  void ForEach(const Visitor& visitor) {
-    visitor(host, "host", std::string("localhost"),
-            "Server host (default: localhost)");
-    visitor(port, "port", 8080,
-            "Server port (default: 8080)");
-    visitor(api_key, "api_key", std::string(""),
-            "Use public API with key (changes host to "
-            "generativelanguage.googleapis.com:443)");
-    visitor(model, "model", std::string("gemma3-4b"),
-            "Model name to use (default: gemma3-4b)");
-    visitor(prompt, "prompt", std::string("Hello! How are you?"),
-            "Prompt for generation (default: 'Hello! How are you?')");
-    visitor(interactive, "interactive", false,
-            "Start interactive chat mode (0 = no, 1 = yes)");
+  void Help() {
+    fprintf(stderr,
+            "To run with pre-2025 weights, specify --tokenizer and --weights.\n"
+            "With the single-file weights format, specify just --weights.\n"
+            "\n*Model Loading Arguments*\n");
+    loader.Help();
+    fprintf(stderr, "\n*Threading Arguments*\n");
+    threading.Help();
+    fprintf(stderr, "\n*Inference Arguments*\n");
+    inference.Help();
+    fprintf(stderr, "\n");
   }
+
+  LoaderArgs loader;
+  ThreadingArgs threading;
+  InferenceArgs inference;
 };
 
 }  // namespace gcpp

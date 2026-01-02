@@ -221,6 +221,8 @@ static size_t DeduceNumLayers(const KeyVec& keys) {
 // This works with or without type prefixes because it searches for substrings.
 static int DeduceLayerTypes(const BlobReader& reader) {
   int layer_types = 0;
+  bool has_key_norm = false;
+  bool has_query_norm = false;
   for (size_t key_idx = 0; key_idx < reader.Keys().size(); ++key_idx) {
     const std::string& key = reader.Keys()[key_idx];
     if (key.find("qkv_ein_w") != std::string::npos) {  // NOLINT
@@ -232,6 +234,15 @@ static int DeduceLayerTypes(const BlobReader& reader) {
         layer_types |= kDeduced448;
       }
     }
+    if (key.find("key_norm") != std::string::npos) {  // NOLINT
+      has_key_norm = true;
+    }
+    if (key.find("query_norm") != std::string::npos) {  // NOLINT
+      has_query_norm = true;
+    }
+  }
+  if (has_key_norm && has_query_norm) {
+    layer_types |= kDeducedKqNorm;
   }
   return layer_types;
 }

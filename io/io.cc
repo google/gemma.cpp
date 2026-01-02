@@ -110,7 +110,8 @@ class FilePosix : public File {
         HWY_WARN(
             "Read failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
-            pos, size, offset, errno);
+            static_cast<size_t>(pos), static_cast<size_t>(size),
+            static_cast<size_t>(offset), errno);
         break;
       }
       pos += bytes_read;
@@ -130,7 +131,8 @@ class FilePosix : public File {
         HWY_WARN(
             "Write failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
-            pos, size, offset, errno);
+            static_cast<size_t>(pos), static_cast<size_t>(size),
+            static_cast<size_t>(offset), errno);
         break;
       }
       pos += bytes_written;
@@ -194,9 +196,9 @@ std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode) {
 namespace gcpp {
 
 std::unique_ptr<File> OpenFileOrAbort(const Path& filename, const char* mode) {
-  std::unique_ptr<File> file = OpenFileOrNull(filename, "r");
+  std::unique_ptr<File> file = OpenFileOrNull(filename, mode);
   if (!file) {
-    HWY_ABORT("Failed to open %s", filename.path.c_str());
+    HWY_ABORT("Failed to open %s, errno %d", filename.path.c_str(), errno);
   }
   return file;
 }
@@ -234,7 +236,9 @@ bool IOBatch::Add(void* mem, size_t bytes) {
   return true;
 }
 
-void InternalInit() {
+int InternalInit() {
+  // currently unused, except for init list ordering in GemmaEnv.
+  return 0;
 }
 
 uint64_t IOBatch::Read(const File& file) const {

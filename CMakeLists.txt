@@ -22,7 +22,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 2a16a50ff61071bb25ddef0ce35d92b0e2b9c579 EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 3b680cde3a556bead9cc23c8f595d07a44d5a0d5 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
@@ -82,6 +82,7 @@ set(SOURCES
   gemma/configs.h
   gemma/flash_attention.cc
   gemma/flash_attention.h
+  gemma/flash_structs.h
   gemma/gemma_args.h
   gemma/gemma-inl.h
   gemma/gemma.cc
@@ -221,6 +222,7 @@ set(GEMMA_TEST_FILES
   compression/nuq_test.cc
   compression/sfp_test.cc
   evals/gemma_test.cc
+  gemma/gemma_args_test.cc
   gemma/flash_attention_test.cc
   gemma/tensor_info_test.cc
   io/blob_finder_test.cc

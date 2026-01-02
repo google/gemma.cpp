@@ -14,6 +14,8 @@
 // limitations under the License.
 
 #include <cstring>
+#include <iostream>
+#include <limits>
 #include <numeric>
 #include <vector>
 
@@ -24,6 +26,7 @@
 #include "gemma/kv_cache.h"
 #include "gemma/weights.h"
 #include "ops/matmul.h"
+#include "util/test_util.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -109,11 +112,14 @@ void TestFlashAttention(size_t target_parallelism) {
   const LayerConfig& layer_config = config.layer_configs[0];
   const LayerWeightsPtrs layers(0, layer_config, tensor_info_registry);
   InferenceArgs inference_args;
+  inference_args.attention_impl = "flash";
   RuntimeConfig runtime_config;
+  inference_args.CopyTo(runtime_config);
   KVCache kv_cache(config, inference_args, ctx.allocator);
   MatMulEnv env(ctx);
-  Activations activations(config, runtime_config.prefill_tbatch_size,
-                          kv_cache.SeqLen(), env.ctx, env.row_ptrs);
+  Activations activations(runtime_config, config,
+                          runtime_config.prefill_tbatch_size, kv_cache.SeqLen(),
+                          env.ctx, env.row_ptrs);
   std::vector<int> tokens(kOuter);
   std::iota(tokens.begin(), tokens.end(), 1);
   PromptTokens prompt(tokens);
@@ -122,8 +128,10 @@ void TestFlashAttention(size_t target_parallelism) {
   QBatch qbatch(/*start=*/0, /*max_size=*/kOuter, all_queries);
   const size_t batch_size = kOuter;
   std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
-  AttentionActivations attention(config, layer_config, batch_size, kOuter,
-                                 ctx.allocator, row_ptrs);
+  AttentionActivations attention_storage(config, layer_config, batch_size,
+                                         kOuter, runtime_config, ctx.allocator,
+                                         row_ptrs);
+  AttentionActivationsPtrs attention(config, kOuter, attention_storage);
   const size_t qkv_dim = layer_config.qkv_dim;
   ASSERT_EQ(qkv_dim, kInner);
   const hwy::Divisor div_qbatch(qbatch.Size());
@@ -145,7 +153,8 @@ void TestFlashAttention(size_t target_parallelism) {
     SetMat(h + layer_config.heads * 2, v);
   }
   SetMat(1, attention.q);
-  DotSoftmaxWeightedSum(tokens.size(), 0, layers, attention, qbatch, ctx);
+  DotSoftmaxWeightedSum(tokens.size(), 0, layers.query_norm_scale, attention,
+                        qbatch, ctx);
   // Copy the output to saved_att to allow for comparison.
   auto saved_att = MakeCopyOfMat(attention.att_out, ctx.allocator);
   SetMat(1, attention.q);
@@ -158,8 +167,8 @@ void TestFlashAttention(size_t target_parallelism) {
                                          total_tasks, target_parallelism);
   printf("FlashAttention: target_parallelism=%zu, kNF=%zu, kVTileSize=%zu\n",
          target_parallelism, kNF, kVTileSize);
-  FlashAttention(tokens.size(), target_parallelism, 0, layers, attention,
-                 qbatch, ctx);
+  FlashAttention(tokens.size(), target_parallelism, 0, layers.query_norm_scale,
+                 attention, qbatch, ctx);
   AssertClose(attention.att_out, *saved_att);
   ctx.profiler.PrintResults();
 }

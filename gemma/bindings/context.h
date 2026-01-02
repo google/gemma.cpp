@@ -53,8 +53,7 @@ typedef void (*GemmaLogCallback)(const char* message, void* user_data);
 
 class GemmaContext {
  private:
-  GemmaContext(const LoaderArgs& loader, const InferenceArgs& inference_args,
-               const ThreadingArgs& threading_args, int max_generated_tokens);
+  GemmaContext(const GemmaArgs& args, int max_generated_tokens);
 
  public:
   static GemmaContext* Create(const char* tokenizer_path,
@@ -81,37 +80,37 @@ class GemmaContext {
 
   // Set max generated tokens
   void SetMaxGeneratedTokens(size_t value) {
-    inference_args.max_generated_tokens = value;
+    args.inference.max_generated_tokens = value;
     LogDebug("Setting max_generated_tokens to configured value");
   }
 
   // Set multiturn flag (0 = disabled, 1 = enabled)
   void SetMultiturn(int value) {
-    inference_args.multiturn = value;
+    args.inference.multiturn = value;
     LogDebug("Setting multiturn to configured value");
   }
 
   // Set temperature for token generation
   void SetTemperature(float value) {
-    inference_args.temperature = value;
+    args.inference.temperature = value;
     LogDebug("Setting temperature to configured value");
   }
 
   // Set top_k parameter for sampling
   void SetTopK(int value) {
-    inference_args.top_k = value;
+    args.inference.top_k = value;
     LogDebug("Setting top_k to configured value");
   }
 
   // Set deterministic flag
   void SetDeterministic(bool value) {
-    inference_args.deterministic = value;
+    args.inference.deterministic = value;
     LogDebug("Setting deterministic flag to configured value");
   }
 
   // Set prefill_tbatch_size
   void SetPrefillTbatchSize(size_t value) {
-    inference_args.prefill_tbatch_size = value;
+    args.inference.prefill_tbatch_size = value;
     LogDebug("Setting prefill_tbatch_size to configured value");
   }
 
@@ -175,7 +174,7 @@ class GemmaContext {
       active_conversation->abs_pos = 0;
       // Replace the cache within the current ConversationData object
       active_conversation->kv_cache = std::make_unique<KVCache>(
-          model.Config(), inference_args, ctx.allocator);
+          model.Config(), args.inference, ctx.allocator);
 
       LogDebug((log_prefix + "Successfully rewound to initial state.").c_str());
     } else {
@@ -193,7 +192,7 @@ class GemmaContext {
     LogDebug("Creating new conversation");
     // Create a new ConversationData object using make_shared
     conversation_cache[name] = std::make_shared<ConversationData>(
-        model.Config(), inference_args, ctx.allocator);
+        model.Config(), args.inference, ctx.allocator);
     return true;
   }
 
@@ -274,8 +273,7 @@ class GemmaContext {
   std::vector<int> token_buffer;
 
   // Cached args (remain global for the context)
-  InferenceArgs inference_args;
-  ThreadingArgs threading_args;
+  GemmaArgs args;
   ThreadingContext ctx;
   MatMulEnv matmul_env;
 

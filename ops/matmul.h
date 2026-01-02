@@ -61,7 +61,7 @@ HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;
 // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
 HWY_INLINE_VAR constexpr size_t kMaxKC = 8 * 1024;
 
-// Policy classes for parallelism, implementing some of `ParallelismStrategy`.
+// Policy classes for parallelism, implementing some of `Parallelism`.
 
 struct MMParallelNone {
   template <class Func>
@@ -103,18 +103,14 @@ struct MMParallelWithinCluster {
   template <class Func>
   void ForN(ThreadingContext& ctx, const IndexRange& range_n, size_t n_multiple,
             size_t inner_tasks, size_t cluster_idx, const Func& func) const {
-    HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMClusterForN);
 
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-    const size_t base = ctx.Worker(cluster_idx);
-
-    const IndexRangePartition ranges_n = StaticPartition(
-        range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
-    ParallelizeOneRange(ranges_n, cluster,
-                        ctx.pool_callers.Get(Callers::kMMClusterForN),
-                        [&](const IndexRange& worker_range, size_t worker) {
-                          func(worker_range, base + worker);
-                        });
+    ParallelPartitionWithinCluster(
+        range_n, n_multiple, inner_tasks, ctx, cluster_idx, caller,
+        [&](const IndexRange& worker_range, size_t worker) {
+          func(worker_range, worker);
+        });
   }
 
   template <class Func>
@@ -122,79 +118,56 @@ struct MMParallelWithinCluster {
                       const IndexRangePartition& ranges_mc,
                       const IndexRangePartition& ranges_nc, size_t cluster_idx,
                       const Func& func) const {
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-    const size_t base = ctx.Worker(cluster_idx);
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMClusterForMCNC);
 
-    // Low-batch: avoid Divide/Remainder.
-    if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
-      ParallelizeOneRange(ranges_nc, cluster,
-                          ctx.pool_callers.Get(Callers::kMMClusterForMCNC),
-                          [&](const IndexRange& range_nc, size_t worker) {
-                            func(ranges_mc.Range(0), range_nc, base + worker);
-                          });
-    } else {
-      ParallelizeTwoRanges(
-          ranges_mc, ranges_nc, cluster,
-          ctx.pool_callers.Get(Callers::kMMClusterForMCNC),
-          [&](const IndexRange& range_mc, const IndexRange& range_nc,
-              size_t worker) { func(range_mc, range_nc, base + worker); });
-    }
+    // We are running on one pool, hence collapse into a 1D range.
+    const hwy::Divisor div_m(static_cast<uint32_t>(ranges_mc.NumTasks()));
+    const auto get_mc = [&](uint64_t task) {
+      return ranges_mc.Range(div_m.Remainder(static_cast<uint32_t>(task)));
+    };
+    const auto get_nc = [&](uint64_t task) {
+      return ranges_nc.Range(div_m.Divide(static_cast<uint32_t>(task)));
+    };
+    const size_t num_tasks = ranges_mc.NumTasks() * ranges_nc.NumTasks();
+
+    ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
+                             [&](uint64_t task, size_t worker) {
+                               func(get_mc(task), get_nc(task), worker);
+                             });
   }
 
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t cluster_idx, const Func& func) const {
-    hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-    const size_t base = ctx.Worker(cluster_idx);
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMClusterForMC);
 
-    cluster.Run(
-        range_mc.begin(), range_mc.end(),
-        ctx.pool_callers.Get(Callers::kMMClusterForMC),
-        [&](uint64_t row_a, size_t worker) { func(row_a, base + worker); });
+    ParallelForWithinCluster(
+        range_mc.Num(), ctx, cluster_idx, caller,
+        [&](uint64_t i, size_t worker) { func(range_mc.begin() + i, worker); });
   }
 };
 
 struct MMParallelHierarchical {
-  // Cluster/CCX-aware parallel-for over B rows in `range_n`. `n_multiple` is
-  // the granularity of per-cluster tasks. Calls `func(worker_range, worker)`.
+  // Similar to `HierarchicalParallelFor`, but over *sub-ranges* of B rows in
+  // `range_n` governed by `n_multiple` and `inner_tasks`.
   template <class Func>
   void ForN(ThreadingContext& ctx, const IndexRange& range_n, size_t n_multiple,
-            size_t inner_tasks, HWY_MAYBE_UNUSED size_t caller_cluster_idx,
+            size_t inner_tasks, size_t caller_cluster_idx,
             const Func& func) const {
-    HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     HWY_DASSERT(caller_cluster_idx == 0);
+    (void)caller_cluster_idx;
     const hwy::pool::Caller caller = ctx.pool_callers.Get(Callers::kMMHierForN);
 
-    // Single cluster: parallel-for over static partition of `range_n`.
-    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
-    const size_t num_clusters = all_clusters.NumWorkers();
-    if (num_clusters == 1) {
-      const size_t cluster_idx = 0;
-      hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-      const IndexRangePartition ranges_n = StaticPartition(
-          range_n, cluster.NumWorkers() * inner_tasks, n_multiple);
-      return ParallelizeOneRange(
-          ranges_n, cluster, caller,
-          [&](const IndexRange& worker_range, size_t worker) {
-            func(worker_range, worker);
-          });
-    }
-
-    // Assign each cluster a sub-range of `range_n` (typically hundreds).
-    const IndexRangePartition ranges_n =
-        StaticPartition(range_n, num_clusters, n_multiple);
-    ParallelizeOneRange(
-        ranges_n, all_clusters, caller,
-        [&](const IndexRange& n_range, const size_t cluster_idx) {
-          hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-          const size_t cluster_base = ctx.Worker(cluster_idx);
-          // Parallel-for over sub-ranges of `cluster_range` within the cluster.
-          const IndexRangePartition worker_ranges = StaticPartition(
-              n_range, cluster.NumWorkers() * inner_tasks, n_multiple);
-          ParallelizeOneRange(
-              worker_ranges, cluster, caller,
+    // Assign clusters (if any) a sub-range of `range_n` (typically hundreds).
+    ParallelPartitionAcrossClusters(
+        range_n, n_multiple, /*inner_tasks=*/1, ctx, caller,
+        [&](const IndexRange& cluster_range, size_t cluster_idx) {
+          ParallelPartitionWithinCluster(
+              cluster_range, n_multiple, inner_tasks, ctx, cluster_idx, caller,
               [&](const IndexRange& worker_range, size_t worker) {
-                func(worker_range, cluster_base + worker);
+                func(worker_range, worker);
               });
         });
   }
@@ -205,69 +178,56 @@ struct MMParallelHierarchical {
   void ForRangesMC_NC(ThreadingContext& ctx,
                       const IndexRangePartition& ranges_mc,
                       const IndexRangePartition& ranges_nc,
-                      HWY_MAYBE_UNUSED size_t caller_cluster_idx,
-                      const Func& func) const {
+                      size_t caller_cluster_idx, const Func& func) const {
     HWY_DASSERT(caller_cluster_idx == 0);
+    (void)caller_cluster_idx;
     const hwy::pool::Caller caller =
         ctx.pool_callers.Get(Callers::kMMHierForMCNC);
 
-    hwy::ThreadPool& all_clusters = ctx.pools.AllClusters();
-    // `all_clusters` is a pool with one worker per cluster in a package.
-    const size_t num_clusters = all_clusters.NumWorkers();
-    // Single (big) cluster: collapse two range indices into one parallel-for
-    // to reduce the number of fork-joins.
-    if (num_clusters == 1) {
-      const size_t cluster_idx = 0;
-      hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-      // Low-batch: avoid Divide/Remainder.
-      if (HWY_UNLIKELY(ranges_mc.NumTasks() == 1)) {
-        return ParallelizeOneRange(
-            ranges_nc, cluster, caller,
-            [&](const IndexRange& range_nc, size_t worker) {
-              func(ranges_mc.Range(0), range_nc, worker);
-            });
-      } else {
-        return ParallelizeTwoRanges(
-            ranges_mc, ranges_nc, cluster, caller,
-            [&](const IndexRange& range_mc, const IndexRange& range_nc,
-                size_t worker) { func(range_mc, range_nc, worker); });
-      }
-    }
+    // Collapse two range indices into a 1D range for better load-balancing,
+    // because `ranges_mc` may just have one task.
+    const hwy::Divisor div_m(static_cast<uint32_t>(ranges_mc.NumTasks()));
+    const auto get_mc = [&](uint64_t task) {
+      return ranges_mc.Range(div_m.Remainder(static_cast<uint32_t>(task)));
+    };
+    const auto get_nc = [&](uint64_t task) {
+      return ranges_nc.Range(div_m.Divide(static_cast<uint32_t>(task)));
+    };
+    const IndexRange all_range(0, ranges_mc.NumTasks() * ranges_nc.NumTasks());
 
-    // Multiple clusters: N across clusters (both are usually the larger), and
-    // M within each cluster. We assume auto-tuning finds small MC/NC tasks.
-    ParallelizeOneRange(
-        ranges_nc, all_clusters, caller,
-        [&](const IndexRange range_nc, size_t cluster_idx) {
-          const size_t cluster_base = ctx.Worker(cluster_idx);
-          hwy::ThreadPool& cluster = ctx.pools.Cluster(cluster_idx);
-          ParallelizeOneRange(ranges_mc, cluster, caller,
-                              [&](const IndexRange& range_mc, size_t worker) {
-                                func(range_mc, range_nc, cluster_base + worker);
-                              });
+    ParallelPartitionAcrossClusters(
+        all_range, /*task_multiple=*/1, /*inner_tasks=*/1, ctx, caller,
+        [&](const IndexRange& cluster_range, size_t cluster_idx) {
+          ParallelForWithinCluster(cluster_range.Num(), ctx, cluster_idx,
+                                   caller, [&](uint64_t i, size_t worker) {
+                                     const size_t task =
+                                         cluster_range.begin() + i;
+                                     func(get_mc(task), get_nc(task), worker);
+                                   });
         });
   }
 
-  // Calls `func(row_a, worker)` in parallel.
+  // No multiple/inner_tasks, so this is just HierarchicalParallelFor.
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t caller_cluster_idx, const Func& func) const {
-    HierarchicalParallelFor(range_mc.Num(), ctx, Callers::kMMHierForMC,
-                            [&](size_t task, size_t worker) {
-                              func(range_mc.begin() + task, worker);
-                            });
+    HWY_DASSERT(caller_cluster_idx == 0);
+    (void)caller_cluster_idx;
+    HierarchicalParallelFor(
+        range_mc.Num(), ctx, Callers::kMMHierForMC,
+        [&](size_t i, size_t worker) { func(range_mc.begin() + i, worker); });
   }
 };
 
 template <class Func, typename... Args>
-void DispatchParallelism(ParallelismStrategy parallelism, const Func& func,
+void DispatchParallelism(Parallelism parallelism, const Func& func,
                          Args&&... args) {
   switch (parallelism) {
-    case ParallelismStrategy::kNone:
+    case Parallelism::kNone:
       return func(MMParallelNone(), std::forward<Args>(args)...);
-    case ParallelismStrategy::kWithinCluster:
+    case Parallelism::kWithinCluster:
       return func(MMParallelWithinCluster(), std::forward<Args>(args)...);
-    case ParallelismStrategy::kHierarchical:
+    case Parallelism::kHierarchical:
       return func(MMParallelHierarchical(), std::forward<Args>(args)...);
     default:
       HWY_UNREACHABLE;
@@ -371,8 +331,8 @@ void DispatchOrder(MMOrder order, const Func& func, Args&&... args) {
   }
 }
 
-static inline bool IsBlock(MMOrder order) {
-  return order == MMOrder::kNT_MT_K || order == MMOrder::kNT_MT;
+static inline bool IsOneMC(MMOrder order) {
+  return order == MMOrder::kNT || order == MMOrder::kNT_K;
 }
 
 static inline bool IsOneKC(MMOrder order) {
@@ -421,6 +381,8 @@ static inline const char* StringFromParA(MMParA par_a) {
 // `mc` := A rows such that `kc` columns fit in L2,
 // `nc` := B rows such that `kc` columns fit in L3 alongside `mc x nc` C.
 // Also includes loop order and task granularity.
+//
+// This is shared by multiple M which return the same `BucketM`.
 #pragma pack(push, 1)
 class MMConfig {
  public:
@@ -428,8 +390,8 @@ class MMConfig {
   // `mr` is the number of A rows per call to `MMKernel::LoopKC`.
   // `MMOrder` is how to parallelize the outer loops.
   // `inner_tasks` chooses the within-cluster task granularity in `ForN`.
-  MMConfig(size_t K, size_t N, size_t mr, size_t mc, size_t kc, size_t nc,
-           size_t kc_multiple, size_t nc_multiple, MMOrder order,
+  MMConfig(size_t M, size_t K, size_t N, size_t mr, size_t mc, size_t kc,
+           size_t nc, size_t kc_multiple, size_t nc_multiple, MMOrder order,
            int inner_tasks)
       : mr_(static_cast<uint32_t>(mr)),
         mc_(static_cast<uint32_t>(mc)),
@@ -441,11 +403,7 @@ class MMConfig {
         inner_tasks_(static_cast<uint8_t>(inner_tasks)),
         reserved_{} {
     HWY_DASSERT(mr == 1 || mr == 2 || mr == 4);
-    if (mc % mr != 0) {
-      HWY_WARN("mc %zu not a multiple of mr %zu", mc, mr);
-    }
-    // Do not warn for single-kc tasks; some models unfortunately have K which
-    // are not multiples of `kc_multiple`.
+    // Some models have K which are not multiples of `kc_multiple`.
     if (kc != K && (kc % kc_multiple) != 0) {
       HWY_WARN("kc %zu not a multiple of kc_multiple %zu", kc, kc_multiple);
     }
@@ -457,11 +415,21 @@ class MMConfig {
   }
 
   // Splits M/N into blocks which are visited sequentially or in parallel.
-  // K is always sequential, see `MMOrder`.
   IndexRangePartition RangesOfMC(size_t M) const {
-    return MaxSizePartition(IndexRange(0, M), mc_, mr_);
+    if (IsOneMC(order_)) {
+      // Must have exactly one M range/tile, regardless of `mr_` and `mc_`.
+      return IndexRangePartition(M);
+    }
+    const size_t mc = HWY_MIN(M, MC());
+    const size_t mr = HWY_MIN(M, MR());
+    return MaxSizePartition(IndexRange(0, M), mc, mr);
   }
+  // K is either a single range, or a sequential loop.
   IndexRangePartition RangesOfKC(size_t K) const {
+    if (IsOneKC(order_)) {
+      // Must have exactly one K range/tile, regardless of `kc_`.
+      return IndexRangePartition(K);
+    }
     return MaxSizePartition(IndexRange(0, K), kc_, kc_multiple_);
   }
   IndexRangePartition RangesOfNC(size_t N) const {
@@ -488,7 +456,7 @@ class MMConfig {
   uint32_t kc_multiple_;
   MMOrder order_;
   uint8_t inner_tasks_;
-  HWY_MAYBE_UNUSED uint8_t reserved_[6];
+  HWY_MEMBER_VAR_MAYBE_UNUSED uint8_t reserved_[6];
 };
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
@@ -597,25 +565,26 @@ class MMAutoTune {
 
 //------------------------------------------------------------------------------
 
-// Minimum M, in units of tile rows of height mr={1, 2, 4}, from which
-// `MMOrder::kNT[_K]` are no longer allowed. They require a single MC range,
-// but choosing the same config for a larger M can result in multiple MC ranges.
-// Thus M less than this must have unique keys/configs.
-HWY_INLINE_VAR constexpr size_t kMaxTilesM = 8;
-
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
-  // Group batch size into buckets to reduce #auto-tunes.
-  static size_t BucketM(size_t M) {
-    if (M < kMaxTilesM * kMaxMR) return M;  // See kMaxTilesM above.
-    if (M <= 128) return 128;
-    return 512;
-  }
-
  public:
   using Key = uint64_t;
   // KeyFromDims will only return this if all dims are zero, which is invalid.
   static constexpr Key kPadding = 0;
+
+  // Returns the maximum permissible M in the bucket, for grouping batch sizes
+  // into buckets to reduce #auto-tunes.
+  static size_t BucketM(size_t M) {
+    HWY_DASSERT(M != 0);
+    // Small M: 1..3, 4..7, 8..15, etc. share the same config.
+    if (M < 64) return M | (kMaxMR - 1);
+    // Larger M use power of two buckets: 64..127, 128..255, etc.
+    const size_t floor_log2_M =
+        31 - hwy::Num0BitsAboveMS1Bit_Nonzero32(static_cast<uint32_t>(M));
+    const size_t min_M = size_t{1} << floor_log2_M;
+    HWY_DASSERT(min_M <= M && M < 2 * min_M);
+    return 2 * min_M - 1;
+  }
 
   // Compresses the dimensions into a single Key for faster comparison.
   static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B) {
@@ -747,7 +716,7 @@ class MMOptions {
   const void* opaque = nullptr;
 
   uint32_t cluster_idx = 0;  // for `parallelism == kWithinCluster`.
-  ParallelismStrategy parallelism = ParallelismStrategy::kHierarchical;
+  Parallelism parallelism = Parallelism::kHierarchical;
 };
 
 // Arguments to MatMul() that are independent of the A/B/C types. Reduces

@@ -80,6 +80,38 @@ static inline bool EnumValid(LayerAttentionType type) {
   return type == LayerAttentionType::kGemma || type == LayerAttentionType::kVit;
 }
 
+enum class AttentionImpl {
+  kOld,
+  kFlash,
+  kSentinel,
+};
+
+AttentionImpl GetAttentionImpl(const std::string& impl);
+
+/*
+ * Returns a bitmask of flags to pass to attention functions based on the
+ * attention implementation selected.
+ *
+ * If `hwy_native_dot_bf16` is true, the function will use the old attention
+ * implementation, ignoring `impl`.
+ *
+ * `hwy_native_dot_bf16` needs to be passed in, because the HWY_NATIVE_DOT_BF16
+ * macro is not available outside of highway instrumented translation units and
+ * cannot be made accessible from .h files.
+ */
+static inline int AttentionImplToFlags(AttentionImpl impl,
+                                       int hwy_native_dot_bf16) {
+  if (hwy_native_dot_bf16) return kAttentionUseOld;
+
+  switch (impl) {
+    case AttentionImpl::kOld:
+      return kAttentionUseOld;
+    case AttentionImpl::kFlash:
+    default:
+      return 0;
+  }
+}
+
 // Post attention and ffw normalization type.
 enum class PostNormType {
   None,
@@ -184,13 +216,6 @@ enum class Model {
 // in Specifier and thus does not change.
 const char* ModelPrefix(Model model);
 
-// Gemma3 is multimodal and has a different prompt wrapping than PaliGemma.
-// This is used for deducing the PromptWrapping for pre-2025 BlobStore.
-static inline bool IsVLM(Model model) {
-  return model == Model::GEMMA3_4B || model == Model::GEMMA3_1B ||
-         model == Model::GEMMA3_12B || model == Model::GEMMA3_27B;
-}
-
 static inline bool IsPaliGemma(Model model) {
   if (model == Model::PALIGEMMA2_3B_224 || model == Model::PALIGEMMA2_3B_448 ||
       model == Model::PALIGEMMA2_10B_224 ||
@@ -280,7 +305,7 @@ struct LayerConfig : public IFields {
   uint32_t kv_heads = 0;
   uint32_t qkv_dim = 0;  // length of Q, K, V vectors (contiguous).
   bool ff_biases = false;
-  bool optimized_gating = true;             // for Gemma3
+  bool optimized_gating = true;  // for Gemma3
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
@@ -383,6 +408,8 @@ struct ModelConfig : public IFields {
 
     internal.VisitFields(visitor);
 
+    visitor(use_global_timescale);
+
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -481,6 +508,7 @@ struct ModelConfig : public IFields {
   std::vector<std::string> scale_base_names;
 
   InternalModelConfig internal;
+  bool use_global_timescale = false;  // for Gemma 3
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
@@ -489,6 +517,7 @@ ModelConfig GetVitConfig(const ModelConfig& config);
 enum DeducedLayerTypes {
   kDeducedViT = 2,
   kDeduced448 = 4,   // For ViT, 448x448 resolution instead of 224x224.
+  kDeducedKqNorm = 8,
 };
 
 // layer_types is one or more of `DeducedLayerTypes`.
