@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/blob_finder.h"
+#include "io/blob_store.h"
 
 #include <stdio.h>
 
@@ -32,10 +32,11 @@ namespace gcpp {
 namespace {
 
 #if !HWY_TEST_STANDALONE
-class BlobFinderTest : public testing::Test {};
+class BlobStoreTest : public testing::Test {};
 #endif
 
-TEST(BlobFinderTest, TestReadWrite) {
+// Change the first argument from BlobFinderTest to BlobStoreTest
+TEST(BlobStoreTest, TestReadWrite) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
 
@@ -92,7 +93,7 @@ TEST(BlobFinderTest, TestReadWrite) {
 }
 
 // Ensures padding works for any number of random-sized blobs.
-TEST(BlobFinderTest, TestNumBlobs) {
+TEST(BlobStoreTest, TestNumBlobs) {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   hwy::RandomState rng;

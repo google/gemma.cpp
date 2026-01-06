@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/blob_finder.h"
+#include "io/blob_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -412,8 +412,8 @@ class BlobStore {
   std::vector<hwy::uint128_t> directory_;  // two per blob, see `SetRange`.
 };  // BlobStore
 
-BlobReader::BlobReader(const Path& blob_path) : blob_path_(blob_path) {
-  PROFILER_ZONE("Startup.BlobReader");
+BlobFinder::BlobFinder(const Path& blob_path) : blob_path_(blob_path) {
+  PROFILER_ZONE("Startup.BlobFinder");
 
   file_ = OpenFileOrAbort(blob_path, "r");
   file_bytes_ = file_->FileSize();

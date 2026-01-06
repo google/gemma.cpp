@@ -99,8 +99,8 @@ set(SOURCES
   gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
-  io/blob_finder.cc
-  io/blob_finder.h
+  io/blob_store.cc
+  io/blob_store.h
   io/fields.cc
   io/fields.h
   io/io_win.cc
@@ -225,7 +225,7 @@ set(GEMMA_TEST_FILES
   gemma/gemma_args_test.cc
   gemma/flash_attention_test.cc
   gemma/tensor_info_test.cc
-  io/blob_finder_test.cc
+  io/blob_store_test.cc
   io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
