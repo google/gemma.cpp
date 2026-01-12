@@ -428,6 +428,18 @@ struct ModelConfig : public IFields {
   // The third ctor also expects a string returned by this.
   std::string Specifier() const;
 
+  // Overwrites `max_seq_len` with `new_max_seq_len` and updates all global
+  // layers' attention window sizes to `new_max_seq_len`. This function must be
+  // called before instantiating the KVCache object.
+  void SetMaxSeqLen(size_t new_max_seq_len) {
+    for (size_t i = 0; i < attention_window_sizes.size(); ++i) {
+      if (attention_window_sizes[i] == max_seq_len) {
+        attention_window_sizes[i] = new_max_seq_len;
+      }
+    }
+    max_seq_len = new_max_seq_len;
+  }
+
   void AddLayerConfig(const LayerConfig& layer_config) {
     layer_configs.push_back(layer_config);
     HWY_ASSERT(layer_configs.size() <= num_layers);
@@ -516,7 +528,7 @@ ModelConfig GetVitConfig(const ModelConfig& config);
 
 enum DeducedLayerTypes {
   kDeducedViT = 2,
-  kDeduced448 = 4,   // For ViT, 448x448 resolution instead of 224x224.
+  kDeduced448 = 4,  // For ViT, 448x448 resolution instead of 224x224.
   kDeducedKqNorm = 8,
 };
 

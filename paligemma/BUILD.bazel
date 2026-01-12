@@ -65,7 +65,6 @@ cc_test(
         "//:benchmark_helper",
         "//:configs",
         "//:gemma_lib",
-        "//io",
         "@highway//:hwy_test_util",
     ],
 )

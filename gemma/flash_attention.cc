@@ -22,10 +22,14 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "gemma/flash_structs.h"
+#include "gemma/kv_cache.h"
+#include "gemma/query.h"
+#include "util/basics.h"
 #include "util/threading_context.h"
 #include "util/zones.h"
 #include "hwy/base.h"
@@ -448,7 +452,7 @@ static VF4 HWY_INLINE Reduce4(DF df, VF x_0, VF x_1, VF x_2, VF x_3,
   constexpr size_t kMaxLanes = hn::MaxLanes(df);
   HWY_LANES_CONSTEXPR size_t kLanes = hn::Lanes(df);
   HWY_ALIGN T x_transposed[4 * kMaxLanes];
-  hn::StoreInterleaved4<DF>(x_0, x_1, x_2, x_3, df, x_transposed);
+  hn::StoreInterleaved4(x_0, x_1, x_2, x_3, df, x_transposed);
   VF4 result = hn::Load(df4, x_transposed);
   for (int i = 1; i < kLanes; ++i) {
     result = reducer(result, hn::Load(df4, x_transposed + i * 4));

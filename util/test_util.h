@@ -115,7 +115,7 @@ template <typename T>
 void PrintMatPtr(MatPtrT<T> mat) {
   for (int i = 0; i < mat.Rows(); ++i) {
     for (int j = 0; j < mat.Cols(); ++j) {
-      std::cerr << mat.Row(i)[j] << " ,";
+      std::cerr << hwy::ConvertScalarTo<float>(mat.Row(i)[j]) << " ,";
     }
     std::cerr << std::endl;
   }

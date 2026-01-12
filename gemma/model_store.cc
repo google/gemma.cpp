@@ -387,7 +387,7 @@ void ModelStore::CreateMatPtrs(BlobReader& reader) {
 }
 
 ModelStore::ModelStore(BlobReader& reader, const Path& tokenizer_path,
-                         Tristate wrapping)
+                       Tristate wrapping)
     : config_(ReadOrDeduceConfig(reader, wrapping)),
       tokenizer_(ReadTokenizer(reader, tokenizer_path)) {
   if (!ReadMatPtrs(reader)) {  // Pre-2025 format.

@@ -35,6 +35,7 @@
 namespace gcpp {
 
 typedef std::vector<float, hwy::AlignedAllocator<float>> AlignedFloatVector;
+typedef std::vector<BF16, hwy::AlignedAllocator<BF16>> AlignedBF16Vector;
 
 // Returns the scale value to use for the query in the attention computation.
 // Also called by ops_test.

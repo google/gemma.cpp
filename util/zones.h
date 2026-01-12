@@ -10,7 +10,7 @@
 namespace gcpp {
 
 // Zones for the profiler.
-enum class Zones {  // Keep sorted
+enum class Zones {   // Keep sorted
   kFlashAttentionFlashAttention,
   kFlashAttentionInclusive,
   kFlashAttentionRmsNormAndPositionalEncoding,

@@ -35,8 +35,13 @@ TEST(KVCacheTest, KVCacheToPtrs) {
 
   std::vector<KVCachePtr> ptrs = ToKVCachePtrs({caches.data(), caches.size()});
   ASSERT_EQ(ptrs.size(), 2);
-  EXPECT_EQ(ptrs[0].kv_cache.Row(0), caches[0].kv_cache.Row(0));
-  EXPECT_EQ(ptrs[1].kv_cache.Row(0), caches[1].kv_cache.Row(0));
+  if (caches[0].IsTiled()) {
+    EXPECT_EQ(ptrs[0].cache, &caches[0]);
+    EXPECT_EQ(ptrs[1].cache, &caches[1]);
+  } else {
+    EXPECT_EQ(ptrs[0].kv_cache.Row(0), caches[0].kv_cache.Row(0));
+    EXPECT_EQ(ptrs[1].kv_cache.Row(0), caches[1].kv_cache.Row(0));
+  }
 }
 
 }  // namespace

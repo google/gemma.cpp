@@ -18,6 +18,9 @@
 
 #include "gemma/gemma.h"
 
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
@@ -556,10 +559,10 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
 }
 
 static void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
-                                          const RuntimeConfig& runtime_config,
-                                          QBatch& qbatch,
-                                          hwy::BitSet4096<>& non_eos,
-                                          size_t qi) {
+                                           const RuntimeConfig& runtime_config,
+                                           QBatch& qbatch,
+                                           hwy::BitSet4096<>& non_eos,
+                                           size_t qi) {
   const size_t last_pos_in_prompt = qbatch.Pos(qi) - qbatch.InitialPos(qi);
 
   const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
@@ -745,6 +748,12 @@ Gemma::Gemma(const GemmaArgs& args, ThreadingContext& ctx)
       chat_template_(model_.Tokenizer(), model_.Config().model),
       inference_(args.inference),
       aes_ctr_engine_(args.inference.deterministic) {
+  if (args.inference.seq_len > model_.Config().max_seq_len) {
+    HWY_WARN(
+        "Overriding model's max_seq_len=%u with user provided seq_len=%zu.",
+        model_.Config().max_seq_len, args.inference.seq_len);
+    model_.MutableConfig().SetMaxSeqLen(args.inference.seq_len);
+  }
   // Negligible CPU time in the ctor body (except ReadFromBlobs).
   weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, args.loader,
                                              args.inference, mat_owners_, ctx);

@@ -469,6 +469,38 @@ decltype(auto) CallUpcastedKV(const MatPtr* base, const Func& func,
   }
 }
 
+// Calls 'func' with a span of MatPtrT<T> for all elements in `base`.
+// T is dynamic type, read from base. It is assumed that all elements in `base`
+// have the same type.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedKVs(hwy::Span<const MatPtr> base, const Func& func,
+                               Args&&... args) {
+  Type type = base[0].GetType();
+  for ([[maybe_unused]] auto&& mat : base) {
+    HWY_DASSERT(mat.GetType() == type);
+  }
+  auto convert_to_matptr_t = [&base]<typename T>() {
+    std::vector<MatPtrT<T>> matptrs;
+    matptrs.reserve(base.size());
+    for (auto&& mat : base) {
+      matptrs.emplace_back(mat);
+    }
+    return matptrs;
+  };
+  if (type == Type::kF32) {
+    auto matptrs = convert_to_matptr_t.template operator()<float>();
+    hwy::Span<const MatPtrT<float>> matptrs_span(matptrs.data(),
+                                                 matptrs.size());
+    return func(matptrs_span, std::forward<Args>(args)...);
+  } else if (type == Type::kBF16) {
+    auto matptrs = convert_to_matptr_t.template operator()<BF16>();
+    hwy::Span<const MatPtrT<BF16>> matptrs_span(matptrs.data(), matptrs.size());
+    return func(matptrs_span, std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(type));
+  }
+}
+
 void CopyMat(const MatPtr& from, MatPtr& to);
 void ZeroInit(MatPtr& mat);
 

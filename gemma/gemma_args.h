@@ -22,8 +22,10 @@
 #include <stdio.h>
 
 #include <functional>
+#include <optional>
 #include <string>
 
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "io/io.h"        // Path
 #include "util/args.h"    // IWYU pragma: export

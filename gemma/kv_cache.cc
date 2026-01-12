@@ -16,8 +16,12 @@
 #include "gemma/kv_cache.h"
 
 #include <stddef.h>
+
+#include <algorithm>
+#include <utility>
 #include <vector>
 
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
 #include "util/mat.h"  // ZeroInit

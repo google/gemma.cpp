@@ -19,12 +19,14 @@
 #include <stddef.h>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "gemma/configs.h"     // ModelConfig
 #include "gemma/gemma_args.h"  // InferenceArgs
 #include "util/basics.h"       // BF16
 #include "util/mat.h"
+#include "hwy/base.h"
 
 namespace gcpp {
 

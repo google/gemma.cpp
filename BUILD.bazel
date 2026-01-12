@@ -523,6 +523,7 @@ cc_library(
         ":configs",
         ":gemma_args",
         ":mat",
+        "//compression:types",
         "@highway//:hwy",
     ],
 )
@@ -575,6 +576,7 @@ cc_library(
         ":configs",
         ":mat",
         ":threading_context",
+        "//compression:types",
         "//io",
         "@highway//:hwy",
         "@highway//:profiler",
@@ -608,7 +610,9 @@ cc_library(
     ],
     deps = [
         ":activations",
+        ":basics",
         ":configs",
+        ":kv_cache",
         ":mat",
         ":matmul",
         ":matmul_env",
