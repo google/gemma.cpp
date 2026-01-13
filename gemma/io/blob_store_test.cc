@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/blob_store.h"
+#include "gemma/io/blob_store.h"
 
 #include <stdio.h>
 
@@ -22,11 +22,12 @@
 #include <string>
 #include <vector>
 
-#include "io/io.h"
-#include "util/basics.h"
-#include "util/threading_context.h"
+#include "gemma/io/io.h"
 #include "hwy/tests/hwy_gtest.h"
 #include "hwy/tests/test_util-inl.h"  // HWY_ASSERT_EQ
+#include "util/basics.h"
+#include "util/threading_context.h"
+
 
 namespace gcpp {
 namespace {
@@ -130,8 +131,8 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);
 
     ParallelFor(
-        Parallelism::kFlat, num_blobs, ctx, /*cluster_idx=*/0,
-        Callers::kTest, [&](uint64_t i, size_t /*thread*/) {
+        Parallelism::kFlat, num_blobs, ctx, /*cluster_idx=*/0, Callers::kTest,
+        [&](uint64_t i, size_t /*thread*/) {
           HWY_ASSERT_STRING_EQ(reader.Keys()[i].c_str(),
                                std::to_string(i).c_str());
           const BlobRange* range = reader.Find(keys[i]);

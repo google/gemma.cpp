@@ -26,11 +26,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include "io/io.h"                // File, Path, MapPtr
-#include "util/basics.h"          // Tristate
-#include "util/threading_context.h"
+#include "gemma/io/io.h"            // File, Path, MapPtr
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"               // HWY_ASSERT
+#include "util/basics.h"            // Tristate
+#include "util/threading_context.h"
+
 
 namespace gcpp {
 

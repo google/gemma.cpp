@@ -21,12 +21,13 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // Gemma
-#include "io/io.h"        // Path
-#include "util/args.h"
+#include "gemma/io/io.h"  // Path
 #include "hwy/base.h"
 #include "hwy/highway.h"
 #include "hwy/profiler.h"
 #include "nlohmann/json.hpp"
+#include "util/args.h"
+
 
 namespace gcpp {
 

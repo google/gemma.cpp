@@ -21,14 +21,15 @@
 #include <string>
 #include <vector>
 
-#include "io/blob_store.h"
-#include "io/io.h"        // Path
-#include "util/basics.h"  // IndexRange
-#include "util/threading.h"
-#include "util/threading_context.h"
+#include "gemma/io/blob_store.h"
+#include "gemma/io/io.h"            // Path
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
 #include "hwy/timer.h"
+#include "util/basics.h"  // IndexRange
+#include "util/threading.h"
+#include "util/threading_context.h"
+
 
 namespace gcpp {
 
@@ -106,8 +107,8 @@ void ReadBlobs(BlobReader& reader, const RangeVec& ranges, BlobVec& blobs,
                ThreadingContext& ctx, size_t cluster_idx) {
   HWY_ASSERT(reader.Keys().size() == blobs.size());
   HWY_ASSERT(ranges.size() == blobs.size());
-  ParallelFor(Parallelism::kWithinCluster, blobs.size(), ctx,
-              cluster_idx, Callers::kTest, [&](size_t i, size_t /*thread*/) {
+  ParallelFor(Parallelism::kWithinCluster, blobs.size(), ctx, cluster_idx,
+              Callers::kTest, [&](size_t i, size_t /*thread*/) {
                 HWY_ASSERT(ranges[i].bytes == blobs[i].size());
                 reader.file().Read(ranges[i].offset, ranges[i].bytes,
                                    blobs[i].data());
@@ -189,8 +190,8 @@ void CompareBlobs(const KeyVec& keys, BlobVec& blobs1, BlobVec& blobs2,
   const double t0 = hwy::platform::Now();
   std::atomic<size_t> blobs_equal{};
   std::atomic<size_t> blobs_diff{};
-  ParallelFor(Parallelism::kHierarchical, keys.size(), ctx, 0,
-              Callers::kTest, [&](size_t i, size_t /*thread*/) {
+  ParallelFor(Parallelism::kHierarchical, keys.size(), ctx, 0, Callers::kTest,
+              [&](size_t i, size_t /*thread*/) {
                 const size_t mismatches =
                     BlobDifferences(blobs1[i], blobs2[i], keys[i]);
                 if (mismatches != 0) {

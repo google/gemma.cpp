@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-#include "io/io.h"
+#include "gemma/io/io.h"
 #include "hwy/aligned_allocator.h"  // hwy::Span
 #include "hwy/base.h"
 #include "hwy/profiler.h"

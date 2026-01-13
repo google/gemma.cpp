@@ -29,19 +29,20 @@
 
 #include "compression/compress.h"  // ScaleWeights
 #include "gemma/configs.h"         // ModelConfig
+#include "gemma/io/blob_store.h"   // BlobWriter
+#include "gemma/io/io.h"           // Path
 #include "gemma/model_store.h"     // ModelStore
 #include "gemma/tensor_info.h"     // TensorInfo
 #include "gemma/tokenizer.h"
-#include "io/blob_store.h"  // BlobWriter
-#include "io/io.h"          // Path
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
 
+
 #undef HWY_TARGET_INCLUDE
 #define HWY_TARGET_INCLUDE \
   "compression/python/compression_clif_aux.cc"  // NOLINT
-#include "hwy/foreach_target.h"  // IWYU pragma: keep
+#include "hwy/foreach_target.h"                 // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"

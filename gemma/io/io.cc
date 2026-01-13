@@ -31,7 +31,7 @@
 #include <memory>
 #include <string>
 
-#include "io/io.h"
+#include "gemma/io/io.h"
 #include "hwy/base.h"  // HWY_ASSERT
 
 #if (HWY_OS_LINUX || HWY_OS_FREEBSD) && \

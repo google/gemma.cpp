@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/blob_store.h"
+#include "gemma/io/blob_store.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,12 +24,13 @@
 #include <utility>  // std::move
 #include <vector>
 
-#include "io/io.h"
-#include "util/threading_context.h"
+#include "gemma/io/io.h"
 #include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
 #include "hwy/detect_compiler_arch.h"
 #include "hwy/profiler.h"
+#include "util/threading_context.h"
+
 
 namespace gcpp {
 
@@ -490,25 +491,24 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
 
   const Parallelism parallelism =
       file_->IsAppendOnly() ? Parallelism::kNone : Parallelism::kFlat;
-  ParallelFor(
-      parallelism, writes.size(), ctx_,
-      /*cluster_idx=*/0, Callers::kBlobWriter,
-      [this, &writes](uint64_t i, size_t /*thread*/) {
-        const BlobRange& range = writes[i].range;
-        if (!file_->Write(writes[i].data, range.bytes, range.offset)) {
-          const std::string& key = StringFromKey(keys_[range.key_idx]);
-          HWY_ABORT("Write failed for %s from %zu, %zu bytes to %p.",
-                    key.c_str(), static_cast<size_t>(range.offset), range.bytes,
-                    writes[i].data);
-        }
-      });
+  ParallelFor(parallelism, writes.size(), ctx_,
+              /*cluster_idx=*/0, Callers::kBlobWriter,
+              [this, &writes](uint64_t i, size_t /*thread*/) {
+                const BlobRange& range = writes[i].range;
+                if (!file_->Write(writes[i].data, range.bytes, range.offset)) {
+                  const std::string& key = StringFromKey(keys_[range.key_idx]);
+                  HWY_ABORT("Write failed for %s from %zu, %zu bytes to %p.",
+                            key.c_str(), static_cast<size_t>(range.offset),
+                            range.bytes, writes[i].data);
+                }
+              });
   curr_offset_ = writes.back().range.End();
 }
 
 void BlobWriter::Finalize() {
   if (!file_->IsAppendOnly() && curr_offset_ != file_->FileSize()) {
-    HWY_WARN("Computed offset %zu does not match file size %zu.",
-             curr_offset_, file_->FileSize());
+    HWY_WARN("Computed offset %zu does not match file size %zu.", curr_offset_,
+             file_->FileSize());
   }
   const BlobStore bs = BlobStore(keys_, blob_sizes_);
 

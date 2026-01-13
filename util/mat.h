@@ -24,10 +24,11 @@
 
 // IWYU pragma: begin_exports
 #include "compression/types.h"  // Type
+#include "gemma/io/fields.h"
 #include "gemma/tensor_info.h"
-#include "io/fields.h"
 #include "util/allocator.h"  // AlignedPtr
-#include "util/basics.h"  // Extents2D
+#include "util/basics.h"     // Extents2D
+
 // IWYU pragma: end_exports
 #include "hwy/base.h"
 
@@ -457,7 +458,7 @@ decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
 // Like CallUpcasted, but only for kv_cache types: kBF16 and kF32.
 template <class Func, typename... Args>
 decltype(auto) CallUpcastedKV(const MatPtr* base, const Func& func,
-                                      Args&&... args) {
+                              Args&&... args) {
   if (base->GetType() == Type::kF32) {
     const MatPtrT<float> mat(*base);
     return func(&mat, std::forward<Args>(args)...);

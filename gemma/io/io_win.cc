@@ -21,9 +21,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "io/io.h"
-#include "util/allocator.h"
+#include "gemma/io/io.h"
 #include "hwy/base.h"  // HWY_ASSERT
+#include "util/allocator.h"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif

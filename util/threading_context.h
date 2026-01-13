@@ -23,14 +23,15 @@
 #include <stdint.h>
 
 // IWYU pragma: begin_exports
-#include "io/io.h"  // Path
+#include "gemma/io/io.h"  // Path
+#include "hwy/profiler.h"
 #include "util/allocator.h"
 #include "util/args.h"
 #include "util/basics.h"  // Tristate
 #include "util/threading.h"
 #include "util/topology.h"
 #include "util/zones.h"
-#include "hwy/profiler.h"
+
 // IWYU pragma: end_exports
 
 namespace gcpp {

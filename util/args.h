@@ -24,9 +24,10 @@
 #include <string>
 #include <vector>
 
-#include "io/io.h"        // Path
+#include "gemma/io/io.h"  // Path
+#include "hwy/base.h"     // HWY_ABORT
 #include "util/basics.h"  // Tristate
-#include "hwy/base.h"  // HWY_ABORT
+
 
 namespace gcpp {
 

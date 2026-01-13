@@ -20,10 +20,11 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"  // LayersOutputFunc
-#include "io/io.h"
-#include "util/args.h"
+#include "gemma/io/io.h"
 #include "hwy/base.h"
 #include "nlohmann/json.hpp"
+#include "util/args.h"
+
 
 using json = nlohmann::json;
 

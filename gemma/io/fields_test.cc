@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "io/fields.h"
+#include "gemma/io/fields.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -21,10 +21,11 @@
 
 #include <limits>
 #include <string>
-#include <vector>
 #include <type_traits>
+#include <vector>
 
 #include "hwy/tests/hwy_gtest.h"
+
 
 namespace gcpp {
 namespace {

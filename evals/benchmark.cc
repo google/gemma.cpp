@@ -11,11 +11,12 @@
 #include "evals/benchmark_helper.h"
 #include "evals/cross_entropy.h"
 #include "gemma/gemma.h"
-#include "io/io.h"  // Path
-#include "util/args.h"
+#include "gemma/io/io.h"  // Path
 #include "hwy/base.h"
 #include "hwy/timer.h"
 #include "nlohmann/json.hpp"
+#include "util/args.h"
+
 
 namespace gcpp {
 
@@ -85,8 +86,8 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice = env.StringFromTokens(prompt_slice);
     total_input_len += text_slice.size();
-    printf("Total cross entropy: %f [cumulative: %f]\n",
-           entropy, total_entropy);
+    printf("Total cross entropy: %f [cumulative: %f]\n", entropy,
+           total_entropy);
     printf("Cross entropy per byte: %f [cumulative: %f]\n",
            entropy / text_slice.size(), total_entropy / total_input_len);
   }
