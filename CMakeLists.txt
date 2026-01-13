@@ -99,13 +99,13 @@ set(SOURCES
   gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
-  io/blob_store.cc
-  io/blob_store.h
-  io/fields.cc
-  io/fields.h
-  io/io_win.cc
-  io/io.cc
-  io/io.h
+  gemma/io/blob_store.cc
+  gemma/io/blob_store.h
+  gemma/io/fields.cc
+  gemma/io/fields.h
+  gemma/io/io_win.cc
+  gemma/io/io.cc
+  gemma/io/io.h
   ops/dot-inl.h
   ops/matmul_static_bf16.cc
   ops/matmul_static_f32.cc
@@ -225,8 +225,8 @@ set(GEMMA_TEST_FILES
   gemma/gemma_args_test.cc
   gemma/flash_attention_test.cc
   gemma/tensor_info_test.cc
-  io/blob_store_test.cc
-  io/fields_test.cc
+  gemma/io/blob_store_test.cc
+  gemma/io/fields_test.cc
   ops/bench_matmul.cc
   ops/dot_test.cc
   ops/matmul_test.cc
@@ -259,7 +259,7 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
-add_executable(migrate_weights io/migrate_weights.cc)
+add_executable(migrate_weights gemma/io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)
 
 
