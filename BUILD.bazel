@@ -823,7 +823,7 @@ cc_test(
 )
 
 cc_binary(
-    name = "gemma",
+    name = "gemma_main",
     srcs = ["gemma/run.cc"],
     deps = [
         ":args",

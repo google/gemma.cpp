@@ -77,4 +77,4 @@ jobs:
         with:
           path: ~/.cache/bazel
           key: bazel-${{ runner.os }}
-      - run: bazel build --cxxopt=-std=c++20 //:gemma --jobs=10 --show_progress_rate_limit=1
+      - run: bazel build --cxxopt=-std=c++20 //:gemma_main --jobs=10 --show_progress_rate_limit=1
