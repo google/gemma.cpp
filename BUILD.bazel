@@ -55,7 +55,7 @@ cc_library(
     hdrs = ["util/args.h"],
     deps = [
         ":basics",
-        "//io",  # Path
+        "//gemma/io",  # Path
         "@highway//:hwy",
     ],
 )
@@ -112,7 +112,7 @@ cc_library(
         ":threading",
         ":topology",
         ":zones",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:profiler",
@@ -192,8 +192,8 @@ cc_library(
     deps = [
         ":basics",
         "//compression:types",
-        "//io",
-        "//io:fields",
+        "//gemma/io",
+        "//gemma/io:fields",
         "@highway//:hwy",  # base.h
     ],
 )
@@ -205,7 +205,7 @@ cc_test(
         ":configs",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:types",
-        "//io:fields",
+        "//gemma/io:fields",
     ],
 )
 
@@ -230,7 +230,7 @@ cc_library(
         ":tensor_info",
         ":threading_context",
         "//compression:types",
-        "//io:fields",
+        "//gemma/io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -282,7 +282,7 @@ cc_library(
         ":threading_context",
         ":zones",
         "//compression:compress",
-        "//io:blob_store",
+        "//gemma/io:blob_store",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -577,7 +577,7 @@ cc_library(
         ":mat",
         ":threading_context",
         "//compression:types",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -641,7 +641,7 @@ cc_library(
         ":threading_context",
         ":zones",
         "//compression:compress",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:stats",
@@ -681,8 +681,8 @@ cc_library(
         ":zones",
         "//compression:compress",
         "//compression:types",
-        "//io",
-        "//io:blob_store",
+        "//gemma/io",
+        "//gemma/io:blob_store",
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
@@ -795,7 +795,7 @@ cc_test(
         ":configs",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
@@ -847,7 +847,7 @@ cc_binary(
         ":benchmark_helper",
         ":cross_entropy",
         ":gemma_lib",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@nlohmann_json//:json",
@@ -874,7 +874,7 @@ cc_binary(
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@nlohmann_json//:json",
     ],
@@ -887,7 +887,7 @@ cc_binary(
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:profiler",
         "@nlohmann_json//:json",
