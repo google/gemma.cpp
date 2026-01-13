@@ -7,7 +7,7 @@
 
 #include "gtest/gtest.h"
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // Type
+#include "gemma/io/fields.h"           // Type
 
 namespace gcpp {
 

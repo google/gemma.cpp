@@ -28,11 +28,12 @@
 
 // IWYU pragma: begin_exports
 #include "gemma/configs.h"  // ModelConfig
+#include "gemma/io/blob_store.h"
 #include "gemma/tokenizer.h"
-#include "io/blob_store.h"
-#include "io/io.h"        // Path
+#include "gemma/io/io.h"        // Path
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"     // MatPtr
+
 // IWYU pragma: end_exports
 
 #include "util/allocator.h"

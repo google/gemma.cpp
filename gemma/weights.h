@@ -27,7 +27,7 @@
 #include "gemma/gemma_args.h"   // InferenceArgs
 #include "gemma/model_store.h"  // ModelStore
 #include "gemma/tensor_info.h"  // TensorInfoRegistry
-#include "io/blob_store.h"      // BlobWriter
+#include "gemma/io/blob_store.h"      // BlobWriter
 #include "util/mat.h"           // MatPtr
 #include "util/threading_context.h"
 

@@ -24,7 +24,7 @@
 #include <cmath>
 #include <memory>
 
-#include "io/io.h"
+#include "gemma/io/io.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "util/zones.h"

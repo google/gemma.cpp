@@ -30,9 +30,9 @@
 #include "gemma/configs.h"  // ModelConfig, kMaxQKVDim
 #include "gemma/tensor_info.h"
 #include "gemma/tokenizer.h"
-#include "io/blob_store.h"
-#include "io/fields.h"
-#include "io/io.h"  // Path
+#include "gemma/io/blob_store.h"
+#include "gemma/io/fields.h"
+#include "gemma/io/io.h"  // Path
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"

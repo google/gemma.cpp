@@ -29,8 +29,8 @@
 #include "gemma/model_store.h"
 #include "gemma/query.h"
 #include "gemma/weights.h"
-#include "io/blob_store.h"
-#include "io/io.h"       // Path
+#include "gemma/io/blob_store.h"
+#include "gemma/io/io.h"       // Path
 #include "ops/matmul.h"  // MatMulEnv
 #include "paligemma/image.h"
 #include "util/basics.h"  // TokenAndProb

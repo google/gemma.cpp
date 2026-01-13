@@ -27,7 +27,7 @@
 
 #include "compression/types.h"
 #include "gemma/configs.h"
-#include "io/io.h"        // Path
+#include "gemma/io/io.h"        // Path
 #include "util/args.h"    // IWYU pragma: export
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"

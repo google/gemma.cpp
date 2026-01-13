@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"          // IFields
-#include "io/io.h"              // Path
+#include "gemma/io/fields.h"          // IFields
+#include "gemma/io/io.h"              // Path
 #include "hwy/base.h"
 
 namespace gcpp {

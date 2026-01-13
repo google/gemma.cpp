@@ -29,7 +29,7 @@
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
 #include "gemma/model_store.h"
-#include "io/blob_store.h"
+#include "gemma/io/blob_store.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "util/zones.h"
