@@ -23,8 +23,8 @@ cc_library(
         "//:threading_context",
         "//:tokenizer",
         "//compression:compress",
-        "//io",
-        "//io:blob_store",
+        "//gemma/io",
+        "//gemma/io:blob_store",
         "@highway//:hwy",
     ],
 )

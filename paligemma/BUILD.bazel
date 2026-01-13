@@ -16,7 +16,7 @@ cc_library(
     srcs = ["image.cc"],
     hdrs = ["image.h"],
     deps = [
-        "//io",
+        "//gemma/io",
         "@highway//:hwy",
         "@highway//:profiler",
     ],
@@ -59,12 +59,22 @@ cc_test(
         "no_tap",
     ],
     deps = [
+
         ":paligemma_helper",
+
         "@googletest//:gtest_main",  # buildcleaner: keep
+
         "//:allocator",
+
         "//:benchmark_helper",
+
         "//:configs",
+
         "//:gemma_lib",
+
+        "//gemma/io",
+
         "@highway//:hwy_test_util",
+
     ],
 )
