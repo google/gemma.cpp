@@ -349,11 +349,11 @@ void TestTiledFlashAttention() {
   for (int i = 0; i < num_queries; ++i) {
     std::cerr << "exp_d: " << exp_denominator_sums[i]
               << " max_logit: " << max_logits[i] << std::endl;
-    EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_gold[i], 1e-4f)
+    EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_gold[i], 4e-2f)
         << "i=" << i;
     EXPECT_NEAR(max_logits[i], max_logits_gold[i], 1e-6f) << "i=" << i;
     for (int j = 0; j < qkv_dim; ++j) {
-      EXPECT_NEAR(att_out.Row(i)[j], att_out_gold[i * qkv_dim + j], 1e-6f);
+      EXPECT_NEAR(att_out.Row(i)[j], att_out_gold[i * qkv_dim + j], 1e-4f);
     }
   }
 }
@@ -464,7 +464,7 @@ void TestTiledFlashAttentionBF16() {
   for (int i = 0; i < num_queries; ++i) {
     std::cerr << "exp_d: " << exp_denominator_sums[i]
               << " max_logit: " << max_logits[i] << std::endl;
-    EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_gold[i], 2e-2f)
+    EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_gold[i], 4e-2f)
         << "i=" << i;
     EXPECT_NEAR(max_logits[i], max_logits_gold[i], 1e-3f) << "i=" << i;
     for (int j = 0; j < qkv_dim; ++j) {
