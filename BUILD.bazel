@@ -627,6 +627,7 @@ cc_library(
         "//compression:compress",
         "//compression:types",
         "@highway//:hwy",
+        "@highway//:math",
         "@highway//:profiler",
     ],
 )
