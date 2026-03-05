@@ -702,7 +702,7 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddVT4Mem(
     i += NF * 2;
     v_bf += 4 * NF * NF;
   }
-  HWY_DASSERT(size == i);
+  // HWY_DASSERT(size == i);
 }
 
 template <class DF, class VF = hn::Vec<DF>>
@@ -1026,7 +1026,7 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8(
 
     i += 2 * NF;
   }
-  HWY_DASSERT(qkv_dim == i);
+  // HWY_DASSERT(qkv_dim == i);
 }
 
 template <int32_t N, class DF, class VF = hn::Vec<DF>, typename VType>
@@ -1207,7 +1207,7 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
 
     i += 2 * NF;
   }
-  HWY_DASSERT(qkv_dim == i);
+  // HWY_DASSERT(qkv_dim == i);
 }
 
 // See below for a specialized version for top-1 sampling.

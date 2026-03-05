@@ -71,12 +71,16 @@ void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
   // is a tiny fraction of the overall computation, and it is linear in the
   // token length.
   const size_t kFloatsPerTile = 2 * FloatsPerVector();
-  for (size_t i = 0; i < qkv_dim; i += 2) {
+  for (size_t i = 0; i + 1 < qkv_dim; i += 2) {
     k[i * kFloatsPerTile] = kv[i];
     k[i * kFloatsPerTile + 1] = kv[i + 1];
   }
+  if (qkv_dim % 2 == 1) {
+    const size_t i = qkv_dim - 1;
+    k[i * kFloatsPerTile] = kv[i];
+  }
   for (size_t i = 0; i < qkv_dim; i += kFloatsPerTile) {
-    for (size_t j = 0; j < kFloatsPerTile; j++) {
+    for (size_t j = 0; j < kFloatsPerTile && i + j < qkv_dim; j++) {
       v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
     }
   }
