@@ -1700,6 +1700,7 @@ void ComputeFlashParams(size_t num_tokens, const size_t target_parallelism,
   // A "head group" in the context of GQA refers to a collection of query
   // heads that share the same key and value heads.
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
+  const size_t cache_layer_size = layer_config.CacheLayerSize();
   const size_t token_batch = num_tokens * div_qbatch.GetDivisor();
   const size_t total_tasks = token_batch * layer_config.heads;
   size_t kVTileSize = GetVTileSize(kNF, kHeadGroups, num_tokens, total_tasks,
@@ -1715,9 +1716,11 @@ void ComputeFlashParams(size_t num_tokens, const size_t target_parallelism,
   params.clear();
   for (uint32_t qi = 0; qi < div_qbatch.GetDivisor(); ++qi) {
     for (uint32_t kv_head = 0; kv_head < layer_config.kv_heads; ++kv_head) {
+      const size_t head_offset = kv_head * qkv_dim * 2;
+      const uint32_t kv_offset = layer_idx * cache_layer_size + head_offset;
       params.push_back(Tile148Params{
           .qi_index = qi,
-          .kv_head = kv_head,
+          .kv_offset = kv_offset,
       });
       for (uint32_t batch_idx = 0; batch_idx < num_tokens; ++batch_idx) {
         const size_t pos = qbatch.Pos(qi) + batch_idx;
@@ -1743,7 +1746,7 @@ void ComputeFlashParams(size_t num_tokens, const size_t target_parallelism,
             // current tile is full so start new tile.
             params.push_back(Tile148Params{
                 .qi_index = qi,
-                .kv_head = kv_head,
+                .kv_offset = kv_offset,
             });
           }
           const size_t head = head_group + kHeadGroups * kv_head;
@@ -2154,20 +2157,13 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
     GCPP_ZONE(ctx, worker, Zones::kFlashAttentionFlashAttention);
     auto& param = params[task];
     auto& kT_cache = qbatch.KV(param.qi_index).k_cache;
-    const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
     MatPtrT<KV_t> kT("k_T_view", Extents2D(hwy::DivCeil(seq_len, 2 * kNF),
-                                           kRoundedQkvDim * 2 * kNF));
-    kT.SetPtr(
-        kT_cache.Row(0) + qbatch.KV(param.qi_index)
-                              .cache->KOrVOffset(layer_idx, param.kv_head, kNF),
-        kT_cache.Stride());
+                                           qkv_dim * 2 * kNF));
+    kT.SetPtr(kT_cache.Row(0) + param.kv_offset * kNF, kT_cache.Stride());
     auto& vT_cache = qbatch.KV(param.qi_index).v_cache;
     MatPtrT<KV_t> vT("v_T_view", Extents2D(hwy::DivCeil(seq_len, 2 * kNF),
-                                           kRoundedQkvDim * 2 * kNF));
-    vT.SetPtr(
-        vT_cache.Row(0) + qbatch.KV(param.qi_index)
-                              .cache->KOrVOffset(layer_idx, param.kv_head, kNF),
-        vT_cache.Stride());
+                                           qkv_dim * 2 * kNF));
+    vT.SetPtr(vT_cache.Row(0) + param.kv_offset * kNF, vT_cache.Stride());
     MatPtrT<float>& att_out =
         param.i_of_n == 0 ? activations.att_out : activations.att_out_reps;
     DispatchTileFlashAttention148(param, activations.q_bf, kT, vT, layer_idx,

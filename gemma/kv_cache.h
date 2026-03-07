@@ -91,38 +91,6 @@ struct KVCache {
     return {start_ptr, source_ptr};
   }
 
-  // Returns the default size of a row in k_cache or v_cache, before scaling by
-  // 2 * kNF.
-  size_t KOrVDefaultCols() const {
-    return num_layers * kv_heads * rounded_qkv_dim;
-  }
-
-  // Returns an offset into a row of k_cache or v_cache at a position that is
-  // aligned to the tile size (a multiple of 2kNF).
-  size_t KOrVOffset(const size_t layer_idx, const size_t kv_head_idx,
-                    const size_t kNF) const {
-    return (layer_idx * kv_heads + kv_head_idx) * rounded_qkv_dim * 2 * kNF;
-  }
-
-  // Returns an offset into k_cache at any given position.
-  size_t KOffset(const size_t layer_idx, const size_t kv_head_idx,
-                 const size_t kNF, const size_t pos) const {
-    return KOrVOffset(layer_idx, kv_head_idx, kNF) + (pos % (2 * kNF)) * 2;
-  }
-
-  // Returns an offset into v_cache at any given position.
-  size_t VOffset(const size_t layer_idx, const size_t kv_head_idx,
-                 const size_t kNF, const size_t pos) const {
-    return KOrVOffset(layer_idx, kv_head_idx, kNF) +
-           (pos % (2 * kNF)) * 2 * kNF;
-  }
-
-  // Saved sizes for computing offsets into the KV cache.
-  size_t num_layers = 0;
-  size_t kv_heads = 0;
-  size_t qkv_dim = 0;
-  size_t rounded_qkv_dim = 0;
-
   static constexpr size_t kTileSize = 32;
   std::optional<uint32_t> tiled_seq_len = std::nullopt;
   // Default Format
@@ -191,8 +159,7 @@ struct KVCache {
   const Allocator& allocator_;
 
   // For use by other ctor and Copy()
-  KVCache(const Extents2D& kv_extents, size_t num_layers, size_t kv_heads,
-          size_t qkv_dim, const Allocator& allocator);
+  KVCache(const Extents2D& kv_extents, const Allocator& allocator);
 };
 
 inline size_t KVCachePtr::SeqLen() const {

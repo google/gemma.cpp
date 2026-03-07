@@ -29,6 +29,11 @@
 
 namespace gcpp {
 
+// TODO: rays - Remove this once hwy is updated.
+#ifndef HWY_ARCH_MAX_BYTES
+#define HWY_ARCH_MAX_BYTES 256
+#endif
+
 // Number of rows for KV cache. Note that both rows and cols are u32, and
 // the total number of elements can exceed 2^32.
 static size_t CappedSeqLen(const ModelConfig& config,
@@ -41,13 +46,8 @@ static size_t CappedSeqLen(const ModelConfig& config,
   return inference_args.seq_len;
 }
 
-KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
-                 size_t kv_heads, size_t qkv_dim, const Allocator& allocator)
-    : num_layers(num_layers),
-      kv_heads(kv_heads),
-      qkv_dim(qkv_dim),
-      rounded_qkv_dim(hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector)),
-      kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
+KVCache::KVCache(const Extents2D& kv_extents, const Allocator& allocator)
+    : kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
       // WARNING: the rows and cols of k_cache and v_cache will be modified
       // before use!
       // The rows will be reduced by a factor of 2xkFloatsPerVector, and the
@@ -56,12 +56,14 @@ KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
       // machine architecture, since kFloatsPerVector is architecture dependent.
       // The change is shape is safe only if the padding is kPacked.
       k_cache("k",
-              Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
+              Extents2D(HWY_MAX(kv_extents.rows,
+                                2 * HWY_ARCH_MAX_BYTES / sizeof(float)),
+                        kv_extents.cols / 2),
               allocator, MatPadding::kPacked),
       v_cache("v",
-              Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
+              Extents2D(HWY_MAX(kv_extents.rows,
+                                2 * HWY_ARCH_MAX_BYTES / sizeof(float)),
+                        kv_extents.cols / 2),
               allocator, MatPadding::kPacked),
       allocator_(allocator) {}
 
@@ -69,8 +71,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const Allocator& allocator)
     : KVCache(
           Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
-          config.layer_configs.size(), config.layer_configs[0].kv_heads,
-          config.layer_configs[0].qkv_dim, allocator) {}
+          allocator) {}
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const RuntimeConfig& runtime_config,
@@ -134,7 +135,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 }
 
 KVCache KVCache::Copy() {
-  KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
+  KVCache copy(kv_cache.Extents(), allocator_);
 
   CopyMat(kv_cache, copy.kv_cache);
   return copy;

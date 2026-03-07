@@ -20,7 +20,6 @@
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "util/zones.h"
-#include "hwy/base.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -59,8 +58,8 @@ size_t FloatsPerVector() {
 
 // The k-cache and v-cache are setup without knowing NF. So if it hasn't been
 // done already, reshape it to take NF into account.
-void MaybeReshapeCache(const size_t default_cols, MatPtrT<KV_t>& cache) {
-  if (default_cols == cache.Cols()) {
+void MaybeReshapeCache(const MatPtrT<KV_t>& kv, MatPtrT<KV_t>& cache) {
+  if (kv.Cols() > cache.Cols()) {
     cache.ReshapePackedRowsToCols(2 * FloatsPerVector());
   }
 }
@@ -72,50 +71,13 @@ void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
   // is a tiny fraction of the overall computation, and it is linear in the
   // token length.
   const size_t kFloatsPerTile = 2 * FloatsPerVector();
-  const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
   for (size_t i = 0; i < qkv_dim; i += 2) {
     k[i * kFloatsPerTile] = kv[i];
     k[i * kFloatsPerTile + 1] = kv[i + 1];
   }
-  for (size_t i = qkv_dim; i < kRoundedQkvDim; i += 2) {
-    k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
-    k[i * kFloatsPerTile + 1] = hwy::ConvertScalarTo<KV_t>(0.0f);
-  }
   for (size_t i = 0; i < qkv_dim; i += kFloatsPerTile) {
-    if (i + kFloatsPerTile <= qkv_dim) {
-      for (size_t j = 0; j < kFloatsPerTile; j++) {
-        v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
-      }
-    } else {
-      for (size_t j = 0; j < qkv_dim - i; j++) {
-        v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
-      }
-      for (size_t j = qkv_dim - i; j < kFloatsPerTile; j++) {
-        v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
-      }
-    }
-  }
-  for (size_t i = hwy::RoundUpTo(qkv_dim, kFloatsPerTile); i < kRoundedQkvDim;
-       i += kFloatsPerTile) {
     for (size_t j = 0; j < kFloatsPerTile; j++) {
-      v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
-    }
-  }
-}
-
-// Zeros out a part of k and v that corresponds to out-of-bounds cache
-// positions.
-void TransposeOOBKVCacheRow(KV_t* HWY_RESTRICT k, KV_t* HWY_RESTRICT v,
-                            size_t qkv_dim) {
-  const size_t kFloatsPerTile = 2 * FloatsPerVector();
-  const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
-  for (size_t i = 0; i < kRoundedQkvDim; i += 2) {
-    k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
-    k[i * kFloatsPerTile + 1] = hwy::ConvertScalarTo<KV_t>(0.0f);
-  }
-  for (size_t i = 0; i < kRoundedQkvDim; i += kFloatsPerTile) {
-    for (size_t j = 0; j < kFloatsPerTile; j++) {
-      v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
+      v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
     }
   }
 }
@@ -352,22 +314,16 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
-                      qbatch.KV(qi).k_cache);
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
-                      qbatch.KV(qi).v_cache);
+    MaybeReshapeCache(qbatch.KV(qi).kv_cache, qbatch.KV(qi).k_cache);
+    MaybeReshapeCache(qbatch.KV(qi).kv_cache, qbatch.KV(qi).v_cache);
   }
   const size_t kFloatsPerVector = FloatsPerVector();
-  const size_t kRoundedTokens =
-      hwy::RoundUpTo(num_tokens, 2 * kFloatsPerVector);
-  const size_t kRoundedNumInterleaved =
-      kRoundedTokens * div_qbatch.GetDivisor();
 
   // Apply positional encodings for K.
   // Note that 2D parallelism is not worth the fork/join overhead because the
   // tasks are very lightweight.
   ParallelFor(
-      Parallelism::kFlat, kv_heads * kRoundedNumInterleaved, env.ctx,
+      Parallelism::kFlat, kv_heads * num_interleaved, env.ctx,
       /*cluster_idx=*/0, Callers::kAttComputeQKV,
       [&](size_t task, size_t worker) HWY_ATTR {
         const size_t head = task % kv_heads;
@@ -375,28 +331,6 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         const size_t qi = div_qbatch.Remainder(interleaved_idx);
         const size_t token_idx = div_qbatch.Divide(interleaved_idx);
         const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-        if (token_idx >= kRoundedTokens) {
-          return;
-        }
-        // The innermost dimension of v is 2NF values from qkv_dim because they
-        // will be loaded into a BF16 vector to be scaled and added to the
-        // cached attention output in 2 NF-sized registers.
-        auto& k_cache = qbatch.KV(qi).k_cache;
-        KV_t* HWY_RESTRICT k =
-            k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->KOffset(layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
-        auto& v_cache = qbatch.KV(qi).v_cache;
-        KV_t* HWY_RESTRICT v =
-            v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->VOffset(layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
-        if (token_idx >= num_tokens) {
-          // Create a zero-filled K/V pair for padding for out-of-sequence
-          // tokens.
-          TransposeOOBKVCacheRow(k, v, qkv_dim);
-          return;
-        }
         // --seq_len must be large enough to avoid wraparound.
         HWY_DASSERT(cache_pos < activations.SeqLen());
         auto& kv_cache = qbatch.KV(qi).kv_cache;
@@ -407,6 +341,22 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         // The innermost dimension of k is 2 values from qkv_dim because they
         // are going to be used in a BF16 dot product involving pairs of
         // values over NF k positions.
+        // The innermost dimension of v is 2NF values from qkv_dim because they
+        // will be loaded into a BF16 vector to be scaled and added to the
+        // cached attention output in 2 NF-sized registers.
+        // TODO(rays): factor out these calculations into functions.
+        auto& k_cache = qbatch.KV(qi).k_cache;
+        KV_t* HWY_RESTRICT k =
+            k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
+            (layer_idx * cache_layer_size + head * qkv_dim * 2) *
+                kFloatsPerVector +
+            (cache_pos % (2 * kFloatsPerVector)) * 2;
+        auto& v_cache = qbatch.KV(qi).v_cache;
+        KV_t* HWY_RESTRICT v =
+            v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
+            (layer_idx * cache_layer_size + head * qkv_dim * 2) *
+                kFloatsPerVector +
+            (cache_pos % (2 * kFloatsPerVector)) * 2 * kFloatsPerVector;
 
         HWY_ALIGN float kv_f32[2 * kMaxQKVDim];
         const hn::ScalableTag<float> df;

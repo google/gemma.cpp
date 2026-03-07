@@ -48,8 +48,8 @@ struct Tile148Params {
   uint32_t max_last_pos = 0;
   // Index into the qbatch.KV is the same for each row in the tile.
   uint32_t qi_index;
-  // kv_head is the same for each row in the tile.
-  uint32_t kv_head;
+  // Index into the kv_cache is the same for each row in the tile.
+  uint32_t kv_offset;
   // In the original task, the index to the split tasks of the first split task.
   uint32_t split_index = 0;
   // The index of the split for running split attention.

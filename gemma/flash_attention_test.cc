@@ -144,15 +144,10 @@ void TestFlashAttention(size_t target_parallelism,
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
   const size_t seq_len =
       static_cast<size_t>(attention.div_seq_len.GetDivisor());
-  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(),
-                    qbatch.KV(0).k_cache);
-  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(),
-                    qbatch.KV(0).v_cache);
+  MaybeReshapeCache(qbatch.KV(0).kv_cache, qbatch.KV(0).k_cache);
+  MaybeReshapeCache(qbatch.KV(0).kv_cache, qbatch.KV(0).v_cache);
   auto& kvc = qbatch.KV(0).kv_cache;
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-  const size_t kNF = hn::Lanes(df);
-  const size_t kFloatsPerTile = 2 * kNF;
+  const size_t kFloatsPerTile = 2 * FloatsPerVector();
   for (size_t h = 0; h < layer_config.heads; ++h) {
     // Make strided views into the kv cache for
     // this query and head.
@@ -165,12 +160,12 @@ void TestFlashAttention(size_t target_parallelism,
     SetMat(h + layer_config.heads * 2, v);
     for (size_t p = 0; p < tokens.size(); ++p) {
       KV_t* HWY_RESTRICT k_src = k.Row(p);
-      KV_t* HWY_RESTRICT k_dest =
-          qbatch.KV(0).k_cache.Row(p / kFloatsPerTile) +
-          qbatch.KV(0).cache->KOffset(0, h / kHeadGroups, kNF, p);
-      KV_t* HWY_RESTRICT v_dest =
-          qbatch.KV(0).v_cache.Row(p / kFloatsPerTile) +
-          qbatch.KV(0).cache->VOffset(0, h / kHeadGroups, kNF, p);
+      KV_t* HWY_RESTRICT k_dest = qbatch.KV(0).k_cache.Row(p / kFloatsPerTile) +
+                                  head_offset * kFloatsPerTile / 2 +
+                                  p % kFloatsPerTile * 2;
+      KV_t* HWY_RESTRICT v_dest = qbatch.KV(0).v_cache.Row(p / kFloatsPerTile) +
+                                  head_offset * kFloatsPerTile / 2 +
+                                  p % kFloatsPerTile * kFloatsPerTile;
 
       TransposeKVCacheRow(k_src, k_dest, v_dest, qkv_dim);
     }
@@ -181,6 +176,9 @@ void TestFlashAttention(size_t target_parallelism,
   // Copy the output to saved_att to allow for comparison.
   auto saved_att = MakeCopyOfMat(attention.att_out, ctx.allocator);
   SetMat(1, attention.q);
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  const size_t kNF = hn::Lanes(df);
   const size_t total_tasks =
       tokens.size() * div_qbatch.GetDivisor() * layer_config.heads;
   const size_t kVTileSize = GetVTileSize(kNF, kHeadGroups, tokens.size(),

@@ -33,7 +33,7 @@ namespace gcpp {
   namespace NAMESPACE {                                                       \
   size_t FloatsPerVector();                                                   \
                                                                               \
-  void MaybeReshapeCache(size_t default_cols, MatPtrT<KV_t>& cache);          \
+  void MaybeReshapeCache(const MatPtrT<KV_t>& kv, MatPtrT<KV_t>& cache);      \
                                                                               \
   void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k, \
                            KV_t* HWY_RESTRICT v, size_t qkv_dim);             \

@@ -29,11 +29,8 @@
 #include "io/fields.h"          // IFieldsVisitor
 #include "io/io.h"              // Path
 #include "util/basics.h"
-#include "hwy/detect_compiler_arch.h"
 
 namespace gcpp {
-
-constexpr size_t kMaxBF16PerVector = HWY_ARCH_MAX_BYTES / sizeof(BF16);
 
 HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
 
