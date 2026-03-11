@@ -294,6 +294,7 @@ void Run(const GemmaArgs& args) {
 
 int main(int argc, char** argv) {
   gcpp::InternalInit();
+  int verbosity = 0;
   {
     // Negligible CPU time.
     gcpp::ConsumedArgs consumed(argc, argv);
@@ -313,8 +314,17 @@ int main(int argc, char** argv) {
     // After `HasHelp` so that we print --help even if unconsumed args remain.
     consumed.AbortIfUnconsumed();
 
+    verbosity = args.inference.verbosity;
     gcpp::Run(args);
   }
+  if (verbosity >= 2) {
+    fflush(stdout);
+    fprintf(stderr, "\n[ BEGIN PHASE: final_stats ]\n");
+  }
   PROFILER_PRINT_RESULTS();  // Must call outside the zone above.
+  if (verbosity >= 2) {
+    fflush(stdout);
+    fprintf(stderr, "\n[ END PHASE: final_stats ]\n");
+  }
   return 0;
 }
