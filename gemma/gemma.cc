@@ -18,18 +18,11 @@
 
 #include "gemma/gemma.h"
 
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <optional>
-
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
+#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
-
-#include "gemma/tensor_stats.h"
-#include "util/zones.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
 // which we pass the filename via macro 'argument'.
@@ -42,8 +35,7 @@
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
-#include "gemma/tiled_attention.h"  // includes highway.h
-#include "gemma/vit.h"              // includes highway.h
+#include "gemma/vit.h"      // includes highway.h
 
 #ifndef GEMMA_CC_ONCE
 #define GEMMA_CC_ONCE
@@ -81,20 +73,10 @@ namespace HWY_NAMESPACE {
 void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
-  if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
-    TiledAttention(
-        activations.attention_impl, num_tokens, layer_idx, layer,
-        activations.attention, qbatch, env,
-        AttentionImplToFlags(activations.attention_impl, HWY_NATIVE_DOT_BF16));
-    return;
-  }
-
   if (type == LayerAttentionType::kGemma) {
     // TODO: remove flag to enable FlashAttention.
     GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
-                   env, activations.attention_impl, /*flags=*/0);
+                   env, HWY_NATIVE_DOT_BF16 ? kAttentionUseOld : 0);
   }
 }
 
@@ -122,6 +104,8 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
 
   if (layer_config.type == LayerAttentionType::kVit) {
     FFWVit(layer, activations, env);
+  } else if (layer_config.num_experts != 0) {
+    FFWMoE(layer, activations, env);
   } else {
     FFWNoVit(layer, activations, env);
   }
@@ -373,10 +357,6 @@ static HWY_NOINLINE void PrefillQBatch(const size_t max_prompt_size,
         (void)runtime_config.StreamToken(qbatch.QueryIdx(qi), pos_in_prompt,
                                          token, 0.0f);
         qbatch.MutablePos(qi) = pos_in_prompt;
-      } else {
-        // This prevents the kv cache of eos_id to be written to last prefilled
-        // token.
-        qbatch.MutablePos(qi) = qbatch.Prompt(qi).size();
       }
 
       qbatch.PrevToken(qi) = token;
@@ -442,13 +422,16 @@ static void SampleAndStream(const ModelConfig& config,
   }
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
 
-  MaybeLogitsSoftCapBatched(config.final_cap, activations.logits, non_eos,
-                            env.ctx);
+  // Use Gemma 4 soft capping if configured, otherwise fall back to final_cap.
+  const float softcap = (config.final_logit_softcapping > 0.0f)
+                            ? config.final_logit_softcapping
+                            : config.final_cap;
+  MaybeLogitsSoftCapBatched(softcap, activations.logits, non_eos, env.ctx);
 
   timing_info.NotifyGenerated(non_eos.Count());
 
   ParallelFor(
-      Parallelism::kFlat, qbatch.Size(), env.ctx,
+      ParallelismStrategy::kFlat, qbatch.Size(), env.ctx,
       /*cluster_idx=*/0, Callers::kSampleAndStream,
       [&](size_t qi, size_t worker) {
         if (!non_eos.Get(qi)) return;
@@ -506,11 +489,12 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   };
 }
 
-static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
-                                    const RuntimeConfig& runtime_config,
-                                    const WeightsPtrs& weights,
-                                    Activations& activations, QBatch& qbatch,
-                                    MatMulEnv& env, TimingInfo& timing_info) {
+// Decode: generates one continuation token for each query in `qbatch`.
+static void GenerateT(const ModelConfig& config,
+                      const RuntimeConfig& runtime_config,
+                      const AesCtrEngine& engine, const WeightsPtrs& weights,
+                      Activations& activations, QBatch& qbatch, MatMulEnv& env,
+                      TimingInfo& timing_info) {
   size_t max_prompt_size = 0;
   bool all_prefix_end_are_zero = true;
   size_t total_prefill_tokens = 0;  // only for throughput stats.
@@ -532,14 +516,14 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
     // We use a single divisor, so all sequence lengths must be the same.
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
   }
-  if (max_prompt_size > seq_len) {
-    HWY_ABORT(
-        "max_prompt_size = %zu, seq_len = %zu, increase --seq_len to at least "
-        "that.",
-        max_prompt_size, seq_len);
+  if (max_prompt_size >= seq_len) {
+    HWY_ABORT("max_prompt_size = %zu, increase --seq_len to at least that.",
+              max_prompt_size);
   }
   HWY_ASSERT(activations.attention.div_seq_len.GetDivisor() == seq_len);
 
+  // Lacks a constructor to bulk-set, hence initialized by Prefill* which have
+  // qi loops anyway.
   hwy::BitSet4096<> non_eos;  // indexed by qi
 
   timing_info.prefill_start = hwy::platform::Now();
@@ -557,6 +541,18 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
   timing_info.NotifyPrefill(total_prefill_tokens);
   // queries_pos have been incremented by Prefill.
 
+  // Stream the last prompt token from each query, fill activations.gen_tokens.
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    const size_t last_pos_in_prompt = qbatch.Pos(qi) - qbatch.InitialPos(qi);
+
+    const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
+    // In autoregressive mode, we have not prefilled the last token, so do
+    // not advance.
+    const bool update_pos = (qbatch.Pos(qi) < qbatch.PrefixEnd(qi));
+    StreamAndUpdateEOS(qi, pos, qbatch.Prompt(qi)[last_pos_in_prompt], 0.0f,
+                       config, runtime_config, qbatch, update_pos, non_eos);
+  }
+
   size_t max_gen_steps = runtime_config.max_generated_tokens;
   if (max_prompt_size + max_gen_steps > seq_len) {
     HWY_WARN("prefill %zu + max_gen_steps %zu > seq_len %zu, truncating.",
@@ -564,120 +560,11 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
     max_gen_steps = seq_len - max_prompt_size;
   }
 
-  return max_gen_steps;
-}
-
-static void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
-                                           const RuntimeConfig& runtime_config,
-                                           QBatch& qbatch,
-                                           hwy::BitSet4096<>& non_eos,
-                                           size_t qi) {
-  const size_t last_pos_in_prompt = qbatch.Pos(qi) - qbatch.InitialPos(qi);
-
-  const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
-  // In autoregressive mode, we have not prefilled the last token, so do
-  // not advance.
-  const bool update_pos = (qbatch.Pos(qi) < qbatch.PrefixEnd(qi));
-  StreamAndUpdateEOS(qi, pos, qbatch.Prompt(qi)[last_pos_in_prompt], 0.0f,
-                     config, runtime_config, qbatch, update_pos, non_eos);
-}
-
-void SetWeightStats(const LayerWeightsPtrs& layer, Activations& a,
-                    ThreadingContext& ctx) {
-  const size_t layer_idx = layer.layer_idx;
-  a.s_w_gating_einsum_w1.Notify(layer_idx, layer.gating_einsum_w1, ctx,
-                                kTensorStatsIsWeight);
-  a.s_w_gating_einsum_w2.Notify(layer_idx, layer.gating_einsum_w2, ctx,
-                                kTensorStatsIsWeight);
-  a.s_w_linear_w.Notify(layer_idx, layer.linear_w, ctx, kTensorStatsIsWeight);
-}
-
-// Decode: generates one continuation token for each query in `qbatch`.
-static void GenerateT(const ModelConfig& config,
-                      const RuntimeConfig& runtime_config,
-                      const AesCtrEngine& engine, const WeightsPtrs& weights,
-                      Activations& activations, QBatch& qbatch, MatMulEnv& env,
-                      TimingInfo& timing_info) {
-  for (const LayerWeightsPtrs& layer : weights.c_layers) {
-    SetWeightStats(layer, activations, env.ctx);
-  }
-
-  MaybePrint(2, timing_info.verbosity, "[ BEGIN PHASE: prefill ]");
-  const size_t max_gen_steps = PrefillTBatchOrQBatch(
-      config, runtime_config, weights, activations, qbatch, env, timing_info);
-  // No-op if the profiler is disabled, but useful to separate prefill and
-  // generate phases for profiling.
-  if constexpr (PROFILER_ENABLED) {
-    fprintf(stderr, "\n");
-  }
-  env.ctx.profiler.PrintResults();
-
-  hwy::BitSet4096<> non_eos;  // indexed by qi
-
-  // Stream the last prompt token from each query, fill activations.gen_tokens.
-  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    non_eos.Set(qi);
-    StreamAndUpdateEOSAfterPrefill(config, runtime_config, qbatch, non_eos, qi);
-  }
-
   const SampleFunc sample_token =
       ChooseSampleFunc(runtime_config, engine, env.ctx);
-
-  MaybePrint(2, timing_info.verbosity, "\n[ BEGIN PHASE: generate ]\n");
 
   timing_info.generate_start = hwy::platform::Now();
   for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
-    Transformer(config, runtime_config, weights, activations, qbatch, env);
-    SampleAndStream(config, runtime_config, weights, sample_token, activations,
-                    qbatch, env, non_eos, timing_info);
-  }
-  timing_info.NotifyGenerateDone();
-}
-
-// Same as GenerateT, but uses ContinuousQBatch.
-static void GenerateTWithContinuousBatching(
-    const ModelConfig& config, const RuntimeConfig& runtime_config,
-    const AesCtrEngine& engine, const WeightsPtrs& weights,
-    Activations& activations, AllQueries& all_queries, MatMulEnv& env,
-    TimingInfo& timing_info) {
-  const size_t qbatch_size = runtime_config.decode_qbatch_size;
-
-  QBatch qbatch(0, qbatch_size, all_queries);
-  ContinuousQBatch prefill_batch(qbatch_size, all_queries);
-
-  hwy::BitSet4096<> non_eos;
-  const SampleFunc sample_token =
-      ChooseSampleFunc(runtime_config, engine, env.ctx);
-
-  size_t query_inserted = 0;
-  while (non_eos.Any() || query_inserted < all_queries.NumQueries()) {
-    for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-      // Continue if qi slot is still processing.
-      if (non_eos.Get(qi)) continue;
-      // Collect the kv_cache from the qi slot in the qbatch to the
-      // available_kv_caches_ in the prefill_batch.
-      prefill_batch.MaybeReleaseKV(qbatch.Single(qi));
-
-      // Prefill if no available prefilled queries to insert.
-      if (prefill_batch.ShouldPrefill()) {
-        prefill_batch.SetupNextBatchForPrefill();
-        PrefillTBatchOrQBatch(config, runtime_config, weights, activations,
-                              prefill_batch, env, timing_info);
-        activations.SetBatchSize(qbatch.Size());
-      }
-
-      // Get the next query to insert to the generate batch.
-      std::optional<size_t> qi_to_insert = prefill_batch.GetNextToInsert();
-      if (qi_to_insert) {
-        qbatch.Insert(qi_to_insert.value(), qi);
-        query_inserted++;
-
-        non_eos.Set(qi);
-        StreamAndUpdateEOSAfterPrefill(config, runtime_config, qbatch, non_eos,
-                                       qi);
-      }
-    }
-
     Transformer(config, runtime_config, weights, activations, qbatch, env);
     SampleAndStream(config, runtime_config, weights, sample_token, activations,
                     qbatch, env, non_eos, timing_info);
@@ -691,9 +578,8 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                      const AesCtrEngine& engine, const WeightsPtrs& weights,
                      KVCache& kv_cache, MatMulEnv& env,
                      TimingInfo& timing_info) {
-  Activations activations(runtime_config, config,
-                          runtime_config.prefill_tbatch_size, kv_cache.SeqLen(),
-                          env.ctx, env.row_ptrs);
+  Activations activations(config, runtime_config.prefill_tbatch_size,
+                          kv_cache.SeqLen(), env.ctx, env.row_ptrs);
 
   AllQueries all_queries(prompt, pos, prefix_end,
                          hwy::Span<KVCache>(&kv_cache, 1));
@@ -711,55 +597,36 @@ void GenerateBatchT(const ModelConfig& config,
                     TimingInfo& timing_info) {
   const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
                                         runtime_config.prefill_tbatch_size);
-  Activations activations(runtime_config, config, max_batch_size,
+  Activations activations(config, max_batch_size,
                           all_queries[0].kv_cache.SeqLen(), env.ctx,
                           env.row_ptrs);
 
-  if (runtime_config.use_continuous_batching) {
-    GenerateTWithContinuousBatching(config, runtime_config, engine, weights,
-                                    activations, all_queries, env, timing_info);
-  } else {
-    for (size_t start = 0; start < all_queries.NumQueries();
-         start += runtime_config.decode_qbatch_size) {
-      QBatch qbatch(start, runtime_config.decode_qbatch_size, all_queries);
-      // Generate a batch of one token for each of `qbatch.Size()` queries.
-      GenerateT(config, runtime_config, engine, weights, activations, qbatch,
-                env, timing_info);
-    }
+  for (size_t start = 0; start < all_queries.NumQueries();
+       start += runtime_config.decode_qbatch_size) {
+    QBatch qbatch(start, runtime_config.decode_qbatch_size, all_queries);
+    // Generate a batch of one token for each of `qbatch.Size()` queries.
+    GenerateT(config, runtime_config, engine, weights, activations, qbatch, env,
+              timing_info);
   }
 }
 
 void GenerateImageTokensT(const ModelConfig& config,
                           const RuntimeConfig& runtime_config, size_t seq_len,
                           const WeightsPtrs& weights, const Image& image,
-                          ImageTokens& image_tokens, MatMulEnv& env,
-                          TimingInfo& timing_info) {
+                          ImageTokens& image_tokens, MatMulEnv& env) {
+  if (config.vit_config.layer_configs.empty()) {
+    HWY_ABORT("Model does not support generating image tokens.");
+  }
+  RuntimeConfig prefill_runtime_config = runtime_config;
   const ModelConfig vit_config = GetVitConfig(config);
   const size_t num_tokens = vit_config.max_seq_len;
-
-  MaybePrint(2, timing_info.verbosity, "\n[ BEGIN PHASE: image_token_gen ]\n");
-  timing_info.NotifyImageTokenStart();
-
-  {
-    GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenImageTokens);
-    if (config.vit_config.layer_configs.empty()) {
-      HWY_ABORT("Model does not support generating image tokens.");
-    }
-    RuntimeConfig prefill_runtime_config = runtime_config;
-    prefill_runtime_config.prefill_tbatch_size =
-        num_tokens / (vit_config.pool_dim * vit_config.pool_dim);
-    Activations prefill_activations(runtime_config, vit_config, num_tokens,
-                                    num_tokens, env.ctx, env.row_ptrs);
-    // Weights are for the full PaliGemma model, not just the ViT part.
-    PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
-               prefill_activations, env);
-  }  // end GCPP_ZONE before we print results.
-
-  // No-op if the profiler is disabled. Printing now ensures that the
-  // `PrintResults` after prefill does not include the image token part.
-  env.ctx.profiler.PrintResults();
-
-  timing_info.NotifyImageTokenDone(num_tokens);
+  prefill_runtime_config.prefill_tbatch_size =
+      num_tokens / (vit_config.pool_dim * vit_config.pool_dim);
+  Activations prefill_activations(vit_config, num_tokens, num_tokens, env.ctx,
+                                  env.row_ptrs);
+  // Weights are for the full PaliGemma model, not just the ViT part.
+  PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
+             prefill_activations, env);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
@@ -773,22 +640,17 @@ HWY_EXPORT(GenerateSingleT);
 HWY_EXPORT(GenerateBatchT);
 HWY_EXPORT(GenerateImageTokensT);
 
-Gemma::Gemma(const GemmaArgs& args, ThreadingContext& ctx)
-    : reader_(args.loader.weights),
-      model_(reader_, args.loader.tokenizer, args.loader.wrapping),
+Gemma::Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
+             ThreadingContext& ctx)
+    : reader_(loader.weights),
+      model_(reader_, loader.tokenizer, loader.wrapping),
       weights_(model_.Config()),
       chat_template_(model_.Tokenizer(), model_.Config().model),
-      inference_(args.inference),
-      aes_ctr_engine_(args.inference.deterministic) {
-  if (args.inference.seq_len > model_.Config().max_seq_len) {
-    HWY_WARN(
-        "Overriding model's max_seq_len=%u with user provided seq_len=%zu.",
-        model_.Config().max_seq_len, args.inference.seq_len);
-    model_.MutableConfig().SetMaxSeqLen(args.inference.seq_len);
-  }
+      inference_(inference),
+      aes_ctr_engine_(inference.deterministic) {
   // Negligible CPU time in the ctor body (except ReadFromBlobs).
-  weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, args.loader,
-                                             args.inference, mat_owners_, ctx);
+  weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, loader, inference,
+                                             mat_owners_, ctx);
   // Read everything into memory, or `weights_.mapped_` keeps the mapping alive.
   reader_.CloseFile();
 }
@@ -830,74 +692,15 @@ void Gemma::GenerateBatch(const RuntimeConfig& runtime_config,
 
 void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
                                 size_t seq_len, const Image& image,
-                                ImageTokens& image_tokens, MatMulEnv& env,
-                                TimingInfo& timing_info) const {
+                                ImageTokens& image_tokens,
+                                MatMulEnv& env) const {
   env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
 
   HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(model_.Config(), runtime_config,
                                              seq_len, weights_, image,
-                                             image_tokens, env, timing_info);
+                                             image_tokens, env);
 
   env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
-}
-
-ContinuousQBatch::ContinuousQBatch(size_t max_size, AllQueries& queries)
-    : QBatch(0, max_size, queries) {
-  for (size_t i = start_; i < queries_.NumQueries(); ++i) {
-    if (!queries_[i].kv_cache.IsEmpty()) {
-      // Put the kv_cache to the available_kv_caches_ instead; leaving the
-      // kv_cache in the queries_ is very confusing. This simplifies the logic
-      // of kv_cache management.
-      available_kv_caches_.push_back(queries_[i].kv_cache);
-      queries_[i].kv_cache = KVCachePtr();
-    }
-  }
-}
-
-bool ContinuousQBatch::ShouldPrefill() const {
-  const bool no_available_to_insert = next_to_insert_ == next_to_prefill_;
-  const int more_queries_to_prefill = next_to_prefill_ < queries_.NumQueries();
-  return no_available_to_insert && more_queries_to_prefill;
-}
-
-void ContinuousQBatch::SetupNextBatchForPrefill() {
-  start_ = next_to_prefill_;
-  size_ = HWY_MIN(max_size_, queries_.NumQueries() - start_);
-  HWY_DASSERT(size_ != 0);
-  HWY_DASSERT(start_ + size_ <= queries_.NumQueries());
-  query_idx_.clear();
-  query_idx_.reserve(size_);
-  for (size_t i = 0; i < size_; ++i) {
-    const size_t next_query_idx = start_ + i;
-    query_idx_.push_back(next_query_idx);
-    HWY_ASSERT(queries_[next_query_idx].kv_cache.IsEmpty());
-    queries_[next_query_idx].kv_cache = available_kv_caches_.back();
-    available_kv_caches_.pop_back();
-  }
-  next_to_prefill_ += size_;
-}
-
-std::optional<size_t> ContinuousQBatch::GetNextToInsert() {
-  if (next_to_insert_ == next_to_prefill_) {
-    return std::nullopt;
-  }
-  next_to_insert_++;
-  return next_to_insert_ - 1;
-}
-
-void ContinuousQBatch::MaybeReleaseKV(const QBatch& from) {
-  const int query_to_collect = from.QueryIdx(0);
-  // Only collect if the query to collect is not the same as the next query to
-  // insert. This happens at the beginning of each Generate call.
-  if (query_to_collect != next_to_insert_) {
-    // Only clear the KV cache if there are more queries to insert; Otherwise
-    // we get a crash because Transformer will still access that KV cache.
-    if (next_to_insert_ < queries_.NumQueries()) {
-      available_kv_caches_.push_back(from.KV(0));
-      ZeroInit(from.KV(0).kv_cache);
-      from.KV(0) = KVCachePtr();
-    }
-  }
 }
 
 }  // namespace gcpp

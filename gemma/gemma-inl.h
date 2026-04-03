@@ -20,7 +20,6 @@
 
 #include "gemma/activations.h"
 #include "gemma/configs.h"
-#include "gemma/tensor_stats.h"
 #include "gemma/weights.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
@@ -71,11 +70,10 @@ template <class Mat>
 void ActivationBatched(
     ActivationType activation, Mat& c1, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    Parallelism parallelism = Parallelism::kFlat) {
+    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
   using T = typename Mat::T;
   ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
               Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
-                // Cast to correct type so type deduction works.
                 Activation(activation, c1.Row(task),
                            static_cast<const T*>(nullptr), c1.Cols(), ctx,
                            worker);
@@ -84,20 +82,17 @@ void ActivationBatched(
 
 #if GEMMA_FUSED_FFN
 
-// Called during `TwoMatMul`.
+// Called during TwoMatMul.
 static inline void Activation(ActivationType activation, const RowPtrsBF C1,
                               const IndexRange range_r,
                               const IndexRange range_c, const StridedViewBF C2,
                               ThreadingContext& ctx, const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kGenActivationFused);
-
   const size_t cols = range_c.Num();
   HWY_DASSERT(C2.Cols() == cols);
-
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  // ActivationType::Gelu
   // Gated: Gelu(c1) * c2.
   for (size_t ir = 0; ir < range_r.Num(); ++ir) {
     Decompress1AndCompressInplace(
@@ -116,7 +111,7 @@ template <class Mat1, class Mat2>
 HWY_NOINLINE void ActivationBatched(
     ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    Parallelism parallelism = Parallelism::kFlat) {
+    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
@@ -152,15 +147,141 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
   }
 }
 
+// Gemma 4 MoE feed-forward with top-k routing.
+static inline void FFWMoE(const LayerWeightsPtrs& layer,
+                            Activations& activations, MatMulEnv& env) {
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
+  const LayerConfig& layer_config = layer.layer_config;
+  const size_t num_experts = layer_config.num_experts;
+  const size_t top_k = layer_config.top_k_experts;
+  const size_t model_dim = layer_config.model_dim;
+  const size_t batch_size = activations.pre_ffw_rms_out.Rows();
+
+  // Compute router logits: [batch, num_experts].
+  CallMatMul(activations.pre_ffw_rms_out, layer.ffn_gate_in_w,
+             /*add=*/nullptr, env, activations.C1);
+
+  // Find top-k experts per token and compute softmax routing weights.
+  // C2 stores [expert_idx_0, weight_0, expert_idx_1, weight_1, ...].
+  ParallelFor(ParallelismStrategy::kFlat, batch_size, env.ctx,
+              /*cluster_idx=*/0, Callers::kSampleAndStream,
+              [&](size_t bi, size_t /*worker*/) {
+    float* router_logits = activations.C1.Row(bi);
+    float* routing = activations.C2.Row(bi);
+    // Selection sort for top-k.
+    for (size_t k = 0; k < top_k; ++k) {
+      size_t best_idx = 0;
+      float best_val = -1e30f;
+      for (size_t e = 0; e < num_experts; ++e) {
+        bool done = false;
+        for (size_t j = 0; j < k; ++j) {
+          if (static_cast<size_t>(routing[j * 2]) == e) { done = true; break; }
+        }
+        if (!done && router_logits[e] > best_val) {
+          best_val = router_logits[e];
+          best_idx = e;
+        }
+      }
+      routing[k * 2] = static_cast<float>(best_idx);
+      routing[k * 2 + 1] = best_val;
+    }
+    // Softmax over top-k logits.
+    float max_val = routing[1];
+    for (size_t k = 1; k < top_k; ++k) {
+      if (routing[k * 2 + 1] > max_val) max_val = routing[k * 2 + 1];
+    }
+    float sum_exp = 0.0f;
+    for (size_t k = 0; k < top_k; ++k) {
+      routing[k * 2 + 1] = expf(routing[k * 2 + 1] - max_val);
+      sum_exp += routing[k * 2 + 1];
+    }
+    for (size_t k = 0; k < top_k; ++k) routing[k * 2 + 1] /= sum_exp;
+  });
+
+  // Save routing data before the expert loop overwrites C2.
+  // Each token stores [expert_idx_0, weight_0, ..., expert_idx_k, weight_k].
+  const size_t routing_cols = top_k * 2;
+  std::vector<float> routing_data(batch_size * routing_cols);
+  for (size_t bi = 0; bi < batch_size; ++bi) {
+    const float* src = activations.C2.Row(bi);
+    float* dst = routing_data.data() + bi * routing_cols;
+    for (size_t c = 0; c < routing_cols; ++c) dst[c] = src[c];
+  }
+
+  // Zero out the output buffer.
+  memset(activations.ffw_out.PackedData(), 0,
+         batch_size * model_dim * sizeof(float));
+
+  // Process each expert: gather tokens, compute, scatter weighted results.
+  for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
+    // Count tokens routed to this expert.
+    size_t expert_token_count = 0;
+    for (size_t bi = 0; bi < batch_size; ++bi) {
+      const float* routing = routing_data.data() + bi * routing_cols;
+      for (size_t k = 0; k < top_k; ++k) {
+        if (static_cast<size_t>(routing[k * 2]) == expert_idx) {
+          ++expert_token_count;
+          break;
+        }
+      }
+    }
+    if (expert_token_count == 0) continue;
+
+    // Gather tokens for this expert, scaled by routing weight.
+    size_t write_idx = 0;
+    for (size_t bi = 0; bi < batch_size; ++bi) {
+      const float* routing = routing_data.data() + bi * routing_cols;
+      for (size_t k = 0; k < top_k; ++k) {
+        if (static_cast<size_t>(routing[k * 2]) == expert_idx) {
+          const float weight = routing[k * 2 + 1];
+          const float* input = activations.pre_ffw_rms_out.Row(bi);
+          float* dest = activations.C1.Row(write_idx);
+          for (size_t d = 0; d < model_dim; ++d) dest[d] = input[d] * weight;
+          ++write_idx;
+          break;
+        }
+      }
+    }
+
+    // Expert FFN: gate * up, then down.
+    CallMatMul(activations.C1, layer.ffn_gate_w,
+               /*add=*/nullptr, env, activations.C1);
+    CallMatMul(activations.pre_ffw_rms_out, layer.ffn_up_w,
+               /*add=*/nullptr, env, activations.C2);
+    ActivationBatched(layer_config.activation, activations.C1,
+                      &activations.C2, env.ctx);
+    CallMatMul(activations.C1, layer.ffn_down_w,
+               /*add=*/nullptr, env, activations.C1);
+
+    // Scatter results back to output buffer.
+    write_idx = 0;
+    for (size_t bi = 0; bi < batch_size; ++bi) {
+      const float* routing = routing_data.data() + bi * routing_cols;
+      for (size_t k = 0; k < top_k; ++k) {
+        if (static_cast<size_t>(routing[k * 2]) == expert_idx) {
+          float* output = activations.ffw_out.Row(bi);
+          const float* expert_out = activations.C1.Row(write_idx);
+          for (size_t d = 0; d < model_dim; ++d) output[d] += expert_out[d];
+          ++write_idx;
+          break;
+        }
+      }
+    }
+  }  // for each expert
+
+  if (layer.ffn_output_w.HasPtr()) {
+    CallMatMul(activations.ffw_out, layer.ffn_output_w,
+               /*add=*/nullptr, env, activations.ffw_out);
+  }
+}
+
+
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& layer_config = layer.layer_config;
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
-
-  activations.s_ffw_in.Notify(layer.layer_idx, activations.pre_ffw_rms_out,
-                              env.ctx);
 
 #if GEMMA_FUSED_FFN
   const auto fused = [&](RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
@@ -183,31 +304,8 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                     env.ctx);
 #endif
 
-  activations.s_ffw_hidden.Notify(layer.layer_idx, activations.C1, env.ctx);
-
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.linear_w, nullptr, env, activations.ffw_out);
-
-  activations.s_ffw_out.Notify(layer.layer_idx, activations.ffw_out, env.ctx);
-}
-
-// Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
-// head_dim (`qkv_dim`) into output (`layer_out`).
-static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
-                                AttentionActivationsPtrs& activations,
-                                MatMulEnv& env) {
-  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttentionSumHeads);
-  const LayerConfig& layer_config = layer.layer_config;
-  (void)layer_config;  // For HWY_DASSERT
-  // att_weights and att_out are concatenated heads, each of length
-  // layer_config.qkv_dim. Thus the [num_interleaved,
-  // layer_config.model_dim] matmul output is the sum over heads. Compare
-  // gemma/modules.py: attn_output = self.attn_vec_einsum('BTNH,NHD->BTD',
-  // encoded)
-  HWY_DASSERT(layer_config.model_dim != 0 && layer_config.heads != 0 &&
-              layer_config.qkv_dim != 0);
-  CallMatMul(activations.att_out, layer.att_weights, /*add=*/nullptr, env,
-             activations.att_sums);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

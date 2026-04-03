@@ -1,18 +1,3 @@
-// Copyright 2025 Google LLC
-// SPDX-License-Identifier: Apache-2.0
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 #include "gemma/tensor_info.h"
 
 #include <stddef.h>
@@ -452,6 +437,53 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
           .shape = {config.model_dim, layer_config.heads, layer_config.qkv_dim},
           .cols_take_extra_dims = true,
       });
+
+  // Gemma 4 MoE weights.
+  if (layer_config.num_experts != 0) {
+    Add(suffix, {
+                    .base_name = "ffn_gate_in_w",
+                    .source_names = {"mlp/gate_in/kernel"},
+                    .axes = {1, 0},
+                    .shape = {config.model_dim, layer_config.num_experts},
+                });
+    Add(suffix, {
+                    .base_name = "ffn_gate_w",
+                    .source_names = {"mlp/gate/kernel"},
+                    .axes = {0, 2, 1},
+                    .shape = {layer_config.num_experts,
+                              layer_config.moe_intermediate_size,
+                              config.model_dim},
+                });
+    Add(suffix, {
+                    .base_name = "ffn_up_w",
+                    .source_names = {"mlp/up/kernel"},
+                    .axes = {0, 2, 1},
+                    .shape = {layer_config.num_experts,
+                              layer_config.moe_intermediate_size,
+                              config.model_dim},
+                });
+    Add(suffix, {
+                    .base_name = "ffn_down_w",
+                    .source_names = {"mlp/down/kernel"},
+                    .axes = {0, 1, 2},
+                    .shape = {layer_config.num_experts,
+                              config.model_dim,
+                              layer_config.moe_intermediate_size},
+                });
+    Add(suffix, {
+                    .base_name = "ffn_output_w",
+                    .source_names = {"mlp/output/kernel"},
+                    .axes = {1, 0},
+                    .shape = {config.model_dim, config.model_dim},
+                });
+  }
+  Add(suffix, {
+                  .base_name = "attn_kv_scale",
+                  .source_names = {"attn/kv_scale"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kF32,
+              });
 }
 
 TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {

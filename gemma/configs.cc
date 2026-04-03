@@ -19,12 +19,11 @@
 #include <stdio.h>
 
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"          // IFields
-#include "io/io.h"              // Path
+#include "io/fields.h"           // IFields
+#include "io/io.h"               // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -239,7 +238,6 @@ static ModelConfig ConfigGemma3_1B() {
   config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
-  config.use_global_timescale = true;
   config.model_dim = 1152;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -290,7 +288,6 @@ static ModelConfig ConfigGemma3_4B() {
   config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
-  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -340,7 +337,6 @@ static ModelConfig ConfigGemma3_12B() {
   config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
-  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -390,7 +386,6 @@ static ModelConfig ConfigGemma3_27B() {
   config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
-  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -461,9 +456,200 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B();
     case Model::GEMMA3_270M:
       return ConfigGemma3_270M();
+    case Model::GEMMA4_E2B:
+      return ConfigGemma4_E2B();
+    case Model::GEMMA4_E4B:
+      return ConfigGemma4_E4B();
+    case Model::GEMMA4_26B_A4B:
+      return ConfigGemma4_26B_A4B();
+    case Model::GEMMA4_31B:
+      return ConfigGemma4_31B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
+}
+
+// Gemma 4 Configurations
+static constexpr size_t kGemma4VocabSize = 262144;
+
+static LayerConfig LayerConfigGemma4_E2B(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 6144;
+  config.heads = 8;
+  config.kv_heads = 1;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  config.hidden_size_per_layer_input = 256;
+  config.num_kv_shared_layers = 20;
+  config.use_double_wide_mlp = true;
+  return config;
+}
+
+static ModelConfig ConfigGemma4_E2B() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.display_name = "Gemma4_E2B";
+  config.model = Model::GEMMA4_E2B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 1536;
+  config.vocab_size = kGemma4VocabSize;
+  config.max_seq_len = 128 * 1024;
+  LayerConfig lc = LayerConfigGemma4_E2B(config.model_dim);
+  config.num_layers = 35;
+  config.layer_configs = {config.num_layers, lc};
+  // Configure full-attention layers with larger head dims and fewer KV heads.
+  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+    if (config.IsGlobalLayer(i)) {
+      config.layer_configs[i].post_qk = PostQKType::PartialRope;
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = config.num_global_kv_heads;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<35, 5>(
+      {512, 512, 512, 512, config.max_seq_len});
+  config.final_logit_softcapping = 30.0f;
+  config.rope_theta_sliding = 10000.0f;
+  config.rope_theta_full = 1000000.0f;
+  config.partial_rotary_factor = 0.25f;
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_E4B(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 10240;
+  config.heads = 8;
+  config.kv_heads = 2;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  config.hidden_size_per_layer_input = 256;
+  config.num_kv_shared_layers = 18;
+  return config;
+}
+
+static ModelConfig ConfigGemma4_E4B() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.display_name = "Gemma4_E4B";
+  config.model = Model::GEMMA4_E4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 2560;
+  config.vocab_size = kGemma4VocabSize;
+  config.max_seq_len = 128 * 1024;
+  LayerConfig lc = LayerConfigGemma4_E4B(config.model_dim);
+  config.num_layers = 42;
+  config.layer_configs = {config.num_layers, lc};
+  // Configure full-attention layers with larger head dims and fewer KV heads.
+  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+    if (config.IsGlobalLayer(i)) {
+      config.layer_configs[i].post_qk = PostQKType::PartialRope;
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = config.num_global_kv_heads;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<42, 6>(
+      {512, 512, 512, 512, 512, config.max_seq_len});
+  config.final_logit_softcapping = 30.0f;
+  config.rope_theta_sliding = 10000.0f;
+  config.rope_theta_full = 1000000.0f;
+  config.partial_rotary_factor = 0.25f;
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_26B_A4B(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 2112;
+  config.heads = 16;
+  config.kv_heads = 8;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  config.num_experts = 128;
+  config.top_k_experts = 8;
+  config.moe_intermediate_size = 704;
+  config.num_global_kv_heads = 2;
+  config.global_head_dim = 512;
+  return config;
+}
+
+static ModelConfig ConfigGemma4_26B_A4B() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.display_name = "Gemma4_26B_A4B";
+  config.model = Model::GEMMA4_26B_A4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 2816;
+  config.vocab_size = kGemma4VocabSize;
+  config.max_seq_len = 256 * 1024;
+  LayerConfig lc = LayerConfigGemma4_26B_A4B(config.model_dim);
+  config.num_layers = 30;
+  config.layer_configs = {config.num_layers, lc};
+  // Configure full-attention layers with larger head dims and fewer KV heads.
+  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+    if (config.IsGlobalLayer(i)) {
+      config.layer_configs[i].post_qk = PostQKType::PartialRope;
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = config.num_global_kv_heads;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<30, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
+  config.final_logit_softcapping = 30.0f;
+  config.rope_theta_sliding = 10000.0f;
+  config.rope_theta_full = 1000000.0f;
+  config.partial_rotary_factor = 0.25f;
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_31B(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 21504;
+  config.heads = 32;
+  config.kv_heads = 16;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.use_qk_norm = true;
+  config.num_global_kv_heads = 4;
+  config.global_head_dim = 512;
+  return config;
+}
+
+static ModelConfig ConfigGemma4_31B() {
+  ModelConfig config = ConfigBaseGemmaV3();
+  config.display_name = "Gemma4_31B";
+  config.model = Model::GEMMA4_31B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 5376;
+  config.vocab_size = kGemma4VocabSize;
+  config.max_seq_len = 256 * 1024;
+  LayerConfig lc = LayerConfigGemma4_31B(config.model_dim);
+  config.num_layers = 60;
+  config.layer_configs = {config.num_layers, lc};
+  // Configure full-attention layers with larger head dims and fewer KV heads.
+  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+    if (config.IsGlobalLayer(i)) {
+      config.layer_configs[i].post_qk = PostQKType::PartialRope;
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = config.num_global_kv_heads;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<60, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
+  config.final_logit_softcapping = 30.0f;
+  config.rope_theta_sliding = 10000.0f;
+  config.rope_theta_full = 1000000.0f;
+  config.partial_rotary_factor = 0.25f;
+  return config;
 }
 
 const char* ModelPrefix(Model model) {
@@ -494,25 +680,33 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b";
     case Model::GEMMA3_270M:
       return "gemma3-270m";
+    case Model::GEMMA4_E2B:
+      return "gemma4-e2b";
+    case Model::GEMMA4_E4B:
+      return "gemma4-e4b";
+    case Model::GEMMA4_26B_A4B:
+      return "gemma4-26b-a4b";
+    case Model::GEMMA4_31B:
+      return "gemma4-31b";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
 }
 
 PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
-  const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
-
-  // For models with a fixed wrapping mode, ignore user override.
-  if (config_wrapping == PromptWrapping::PALIGEMMA ||
-      config_wrapping == PromptWrapping::GEMMA_VLM) {
+  if (IsPaliGemma(model)) {
     if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
-               ModelPrefix(model));
+      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
     }
-    return config_wrapping;
+    return PromptWrapping::PALIGEMMA;
   }
-
-  // For other models, default to IT unless --wrapping=0 is passed.
+  if (IsVLM(model)) {
+    if (wrapping != Tristate::kDefault) {
+      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
+    }
+    return PromptWrapping::GEMMA_VLM;
+  }
+  // Default to IT unless --wrapping=0.
   return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
                                       : PromptWrapping::GEMMA_IT;
 }
@@ -679,15 +873,17 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return Model::GEMMA3_270M;
 
     case 26:
-      if (layer_types & (kDeducedViT | kDeducedKqNorm)) {
-        return Model::GEMMA3_1B;
-      }
+      if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
       return Model::GEMMA2_2B;
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
+    case 30:
+      return Model::GEMMA4_26B_A4B;
     case 34:
       return Model::GEMMA3_4B;
+    case 35:
+      return Model::GEMMA4_E2B;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -698,6 +894,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return Model::GEMMA2_27B;
     case 48:
       return Model::GEMMA3_12B;
+    case 60:
+      return Model::GEMMA4_31B;
     case 62:
       return Model::GEMMA3_27B;
 
@@ -711,30 +909,6 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
                blob_path.path.c_str(), layers, layer_types);
       return Model::UNKNOWN;
   }
-}
-
-constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
-    {"old", AttentionImpl::kOld},
-    {"flash", AttentionImpl::kFlash},
-    {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
-    {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
-    {"flash_transposed_qs_int16", AttentionImpl::kFlashTransposedQsInt16},
-};
-
-std::string GetAttentionImplName(AttentionImpl impl) {
-  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
-    if (attention_impl == impl) return std::string(name);
-  }
-  return "unknown";
-}
-
-AttentionImpl GetAttentionImpl(const std::string& impl_name) {
-  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
-    if (name == impl_name) return attention_impl;
-  }
-  HWY_WARN("Unknown attention implementation: %s. Using kOld.\n",
-           impl_name.c_str());
-  return AttentionImpl::kOld;
 }
 
 }  // namespace gcpp

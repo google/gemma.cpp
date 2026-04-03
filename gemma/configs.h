@@ -29,11 +29,8 @@
 #include "io/fields.h"          // IFieldsVisitor
 #include "io/io.h"              // Path
 #include "util/basics.h"
-#include "hwy/detect_compiler_arch.h"
 
 namespace gcpp {
-
-constexpr size_t kMaxBF16PerVector = HWY_ARCH_MAX_BYTES / sizeof(BF16);
 
 HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
 
@@ -83,55 +80,6 @@ static inline bool EnumValid(LayerAttentionType type) {
   return type == LayerAttentionType::kGemma || type == LayerAttentionType::kVit;
 }
 
-// Values stated explicitly to allow for semantic reordering
-enum class KVEncoding {
-  kUnspecified = 0,
-  kF32 = 1,
-  kBF16 = 2,
-  kF32TwoTranspositions = 3,
-  kBF16TwoTranspositions = 4,
-  kInt8 = 5,
-  kInt8TwoTranspositions = 6,
-};
-
-enum class AttentionImpl {
-  kOld,    // Previous Attention implementation
-  kFlash,  // Flash Attention (default)
-  kFlashTransposedQs,
-  kFlashTransposedQsBF16,
-  kFlashTransposedQsInt16,
-  kSentinel,
-};
-
-std::string GetAttentionImplName(AttentionImpl impl);
-AttentionImpl GetAttentionImpl(const std::string& impl);
-
-/*
- * Returns a bitmask of flags to pass to attention functions based on the
- * attention implementation selected.
- *
- * If `hwy_native_dot_bf16` is true, the function will use the old attention
- * implementation, ignoring `impl`.
- *
- * `hwy_native_dot_bf16` needs to be passed in, because the HWY_NATIVE_DOT_BF16
- * macro is not available outside of highway instrumented translation units and
- * cannot be made accessible from .h files.
- */
-static inline int AttentionImplToFlags(AttentionImpl impl,
-                                       int hwy_native_dot_bf16) {
-  if (hwy_native_dot_bf16) return kAttentionUseOld;
-
-  switch (impl) {
-    case AttentionImpl::kOld:
-      return kAttentionUseOld;
-    case AttentionImpl::kFlash:
-    case AttentionImpl::kFlashTransposedQs:
-    case AttentionImpl::kFlashTransposedQsBF16:
-    default:
-      return 0;
-  }
-}
-
 // Post attention and ffw normalization type.
 enum class PostNormType {
   None,
@@ -148,6 +96,7 @@ static inline bool EnumValid(PostNormType type) {
 enum class PostQKType {
   Rope,
   HalfRope,
+  PartialRope,  // Gemma 4: partial rotary for full attention layers
   kSentinel  // must be last
 };
 
@@ -229,13 +178,31 @@ enum class Model {
   GEMMA3_12B,
   GEMMA3_27B,
   GEMMA3_270M,
-  CUSTOM,
+  // Gemma 4 models
+  GEMMA4_E2B,
+  GEMMA4_E4B,
+  GEMMA4_26B_A4B,
+  GEMMA4_31B,
   kSentinel,
 };
 
 // Returns canonical model name without the PromptWrapping suffix. This is used
 // in Specifier and thus does not change.
 const char* ModelPrefix(Model model);
+
+// Gemma3 is multimodal and has a different prompt wrapping than PaliGemma.
+// This is used for deducing the PromptWrapping for pre-2025 BlobStore.
+static inline bool IsVLM(Model model) {
+  return model == Model::GEMMA3_4B || model == Model::GEMMA3_1B ||
+         model == Model::GEMMA3_12B || model == Model::GEMMA3_27B ||
+         IsGemma4(model);
+}
+
+// Gemma 4 is multimodal and has a different prompt wrapping.
+static inline bool IsGemma4(Model model) {
+  return model == Model::GEMMA4_E2B || model == Model::GEMMA4_E4B ||
+         model == Model::GEMMA4_26B_A4B || model == Model::GEMMA4_31B;
+}
 
 static inline bool IsPaliGemma(Model model) {
   if (model == Model::PALIGEMMA2_3B_224 || model == Model::PALIGEMMA2_3B_448 ||
@@ -252,13 +219,13 @@ static inline bool IsObsolete(Model model) {
   return false;
 }
 
-// Visits every valid model enum, skipping `UNKNOWN`, `kSentinel` and `CUSTOM`.
+// Visits every valid model enum, skipping `UNKNOWN` and `kSentinel`.
 template <class Func>
 void ForEachModel(const Func& func) {
   for (size_t i = static_cast<size_t>(Model::GEMMA2_9B);
        i < static_cast<size_t>(Model::kSentinel); ++i) {
     const Model model = static_cast<Model>(i);
-    if (!IsObsolete(model) && model != Model::CUSTOM) func(model);
+    if (!IsObsolete(model)) func(model);
   }
 }
 
@@ -308,6 +275,14 @@ struct LayerConfig : public IFields {
     visitor(activation);
     visitor(post_qk);
     visitor(use_qk_norm);
+    visitor(num_experts);
+    visitor(top_k_experts);
+    visitor(moe_intermediate_size);
+    visitor(num_global_kv_heads);
+    visitor(global_head_dim);
+    visitor(hidden_size_per_layer_input);
+    visitor(num_kv_shared_layers);
+    visitor(use_double_wide_mlp);
     internal.VisitFields(visitor);
     // Append new fields here, then update `python/configs.cc`.
   }
@@ -326,12 +301,21 @@ struct LayerConfig : public IFields {
   uint32_t kv_heads = 0;
   uint32_t qkv_dim = 0;  // length of Q, K, V vectors (contiguous).
   bool ff_biases = false;
-  bool optimized_gating = true;  // for Gemma3
+  bool optimized_gating = true;             // for Gemma3
   PostNormType post_norm = PostNormType::None;
   LayerAttentionType type = LayerAttentionType::kGemma;
   ActivationType activation = ActivationType::Gelu;
   PostQKType post_qk = PostQKType::Rope;
   bool use_qk_norm = false;
+  // Gemma 4 fields
+  uint32_t num_experts = 0;           // MoE: total experts (0 = dense)
+  uint32_t top_k_experts = 0;         // MoE: active experts per token
+  uint32_t moe_intermediate_size = 0; // MoE: expert FFN dim
+  uint32_t num_global_kv_heads = 0;   // Global attention KV heads
+  uint32_t global_head_dim = 0;       // Global attention head dim
+  uint32_t hidden_size_per_layer_input = 0; // PLE per-layer input dim
+  uint32_t num_kv_shared_layers = 0;  // KV cache sharing
+  bool use_double_wide_mlp = false;   // E2B double-wide MLP
   InternalLayerConfig internal;
 };
 
@@ -411,6 +395,10 @@ struct ModelConfig : public IFields {
 
     visitor(att_cap);
     visitor(final_cap);
+    visitor(final_logit_softcapping);
+    visitor(rope_theta_sliding);
+    visitor(rope_theta_full);
+    visitor(partial_rotary_factor);
 
     visitor(absolute_pe);
     bool unused_use_local_attention = false;  // formerly used for Griffin
@@ -429,8 +417,6 @@ struct ModelConfig : public IFields {
 
     internal.VisitFields(visitor);
 
-    visitor(use_global_timescale);
-
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -448,18 +434,6 @@ struct ModelConfig : public IFields {
   // `PromptWrapping`. Stable/unchanging; can be used as the model file name.
   // The third ctor also expects a string returned by this.
   std::string Specifier() const;
-
-  // Overwrites `max_seq_len` with `new_max_seq_len` and updates all global
-  // layers' attention window sizes to `new_max_seq_len`. This function must be
-  // called before instantiating the KVCache object.
-  void SetMaxSeqLen(size_t new_max_seq_len) {
-    for (size_t i = 0; i < attention_window_sizes.size(); ++i) {
-      if (attention_window_sizes[i] == max_seq_len) {
-        attention_window_sizes[i] = new_max_seq_len;
-      }
-    }
-    max_seq_len = new_max_seq_len;
-  }
 
   void AddLayerConfig(const LayerConfig& layer_config) {
     layer_configs.push_back(layer_config);
@@ -522,6 +496,11 @@ struct ModelConfig : public IFields {
 
   float att_cap = 0.0f;
   float final_cap = 0.0f;
+  // Gemma 4 fields
+  float final_logit_softcapping = 0.0f;  // Logit soft capping (30.0 for Gemma 4)
+  float rope_theta_sliding = 10000.0f;   // RoPE theta for sliding attention
+  float rope_theta_full = 1000000.0f;    // RoPE theta for full attention
+  float partial_rotary_factor = 1.0f;     // Partial rotary factor for full attention
 
   bool absolute_pe = false;
   QueryScaleType query_scale = QueryScaleType::SqrtKeySize;
@@ -541,7 +520,6 @@ struct ModelConfig : public IFields {
   std::vector<std::string> scale_base_names;
 
   InternalModelConfig internal;
-  bool use_global_timescale = false;  // for Gemma 3
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
@@ -549,8 +527,7 @@ ModelConfig GetVitConfig(const ModelConfig& config);
 
 enum DeducedLayerTypes {
   kDeducedViT = 2,
-  kDeduced448 = 4,  // For ViT, 448x448 resolution instead of 224x224.
-  kDeducedKqNorm = 8,
+  kDeduced448 = 4,   // For ViT, 448x448 resolution instead of 224x224.
 };
 
 // layer_types is one or more of `DeducedLayerTypes`.

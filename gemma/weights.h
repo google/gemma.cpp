@@ -96,8 +96,7 @@ struct LayerWeightsPtrs {
   // other values for purposes of the KV cache.
   LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
                    const TensorInfoRegistry& tensors)
-      : layer_idx(layer_idx),
-        finder_(LayerSuffix(layer_idx), tensors),
+      : finder_(LayerSuffix(layer_idx), tensors),
         qkv_einsum_w(finder_("qkv_ein")),
         qkv_einsum_w1(finder_("qkv1_w")),
         qkv_einsum_w2(finder_("qkv2_w")),
@@ -131,12 +130,18 @@ struct LayerWeightsPtrs {
 
         key_norm_scale(finder_("key_norm")),
         query_norm_scale(finder_("query_norm")),
+        // Gemma 4 MoE weights.
+        ffn_gate_in_w(finder_("ffn_gate_in_w")),
+        ffn_gate_w(finder_("ffn_gate_w")),
+        ffn_up_w(finder_("ffn_up_w")),
+        ffn_down_w(finder_("ffn_down_w")),
+        ffn_output_w(finder_("ffn_output_w")),
+        attn_kv_scale(finder_("attn_kv_scale")),
 
         layer_config(config) {
   }
   ~LayerWeightsPtrs() = default;
 
-  const size_t layer_idx;
   const MatFinder finder_;
 
   // Files either have qkv_einsum_w with 2 stacked matrices or separate
@@ -183,6 +188,14 @@ struct LayerWeightsPtrs {
 
   MatPtr key_norm_scale;    // at least BF16.
   MatPtr query_norm_scale;  // at least BF16.
+
+  // Gemma 4 MoE weights.
+  MatPtr ffn_gate_in_w;   // Router weights.
+  MatPtr ffn_gate_w;    // Expert gate (up proj).
+  MatPtr ffn_up_w;      // Expert up proj.
+  MatPtr ffn_down_w;    // Expert down proj.
+  MatPtr ffn_output_w;  // MoE output.
+  MatPtrT<float> attn_kv_scale;  // Per-layer KV scaling.
 
   const LayerConfig& layer_config;
 
@@ -243,6 +256,15 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(ffw_gating_biases, kMustRead));
       func(TENSOR_ARGS(ffw_output_biases, kMustRead));
     }
+    // Gemma 4 MoE weights.
+    if (layer_config.num_experts != 0) {
+      func(TENSOR_ARGS(ffn_gate_in_w, kMaybeRead));
+      func(TENSOR_ARGS(ffn_gate_w, kMaybeRead));
+      func(TENSOR_ARGS(ffn_up_w, kMaybeRead));
+      func(TENSOR_ARGS(ffn_down_w, kMaybeRead));
+      func(TENSOR_ARGS(ffn_output_w, kMaybeRead));
+    }
+    func(TENSOR_ARGS(attn_kv_scale, kMaybeRead));
   }  // `ForEachTensor`
 
   // Zero-initializes all allocated tensors in the layer.
