@@ -504,8 +504,8 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
   activations.DebugCheckSameShape(out);
 
   CallUpcasted(&weights, [&](const auto* weights_t) {
-    ParallelFor(Parallelism::kFlat, activations.Rows(), ctx,
-                cluster_idx, Callers::kOpsRMSNormBatched,
+    ParallelFor(Parallelism::kFlat, activations.Rows(), ctx, cluster_idx,
+                Callers::kOpsRMSNormBatched,
                 [&](uint64_t token_idx, size_t worker) {
                   RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
                           /*w_ofs=*/0, out.Row(token_idx), activations.Cols(),
@@ -1278,88 +1278,88 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
     LoadAndMulUpTo8Times2<N>(df, out, i, scales, out0_0, out0_1, out1_0, out1_1,
                              out2_0, out2_1, out3_0, out3_1, out4_0, out4_1,
                              out5_0, out5_1, out6_0, out6_1, out7_0, out7_1);
-      for (int lane = 0; lane < NF; ++lane) {
-        VBF xI, xI2;
-        Decompress2(dbf, v_span, 2 * qkv_dim * lane + i * 2, xI, xI2);
+    for (int lane = 0; lane < NF; ++lane) {
+      VBF xI, xI2;
+      Decompress2(dbf, v_span, 2 * qkv_dim * lane + i * 2, xI, xI2);
 
-        // Set pair of c scales for 2 value vectors
-        out0_0 = hn::ReorderWidenMulAccumulate(
-            df, xI, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_0,
-            helper_out0_0);
-        out0_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_1,
-            helper_out0_1);
-        if constexpr (N >= 2) {
-          out1_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
-              out1_0, helper_out1_0);
-          out1_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
-              out1_1, helper_out1_1);
-        }
-        if constexpr (N >= 3) {
-          out2_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
-              out2_0, helper_out2_0);
-          out2_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
-              out2_1, helper_out2_1);
-        }
-        if constexpr (N >= 4) {
-          out3_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
-              out3_0, helper_out3_0);
-          out3_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
-              out3_1, helper_out3_1);
-        }
-        if constexpr (N >= 5) {
-          out4_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
-              out4_0, helper_out4_0);
-          out4_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
-              out4_1, helper_out4_1);
-        }
-        if constexpr (N >= 6) {
-          out5_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
-              out5_0, helper_out5_0);
-          out5_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
-              out5_1, helper_out5_1);
-        }
-        if constexpr (N >= 7) {
-          out6_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
-              out6_0, helper_out6_0);
-          out6_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
-              out6_1, helper_out6_1);
-        }
-        if constexpr (N >= 8) {
-          out7_0 = hn::ReorderWidenMulAccumulate(
-              df, xI,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
-              out7_0, helper_out7_0);
-          out7_1 = hn::ReorderWidenMulAccumulate(
-              df, xI2,
-              hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
-              out7_1, helper_out7_1);
-        }
+      // Set pair of c scales for 2 value vectors
+      out0_0 = hn::ReorderWidenMulAccumulate(
+          df, xI, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_0,
+          helper_out0_0);
+      out0_1 = hn::ReorderWidenMulAccumulate(
+          df, xI2, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_1,
+          helper_out0_1);
+      if constexpr (N >= 2) {
+        out1_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
+            out1_0, helper_out1_0);
+        out1_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
+            out1_1, helper_out1_1);
       }
+      if constexpr (N >= 3) {
+        out2_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
+            out2_0, helper_out2_0);
+        out2_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
+            out2_1, helper_out2_1);
+      }
+      if constexpr (N >= 4) {
+        out3_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
+            out3_0, helper_out3_0);
+        out3_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
+            out3_1, helper_out3_1);
+      }
+      if constexpr (N >= 5) {
+        out4_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
+            out4_0, helper_out4_0);
+        out4_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
+            out4_1, helper_out4_1);
+      }
+      if constexpr (N >= 6) {
+        out5_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
+            out5_0, helper_out5_0);
+        out5_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
+            out5_1, helper_out5_1);
+      }
+      if constexpr (N >= 7) {
+        out6_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
+            out6_0, helper_out6_0);
+        out6_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
+            out6_1, helper_out6_1);
+      }
+      if constexpr (N >= 8) {
+        out7_0 = hn::ReorderWidenMulAccumulate(
+            df, xI,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
+            out7_0, helper_out7_0);
+        out7_1 = hn::ReorderWidenMulAccumulate(
+            df, xI2,
+            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
+            out7_1, helper_out7_1);
+      }
+    }
 #if HWY_NATIVE_DOT_BF16 == 0
     out0_0 = hn::Add(out0_0, helper_out0_0);
     out0_1 = hn::Add(out0_1, helper_out0_1);
