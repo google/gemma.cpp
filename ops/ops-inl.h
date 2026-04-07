@@ -55,6 +55,7 @@
 #include "ops/matmul_static.h"  // includes highway.h
 #include "ops/sum-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
+#include "hwy/contrib/math/fast_math-inl.h"
 #include "hwy/contrib/math/math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -1442,10 +1443,11 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
   hn::Transform(d, logits.data(), logits.size(),
                 [pmax](const auto d, const V value) HWY_ATTR {
                   if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-                    // Workaround for buggy SVE codegen: avoid inlined Exp().
-                    return hn::CallExp(d, hn::Sub(value, *pmax));
+                    // Workaround for buggy SVE codegen: avoid inlined
+                    // FastExpMinusOrZero().
+                    return hn::CallFastExpMinusOrZero(d, hn::Sub(value, *pmax));
                   } else {
-                    return hn::Exp(d, hn::Sub(value, *pmax));
+                    return hn::FastExpMinusOrZero(d, hn::Sub(value, *pmax));
                   }
                 });
 

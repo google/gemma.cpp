@@ -321,10 +321,10 @@ class TestSoftmax {
     for (size_t i = 0; i < count; ++i) {
       sum += x[i];
       double rel = std::abs(x[i] - e[i]) / e[i];
-      ASSERT_LT(rel, 1e-6) << "Mismatch on coordinate " << i << " out of "
+      ASSERT_LT(rel, 2e-5) << "Mismatch on coordinate " << i << " out of "
                            << count;
     }
-    ASSERT_NEAR(sum, 1.0, 1e-6);
+    ASSERT_NEAR(sum, 1.0, 2e-5);
   }
 
  private:
@@ -384,7 +384,7 @@ class TestSoftmaxState {
     }
 
     ASSERT_NEAR(softmax_max, maxval, 1e-6);
-    ASSERT_NEAR(softmax_d, sum_exp, 1e-6);
+    ASSERT_NEAR(softmax_d, sum_exp, 2e-5);
   }
 };
 
