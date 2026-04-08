@@ -200,6 +200,8 @@ class MatPtr : public IFields {
                 private_rows_);
     }
     override_rows_ = static_cast<uint32_t>(rows);
+    num_elements_ = static_cast<uint32_t>(
+        ComputeNumElements(type_, Extents2D(override_rows_, cols_)));
   }
 
   // Changes the number of rows and columns without reallocating the memory.
