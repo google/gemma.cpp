@@ -81,6 +81,7 @@ enum class Callers {  // Keep sorted
   kAttComputeQKV,
   kAttDotSoftmaxWeightedSum,
   kBlobWriter,
+  kBRGeMM,
   kCompress,
   kFixupWeights,
   kFlashAttention,
