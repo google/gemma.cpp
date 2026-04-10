@@ -1,13 +1,12 @@
 #include <stddef.h>
 
-#include <algorithm>
-#include <cmath>
 #include <iostream>
 #include <memory>
 #include <optional>
 #include <tuple>
 #include <vector>
 
+#include "third_party/absl/types/span.h"
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "gemma/activations.h"
 #include "gemma/configs.h"
