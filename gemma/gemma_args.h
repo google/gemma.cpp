@@ -134,7 +134,7 @@ struct RuntimeConfig {
 
   // These defaults are overridden by InferenceArgs::CopyTo(*this):
   // Max tokens per batch during prefill.
-  size_t prefill_tbatch_size = 256;
+  size_t prefill_tbatch_size = kMaxBatchSize;
   // Max queries per batch (one token from each) during decode.
   size_t decode_qbatch_size = 16;
 
@@ -225,7 +225,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(max_generated_tokens, "max_generated_tokens", size_t{4096},
             "Maximum number of tokens to generate.");
 
-    visitor(prefill_tbatch_size, "prefill_tbatch", size_t{256},
+    visitor(prefill_tbatch_size, "prefill_tbatch", size_t{kMaxBatchSize},
             "Prefill: max tokens per batch.");
     visitor(decode_qbatch_size, "decode_qbatch", size_t{16},
             "Decode: max queries per batch.");
