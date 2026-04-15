@@ -97,7 +97,12 @@ struct Extents2D {
   constexpr Extents2D() : rows(0), cols(0) {}
   constexpr Extents2D(size_t rows, size_t cols) : rows(rows), cols(cols) {}
 
-  size_t Area() const { return rows * cols; }
+  size_t Area() const {
+    if (rows != 0 && cols > SIZE_MAX / rows) {
+      HWY_ABORT("Tensor dimension overflow: rows=%zu cols=%zu", rows, cols);
+    }
+    return rows * cols;
+  }
 
   size_t rows;
   size_t cols;
