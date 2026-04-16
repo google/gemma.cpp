@@ -140,11 +140,11 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
   }
   ++pos;
   if (width == 0 || height == 0) {
-    std::cerr << "Invalid zero dimension\n";
+    HWY_ABORT("Invalid zero dimension\n");
     return false;
   }
   if (width > SIZE_MAX / 3 || width * 3 > SIZE_MAX / height) {
-    std::cerr << "Image dimensions overflow\n";
+    HWY_ABORT("Image dimensions overflow\n");
     return false;
   }
   const size_t data_size = width * height * 3;
