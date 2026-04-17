@@ -83,8 +83,11 @@ const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
   }
   num = 0;
   for (; pos < end && std::isdigit(*pos); ++pos) {
-    num *= 10;
-    num += *pos - '0';
+    const size_t digit = *pos - '0';
+    if (num > (SIZE_MAX - digit) / 10) {
+      return nullptr;  // overflow
+    }
+    num = num * 10 + digit;
   }
   return pos;
 }
@@ -136,6 +139,14 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
     return false;
   }
   ++pos;
+  if (width == 0 || height == 0) {
+    HWY_ABORT("Invalid zero dimension\n");
+    return false;
+  }
+  if (width > SIZE_MAX / 3 || width * 3 > SIZE_MAX / height) {
+    HWY_ABORT("Image dimensions overflow\n");
+    return false;
+  }
   const size_t data_size = width * height * 3;
   if (buf.cend() - pos < static_cast<ptrdiff_t>(data_size)) {
     std::cerr << "Insufficient data remaining\n";
