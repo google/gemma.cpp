@@ -35,8 +35,6 @@ namespace gcpp {
 
 constexpr size_t kMaxBF16PerVector = HWY_ARCH_MAX_BYTES / sizeof(BF16);
 
-HWY_INLINE_VAR constexpr int kAttentionUseOld = 2;
-
 HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
 
 #ifndef GEMMA_FUSED_FFN
@@ -95,8 +93,7 @@ enum class KVEncoding {
 };
 
 enum class AttentionImpl {
-  kOld,    // Previous Attention implementation
-  kFlash,  // Flash Attention (default)
+  kFlash = 0,  // Flash Attention (default)
   kFlashTransposedQs,
   kFlashTransposedQsBF16,
   kFlashTransposedQsInt16,
@@ -105,32 +102,6 @@ enum class AttentionImpl {
 
 std::string GetAttentionImplName(AttentionImpl impl);
 AttentionImpl GetAttentionImpl(const std::string& impl);
-
-/*
- * Returns a bitmask of flags to pass to attention functions based on the
- * attention implementation selected.
- *
- * If `hwy_native_dot_bf16` is true, the function will use the old attention
- * implementation, ignoring `impl`.
- *
- * `hwy_native_dot_bf16` needs to be passed in, because the HWY_NATIVE_DOT_BF16
- * macro is not available outside of highway instrumented translation units and
- * cannot be made accessible from .h files.
- */
-static inline int AttentionImplToFlags(AttentionImpl impl,
-                                       int hwy_native_dot_bf16) {
-  if (hwy_native_dot_bf16) return kAttentionUseOld;
-
-  switch (impl) {
-    case AttentionImpl::kOld:
-      return kAttentionUseOld;
-    case AttentionImpl::kFlash:
-    case AttentionImpl::kFlashTransposedQs:
-    case AttentionImpl::kFlashTransposedQsBF16:
-    default:
-      return 0;
-  }
-}
 
 // Post attention and ffw normalization type.
 enum class PostNormType {

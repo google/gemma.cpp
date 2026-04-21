@@ -19,7 +19,6 @@
 #include <stddef.h>
 
 #include <optional>
-#include <utility>
 #include <vector>
 
 #include "gemma/configs.h"     // ModelConfig

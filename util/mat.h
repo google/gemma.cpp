@@ -86,7 +86,9 @@ class MatPtr : public IFields {
 
   // Only for use by ctor, `AllocateFor` and 'loading' memory-mapped tensors.
   void SetPtr(void* ptr, size_t stride) {
-    HWY_ASSERT(stride >= Cols());
+    if (stride < Cols()) {
+      HWY_ABORT("%s: stride %zu < cols %zu\n", Name(), stride, Cols());
+    }
     ptr_ = ptr;
     stride_ = static_cast<uint32_t>(stride);
 
@@ -211,7 +213,7 @@ class MatPtr : public IFields {
     HWY_ASSERT(IsPacked());
     private_rows_ = hwy::DivCeil(private_rows_, factor);
     cols_ *= factor;
-    stride_ *= factor;
+    stride_ *= factor;  // safe because we verified IsPacked
   }
 
   // Offset by which to advance pointers to the next row.

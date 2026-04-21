@@ -81,20 +81,18 @@ namespace HWY_NAMESPACE {
 void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
+  const int kFlags = 0;
   if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
       activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
       activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
-    TiledAttention(
-        activations.attention_impl, num_tokens, layer_idx, layer,
-        activations.attention, qbatch, env,
-        AttentionImplToFlags(activations.attention_impl, HWY_NATIVE_DOT_BF16));
+    TiledAttention(activations.attention_impl, num_tokens, layer_idx, layer,
+                   activations.attention, qbatch, env, kFlags);
     return;
   }
 
   if (type == LayerAttentionType::kGemma) {
-    // TODO: remove flag to enable FlashAttention.
     GemmaAttention(num_tokens, layer_idx, layer, activations.attention, qbatch,
-                   env, activations.attention_impl, /*flags=*/0);
+                   env, activations.attention_impl, kFlags);
   }
 }
 

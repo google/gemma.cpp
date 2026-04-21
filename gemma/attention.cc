@@ -19,17 +19,20 @@
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
-#include "util/zones.h"
-#include "hwy/base.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
 #include "gemma/activations.h"
 #include "gemma/configs.h"  // kMaxQKVDim
+#include "gemma/kv_cache.h"
+#include "gemma/query.h"
 #include "gemma/weights.h"
+#include "ops/matmul.h"
 #include "util/threading.h"
 #include "util/threading_context.h"
+#include "util/zones.h"
+#include "hwy/base.h"
 #include "hwy/profiler.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
@@ -42,6 +45,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "gemma/attention.h"  // includes highway.h
 #include "gemma/flash_attention.h"
 #include "gemma/gemma-inl.h"
 #include "ops/ops-inl.h"
@@ -49,21 +53,6 @@
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
-
-// Returns the number of floats per vector (aka NF).
-size_t FloatsPerVector() {
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-  return hn::Lanes(df);
-}
-
-// The k-cache and v-cache are setup without knowing NF. So if it hasn't been
-// done already, reshape it to take NF into account.
-void MaybeReshapeCache(const size_t default_cols, MatPtrT<KV_t>& cache) {
-  if (default_cols == cache.Cols()) {
-    cache.ReshapePackedRowsToCols(2 * FloatsPerVector());
-  }
-}
 
 // Transposes a single row of the kv cache into the k-cache and v-cache.
 void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
@@ -120,32 +109,6 @@ void TransposeOOBKVCacheRow(KV_t* HWY_RESTRICT k, KV_t* HWY_RESTRICT v,
   }
 }
 
-// Computes Q.K scores, which are "logits" (or scores) stored to att.
-// `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
-static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
-                             const hwy::Divisor& div_seq_len,
-                             const float* HWY_RESTRICT q,
-                             const MatPtrT<KV_t>& k, float* HWY_RESTRICT att,
-                             ThreadingContext& ctx, const size_t worker) {
-  GCPP_ZONE(ctx, worker, Zones::kGenAttentionQDotK);
-  const hn::ScalableTag<BF16> dbf;
-  const size_t qkv_dim = k.Cols();
-  HWY_ALIGN BF16 q_bf[kMaxQKVDim];
-
-  CompressPerThread tls;
-  const hn::ScalableTag<float> df;
-  CompressTraits<BF16>::Compress(df, q, qkv_dim, tls, MakeSpan(q_bf, qkv_dim),
-                                 0);
-
-  // --seq_len must be large enough to avoid wraparound.
-  HWY_DASSERT(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()));
-  for (size_t pos = start_pos; pos <= last_pos; ++pos) {
-    const float score =
-        Dot(dbf, MakeConstSpan(q_bf, qkv_dim), 0, k.Row(pos), qkv_dim);
-    att[pos] = score;
-  }
-}
-
 void PositionalEncodingQK(float* qk, const size_t layer_idx,
                           const AttentionActivationsPtrs& activations,
                           ThreadingContext& ctx, const size_t worker,
@@ -165,141 +128,6 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
     if (mul != 1.0f) MulByConst(mul, qk, qkv_dim);
   } else {
     RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, ctx, worker);
-  }
-}
-
-// Accumulates the sum of v (from `kv_cache`) * probability (`att`) into
-// `att_out`. Equivalent in gemma/modules.py:
-// encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
-// `v` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
-static HWY_INLINE void WeightedSumV(
-    const size_t start_pos, const size_t last_pos,
-    const hwy::Divisor& div_seq_len, const float* HWY_RESTRICT att,
-    const MatPtrT<KV_t>& v, float* HWY_RESTRICT att_out, ThreadingContext& ctx,
-    const size_t worker) {
-  // --seq_len must be large enough to avoid wraparound.
-  HWY_DASSERT(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()));
-  // TODO: replace with MatMul(att, v) after it supports non-transposed B.
-  MulByConstTo(att[start_pos], v.Row(start_pos), att_out, v.Cols(), ctx,
-               worker);
-  for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-    MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols());
-  }
-}
-
-// Calculates the attention outputs for a single q, which may be updated
-// in place for RMSNorm.
-void SingleDotSoftmaxWeightedSum(
-    const size_t q_pos, const size_t kv_start_pos, const size_t kv_last_pos,
-    float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
-    const MatPtr& query_norm_scale, const size_t layer_idx,
-    const AttentionActivationsPtrs& activations, float* HWY_RESTRICT att,
-    float* HWY_RESTRICT att_out, const SMOptions& sm_options,
-    ThreadingContext& ctx, const size_t worker) {
-  const float att_cap = activations.config.att_cap;
-  const float query_scale = activations.query_scale;
-  // --seq_len must be large enough to avoid wraparound.
-  HWY_DASSERT(kv_last_pos < activations.SeqLen());
-  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
-
-  // Apply rope and scaling to Q.
-  if (query_norm_scale.HasPtr()) {
-    CallUpcasted(&query_norm_scale, [&](const auto* weights_t) {
-      RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q,
-                     layer_config.qkv_dim, ctx, worker);
-    });
-  }
-
-  PositionalEncodingQK(q, layer_idx, activations, ctx, worker, q_pos,
-                       query_scale);
-
-  QDotK(kv_start_pos, kv_last_pos, activations.div_seq_len, q, k, att, ctx,
-        worker);
-
-  // SoftMax with optional SoftCap yields "probabilities" in att.
-  const Logits logits(att, kv_last_pos + 1);
-  MaybeLogitsSoftCap(att_cap, logits, ctx, worker);
-  Softmax(logits, ctx, worker, /*temperature=*/1.0f, sm_options);
-
-  WeightedSumV(kv_start_pos, kv_last_pos, activations.div_seq_len, att, v,
-               att_out, ctx, worker);
-}
-
-// The attention window usually starts at 0 unless `pos` is larger than
-// the attention window size, then it is `pos` - window_size + 1.
-size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx) {
-  const size_t att_window_size = config.attention_window_sizes[layer_idx];
-  return pos - HWY_MIN(att_window_size - 1, pos);
-}
-
-void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
-                           const MatPtr& query_norm_scale,
-                           AttentionActivationsPtrs& activations,
-                           QBatch& qbatch, ThreadingContext& ctx) {
-  GCPP_ZONE(ctx, 0, Zones::kGenAttentionDotSoftmaxWeightedSumInclusive);
-
-  const hwy::Divisor div_qbatch(qbatch.Size());
-  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
-  const size_t qkv_dim = layer_config.qkv_dim;
-
-  // A "head group" in the context of GQA refers to a collection of query
-  // heads that share the same key and value heads.
-  const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
-
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
-  const size_t seq_len = activations.SeqLen();
-  // All layers should have the same number of heads.
-  HWY_DASSERT(activations.div_heads.GetDivisor() == layer_config.heads);
-
-  // For each head/token/query, compute Q.K, softmax, and weighted V.
-  const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    const size_t tq_idx = activations.div_heads.Divide(task);
-    const size_t head = activations.div_heads.Remainder(task);
-    GCPP_ZONE(ctx, worker, Zones::kGenAttentionDotSoftmaxWeightedSumPar);
-
-    const size_t qi = div_qbatch.Remainder(tq_idx);
-    const size_t token_idx = div_qbatch.Divide(tq_idx);
-    auto& kv_cache = qbatch.KV(qi).kv_cache;
-
-    // Find the token position in the query and calculate
-    // the range of cache positions to attend to.
-    const size_t pos = qbatch.Pos(qi) + token_idx;
-    const size_t start_pos = StartPos(pos, activations.config, layer_idx);
-    size_t last_pos = pos;
-    const size_t prefix_end = qbatch.PrefixEnd(qi);
-    if (prefix_end > 0 && prefix_end - 1 > last_pos) {
-      // last_pos in QDotK and WeightedSumV is inclusive.
-      last_pos = prefix_end - 1;
-    }
-
-    float* HWY_RESTRICT q = activations.q.Row(tq_idx) + head * qkv_dim;
-    float* HWY_RESTRICT att = activations.att.Row(tq_idx) + head * seq_len;
-    float* HWY_RESTRICT att_out =
-        activations.att_out.Row(tq_idx) + head * qkv_dim;
-    SMOptions sm_options{.max_out = activations.softmax_max.Row(tq_idx) + head,
-                         .d_out = activations.softmax_d.Row(tq_idx) + head};
-
-    // Make strided read-only views into the kv cache for
-    // this query and head.
-    const size_t head_offset = (head / kHeadGroups) * qkv_dim * 2;
-    const size_t kv_head_offset = layer_idx * cache_layer_size + head_offset;
-    MatPtrT<KV_t> k("k_view", Extents2D(seq_len, qkv_dim));
-    k.SetPtr(kv_cache.Row(0) + kv_head_offset, kv_cache.Stride());
-    MatPtrT<KV_t> v("v_view", Extents2D(seq_len, qkv_dim));
-    v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim, kv_cache.Stride());
-
-    constexpr size_t offset = 0;  // placeholder, do not remove
-    SingleDotSoftmaxWeightedSum(pos + offset, start_pos, last_pos, q, k, v,
-                                query_norm_scale, layer_idx, activations, att,
-                                att_out, sm_options, ctx, worker);
-  };
-
-  {
-    PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
-    // Full parallelism is helpful, kAcrossClusters is insufficient.
-    HierarchicalParallelFor(
-        num_tokens * div_qbatch.GetDivisor() * layer_config.heads, ctx,
-        Callers::kAttDotSoftmaxWeightedSum, func);
   }
 }
 
@@ -447,17 +275,11 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
   (void)layer_config;  // only used in HWY_DASSERT
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
-  if (attention_impl == AttentionImpl::kOld) {
-    DotSoftmaxWeightedSum(num_tokens, layer_idx, layer.query_norm_scale,
-                          activations, qbatch, env.ctx);
-  } else {
-    // * 2 does not help on Turin.
-    FlashAttention(num_tokens,
-                   /*target_parallelism=*/env.ctx.pools.MaxWorkers() *
-                       AttentionActivations::kThreadReplicationFactor,
-                   layer_idx, layer.query_norm_scale, activations, qbatch,
-                   env.ctx, attention_impl);
-  }
+  FlashAttention(num_tokens,
+                 /*target_parallelism=*/env.ctx.pools.MaxWorkers() *
+                     AttentionActivations::kThreadReplicationFactor,
+                 layer_idx, layer.query_norm_scale, activations, qbatch,
+                 env.ctx, attention_impl);
   SumHeads(layer, activations, env);
 }
 

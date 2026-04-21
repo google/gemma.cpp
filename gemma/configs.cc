@@ -714,7 +714,6 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
 }
 
 constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
-    {"old", AttentionImpl::kOld},
     {"flash", AttentionImpl::kFlash},
     {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
     {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
@@ -732,9 +731,9 @@ AttentionImpl GetAttentionImpl(const std::string& impl_name) {
   for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
     if (name == impl_name) return attention_impl;
   }
-  HWY_WARN("Unknown attention implementation: %s. Using kOld.\n",
+  HWY_WARN("Unknown attention implementation: %s. Using kFlash.\n",
            impl_name.c_str());
-  return AttentionImpl::kOld;
+  return AttentionImpl::kFlash;
 }
 
 }  // namespace gcpp
