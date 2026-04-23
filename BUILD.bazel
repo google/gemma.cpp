@@ -27,6 +27,13 @@ exports_files([
     ".github/workflows/build.yml",
 ])
 
+# To enable OneDNN BRGeMM support, build with:
+#   bazel build --define gemma_onednn_brgemm=1 ...
+config_setting(
+    name = "gemma_onednn_brgemm",
+    define_values = {"gemma_onednn_brgemm": "1"},
+)
+
 cc_library(
     name = "basics",
     srcs = ["util/basics.cc"],
@@ -318,7 +325,7 @@ cc_library(
         "ops/matmul.h",
     ],
     defines = select({
-        "@platforms//cpu:x86_64": ["GEMMA_ONEDNN=1", "DNNL_EXPERIMENTAL_UKERNEL"],
+        ":gemma_onednn_brgemm": ["GEMMA_ONEDNN_BRGEMM=1", "DNNL_EXPERIMENTAL_UKERNEL"],
         "//conditions:default": [],
     }),
     deps = [
@@ -332,7 +339,7 @@ cc_library(
         "@highway//:nanobenchmark",
         "@highway//:profiler",
     ] + select({
-        "@platforms//cpu:x86_64": ["@onednn//:onednn"],
+        ":gemma_onednn_brgemm": ["@onednn//:onednn"],
         "//conditions:default": [],
     }),
 )
@@ -359,7 +366,7 @@ cc_library(
         "@highway//:nanobenchmark",
         "@highway//:profiler",
     ] + select({
-        "@platforms//cpu:x86_64": ["@onednn//:onednn"],
+        ":gemma_onednn_brgemm": ["@onednn//:onednn"],
         "//conditions:default": [],
     }),
 )
@@ -396,7 +403,7 @@ cc_library(
         "@highway//:profiler",
         "@highway//:timer",
     ] + select({
-        "@platforms//cpu:x86_64": ["@onednn//:onednn"],
+        ":gemma_onednn_brgemm": ["@onednn//:onednn"],
         "//conditions:default": [],
     }),
 )

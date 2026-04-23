@@ -15,7 +15,7 @@
 
 // BRGeMM dispatch. Included from matmul-inl.h inside gcpp::HWY_NAMESPACE.
 
-#if GEMMA_ONEDNN
+#if GEMMA_ONEDNN_BRGEMM_BRGEMM
 
 static bool MakeBrgemm(dnnl::ukernel::brgemm& brg, int64_t m, int64_t n,
                         int64_t k, int64_t batch, int64_t lda, int64_t ldb,
@@ -489,4 +489,4 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
   main_bufs.hw_ctx_kernel = nullptr;
 }
 
-#endif  // GEMMA_ONEDNN
+#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM

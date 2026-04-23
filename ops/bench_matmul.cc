@@ -131,7 +131,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
     // Only record times after autotuning finished.
     bool done = per_key->autotune.Best();
-#if GEMMA_ONEDNN
+#if GEMMA_ONEDNN_BRGEMM_BRGEMM
     done = done || per_key->brgemm_autotune.Best();
 #endif
     if (done) times.push_back(elapsed);
