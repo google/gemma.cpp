@@ -22,6 +22,10 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Optional: OneDNN BRGeMM micro-kernel support (x86-64 only).
+# Enable with: cmake -DGEMMA_ONEDNN_BRGEMM=ON ...
+option(GEMMA_ONEDNN_BRGEMM "Enable OneDNN BRGeMM micro-kernel for MatMul (x86-64)" OFF)
+
 if(EMSCRIPTEN)
   add_compile_options("-sMEMORY64")
   add_compile_options("-msimd128")
@@ -85,6 +89,23 @@ if(EMSCRIPTEN)
   target_compile_options(benchmark PRIVATE -Wno-c2y-extensions)
 endif()
 
+# OneDNN BRGeMM micro-kernel support (optional, x86-64 only).
+if(GEMMA_ONEDNN_BRGEMM)
+  set(DNNL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(DNNL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(DNNL_CPU_RUNTIME "SEQ" CACHE STRING "" FORCE)
+  set(DNNL_GPU_RUNTIME "NONE" CACHE STRING "" FORCE)
+  set(DNNL_LIBRARY_TYPE "STATIC" CACHE STRING "" FORCE)
+  set(DNNL_EXPERIMENTAL_UKERNEL ON CACHE BOOL "" FORCE)
+  FetchContent_Declare(onednn
+    GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
+    GIT_TAG v3.11
+    EXCLUDE_FROM_ALL
+  )
+  FetchContent_MakeAvailable(onednn)
+  message(STATUS "OneDNN BRGeMM micro-kernel support enabled")
+endif()
+
 # Base source files
 set(SOURCES
   compression/compress-inl.h
@@ -141,6 +162,8 @@ set(SOURCES
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
+  ops/brgemm.h
+  ops/brgemm-inl.h
   ops/ops-inl.h
   ops/ops.h
   ops/sum-inl.h
@@ -191,6 +214,10 @@ target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static)
 target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+if(GEMMA_ONEDNN_BRGEMM)
+  target_compile_definitions(libgemma PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
+  target_link_libraries(libgemma dnnl)
+endif()
 install(TARGETS libgemma DESTINATION lib)
 
 # Shared library target for C# interop
@@ -215,6 +242,10 @@ target_compile_definitions(gemma_shared
     $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>
 )
 target_compile_options(gemma_shared PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+if(GEMMA_ONEDNN_BRGEMM)
+  target_compile_definitions(gemma_shared PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
+  target_link_libraries(gemma_shared PRIVATE dnnl)
+endif()
 install(TARGETS gemma_shared DESTINATION lib)
 install(FILES gemma/c_api.h DESTINATION include/gemma)
 install(FILES gemma/GemmaInterop.cs DESTINATION include/gemma)

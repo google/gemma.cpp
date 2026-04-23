@@ -32,7 +32,7 @@
 #include "hwy/base.h"
 #include "hwy/bit_set.h"
 #include "hwy/profiler.h"
-#include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM_BRGEMM
+#include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM
 // IWYU pragma: end_exports
 
 namespace gcpp {
@@ -640,9 +640,9 @@ class MMKeys {
 struct MMPerKey {
   MMAutoTune<MMConfig> autotune;
   MMAutoTune<MMParA> autotune_par_a;
-#if GEMMA_ONEDNN_BRGEMM_BRGEMM
+#if GEMMA_ONEDNN_BRGEMM
   MMAutoTune<BRGeMMConfig> brgemm_autotune;
-#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM
+#endif  // GEMMA_ONEDNN_BRGEMM
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive

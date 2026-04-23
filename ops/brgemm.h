@@ -14,7 +14,7 @@
 // limitations under the License.
 
 // OneDNN BRGeMM micro-kernel integration for MatMul on Intel AMX/AVX-512.
-// Enabled at compile time via GEMMA_ONEDNN_BRGEMM_BRGEMM=1 (Bazel: --define gemma_onednn_brgemm=1).
+// Enabled at compile time via GEMMA_ONEDNN_BRGEMM=1 (Bazel: --define gemma_onednn_brgemm=1).
 
 #ifndef THIRD_PARTY_GEMMA_CPP_OPS_BRGEMM_H_
 #define THIRD_PARTY_GEMMA_CPP_OPS_BRGEMM_H_
@@ -29,12 +29,12 @@
 
 #include "hwy/base.h"
 
-#if GEMMA_ONEDNN_BRGEMM_BRGEMM
+#if GEMMA_ONEDNN_BRGEMM
 #include <sys/mman.h>
 
 #include "oneapi/dnnl/dnnl.hpp"
 #include "oneapi/dnnl/dnnl_ukernel.hpp"
-#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM
+#endif  // GEMMA_ONEDNN_BRGEMM
 
 namespace gcpp {
 
@@ -46,7 +46,7 @@ struct BRGeMMConfig {
   int64_t par_m;
 };
 
-#if GEMMA_ONEDNN_BRGEMM_BRGEMM
+#if GEMMA_ONEDNN_BRGEMM
 
 // Generates autotuning candidates. Fixed: N_blk=32, K_blk=32 (AMX BF16).
 // Tunable: M_blk in {32,64}, batch_size in {16,32,64,128,256}.
@@ -281,7 +281,7 @@ inline auto& GetBRGeMMPackedBCache() {
   return cache;
 }
 
-#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM
+#endif  // GEMMA_ONEDNN_BRGEMM
 
 }  // namespace gcpp
 

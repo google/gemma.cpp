@@ -47,9 +47,9 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
-#if GEMMA_ONEDNN_BRGEMM_BRGEMM
+#if GEMMA_ONEDNN_BRGEMM
 #include "ops/brgemm-inl.h"  // DoMatMul_BRGeMM
-#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM
+#endif  // GEMMA_ONEDNN_BRGEMM
 
 // Like hn::PromoteOddTo, but uses assembly to avoid an extra vector register.
 template <class DF, class DBF = hn::Repartition<BF16, DF>>
@@ -1081,7 +1081,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   MMPerKey& per_key = MMImpl::FindOrAddPerKey(
       M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
 
-#if GEMMA_ONEDNN_BRGEMM_BRGEMM
+#if GEMMA_ONEDNN_BRGEMM
   // BRGeMM path for BF16×BF16 on Intel AMX/AVX-512.
   // Requires M,N,K >= 32 and K % 32 == 0 (AMX tile constraint).
   if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
@@ -1119,7 +1119,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     return &per_key;
   }
   }  // if constexpr BF16/float
-#endif  // GEMMA_ONEDNN_BRGEMM_BRGEMM
+#endif  // GEMMA_ONEDNN_BRGEMM
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
   const StridedViewBF A_view =
