@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 DeepMind Technologies Limited.
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
