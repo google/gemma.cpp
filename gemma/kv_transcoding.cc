@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <optional>
+#include <cmath>
 
 #include "compression/types.h"
 #include "gemma/activations.h"
@@ -52,7 +53,7 @@ inline size_t VOffset(bool transposed, size_t qkv_dim, size_t dim,
 }
 
 int8_t Quantize(float v, float inv_scale) {
-  float scaled = v * inv_scale;
+  float scaled = std::nearbyint(v * inv_scale);
   if (scaled > 127.0f) return 127;
   if (scaled < -127.0f) return -127;
   return hwy::ConvertScalarTo<int8_t>(scaled);
