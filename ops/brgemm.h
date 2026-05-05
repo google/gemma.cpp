@@ -39,11 +39,11 @@
 namespace gcpp {
 
 struct BRGeMMConfig {
-  int64_t M_blk;
-  int64_t N_blk;
-  int64_t K_blk;
-  int64_t batch_size;
-  int64_t par_m;
+  size_t M_blk;
+  size_t N_blk = 32;
+  size_t K_blk = 32;
+  size_t batch_size;
+  size_t par_m;
 };
 
 #if GEMMA_ONEDNN_BRGEMM
@@ -53,18 +53,19 @@ struct BRGeMMConfig {
 inline std::vector<BRGeMMConfig> BRGeMMCandidates(size_t M, size_t K,
                                                    size_t N) {
   std::vector<BRGeMMConfig> out;
-  static constexpr int64_t kNBlk = 32;
-  static constexpr int64_t kKBlk = 32;
-  static constexpr int64_t kMBlkValues[] = {32, 64};
-  static constexpr int64_t kBatchValues[] = {16, 32, 64, 128, 256};
+  out.reserve(10);  // At most 2 M_blk * 5 batch_size candidates.
+  static constexpr size_t kNBlk = 32;
+  static constexpr size_t kKBlk = 32;
+  static constexpr size_t kMBlkValues[] = {32, 64};
+  static constexpr size_t kBatchValues[] = {16, 32, 64, 128, 256};
 
-  const int64_t k_chunks = static_cast<int64_t>(K) / kKBlk;
-  for (int64_t mb : kMBlkValues) {
-    if (mb > static_cast<int64_t>(M)) continue;
-    if (kNBlk > static_cast<int64_t>(N)) continue;
-    for (int64_t bs : kBatchValues) {
-      const int64_t eff_bs =
-          (k_chunks > 0) ? std::min(bs, k_chunks) : int64_t{1};
+  const size_t k_chunks = K / kKBlk;
+  for (size_t mb : kMBlkValues) {
+    if (mb > M) continue;
+    if (kNBlk > N) continue;
+    for (size_t bs : kBatchValues) {
+      const size_t eff_bs =
+          (k_chunks > 0) ? std::min(bs, k_chunks) : size_t{1};
       bool dup = false;
       for (const auto& c : out) {
         if (c.M_blk == mb && c.batch_size == eff_bs) {
@@ -77,8 +78,8 @@ inline std::vector<BRGeMMConfig> BRGeMMCandidates(size_t M, size_t K,
     }
   }
   if (out.empty()) {
-    out.push_back({static_cast<int64_t>(std::min(M, size_t{32})),
-                   static_cast<int64_t>(std::min(N, size_t{32})), 32, 1, 1});
+    out.push_back({std::min(M, size_t{32}),
+                   std::min(N, size_t{32}), 32, 1, 1});
   }
   return out;
 }
@@ -123,7 +124,8 @@ class HugePageBuffer {
     }
     madvise(ptr_, size_, MADV_HUGEPAGE);
     for (size_t off = 0; off < size_; off += kHugePageSize) {
-      static_cast<volatile uint8_t*>(ptr_)[off] = 0;
+      ptr_[off] = 0;
+      hwy::PreventElision(ptr_[off]);
     }
   }
 
@@ -139,7 +141,7 @@ class HugePageBuffer {
 // Kernel cache key: identifies a JIT-compiled kernel set.
 struct BRGeMMKernelKey {
   size_t M, K, N;
-  int64_t M_blk, N_blk, K_blk, batch_size;
+  size_t M_blk, N_blk, K_blk, batch_size;
   bool operator==(const BRGeMMKernelKey& o) const {
     return M == o.M && K == o.K && N == o.N && M_blk == o.M_blk &&
            N_blk == o.N_blk && K_blk == o.K_blk && batch_size == o.batch_size;
@@ -152,25 +154,25 @@ struct BRGeMMKernelKeyHash {
     h = (h ^ k.M) * 1099511628211ULL;
     h = (h ^ k.K) * 1099511628211ULL;
     h = (h ^ k.N) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.M_blk)) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.N_blk)) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.K_blk)) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.batch_size)) * 1099511628211ULL;
+    h = (h ^ k.M_blk) * 1099511628211ULL;
+    h = (h ^ k.N_blk) * 1099511628211ULL;
+    h = (h ^ k.K_blk) * 1099511628211ULL;
+    h = (h ^ k.batch_size) * 1099511628211ULL;
     return h;
   }
 };
 
 // Cached JIT-compiled kernels with precomputed tile parameters and offsets.
 struct BRGeMMKernelEntry {
-  int64_t M_blk, N_blk, K_blk;
-  int64_t M_tail, N_tail, K_tail;
-  int64_t K_chunks;
-  int64_t M_full_tiles, N_full_tiles;
-  int64_t M_total_tiles, N_total_tiles;
-  int64_t K_super_size, K_super_blocks;
-  int64_t K_super_rem;
-  int64_t batch_full, batch_rem;
-  int64_t m_sizes[2], n_sizes[2];
+  size_t M_blk, N_blk, K_blk;
+  size_t M_tail, N_tail, K_tail;
+  size_t K_chunks;
+  size_t M_full_tiles, N_full_tiles;
+  size_t M_total_tiles, N_total_tiles;
+  size_t K_super_size, K_super_blocks;
+  size_t K_super_rem;
+  size_t batch_full, batch_rem;
+  size_t m_sizes[2], n_sizes[2];
   int64_t lda;
   int64_t ldb_orig;
   bool need_pack;
@@ -203,7 +205,7 @@ struct BRGeMMKernelEntry {
 struct BRGeMMPackedBKey {
   uintptr_t B_ptr;
   size_t K, N;
-  int64_t K_blk, N_blk;
+  size_t K_blk, N_blk;
   bool operator==(const BRGeMMPackedBKey& o) const {
     return B_ptr == o.B_ptr && K == o.K && N == o.N && K_blk == o.K_blk &&
            N_blk == o.N_blk;
@@ -216,8 +218,8 @@ struct BRGeMMPackedBKeyHash {
     h = (h ^ k.B_ptr) * 1099511628211ULL;
     h = (h ^ k.K) * 1099511628211ULL;
     h = (h ^ k.N) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.K_blk)) * 1099511628211ULL;
-    h = (h ^ static_cast<size_t>(k.N_blk)) * 1099511628211ULL;
+    h = (h ^ k.K_blk) * 1099511628211ULL;
+    h = (h ^ k.N_blk) * 1099511628211ULL;
     return h;
   }
 };
@@ -234,7 +236,6 @@ struct BRGeMMThreadBufs {
 
   std::vector<uint8_t> scratch;
   std::vector<uint8_t> tc_storage;
-  bool hw_ctx_set = false;
   const void* hw_ctx_kernel = nullptr;
 
   uint8_t* EnsureScratch(size_t size) {
@@ -253,9 +254,8 @@ struct BRGeMMThreadBufs {
 
   void MaybeSetHwContext(const dnnl::ukernel::brgemm& brg) {
     const void* brg_ptr = &brg;
-    if (!hw_ctx_set || hw_ctx_kernel != brg_ptr) {
+    if (hw_ctx_kernel != brg_ptr) {
       brg.set_hw_context();
-      hw_ctx_set = true;
       hw_ctx_kernel = brg_ptr;
     }
   }

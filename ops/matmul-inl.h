@@ -41,15 +41,14 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#if GEMMA_ONEDNN_BRGEMM
+#include "ops/brgemm-inl.h"
+#endif  // GEMMA_ONEDNN_BRGEMM
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
-
-#if GEMMA_ONEDNN_BRGEMM
-#include "ops/brgemm-inl.h"  // DoMatMul_BRGeMM
-#endif  // GEMMA_ONEDNN_BRGEMM
 
 // Like hn::PromoteOddTo, but uses assembly to avoid an extra vector register.
 template <class DF, class DBF = hn::Repartition<BF16, DF>>
@@ -1110,11 +1109,10 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
       const BRGeMMConfig& best = *brg_tuner.Best();
       fprintf(stderr,
-              "BRGeMM best: %zux%zux%zu M_blk=%ld N_blk=%ld K_blk=%ld "
-              "batch=%ld\n",
-              M, K, N, static_cast<long>(best.M_blk),
-              static_cast<long>(best.N_blk), static_cast<long>(best.K_blk),
-              static_cast<long>(best.batch_size));
+              "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
+              "batch=%zu\n",
+              M, K, N, best.M_blk, best.N_blk, best.K_blk,
+              best.batch_size);
     }
     return &per_key;
   }
