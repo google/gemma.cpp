@@ -165,6 +165,10 @@ struct BRGeMMKernelKeyHash {
 // Cached JIT-compiled kernels with precomputed tile parameters and offsets.
 struct BRGeMMKernelEntry {
   size_t M_blk, N_blk, K_blk;
+  // Precomputed divisors for fast modulo/division by block sizes.
+  hwy::Divisor div_M_blk{1};
+  hwy::Divisor div_N_blk{1};
+  hwy::Divisor div_K_blk{1};
   size_t M_tail, N_tail, K_tail;
   size_t K_chunks;
   size_t M_full_tiles, N_full_tiles;

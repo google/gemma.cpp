@@ -85,17 +85,20 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
     ke.K_blk = cfg.K_blk;
     ke.N_blk = cfg.N_blk;
     ke.M_blk = std::min(cfg.M_blk, M);
+    ke.div_M_blk = hwy::Divisor(ke.M_blk);
+    ke.div_N_blk = hwy::Divisor(ke.N_blk);
+    ke.div_K_blk = hwy::Divisor(ke.K_blk);
 
-    ke.M_tail = M % ke.M_blk;
-    ke.N_tail = N % ke.N_blk;
-    ke.K_tail = K % ke.K_blk;
+    ke.M_tail = ke.div_M_blk.Remainder(M);
+    ke.N_tail = ke.div_N_blk.Remainder(N);
+    ke.K_tail = ke.div_K_blk.Remainder(K);
 
     // Floor division: K_tail remainder is handled by a dedicated brg_ktail
     // kernel rather than padding K, avoiding extra memory writes to zero-pad
     // A and B along the K dimension.
-    ke.K_chunks = K / ke.K_blk;
-    ke.N_full_tiles = N / ke.N_blk;
-    ke.M_full_tiles = M / ke.M_blk;
+    ke.K_chunks = ke.div_K_blk.Divide(K);
+    ke.N_full_tiles = ke.div_N_blk.Divide(N);
+    ke.M_full_tiles = ke.div_M_blk.Divide(M);
     ke.N_total_tiles = ke.N_full_tiles + (ke.N_tail ? 1 : 0);
     ke.M_total_tiles = ke.M_full_tiles + (ke.M_tail ? 1 : 0);
     ke.N_padded = ke.N_total_tiles * ke.N_blk;
@@ -367,8 +370,8 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
   const auto execute_tile = [&](size_t m_start, size_t n_start,
                                 size_t k_super, float* temp_C,
                                 uint8_t* scratch) HWY_ATTR {
-    const size_t m_tile_idx = m_start / ke.M_blk;
-    const size_t n_tile_idx = n_start / ke.N_blk;
+    const size_t m_tile_idx = ke.div_M_blk.Divide(m_start);
+    const size_t n_tile_idx = ke.div_N_blk.Divide(n_start);
     const int mi = (m_tile_idx < ke.M_full_tiles) ? 0 : 1;
     const int ni = (n_tile_idx < ke.N_full_tiles) ? 0 : 1;
     const size_t cur_m = ke.m_sizes[mi];
