@@ -173,8 +173,8 @@ struct BRGeMMKernelEntry {
   size_t K_super_rem;
   size_t batch_full, batch_rem;
   size_t m_sizes[2], n_sizes[2];
-  int64_t lda;
-  int64_t ldb_orig;
+  size_t lda;
+  size_t ldb_orig;
   bool need_pack;
   size_t a_dt_size, b_dt_size;
   size_t N_padded;

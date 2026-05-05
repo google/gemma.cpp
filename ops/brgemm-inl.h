@@ -90,6 +90,9 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
     ke.N_tail = N % ke.N_blk;
     ke.K_tail = K % ke.K_blk;
 
+    // Floor division: K_tail remainder is handled by a dedicated brg_ktail
+    // kernel rather than padding K, avoiding extra memory writes to zero-pad
+    // A and B along the K dimension.
     ke.K_chunks = K / ke.K_blk;
     ke.N_full_tiles = N / ke.N_blk;
     ke.M_full_tiles = M / ke.M_blk;
@@ -146,9 +149,9 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
         if (ke.K_chunks > 0) {
           if (!MakeBrgemm(ke.brg_first_all[mi][ni], ms, ns,
                           static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.K_super_size), ke.lda,
-                          ldb_for[ni], ldc_for[ni], a_dt, b_dt, c_dt,
-                          false)) {
+                          static_cast<int64_t>(ke.K_super_size),
+                          static_cast<int64_t>(ke.lda), ldb_for[ni],
+                          ldc_for[ni], a_dt, b_dt, c_dt, false)) {
             return;
           }
           max_sp = std::max(max_sp,
@@ -157,8 +160,9 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
         if (ke.K_super_blocks > 1) {
           if (!MakeBrgemm(ke.brg_full[mi][ni], ms, ns,
                           static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.batch_full), ke.lda,
-                          ldb_for[ni], ldc_for[ni], a_dt, b_dt, c_dt, true)) {
+                          static_cast<int64_t>(ke.batch_full),
+                          static_cast<int64_t>(ke.lda), ldb_for[ni],
+                          ldc_for[ni], a_dt, b_dt, c_dt, true)) {
             return;
           }
           max_sp =
@@ -169,8 +173,9 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
           auto& target = rem_is_first ? ke.brg_first_rem[mi][ni]
                                       : ke.brg_rem[mi][ni];
           if (!MakeBrgemm(target, ms, ns, static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.batch_rem), ke.lda,
-                          ldb_for[ni], ldc_for[ni], a_dt, b_dt, c_dt,
+                          static_cast<int64_t>(ke.batch_rem),
+                          static_cast<int64_t>(ke.lda), ldb_for[ni],
+                          ldc_for[ni], a_dt, b_dt, c_dt,
                           !rem_is_first)) {
             return;
           }
@@ -179,8 +184,9 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
         if (ke.K_tail > 0) {
           const bool add_c = (ke.K_chunks > 0);
           if (!MakeBrgemm(ke.brg_ktail[mi][ni], ms, ns,
-                          static_cast<int64_t>(ke.K_tail), 1, ke.lda,
-                          ldb_for[ni], ldc_for[ni], a_dt, b_dt, c_dt,
+                          static_cast<int64_t>(ke.K_tail), 1,
+                          static_cast<int64_t>(ke.lda), ldb_for[ni],
+                          ldc_for[ni], a_dt, b_dt, c_dt,
                           add_c)) {
             return;
           }
@@ -203,7 +209,8 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
               static_cast<int64_t>(ke.K_chunks * ke.K_blk);
           try {
             ke.pack_B[ni] = transform(K_full, ns, pack_type::trans,
-                                       ke.ldb_orig, ldb_for[ni], b_dt, b_dt);
+                                       static_cast<int64_t>(ke.ldb_orig),
+                                       ldb_for[ni], b_dt, b_dt);
             if (!ke.pack_B[ni]) return;
             ke.pack_B[ni].generate();
             ke.blocked_B_size[ni] = static_cast<size_t>(ldb_for[ni]) *
@@ -216,7 +223,7 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
           try {
             ke.pack_B_ktail[ni] = transform(
                 static_cast<int64_t>(ke.K_tail), ns, pack_type::trans,
-                ke.ldb_orig, ldb_for[ni], b_dt, b_dt);
+                static_cast<int64_t>(ke.ldb_orig), ldb_for[ni], b_dt, b_dt);
             if (!ke.pack_B_ktail[ni]) return;
             ke.pack_B_ktail[ni].generate();
             ke.blocked_B_ktail_size[ni] =
@@ -327,7 +334,7 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
                                  ? nt * ke.N_blk
                                  : ke.N_full_tiles * ke.N_blk;
         const uint8_t* B_in =
-            B_base + b_row * static_cast<size_t>(ke.ldb_orig) * ke.b_dt_size;
+            B_base + b_row * ke.ldb_orig * ke.b_dt_size;
 
         try {
           if (ke.K_chunks > 0) {
@@ -375,14 +382,14 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
                               : ke.N_full_tiles * ke.N_blk;
 
     const uint8_t* A_tile =
-        A_base + real_m * static_cast<size_t>(ke.lda) * ke.a_dt_size;
+        A_base + real_m * ke.lda * ke.a_dt_size;
     const void* B_tile =
         ke.need_pack
             ? static_cast<const void*>(B_packed +
                                        pe.B_tile_offset[n_tile_idx])
             : static_cast<const void*>(
                   B_base +
-                  real_n * static_cast<size_t>(ke.ldb_orig) * ke.b_dt_size);
+                  real_n * ke.ldb_orig * ke.b_dt_size);
 
     float* C_tile_ptr = temp_C;
     const size_t k_total =
@@ -419,7 +426,7 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
                 ? static_cast<const void*>(B_packed +
                                            pe.B_ktail_offset[n_tile_idx])
                 : static_cast<const void*>(
-                      B_base + (real_n * static_cast<size_t>(ke.ldb_orig) +
+                      B_base + (real_n * ke.ldb_orig +
                                 ke.K_chunks * ke.K_blk) *
                                    ke.b_dt_size);
         ke.brg_ktail[mi][ni].execute(A_ktail, const_cast<void*>(B_ktail),
