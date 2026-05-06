@@ -64,14 +64,242 @@ static bool MakeBrgemm(dnnl::ukernel::brgemm& brg, int64_t m, int64_t n,
   }
 }
 
+// JIT-compiles brgemm kernels, B-packing transforms, and offset tables for
+// the given matrix dimensions and tiling config. Returns false on failure.
+static HWY_NOINLINE bool InitBRGeMMKernels(
+    const BRGeMMConfig& cfg, size_t M, size_t K, size_t N, size_t lda,
+    size_t ldb_orig, BRGeMMKernelEntry& ke) {
+  using dnnl::ukernel::brgemm;
+  using dnnl::ukernel::pack_type;
+  using dnnl::ukernel::transform;
+
+  ke.K_blk = cfg.K_blk;
+  ke.N_blk = cfg.N_blk;
+  ke.M_blk = std::min(cfg.M_blk, M);
+  ke.div_M_blk = hwy::Divisor(ke.M_blk);
+  ke.div_N_blk = hwy::Divisor(ke.N_blk);
+  ke.div_K_blk = hwy::Divisor(ke.K_blk);
+
+  ke.M_tail = ke.div_M_blk.Remainder(M);
+  ke.N_tail = ke.div_N_blk.Remainder(N);
+  ke.K_tail = ke.div_K_blk.Remainder(K);
+
+  // Floor division: K_tail remainder is handled by a dedicated brg_ktail
+  // kernel rather than padding K, avoiding extra memory writes to zero-pad
+  // A and B along the K dimension.
+  ke.K_chunks = ke.div_K_blk.Divide(K);
+  ke.N_full_tiles = ke.div_N_blk.Divide(N);
+  ke.M_full_tiles = ke.div_M_blk.Divide(M);
+  ke.N_total_tiles = ke.N_full_tiles + (ke.N_tail ? 1 : 0);
+  ke.M_total_tiles = ke.M_full_tiles + (ke.M_tail ? 1 : 0);
+  ke.N_padded = ke.N_total_tiles * ke.N_blk;
+
+  if (ke.M_total_tiles == 0 || ke.N_total_tiles == 0 ||
+      (ke.K_chunks == 0 && ke.K_tail == 0)) {
+    return false;
+  }
+
+  ke.K_super_size = std::min(cfg.batch_size, ke.K_chunks);
+  ke.K_super_blocks = (ke.K_chunks > 0) ? ke.K_chunks / ke.K_super_size : 0;
+  ke.K_super_rem = (ke.K_chunks > 0) ? ke.K_chunks % ke.K_super_size : 0;
+  ke.batch_full = ke.K_super_size;
+  ke.batch_rem = ke.K_super_rem;
+
+  const auto a_dt = dnnl::memory::data_type::bf16;
+  const auto b_dt = dnnl::memory::data_type::bf16;
+  const auto c_dt = dnnl::memory::data_type::f32;
+  ke.a_dt_size = dnnl::memory::data_type_size(a_dt);
+  ke.b_dt_size = dnnl::memory::data_type_size(b_dt);
+
+  const auto pack = brgemm::get_B_pack_type(a_dt, b_dt);
+  if (pack == pack_type::undef) return false;
+  ke.need_pack = (pack != pack_type::no_trans);
+
+  ke.lda = lda;
+  ke.ldb_orig = ldb_orig;
+
+  // Indexed by tail flag: [0] = full tile size, [1] = tail size (or full if
+  // no tail). Separate kernels are JIT-compiled for full vs. tail tile widths
+  // along both M and N dimensions.
+  ke.m_sizes[0] = ke.M_blk;
+  ke.m_sizes[1] = ke.M_tail ? ke.M_tail : ke.M_blk;
+  ke.n_sizes[0] = ke.N_blk;
+  ke.n_sizes[1] = ke.N_tail ? ke.N_tail : ke.N_blk;
+  const int64_t ldb_for[2] = {static_cast<int64_t>(ke.N_blk),
+                               static_cast<int64_t>(ke.N_tail ? ke.N_tail : ke.N_blk)};
+  const int64_t ldc_for[2] = {static_cast<int64_t>(ke.N_blk),
+                               static_cast<int64_t>(ke.N_tail ? ke.N_tail : ke.N_blk)};
+
+  // JIT a brgemm kernel for each (mi, ni) where mi/ni indicate whether we
+  // are processing the M-tail or N-tail: 0 = full block, 1 = tail block.
+  // Skipped when the corresponding tail is zero (no partial tile exists).
+  size_t max_sp = 0;
+  for (int mi = 0; mi < 2; ++mi) {
+    for (int ni = 0; ni < 2; ++ni) {
+      if (mi == 1 && ke.M_tail == 0) continue;
+      if (ni == 1 && ke.N_tail == 0) continue;
+      if (mi == 0 && ke.M_full_tiles == 0) continue;
+      if (ni == 0 && ke.N_full_tiles == 0) continue;
+
+      const int64_t ms = static_cast<int64_t>(ke.m_sizes[mi]);
+      const int64_t ns = static_cast<int64_t>(ke.n_sizes[ni]);
+
+      if (ke.K_chunks > 0) {
+        if (!MakeBrgemm(ke.brg_first_all[mi][ni], ms, ns,
+                        static_cast<int64_t>(ke.K_blk),
+                        static_cast<int64_t>(ke.K_super_size),
+                        static_cast<int64_t>(ke.lda), ldb_for[ni],
+                        ldc_for[ni], a_dt, b_dt, c_dt, false)) {
+          return false;
+        }
+        max_sp = std::max(max_sp,
+                          ke.brg_first_all[mi][ni].get_scratchpad_size());
+      }
+      if (ke.K_super_blocks > 1) {
+        if (!MakeBrgemm(ke.brg_full[mi][ni], ms, ns,
+                        static_cast<int64_t>(ke.K_blk),
+                        static_cast<int64_t>(ke.batch_full),
+                        static_cast<int64_t>(ke.lda), ldb_for[ni],
+                        ldc_for[ni], a_dt, b_dt, c_dt, true)) {
+          return false;
+        }
+        max_sp =
+            std::max(max_sp, ke.brg_full[mi][ni].get_scratchpad_size());
+      }
+      if (ke.K_super_rem > 0) {
+        const bool rem_is_first = (ke.K_super_blocks == 0);
+        auto& target = rem_is_first ? ke.brg_first_rem[mi][ni]
+                                    : ke.brg_rem[mi][ni];
+        if (!MakeBrgemm(target, ms, ns, static_cast<int64_t>(ke.K_blk),
+                        static_cast<int64_t>(ke.batch_rem),
+                        static_cast<int64_t>(ke.lda), ldb_for[ni],
+                        ldc_for[ni], a_dt, b_dt, c_dt,
+                        !rem_is_first)) {
+          return false;
+        }
+        max_sp = std::max(max_sp, target.get_scratchpad_size());
+      }
+      if (ke.K_tail > 0) {
+        const bool add_c = (ke.K_chunks > 0);
+        if (!MakeBrgemm(ke.brg_ktail[mi][ni], ms, ns,
+                        static_cast<int64_t>(ke.K_tail), 1,
+                        static_cast<int64_t>(ke.lda), ldb_for[ni],
+                        ldc_for[ni], a_dt, b_dt, c_dt,
+                        add_c)) {
+          return false;
+        }
+        max_sp =
+            std::max(max_sp, ke.brg_ktail[mi][ni].get_scratchpad_size());
+      }
+    }
+  }
+  ke.scratchpad_size = max_sp + 64;
+
+  // Create B-packing transforms.
+  if (ke.need_pack) {
+    for (int ni = 0; ni < 2; ++ni) {
+      if (ni == 1 && ke.N_tail == 0) continue;
+      if (ni == 0 && ke.N_full_tiles == 0) continue;
+
+      const int64_t ns = static_cast<int64_t>(ke.n_sizes[ni]);
+      if (ke.K_chunks > 0) {
+        const int64_t K_full =
+            static_cast<int64_t>(ke.K_chunks * ke.K_blk);
+        try {
+          ke.pack_B[ni] = transform(K_full, ns, pack_type::trans,
+                                     static_cast<int64_t>(ke.ldb_orig),
+                                     ldb_for[ni], b_dt, b_dt);
+          if (!ke.pack_B[ni]) return false;
+          ke.pack_B[ni].generate();
+          ke.blocked_B_size[ni] = static_cast<size_t>(ldb_for[ni]) *
+                                  ke.K_blk * ke.b_dt_size;
+        } catch (...) {
+          return false;
+        }
+      }
+      if (ke.K_tail > 0) {
+        try {
+          ke.pack_B_ktail[ni] = transform(
+              static_cast<int64_t>(ke.K_tail), ns, pack_type::trans,
+              static_cast<int64_t>(ke.ldb_orig), ldb_for[ni], b_dt, b_dt);
+          if (!ke.pack_B_ktail[ni]) return false;
+          ke.pack_B_ktail[ni].generate();
+          ke.blocked_B_ktail_size[ni] =
+              static_cast<size_t>(ldb_for[ni]) * ke.K_tail * ke.b_dt_size;
+        } catch (...) {
+          return false;
+        }
+      }
+    }
+  }
+
+  // Precompute A/B offset tables for each K-super-block.
+  for (int ni = 0; ni < 2; ++ni) {
+    if (ni == 1 && ke.N_tail == 0) continue;
+    if (ni == 0 && ke.N_full_tiles == 0) continue;
+    const size_t cur_n = ke.n_sizes[ni];
+
+    if (ke.K_chunks > 0) {
+      ke.offsets_first_all[ni].resize(ke.K_super_size);
+      for (size_t i = 0; i < ke.K_super_size; ++i) {
+        const int64_t a_off =
+            static_cast<int64_t>(i * ke.K_blk * ke.a_dt_size);
+        const int64_t b_off =
+            ke.need_pack
+                ? static_cast<int64_t>(i * ke.blocked_B_size[ni])
+                : static_cast<int64_t>(i * cur_n * ke.K_blk * ke.b_dt_size);
+        ke.offsets_first_all[ni][i] = {a_off, b_off};
+      }
+    }
+
+    if (ke.K_super_blocks > 1) {
+      ke.offsets_full[ni].resize(ke.K_super_blocks - 1);
+      for (size_t ks = 1; ks < ke.K_super_blocks; ++ks) {
+        auto& tbl = ke.offsets_full[ni][ks - 1];
+        tbl.resize(ke.batch_full);
+        const size_t k_start = ks * ke.K_super_size;
+        for (size_t i = 0; i < ke.batch_full; ++i) {
+          const size_t k_idx = k_start + i;
+          const int64_t a_off =
+              static_cast<int64_t>(k_idx * ke.K_blk * ke.a_dt_size);
+          const int64_t b_off =
+              ke.need_pack
+                  ? static_cast<int64_t>(k_idx * ke.blocked_B_size[ni])
+                  : static_cast<int64_t>(k_idx * cur_n * ke.K_blk *
+                                         ke.b_dt_size);
+          tbl[i] = {a_off, b_off};
+        }
+      }
+    }
+
+    if (ke.K_super_rem > 0) {
+      const size_t k_base = ke.K_super_blocks * ke.K_super_size;
+      auto& rem_tbl = (ke.K_super_blocks == 0) ? ke.offsets_first_rem[ni]
+                                                : ke.offsets_rem[ni];
+      rem_tbl.resize(ke.K_super_rem);
+      for (size_t i = 0; i < ke.K_super_rem; ++i) {
+        const size_t k_idx = k_base + i;
+        const int64_t a_off =
+            static_cast<int64_t>(k_idx * ke.K_blk * ke.a_dt_size);
+        const int64_t b_off =
+            ke.need_pack
+                ? static_cast<int64_t>(k_idx * ke.blocked_B_size[ni])
+                : static_cast<int64_t>(k_idx * cur_n * ke.K_blk *
+                                       ke.b_dt_size);
+        rem_tbl[i] = {a_off, b_off};
+      }
+    }
+  }
+
+  return true;
+}
+
 template <typename TA, typename TB, typename TC>
 static HWY_NOINLINE void DoMatMul_BRGeMM(
     const MatPtrT<TA>& A, const MatPtrT<TB>& B, RowPtrs<TC> C, size_t M,
     size_t K, size_t N, float scale, const float* HWY_RESTRICT add,
     const BRGeMMConfig& cfg, ThreadingContext& ctx, size_t cluster_idx) {
   using dnnl::ukernel::brgemm;
-  using dnnl::ukernel::pack_type;
-  using dnnl::ukernel::transform;
 
   // Level-1 cache: kernels keyed on (M, K, N, config).
   const BRGeMMKernelKey kern_key{M, K, N, cfg.M_blk, cfg.N_blk, cfg.K_blk,
@@ -81,226 +309,13 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
 
   if (kern_it == kern_cache.end()) {
     BRGeMMKernelEntry ke;
-
-    ke.K_blk = cfg.K_blk;
-    ke.N_blk = cfg.N_blk;
-    ke.M_blk = std::min(cfg.M_blk, M);
-    ke.div_M_blk = hwy::Divisor(ke.M_blk);
-    ke.div_N_blk = hwy::Divisor(ke.N_blk);
-    ke.div_K_blk = hwy::Divisor(ke.K_blk);
-
-    ke.M_tail = ke.div_M_blk.Remainder(M);
-    ke.N_tail = ke.div_N_blk.Remainder(N);
-    ke.K_tail = ke.div_K_blk.Remainder(K);
-
-    // Floor division: K_tail remainder is handled by a dedicated brg_ktail
-    // kernel rather than padding K, avoiding extra memory writes to zero-pad
-    // A and B along the K dimension.
-    ke.K_chunks = ke.div_K_blk.Divide(K);
-    ke.N_full_tiles = ke.div_N_blk.Divide(N);
-    ke.M_full_tiles = ke.div_M_blk.Divide(M);
-    ke.N_total_tiles = ke.N_full_tiles + (ke.N_tail ? 1 : 0);
-    ke.M_total_tiles = ke.M_full_tiles + (ke.M_tail ? 1 : 0);
-    ke.N_padded = ke.N_total_tiles * ke.N_blk;
-
-    if (ke.M_total_tiles == 0 || ke.N_total_tiles == 0 ||
-        (ke.K_chunks == 0 && ke.K_tail == 0)) {
+    if (!InitBRGeMMKernels(cfg, M, K, N, A.Stride(), B.Stride(), ke)) {
       return;
     }
-
-    ke.K_super_size = std::min(cfg.batch_size, ke.K_chunks);
-    ke.K_super_blocks = (ke.K_chunks > 0) ? ke.K_chunks / ke.K_super_size : 0;
-    ke.K_super_rem = (ke.K_chunks > 0) ? ke.K_chunks % ke.K_super_size : 0;
-    ke.batch_full = ke.K_super_size;
-    ke.batch_rem = ke.K_super_rem;
-
-    const auto a_dt = dnnl::memory::data_type::bf16;
-    const auto b_dt = dnnl::memory::data_type::bf16;
-    const auto c_dt = dnnl::memory::data_type::f32;
-    ke.a_dt_size = dnnl::memory::data_type_size(a_dt);
-    ke.b_dt_size = dnnl::memory::data_type_size(b_dt);
-
-    const auto pack = brgemm::get_B_pack_type(a_dt, b_dt);
-    if (pack == pack_type::undef) return;
-    ke.need_pack = (pack != pack_type::no_trans);
-
-    ke.lda = A.Stride();
-    ke.ldb_orig = B.Stride();
-
-    ke.m_sizes[0] = ke.M_blk;
-    ke.m_sizes[1] = ke.M_tail ? ke.M_tail : ke.M_blk;
-    ke.n_sizes[0] = ke.N_blk;
-    ke.n_sizes[1] = ke.N_tail ? ke.N_tail : ke.N_blk;
-    const int64_t ldb_for[2] = {static_cast<int64_t>(ke.N_blk),
-                                 static_cast<int64_t>(ke.N_tail ? ke.N_tail : ke.N_blk)};
-    const int64_t ldc_for[2] = {static_cast<int64_t>(ke.N_blk),
-                                 static_cast<int64_t>(ke.N_tail ? ke.N_tail : ke.N_blk)};
-
-    // Create brgemm kernels for full/tail M and N tile sizes.
-    // mi=0 is the full M tile, mi=1 is the M-tail; likewise for ni and N.
-    size_t max_sp = 0;
-    for (int mi = 0; mi < 2; ++mi) {
-      for (int ni = 0; ni < 2; ++ni) {
-        if (mi == 1 && ke.M_tail == 0) continue;
-        if (ni == 1 && ke.N_tail == 0) continue;
-        if (mi == 0 && ke.M_full_tiles == 0) continue;
-        if (ni == 0 && ke.N_full_tiles == 0) continue;
-
-        const int64_t ms = static_cast<int64_t>(ke.m_sizes[mi]);
-        const int64_t ns = static_cast<int64_t>(ke.n_sizes[ni]);
-
-        if (ke.K_chunks > 0) {
-          if (!MakeBrgemm(ke.brg_first_all[mi][ni], ms, ns,
-                          static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.K_super_size),
-                          static_cast<int64_t>(ke.lda), ldb_for[ni],
-                          ldc_for[ni], a_dt, b_dt, c_dt, false)) {
-            return;
-          }
-          max_sp = std::max(max_sp,
-                            ke.brg_first_all[mi][ni].get_scratchpad_size());
-        }
-        if (ke.K_super_blocks > 1) {
-          if (!MakeBrgemm(ke.brg_full[mi][ni], ms, ns,
-                          static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.batch_full),
-                          static_cast<int64_t>(ke.lda), ldb_for[ni],
-                          ldc_for[ni], a_dt, b_dt, c_dt, true)) {
-            return;
-          }
-          max_sp =
-              std::max(max_sp, ke.brg_full[mi][ni].get_scratchpad_size());
-        }
-        if (ke.K_super_rem > 0) {
-          const bool rem_is_first = (ke.K_super_blocks == 0);
-          auto& target = rem_is_first ? ke.brg_first_rem[mi][ni]
-                                      : ke.brg_rem[mi][ni];
-          if (!MakeBrgemm(target, ms, ns, static_cast<int64_t>(ke.K_blk),
-                          static_cast<int64_t>(ke.batch_rem),
-                          static_cast<int64_t>(ke.lda), ldb_for[ni],
-                          ldc_for[ni], a_dt, b_dt, c_dt,
-                          !rem_is_first)) {
-            return;
-          }
-          max_sp = std::max(max_sp, target.get_scratchpad_size());
-        }
-        if (ke.K_tail > 0) {
-          const bool add_c = (ke.K_chunks > 0);
-          if (!MakeBrgemm(ke.brg_ktail[mi][ni], ms, ns,
-                          static_cast<int64_t>(ke.K_tail), 1,
-                          static_cast<int64_t>(ke.lda), ldb_for[ni],
-                          ldc_for[ni], a_dt, b_dt, c_dt,
-                          add_c)) {
-            return;
-          }
-          max_sp =
-              std::max(max_sp, ke.brg_ktail[mi][ni].get_scratchpad_size());
-        }
-      }
-    }
-    ke.scratchpad_size = max_sp + 64;
-
-    // Create B-packing transforms.
-    if (ke.need_pack) {
-      for (int ni = 0; ni < 2; ++ni) {
-        if (ni == 1 && ke.N_tail == 0) continue;
-        if (ni == 0 && ke.N_full_tiles == 0) continue;
-
-        const int64_t ns = static_cast<int64_t>(ke.n_sizes[ni]);
-        if (ke.K_chunks > 0) {
-          const int64_t K_full =
-              static_cast<int64_t>(ke.K_chunks * ke.K_blk);
-          try {
-            ke.pack_B[ni] = transform(K_full, ns, pack_type::trans,
-                                       static_cast<int64_t>(ke.ldb_orig),
-                                       ldb_for[ni], b_dt, b_dt);
-            if (!ke.pack_B[ni]) return;
-            ke.pack_B[ni].generate();
-            ke.blocked_B_size[ni] = static_cast<size_t>(ldb_for[ni]) *
-                                    ke.K_blk * ke.b_dt_size;
-          } catch (...) {
-            return;
-          }
-        }
-        if (ke.K_tail > 0) {
-          try {
-            ke.pack_B_ktail[ni] = transform(
-                static_cast<int64_t>(ke.K_tail), ns, pack_type::trans,
-                static_cast<int64_t>(ke.ldb_orig), ldb_for[ni], b_dt, b_dt);
-            if (!ke.pack_B_ktail[ni]) return;
-            ke.pack_B_ktail[ni].generate();
-            ke.blocked_B_ktail_size[ni] =
-                static_cast<size_t>(ldb_for[ni]) * ke.K_tail * ke.b_dt_size;
-          } catch (...) {
-            return;
-          }
-        }
-      }
-    }
-
-    // Precompute A/B offset tables for each K-super-block.
-    for (int ni = 0; ni < 2; ++ni) {
-      if (ni == 1 && ke.N_tail == 0) continue;
-      if (ni == 0 && ke.N_full_tiles == 0) continue;
-      const size_t cur_n = ke.n_sizes[ni];
-
-      if (ke.K_chunks > 0) {
-        ke.offsets_first_all[ni].resize(ke.K_super_size);
-        for (size_t i = 0; i < ke.K_super_size; ++i) {
-          const int64_t a_off =
-              static_cast<int64_t>(i * ke.K_blk * ke.a_dt_size);
-          const int64_t b_off =
-              ke.need_pack
-                  ? static_cast<int64_t>(i * ke.blocked_B_size[ni])
-                  : static_cast<int64_t>(i * cur_n * ke.K_blk * ke.b_dt_size);
-          ke.offsets_first_all[ni][i] = {a_off, b_off};
-        }
-      }
-
-      if (ke.K_super_blocks > 1) {
-        ke.offsets_full[ni].resize(ke.K_super_blocks - 1);
-        for (size_t ks = 1; ks < ke.K_super_blocks; ++ks) {
-          auto& tbl = ke.offsets_full[ni][ks - 1];
-          tbl.resize(ke.batch_full);
-          const size_t k_start = ks * ke.K_super_size;
-          for (size_t i = 0; i < ke.batch_full; ++i) {
-            const size_t k_idx = k_start + i;
-            const int64_t a_off =
-                static_cast<int64_t>(k_idx * ke.K_blk * ke.a_dt_size);
-            const int64_t b_off =
-                ke.need_pack
-                    ? static_cast<int64_t>(k_idx * ke.blocked_B_size[ni])
-                    : static_cast<int64_t>(k_idx * cur_n * ke.K_blk *
-                                           ke.b_dt_size);
-            tbl[i] = {a_off, b_off};
-          }
-        }
-      }
-
-      if (ke.K_super_rem > 0) {
-        const size_t k_base = ke.K_super_blocks * ke.K_super_size;
-        auto& rem_tbl = (ke.K_super_blocks == 0) ? ke.offsets_first_rem[ni]
-                                                  : ke.offsets_rem[ni];
-        rem_tbl.resize(ke.K_super_rem);
-        for (size_t i = 0; i < ke.K_super_rem; ++i) {
-          const size_t k_idx = k_base + i;
-          const int64_t a_off =
-              static_cast<int64_t>(k_idx * ke.K_blk * ke.a_dt_size);
-          const int64_t b_off =
-              ke.need_pack
-                  ? static_cast<int64_t>(k_idx * ke.blocked_B_size[ni])
-                  : static_cast<int64_t>(k_idx * cur_n * ke.K_blk *
-                                         ke.b_dt_size);
-          rem_tbl[i] = {a_off, b_off};
-        }
-      }
-    }
-
     kern_it = kern_cache.emplace(kern_key, std::move(ke)).first;
   }
 
   BRGeMMKernelEntry& ke = kern_it->second;
-  if (ke.M_total_tiles == 0 || ke.N_total_tiles == 0) return;
 
   // Level-2 cache: packed B keyed on (B_ptr, K, N, config).
   const uint8_t* A_base = reinterpret_cast<const uint8_t*>(A.Row(0));
