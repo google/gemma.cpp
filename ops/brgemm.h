@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
 #if GEMMA_ONEDNN_BRGEMM
@@ -238,22 +239,19 @@ struct BRGeMMPackedBEntry {
 struct BRGeMMThreadBufs {
   static constexpr size_t kMaxTempCSize = 64 * 64;
 
-  std::vector<uint8_t> scratch;
-  std::vector<uint8_t> tc_storage;
+  hwy::AlignedVector<uint8_t> scratch;
+  hwy::AlignedVector<uint8_t> tc_storage;
   const void* hw_ctx_kernel = nullptr;
 
   uint8_t* EnsureScratch(size_t size) {
-    if (scratch.size() < size + 64) scratch.resize(size + 64);
-    return scratch.data() +
-           (64 - (reinterpret_cast<uintptr_t>(scratch.data()) % 64));
+    if (scratch.size() < size) scratch.resize(size);
+    return scratch.data();
   }
 
   float* EnsureTempC(size_t n_tiles) {
-    const size_t need = n_tiles * kMaxTempCSize * sizeof(float) + 64;
+    const size_t need = n_tiles * kMaxTempCSize * sizeof(float);
     if (tc_storage.size() < need) tc_storage.resize(need);
-    return reinterpret_cast<float*>(
-        (reinterpret_cast<uintptr_t>(tc_storage.data()) + 63) &
-        ~uintptr_t{63});
+    return reinterpret_cast<float*>(tc_storage.data());
   }
 
   void MaybeSetHwContext(const dnnl::ukernel::brgemm& brg) {
