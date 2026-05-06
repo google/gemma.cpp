@@ -54,12 +54,25 @@ static bool MakeBrgemm(dnnl::ukernel::brgemm& brg, int64_t m, int64_t n,
   try {
     brg = dnnl::ukernel::brgemm(m, n, k, batch, lda, ldb, ldc, a_dt, b_dt,
                                  c_dt, true);
-    if (!brg) return false;
+    if (!brg) {
+      HWY_WARN("BRGeMM: kernel creation failed m=%lld n=%lld k=%lld.",
+               static_cast<long long>(m), static_cast<long long>(n),
+               static_cast<long long>(k));
+      return false;
+    }
     brg.set_add_C(add_C);
-    if (!brg.finalize()) return false;
+    if (!brg.finalize()) {
+      HWY_WARN("BRGeMM: kernel finalize failed m=%lld n=%lld k=%lld.",
+               static_cast<long long>(m), static_cast<long long>(n),
+               static_cast<long long>(k));
+      return false;
+    }
     brg.generate();
     return true;
   } catch (...) {
+    HWY_WARN("BRGeMM: kernel JIT exception m=%lld n=%lld k=%lld.",
+             static_cast<long long>(m), static_cast<long long>(n),
+             static_cast<long long>(k));
     return false;
   }
 }
@@ -295,7 +308,7 @@ static HWY_NOINLINE bool InitBRGeMMKernels(
 }
 
 template <typename TA, typename TB, typename TC>
-static HWY_NOINLINE void DoMatMul_BRGeMM(
+static HWY_NOINLINE bool DoMatMul_BRGeMM(
     const MatPtrT<TA>& A, const MatPtrT<TB>& B, RowPtrs<TC> C, size_t M,
     size_t K, size_t N, float scale, const float* HWY_RESTRICT add,
     const BRGeMMConfig& cfg, ThreadingContext& ctx, size_t cluster_idx) {
@@ -310,7 +323,7 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
   if (kern_it == kern_cache.end()) {
     BRGeMMKernelEntry ke;
     if (!InitBRGeMMKernels(cfg, M, K, N, A.Stride(), B.Stride(), ke)) {
-      return;
+      return false;
     }
     kern_it = kern_cache.emplace(kern_key, std::move(ke)).first;
   }
@@ -344,7 +357,10 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
 
       pe.B_packed_buf.Resize(total_packed);
       uint8_t* B_packed = pe.B_packed_buf.data();
-      if (!B_packed) return;
+      if (!B_packed) {
+        HWY_WARN("BRGeMM: packed B allocation failed.");
+        return false;
+      }
 
       for (size_t nt = 0; nt < ke.N_total_tiles; ++nt) {
         const int ni = (nt < ke.N_full_tiles) ? 0 : 1;
@@ -366,7 +382,8 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
                                         B_packed + pe.B_ktail_offset[nt]);
           }
         } catch (...) {
-          return;
+          HWY_WARN("BRGeMM: B-packing execution failed.");
+          return false;
         }
       }
     }
@@ -548,6 +565,7 @@ static HWY_NOINLINE void DoMatMul_BRGeMM(
   dnnl::ukernel::brgemm::release_hw_context();
   auto& main_bufs = GetBRGeMMThreadBufs();
   main_bufs.hw_ctx_kernel = nullptr;
+  return true;
 }
 
 #endif  // GEMMA_ONEDNN_BRGEMM

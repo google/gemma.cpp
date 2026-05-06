@@ -1089,9 +1089,11 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     MMAutoTune<BRGeMMConfig>& brg_tuner = per_key.brgemm_autotune;
 
     if (HWY_LIKELY(brg_tuner.Best())) {
-      DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, *brg_tuner.Best(),
-                       env.ctx, cluster_idx);
-      return &per_key;
+      if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add,
+                           *brg_tuner.Best(), env.ctx, cluster_idx)) {
+        return &per_key;
+      }
+      // BRGeMM failed; fall through to standard matmul.
     }
 
     if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
@@ -1100,21 +1102,23 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
 
     const BRGeMMConfig& cfg = brg_tuner.NextConfig();
     const uint64_t t0 = hwy::timer::Start();
-    DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
-                     cluster_idx);
-    const uint64_t t1 =
-        env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
-    brg_tuner.NotifyTicks(t1 - t0);
+    if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
+                         cluster_idx)) {
+      const uint64_t t1 =
+          env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+      brg_tuner.NotifyTicks(t1 - t0);
 
-    if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
-      const BRGeMMConfig& best = *brg_tuner.Best();
-      fprintf(stderr,
-              "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
-              "batch=%zu\n",
-              M, K, N, best.M_blk, best.N_blk, best.K_blk,
-              best.batch_size);
+      if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
+        const BRGeMMConfig& best = *brg_tuner.Best();
+        fprintf(stderr,
+                "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
+                "batch=%zu\n",
+                M, K, N, best.M_blk, best.N_blk, best.K_blk,
+                best.batch_size);
+      }
+      return &per_key;
     }
-    return &per_key;
+    // BRGeMM failed; fall through to standard matmul.
   }
   }  // if constexpr BF16/float
 #endif  // GEMMA_ONEDNN_BRGEMM
