@@ -503,7 +503,7 @@ struct TestFastGelu {
     gcpp::HWY_NAMESPACE::FastGelu(result.data(), result.size());
 
     for (size_t i = 0; i < values.size(); i++) {
-      const float max_error = IsBF16<T>() ? 0.02f : 0.002f;
+      const float max_error = IsBF16<T>() ? 0.007f : 1e-5f;
       const float x = hwy::ConvertScalarTo<float>(values[i]);
       const float actual = hwy::ConvertScalarTo<float>(result[i]);
       const float expected =

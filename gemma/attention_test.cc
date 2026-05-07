@@ -568,8 +568,6 @@ void RunAttentionTest(AttentionImpl attention_impl) {
                          /*q_head=*/0, kGoldenQ);
 }
 
-void TestGemmaAttentionOld() { RunAttentionTest(AttentionImpl::kOld); }
-
 void TestGemmaAttentionFlash() { RunAttentionTest(AttentionImpl::kFlash); }
 
 }  // namespace HWY_NAMESPACE
@@ -580,7 +578,6 @@ HWY_AFTER_NAMESPACE();
 
 namespace gcpp {
 HWY_BEFORE_TEST(AttentionTest);
-HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionOld);
 HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionFlash);
 HWY_AFTER_TEST();
 

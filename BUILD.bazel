@@ -151,6 +151,7 @@ cc_test(
         ":kv_transcoding",
         ":mat",
         ":matmul",
+        ":ops",
         ":test_util",
         ":threading_context",
         ":weights",

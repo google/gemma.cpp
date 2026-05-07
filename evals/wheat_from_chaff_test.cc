@@ -146,7 +146,7 @@ GemmaEnv* GemmaTest::s_env = nullptr;
 // Tests whether Gemma can find the right answer in varying levels of
 // background information, ranging from the bare facts to outright distraction.
 TEST_F(GemmaTest, WheatFromChaff) {
-  const AttentionImpl modes[] = {AttentionImpl::kOld, AttentionImpl::kFlash};
+  const AttentionImpl modes[] = {AttentionImpl::kFlash};
   fprintf(stderr, "Warmup, mode %s\n", GetAttentionImplName(modes[0]).c_str());
   auto prompt = BuildPrompt({"quark_1.txt", "holiday_story.txt"}, kQuestions);
   auto response = GemmaReply(prompt, modes[0]);

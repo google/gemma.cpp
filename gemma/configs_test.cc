@@ -49,8 +49,8 @@ TEST(ConfigsTest, TestAttentionImpl) {
     ASSERT_EQ(GetAttentionImpl(name), impl);
   }
   ASSERT_EQ(GetAttentionImplName(AttentionImpl::kSentinel), "unknown");
-  ASSERT_EQ(GetAttentionImpl("unknown"), AttentionImpl::kOld);
-  ASSERT_EQ(GetAttentionImpl("invalid"), AttentionImpl::kOld);
+  ASSERT_EQ(GetAttentionImpl("unknown"), AttentionImpl::kFlash);
+  ASSERT_EQ(GetAttentionImpl("invalid"), AttentionImpl::kFlash);
 }
 
 }  // namespace gcpp

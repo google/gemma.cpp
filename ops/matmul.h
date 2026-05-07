@@ -55,12 +55,12 @@ HWY_INLINE_VAR constexpr size_t kNR = 4;
 HWY_INLINE_VAR constexpr size_t kMaxMR = 4;
 
 // For `MMTilesC`.
-HWY_INLINE_VAR constexpr size_t kMaxMC = 512;
-HWY_INLINE_VAR constexpr size_t kMaxNC = 16384;
+HWY_INLINE_VAR constexpr size_t kMaxMC = 256;
+HWY_INLINE_VAR constexpr size_t kMaxNC = 6 * 1024;
 
 // Upper bound for per-worker B storage on the stack. Chosen such that one row
 // of BF16 A and B fit in 32 KiB L1, but there may be `kMaxMR` and `kNR`.
-HWY_INLINE_VAR constexpr size_t kMaxKC = 8 * 1024;
+HWY_INLINE_VAR constexpr size_t kMaxKC = 6 * 1024;
 
 // Policy classes for parallelism, implementing some of `Parallelism`.
 
