@@ -736,4 +736,23 @@ AttentionImpl GetAttentionImpl(const std::string& impl_name) {
   return AttentionImpl::kFlash;
 }
 
+std::string KVEncodingToString(KVEncoding encoding) {
+  switch (encoding) {
+    case KVEncoding::kF32:
+      return "F32";
+    case KVEncoding::kBF16:
+      return "BF16";
+    case KVEncoding::kF32TwoTranspositions:
+      return "F32TwoTranspositions";
+    case KVEncoding::kBF16TwoTranspositions:
+      return "BF16TwoTranspositions";
+    case KVEncoding::kInt8:
+      return "Int8";
+    case KVEncoding::kInt8TwoTranspositions:
+      return "Int8TwoTranspositions";
+    default:
+      return "Unknown";
+  }
+}
+
 }  // namespace gcpp

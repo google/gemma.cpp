@@ -92,6 +92,13 @@ enum class KVEncoding {
   kInt8TwoTranspositions = 6,
 };
 
+// Returns a string representation of the KVEncoding.
+// This representation will not change and can be used for
+// serialization or logging.
+// Note that no reverse function exists to convert a string back to a
+// KVEncoding.
+std::string KVEncodingToString(KVEncoding encoding);
+
 enum class AttentionImpl {
   kFlash = 0,  // Flash Attention (default)
   kFlashTransposedQs,
