@@ -6,7 +6,7 @@ foundation models from Google.
 For additional information about Gemma, see
 [ai.google.dev/gemma](https://ai.google.dev/gemma). Model weights, including
 gemma.cpp specific artifacts, are
-[available on kaggle](https://www.kaggle.com/models/google/gemma-2).
+[available on kaggle](https://www.kaggle.com/models/google/gemma-3).
 
 ## Who is this project for?
 
@@ -34,7 +34,7 @@ portable SIMD for CPU inference.
 
 For production-oriented edge deployments we recommend standard deployment
 pathways using Python frameworks like JAX, Keras, PyTorch, and Transformers
-([all model variations here](https://www.kaggle.com/models/google/gemma)).
+([all model variations here](https://www.kaggle.com/models/google/gemma-3)).
 
 ## Contributing
 
@@ -104,7 +104,7 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "-
 ### Step 1: Obtain model weights and tokenizer from Kaggle or Hugging Face Hub
 
 Visit the
-[Kaggle page for Gemma-2](https://www.kaggle.com/models/google/gemma-2/gemmaCpp)
+[Kaggle page for Gemma-2](https://www.kaggle.com/models/google/gemma-3/gemmaCpp)
 and select `Model Variations |> Gemma C++`.
 
 On this tab, the `Variation` dropdown includes the options below. Note bfloat16
