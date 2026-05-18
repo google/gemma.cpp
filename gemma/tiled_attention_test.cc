@@ -17,6 +17,7 @@
 #include "gemma/weights.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
+#include "hwy/base.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -197,33 +198,32 @@ struct AttentionTestEnv {
   MatStorageT<float> key_norm_scale;
 };
 
-void TestTransposeStridedQueries() {
+void TestCompressQueries() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   size_t qkv_dim = 64;
   size_t num_queries = 24;
   AlignedPtr<float[]> input_queries =
       ctx.allocator.Alloc<float>(qkv_dim * num_queries);
-  AlignedPtr<float[]> output_queries =
-      ctx.allocator.Alloc<float>(qkv_dim * num_queries);
+  AlignedPtr<BF16[]> output_queries =
+      ctx.allocator.Alloc<BF16>(qkv_dim * num_queries);
   for (size_t i = 0; i < num_queries; ++i) {
     for (size_t j = 0; j < qkv_dim; ++j) {
-      input_queries[i * qkv_dim + j] = i * qkv_dim + j;
+      input_queries[i * qkv_dim + j] = 0.01f * (i + 1) / (j + 1);
     }
   }
-  std::vector<float*> queries;
+  std::vector<const float*> queries;
   for (size_t i = 0; i < num_queries; ++i) {
     queries.push_back(input_queries.get() + i * qkv_dim);
   }
-  hwy::Span<float*> queries_span(queries.data(), queries.size());
 
-  TransposeStridedQueries(
-      queries_span, qkv_dim,
-      hwy::Span<float>(output_queries.get(), qkv_dim * num_queries));
+  CompressQueriesBF16(
+      hwy::Span<const float* const>(queries.data(), queries.size()), qkv_dim,
+      output_queries.get());
   for (size_t i = 0; i < num_queries; ++i) {
     for (size_t j = 0; j < qkv_dim; ++j) {
-      EXPECT_EQ(output_queries[j * num_queries + i],
-                input_queries[i * qkv_dim + j])
+      EXPECT_NEAR(hwy::ConvertScalarTo<float>(output_queries[i * qkv_dim + j]),
+                  input_queries[i * qkv_dim + j], 1e-3)
           << "i=" << i << " j=" << j;
     }
   }
@@ -777,7 +777,7 @@ HWY_AFTER_NAMESPACE();
 
 namespace gcpp {
 HWY_BEFORE_TEST(TiledAttentionTest);
-HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestTransposeStridedQueries);
+HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestCompressQueries);
 // TODO() Fix the goldens for the change in KV_t to BF16
 // HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
 //                       TestLocalAttentionForAllHeadsTokensAndBatch);

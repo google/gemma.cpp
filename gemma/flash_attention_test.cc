@@ -286,6 +286,17 @@ void PopulateTestKVCache(MatStorageT<T>& kv, gcpp::KVEncoding encoding,
   }
 }
 
+AlignedFloatVector PopulateTestQueries(size_t num_queries, size_t qkv_dim) {
+  AlignedFloatVector q_all(num_queries * qkv_dim);
+  const float unpredictable_factor = 0.01f * hwy::Unpredictable1();
+  for (size_t i = 0; i < num_queries; ++i) {
+    for (size_t j = 0; j < qkv_dim; ++j) {
+      q_all[i * qkv_dim + j] = unpredictable_factor * (i + 1) / (j + 1);
+    }
+  }
+  return q_all;
+}
+
 struct AttentionTestEnv {
   AttentionTestEnv(size_t num_queries, size_t kv_seq_len, size_t qkv_dim,
                    AttentionImpl attention_impl);
@@ -492,18 +503,7 @@ void TestTiledFlashAttention() {
                                   2 * qkv_dim * gcpp::KVCache::kTileSize),
                         ctx.allocator, MatPadding::kPacked);
   PopulateTestKVCache(kv, gcpp::KVEncoding::kF32, qkv_dim);
-  std::vector<float> q_float(4 * qkv_dim);
-  std::vector<float> q_float2(4 * qkv_dim);
-  // fill in qs with predictable, synthetic data
-  for (size_t i = 0; i < 4; ++i) {
-    for (size_t j = 0; j < qkv_dim; j++) {
-      float val_1 = 0.01f * (i + 1) / (j + 1);
-      float val_2 = 0.01f * (i + 4 + 1) / (j + 1);
-      q_float[j * 4 + i] = val_1;
-      q_float2[j * 4 + i] = val_2;
-    }
-  }
-  const float* q_T[2] = {q_float.data(), q_float2.data()};
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
 
   MatStorageT<float> att_out("att_out", Extents2D(num_queries, qkv_dim),
                              ctx.allocator, MatPadding::kPacked);
@@ -536,7 +536,7 @@ void TestTiledFlashAttention() {
 
   hwy::Span<const MatPtr> kvs(&kv, 1);
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
-      kvs, num_queries, hwy::Span<const float*>(q_T, 2),
+      kvs, num_queries, q_all.data(),
       hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
       exp_denominator_sums.data(), max_logits.data());
@@ -578,22 +578,11 @@ void TestTiledFlashAttentionBF16() {
                        ctx.allocator, MatPadding::kPacked);
   PopulateTestKVCache(kv, gcpp::KVEncoding::kBF16TwoTranspositions, qkv_dim);
 
-  std::vector<float> q_all(num_queries * qkv_dim);
-  for (size_t i = 0; i < num_queries; ++i) {
-    for (size_t j = 0; j < qkv_dim; ++j) {
-      q_all[i * qkv_dim + j] = 0.01f * (i + 1) / (j + 1);
-    }
-  }
-  std::vector<float*> q_ptrs(num_queries);
-  for (int i = 0; i < num_queries; ++i) {
-    q_ptrs[i] = q_all.data() + i * qkv_dim;
-  }
-  auto [transposed_queries, transposed_queries_ptrs, _] =
-      TransposeQueriesToGroupsOfNBF16orInt16<BF16>(hwy::Span<float*>(q_ptrs),
-                                                   qkv_dim, /*group_size=*/4);
-  hwy::Span<const BF16*> q_T(
-      const_cast<const BF16**>(transposed_queries_ptrs.data()),
-      transposed_queries_ptrs.size());
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
+  std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries(num_queries *
+                                                              qkv_dim);
+  CompressQueriesBF16Contiguous(q_all.data(), qkv_dim, num_queries,
+                                bf16_queries.data());
 
   MatStorageT<float> att_out("att_out", Extents2D(num_queries, qkv_dim),
                              ctx.allocator, MatPadding::kPacked);
@@ -624,7 +613,8 @@ void TestTiledFlashAttentionBF16() {
   }
   hwy::Span<const MatPtr> kvs(&kv, 1);
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
-      kvs, num_queries, q_T, hwy::Span<const size_t>(start_pos_per_query),
+      kvs, num_queries, bf16_queries.data(),
+      hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
       exp_denominator_sums.data(), max_logits.data());
 
@@ -673,18 +663,7 @@ void TestTiledFlashAttentionInt8() {
                          ctx.allocator, MatPadding::kPacked);
   PopulateTestKVCache(kv, gcpp::KVEncoding::kInt8, qkv_dim);
 
-  std::vector<float> q_float(4 * qkv_dim);
-  std::vector<float> q_float2(4 * qkv_dim);
-  // fill in qs with predictable, synthetic data
-  for (size_t i = 0; i < 4; ++i) {
-    for (size_t j = 0; j < qkv_dim; j++) {
-      float val_1 = 0.01f * (i + 1) / (j + 1);
-      float val_2 = 0.01f * (i + 4 + 1) / (j + 1);
-      q_float[j * 4 + i] = val_1;
-      q_float2[j * 4 + i] = val_2;
-    }
-  }
-  const float* q_T[2] = {q_float.data(), q_float2.data()};
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
 
   MatStorageT<float> att_out("att_out", Extents2D(num_queries, qkv_dim),
                              ctx.allocator, MatPadding::kPacked);
@@ -717,7 +696,7 @@ void TestTiledFlashAttentionInt8() {
 
   hwy::Span<const MatPtr> kvs(&kv, 1);
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
-      kvs, num_queries, hwy::Span<const float*>(q_T, 2),
+      kvs, num_queries, q_all.data(),
       hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
       exp_denominator_sums.data(), max_logits.data());
@@ -741,22 +720,23 @@ void TestTiledFlashAttentionInt8() {
 
 
 void TestTiledFlashAttentionInt8BF16() {
-  int qkv_dim = 64;
-  int kv_seq_len = 60;  // number of tokens we will attend to. Not divisible by
-                        // tiles size to test the padding logic.
-  int padded_kv_seq_len = hwy::RoundUpTo(kv_seq_len, gcpp::KVCache::kTileSize);
+  size_t qkv_dim = 64;
+  size_t kv_seq_len = 60;  // number of tokens we will attend to. Not divisible
+                           // by tiles size to test the padding logic.
+  size_t padded_kv_seq_len =
+      hwy::RoundUpTo(kv_seq_len, gcpp::KVCache::kTileSize);
   float att_cap = 10.0f;
-  int num_queries = 8;
-  int num_queries_per_timestep = 4;
-  int num_tokens = num_queries / num_queries_per_timestep;
-  int kv_seq_end =
+  size_t num_queries = 8;
+  size_t num_queries_per_timestep = 4;
+  size_t num_tokens = num_queries / num_queries_per_timestep;
+  size_t kv_seq_end =
       kv_seq_len - hwy::DivCeil(num_queries, num_queries_per_timestep);
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
 
-  int num_tiles = padded_kv_seq_len / gcpp::KVCache::kTileSize;
-  int tile_size_bytes = 2 * qkv_dim * gcpp::KVCache::kTileSize +
-                        2 * sizeof(BF16) * gcpp::KVCache::kTileSize;
+  size_t num_tiles = padded_kv_seq_len / gcpp::KVCache::kTileSize;
+  size_t tile_size_bytes = 2 * qkv_dim * gcpp::KVCache::kTileSize +
+                           2 * sizeof(BF16) * gcpp::KVCache::kTileSize;
 
   MatStorageT<int8_t> kv("kv", Extents2D(num_tiles, tile_size_bytes),
                          ctx.allocator, MatPadding::kPacked);
@@ -764,22 +744,11 @@ void TestTiledFlashAttentionInt8BF16() {
   // fill in kvs with predictable, synthetic data matching BF16 paired layout
   PopulateTestKVCache(kv, gcpp::KVEncoding::kInt8TwoTranspositions, qkv_dim);
 
-  std::vector<float> q_all(num_queries * qkv_dim);
-  for (int i = 0; i < num_queries; ++i) {
-    for (int j = 0; j < qkv_dim; ++j) {
-      q_all[i * qkv_dim + j] = 0.01f * (i + 1) / (j + 1);
-    }
-  }
-  std::vector<float*> q_ptrs(num_queries);
-  for (int i = 0; i < num_queries; ++i) {
-    q_ptrs[i] = q_all.data() + i * qkv_dim;
-  }
-  auto [transposed_queries, transposed_queries_ptrs, _] =
-      TransposeQueriesToGroupsOfNBF16orInt16<BF16>(hwy::Span<float*>(q_ptrs),
-                                                   qkv_dim, /*group_size=*/4);
-  hwy::Span<const BF16*> q_T(
-      const_cast<const BF16**>(transposed_queries_ptrs.data()),
-      transposed_queries_ptrs.size());
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
+  std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries(num_queries *
+                                                              qkv_dim);
+  CompressQueriesBF16Contiguous(q_all.data(), qkv_dim, num_queries,
+                                bf16_queries.data());
 
   MatStorageT<float> att_out("att_out", Extents2D(num_queries, qkv_dim),
                              ctx.allocator, MatPadding::kPacked);
@@ -812,7 +781,8 @@ void TestTiledFlashAttentionInt8BF16() {
 
   hwy::Span<const MatPtr> kvs(&kv, 1);
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
-      kvs, num_queries, q_T, hwy::Span<const size_t>(start_pos_per_query),
+      kvs, num_queries, bf16_queries.data(),
+      hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
       exp_denominator_sums.data(), max_logits.data());
 
@@ -853,23 +823,12 @@ void TestTiledFlashAttentionInt8Int16() {
   // fill in kvs with predictable, synthetic data matching BF16 paired layout
   PopulateTestKVCache(kv, gcpp::KVEncoding::kInt8TwoTranspositions, qkv_dim);
 
-  std::vector<float> q_all(num_queries * qkv_dim);
-  for (int i = 0; i < num_queries; ++i) {
-    for (int j = 0; j < qkv_dim; ++j) {
-      q_all[i * qkv_dim + j] = 0.01f * (i + 1) / (j + 1);
-    }
-  }
-  std::vector<float*> q_ptrs(num_queries);
-  for (int i = 0; i < num_queries; ++i) {
-    q_ptrs[i] = q_all.data() + i * qkv_dim;
-  }
-  auto [transposed_queries, transposed_queries_ptrs, q_scales] =
-      TransposeQueriesToGroupsOfNBF16orInt16<int16_t>(
-          hwy::Span<float*>(q_ptrs), qkv_dim, /*group_size=*/4);
-  hwy::Span<const int16_t*> q_T(
-      const_cast<const int16_t**>(transposed_queries_ptrs.data()),
-      transposed_queries_ptrs.size());
-
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries(
+      num_queries * qkv_dim);
+  AlignedFloatVector q_scales(num_queries);
+  CompressQueriesInt16Contiguous(q_all.data(), qkv_dim, num_queries,
+                                 int16_queries.data(), q_scales.data());
   MatStorageT<float> att_out("att_out", Extents2D(num_queries, qkv_dim),
                              ctx.allocator, MatPadding::kPacked);
   using DF = hn::ScalableTag<float>;
@@ -901,7 +860,7 @@ void TestTiledFlashAttentionInt8Int16() {
 
   hwy::Span<const MatPtr> kvs(&kv, 1);
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
-      kvs, num_queries, q_T, q_scales,
+      kvs, num_queries, int16_queries.data(), q_scales,
       hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
       exp_denominator_sums.data(), max_logits.data());
