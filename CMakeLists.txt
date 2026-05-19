@@ -240,7 +240,17 @@ set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)
 
 enable_testing()
+find_package(GTest REQUIRED)
 include(GoogleTest)
+
+# Tests use HWY_IS_TEST=1 with `hwy/foreach_target.h`, which expands the test
+# TU for every attainable SIMD target (including EMU128). libgemma's
+# foreach_target sources (flash_attention.cc, attention.cc, gemma.cc, vit.cc)
+# normally compile only for the baseline+best targets, so tests would fail to
+# link against per-target symbols like N_EMU128::FlashAttention. Build
+# libgemma for all attainable targets when tests are enabled, matching what
+# the tests reference.
+target_compile_definitions(libgemma PRIVATE HWY_IS_TEST=1)
 
 set(GEMMA_TEST_FILES
   compression/compress_test.cc
