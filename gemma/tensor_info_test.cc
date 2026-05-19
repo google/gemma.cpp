@@ -36,5 +36,36 @@ TEST(TensorInfoRegistryTest, Find) {
   });
 }
 
+// Gemma 3 LM variants must not request any ViT tensors: their `vit_config`
+// stays empty so `WeightsPtrs::ForEachTensor` skips the whole block.
+TEST(TensorInfoRegistryTest, LmConfigsHaveNoVit) {
+  for (Model model :
+       {Model::GEMMA3_4B_LM, Model::GEMMA3_12B_LM, Model::GEMMA3_27B_LM}) {
+    const ModelConfig config(model, Type::kSFP, ChooseWrapping(model));
+    EXPECT_TRUE(config.vit_config.layer_configs.empty())
+        << config.display_name;
+    EXPECT_EQ(config.wrapping, PromptWrapping::GEMMA_IT) << config.display_name;
+
+    WeightsPtrs weights(config);
+    weights.ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
+      const std::string name = t.mat.Name();
+      EXPECT_EQ(name.find("enc_norm_"), std::string::npos) << name;
+      EXPECT_EQ(name.find("img_"), std::string::npos) << name;
+      EXPECT_EQ(name.find("mm_embed_norm"), std::string::npos) << name;
+    });
+  }
+}
+
+// FindModel must disambiguate `gemma3-4b-...` and `gemma3-4b-lm-...` by
+// preferring the longest matching prefix.
+TEST(TensorInfoRegistryTest, FindModelLongestMatch) {
+  // Construction via the specifier-string ctor goes through `FindModel`.
+  const ModelConfig lm("gemma3-4b-lm-sfp-it");
+  EXPECT_EQ(lm.model, Model::GEMMA3_4B_LM);
+
+  const ModelConfig vlm("gemma3-4b-sfp");
+  EXPECT_EQ(vlm.model, Model::GEMMA3_4B);
+}
+
 }  // namespace
 }  // namespace gcpp

@@ -92,8 +92,14 @@ PYBIND11_MODULE(configs, py_module) {
       .value("PALIGEMMA2_10B_224", Model::PALIGEMMA2_10B_224)
       .value("PALIGEMMA2_3B_448", Model::PALIGEMMA2_3B_448)
       .value("PALIGEMMA2_10B_448", Model::PALIGEMMA2_10B_448)
+      .value("GEMMA3_1B", Model::GEMMA3_1B)
+      .value("GEMMA3_4B", Model::GEMMA3_4B)
+      .value("GEMMA3_12B", Model::GEMMA3_12B)
+      .value("GEMMA3_27B", Model::GEMMA3_27B)
       .value("GEMMA3_270M", Model::GEMMA3_270M)
-  .value("PALIGEMMA_448", Model::PALIGEMMA_448);
+      .value("GEMMA3_4B_LM", Model::GEMMA3_4B_LM)
+      .value("GEMMA3_12B_LM", Model::GEMMA3_12B_LM)
+      .value("GEMMA3_27B_LM", Model::GEMMA3_27B_LM);
 
   class_<TensorInfo>(py_module, "TensorInfo")
       .def(init())
