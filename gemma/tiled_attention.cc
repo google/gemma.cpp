@@ -295,241 +295,97 @@ static HWY_INLINE void ComputeQKVTransposedTile(
       });
 }
 
-// Transposes queries
-// Input: vector of pointers to subsequent queries. (allows for arbitrary
-// strides)
-// qkv_dim: dimension of query
-// allocator: aligned allocator to use for temporary storage
-//
-// Output: Pointer to contiguous memory with shape (qkv_dim,
-// queries.size())
-void TransposeStridedQueries(
-    hwy::Span<float*> queries, int qkv_dim,
-    hwy::Span<float> transposed_queries) {
+// Note: q_ptr and out_ptr do not use HWY_RESTRICT because this function may be
+// called for in-place compression.
+template <typename OutT, class DF, class DOut>
+static HWY_INLINE void CompressSingleQueryBF16orInt16(
+    DF df, DOut d_out, const float* q_ptr, int qkv_dim, OutT* out_ptr,
+    // scale_out is required if OutT is int16_t, and unused otherwise.
+    float* scale_out = nullptr) {
   namespace hn = hwy::HWY_NAMESPACE;
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-  using VF = hn::Vec<DF>;
-  using DI = hn::ScalableTag<int32_t>;
-  const DI di;
-  using VI = hn::Vec<DI>;
   const size_t lanes = hn::Lanes(df);
-  const size_t num_queries = queries.size();
-  const size_t num_queries_rounded_up = hwy::RoundUpTo(num_queries, lanes);
-  std::vector<int32_t, hwy::AlignedAllocator<int32_t>> query_offsets(
-      num_queries_rounded_up);
-  for (size_t i = 0; i < num_queries; ++i) {
-    query_offsets[i] = queries[i] - queries[0];
-  }
-  for (size_t i = num_queries; i < num_queries_rounded_up; ++i) {
-    // last offset is the same so gather doesn't read out of bounds
-    query_offsets[i] = query_offsets[num_queries - 1];
-  }
-
-  for (size_t i = 0; i < qkv_dim; i++) {
-    size_t j = 0;
-    if (num_queries >= lanes) {
-      for (; j <= num_queries-lanes; j += lanes) {
-        const VI offsets = hn::LoadU(di, query_offsets.data() + j);
-        VF x = hn::GatherIndex(df, queries[0] + i, offsets);
-        hn::StoreU(x, df, transposed_queries.data() + i * num_queries + j);
-      }
-    }
-    if (j < num_queries) {
-      const VI offsets = hn::LoadU(di, query_offsets.data() + j);
-      VF x = hn::GatherIndex(df, queries[0] + i, offsets);
-      hn::StoreN(x, df, transposed_queries.data() + i * num_queries + j,
-                 num_queries - j);
-    }
-  }
-}
-
-std::pair<AlignedFloatVector, std::vector<float*>> TransposeQueriesToGroupsOf4(
-    hwy::Span<float*> queries_ptrs, int qkv_dim) {
-  int num_queries = queries_ptrs.size();
-  int num_groups = hwy::DivCeil(num_queries, 4);
-  AlignedFloatVector transposed_queries(num_groups * 4 * qkv_dim);
-  std::vector<float*> transposed_queries_ptrs;
-  for (int group_idx = 0; group_idx < num_groups; ++group_idx){
-    int group_size = std::min(4, num_queries - group_idx * 4);
-    transposed_queries_ptrs.push_back(transposed_queries.data() +
-                                      group_idx * qkv_dim * 4);
-    TransposeStridedQueries(
-        hwy::Span<float*>(queries_ptrs.data() + group_idx * 4,
-                          group_size),
-        qkv_dim,
-        hwy::Span<float>(transposed_queries_ptrs.back(), qkv_dim * group_size));
-  }
-  return std::make_pair(std::move(transposed_queries),
-                        std::move(transposed_queries_ptrs));
-}
-
-template <typename OutT>
-static HWY_INLINE void TransposeStridedQueriesBF16orInt16(
-    hwy::Span<const float*> queries, int qkv_dim,
-    hwy::Span<OutT> transposed_queries, hwy::Span<float> q_scales) {
-  namespace hn = hwy::HWY_NAMESPACE;
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-  using VF = hn::Vec<DF>;
-  // doubles to avoid moving between int/float domains when gathering
-  using DF64 = hn::ScalableTag<double>;
-  const DF64 dd64;
-  using DI64 = hn::ScalableTag<int64_t>;
-  const DI64 di64;
-  using VI64 = hn::Vec<DI64>;
-  auto d_out = hn::Rebind<OutT, decltype(df)>();
-  const size_t lanes = hn::Lanes(df);
-  const size_t half_lanes = lanes / 2;
-  const size_t num_queries = queries.size();
-  const size_t num_numbers_to_gather = num_queries * 2;
-  const size_t num_queries_rounded_up = hwy::RoundUpTo(num_queries, half_lanes);
-  const size_t num_scales_rounded_up =
-      hwy::RoundUpTo(num_numbers_to_gather, lanes);
-
-  // We store scales twice so we will be able to just load them without a need
-  // to duplicate for multiplication
-  AlignedFloatVector inverted_q_scales_doubled(num_scales_rounded_up);
-
+  const hn::ScalableTag<OutT> d_out_full;
+  float s = 1.0f;
   if constexpr (IsInt16<OutT>()) {
-    // compute microscales
-    for (size_t i = 0; i < num_queries; ++i) {
-      float max_abs = AbsMaxOfSpan(hwy::Span<const float>(queries[i], qkv_dim));
-      float scale = max_abs == 0.0f ? 1.0f : 32767.0f / max_abs;
-      inverted_q_scales_doubled[2 * i] = scale;
-      inverted_q_scales_doubled[2 * i + 1] = scale;
-      q_scales[i] = 1.0f / scale;
-    }
+    HWY_DASSERT(scale_out != nullptr);
+    float max_abs = AbsMaxOfSpan(hwy::Span<const float>(q_ptr, qkv_dim));
+    s = max_abs == 0.0f ? 1.0f : 32767.0f / max_abs;
+    *scale_out = 1.0f / s;
   }
+  auto scale_vec = hn::Set(df, s);
 
-  std::vector<int64_t, hwy::AlignedAllocator<int64_t>> query_offsets(
-      num_queries_rounded_up);
-  for (size_t i = 0; i < num_queries; ++i) {
-    query_offsets[i] = (queries[i] - queries[0]) / 2;
-  }
-  for (size_t i = num_queries; i < num_queries_rounded_up; ++i) {
-    // last offset is the same so gather doesn't read out of bounds
-    query_offsets[i] = query_offsets[num_queries > 0 ? num_queries - 1 : 0];
-  }
-
-  const double* queries_0_double = HWY_RCAST_ALIGNED(const double*, queries[0]);
-
-  // Lambda to handle the scaling and demotion for Int16 types.
-  auto process_values = [&]() HWY_ATTR {
+  for (size_t i = 0; i < qkv_dim; i += 2 * lanes) {
+    auto x0 = hn::LoadU(df, q_ptr + i);
+    auto x1 = hn::LoadU(df, q_ptr + i + lanes);
     if constexpr (IsInt16<OutT>()) {
-      return [&](VF& x, size_t j) HWY_ATTR {
-        VF scales = hn::Load(df, inverted_q_scales_doubled.data() + j * 2);
-        x = hn::Mul(x, scales);
-        return hn::DemoteTo(d_out, hn::NearestInt(x));
-      };
+      x0 = hn::Mul(x0, scale_vec);
+      x1 = hn::Mul(x1, scale_vec);
+      auto demoted = hn::OrderedDemote2To(d_out_full, hn::NearestInt(x0),
+                                          hn::NearestInt(x1));
+      hn::StoreU(demoted, d_out_full, out_ptr + i);
     } else {
-      return [&](VF& x, size_t j) HWY_ATTR { return hn::DemoteTo(d_out, x); };
-    }
-  }();
-
-  for (size_t i = 0; i < qkv_dim; i += 2) {
-    size_t j = 0;
-    if (num_queries >= half_lanes) {
-      for (; j <= num_queries - half_lanes; j += half_lanes) {
-        const VI64 offsets = hn::LoadU(di64, query_offsets.data() + j);
-        auto x64 = hn::GatherIndex(dd64, queries_0_double + i / 2, offsets);
-        VF x = hn::BitCast(df, x64);
-        if constexpr (IsInt16<OutT>()) {
-          auto demoted = process_values(x, j);
-          hn::Store(demoted, d_out,
-                    transposed_queries.data() + i * num_queries + j * 2);
-        } else if constexpr (IsBF16<OutT>()) {
-          auto demoted = hn::DemoteTo(d_out, x);
-          hn::Store(demoted, d_out,
-                    transposed_queries.data() + i * num_queries + j * 2);
-        } else {
-          static_assert(false, "Unsupported type");
-        }
-      }
-    }
-    if (j < num_queries) {
-      const VI64 offsets = hn::LoadU(di64, query_offsets.data() + j);
-      auto x64 = hn::GatherIndex(dd64, queries_0_double + i / 2, offsets);
-      VF x = hn::BitCast(df, x64);
-      if constexpr (IsInt16<OutT>()) {
-        auto demoted = process_values(x, j);
-        hn::StoreN(demoted, d_out,
-                   transposed_queries.data() + i * num_queries + j * 2,
-                   num_numbers_to_gather - j * 2);
-      } else if constexpr (IsBF16<OutT>()) {
-        auto demoted = hn::DemoteTo(d_out, x);
-        hn::StoreN(demoted, d_out,
-                   transposed_queries.data() + i * num_queries + j * 2,
-                   num_numbers_to_gather - j * 2);
-      } else {
-        static_assert(false, "Unsupported type");
-      }
+      auto demoted = hn::OrderedDemote2To(d_out_full, x0, x1);
+      hn::StoreU(demoted, d_out_full, out_ptr + i);
     }
   }
 }
 
-// Transposed queries data, vector of pointers to transposed queries, vector of
-// scales
 template <typename OutT>
-std::tuple<std::vector<OutT, hwy::AlignedAllocator<OutT>>, std::vector<OutT*>,
-           AlignedFloatVector>
-TransposeQueriesToGroupsOfNBF16orInt16(hwy::Span<float*> queries_ptrs,
-                                       int qkv_dim, size_t group_size) {
-  size_t num_queries = queries_ptrs.size();
-  size_t num_groups = hwy::DivCeil(num_queries, group_size);
-  std::vector<OutT, hwy::AlignedAllocator<OutT>> transposed_queries(
-      num_groups * group_size * qkv_dim);
-  std::vector<OutT*> transposed_queries_ptrs;
-  AlignedFloatVector q_scales(num_groups * 4);
-  for (size_t group_idx = 0; group_idx < num_groups; ++group_idx) {
-    size_t current_group_size =
-        std::min(group_size, num_queries - group_idx * group_size);
-    transposed_queries_ptrs.push_back(transposed_queries.data() +
-                                      group_idx * qkv_dim * group_size);
-    TransposeStridedQueriesBF16orInt16(
-        hwy::Span<const float*>(
-            const_cast<const float**>(queries_ptrs.data() +
-                                      group_idx * group_size),
-            current_group_size),
-        qkv_dim,
-        hwy::Span<OutT>(transposed_queries_ptrs.back(),
-                        qkv_dim * current_group_size),
-        hwy::Span<float>(q_scales.data() + group_idx * group_size,
-                         current_group_size));
+static HWY_INLINE void CompressQueriesBF16orInt16(
+    hwy::Span<const float* const> input, int qkv_dim, OutT* HWY_RESTRICT output,
+    float* HWY_RESTRICT scale = nullptr) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  auto d_out = hn::Rebind<OutT, decltype(df)>();
+  const size_t num_queries = input.size();
+
+  for (size_t q = 0; q < num_queries; ++q) {
+    CompressSingleQueryBF16orInt16(df, d_out, input[q], qkv_dim,
+                                   output + q * qkv_dim,
+                                   scale == nullptr ? nullptr : scale + q);
   }
-  return std::make_tuple(std::move(transposed_queries),
-                         std::move(transposed_queries_ptrs),
-                         std::move(q_scales));
 }
 
-std::pair<AlignedBF16Vector, std::vector<BF16*>>
-TransposeTransposedQueriesAndPackIntoBF16(hwy::Span<float*> queries_ptrs,
-                                          int qkv_dim, int num_queries) {
-  constexpr int kMaxGroupSize = 4;
-  int num_groups = queries_ptrs.size();
-  AlignedBF16Vector transposed_queries(num_groups * kMaxGroupSize * qkv_dim);
-  std::vector<BF16*> transposed_queries_ptrs;
-  transposed_queries_ptrs.reserve(num_groups);
-  for (int group_idx = 0; group_idx < num_groups; ++group_idx) {
-    int group_size =
-        std::min(kMaxGroupSize, num_queries - group_idx * kMaxGroupSize);
-    transposed_queries_ptrs.push_back(transposed_queries.data() +
-                                      group_idx * qkv_dim * kMaxGroupSize);
-    for (int dim_idx = 0; dim_idx < qkv_dim; dim_idx += 2) {
-      for (int query_idx = 0; query_idx < group_size; ++query_idx) {
-        transposed_queries_ptrs.back()[dim_idx * group_size + query_idx * 2] =
-            hwy::ConvertScalarTo<BF16>(
-                queries_ptrs[group_idx][dim_idx * group_size + query_idx]);
-        transposed_queries_ptrs
-            .back()[dim_idx * group_size + query_idx * 2 + 1] =
-            hwy::ConvertScalarTo<BF16>(
-                queries_ptrs[group_idx]
-                            [(dim_idx + 1) * group_size + query_idx]);
-      }
-    }
+template <typename OutT>
+static HWY_INLINE void CompressQueriesBF16orInt16Contiguous(
+    const float* HWY_RESTRICT input, int qkv_dim, size_t num_queries,
+    OutT* HWY_RESTRICT output, float* HWY_RESTRICT scale = nullptr) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  auto d_out = hn::Rebind<OutT, decltype(df)>();
+
+  for (size_t q = 0; q < num_queries; ++q) {
+    CompressSingleQueryBF16orInt16(df, d_out, input + q * qkv_dim, qkv_dim,
+                                   output + q * qkv_dim,
+                                   scale == nullptr ? nullptr : scale + q);
   }
-  return std::make_pair(std::move(transposed_queries),
-                        std::move(transposed_queries_ptrs));
+}
+
+void CompressQueriesBF16(hwy::Span<const float* const> input, int qkv_dim,
+                         BF16* HWY_RESTRICT output) {
+  CompressQueriesBF16orInt16(input, qkv_dim, output);
+}
+
+void CompressQueriesBF16Contiguous(const float* HWY_RESTRICT input, int qkv_dim,
+                                   size_t num_queries,
+                                   BF16* HWY_RESTRICT output) {
+  CompressQueriesBF16orInt16Contiguous(input, qkv_dim, num_queries, output);
+}
+
+void CompressQueriesInt16(hwy::Span<const float* const> input, int qkv_dim,
+                          int16_t* HWY_RESTRICT output,
+                          float* HWY_RESTRICT scale) {
+  CompressQueriesBF16orInt16(input, qkv_dim, output, scale);
+}
+
+void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,
+                                    int qkv_dim, size_t num_queries,
+                                    int16_t* HWY_RESTRICT output,
+                                    float* HWY_RESTRICT scale) {
+  CompressQueriesBF16orInt16Contiguous(input, qkv_dim, num_queries, output,
+                                       scale);
 }
 
 template <typename T>
@@ -602,6 +458,26 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     activations.sub_task_att_out->resize(num_sub_tasks);
     activations.sub_task_exp_denominator_sums->resize(num_sub_tasks);
     activations.sub_task_max_logits->resize(num_sub_tasks);
+  }
+  int num_queries = num_query_tokens * heads_per_kv_head;
+  if (activations.bf16_queries != nullptr &&
+      num_sub_tasks * num_queries * qkv_dim >
+          activations.bf16_queries->size()) {
+    activations.bf16_queries->resize(num_sub_tasks * num_queries * qkv_dim);
+  }
+  if (activations.int16_queries != nullptr &&
+      num_sub_tasks * num_queries * qkv_dim >
+          activations.int16_queries->size()) {
+    activations.int16_queries->resize(num_sub_tasks * num_queries * qkv_dim);
+  }
+  if (activations.float_queries != nullptr &&
+      num_sub_tasks * num_queries * qkv_dim >
+          activations.float_queries->size()) {
+    activations.float_queries->resize(num_sub_tasks * num_queries * qkv_dim);
+  }
+  if (activations.q_scales != nullptr &&
+      num_sub_tasks * num_queries > activations.q_scales->size()) {
+    activations.q_scales->resize(num_sub_tasks * num_queries);
   }
   std::vector<int> skip_sub_task(num_sub_tasks, 0);
 
@@ -730,40 +606,43 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         }
 
         if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {
-          // pack transposed queries into BF16
-          auto [transposed_queries, transposed_queries_ptrs, _] =
-              TransposeQueriesToGroupsOfNBF16orInt16<BF16>(
-                  queries_ptrs_span, qkv_dim, /*group_size=*/4);
-          hwy::Span<const BF16*> queries_span(
-              const_cast<const BF16**>(transposed_queries_ptrs.data()),
-              transposed_queries_ptrs.size());
+          HWY_DASSERT(activations.bf16_queries != nullptr);
+          BF16* bf16_queries_ptr = activations.bf16_queries->data() +
+                                   task_idx * num_queries * qkv_dim;
+          CompressQueriesBF16(queries_ptrs_span, qkv_dim, bf16_queries_ptr);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
-              kv_ptrs, num_queries, queries_span,
+              kv_ptrs, num_queries, bf16_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data());
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
-          auto [transposed_queries, transposed_queries_ptrs, q_scales] =
-              TransposeQueriesToGroupsOfNBF16orInt16<int16_t>(
-                  queries_ptrs_span, qkv_dim, /*group_size=*/4);
-          hwy::Span<const int16_t*> queries_span(
-              const_cast<const int16_t**>(transposed_queries_ptrs.data()),
-              transposed_queries_ptrs.size());
+          HWY_DASSERT(activations.int16_queries != nullptr);
+          HWY_DASSERT(activations.q_scales != nullptr);
+          int16_t* int16_queries_ptr = activations.int16_queries->data() +
+                                       task_idx * num_queries * qkv_dim;
+          float* q_scales_ptr =
+              activations.q_scales->data() + task_idx * num_queries;
+          CompressQueriesInt16(queries_ptrs_span, qkv_dim, int16_queries_ptr,
+                               q_scales_ptr);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
-              kv_ptrs, num_queries, queries_span, q_scales,
+              kv_ptrs, num_queries, int16_queries_ptr,
+              hwy::Span<const float>(q_scales_ptr, num_queries),
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data());
         } else {
-          auto [transposed_queries, transposed_queries_ptrs] =
-              TransposeQueriesToGroupsOf4(queries_ptrs_span, qkv_dim);
+          HWY_DASSERT(activations.float_queries != nullptr);
+          float* contiguous_queries_ptr = activations.float_queries->data() +
+                                          task_idx * num_queries * qkv_dim;
+          for (int i = 0; i < num_queries; ++i) {
+            hwy::CopyBytes(queries_ptrs_span[i],
+                           contiguous_queries_ptr + i * qkv_dim,
+                           qkv_dim * sizeof(float));
+          }
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
-              kv_ptrs, num_queries,
-              hwy::Span<const float*>(
-                  const_cast<const float**>(transposed_queries_ptrs.data()),
-                  transposed_queries_ptrs.size()),
+              kv_ptrs, num_queries, contiguous_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),

@@ -51,25 +51,24 @@ namespace gcpp {
                       ThreadingContext& ctx, AttentionImpl attention_impl);  \
                                                                              \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(                  \
-      hwy::Span<const MatPtr> kvs, int q_count,                              \
-      const hwy::Span<const float* HWY_RESTRICT> q_T_in_groups_up_to_4,      \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
+      const float* HWY_RESTRICT q_base,                                      \
       hwy::Span<const size_t> start_pos_per_query,                           \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \
       float* HWY_RESTRICT max_logits);                                       \
                                                                              \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(              \
-      hwy::Span<const MatPtr> kvs, int q_count,                              \
-      const hwy::Span<const BF16 * HWY_RESTRICT> q_T_in_groups_up_to_4,      \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
+      const BF16* HWY_RESTRICT q_base,                                       \
       hwy::Span<const size_t> start_pos_per_query,                           \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \
       float* HWY_RESTRICT max_logits);                                       \
                                                                              \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(             \
-      hwy::Span<const MatPtr> kvs, int q_count,                              \
-      const hwy::Span<const int16_t* HWY_RESTRICT> q_T_in_groups_up_to_4,    \
-      hwy::Span<const float> q_scales,                                       \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
+      const int16_t* HWY_RESTRICT q_base, hwy::Span<const float> q_scales,   \
       hwy::Span<const size_t> start_pos_per_query,                           \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \

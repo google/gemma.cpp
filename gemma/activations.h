@@ -55,7 +55,9 @@ struct AttentionActivations {
       size_t batch_size, size_t seq_len, const RuntimeConfig& runtime_config,
       size_t max_workers, const Allocator& allocator,
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : rep_factor(max_workers *
+      : heads(layer_config.heads),
+        qkv_dim(layer_config.qkv_dim),
+        rep_factor(max_workers *
                    AttentionActivations::kThreadReplicationFactor /
                    layer_config.heads),
         // `vocab_size == 0` means it is for Vit part, VitAttention
@@ -144,6 +146,13 @@ struct AttentionActivations {
     // `inv_timescale*` are not batched.
   }
 
+  size_t heads;
+  size_t qkv_dim;
+  AlignedBF16Vector bf16_queries;
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries;
+  AlignedFloatVector float_queries;
+  AlignedFloatVector q_scales;
+
   // Maximum factor by which we might scale-up work to maximize parallelism.
   size_t rep_factor = 1;
   // Parameters for flash attention. The size of the vector is somewhere between
@@ -191,6 +200,10 @@ struct AttentionActivationsPtrs {
       : config(config),
         flash_params(flash_params),
         split_flash_params(split_flash_params),
+        bf16_queries(nullptr),
+        int16_queries(nullptr),
+        float_queries(nullptr),
+        q_scales(nullptr),
         div_seq_len(static_cast<uint32_t>(seq_len)),
         div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
         query_scale(ChooseQueryScale(config)) {}
@@ -212,6 +225,10 @@ struct AttentionActivationsPtrs {
     att_sums = activations.att_sums;
     inv_timescale = activations.inv_timescale;
     inv_timescale_global = activations.inv_timescale_global;
+    bf16_queries = &activations.bf16_queries;
+    int16_queries = &activations.int16_queries;
+    float_queries = &activations.float_queries;
+    q_scales = &activations.q_scales;
   }
 
   void SetBatchSize(size_t batch_size) {
@@ -277,6 +294,10 @@ struct AttentionActivationsPtrs {
       sub_task_exp_denominator_sums;
   std::vector<AlignedFloatVector>*
       sub_task_max_logits;
+  AlignedBF16Vector* bf16_queries;
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>>* int16_queries;
+  AlignedFloatVector* float_queries;
+  AlignedFloatVector* q_scales;
   // Inverse timescales for RoPE computation.
   MatPtrT<float> inv_timescale;
   // Inverse timescales for global RoPE computation.
