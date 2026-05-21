@@ -40,8 +40,9 @@ namespace gcpp {
 namespace {
 
 // Returns a HF layer tensor name for layer `i`.
+// Gemma 4 multimodal checkpoints nest the LM under model.language_model.
 static inline std::string LN(const char* tail, size_t i) {
-  return "model.layers." + std::to_string(i) + "." + tail;
+  return "model.language_model.layers." + std::to_string(i) + "." + tail;
 }
 
 // Validates that the safetensor entry has the expected element count.
@@ -148,21 +149,24 @@ static void AllocAndReadConcat3(MatPtr& mat, std::vector<MatOwner>& owners,
   if (!idx.ReadTensor(*ec, dst)) HWY_ABORT("safetensors: read failed: '%s'", hf_c);
 }
 
-// Loads per_layer_token_embd from HF shape [L, V, D] into gemma shape
-// [L*D, V] by transposing the [V, D] sub-matrix for each layer.
-// HF: data[l*V*D + v*D + d]  →  gemma row (l*D+d), col v
+// Loads per-layer token embedding from HF shape [V, L*D] into gemma shape
+// [L*D, V] by transposing (simple matrix transpose of a [V, L*D] matrix).
+// HF: hf[v, l*D+d]  →  gemma row (l*D+d), col v.
 static void LoadPerLayerEmbd(MatPtr& mat, std::vector<MatOwner>& owners,
                              const Allocator& alloc,
                              const SafetensorsIndex& idx,
                              size_t num_layers, size_t vocab_size,
                              size_t embd_dim) {
-  const char* hf_name = "model.per_layer_token_embd.weight";
+  // Gemma 4 multimodal: "model.language_model.embed_tokens_per_layer.weight"
+  // Shape [V, L*D] in HF; gemma stores it as [L*D, V].
+  const char* hf_name =
+      "model.language_model.embed_tokens_per_layer.weight";
   const SafetensorEntry* e = idx.Find(hf_name);
   if (!e) HWY_ABORT("safetensors: '%s' not found", hf_name);
   ValidateShape(*e, hf_name, num_layers * vocab_size * embd_dim);
 
-  // Read HF [L, V, D] into a temp buffer.
-  const size_t total_elems = num_layers * vocab_size * embd_dim;
+  // Read HF [V, L*D] into a temp buffer.
+  const size_t total_elems = vocab_size * num_layers * embd_dim;
   auto tmp = hwy::AllocateAligned<uint16_t>(total_elems);  // BF16 = uint16
   if (!idx.ReadTensor(*e, tmp.get())) {
     HWY_ABORT("safetensors: read failed: '%s'", hf_name);
@@ -173,16 +177,13 @@ static void LoadPerLayerEmbd(MatPtr& mat, std::vector<MatOwner>& owners,
   owners.emplace_back();
   owners.back().AllocateFor(mat, alloc, MatPadding::kPacked);
 
-  // Transpose: gemma[l*D+d, v] = HF[l*V*D + v*D + d]
+  // Transpose: gemma[l*D+d, v] = HF[v, l*D+d]
   uint16_t* dst = static_cast<uint16_t*>(mat.Packed());
   const uint16_t* src = tmp.get();
-  for (size_t l = 0; l < num_layers; ++l) {
-    for (size_t d = 0; d < embd_dim; ++d) {
-      const size_t dst_row = l * embd_dim + d;
-      uint16_t* dst_row_ptr = dst + dst_row * vocab_size;
-      for (size_t v = 0; v < vocab_size; ++v) {
-        dst_row_ptr[v] = src[l * vocab_size * embd_dim + v * embd_dim + d];
-      }
+  const size_t LD = num_layers * embd_dim;
+  for (size_t v = 0; v < vocab_size; ++v) {
+    for (size_t ld = 0; ld < LD; ++ld) {
+      dst[ld * vocab_size + v] = src[v * LD + ld];
     }
   }
 }
@@ -198,9 +199,9 @@ void WeightsPtrs::LoadFromSafetensors(const std::string& dir,
 
   // ── Global tensors ────────────────────────────────────────────────────────
   AllocAndReadDirect(embedder_input_embedding, mat_owners, alloc, idx,
-                     "model.embed_tokens.weight");
+                     "model.language_model.embed_tokens.weight");
   AllocAndReadDirect(final_norm_scale, mat_owners, alloc, idx,
-                     "model.norm.weight");
+                     "model.language_model.norm.weight");
 
   if (cfg.per_layer_embd_dim > 0) {
     LoadPerLayerEmbd(per_layer_input_embedding, mat_owners, alloc, idx,
