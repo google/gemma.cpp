@@ -442,6 +442,16 @@ struct ModelConfig : public IFields {
     return total;
   }
 
+  // Returns the column offset into the KV cache row for the given layer.
+  // Handles models with variable qkv_dim per layer (e.g. Gemma 4 dual-attention).
+  size_t KVCacheLayerOffset(size_t layer_idx) const {
+    size_t offset = 0;
+    for (size_t i = 0; i < layer_idx && i < layer_configs.size(); ++i) {
+      offset += layer_configs[i].CacheLayerSize();
+    }
+    return offset;
+  }
+
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
 
   // Major version of the model family, reflecting architecture changes. This is
