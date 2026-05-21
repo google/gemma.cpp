@@ -430,6 +430,93 @@ static ModelConfig ConfigGemma3_270M() {
   return config;
 }
 
+static ModelConfig ConfigBaseGemmaV4() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 0.0f;
+  config.final_cap = 30.0f;  // Gemma 4 uses final logit softcapping.
+  config.eos_id = 1;
+  config.secondary_eos_id = 106;
+  return config;
+}
+
+// Builds per-layer configs for Gemma 4, which has two distinct qkv_dims:
+// SWA layers use kQKVDimSWA=256, full-attention layers use kQKVDimFull=512.
+// The sliding_window_pattern is all models: every (pattern_period-1)th layer
+// (0-indexed) is full-attention (False), the rest are SWA (True).
+static void BuildGemma4LayerConfigs(ModelConfig& config,
+                                    uint32_t num_layers,
+                                    uint32_t pattern_period,
+                                    uint32_t heads,
+                                    uint32_t kv_heads,
+                                    const std::vector<uint32_t>& ff_per_layer,
+                                    uint32_t swa_window) {
+  static constexpr uint32_t kQKVDimSWA = 256;
+  static constexpr uint32_t kQKVDimFull = 512;
+  config.num_layers = num_layers;
+  config.attention_window_sizes.resize(num_layers);
+  config.layer_configs.reserve(num_layers);
+  for (uint32_t i = 0; i < num_layers; ++i) {
+    const bool is_full = ((i % pattern_period) == (pattern_period - 1));
+    LayerConfig lc;
+    lc.model_dim = config.model_dim;
+    lc.ff_hidden_dim = ff_per_layer[i];
+    lc.heads = heads;
+    lc.kv_heads = kv_heads;
+    lc.qkv_dim = is_full ? kQKVDimFull : kQKVDimSWA;
+    lc.optimized_gating = true;
+    lc.post_norm = PostNormType::Scale;
+    lc.use_qk_norm = true;
+    config.layer_configs.push_back(lc);
+    config.attention_window_sizes[i] =
+        is_full ? config.max_seq_len : swa_window;
+  }
+}
+
+// Gemma 4 E2B ("nano"): 35 layers, model_dim=1536.
+// Sliding window pattern TTTTF repeated 7 times (7 full-att, 28 SWA).
+// FFN: first 15 layers=6144, last 20 layers=12288.
+static ModelConfig ConfigGemma4_E2B() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_E2B";
+  config.model = Model::GEMMA4_E2B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 1536;
+  config.vocab_size = kGemmaV3VocabSize;
+  config.max_seq_len = 128 * 1024;  // 131072
+  config.per_layer_embd_dim = 256;
+  config.query_scale = QueryScaleType::SqrtKeySize;
+
+  // Per-layer FFN: layers 0-14 use 6144, layers 15-34 use 12288.
+  std::vector<uint32_t> ff(35);
+  for (uint32_t i = 0; i < 35; ++i) ff[i] = (i < 15) ? 6144 : 12288;
+
+  // Pattern: TTTTF (period=5), SWA window=512 tokens.
+  BuildGemma4LayerConfigs(config, 35, 5, 8, 1, ff, 512);
+  return config;
+}
+
+// Gemma 4 E4B ("turbo"): 42 layers, model_dim=2560.
+// Sliding window pattern TTTTTF repeated 7 times (7 full-att, 35 SWA).
+// FFN: uniform 10240 across all layers.
+static ModelConfig ConfigGemma4_E4B() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_E4B";
+  config.model = Model::GEMMA4_E4B;
+  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.model_dim = 2560;
+  config.vocab_size = kGemmaV3VocabSize;
+  config.max_seq_len = 128 * 1024;  // 131072
+  config.per_layer_embd_dim = 256;
+  config.query_scale = QueryScaleType::SqrtKeySize;
+
+  // Per-layer FFN: uniform 10240 across all 42 layers.
+  std::vector<uint32_t> ff(42, 10240);
+
+  // Pattern: TTTTTF (period=6), SWA window=512 tokens.
+  BuildGemma4LayerConfigs(config, 42, 6, 8, 2, ff, 512);
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -456,6 +543,10 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B();
     case Model::GEMMA3_270M:
       return ConfigGemma3_270M();
+    case Model::GEMMA4_E2B:
+      return ConfigGemma4_E2B();
+    case Model::GEMMA4_E4B:
+      return ConfigGemma4_E4B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -489,6 +580,10 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b";
     case Model::GEMMA3_270M:
       return "gemma3-270m";
+    case Model::GEMMA4_E2B:
+      return "gemma4-e2b";
+    case Model::GEMMA4_E4B:
+      return "gemma4-e4b";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }

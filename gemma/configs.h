@@ -177,6 +177,8 @@ enum class Model {
   GEMMA3_12B,
   GEMMA3_27B,
   GEMMA3_270M,
+  GEMMA4_E2B,
+  GEMMA4_E4B,
   kSentinel,
 };
 
@@ -188,7 +190,8 @@ const char* ModelPrefix(Model model);
 // This is used for deducing the PromptWrapping for pre-2025 BlobStore.
 static inline bool IsVLM(Model model) {
   return model == Model::GEMMA3_4B || model == Model::GEMMA3_1B ||
-         model == Model::GEMMA3_12B || model == Model::GEMMA3_27B;
+         model == Model::GEMMA3_12B || model == Model::GEMMA3_27B ||
+         model == Model::GEMMA4_E2B || model == Model::GEMMA4_E4B;
 }
 
 static inline bool IsPaliGemma(Model model) {
@@ -383,6 +386,7 @@ struct ModelConfig : public IFields {
 
     internal.VisitFields(visitor);
 
+    visitor(per_layer_embd_dim);
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -431,8 +435,11 @@ struct ModelConfig : public IFields {
   }
 
   size_t KVCacheCols() const {
-    const size_t num_layers = layer_configs.size();
-    return num_layers * layer_configs[0].CacheLayerSize();
+    size_t total = 0;
+    for (const auto& lc : layer_configs) {
+      total += lc.CacheLayerSize();
+    }
+    return total;
   }
 
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
@@ -453,6 +460,8 @@ struct ModelConfig : public IFields {
   uint32_t model_dim = 0;
   uint32_t vocab_size = 0;
   uint32_t max_seq_len = 0;
+  // Per-layer input embedding dimension (Gemma 4+). 0 means not used.
+  uint32_t per_layer_embd_dim = 0;
 
   // We no longer set nor use this: config_converter is not able to set this,
   // and only pre-2025 format stores scales, and we do not require advance

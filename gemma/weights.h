@@ -276,6 +276,9 @@ struct WeightsPtrs {
         tensors_(config_),
         finder_("", tensors_),  // no suffix because these are per-model.
         embedder_input_embedding(finder_("c_embedding")),
+        per_layer_input_embedding(config.per_layer_embd_dim > 0
+                                      ? finder_("per_layer_embd")
+                                      : MatPtr()),
         final_norm_scale(finder_("c_final_norm")),
         vit_encoder_norm_bias(finder_("enc_norm_bias")),
         vit_encoder_norm_scale(finder_("enc_norm_scale")),
@@ -306,6 +309,8 @@ struct WeightsPtrs {
 
   // TODO: switch to SFP?
   MatPtr embedder_input_embedding;
+  // Per-layer input embeddings (Gemma 4+). Shape: [num_layers * embd_dim, vocab].
+  MatPtr per_layer_input_embedding;
   MatPtr final_norm_scale;  // at least BF16.
 
   // Vit parts.
@@ -341,6 +346,9 @@ struct WeightsPtrs {
     LayerWeightsPtrs* other_layer1 = nullptr;
     LayerWeightsPtrs* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
+    if (config_.per_layer_embd_dim > 0) {
+      func(TENSOR_ARGS(per_layer_input_embedding, kMustRead));
+    }
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
 
     if (!config_.vit_config.layer_configs.empty()) {  // Vit parts.
