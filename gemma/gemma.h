@@ -16,6 +16,7 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_GEMMA_H_
 
+#include <memory>
 #include <stdio.h>
 
 #include <vector>
@@ -237,6 +238,12 @@ class Gemma {
   // may reference the same, or other `ThreadingContext` via `MatMulEnv`.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
         ThreadingContext& ctx);
+
+  // Loads BF16 weights directly from a HuggingFace safetensors directory,
+  // bypassing any BlobStore conversion step (no precision loss from conversion).
+  Gemma(const ModelConfig& config, const Path& tokenizer_path,
+        const Path& safetensors_dir, const InferenceArgs& inference,
+        ThreadingContext& ctx);
   ~Gemma();
 
   const ModelConfig& Config() const { return model_.Config(); }
@@ -273,7 +280,7 @@ class Gemma {
                            MatMulEnv& env) const;
 
  private:
-  BlobReader reader_;
+  std::unique_ptr<BlobReader> reader_;
   ModelStore model_;
   std::vector<MatOwner> mat_owners_;
   WeightsPtrs weights_;

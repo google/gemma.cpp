@@ -394,6 +394,11 @@ ModelStore::ModelStore(BlobReader& reader, const Path& tokenizer_path,
   HWY_ASSERT(key_idx_.size() == mat_ptrs_.size());
 }
 
+ModelStore::ModelStore(const ModelConfig& config, const Path& tokenizer_path)
+    : config_(config),
+      tokenizer_(tokenizer_path.Empty() ? kMockTokenizer
+                                        : ReadFileToString(tokenizer_path)) {}
+
 ModelStore::~ModelStore() {
   // Sanity check: ensure all scales were consumed.
   HWY_ASSERT(scales_consumed_ == scales_.size());

@@ -417,6 +417,12 @@ struct WeightsPtrs {
                      const LoaderArgs& loader, const InferenceArgs& inference,
                      std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
 
+  // Loads BF16 tensor data directly from a HuggingFace safetensors directory
+  // (e.g. google/gemma-4-e2b-it) without any BlobStore conversion step.
+  void LoadFromSafetensors(const std::string& dir,
+                           std::vector<MatOwner>& mat_owners,
+                           ThreadingContext& ctx);
+
   // Adds one blob for each tensor's data and returns all serialized MatPtr.
   std::vector<uint32_t> AddTensorDataToWriter(BlobWriter& writer) const;
 

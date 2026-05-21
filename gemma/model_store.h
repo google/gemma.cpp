@@ -53,6 +53,10 @@ class ModelStore {
   // used for pre-2025 files.
   ModelStore(BlobReader& reader, const Path& tokenizer_path = Path(),
              Tristate wrapping = Tristate::kDefault);
+
+  // Constructs from an in-memory config and a tokenizer file path, without
+  // requiring a BlobStore. Used for direct safetensors loading.
+  ModelStore(const ModelConfig& config, const Path& tokenizer_path);
   ~ModelStore();
 
   const ModelConfig& Config() const {
