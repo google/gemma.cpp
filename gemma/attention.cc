@@ -183,7 +183,12 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
   // heads that share the same key and value heads.
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
 
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
+  // Cumulative KV cache column offset for this layer. For models with uniform
+  // qkv_dim this equals layer_idx * CacheLayerSize(), but for Gemma 4
+  // dual-attention each layer may have a different qkv_dim and thus different
+  // CacheLayerSize(), so we must sum previous layers explicitly.
+  const size_t layer_kv_offset =
+      activations.config.KVCacheLayerOffset(layer_idx);
   const size_t seq_len =
       static_cast<size_t>(activations.div_seq_len.GetDivisor());
   // All layers should have the same number of heads.
@@ -218,7 +223,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
     // Make strided read-only views into the kv cache for
     // this query and head.
     const size_t head_offset = (head / kHeadGroups) * qkv_dim * 2;
-    const size_t kv_head_offset = layer_idx * cache_layer_size + head_offset;
+    const size_t kv_head_offset = layer_kv_offset + head_offset;
     MatPtrT<KV_t> k("k_view", Extents2D(seq_len, qkv_dim));
     k.SetPtr(kv_cache.Row(0) + kv_head_offset, kv_cache.Stride());
     MatPtrT<KV_t> v("v_view", Extents2D(seq_len, qkv_dim));
@@ -257,7 +262,10 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   const LayerConfig& layer_config = layer.layer_config;
   const size_t qkv_dim = layer_config.qkv_dim;
   const size_t kv_heads = layer_config.kv_heads;
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
+  // Cumulative KV cache column offset for this layer (handles variable
+  // qkv_dim per layer in Gemma 4 dual-attention).
+  const size_t layer_kv_offset =
+      activations.config.KVCacheLayerOffset(layer_idx);
 
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
@@ -276,7 +284,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
     const size_t cache_pos =
         activations.div_seq_len.Remainder(qbatch.Pos(qi) + batch_idx);
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
-        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_idx * cache_layer_size);
+        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_kv_offset);
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
@@ -297,7 +305,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         const size_t cache_pos = activations.div_seq_len.Remainder(pos);
         auto& kv_cache = qbatch.KV(qi).kv_cache;
         KV_t* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
-                                layer_idx * cache_layer_size +
+                                layer_kv_offset +
                                 head * qkv_dim * 2;
 
         HWY_ALIGN float kv_f32[2 * kMaxQKVDim];

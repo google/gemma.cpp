@@ -42,6 +42,18 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .shape = {config.model_dim},
                      .min_size = Type::kBF16,
                  });
+  // Per-layer token embeddings (Gemma 4+). Shape: [num_layers * embd_dim, vocab].
+  if (config.per_layer_embd_dim > 0) {
+    Add(no_suffix,
+        {
+            .base_name = "per_layer_embd",
+            .source_names = {"per_layer_token_embd.weight"},
+            .axes = {0, 1},
+            .shape = {config.num_layers * config.per_layer_embd_dim,
+                      config.vocab_size},
+            .min_size = Type::kBF16,
+        });
+  }
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},

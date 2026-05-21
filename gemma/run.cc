@@ -18,6 +18,7 @@
 #include <stdio.h>
 
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -255,7 +256,24 @@ void Run(const LoaderArgs& loader, const ThreadingArgs& threading,
   ThreadingContext ctx(threading);
   MatMulEnv env(ctx);
   if (inference.verbosity >= 3) env.print_best = true;
-  const Gemma gemma(loader, inference, ctx);
+
+  // Two load paths: safetensors directory or BlobStore .sbs file.
+  const bool use_safetensors = !loader.safetensors.Empty();
+  if (use_safetensors && loader.model_spec.empty()) {
+    HWY_ABORT(
+        "--safetensors requires --model_spec, e.g. 'gemma4-e2b-BF16-it'.");
+  }
+
+  std::unique_ptr<Gemma> gemma_ptr;
+  if (use_safetensors) {
+    const ModelConfig st_config(loader.model_spec);
+    gemma_ptr = std::make_unique<Gemma>(st_config, loader.tokenizer,
+                                        loader.safetensors, inference, ctx);
+  } else {
+    gemma_ptr = std::make_unique<Gemma>(loader, inference, ctx);
+  }
+  const Gemma& gemma = *gemma_ptr;
+
   KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
 
   if (inference.verbosity >= 1) {

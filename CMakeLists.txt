@@ -98,6 +98,7 @@ set(SOURCES
   gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
+  gemma/load_safetensors.cc
   io/blob_store.cc
   io/blob_store.h
   io/fields.cc
@@ -105,6 +106,8 @@ set(SOURCES
   io/io_win.cc
   io/io.cc
   io/io.h
+  io/safetensors.cc
+  io/safetensors.h
   ops/dot-inl.h
   ops/matmul_static_bf16.cc
   ops/matmul_static_f32.cc
@@ -160,7 +163,7 @@ set_property(TARGET libgemma PROPERTY CXX_STANDARD 17)
 set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
-target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static)
+target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static nlohmann_json::nlohmann_json)
 target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
 target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
