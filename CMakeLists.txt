@@ -36,7 +36,7 @@ if(EMSCRIPTEN)
   add_link_options("-sEXIT_RUNTIME=1")
 endif()
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 1a7d0ac1b1ccca785a7eda86874f5a84cb24fa95 EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 783beecea257838c964ec7644697e8b08396596e EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
