@@ -734,17 +734,10 @@ class DotStats {
   void Check() const {
     CheckMuls();
     CheckL1();
-#if !HWY_ARCH_ARM_A64
-    // CheckRel/CheckBwd/CheckUlps thresholds are tuned for x86; on aarch64
-    // the compensated dot product has slightly higher relative error
-    // (see the explicit "Extremely high error on aarch64" comments below for
-    // precedent). Skip them on aarch64 rather than maintain two sets of
-    // platform-specific bounds.
     CheckRel();
     CheckBwd();
     // No need to check bits, it is a monotonic function of rel.
     CheckUlps();
-#endif
 
     // We do not check times because they can be noisy/nonportable, but
     // `kAddTwoProd` is only about 10% slower than `kKahan`, and about 1.5 times
