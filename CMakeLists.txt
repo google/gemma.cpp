@@ -36,13 +36,8 @@ if(EMSCRIPTEN)
   add_link_options("-sEXIT_RUNTIME=1")
 endif()
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 30770269fa9c35b2168f743e7b9dab1a1c3d180a EXCLUDE_FROM_ALL)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 1a7d0ac1b1ccca785a7eda86874f5a84cb24fa95 EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(highway)
-
-# Highway ships hwy/stats.{h,cc} but its CMakeLists.txt doesn't compile stats.cc
-# into libhwy (Bazel BUILD does include it). Pull the symbol in via libgemma so
-# tests that use hwy::Stats::ToString link cleanly.
-target_sources(hwy PRIVATE ${highway_SOURCE_DIR}/hwy/stats.cc)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
