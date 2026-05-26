@@ -22,6 +22,7 @@
 
 #include <cstdint>
 
+#include "gemma/activations.h"
 #include "gemma/configs.h"
 #include "gemma/flash_structs.h"
 #include "gemma/kv_cache.h"
