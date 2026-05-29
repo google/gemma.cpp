@@ -571,7 +571,8 @@ static HWY_INLINE void FlashAttentionTileStepAndApplySoftCap4(
   using VF4 = hn::Vec<DF4>;
   static_assert(kNumQueries >= 1 && kNumQueries <= 4);
   VF4 new_max = hn::Set(df4, kNegInf);
-  VF max_0, max_1, max_2, max_3 = hn::Zero(df);
+  VF max_0 = hn::Zero(df), max_1 = hn::Zero(df), max_2 = hn::Zero(df),
+     max_3 = hn::Zero(df);
   max_0 = hn::Max(x_0_p0, x_0_p1);
   if constexpr (kNumQueries >= 2) {
     max_1 = hn::Max(x_1_p0, x_1_p1);
