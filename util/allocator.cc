@@ -236,7 +236,7 @@ AlignedPtr<uint8_t[]> Allocator::AllocBytes(size_t bytes) const {
 
   // Binding, or large vector/cache line size: use platform-specific allocator.
 
-#if HWY_OS_LINUX && !defined(__ANDROID_API__)
+#if GEMMA_BIND && HWY_OS_LINUX && !defined(__ANDROID_API__)
   // `move_pages` is documented to require an anonymous/private mapping or
   // `MAP_SHARED`. A normal allocation might not suffice, so we use `mmap`.
   // `Init` verified that the page size is a multiple of `QuantumBytes()`.

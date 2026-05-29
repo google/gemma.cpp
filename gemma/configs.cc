@@ -266,12 +266,13 @@ static LayerConfig LayerConfigGemma3_4B_LM(size_t model_dim) {
   return config;
 }
 
-// Until we have the SigLIP checkpoints included, we use the LM config directly.
+// Shared LM-only config for Gemma3 4B: used directly for text-only checkpoints
+// (e.g. TranslateGemma) and as the base for the VLM build.
 static ModelConfig ConfigGemma3_4B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_4B";
-  config.model = Model::GEMMA3_4B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_4B_LM";
+  config.model = Model::GEMMA3_4B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 2560;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -319,9 +320,9 @@ static LayerConfig LayerConfigGemma3_12B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_12B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_12B";
-  config.model = Model::GEMMA3_12B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_12B_LM";
+  config.model = Model::GEMMA3_12B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 3840;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -369,9 +370,9 @@ static LayerConfig LayerConfigGemma3_27B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_27B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_27B";
-  config.model = Model::GEMMA3_27B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_27B_LM";
+  config.model = Model::GEMMA3_27B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 5376;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -461,6 +462,12 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B();
     case Model::GEMMA3_270M:
       return ConfigGemma3_270M();
+    case Model::GEMMA3_4B_LM:
+      return ConfigGemma3_4B_LM();
+    case Model::GEMMA3_12B_LM:
+      return ConfigGemma3_12B_LM();
+    case Model::GEMMA3_27B_LM:
+      return ConfigGemma3_27B_LM();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -494,6 +501,12 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b";
     case Model::GEMMA3_270M:
       return "gemma3-270m";
+    case Model::GEMMA3_4B_LM:
+      return "gemma3-4b-lm";
+    case Model::GEMMA3_12B_LM:
+      return "gemma3-12b-lm";
+    case Model::GEMMA3_27B_LM:
+      return "gemma3-27b-lm";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -529,14 +542,16 @@ ModelConfig::ModelConfig(const Model model, Type weight,
 }
 
 static Model FindModel(const std::string& specifier) {
+  // Some model prefixes are prefixes of other prefixes (e.g. `gemma3-4b-` is a
+  // prefix of `gemma3-4b-lm-`). Pick the longest matching prefix so the more
+  // specific model wins.
   Model found_model = Model::UNKNOWN;
+  size_t longest_match = 0;
   ForEachModel([&](Model model) {
-    // Some model names are prefixes of other model names
     const std::string prefix = std::string(ModelPrefix(model)) + "-";
-    if (specifier.rfind(prefix, 0) == 0) {  // Starts with prefix.
-      // We only expect one match.
-      HWY_ASSERT_M(found_model == Model::UNKNOWN, specifier.c_str());
+    if (specifier.rfind(prefix, 0) == 0 && prefix.size() > longest_match) {
       found_model = model;
+      longest_match = prefix.size();
     }
   });
   HWY_ASSERT_M(found_model != Model::UNKNOWN, specifier.c_str());
@@ -687,7 +702,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
     case 34:
-      return Model::GEMMA3_4B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
+                                         : Model::GEMMA3_4B_LM;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -697,9 +713,11 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 46:
       return Model::GEMMA2_27B;
     case 48:
-      return Model::GEMMA3_12B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_12B
+                                         : Model::GEMMA3_12B_LM;
     case 62:
-      return Model::GEMMA3_27B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_27B
+                                         : Model::GEMMA3_27B_LM;
 
     // TODO: detect these.
     /*

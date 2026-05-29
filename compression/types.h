@@ -53,6 +53,8 @@ namespace gcpp {
   (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX10_2)
 #elif HWY_ARCH_WASM
 #define GEMMA_DISABLED_TARGETS HWY_SCALAR
+#elif HWY_ARCH_RISCV
+#define GEMMA_DISABLED_TARGETS HWY_SCALAR
 #endif  // HWY_ARCH_*
 
 #endif  // GEMMA_DISABLED_TARGETS
@@ -345,6 +347,9 @@ constexpr size_t CompressedArrayElements(size_t capacity) {
 // reusing `hwy::Span`.
 template <typename Packed>
 struct PackedSpan {
+  PackedSpan() = default;
+  PackedSpan(Packed* HWY_RESTRICT ptr, size_t num) : ptr(ptr), num(num) {}
+
   // Ensures callers can read or write `num_accessible` elements starting at
   // `packed_ofs`.
   void BoundsCheck(size_t packed_ofs, size_t num_accessible) const {

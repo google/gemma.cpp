@@ -208,6 +208,12 @@ enum class Model {
   GEMMA3_27B,
   GEMMA3_270M,
   CUSTOM,
+  // Text-only variants of Gemma 3, distinguished by absence of a vision tower
+  // (e.g. TranslateGemma). Added after CUSTOM to preserve serialized enum
+  // values for existing weight files.
+  GEMMA3_4B_LM,
+  GEMMA3_12B_LM,
+  GEMMA3_27B_LM,
   kSentinel,
 };
 

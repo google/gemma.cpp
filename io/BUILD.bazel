@@ -29,7 +29,8 @@ FILE_DEPS = select({
         # Placeholder for io deps, do not remove
     ],
     ":android": [],
-    # Placeholder for internal build rules, do not remove
+    # Placeholder 1 for internal build rules, do not remove
+    # Placeholder 2 for internal build rules, do not remove
 })
 
 cc_library(
