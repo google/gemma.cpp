@@ -345,6 +345,9 @@ constexpr size_t CompressedArrayElements(size_t capacity) {
 // reusing `hwy::Span`.
 template <typename Packed>
 struct PackedSpan {
+  PackedSpan() = default;
+  PackedSpan(Packed* HWY_RESTRICT ptr, size_t num) : ptr(ptr), num(num) {}
+
   // Ensures callers can read or write `num_accessible` elements starting at
   // `packed_ofs`.
   void BoundsCheck(size_t packed_ofs, size_t num_accessible) const {
