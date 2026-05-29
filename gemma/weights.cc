@@ -594,6 +594,10 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                 GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToBF16);
                 const TensorToRead& tensor = tensors[task];
                 MatPtr& mat = *tensor.mat;
+                // Validate blob size matches allocated buffer before any read.
+                // MapAll (line ~557) and MakeBatches (line ~645) both assert this;
+                // this path was the only one missing the check.
+                HWY_ASSERT_M(tensor.range.bytes == mat.PackedBytes(), mat.Name());
 
                 if (tensor.keep_type) {
                   HWY_ASSERT(reader.file().Read(
