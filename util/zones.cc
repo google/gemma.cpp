@@ -15,16 +15,18 @@ const char* ZoneName(Zones zone) {
       return "FlashAttention.FlashAttention";
     case Zones::kFlashAttentionInclusive:
       return "FlashAttention.Inclusive";
+    case Zones::kVitFlashAttentionInclusive:
+      return "Vit.FlashAttention.Inclusive";
     case Zones::kFlashAttentionRmsNormAndPositionalEncoding:
       return "FlashAttention.RMSNormAndPositionalEncoding";
-    case Zones::kFlashAttentionSingleFlashAttention:
-      return "FlashAttention.SingleFlashAttention";
-    case Zones::kFlashAttentionTileFlashAttention:
-      return "FlashAttention.TileFlashAttention";
+    case Zones::kFlashAttentionTileFlashAttention1:
+      return "FlashAttention.TileFlashAttention1";
     case Zones::kFlashAttentionTileFlashAttention4:
       return "FlashAttention.TileFlashAttention4";
-    case Zones::kFlashAttentionTransposeQ:
-      return "FlashAttention.TransposeQ";
+    case Zones::kFlashAttentionTileFlashAttention8:
+      return "FlashAttention.TileFlashAttention8";
+    case Zones::kFlashAttentionCombineSplit:
+      return "FlashAttention.CombineSplit";
     case Zones::kGenActivation:
       return "Gen.Activation";
     case Zones::kGenActivationFused:
@@ -47,10 +49,14 @@ const char* ZoneName(Zones zone) {
       return "Gen.EmbeddingMatmul";
     case Zones::kGenFFW:
       return "Gen.FFW";
+    case Zones::kGenImageTokens:
+      return "Gen.ImageTokens";
     case Zones::kGenSampleTop1:
       return "Gen.SampleTop1";
     case Zones::kGenSampleTopK:
       return "Gen.SampleTopK";
+    case Zones::kGenStats:
+      return "Gen.Stats";
     case Zones::kMMDecompressA:
       return "MM.DecompressA";
     case Zones::kMMDispatch:
@@ -102,6 +108,7 @@ const char* ZoneName(Zones zone) {
 hwy::ProfilerFlags ZoneFlags(Zones zone) {
   switch (zone) {
     case Zones::kFlashAttentionInclusive:
+    case Zones::kVitFlashAttentionInclusive:
     case Zones::kGenAttention:
     case Zones::kGenAttentionComputeQKV:
     case Zones::kGenAttentionDotSoftmaxWeightedSumInclusive:
@@ -109,6 +116,7 @@ hwy::ProfilerFlags ZoneFlags(Zones zone) {
     case Zones::kGenEmbed:
     case Zones::kGenEmbeddingMatmul:
     case Zones::kGenFFW:
+    case Zones::kGenImageTokens:
       return hwy::ProfilerFlags::kInclusive;
     default:
       return hwy::ProfilerFlags::kDefault;
@@ -163,6 +171,8 @@ const char* CallerName(Callers caller) {
       return "ReadBatches";
     case Callers::kSampleAndStream:
       return "SampleAndStream";
+    case Callers::kTensorStats:
+      return "TensorStats";
     case Callers::kTest:  // only for unit tests.
       return "Test-only!";
     case Callers::kTunePool:

@@ -84,6 +84,7 @@ PYBIND11_MODULE(configs, py_module) {
 
   enum_<Model>(py_module, "Model")
       .value("UNKNOWN", Model::UNKNOWN)
+      .value("CUSTOM", Model::CUSTOM)
       .value("GEMMA2_9B", Model::GEMMA2_9B)
       .value("GEMMA2_27B", Model::GEMMA2_27B)
       .value("GEMMA2_2B", Model::GEMMA2_2B)
@@ -91,7 +92,15 @@ PYBIND11_MODULE(configs, py_module) {
       .value("PALIGEMMA2_10B_224", Model::PALIGEMMA2_10B_224)
       .value("PALIGEMMA2_3B_448", Model::PALIGEMMA2_3B_448)
       .value("PALIGEMMA2_10B_448", Model::PALIGEMMA2_10B_448)
+      .value("GEMMA3_1B", Model::GEMMA3_1B)
+      .value("GEMMA3_4B", Model::GEMMA3_4B)
+      .value("GEMMA3_12B", Model::GEMMA3_12B)
+      .value("GEMMA3_27B", Model::GEMMA3_27B)
       .value("GEMMA3_270M", Model::GEMMA3_270M)
+      .value("GEMMA3_4B_LM", Model::GEMMA3_4B_LM)
+      .value("GEMMA3_12B_LM", Model::GEMMA3_12B_LM)
+      .value("GEMMA3_27B_LM", Model::GEMMA3_27B_LM)
+      // Insert new models above this line.
   .value("PALIGEMMA_448", Model::PALIGEMMA_448);
 
   class_<TensorInfo>(py_module, "TensorInfo")
@@ -173,6 +182,8 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("secondary_eos_id", &ModelConfig::secondary_eos_id)
       .def_readwrite("scale_base_names", &ModelConfig::scale_base_names)
       .def_readwrite("internal", &ModelConfig::internal)
+      .def_readwrite("use_global_timescale",
+                     &ModelConfig::use_global_timescale)
 
       .def("add_layer_config", &ModelConfig::AddLayerConfig,
            arg("layer_config"))

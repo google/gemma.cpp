@@ -31,7 +31,9 @@ namespace gcpp {
 
 class PromptArgs : public ArgsBase<PromptArgs> {
  public:
-  PromptArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  PromptArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
 
   Path layers_output;  // optional
   std::string prompt;
@@ -51,11 +53,15 @@ class PromptArgs : public ArgsBase<PromptArgs> {
 };
 
 int Run(int argc, char** argv) {
-  PromptArgs prompt_args(argc, argv);
+  ConsumedArgs consumed(argc, argv);
+  const GemmaArgs args(argc, argv, consumed);
+  const PromptArgs prompt_args(argc, argv, consumed);
   AbortIfInvalidArgs(prompt_args);
+  consumed.AbortIfUnconsumed();
 
   json json_output;
-  GemmaEnv env(argc, argv);
+  GemmaEnv env(args);
+
   env.MutableConfig().layers_output =
       prompt_args.layers_output.Empty()
           ? LayersOutputFunc()

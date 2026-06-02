@@ -23,7 +23,9 @@ using json = nlohmann::json;
 
 class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
  public:
-  BenchmarkArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  BenchmarkArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
 
   Path summarize_text;
   Path cross_entropy;
@@ -127,9 +129,16 @@ int BenchmarkTriviaQA(GemmaEnv& env, const Path& json_file,
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  gcpp::GemmaEnv env(argc, argv);
-  gcpp::BenchmarkArgs benchmark_args(argc, argv);
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
+  gcpp::BenchmarkArgs benchmark_args(argc, argv, consumed);
+  if (gcpp::HasHelp(argc, argv)) {
+    args.Help();
+    return 0;
+  }
+  consumed.AbortIfUnconsumed();
 
+  gcpp::GemmaEnv env(args);
   if (!benchmark_args.summarize_text.Empty()) {
     return BenchmarkSummary(env, benchmark_args.summarize_text);
   } else if (!benchmark_args.cross_entropy.Empty()) {

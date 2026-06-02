@@ -37,8 +37,6 @@
 
 namespace gcpp {
 namespace {
-// Hardcoded for PaliGemma ViT input.
-constexpr size_t kPatchSize = 14;
 
 // Returns the linearly scaled index in [0, to_size) closest to the
 // value in [0, from_size).
@@ -85,8 +83,11 @@ const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
   }
   num = 0;
   for (; pos < end && std::isdigit(*pos); ++pos) {
-    num *= 10;
-    num += *pos - '0';
+    const size_t digit = *pos - '0';
+    if (num > (SIZE_MAX - digit) / 10) {
+      return nullptr;  // overflow
+    }
+    num = num * 10 + digit;
   }
   return pos;
 }
@@ -102,6 +103,7 @@ bool Image::ReadPPM(const std::string& filename) {
   return ReadPPM(hwy::Span<const char>(content.data(), content.size()));
 }
 
+// This is surprisingly inexpensive for small images (3 ms).
 bool Image::ReadPPM(const hwy::Span<const char>& buf) {
   const char* pos = CheckP6Format(buf.cbegin(), buf.cend());
   if (!pos) {
@@ -137,6 +139,14 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
     return false;
   }
   ++pos;
+  if (width == 0 || height == 0) {
+    HWY_ABORT("Invalid zero dimension\n");
+    return false;
+  }
+  if (width > SIZE_MAX / 3 || width * 3 > SIZE_MAX / height) {
+    HWY_ABORT("Image dimensions overflow\n");
+    return false;
+  }
   const size_t data_size = width * height * 3;
   if (buf.cend() - pos < static_cast<ptrdiff_t>(data_size)) {
     std::cerr << "Insufficient data remaining\n";
@@ -173,6 +183,7 @@ void Image::Set(int width, int height, const float* data) {
   }
 }
 
+// This is surprisingly inexpensive for small images (2 ms).
 void Image::Resize(int new_width, int new_height) {
   std::vector<float> new_data(new_width * new_height * 3);
   // TODO: go to bilinear interpolation, or antialias.
@@ -208,24 +219,25 @@ bool Image::WriteBinary(const std::string& filename) const {
 }
 
 // Image.data() is H x W x 3.
-// We want the N-th patch of size kPatchSize x kPatchSize x 3.
-void Image::GetPatch(size_t patch_num, float* patch) const {
+// We want the N-th patch of size patch_dim x patch_dim x 3.
+void Image::GetPatch(size_t patch_num, const hwy::Divisor& div_patch_dim,
+                     float* patch) const {
   PROFILER_FUNC;
   constexpr size_t kNumChannels = 3;
-  constexpr size_t kBytesPerPixel = (kNumChannels * sizeof(float));
-  constexpr size_t kBytesPerRow = (kPatchSize * kBytesPerPixel);
-  const size_t kDataSize = width_ * height_ * kNumChannels;
+  constexpr size_t kBytesPerPixel = kNumChannels * sizeof(float);
+  const size_t patch_dim = div_patch_dim.GetDivisor();
+  const size_t bytes_per_row = (patch_dim * kBytesPerPixel);
   const size_t in_bytes_to_next_row = (width_ * kBytesPerPixel);
-  HWY_ASSERT(size() == kDataSize);
-  HWY_ASSERT(width_ % kPatchSize == 0);
-  HWY_ASSERT(height_ % kPatchSize == 0);
-  const size_t kNumPatchesPerRow = width_ / kPatchSize;
-  size_t patch_y = patch_num / kNumPatchesPerRow;
-  size_t patch_x = patch_num % kNumPatchesPerRow;
-  HWY_ASSERT(0 <= patch_y && patch_y < height_ / kPatchSize);
-  HWY_ASSERT(0 <= patch_x && patch_x < kNumPatchesPerRow);
-  patch_y *= kPatchSize;
-  patch_x *= kPatchSize;
+  HWY_ASSERT(size() == width_ * height_ * kNumChannels);
+  HWY_ASSERT(div_patch_dim.Remainder(width_) == 0);
+  HWY_ASSERT(div_patch_dim.Remainder(height_) == 0);
+  const size_t patches_x = div_patch_dim.Divide(width_);
+  size_t patch_y = patch_num / patches_x;
+  size_t patch_x = patch_num % patches_x;
+  HWY_DASSERT(0 <= patch_y && patch_y < div_patch_dim.Divide(height_));
+  HWY_DASSERT(0 <= patch_x && patch_x < patches_x);
+  patch_y *= patch_dim;
+  patch_x *= patch_dim;
 
   // Move `out` and `in` to the start of the patch.
   char* out = reinterpret_cast<char*>(patch);
@@ -233,9 +245,9 @@ void Image::GetPatch(size_t patch_num, float* patch) const {
   in += (((patch_y * width_) + patch_x) * kBytesPerPixel);
 
   // Copy the patch one row at a time.
-  for (size_t y = 0; y < kPatchSize; ++y) {
-    std::memcpy(out, in, kBytesPerRow);
-    out += kBytesPerRow;
+  for (size_t y = 0; y < patch_dim; ++y) {
+    std::memcpy(out, in, bytes_per_row);
+    out += bytes_per_row;
     in += in_bytes_to_next_row;
   }
 }

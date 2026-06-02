@@ -488,11 +488,10 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
   EnqueueChunks(keys_.size() - 1, curr_offset_, bytes,
                 static_cast<const uint8_t*>(data), writes);
 
-  const ParallelismStrategy strategy = file_->IsAppendOnly()
-                                           ? ParallelismStrategy::kNone
-                                           : ParallelismStrategy::kFlat;
+  const Parallelism parallelism =
+      file_->IsAppendOnly() ? Parallelism::kNone : Parallelism::kFlat;
   ParallelFor(
-      strategy, writes.size(), ctx_,
+      parallelism, writes.size(), ctx_,
       /*cluster_idx=*/0, Callers::kBlobWriter,
       [this, &writes](uint64_t i, size_t /*thread*/) {
         const BlobRange& range = writes[i].range;
@@ -509,7 +508,8 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
 void BlobWriter::Finalize() {
   if (!file_->IsAppendOnly() && curr_offset_ != file_->FileSize()) {
     HWY_WARN("Computed offset %zu does not match file size %zu.",
-             curr_offset_, file_->FileSize());
+             static_cast<size_t>(curr_offset_),
+             static_cast<size_t>(file_->FileSize()));
   }
   const BlobStore bs = BlobStore(keys_, blob_sizes_);
 

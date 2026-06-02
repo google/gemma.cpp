@@ -22,7 +22,6 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
-#include "io/io.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -42,7 +41,11 @@ class GemmaTest : public ::testing::Test {
   // Requires argc/argv, hence do not use `SetUpTestSuite`.
   static void InitEnv(int argc, char** argv) {
     HWY_ASSERT(s_env == nullptr);  // Should only be called once.
-    s_env = new GemmaEnv(argc, argv);
+    ConsumedArgs consumed(argc, argv);
+    GemmaArgs args(argc, argv, consumed);
+    consumed.AbortIfUnconsumed();
+
+    s_env = new GemmaEnv(args);
     const gcpp::ModelConfig& config = s_env->GetGemma()->Config();
     fprintf(stderr, "Using %s\n", config.Specifier().c_str());
   }
@@ -130,7 +133,7 @@ TEST_F(GemmaTest, Multiturn) {
   // Note: we do not rewind any <end_of_turn> tokens here. If the model
   // produced one and WrapAndTokenize() inserts another one, it will just be
   // duplicated.
-  mutable_prompt = "Please repeat all prior statements.";
+  mutable_prompt = "Please repeat what I just told you.";
   tokens = WrapAndTokenize(model->Tokenizer(), model->ChatTemplate(),
                            config.wrapping, abs_pos, mutable_prompt);
 
@@ -167,6 +170,9 @@ TEST_F(GemmaTest, CrossEntropySmall) {
     case gcpp::Model::GEMMA2_27B:
       EXPECT_NEAR(entropy, 1.30f, 0.02f);
       break;
+    case gcpp::Model::GEMMA3_270M:
+      EXPECT_NEAR(entropy, 1.41f, 0.02f);
+      break;
     default:
       FAIL() << "no entropy expectation for this model";
       break;
@@ -178,7 +184,6 @@ TEST_F(GemmaTest, CrossEntropySmall) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  gcpp::InternalInit();
   gcpp::GemmaTest::InitEnv(argc, argv);
   int ret = RUN_ALL_TESTS();
   gcpp::GemmaTest::DeleteEnv();

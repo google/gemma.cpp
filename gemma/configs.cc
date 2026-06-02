@@ -19,11 +19,12 @@
 #include <stdio.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFields
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFields
+#include "io/io.h"              // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -238,6 +239,7 @@ static ModelConfig ConfigGemma3_1B() {
   config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   config.model_dim = 1152;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -264,12 +266,13 @@ static LayerConfig LayerConfigGemma3_4B_LM(size_t model_dim) {
   return config;
 }
 
-// Until we have the SigLIP checkpoints included, we use the LM config directly.
+// Shared LM-only config for Gemma3 4B: used directly for text-only checkpoints
+// (e.g. TranslateGemma) and as the base for the VLM build.
 static ModelConfig ConfigGemma3_4B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_4B";
-  config.model = Model::GEMMA3_4B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_4B_LM";
+  config.model = Model::GEMMA3_4B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 2560;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -288,6 +291,7 @@ static ModelConfig ConfigGemma3_4B() {
   config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -316,9 +320,9 @@ static LayerConfig LayerConfigGemma3_12B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_12B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_12B";
-  config.model = Model::GEMMA3_12B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_12B_LM";
+  config.model = Model::GEMMA3_12B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 3840;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -337,6 +341,7 @@ static ModelConfig ConfigGemma3_12B() {
   config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -365,9 +370,9 @@ static LayerConfig LayerConfigGemma3_27B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_27B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_27B";
-  config.model = Model::GEMMA3_27B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_27B_LM";
+  config.model = Model::GEMMA3_27B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 5376;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -386,6 +391,7 @@ static ModelConfig ConfigGemma3_27B() {
   config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -456,6 +462,12 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B();
     case Model::GEMMA3_270M:
       return ConfigGemma3_270M();
+    case Model::GEMMA3_4B_LM:
+      return ConfigGemma3_4B_LM();
+    case Model::GEMMA3_12B_LM:
+      return ConfigGemma3_12B_LM();
+    case Model::GEMMA3_27B_LM:
+      return ConfigGemma3_27B_LM();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -489,25 +501,31 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b";
     case Model::GEMMA3_270M:
       return "gemma3-270m";
+    case Model::GEMMA3_4B_LM:
+      return "gemma3-4b-lm";
+    case Model::GEMMA3_12B_LM:
+      return "gemma3-12b-lm";
+    case Model::GEMMA3_27B_LM:
+      return "gemma3-27b-lm";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
 }
 
 PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
-  if (IsPaliGemma(model)) {
+  const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
+
+  // For models with a fixed wrapping mode, ignore user override.
+  if (config_wrapping == PromptWrapping::PALIGEMMA ||
+      config_wrapping == PromptWrapping::GEMMA_VLM) {
     if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
+      HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
+               ModelPrefix(model));
     }
-    return PromptWrapping::PALIGEMMA;
+    return config_wrapping;
   }
-  if (IsVLM(model)) {
-    if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
-    }
-    return PromptWrapping::GEMMA_VLM;
-  }
-  // Default to IT unless --wrapping=0.
+
+  // For other models, default to IT unless --wrapping=0 is passed.
   return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
                                       : PromptWrapping::GEMMA_IT;
 }
@@ -524,14 +542,16 @@ ModelConfig::ModelConfig(const Model model, Type weight,
 }
 
 static Model FindModel(const std::string& specifier) {
+  // Some model prefixes are prefixes of other prefixes (e.g. `gemma3-4b-` is a
+  // prefix of `gemma3-4b-lm-`). Pick the longest matching prefix so the more
+  // specific model wins.
   Model found_model = Model::UNKNOWN;
+  size_t longest_match = 0;
   ForEachModel([&](Model model) {
-    // Some model names are prefixes of other model names
     const std::string prefix = std::string(ModelPrefix(model)) + "-";
-    if (specifier.rfind(prefix, 0) == 0) {  // Starts with prefix.
-      // We only expect one match.
-      HWY_ASSERT_M(found_model == Model::UNKNOWN, specifier.c_str());
+    if (specifier.rfind(prefix, 0) == 0 && prefix.size() > longest_match) {
       found_model = model;
+      longest_match = prefix.size();
     }
   });
   HWY_ASSERT_M(found_model != Model::UNKNOWN, specifier.c_str());
@@ -674,13 +694,16 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return Model::GEMMA3_270M;
 
     case 26:
-      if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
+      if (layer_types & (kDeducedViT | kDeducedKqNorm)) {
+        return Model::GEMMA3_1B;
+      }
       return Model::GEMMA2_2B;
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
     case 34:
-      return Model::GEMMA3_4B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
+                                         : Model::GEMMA3_4B_LM;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -690,9 +713,11 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 46:
       return Model::GEMMA2_27B;
     case 48:
-      return Model::GEMMA3_12B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_12B
+                                         : Model::GEMMA3_12B_LM;
     case 62:
-      return Model::GEMMA3_27B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_27B
+                                         : Model::GEMMA3_27B_LM;
 
     // TODO: detect these.
     /*
@@ -703,6 +728,48 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
                blob_path.path.c_str(), layers, layer_types);
       return Model::UNKNOWN;
+  }
+}
+
+constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
+    {"flash", AttentionImpl::kFlash},
+    {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
+    {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
+    {"flash_transposed_qs_int16", AttentionImpl::kFlashTransposedQsInt16},
+};
+
+std::string GetAttentionImplName(AttentionImpl impl) {
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (attention_impl == impl) return std::string(name);
+  }
+  return "unknown";
+}
+
+AttentionImpl GetAttentionImpl(const std::string& impl_name) {
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (name == impl_name) return attention_impl;
+  }
+  HWY_WARN("Unknown attention implementation: %s. Using kFlash.\n",
+           impl_name.c_str());
+  return AttentionImpl::kFlash;
+}
+
+std::string KVEncodingToString(KVEncoding encoding) {
+  switch (encoding) {
+    case KVEncoding::kF32:
+      return "F32";
+    case KVEncoding::kBF16:
+      return "BF16";
+    case KVEncoding::kF32TwoTranspositions:
+      return "F32TwoTranspositions";
+    case KVEncoding::kBF16TwoTranspositions:
+      return "BF16TwoTranspositions";
+    case KVEncoding::kInt8:
+      return "Int8";
+    case KVEncoding::kInt8TwoTranspositions:
+      return "Int8TwoTranspositions";
+    default:
+      return "Unknown";
   }
 }
 

@@ -45,10 +45,7 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 // Wrapper around GemmaEnv to expose to Python.
 class GemmaModel {
  public:
-  GemmaModel(const gcpp::LoaderArgs& loader,
-             const gcpp::ThreadingArgs& threading,
-             const gcpp::InferenceArgs& inference)
-      : env_(loader, threading, inference), last_prob_(0.0f) {}
+  GemmaModel(const gcpp::GemmaArgs& args) : env_(args), last_prob_(0.0f) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
@@ -186,7 +183,8 @@ class GemmaModel {
         env_.MutableEnv().ctx.allocator, gcpp::MatPadding::kOdd));
     gcpp::RuntimeConfig runtime_config = {.verbosity = 0};
     gemma.GenerateImageTokens(runtime_config, env_.MutableKVCache().SeqLen(),
-                              c_image, *image_tokens_, env_.MutableEnv());
+                              c_image, *image_tokens_, env_.MutableEnv(),
+                              timing_info_);
   }
 
   // Generates a response to the given prompt, using the last set image.
@@ -247,6 +245,7 @@ class GemmaModel {
  private:
   gcpp::GemmaEnv env_;
   std::unique_ptr<gcpp::ImageTokens> image_tokens_;
+  gcpp::TimingInfo timing_info_;
   float last_prob_;
 };
 
@@ -254,13 +253,15 @@ PYBIND11_MODULE(gemma, mod) {
   py::class_<GemmaModel>(mod, "GemmaModel")
       .def(py::init([](const std::string& tokenizer, const std::string& weights,
                        size_t max_threads) {
-             const gcpp::LoaderArgs loader(tokenizer, weights);
              gcpp::ThreadingArgs threading;
              threading.max_lps = max_threads;
+
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
-             auto gemma =
-                 std::make_unique<GemmaModel>(loader, threading, inference);
+
+             const gcpp::GemmaArgs args(gcpp::LoaderArgs(tokenizer, weights),
+                                        threading, inference);
+             auto gemma = std::make_unique<GemmaModel>(args);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }

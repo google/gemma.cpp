@@ -6,7 +6,7 @@ foundation models from Google.
 For additional information about Gemma, see
 [ai.google.dev/gemma](https://ai.google.dev/gemma). Model weights, including
 gemma.cpp specific artifacts, are
-[available on kaggle](https://www.kaggle.com/models/google/gemma-2).
+[available on kaggle](https://www.kaggle.com/models/google/gemma-3).
 
 ## Who is this project for?
 
@@ -34,7 +34,7 @@ portable SIMD for CPU inference.
 
 For production-oriented edge deployments we recommend standard deployment
 pathways using Python frameworks like JAX, Keras, PyTorch, and Transformers
-([all model variations here](https://www.kaggle.com/models/google/gemma)).
+([all model variations here](https://www.kaggle.com/models/google/gemma-3)).
 
 ## Contributing
 
@@ -55,7 +55,6 @@ Guidelines](https://opensource.google.com/conduct/).
 
     -   CPU-only inference for: Gemma 2-3, PaliGemma 2.
     -   Sampling with TopK and temperature.
-    -   Backward pass (VJP) and Adam optimizer for Gemma research.
 
 -   Optimizations
 
@@ -105,7 +104,7 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools --force --override "-
 ### Step 1: Obtain model weights and tokenizer from Kaggle or Hugging Face Hub
 
 Visit the
-[Kaggle page for Gemma-2](https://www.kaggle.com/models/google/gemma-2/gemmaCpp)
+[Kaggle page for Gemma-2](https://www.kaggle.com/models/google/gemma-3/gemmaCpp)
 and select `Model Variations |> Gemma C++`.
 
 On this tab, the `Variation` dropdown includes the options below. Note bfloat16
@@ -452,7 +451,7 @@ FetchContent_MakeAvailable(sentencepiece)
 FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp GIT_TAG origin/main)
 FetchContent_MakeAvailable(gemma)
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 2a16a50ff61071bb25ddef0ce35d92b0e2b9c579)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG c971dbe61bd2751923e3458666450bf95dfbbd98)
 FetchContent_MakeAvailable(highway)
 ```
 
@@ -520,13 +519,19 @@ Mikhaylov, Eugene Kliuchnikov, Jan Wassenberg, Jyrki Alakuijala, Lode
 Vandevenne, Luca Versari, Martin Bruse, Phil Culliton, Sami Boukortt, Thomas
 Fischbacher and Zoltan Szabadka. It was removed in 2025-09.
 
-Gemma-2 support was implemented in June/July 2024 with the help of several
-people.
+Gemma 2 support was implemented in June/July 2024 with the help of several
+people including Daniel Keysers and Phil Culliton.
 
 PaliGemma support was implemented in September 2024 with contributions from
 Daniel Keysers.
 
+Gemma 3 support was implemented in January-March 2025 with contributions from
+Daniel Keysers and Phil Culliton.
+
 [Jan Wassenberg](mailto:janwas@google.com) has continued to contribute many
 improvements, including major gains in efficiency, since the initial release.
+
+[Phil Culliton](mailto:philculliton@google.com) has worked on model releases,
+eval and validation, GTM, and quantization, since the initial release.
 
 This is not an officially supported Google product.

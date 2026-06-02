@@ -1,6 +1,5 @@
 name: build
 
-# Trigger on push, pull request, or via manual dispatch.
 on:
   push:
   pull_request:
@@ -10,62 +9,88 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.preset }}) ${{ matrix.build_type }}
+    name: ${{ matrix.name }}
     timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
-        # When adding another, also add to copybara's github_check_runs.
-        os: ['ubuntu-latest', 'macos-latest', 'windows-latest']
-        build_type: ['Release']
-        preset: ['make', 'windows']
-        exclude:
-          - os: ubuntu-latest
-            preset: windows
-          - os: macos-latest
-            preset: windows
-          - os: windows-latest
+        include:
+          - name: ubuntu-latest (make) Release
+            os: ubuntu-latest
             preset: make
+            build_type: Release
+            cc: gcc-13
+            cxx: g++-13
+
+          - name: ubuntu-latest (gcc-15) Release
+            os: ubuntu-latest
+            preset: make
+            build_type: Release
+            cc: gcc-15
+            cxx: g++-15
+
+          - name: macos-latest (make) Release
+            os: macos-latest
+            preset: make
+            build_type: Release
+            cc: clang
+            cxx: clang++
+
+          - name: windows-latest (windows) Release
+            os: windows-latest
+            preset: windows
+            build_type: Release
 
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.os }}-${{ matrix.preset }}-${{ matrix.build_type }}
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.name }}
       cancel-in-progress: true
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-    # Set up ccache
-    - name: ccache
-      uses: hendrikmuhs/ccache-action@v1.2
+      - name: Install Linux toolchain
+        if: runner.os == 'Linux'
+        run: |
+          if [[ "${{ matrix.cc }}" == "gcc-15" ]]; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          fi
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc }} ${{ matrix.cxx }}
 
-    - name: Configure CMake
-      run: >
-        cmake --preset ${{ matrix.preset }}
-        -S ${{ github.workspace }} -B ${{ github.workspace }}/build
-        -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
-        -D CMAKE_C_COMPILER_LAUNCHER=ccache
-        -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
 
-    - name: Build
-      run: cmake --build ${{ github.workspace }}/build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }} -j 4
+      - name: Configure CMake
+        run: >
+          cmake --preset ${{ matrix.preset }}
+          -S ${{ github.workspace }} -B ${{ github.workspace }}/build
+          -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -D CMAKE_C_COMPILER=${{ matrix.cc || '' }}
+          -D CMAKE_CXX_COMPILER=${{ matrix.cxx || '' }}
+          -D CMAKE_C_COMPILER_LAUNCHER=ccache
+          -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          ${{ matrix.cc == 'gcc-15' && '-DCMAKE_CXX_FLAGS=-Wno-error=missing-declarations -Wno-error=missing-field-initializers' || '' }}
 
-    - name: Archive production artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: gemma-${{ matrix.os }}-${{ matrix.preset }}-${{ matrix.build_type }}
-        path: |
-          ${{ github.workspace }}/build/${{ matrix.build_type }}/gemma.exe
-          ${{ github.workspace }}/build/${{ matrix.build_type }}/libgemma.lib
-          ${{ github.workspace }}/build/gemma
-          ${{ github.workspace }}/build/libgemma.a
+      - name: Build
+        run: cmake --build ${{ github.workspace }}/build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }} -j 4
+
+      - name: Archive production artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: gemma-${{ matrix.os }}-${{ matrix.preset }}-${{ matrix.build_type }}-${{ matrix.cc || 'default' }}
+          path: |
+            ${{ github.workspace }}/build/${{ matrix.build_type }}/gemma.exe
+            ${{ github.workspace }}/build/${{ matrix.build_type }}/libgemma.lib
+            ${{ github.workspace }}/build/gemma
+            ${{ github.workspace }}/build/libgemma.a
 
   bazel:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@63c24ba6bd7ba022e95695ff85de572c04a18142 # v2.7.0
+        uses: step-security/harden-runner@58077d3c7e43986b6b15fba718e8ea69e387dfcc  # v2.15.1
         with:
           egress-policy: audit  # cannot be block - runner does git checkout
 

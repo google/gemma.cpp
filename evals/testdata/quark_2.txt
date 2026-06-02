@@ -1,0 +1,90 @@
+Text from https://en.wikipedia.org/wiki/Quark is licensed under Creative Commons Attribution-ShareAlike 4.0 License; (https://en.wikipedia.org/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License)
+
+Quark
+From Wikipedia, the free encyclopedia
+(Redirected from Quarks)
+This article is about the elementary particle and its antiparticle. For other uses, see Quark (disambiguation).
+Quark
+Three colored balls (symbolizing quarks) connected pairwise by springs (symbolizing gluons), all inside a gray circle (symbolizing a proton). The colors of the balls are red, green, and blue, to parallel each quark's color charge. The red and blue balls are labeled "u" (for "up" quark) and the green one is labeled "d" (for "down" quark).
+A proton is composed of two up quarks, one down quark, and the gluons that mediate the forces "binding" them together. The color assignment of individual quarks is arbitrary, but all three colors must be present; red, blue and green are used as an analogy to the primary colors that together produce a white color.
+Composition	elementary particle
+Statistics	fermionic
+Generation	1st, 2nd, 3rd
+Interactions	strong, weak, electromagnetic, gravitation
+Symbol	q
+Antiparticle	antiquark (q)
+Theorized	
+Murray Gell-Mann (1964)
+George Zweig (1964)
+Discovered	SLAC (c. 1968)
+Types	6 (up, down, strange, charm, bottom, and top)
+⁠
+A quark (/ˈkwɔːrk, ˈkwɑːrk/ ⓘ) is a type of elementary particle and a fundamental constituent of matter. Quarks combine to form composite particles called hadrons, the most stable of which are protons and neutrons, the components of atomic nuclei.[1] All commonly observable matter is composed of up quarks, down quarks and electrons. Owing to a phenomenon known as color confinement, quarks are never found in isolation; they can be found only within hadrons, which include baryons (such as protons and neutrons) and mesons, or in quark–gluon plasmas.[2][3][nb 1] For this reason, much of what is known about quarks has been drawn from observations of hadrons.
+
+Quarks have various intrinsic properties, including electric charge, mass, color charge, and spin. They are the only elementary particles in the Standard Model of particle physics to experience all four fundamental interactions, also known as fundamental forces (electromagnetism, gravitation, strong interaction, and weak interaction), as well as the only known particles whose electric charges are not integer multiples of the elementary charge.
+
+There are six types, known as flavors, of quarks: up, down, charm, strange, top, and bottom.[4] Up and down quarks have the lowest masses of all quarks. The heavier quarks rapidly change into up and down quarks through a process of particle decay: the transformation from a higher mass state to a lower mass state. Because of this, up and down quarks are generally stable and the most common in the universe, whereas strange, charm, bottom, and top quarks can only be produced in high energy collisions (such as those involving cosmic rays and in particle accelerators). For every quark flavor there is a corresponding type of antiparticle, known as an antiquark, that differs from the quark only in that some of its properties (such as the electric charge) have equal magnitude but opposite sign.
+
+The quark model was independently proposed by physicists Murray Gell-Mann and George Zweig in 1964.[5] Quarks were introduced as parts of an ordering scheme for hadrons, and there was little evidence for their physical existence until deep inelastic scattering experiments at the Stanford Linear Accelerator Center in 1968.[6][7] Accelerator program experiments have provided evidence for all six flavors. The top quark, first observed at Fermilab in 1995, was the last to be discovered.[5]
+
+Classification
+See also: Standard Model
+A four-by-four table of particles. Columns are three generations of matter (fermions) and one of forces (bosons). In the first three columns, two rows contain quarks and two leptons. The top two rows' columns contain up (u) and down (d) quarks, charm (c) and strange (s) quarks, top (t) and bottom (b) quarks, and photon (γ) and gluon (g), respectively. The bottom two rows' columns contain electron neutrino (ν sub e) and electron (e), muon neutrino (ν sub μ) and muon (μ), and tau neutrino (ν sub τ) and tau (τ), and Z sup 0 and W sup ± weak force. Mass, charge, and spin are listed for each particle.
+Six of the particles in the Standard Model are quarks (shown in purple). Each of the first three columns forms a generation of matter.
+The Standard Model is the theoretical framework describing all the known elementary particles. This model contains six flavors of quarks (q), named up (u), down (d), strange (s), charm (c), bottom (b), and top (t).[4] Antiparticles of quarks are called antiquarks, and are denoted by a bar over the symbol for the corresponding quark, such as u for an up antiquark. As with antimatter in general, antiquarks have the same mass, mean lifetime, and spin as their respective quarks, but the electric charge and other charges have the opposite sign.[8]
+
+Quarks are spin-⁠
+1
+/
+2
+⁠ particles, which means they are fermions according to the spin–statistics theorem. They are subject to the Pauli exclusion principle, which states that no two identical fermions can simultaneously occupy the same quantum state. This is in contrast to bosons (particles with integer spin), of which any number can be in the same state.[9] Unlike leptons, quarks possess color charge, which causes them to engage in the strong interaction. The resulting attraction between different quarks causes the formation of composite particles known as hadrons (see § Strong interaction and color charge below).
+
+The quarks that determine the quantum numbers of hadrons are called valence quarks; apart from these, any hadron may contain an indefinite number of virtual "sea" quarks, antiquarks, and gluons, which do not influence its quantum numbers.[10] There are two families of hadrons: baryons, with three valence quarks, and mesons, with a valence quark and an antiquark.[11] The most common baryons are the proton and the neutron, the building blocks of the atomic nucleus.[12] A great number of hadrons are known (see list of baryons and list of mesons), most of them differentiated by their quark content and the properties these constituent quarks confer. The existence of "exotic" hadrons with more valence quarks, such as tetraquarks (qqqq) and pentaquarks (qqqqq), was conjectured from the beginnings of the quark model[13] but not discovered until the early 21st century.[14][15][16][17]
+
+Elementary fermions are grouped into three generations, each comprising two leptons and two quarks. The first generation includes up and down quarks, the second strange and charm quarks, and the third bottom and top quarks. All searches for a fourth generation of quarks and other elementary fermions have failed,[18][19] and there is strong indirect evidence that no more than three generations exist.[nb 2][20][21][22] Particles in higher generations generally have greater mass and less stability, causing them to decay into lower-generation particles by means of weak interactions. Only first-generation (up and down) quarks occur commonly in nature. Heavier quarks can only be created in high-energy collisions (such as in those involving cosmic rays), and decay quickly; however, they are thought to have been present during the first fractions of a second after the Big Bang, when the universe was in an extremely hot and dense phase (the quark epoch). Studies of heavier quarks are conducted in artificially created conditions, such as in particle accelerators.[23]
+
+Having electric charge, mass, color charge, and flavor, quarks are the only known elementary particles that engage in all four fundamental interactions of contemporary physics: electromagnetism, gravitation, strong interaction, and weak interaction.[12] Gravitation is too weak to be relevant to individual particle interactions except at extremes of energy (Planck energy) and distance scales (Planck distance). However, since no successful quantum theory of gravity exists, gravitation is not described by the Standard Model.
+
+See the table of properties below for a more complete overview of the six quark flavors' properties.
+
+History
+
+Murray Gell-Mann (2007)
+
+George Zweig (2015)
+The quark model was independently proposed by physicists Murray Gell-Mann[24] and George Zweig[25][26] in 1964.[5] The proposal came shortly after Gell-Mann's 1961 formulation of a particle classification system known as the Eightfold Way – or, in more technical terms, SU(3) flavor symmetry, streamlining its structure.[27] Physicist Yuval Ne'eman had independently developed a scheme similar to the Eightfold Way in the same year.[28][29] An early attempt at constituent organization was available in the Sakata model.
+
+At the time of the quark theory's inception, the "particle zoo" included a multitude of hadrons, among other particles. Gell-Mann and Zweig posited that they were not elementary particles, but were instead composed of combinations of quarks and antiquarks. Their model involved three flavors of quarks, up, down, and strange, to which they ascribed properties such as spin and electric charge.[24][25][26] The initial reaction of the physics community to the proposal was mixed. There was particular contention about whether the quark was a physical entity or a mere abstraction used to explain concepts that were not fully understood at the time.[30]
+
+In less than a year, extensions to the Gell-Mann–Zweig model were proposed. Sheldon Glashow and James Bjorken predicted the existence of a fourth flavor of quark, which they called charm. The addition was proposed because it allowed for a better description of the weak interaction (the mechanism that allows quarks to decay), equalized the number of known quarks with the number of known leptons, and implied a mass formula that correctly reproduced the masses of the known mesons.[31]
+
+Deep inelastic scattering experiments conducted in 1968 at the Stanford Linear Accelerator Center (SLAC) and published on October 20, 1969, showed that the proton contained much smaller, point-like objects and was therefore not an elementary particle.[6][7][32] Physicists were reluctant to firmly identify these objects with quarks at the time, instead calling them "partons" – a term coined by Richard Feynman.[33][34][35] The objects that were observed at SLAC would later be identified as up and down quarks as the other flavors were discovered.[36] Nevertheless, "parton" remains in use as a collective term for the constituents of hadrons (quarks, antiquarks, and gluons). Richard Taylor, Henry Kendall and Jerome Friedman received the 1990 Nobel Prize in physics for their work at SLAC.
+
+Photo of bubble chamber tracks next to diagram of same tracks. A neutrino (unseen in photo) enters from below and collides with a proton, producing a negatively charged muon, three positively charged pions, and one negatively charged pion, as well as a neutral lambda baryon (unseen in photograph). The lambda baryon then decays into a proton and a negative pion, producing a "V" pattern.
+Photograph of the event that led to the discovery of the Σ++
+c baryon, at the Brookhaven National Laboratory in 1974
+The strange quark's existence was indirectly validated by SLAC's scattering experiments: not only was it a necessary component of Gell-Mann and Zweig's three-quark model, but it provided an explanation for the kaon (K) and pion (π) hadrons discovered in cosmic rays in 1947.[37]
+
+In a 1970 paper, Glashow, John Iliopoulos and Luciano Maiani presented the GIM mechanism (named from their initials) to explain the experimental non-observation of flavor-changing neutral currents. This theoretical model required the existence of the as-yet undiscovered charm quark.[38][39] The number of supposed quark flavors grew to the current six in 1973, when Makoto Kobayashi and Toshihide Maskawa noted that the experimental observation of CP violation[nb 3][40] could be explained if there were another pair of quarks.
+
+Charm quarks were produced almost simultaneously by two teams in November 1974 (see November Revolution) – one at SLAC under Burton Richter, and one at Brookhaven National Laboratory under Samuel Ting. The charm quarks were observed bound with charm antiquarks in mesons. The two parties had assigned the discovered meson two different symbols, J and ψ; thus, it became formally known as the J/ψ meson. The discovery finally convinced the physics community of the quark model's validity.[35]
+
+In the following years a number of suggestions appeared for extending the quark model to six quarks. Of these, the 1975 paper by Haim Harari[41] was the first to coin the terms top and bottom for the additional quarks.[42]
+
+In 1977, the bottom quark was observed by a team at Fermilab led by Leon Lederman.[43][44] This was a strong indicator of the top quark's existence: without the top quark, the bottom quark would have been without a partner. It was not until 1995 that the top quark was finally observed, also by the CDF[45] and DØ[46] teams at Fermilab.[5] It had a mass much larger than expected,[47] almost as large as that of a gold atom.[48]
+
+Etymology
+For some time, Gell-Mann was undecided on an actual spelling for the term he intended to coin, until he found the word quark in James Joyce's 1939 book Finnegans Wake:[49]
+
+– Three quarks for Muster Mark!
+Sure he hasn't got much of a bark
+And sure any he has it's all beside the mark.
+
+The word quark is an old English word meaning to croak[50] and the above-quoted lines are about a bird choir mocking king Mark of Cornwall in the legend of Tristan and Iseult.[51] Especially in the German-speaking parts of the world there is a widespread legend, however, that Joyce had taken it from the word Quark,[52] a German word of Slavic origin which denotes a curd cheese,[53] but is also a colloquial term for "trivial nonsense".[54] In the legend it is said that he had heard it on a journey to Germany at a farmers' market in Freiburg.[55][56] Some authors, however, defend a possible German origin of Joyce's word quark.[57] Gell-Mann went into further detail regarding the name of the quark in his 1994 book The Quark and the Jaguar:[58]
+
+In 1963, when I assigned the name "quark" to the fundamental constituents of the nucleon, I had the sound first, without the spelling, which could have been "kwork". Then, in one of my occasional perusals of Finnegans Wake, by James Joyce, I came across the word "quark" in the phrase "Three quarks for Muster Mark". Since "quark" (meaning, for one thing, the cry of the gull) was clearly intended to rhyme with "Mark", as well as "bark" and other such words, I had to find an excuse to pronounce it as "kwork". But the book represents the dream of a publican named Humphrey Chimpden Earwicker. Words in the text are typically drawn from several sources at once, like the "portmanteau" words in Through the Looking-Glass. From time to time, phrases occur in the book that are partially determined by calls for drinks at the bar. I argued, therefore, that perhaps one of the multiple sources of the cry "Three quarks for Muster Mark" might be "Three quarts for Mister Mark", in which case the pronunciation "kwork" would not be totally unjustified. In any case, the number three fitted perfectly the way quarks occur in nature.
+
+Zweig preferred the name ace for the particle he had theorized, but Gell-Mann's terminology came to prominence once the quark model had been commonly accepted.[59]
+
+The quark flavors were given their names for several reasons. The up and down quarks are named after the up and down components of isospin, which they carry.[60] Strange quarks were given their name because they were discovered to be components of the strange particles discovered in cosmic rays years before the quark model was proposed; these particles were deemed "strange" because they had unusually long lifetimes.[61] Glashow, who co-proposed the charm quark with Bjorken, is quoted as saying, "We called our construct the 'charmed quark', for we were fascinated and pleased by the symmetry it brought to the subnuclear world."[62] The names "top" and "bottom", coined by Harari, were chosen because they are "logical partners for up and down quarks".[41][42][61] Alternative names for top and bottom quarks are "truth" and "beauty" respectively,[nb 4] but these names have somewhat fallen out of use.[66] While "truth" never did catch on, accelerator complexes devoted to massive production of bottom quarks are sometimes called "beauty factories".[67]
+

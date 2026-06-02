@@ -10,14 +10,15 @@
 namespace gcpp {
 
 // Zones for the profiler.
-enum class Zones {  // Keep sorted
+enum class Zones {   // Keep sorted
   kFlashAttentionFlashAttention,
   kFlashAttentionInclusive,
+  kVitFlashAttentionInclusive,
   kFlashAttentionRmsNormAndPositionalEncoding,
-  kFlashAttentionSingleFlashAttention,
-  kFlashAttentionTileFlashAttention,
+  kFlashAttentionTileFlashAttention1,
   kFlashAttentionTileFlashAttention4,
-  kFlashAttentionTransposeQ,
+  kFlashAttentionTileFlashAttention8,
+  kFlashAttentionCombineSplit,
   kGenActivation,
   kGenActivationFused,
   kGenAttention,
@@ -29,8 +30,10 @@ enum class Zones {  // Keep sorted
   kGenEmbed,
   kGenEmbeddingMatmul,
   kGenFFW,
+  kGenImageTokens,
   kGenSampleTop1,
   kGenSampleTopK,
+  kGenStats,
   kMMDecompressA,
   kMMDispatch,
   kMMMatMul,
@@ -96,6 +99,7 @@ enum class Callers {  // Keep sorted
   kReadAllToBF16,
   kReadBatches,
   kSampleAndStream,
+  kTensorStats,
   kTest,  // only for unit tests.
   kTunePool,
   kVitDotSoftmax1,

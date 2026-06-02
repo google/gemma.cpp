@@ -19,17 +19,20 @@
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
-#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
 #include "gemma/activations.h"
 #include "gemma/configs.h"  // kMaxQKVDim
-#include "gemma/gemma.h"
+#include "gemma/kv_cache.h"
+#include "gemma/query.h"
 #include "gemma/weights.h"
+#include "ops/matmul.h"
 #include "util/threading.h"
 #include "util/threading_context.h"
+#include "util/zones.h"
+#include "hwy/base.h"
 #include "hwy/profiler.h"
 
 // Compiles this file for multiple architectures via "foreach_target.h", to
@@ -42,48 +45,81 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "gemma/attention.h"  // includes highway.h
 #include "gemma/flash_attention.h"
+#include "gemma/gemma-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-// Computes Q.K scores, which are "logits" (or scores) stored to att.
-// `k` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
-static HWY_INLINE void QDotK(const size_t start_pos, const size_t last_pos,
-                             const hwy::Divisor& div_seq_len,
-                             const float* HWY_RESTRICT q,
-                             const MatPtrT<KV_t>& k, float* HWY_RESTRICT att,
-                             ThreadingContext& ctx, const size_t worker) {
-  GCPP_ZONE(ctx, worker, Zones::kGenAttentionQDotK);
-  if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
-    // Slightly faster: no wraparound.
-    for (size_t pos = start_pos; pos <= last_pos; ++pos) {
-      const float score = Dot(q, k.Row(pos), k.Cols());
-      att[pos] = score;
+// Transposes a single row of the kv cache into the k-cache and v-cache.
+void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
+                         KV_t* HWY_RESTRICT v, size_t qkv_dim) {
+  // This is inefficient, as the writes are scattered over cache lines, but it
+  // is a tiny fraction of the overall computation, and it is linear in the
+  // token length.
+  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
+  for (size_t i = 0; i < qkv_dim; i += 2) {
+    k[i * kFloatsPerTile] = kv[i];
+    k[i * kFloatsPerTile + 1] = kv[i + 1];
+  }
+  for (size_t i = qkv_dim; i < kRoundedQkvDim; i += 2) {
+    k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
+    k[i * kFloatsPerTile + 1] = hwy::ConvertScalarTo<KV_t>(0.0f);
+  }
+  for (size_t i = 0; i < qkv_dim; i += kFloatsPerTile) {
+    if (i + kFloatsPerTile <= qkv_dim) {
+      for (size_t j = 0; j < kFloatsPerTile; j++) {
+        v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
+      }
+    } else {
+      for (size_t j = 0; j < qkv_dim - i; j++) {
+        v[i * kFloatsPerTile + j] = kv[i + j + qkv_dim];
+      }
+      for (size_t j = qkv_dim - i; j < kFloatsPerTile; j++) {
+        v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
+      }
     }
-  } else {
-    for (size_t pos = start_pos; pos <= last_pos; ++pos) {
-      const size_t pos_modulo = div_seq_len.Remainder(pos);
-      const float score = Dot(q, k.Row(pos_modulo), k.Cols());
-      att[pos_modulo] = score;
+  }
+  for (size_t i = hwy::RoundUpTo(qkv_dim, kFloatsPerTile); i < kRoundedQkvDim;
+       i += kFloatsPerTile) {
+    for (size_t j = 0; j < kFloatsPerTile; j++) {
+      v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
+    }
+  }
+}
+
+// Zeros out a part of k and v that corresponds to out-of-bounds cache
+// positions.
+void TransposeOOBKVCacheRow(KV_t* HWY_RESTRICT k, KV_t* HWY_RESTRICT v,
+                            size_t qkv_dim) {
+  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
+  for (size_t i = 0; i < kRoundedQkvDim; i += 2) {
+    k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
+    k[i * kFloatsPerTile + 1] = hwy::ConvertScalarTo<KV_t>(0.0f);
+  }
+  for (size_t i = 0; i < kRoundedQkvDim; i += kFloatsPerTile) {
+    for (size_t j = 0; j < kFloatsPerTile; j++) {
+      v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
     }
   }
 }
 
 void PositionalEncodingQK(float* qk, const size_t layer_idx,
-                          const LayerWeightsPtrs& layer,
-                          const AttentionActivations& activations,
+                          const AttentionActivationsPtrs& activations,
                           ThreadingContext& ctx, const size_t worker,
                           const size_t pos, const float mul) {
-  const size_t qkv_dim = layer.layer_config.qkv_dim;
-  const PostQKType& post_qk = layer.layer_config.post_qk;
+  const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
+  const size_t qkv_dim = layer_config.qkv_dim;
+  const PostQKType& post_qk = layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
   const float* inv_timescale = activations.inv_timescale.PackedScale1();
   const bool is_global_layer = activations.config.IsGlobalLayer(layer_idx);
-  // TODO: add a config flag instead of hardcoding the model.
-  if (is_global_layer && IsVLM(activations.config.model)) {
+  if (is_global_layer && activations.config.use_global_timescale) {
     inv_timescale = activations.inv_timescale_global.PackedScale1();
   }
   // PostQKType::Rope
@@ -92,148 +128,6 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
     if (mul != 1.0f) MulByConst(mul, qk, qkv_dim);
   } else {
     RopeAndMulBy(mul, qk, qkv_dim, inv_timescale, pos, ctx, worker);
-  }
-}
-
-// Accumulates the sum of v (from `kv_cache`) * probability (`att`) into
-// `att_out`. Equivalent in gemma/modules.py:
-// encoded = jnp.einsum('BTNS,BSNH->BTNH', probs, value_proj)
-// `v` is a strided view of the kv cache with dimensions [seq_len, qkv_dim].
-static HWY_INLINE void WeightedSumV(
-    const size_t start_pos, const size_t last_pos,
-    const hwy::Divisor& div_seq_len, const float* HWY_RESTRICT att,
-    const MatPtrT<KV_t>& v, float* HWY_RESTRICT att_out, ThreadingContext& ctx,
-    const size_t worker) {
-  if (HWY_LIKELY(last_pos < static_cast<size_t>(div_seq_len.GetDivisor()))) {
-    // Slightly faster: no wraparound. Could be replaced with MatMul(att, v) if
-    // we supported non-transposed B.
-    // TODO: 2..4x unroll
-    MulByConstTo(att[start_pos], v.Row(start_pos), att_out, v.Cols(), ctx,
-                 worker);
-    for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-      MulByConstAndAdd(att[pos], v.Row(pos), att_out, v.Cols());
-    }
-  } else {
-    {
-      const size_t pos_mod = div_seq_len.Remainder(start_pos);
-      MulByConstTo(att[pos_mod], v.Row(pos_mod), att_out, v.Cols(), ctx,
-                   worker);
-    }
-    for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-      const size_t pos_mod = div_seq_len.Remainder(pos);
-      MulByConstAndAdd(att[pos_mod], v.Row(pos_mod), att_out, v.Cols());
-    }
-  }
-}
-
-// Calculates the attention outputs for a single q, which may be updated
-// in place for RMSNorm.
-void SingleDotSoftmaxWeightedSum(
-    const size_t pos, const size_t start_pos, const size_t last_pos,
-    float* HWY_RESTRICT q, const MatPtrT<KV_t>& k, const MatPtrT<KV_t>& v,
-    const size_t layer_idx, const LayerWeightsPtrs& layer,
-    const AttentionActivations& activations, float* HWY_RESTRICT att,
-    float* HWY_RESTRICT att_out, ThreadingContext& ctx, const size_t worker) {
-  const float att_cap = activations.config.att_cap;
-  const float query_scale = activations.query_scale;
-  const size_t seq_len =
-      static_cast<size_t>(activations.div_seq_len.GetDivisor());
-
-  // Apply rope and scaling to Q.
-  if (layer.query_norm_scale.HasPtr()) {
-    CallUpcasted(&layer.query_norm_scale, [&](const auto* weights_t) {
-      RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q,
-                     layer.layer_config.qkv_dim, ctx, worker);
-    });
-  }
-
-  PositionalEncodingQK(q, layer_idx, layer, activations, ctx, worker, pos,
-                       query_scale);
-
-  QDotK(start_pos, last_pos, activations.div_seq_len, q, k, att, ctx, worker);
-
-  // SoftMax with optional SoftCap yields "probabilities" in att.
-  const size_t att_len = HWY_MIN(last_pos + 1, seq_len);
-  const Logits logits(att, att_len);
-  MaybeLogitsSoftCap(att_cap, logits, ctx, worker);
-  Softmax(logits, ctx, worker, /*temperature=*/1.0f);
-
-  WeightedSumV(start_pos, last_pos, activations.div_seq_len, att, v, att_out,
-               ctx, worker);
-}
-
-// The attention window usually starts at 0 unless `pos` is larger than
-// the attention window size, then it is `pos` - window_size + 1.
-size_t StartPos(size_t pos, const ModelConfig& config, size_t layer_idx) {
-  const size_t att_window_size = config.attention_window_sizes[layer_idx];
-  return pos - HWY_MIN(att_window_size - 1, pos);
-}
-
-void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
-                           const LayerWeightsPtrs& layer,
-                           AttentionActivations& activations, QBatch& qbatch,
-                           ThreadingContext& ctx) {
-  GCPP_ZONE(ctx, 0, Zones::kGenAttentionDotSoftmaxWeightedSumInclusive);
-
-  const hwy::Divisor div_qbatch(qbatch.Size());
-  const LayerConfig& layer_config = layer.layer_config;
-  const size_t qkv_dim = layer_config.qkv_dim;
-
-  // A "head group" in the context of GQA refers to a collection of query
-  // heads that share the same key and value heads.
-  const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
-
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
-  const size_t seq_len =
-      static_cast<size_t>(activations.div_seq_len.GetDivisor());
-  // All layers should have the same number of heads.
-  HWY_DASSERT(activations.div_heads.GetDivisor() == layer_config.heads);
-
-  // For each head/token/query, compute Q.K, softmax, and weighted V.
-  const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    const size_t tq_idx = activations.div_heads.Divide(task);
-    const size_t head = activations.div_heads.Remainder(task);
-    GCPP_ZONE(ctx, worker, Zones::kGenAttentionDotSoftmaxWeightedSumPar);
-
-    const size_t qi = div_qbatch.Remainder(tq_idx);
-    const size_t batch_idx = div_qbatch.Divide(tq_idx);
-    auto& kv_cache = qbatch.KV(qi).kv_cache;
-
-    // Find the token position in the query and calculate
-    // the range of cache positions to attend to.
-    const size_t pos = qbatch.Pos(qi) + batch_idx;
-    const size_t start_pos = StartPos(pos, activations.config, layer_idx);
-    size_t last_pos = pos;
-    const size_t prefix_end = qbatch.PrefixEnd(qi);
-    if (prefix_end > 0 && prefix_end - 1 > last_pos) {
-      // last_pos in QDotK and WeightedSumV is inclusive.
-      last_pos = prefix_end - 1;
-    }
-
-    float* HWY_RESTRICT q = activations.q.Row(tq_idx) + head * qkv_dim;
-    float* HWY_RESTRICT att = activations.att.Row(tq_idx) + head * seq_len;
-    float* HWY_RESTRICT att_out =
-        activations.att_out.Row(tq_idx) + head * qkv_dim;
-
-    // Make strided read-only views into the kv cache for
-    // this query and head.
-    const size_t head_offset = (head / kHeadGroups) * qkv_dim * 2;
-    const size_t kv_head_offset = layer_idx * cache_layer_size + head_offset;
-    MatPtrT<KV_t> k("k_view", Extents2D(seq_len, qkv_dim));
-    k.SetPtr(kv_cache.Row(0) + kv_head_offset, kv_cache.Stride());
-    MatPtrT<KV_t> v("v_view", Extents2D(seq_len, qkv_dim));
-    v.SetPtr(kv_cache.Row(0) + kv_head_offset + qkv_dim, kv_cache.Stride());
-
-    SingleDotSoftmaxWeightedSum(pos, start_pos, last_pos, q, k, v, layer_idx,
-                                layer, activations, att, att_out, ctx, worker);
-  };
-
-  {
-    PROFILER_ZONE("Gen.Attention.DotSoftmax.ForkJoin");
-    // Full parallelism is helpful, kAcrossClusters is insufficient.
-    HierarchicalParallelFor(
-        num_tokens * div_qbatch.GetDivisor() * layer_config.heads, ctx,
-        Callers::kAttDotSoftmaxWeightedSum, func);
   }
 }
 
@@ -246,7 +140,7 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 // Fills activations.q and writes to KV cache.
 static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                   const LayerWeightsPtrs& layer,
-                                  AttentionActivations& activations,
+                                  AttentionActivationsPtrs& activations,
                                   const QBatch& qbatch, const int flags,
                                   MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(),
@@ -271,34 +165,76 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
                                         layer.qkv_einsum_w2.Rows()));
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
+    // Index into qbatch, within [0, qbatch.Size()]
     const size_t qi = div_qbatch.Remainder(interleaved_idx);
-    const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
-    const size_t cache_pos =
-        activations.div_seq_len.Remainder(qbatch.Pos(qi) + batch_idx);
+    // Index along token sequence, within [0, num_tokens)
+    const size_t token_idx = div_qbatch.Divide(interleaved_idx);
+    const size_t cache_pos = qbatch.Pos(qi) + token_idx;
+    // --seq_len must be large enough to avoid wraparound.
+    HWY_DASSERT(cache_pos < activations.SeqLen());
+
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
         qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_idx * cache_layer_size);
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
+                      qbatch.KV(qi).k_cache);
+    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
+                      qbatch.KV(qi).v_cache);
+  }
+  const size_t kFloatsPerVector = FloatsPerVector();
+  const size_t kRoundedTokens =
+      hwy::RoundUpTo(num_tokens, 2 * kFloatsPerVector);
+  const size_t kRoundedNumInterleaved =
+      kRoundedTokens * div_qbatch.GetDivisor();
 
   // Apply positional encodings for K.
   // Note that 2D parallelism is not worth the fork/join overhead because the
   // tasks are very lightweight.
   ParallelFor(
-      ParallelismStrategy::kFlat, kv_heads * num_interleaved, env.ctx,
+      Parallelism::kFlat, kv_heads * kRoundedNumInterleaved, env.ctx,
       /*cluster_idx=*/0, Callers::kAttComputeQKV,
       [&](size_t task, size_t worker) HWY_ATTR {
         const size_t head = task % kv_heads;
         const size_t interleaved_idx = task / kv_heads;
         const size_t qi = div_qbatch.Remainder(interleaved_idx);
-        const size_t batch_idx = div_qbatch.Divide(interleaved_idx);
-        const size_t pos = qbatch.Pos(qi) + batch_idx;
-        const size_t cache_pos = activations.div_seq_len.Remainder(pos);
+        const size_t token_idx = div_qbatch.Divide(interleaved_idx);
+        const size_t cache_pos = qbatch.Pos(qi) + token_idx;
+        if (token_idx >= kRoundedTokens) {
+          return;
+        }
+        // The innermost dimension of v is 2NF values from qkv_dim because they
+        // will be loaded into a BF16 vector to be scaled and added to the
+        // cached attention output in 2 NF-sized registers.
+        auto& k_cache = qbatch.KV(qi).k_cache;
+        KV_t* HWY_RESTRICT k =
+            k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
+            qbatch.KV(qi).cache->KOffset(layer_idx, head, kFloatsPerVector,
+                                         cache_pos);
+        auto& v_cache = qbatch.KV(qi).v_cache;
+        KV_t* HWY_RESTRICT v =
+            v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
+            qbatch.KV(qi).cache->VOffset(layer_idx, head, kFloatsPerVector,
+                                         cache_pos);
+        if (token_idx >= num_tokens) {
+          // Create a zero-filled K/V pair for padding for out-of-sequence
+          // tokens.
+          TransposeOOBKVCacheRow(k, v, qkv_dim);
+          return;
+        }
+        // --seq_len must be large enough to avoid wraparound.
+        HWY_DASSERT(cache_pos < activations.SeqLen());
         auto& kv_cache = qbatch.KV(qi).kv_cache;
         KV_t* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
                                 layer_idx * cache_layer_size +
                                 head * qkv_dim * 2;
+        // Note that k_cache and v_cache are different shapes.
+        // The innermost dimension of k is 2 values from qkv_dim because they
+        // are going to be used in a BF16 dot product involving pairs of
+        // values over NF k positions.
 
         HWY_ALIGN float kv_f32[2 * kMaxQKVDim];
         const hn::ScalableTag<float> df;
@@ -313,36 +249,23 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
           });
         }
 
-        PositionalEncodingQK(kv_f32, layer_idx, layer, activations, env.ctx,
-                             worker, pos, /*mul=*/1.0f);
+        constexpr size_t offset = 0;  // placeholder, do not remove
+        PositionalEncodingQK(kv_f32, layer_idx, activations, env.ctx, worker,
+                             cache_pos + offset,
+                             /*mul=*/1.0f);
         CompressPerThread tls;
         Compress(kv_f32, 2 * qkv_dim, tls, MakeSpan(kv, 2 * qkv_dim), 0);
+        // This is inefficient, as multiple threads are writing the same K
+        // cache line, but the input is generated by a matmul, so it is
+        // difficult to change, and it probably isn't significant.
+        TransposeKVCacheRow(kv, k, v, qkv_dim);
       });
-}
-
-// Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
-// head_dim (`qkv_dim`) into output (`layer_out`).
-static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
-                                AttentionActivations& activations,
-                                MatMulEnv& env) {
-  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttentionSumHeads);
-  const LayerConfig& layer_config = layer.layer_config;
-  (void)layer_config;  // For HWY_DASSERT
-  // att_weights and att_out are concatenated heads, each of length
-  // layer_config.qkv_dim. Thus the [num_interleaved,
-  // layer_config.model_dim] matmul output is the sum over heads. Compare
-  // gemma/modules.py: attn_output = self.attn_vec_einsum('BTNH,NHD->BTD',
-  // encoded)
-  HWY_DASSERT(layer_config.model_dim != 0 && layer_config.heads != 0 &&
-              layer_config.qkv_dim != 0);
-  CallMatMul(activations.att_out, layer.att_weights, /*add=*/nullptr, env,
-             activations.att_sums);
 }
 
 void GemmaAttention(size_t num_tokens, const size_t layer_idx,
                     const LayerWeightsPtrs& layer,
-                    AttentionActivations& activations, QBatch& qbatch,
-                    MatMulEnv& env, int flags) {
+                    AttentionActivationsPtrs& activations, QBatch& qbatch,
+                    MatMulEnv& env, AttentionImpl attention_impl, int flags) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttention);
 
   const LayerConfig& layer_config = layer.layer_config;
@@ -352,15 +275,11 @@ void GemmaAttention(size_t num_tokens, const size_t layer_idx,
   (void)layer_config;  // only used in HWY_DASSERT
 
   ComputeQKV(num_tokens, layer_idx, layer, activations, qbatch, flags, env);
-  if (flags & kAttentionUseOld) {
-    DotSoftmaxWeightedSum(num_tokens, layer_idx, layer, activations, qbatch,
-                          env.ctx);
-  } else {
-    // * 2 does not help on Turin.
-    FlashAttention(num_tokens,
-                   /*target_parallelism=*/env.ctx.pools.MaxWorkers() * 1,
-                   layer_idx, layer, activations, qbatch, env.ctx);
-  }
+  FlashAttention(num_tokens,
+                 /*target_parallelism=*/env.ctx.pools.MaxWorkers() *
+                     AttentionActivations::kThreadReplicationFactor,
+                 layer_idx, layer.query_norm_scale, activations, qbatch,
+                 env.ctx, attention_impl);
   SumHeads(layer, activations, env);
 }
 

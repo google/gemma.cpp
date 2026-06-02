@@ -519,6 +519,229 @@ def export_paligemma_sbs(
     csv.writer(csv_handle).writerows(metadata)
 
 
+def export_gemma3_lm_sbs(
+    model_specifier: str,
+    load_path: str,
+    tokenizer_file: str,
+    csv_file: str,
+    sbs_file: str,
+) -> None:
+  """Exports sbs file from a text-only Gemma 3 safetensors checkpoint.
+
+  Used for variants like TranslateGemma 4B that share the Gemma 3 LM
+  architecture but lack the SigLIP vision tower / multi_modal_projector.
+  """
+
+  if load_path.endswith(".json"):
+    with open(load_path, "r") as f:
+      j_obj = json.load(f)
+    files = list(set(j_obj["weight_map"].values()))
+    files = [os.path.join(os.path.dirname(load_path), f) for f in files]
+  else:
+    files = [load_path]
+
+  params: Dict[str, Any] = {}
+  for file in files:
+    with safetensors.safe_open(file, framework="pt") as f:
+      for k in f.keys():
+        # TranslateGemma checkpoints sometimes still ship the vision tower /
+        # projector tensors. Silently drop them — this is the LM-only path.
+        if k.startswith("vision_tower.") or k.startswith("multi_modal_projector."):
+          continue
+        params[k] = f.get_tensor(k)
+
+  # Some Gemma-3 checkpoints prefix LLM tensors with "language_model.", others
+  # use plain "model.". Detect from the embedding tensor.
+  if "language_model.model.embed_tokens.weight" in params:
+    llm_prefix = "language_model.model."
+  elif "model.embed_tokens.weight" in params:
+    llm_prefix = "model."
+  else:
+    raise ValueError(
+        "Could not locate embed_tokens.weight under "
+        "'language_model.model.' or 'model.' in checkpoint."
+    )
+
+  embed_tokens = params[f"{llm_prefix}embed_tokens.weight"]
+  vocab_size, model_dim = embed_tokens.shape
+  hidden_dim = params[f"{llm_prefix}layers.0.mlp.gate_proj.weight"].shape[0]
+  head_dim = 256  # Gemma 3 4B/12B/27B all use head_dim=256.
+  num_heads = (
+      params[f"{llm_prefix}layers.0.self_attn.q_proj.weight"].shape[0] // head_dim
+  )
+  num_layers = len(
+      set([k for k in params.keys() if k.endswith("input_layernorm.weight")])
+  )
+  has_qk_norm = f"{llm_prefix}layers.0.self_attn.q_norm.weight" in params
+
+  print(
+      f"Gemma3 LM: vocab={vocab_size} dim={model_dim} hidden={hidden_dim} "
+      f"heads={num_heads} head_dim={head_dim} layers={num_layers} "
+      f"qk_norm={has_qk_norm}"
+  )
+
+  writer = compression.SbsWriter(sbs_file)
+  metadata = []
+  scales = {}
+
+  def add_data(param_name, data, expected_shape, sbs_name, layer_index=None):
+    if not isinstance(expected_shape, tuple):
+      expected_shape = (expected_shape,)
+    print(f"Writing {param_name} with shape {data.shape} e:{expected_shape}")
+    assert data.shape == expected_shape, param_name
+
+    assert isinstance(data, torch.Tensor)
+    data = data.to(torch.float32).numpy()
+    data = np.array(data)
+
+    if layer_index is not None:
+      param_name = param_name % layer_index
+      sbs_name = sbs_name + f"_{layer_index}"
+
+    value = flatten_f32(data)
+    scale = compute_scale(value)
+    both_names = param_name + "::" + sbs_name
+    metadata.append((both_names, data.dtype, data.shape, scale))
+
+    if _is_float_param(sbs_name):
+      packed = configs.Type.kF32
+    elif _is_bf16_param(sbs_name):
+      packed = configs.Type.kBF16
+    else:
+      packed = configs.Type.kSFP
+      assert scale == 1.0, f"Scale for {both_names} is not 1.0"
+      scales[sbs_name] = scale
+    sys.stdout.flush()
+
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
+
+  def add_qkv_einsum(i):
+    q = params.pop(f"{llm_prefix}layers.{i}.self_attn.q_proj.weight")
+    k = params.pop(f"{llm_prefix}layers.{i}.self_attn.k_proj.weight")
+    v = params.pop(f"{llm_prefix}layers.{i}.self_attn.v_proj.weight")
+    n_kv = k.shape[0] // head_dim
+    q = q.reshape(num_heads, head_dim, model_dim)
+    k = k.reshape(n_kv, head_dim, model_dim)
+    v = v.reshape(n_kv, head_dim, model_dim)
+    stacked = torch.stack((k, v), dim=0)              # (2, K, H, D)
+    transposed = stacked.transpose(0, 1)              # (K, 2, H, D)
+    reshaped = transposed.reshape(2 * n_kv, head_dim, model_dim)
+    qkv = torch.cat([q, reshaped], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.qkv_proj.weight",
+        qkv,
+        (num_heads + 2 * n_kv, head_dim, model_dim),
+        "qkv_ein",
+        i,
+    )
+
+  def add_att_einsum(i):
+    o = params.pop(f"{llm_prefix}layers.{i}.self_attn.o_proj.weight")
+    o = o.reshape(model_dim, num_heads, head_dim).permute(1, 0, 2)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.o_proj.weight",
+        o,
+        (num_heads, model_dim, head_dim),
+        "att_ein",
+        i,
+    )
+
+  def add_gating_einsum(i):
+    gate = params.pop(f"{llm_prefix}layers.{i}.mlp.gate_proj.weight")
+    up = params.pop(f"{llm_prefix}layers.{i}.mlp.up_proj.weight")
+    assert gate.shape == up.shape == (hidden_dim, model_dim)
+    gating = torch.stack([gate, up], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.mlp.gating_einsum.weight",
+        gating,
+        (2, hidden_dim, model_dim),
+        "gating_ein",
+        i,
+    )
+
+  # Non-layer tensors.
+  add_data(
+      f"{llm_prefix}embed_tokens.weight",
+      params.pop(f"{llm_prefix}embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "c_embedding",
+  )
+  add_data(
+      f"{llm_prefix}norm.weight",
+      params.pop(f"{llm_prefix}norm.weight"),
+      (model_dim,),
+      "c_final_norm",
+  )
+
+  for i in range(num_layers):
+    add_att_einsum(i)
+    add_gating_einsum(i)
+    add_qkv_einsum(i)
+    add_data(
+        f"{llm_prefix}layers.%d.mlp.down_proj.weight",
+        params.pop(f"{llm_prefix}layers.{i}.mlp.down_proj.weight"),
+        (model_dim, hidden_dim),
+        "linear_w",
+        i,
+    )
+    # Gemma 3 has the full quartet of post-norms.
+    add_data(
+        f"{llm_prefix}layers.%d.input_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.input_layernorm.weight"),
+        (model_dim,),
+        "pre_att_ns",
+        i,
+    )
+    add_data(
+        f"{llm_prefix}layers.%d.post_attention_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.post_attention_layernorm.weight"),
+        (model_dim,),
+        "post_att_ns",
+        i,
+    )
+    add_data(
+        f"{llm_prefix}layers.%d.pre_feedforward_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.pre_feedforward_layernorm.weight"),
+        (model_dim,),
+        "pre_ff_ns",
+        i,
+    )
+    add_data(
+        f"{llm_prefix}layers.%d.post_feedforward_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.post_feedforward_layernorm.weight"),
+        (model_dim,),
+        "post_ff_ns",
+        i,
+    )
+    if has_qk_norm:
+      add_data(
+          f"{llm_prefix}layers.%d.self_attn.q_norm.weight",
+          params.pop(f"{llm_prefix}layers.{i}.self_attn.q_norm.weight"),
+          (head_dim,),
+          "query_norm",
+          i,
+      )
+      add_data(
+          f"{llm_prefix}layers.%d.self_attn.k_norm.weight",
+          params.pop(f"{llm_prefix}layers.{i}.self_attn.k_norm.weight"),
+          (head_dim,),
+          "key_norm",
+          i,
+      )
+
+  if params:
+    print(f"WARNING: leftover params not consumed: {list(params.keys())[:10]}")
+
+  sbs_config = configs.ModelConfig(model_specifier)
+  writer.write(sbs_config, tokenizer_file)
+
+  with open(csv_file, "w") as csv_handle:
+    csv.writer(csv_handle).writerows(metadata)
+
+
 _MODEL_SPECIFIER = flags.DEFINE_string(
     "model_specifier",
     None,
@@ -567,9 +790,19 @@ def main(argv: Sequence[str]) -> None:
       tokenizer_file,
       sbs_file,
   )
-  export_paligemma_sbs(
-      model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
-  )
+  if model_specifier.startswith("paligemma"):
+    export_paligemma_sbs(
+        model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+    )
+  elif model_specifier.startswith("gemma3-") and "-lm-" in model_specifier:
+    export_gemma3_lm_sbs(
+        model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+    )
+  else:
+    raise app.UsageError(
+        f"Unsupported model_specifier {model_specifier!r}. Expected a "
+        "'paligemma*' or 'gemma3-*-lm-*' specifier."
+    )
 
 
 if __name__ == "__main__":

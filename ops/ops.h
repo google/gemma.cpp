@@ -41,6 +41,11 @@ static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
   return inv_timescale;
 }
 
+struct SMOptions {
+  float* HWY_RESTRICT max_out = nullptr;
+  float* HWY_RESTRICT d_out = nullptr;
+};
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_OPS_OPS_H_

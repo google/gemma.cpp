@@ -41,4 +41,16 @@ TEST(ConfigsTest, TestAll) {
   });
 }
 
+TEST(ConfigsTest, TestAttentionImpl) {
+  for (int i = 0; i < static_cast<int>(AttentionImpl::kSentinel); ++i) {
+    AttentionImpl impl = static_cast<AttentionImpl>(i);
+    std::string name = GetAttentionImplName(impl);
+    ASSERT_NE(name, "unknown");
+    ASSERT_EQ(GetAttentionImpl(name), impl);
+  }
+  ASSERT_EQ(GetAttentionImplName(AttentionImpl::kSentinel), "unknown");
+  ASSERT_EQ(GetAttentionImpl("unknown"), AttentionImpl::kFlash);
+  ASSERT_EQ(GetAttentionImpl("invalid"), AttentionImpl::kFlash);
+}
+
 }  // namespace gcpp

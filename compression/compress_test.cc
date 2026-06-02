@@ -126,6 +126,8 @@ struct TestDecompress2 {
       HWY_ASSERT(stats.L1().Max() <= 0.08f);
       HWY_ASSERT(IsInside(0.02, 0.05, stats.WeightedAverageL1()));
       HWY_ASSERT(IsInside(18.0, 62.0, stats.GeomeanValueDivL1()));
+    } else if constexpr (hwy::IsSame<Packed, int8_t>()) {
+      HWY_ASSERT(stats.L1().Max() <= 0.6f);
     } else {
       HWY_ABORT("Unhandled type requested by ForeachPackedAndRawType");
     }
@@ -200,6 +202,8 @@ struct TestShortLengths {
         HWY_ASSERT(stats.L1().Max() <= 0.14f);
         HWY_ASSERT(IsInside(7E-5, 0.06, stats.WeightedAverageL1()));
         HWY_ASSERT(IsInside(11.0, 180.0, stats.GeomeanValueDivL1()));
+      } else if constexpr (hwy::IsSame<Packed, int8_t>()) {
+        HWY_ASSERT(stats.L1().Max() <= 0.6f);
       } else {
         HWY_ABORT("Unhandled type requested by ForeachPackedAndRawType");
       }
@@ -258,6 +262,13 @@ class TestDecompressAndCompress {
             df, out.get(), num, p1.get(), /*p1_ofs=*/0,
             [](DF, VF v, VF v1) HWY_ATTR -> VF { return hn::Add(v, v1); });
         HWY_ASSERT_ARRAY_EQ(expected2.get(), out.get(), num);
+
+        // `out` already contains v + v1.
+        Decompress2AndCompressInplace(
+            df, out.get(), num, p1.get(), p2.get(), /*p2_ofs=*/0,
+            [](DF, VF v, VF /*v1*/, VF v2)
+                HWY_ATTR -> VF { return hn::Add(v, v2); });
+        HWY_ASSERT_ARRAY_EQ(expected3.get(), out.get(), num);
 
         Decompress1AndCompressTo(df, out.get(), num, p.get(),
                                  [](DF, VF v) HWY_ATTR -> VF { return v; });

@@ -20,6 +20,7 @@
 
 #include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "gemma/tensor_stats.h"
 #include "gemma/weights.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
@@ -70,7 +71,7 @@ template <class Mat>
 void ActivationBatched(
     ActivationType activation, Mat& c1, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
+    Parallelism parallelism = Parallelism::kFlat) {
   using T = typename Mat::T;
   ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
               Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
@@ -115,7 +116,7 @@ template <class Mat1, class Mat2>
 HWY_NOINLINE void ActivationBatched(
     ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
+    Parallelism parallelism = Parallelism::kFlat) {
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
@@ -158,6 +159,9 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
 
+  activations.s_ffw_in.Notify(layer.layer_idx, activations.pre_ffw_rms_out,
+                              env.ctx);
+
 #if GEMMA_FUSED_FFN
   const auto fused = [&](RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
                          StridedViewBF C2, size_t worker) {
@@ -179,8 +183,31 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                     env.ctx);
 #endif
 
+  activations.s_ffw_hidden.Notify(layer.layer_idx, activations.C1, env.ctx);
+
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.linear_w, nullptr, env, activations.ffw_out);
+
+  activations.s_ffw_out.Notify(layer.layer_idx, activations.ffw_out, env.ctx);
+}
+
+// Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
+// head_dim (`qkv_dim`) into output (`layer_out`).
+static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
+                                AttentionActivationsPtrs& activations,
+                                MatMulEnv& env) {
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttentionSumHeads);
+  const LayerConfig& layer_config = layer.layer_config;
+  (void)layer_config;  // For HWY_DASSERT
+  // att_weights and att_out are concatenated heads, each of length
+  // layer_config.qkv_dim. Thus the [num_interleaved,
+  // layer_config.model_dim] matmul output is the sum over heads. Compare
+  // gemma/modules.py: attn_output = self.attn_vec_einsum('BTNH,NHD->BTD',
+  // encoded)
+  HWY_DASSERT(layer_config.model_dim != 0 && layer_config.heads != 0 &&
+              layer_config.qkv_dim != 0);
+  CallMatMul(activations.att_out, layer.att_weights, /*add=*/nullptr, env,
+             activations.att_sums);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

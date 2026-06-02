@@ -53,7 +53,7 @@ extern int64_t first_target;
 namespace HWY_NAMESPACE {
 
 void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
-                std::vector<double>& times, MMPerKey* per_key) {
+                std::vector<double>& times) {
   std::sort(times.begin(), times.end());
   // bench_dnn reports the best and average, but the median seems more
   // consistent and resistant to outliers.
@@ -134,7 +134,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
   }
   hwy::PreventElision(keep);
   env.ctx.pools.MaybeStopSpinning(use_spinning);
-  PrintSpeed(A_extents, B_extents, times, per_key);
+  PrintSpeed(A_extents, B_extents, times);
 }
 
 using F32 = float;

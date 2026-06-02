@@ -56,6 +56,26 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+template <class D, typename Packed>
+static HWY_INLINE hn::Vec<D> LoadNonElementAligned(
+    D d, const Packed* HWY_RESTRICT ptr, size_t offset_in_packed) {
+  const hn::Repartition<uint8_t, D> du8;
+  const uint8_t* src_bytes = reinterpret_cast<const uint8_t*>(ptr);
+  return hn::BitCast(
+      d, hn::LoadU(du8, src_bytes + offset_in_packed * sizeof(Packed)));
+}
+
+template <class D, typename Packed>
+static HWY_INLINE hn::Vec<D> LoadNNonElementAligned(
+    D d, const Packed* HWY_RESTRICT ptr, size_t offset_in_packed,
+    size_t num_packed) {
+  const hn::Repartition<uint8_t, D> du8;
+  const uint8_t* src_bytes = reinterpret_cast<const uint8_t*>(ptr);
+  return hn::BitCast(
+      d, hn::LoadN(du8, src_bytes + offset_in_packed * sizeof(Packed),
+                   num_packed * sizeof(Packed)));
+}
+
 // Enables generic code independent of compression type.
 template <typename T>  // primary, must specialize
 struct CompressTraits {};
@@ -82,6 +102,8 @@ struct CompressTraits<float> {
     hn::StoreU(raw1, df, packed.ptr + packed_ofs + NF);
   }
 
+  static float ToFloatSlow(const Packed x) { return x; }
+
   template <class DBF16, HWY_IF_BF16_D(DBF16), class VBF16 = hn::Vec<DBF16>>
   static HWY_INLINE void Load2(DBF16 dbf16,
                                const PackedSpan<const Packed>& packed,
@@ -90,10 +112,10 @@ struct CompressTraits<float> {
     const hn::Repartition<float, decltype(dbf16)> df;
     using VF = hn::Vec<decltype(df)>;
     const size_t NF = hn::Lanes(df);
-    const VF f0 = hn::LoadU(df, packed.ptr + packed_ofs + 0 * NF);
-    const VF f1 = hn::LoadU(df, packed.ptr + packed_ofs + 1 * NF);
-    const VF f2 = hn::LoadU(df, packed.ptr + packed_ofs + 2 * NF);
-    const VF f3 = hn::LoadU(df, packed.ptr + packed_ofs + 3 * NF);
+    const VF f0 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 0 * NF);
+    const VF f1 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 1 * NF);
+    const VF f2 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 2 * NF);
+    const VF f3 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 3 * NF);
     raw0 = hn::OrderedDemote2To(dbf16, f0, f1);
     raw1 = hn::OrderedDemote2To(dbf16, f2, f3);
   }
@@ -102,8 +124,8 @@ struct CompressTraits<float> {
   static HWY_INLINE void Load2(DF df, const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, VF& raw0, VF& raw1) {
     const size_t N = hn::Lanes(df);
-    raw0 = hn::LoadU(df, packed.ptr + packed_ofs);
-    raw1 = hn::LoadU(df, packed.ptr + packed_ofs + N);
+    raw0 = LoadNonElementAligned(df, packed.ptr, packed_ofs);
+    raw1 = LoadNonElementAligned(df, packed.ptr, packed_ofs + N);
   }
 
   template <class DD, HWY_IF_F64_D(DD), class VD = hn::Vec<DD>>
@@ -112,9 +134,8 @@ struct CompressTraits<float> {
     const hn::Rebind<float, DD> df;
     using VF = hn::Vec<decltype(df)>;
     const size_t NF = hn::Lanes(df);
-    // Two half loads are likely cheaper than one full + UpperHalf.
-    const VF f0 = hn::LoadU(df, packed.ptr + packed_ofs + 0 * NF);
-    const VF f1 = hn::LoadU(df, packed.ptr + packed_ofs + 1 * NF);
+    const VF f0 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 0 * NF);
+    const VF f1 = LoadNonElementAligned(df, packed.ptr, packed_ofs + 1 * NF);
     raw0 = hn::PromoteTo(dd, f0);
     raw1 = hn::PromoteTo(dd, f1);
   }
@@ -130,17 +151,22 @@ struct CompressTraits<float> {
     size_t i = 0;
     if (num >= 2 * NF) {
       for (; i <= num - 2 * NF; i += 2 * NF) {
-        const VF f0 = hn::LoadU(df, packed.ptr + packed_ofs + i);
-        const VF f1 = hn::LoadU(df, packed.ptr + packed_ofs + i + NF);
+        const VF f0 = LoadNonElementAligned(df, packed.ptr, packed_ofs + i);
+        const VF f1 =
+            LoadNonElementAligned(df, packed.ptr, packed_ofs + i + NF);
         hn::StoreU(hn::OrderedDemote2To(dbf, f0, f1), dbf, raw + i);
       }
     }
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 2 * NF);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const size_t remaining2 = remaining - HWY_MIN(remaining, NF);
-      const VF f0 = hn::LoadN(df, packed.ptr + packed_ofs + i, remaining);
-      const VF f1 = hn::LoadN(df, packed.ptr + packed_ofs + i + NF, remaining2);
+      const VF f0 =
+          LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
+      VF f1 = hn::Zero(df);
+      if (remaining > NF) {
+        f1 = LoadNNonElementAligned(df, packed.ptr, packed_ofs + i + NF,
+                                    remaining - NF);
+      }
       hn::StoreU(hn::OrderedDemote2To(dbf, f0, f1), dbf, raw + i);
     }
   }
@@ -155,14 +181,14 @@ struct CompressTraits<float> {
     size_t i = 0;
     if (num >= NF) {
       for (; i <= num - NF; i += NF) {
-        const VF vf = hn::LoadU(df, packed.ptr + packed_ofs + i);
+        const VF vf = LoadNonElementAligned(df, packed.ptr, packed_ofs + i);
         hn::StoreU(vf, df, raw + i);
       }
     }
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < NF);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VF vf = hn::LoadN(df, packed.ptr + packed_ofs + i, remaining);
+      const VF vf = LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(vf, df, raw + i);  // adds zero padding
     }
   }
@@ -178,14 +204,14 @@ struct CompressTraits<float> {
     size_t i = 0;
     if (num >= ND) {
       for (; i <= num - ND; i += ND) {
-        const VF vf = hn::LoadU(df, packed.ptr + packed_ofs + i);
+        const VF vf = LoadNonElementAligned(df, packed.ptr, packed_ofs + i);
         hn::StoreU(hn::PromoteTo(dd, vf), dd, raw + i);
       }
     }
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < ND);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VF vf = hn::LoadN(df, packed.ptr + packed_ofs + i, remaining);
+      const VF vf = LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(hn::PromoteTo(dd, vf), dd, raw + i);  // adds zero padding
     }
   }
@@ -229,8 +255,10 @@ struct CompressTraits<BF16> {
     HWY_DASSERT(remaining < 2 * NF);
     if (remaining != 0) {
       const VF raw0 = hn::LoadN(df, raw + i, remaining);
-      const size_t remaining1 = remaining - HWY_MIN(remaining, NF);
-      const VF raw1 = hn::LoadN(df, raw + i + NF, remaining1);
+      VF raw1 = hn::Zero(df);
+      if (remaining > NF) {
+        raw1 = hn::LoadN(df, raw + i + NF, remaining - NF);
+      }
 
       hn::StoreN(hn::OrderedDemote2To(dbf, raw0, raw1), dbf,
                  packed.ptr + packed_ofs + i, remaining);
@@ -254,14 +282,18 @@ struct CompressTraits<BF16> {
                packed.ptr + packed_ofs);
   }
 
+  static float ToFloatSlow(const Packed x) {
+    return hwy::ConvertScalarTo<float>(x);
+  }
+
   template <class DBF16, HWY_IF_BF16_D(DBF16)>
   static HWY_INLINE void Load2(DBF16 dbf16,
                                const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, hn::Vec<DBF16>& raw0,
                                hn::Vec<DBF16>& raw1) {
     const size_t N16 = hn::Lanes(dbf16);
-    raw0 = hn::LoadU(dbf16, packed.ptr + packed_ofs);
-    raw1 = hn::LoadU(dbf16, packed.ptr + packed_ofs + N16);
+    raw0 = LoadNonElementAligned(dbf16, packed.ptr, packed_ofs);
+    raw1 = LoadNonElementAligned(dbf16, packed.ptr, packed_ofs + N16);
   }
 
   template <class DF, HWY_IF_F32_D(DF)>
@@ -270,7 +302,7 @@ struct CompressTraits<BF16> {
                                hn::Vec<DF>& raw1) {
     const hn::Repartition<BF16, decltype(df)> dbf;
     using VBF = hn::Vec<decltype(dbf)>;
-    const VBF packed0 = hn::LoadU(dbf, packed.ptr + packed_ofs);
+    const VBF packed0 = LoadNonElementAligned(dbf, packed.ptr, packed_ofs);
     raw0 = hn::PromoteLowerTo(df, packed0);
     raw1 = hn::PromoteUpperTo(df, packed0);
   }
@@ -285,7 +317,7 @@ struct CompressTraits<BF16> {
     size_t i = 0;
     if (num >= N16) {
       for (; i <= num - N16; i += N16) {
-        const VBF packed0 = hn::LoadU(dbf, packed.ptr + packed_ofs + i);
+        const VBF packed0 = LoadNonElementAligned(dbf, packed.ptr, packed_ofs + i);
         hn::StoreU(packed0, dbf, raw + i);
       }
     }
@@ -293,8 +325,7 @@ struct CompressTraits<BF16> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < N16);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VBF packed0 =
-          hn::LoadN(dbf, packed.ptr + packed_ofs + i, remaining);
+      const VBF packed0 = LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(packed0, dbf, raw + i);
     }
   }
@@ -357,8 +388,7 @@ struct CompressTraits<BF16> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 2 * NF);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VBF packed0 =
-          hn::LoadN(dbf, packed.ptr + packed_ofs + i, remaining);
+      const VBF packed0 = LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
       const VF raw0 = hn::PromoteLowerTo(df, packed0);
       const VF raw1 = hn::PromoteUpperTo(df, packed0);
       // If at most one vector, the first store adds zero padding. Check before
@@ -397,6 +427,27 @@ struct CompressTraits<SfpStream> {
     }
   }
 
+  // NOTE: this does not take into account the per-tensor scale.
+  static float ToFloatSlow(const Packed x) {
+    uint32_t sfp = x.byte;
+    HWY_ASSERT(sfp != 0x80);  // -0 is reserved
+
+    const uint32_t sign32 = (sfp & 0x80) << 24;
+    sfp &= 0x7F;
+    const bool large_e = sfp >= 64;
+    const size_t m_bits = large_e ? 3 : 2;
+    uint32_t m = sfp & ((1u << m_bits) - 1u);
+    size_t e = sfp >> m_bits;
+    if (sfp == 0) return 0.0f;
+    const uint32_t e_bias = large_e ? 15 : 23;
+    const uint32_t exp32 = static_cast<uint32_t>(127 + e - e_bias) << 23;
+    const uint32_t mnt32 = m << (23 - m_bits);
+    const uint32_t binary32 = sign32 | exp32 | mnt32;
+    float result;
+    hwy::CopySameSize(&binary32, &result);
+    return result;
+  }
+
   template <class D>  // Caller checks this is f32 or bf16
   static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
                                const size_t packed_ofs, hn::Vec<D>& raw0,
@@ -414,6 +465,142 @@ struct CompressTraits<SfpStream> {
       D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
       Raw* HWY_RESTRICT raw, const size_t num) {
     SfpCodec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
+  }
+};
+
+template <>
+struct CompressTraits<int8_t> {
+  using Packed = int8_t;
+
+  static size_t CompressBound(size_t num) { return num * sizeof(Packed); }
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
+                                  size_t num, CompressPerThread& /*tls*/,
+                                  const PackedSpan<Packed>& packed,
+                                  const size_t packed_ofs) {
+    const hn::Repartition<int32_t, DF> di32;
+    const hn::Repartition<int16_t, DF> di16;
+    const hn::Repartition<int8_t, DF> di8;
+    const auto di16_16 = hn::Half<decltype(di16)>();
+    const auto di8_16 = hn::Half<decltype(di8)>();
+    using VF = hn::Vec<DF>;
+    const size_t NF = hn::Lanes(df);
+
+    size_t i = 0;
+    if (num >= 2 * NF) {
+      for (; i <= num - 2 * NF; i += 2 * NF) {
+        const VF v0 = hn::LoadU(df, raw + i);
+        const VF v1 = hn::LoadU(df, raw + i + NF);
+        const auto vi32_0 = hn::NearestInt(v0);
+        const auto vi32_1 = hn::NearestInt(v1);
+        const auto vi16 = hn::OrderedDemote2To(di16, vi32_0, vi32_1);
+        const auto vi8 = hn::OrderedDemote2To(
+            di8_16, hn::LowerHalf(di16_16, vi16), hn::UpperHalf(di16_16, vi16));
+        hn::StoreU(vi8, di8_16, packed.ptr + packed_ofs + i);
+      }
+    }
+    const size_t remaining = num - i;
+    if (remaining > 0) {
+      HWY_ALIGN float buf[2 * NF];
+      hwy::ZeroBytes(buf, 2 * NF * sizeof(float));
+      for (size_t j = 0; j < remaining; ++j) buf[j] = raw[i + j];
+      const VF v0 = hn::LoadU(df, buf);
+      const VF v1 = hn::LoadU(df, buf + NF);
+      const auto vi32_0 = hn::NearestInt(v0);
+      const auto vi32_1 = hn::NearestInt(v1);
+      const auto vi16 = hn::OrderedDemote2To(di16, vi32_0, vi32_1);
+      const auto vi8 = hn::OrderedDemote2To(
+          di8_16, hn::LowerHalf(di16_16, vi16), hn::UpperHalf(di16_16, vi16));
+      hn::StoreN(vi8, di8_16, packed.ptr + packed_ofs + i, remaining);
+    }
+  }
+
+  static float ToFloatSlow(const Packed x) { return static_cast<float>(x); }
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Load2(DF df, const PackedSpan<const Packed>& packed,
+                               const size_t packed_ofs, hn::Vec<DF>& raw0,
+                               hn::Vec<DF>& raw1) {
+    const hn::Repartition<int32_t, DF> di32;
+    const hn::Repartition<int16_t, DF> di16;
+    const hn::Rebind<int8_t, decltype(di16)> di8_half;
+
+    const auto vec_i8 = hn::LoadU(di8_half, packed.ptr + packed_ofs);
+    const auto vec_i16 = hn::PromoteTo(di16, vec_i8);
+    const auto vec_i32_0 = hn::PromoteLowerTo(di32, vec_i16);
+    const auto vec_i32_1 = hn::PromoteUpperTo(di32, vec_i16);
+
+    raw0 = hn::ConvertTo(df, vec_i32_0);
+    raw1 = hn::ConvertTo(df, vec_i32_1);
+  }
+
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void Load2(DBF dbf, const PackedSpan<const Packed>& packed,
+                               const size_t packed_ofs, hn::Vec<DBF>& raw0,
+                               hn::Vec<DBF>& raw1) {
+    const hn::Repartition<float, DBF> df;
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+
+    VF f0, f1, f2, f3;
+    Load2(df, packed, packed_ofs, f0, f1);
+    Load2(df, packed, packed_ofs + 2 * NF, f2, f3);
+
+    raw0 = hn::OrderedDemote2To(dbf, f0, f1);
+    raw1 = hn::OrderedDemote2To(dbf, f2, f3);
+  }
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void DecompressAndZeroPad(
+      DF df, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      float* HWY_RESTRICT raw, size_t num) {
+    using VF = hn::Vec<decltype(df)>;
+    const size_t NF = hn::Lanes(df);
+
+    size_t i = 0;
+    if (num >= 2 * NF) {
+      for (; i <= num - 2 * NF; i += 2 * NF) {
+        VF raw0, raw1;
+        Load2(df, packed, packed_ofs + i, raw0, raw1);
+        hn::StoreU(raw0, df, raw + i);
+        hn::StoreU(raw1, df, raw + i + NF);
+      }
+    }
+
+    const size_t remaining = num - i;
+    if (HWY_UNLIKELY(remaining != 0)) {
+      for (size_t j = 0; j < remaining; ++j) {
+        raw[i + j] = static_cast<float>(packed.ptr[packed_ofs + i + j]);
+      }
+    }
+  }
+
+  template <class DBF, HWY_IF_BF16_D(DBF)>
+  static HWY_INLINE void DecompressAndZeroPad(
+      DBF dbf, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      BF16* HWY_RESTRICT raw, size_t num) {
+    const hn::Repartition<float, DBF> df;
+    const size_t NF = hn::Lanes(df);
+    size_t i = 0;
+    const size_t NBF = hn::Lanes(dbf);
+    if (num >= NBF) {
+      for (; i <= num - NBF; i += NBF) {
+        hn::Vec<decltype(df)> f0, f1;
+        Load2(df, packed, packed_ofs + i, f0, f1);
+        auto vbf = hn::OrderedDemote2To(dbf, f0, f1);
+        hn::StoreU(vbf, dbf, raw + i);
+      }
+    }
+    const size_t remaining = num - i;
+    if (remaining > 0) {
+      HWY_ALIGN float buf[2 * hn::MaxLanes(df)];
+      DecompressAndZeroPad(df, packed, packed_ofs + i, buf, remaining);
+      auto f0 = hn::LoadU(df, buf);
+      auto f1 = hn::LoadU(df, buf + NF);
+      auto vbf = hn::OrderedDemote2To(dbf, f0, f1);
+      hn::StoreN(vbf, dbf, raw + i, remaining);
+    }
   }
 };
 
@@ -436,6 +623,12 @@ struct CompressTraits<I8Stream> {
                                hn::Vec<D>& raw1) {
     IntCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
   }
+
+  static float ToFloatSlow(const Packed x) {
+    HWY_DASSERT(!"Not supported - requires a stream");
+    return 0.0f;
+  }
+  // Store2 is not yet implemented.
 
   template <class D, typename Raw>
   static HWY_INLINE void DecompressAndZeroPad(
@@ -483,6 +676,10 @@ struct CompressTraits<NuqStream> {
     NuqCodec::Dec2(d, packed, packed_ofs, raw0, raw1);
   }
 
+  static float ToFloatSlow(const Packed x) {
+    HWY_DASSERT(!"Not supported - requires a stream");
+    return 0.0f;
+  }
   // Store2 is not yet implemented.
 
   template <class D, typename Raw>
@@ -603,6 +800,13 @@ HWY_INLINE void DecompressAndZeroPad(DRaw d, const PackedSpan<Packed>& packed,
   using Traits = CompressTraits<hwy::RemoveCvRef<Packed>>;
   Traits::DecompressAndZeroPad(d, MakeConst(packed), packed_ofs, raw, num);
 }
+
+// NOTE: the following are the recommended way to iterate over arrays of
+// potentially compressed elements, including remainder handling. Prefer them
+// over calling `Decompress2` directly, which does not handle remainders.
+// `DecompressAndCall` is for algorithms expressed as `Kernel` objects, such as
+// `Dot`. `Decompress*AndCompress*` are for varying numbers of input arrays and
+// user code expressed as lambdas.
 
 // Invokes `kernel` for the `v.num` elements of `w` and `v`. Decompresses from
 // both into groups of four vectors with lane type `Kernel::Raw`, passes them to
@@ -733,8 +937,8 @@ HWY_INLINE float DecompressAndCall(D, const PackedSpan<const VT> v,
                        comp3);
 }
 
-// Similar to `hn::Transform*`, but for compressed `T`. Used by ops-inl.h.
-// `DF` is the decompressed type, typically `float`.
+// Similar to `hn::Transform*`, but for compressed `T`. Used by `ops-inl.h`.
+// `DF` is the decompressed type, typically `float`. Calls `func(df, v_inout)`.
 template <class DF, typename T, class Func>
 HWY_INLINE void DecompressAndCompressInplace(DF df, T* HWY_RESTRICT inout,
                                              size_t num, Func&& func) {
@@ -773,6 +977,7 @@ HWY_INLINE void DecompressAndCompressInplace(DF df, T* HWY_RESTRICT inout,
 }
 
 // One extra argument. `DF` is the decompressed type, typically `float`.
+// Calls `func(df, v_inout, v1)`.
 template <class DF, typename T, typename T1, class Func>
 HWY_INLINE void Decompress1AndCompressInplace(DF df, T* HWY_RESTRICT inout,
                                               size_t num,
@@ -821,8 +1026,64 @@ HWY_INLINE void Decompress1AndCompressInplace(DF df, T* HWY_RESTRICT inout,
   }
 }
 
+// Two extra arguments. `DF` is the decompressed type, typically `float`.
+// Calls `func(df, v_inout, v1, v2)`.
+template <class DF, typename T, typename T1, typename T2, class Func>
+HWY_INLINE void Decompress2AndCompressInplace(
+    DF df, T* HWY_RESTRICT inout, size_t num, const T1* HWY_RESTRICT p1,
+    const T2* HWY_RESTRICT p2, const size_t p2_ofs, Func&& func) {
+  const auto packed_inout = MakeSpan(inout, num);
+  const auto packed1 = MakeSpan(p1, num);
+  const auto packed2 = MakeSpan(p2, p2_ofs + num);
+
+  using VF = hn::Vec<decltype(df)>;
+  HWY_LANES_CONSTEXPR const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      VF v0, v1;
+      Decompress2(df, packed_inout, i, v0, v1);
+      VF v10, v11;
+      Decompress2(df, packed1, i, v10, v11);
+      VF v20, v21;
+      Decompress2(df, packed2, p2_ofs + i, v20, v21);
+      const VF out0 = func(df, v0, v10, v20);
+      const VF out1 = func(df, v1, v11, v21);
+      Compress2(df, out0, out1, packed_inout, i);
+    }
+  }
+
+  const size_t remaining = num - i;
+  HWY_DASSERT(remaining < 2 * NF);
+  if (HWY_UNLIKELY(remaining != 0)) {
+    HWY_ALIGN float buf_inout[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf1[2 * hn::MaxLanes(df)];
+    HWY_ALIGN float buf2[2 * hn::MaxLanes(df)];
+    // Ensure the second vector is zeroed even if remaining <= NF.
+    hn::Store(hn::Zero(df), df, buf_inout + NF);
+    hn::Store(hn::Zero(df), df, buf1 + NF);
+    hn::Store(hn::Zero(df), df, buf2 + NF);
+    DecompressAndZeroPad(df, packed_inout, i, buf_inout, remaining);
+    DecompressAndZeroPad(df, packed1, i, buf1, remaining);
+    DecompressAndZeroPad(df, packed2, p2_ofs + i, buf2, remaining);
+    const VF v0 = hn::Load(df, buf_inout);
+    const VF v1 = hn::Load(df, buf_inout + NF);
+    const VF v10 = hn::Load(df, buf1);
+    const VF v11 = hn::Load(df, buf1 + NF);
+    const VF v20 = hn::Load(df, buf2);
+    const VF v21 = hn::Load(df, buf2 + NF);
+    const VF out0 = func(df, v0, v10, v20);
+    const VF out1 = func(df, v1, v11, v21);
+    Compress2(df, out0, out1, MakeSpan(buf_inout, 2 * NF), 0);
+    // Clang generates incorrect code for CopyBytes if num = 2.
+    for (size_t j = 0; j < remaining; ++j) {
+      inout[i + j] = hwy::ConvertScalarTo<T>(buf_inout[j]);
+    }
+  }
+}
+
 // Single input, separate output. `DF` is the decompressed type, typically
-// `float`.
+// `float`.  Calls `func(df, v1)`.
 template <class DF, typename T, typename T1, class Func>
 HWY_INLINE void Decompress1AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
                                          const T1* HWY_RESTRICT p1,
@@ -863,7 +1124,8 @@ HWY_INLINE void Decompress1AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
   }
 }
 
-// Two inputs. `DF` is the decompressed type, typically `float`.
+// Two inputs, separate output. `DF` is the decompressed type, typically
+// `float`. Calls `func(df, v1, v2)`.
 template <class DF, typename T, typename T1, typename T2, class Func>
 HWY_INLINE void Decompress2AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
                                          const T1* HWY_RESTRICT p1,
@@ -912,7 +1174,8 @@ HWY_INLINE void Decompress2AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,
   }
 }
 
-// Three inputs. `DF` is the decompressed type, typically `float`.
+// Three inputs, separate output. `DF` is the decompressed type, typically
+// `float`. Calls `func(df, v1, v2, v3)`.
 template <class DF, typename T, typename T1, typename T2, typename T3,
           class Func>
 HWY_INLINE void Decompress3AndCompressTo(DF df, T* HWY_RESTRICT out, size_t num,

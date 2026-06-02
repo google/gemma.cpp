@@ -20,6 +20,8 @@
 #include <stdio.h>
 
 #include <limits>
+#include <string>
+#include <vector>
 #include <type_traits>
 
 #include "hwy/tests/hwy_gtest.h"

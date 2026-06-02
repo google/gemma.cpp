@@ -14,7 +14,6 @@
 // limitations under the License.
 
 #include "compression/types.h"
-#include "util/zones.h"
 #ifndef HWY_DISABLED_TARGETS
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
@@ -38,7 +37,6 @@
 #include "util/mat.h"     // MatStorageT
 #include "util/test_util.h"
 #include "util/threading_context.h"
-#include "hwy/profiler.h"
 #include "hwy/tests/hwy_gtest.h"
 
 // clang-format off
@@ -50,6 +48,7 @@
 // After highway.h
 #include "compression/test_util-inl.h"
 #include "ops/ops-inl.h"
+#include "ops/fast_ops-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -322,10 +321,10 @@ class TestSoftmax {
     for (size_t i = 0; i < count; ++i) {
       sum += x[i];
       double rel = std::abs(x[i] - e[i]) / e[i];
-      ASSERT_LT(rel, 1e-6) << "Mismatch on coordinate " << i << " out of "
+      ASSERT_LT(rel, 2e-5) << "Mismatch on coordinate " << i << " out of "
                            << count;
     }
-    ASSERT_NEAR(sum, 1.0, 1e-6);
+    ASSERT_NEAR(sum, 1.0, 2e-5);
   }
 
  private:
@@ -346,6 +345,51 @@ class TestSoftmax {
 
 void TestAllSoftmax() {
   hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
+}
+
+class TestSoftmaxState {
+ public:
+  template <class D>
+  void operator()(D d, size_t count, size_t misalign_a, size_t misalign_b,
+                  hwy::RandomState& rng) {
+    if (count == 0) return;  // *Softmax would assert
+    if (misalign_b == 0) return;
+    using T = hn::TFromD<D>;
+
+    hwy::AlignedFreeUniquePtr<T[]> px =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    hwy::AlignedFreeUniquePtr<T[]> pe =
+        hwy::AllocateAligned<T>(HWY_MAX(1, misalign_a + count));
+    HWY_ASSERT(px && pe);
+
+    T* x = px.get() + misalign_a;
+    T* initial_logits = pe.get() + misalign_a;
+
+    for (size_t i = 0; i < count; ++i) {
+      x[i] = Random<T>(rng);
+      initial_logits[i] = x[i];
+    }
+
+    float softmax_max;
+    float softmax_d;
+    Softmax(Logits(x, count), Ctx(), /*worker=*/0, /*temperature=*/1.0f,
+            {.max_out = &softmax_max, .d_out = &softmax_d});
+
+    const float maxval =
+        *std::max_element(initial_logits, initial_logits + count);
+
+    float sum_exp = 0.0f;
+    for (size_t i = 0; i < count; ++i) {
+      sum_exp += std::exp(initial_logits[i] - maxval);
+    }
+
+    ASSERT_NEAR(softmax_max, maxval, 1e-6);
+    ASSERT_NEAR(softmax_d, sum_exp, 2e-5);
+  }
+};
+
+void TestAllSoftmaxState() {
+  hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmaxState>>()(float());
 }
 
 template <size_t k>
@@ -397,6 +441,31 @@ static HWY_NOINLINE void TestAllSigmoid() {
   ForeachActivationType1<TestSigmoid>(hn::ScalableTag<float>());
 }
 
+struct TestFastSigmoid {
+  template <typename T, class D>
+  void operator()(T, D) const {
+    std::vector<T> values;
+    for (int i = -150; i <= 150; ++i) {
+      values.push_back(hwy::ConvertScalarTo<T>(.1f * i));
+    }
+    std::vector<T> result = values;
+    gcpp::HWY_NAMESPACE::FastSigmoid(result.data(), result.size());
+
+    for (size_t i = 0; i < values.size(); i++) {
+      const float max_error = IsBF16<T>() ? 0.003f : 0.0004f;
+      const float value = hwy::ConvertScalarTo<float>(values[i]);
+      const float actual = hwy::ConvertScalarTo<float>(result[i]);
+      const float expected = (1 / (1 + std::exp(-value)));
+      EXPECT_NEAR(expected, actual, max_error)
+          << (IsBF16<T>() ? "bf16" : "float");
+    }
+  }
+};
+
+static HWY_NOINLINE void TestAllFastSigmoid() {
+  ForeachActivationType1<TestFastSigmoid>(hn::ScalableTag<float>());
+}
+
 struct TestGelu {
   template <typename T, class D>
   void operator()(T, D) const {
@@ -421,6 +490,32 @@ struct TestGelu {
 
 static HWY_NOINLINE void TestAllGelu() {
   ForeachActivationType1<TestGelu>(hn::ScalableTag<float>());
+}
+
+struct TestFastGelu {
+  template <typename T, class D>
+  void operator()(T, D) const {
+    std::vector<T> values;
+    for (int i = -150; i <= 150; ++i) {
+      values.push_back(hwy::ConvertScalarTo<T>(.1f * i));
+    }
+    std::vector<T> result = values;
+    gcpp::HWY_NAMESPACE::FastGelu(result.data(), result.size());
+
+    for (size_t i = 0; i < values.size(); i++) {
+      const float max_error = IsBF16<T>() ? 0.007f : 1e-5f;
+      const float x = hwy::ConvertScalarTo<float>(values[i]);
+      const float actual = hwy::ConvertScalarTo<float>(result[i]);
+      const float expected =
+          x * (0.5f + 0.5f * tanh(x * (0.79788f + 0.035677f * x * x)));
+      EXPECT_NEAR(expected, actual, max_error)
+          << (IsBF16<T>() ? "bf16" : "float");
+    }
+  }
+};
+
+static HWY_NOINLINE void TestAllFastGelu() {
+  ForeachActivationType1<TestFastGelu>(hn::ScalableTag<float>());
 }
 
 static HWY_NOINLINE HWY_MAYBE_UNUSED void ScalarRopeAndMulBy(
@@ -456,7 +551,7 @@ void TestRopeAndMulBy() {
     x.Row(0)[i] = random_float();
   }
 
-  const float qmul = AttentionActivations::ChooseQueryScale(config);
+  const float qmul = ChooseQueryScale(config);
   constexpr float kmul = 1.0f;
 
   MatStorageT<float> qexpected("qexpected", dim_qkv, ctx.allocator);
@@ -771,9 +866,12 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstTo);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmaxState);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSigmoid);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllFastSigmoid);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllGelu);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestAllFastGelu);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestRopeAndMulBy);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNormInplace);

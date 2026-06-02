@@ -96,7 +96,8 @@ struct LayerWeightsPtrs {
   // other values for purposes of the KV cache.
   LayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
                    const TensorInfoRegistry& tensors)
-      : finder_(LayerSuffix(layer_idx), tensors),
+      : layer_idx(layer_idx),
+        finder_(LayerSuffix(layer_idx), tensors),
         qkv_einsum_w(finder_("qkv_ein")),
         qkv_einsum_w1(finder_("qkv1_w")),
         qkv_einsum_w2(finder_("qkv2_w")),
@@ -135,6 +136,7 @@ struct LayerWeightsPtrs {
   }
   ~LayerWeightsPtrs() = default;
 
+  const size_t layer_idx;
   const MatFinder finder_;
 
   // Files either have qkv_einsum_w with 2 stacked matrices or separate

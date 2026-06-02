@@ -23,7 +23,7 @@
 #include <vector>
 
 #include "third_party/gemma_cpp/gemma/gemma.h"
-#include "third_party/gemma_cpp/gemma/gemma_args.h"  // LoaderArgs
+#include "third_party/gemma_cpp/gemma/gemma_args.h"  // GemmaArgs
 #include "third_party/gemma_cpp/gemma/tokenizer.h"
 #include "third_party/gemma_cpp/ops/matmul.h"
 #include "third_party/gemma_cpp/util/threading_context.h"
@@ -31,18 +31,11 @@
 
 class SimplifiedGemma {
  public:
-  SimplifiedGemma(const gcpp::LoaderArgs& loader,
-                  const gcpp::ThreadingArgs& threading = gcpp::ThreadingArgs(),
-                  const gcpp::InferenceArgs& inference = gcpp::InferenceArgs())
-      : ctx_(threading),
+  SimplifiedGemma(const gcpp::GemmaArgs& args)
+      : ctx_(args.threading),
         env_(ctx_),
-        gemma_(loader, inference, ctx_),
-        kv_cache_(gemma_.Config(), inference, ctx_.allocator) {}
-
-  SimplifiedGemma(int argc, char** argv)
-      : SimplifiedGemma(gcpp::LoaderArgs(argc, argv),
-                        gcpp::ThreadingArgs(argc, argv),
-                        gcpp::InferenceArgs(argc, argv)) {}
+        gemma_(args, ctx_),
+        kv_cache_(gemma_.Config(), args.inference, ctx_.allocator) {}
 
   void Generate(std::string& prompt, size_t max_generated_tokens = 1024,
                 float temperature = 0.7,

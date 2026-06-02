@@ -1,0 +1,21 @@
+Text from https://en.wikipedia.org/wiki/Quark is licensed under Creative Commons Attribution-ShareAlike 4.0 License; (https://en.wikipedia.org/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License)
+
+Quark
+From Wikipedia, the free encyclopedia
+(Redirected from Quarks)
+This article is about the elementary particle and its antiparticle. For other uses, see Quark (disambiguation).
+⁠
+A quark (/ˈkwɔːrk, ˈkwɑːrk/ ⓘ) is a type of elementary particle and a fundamental constituent of matter. Quarks combine to form composite particles called hadrons, the most stable of which are protons and neutrons, the components of atomic nuclei.[1] All commonly observable matter is composed of up quarks, down quarks and electrons. Owing to a phenomenon known as color confinement, quarks are never found in isolation; they can be found only within hadrons, which include baryons (such as protons and neutrons) and mesons, or in quark–gluon plasmas.[2][3][nb 1] For this reason, much of what is known about quarks has been drawn from observations of hadrons.
+
+Quarks have various intrinsic properties, including electric charge, mass, color charge, and spin. They are the only elementary particles in the Standard Model of particle physics to experience all four fundamental interactions, also known as fundamental forces (electromagnetism, gravitation, strong interaction, and weak interaction), as well as the only known particles whose electric charges are not integer multiples of the elementary charge.
+
+There are six types, known as flavors, of quarks: up, down, charm, strange, top, and bottom.[4] Up and down quarks have the lowest masses of all quarks. The heavier quarks rapidly change into up and down quarks through a process of particle decay: the transformation from a higher mass state to a lower mass state. Because of this, up and down quarks are generally stable and the most common in the universe, whereas strange, charm, bottom, and top quarks can only be produced in high energy collisions (such as those involving cosmic rays and in particle accelerators). For every quark flavor there is a corresponding type of antiparticle, known as an antiquark, that differs from the quark only in that some of its properties (such as the electric charge) have equal magnitude but opposite sign.
+
+The quark model was independently proposed by physicists Murray Gell-Mann and George Zweig in 1964.[5] Quarks were introduced as parts of an ordering scheme for hadrons, and there was little evidence for their physical existence until deep inelastic scattering experiments at the Stanford Linear Accelerator Center in 1968.[6][7] Accelerator program experiments have provided evidence for all six flavors. The top quark, first observed at Fermilab in 1995, was the last to be discovered.[5]
+
+Classification
+See also: Standard Model
+A four-by-four table of particles. Columns are three generations of matter (fermions) and one of forces (bosons). In the first three columns, two rows contain quarks and two leptons. The top two rows' columns contain up (u) and down (d) quarks, charm (c) and strange (s) quarks, top (t) and bottom (b) quarks, and photon (γ) and gluon (g), respectively. The bottom two rows' columns contain electron neutrino (ν sub e) and electron (e), muon neutrino (ν sub μ) and muon (μ), and tau neutrino (ν sub τ) and tau (τ), and Z sup 0 and W sup ± weak force. Mass, charge, and spin are listed for each particle.
+Six of the particles in the Standard Model are quarks (shown in purple). Each of the first three columns forms a generation of matter.
+The Standard Model is the theoretical framework describing all the known elementary particles. This model contains six flavors of quarks (q), named up (u), down (d), strange (s), charm (c), bottom (b), and top (t).[4] Antiparticles of quarks are called antiquarks, and are denoted by a bar over the symbol for the corresponding quark, such as u for an up antiquark. As with antimatter in general, antiquarks have the same mass, mean lifetime, and spin as their respective quarks, but the electric charge and other charges have the opposite sign.[8]
+
