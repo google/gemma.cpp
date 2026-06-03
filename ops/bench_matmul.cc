@@ -130,11 +130,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     keep += hwy::ConvertScalarTo<double>(C.Row(0)[hwy::Unpredictable1()]);
 
     // Only record times after autotuning finished.
-    bool done = per_key->autotune.Best();
-#if GEMMA_ONEDNN_BRGEMM
-    done = done || per_key->brgemm_autotune.Best();
-#endif
-    if (done) times.push_back(elapsed);
+    if (per_key->autotune.Best()) times.push_back(elapsed);
   }
   hwy::PreventElision(keep);
   env.ctx.pools.MaybeStopSpinning(use_spinning);
