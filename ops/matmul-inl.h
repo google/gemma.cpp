@@ -41,6 +41,9 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#if GEMMA_ONEDNN_BRGEMM
+#include "ops/brgemm-inl.h"
+#endif  // GEMMA_ONEDNN_BRGEMM
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -1076,6 +1079,48 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const CacheInfo& cache = env.ctx.cache_info;
   MMPerKey& per_key = MMImpl::FindOrAddPerKey(
       M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
+
+#if GEMMA_ONEDNN_BRGEMM
+  // BRGeMM path for BF16×BF16 on Intel AMX/AVX-512.
+  // Requires M,N,K >= 32 and K % 32 == 0 (AMX tile constraint).
+  if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
+    if (M >= 32 && N >= 32 && K >= 32 && (K % 32) == 0) {
+      const float scale = A.Scale() * B.Scale();
+      MMAutoTune<BRGeMMConfig>& brg_tuner = per_key.brgemm_autotune;
+
+      if (HWY_LIKELY(brg_tuner.Best())) {
+        if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add,
+                            *brg_tuner.Best(), env.ctx, cluster_idx)) {
+          return &per_key;
+        }
+        // BRGeMM failed; fall through to standard matmul.
+      }
+
+      if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
+        brg_tuner.SetCandidates(BRGeMMCandidates(M, K, N));
+      }
+
+      const BRGeMMConfig& cfg = brg_tuner.NextConfig();
+      const uint64_t t0 = hwy::timer::Start();
+      if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
+                          cluster_idx)) {
+        const uint64_t t1 =
+            env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+        brg_tuner.NotifyTicks(t1 - t0);
+
+        if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
+          const BRGeMMConfig& best = *brg_tuner.Best();
+          fprintf(stderr,
+                  "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
+                  "batch=%zu\n",
+                  M, K, N, best.M_blk, best.N_blk, best.K_blk, best.batch_size);
+        }
+        return &per_key;
+      }
+      // BRGeMM failed; fall through to standard matmul.
+    }
+  }  // if constexpr BF16/float
+#endif  // GEMMA_ONEDNN_BRGEMM
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
   const StridedViewBF A_view =

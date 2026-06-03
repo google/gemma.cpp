@@ -25,6 +25,17 @@ git_override(
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# OneDNN v3.11 for BRGeMM micro-kernel support (optional, x86-64 only).
+http_archive(
+    name = "onednn",
+    build_file = "@//bazel:onednn.BUILD",
+    sha256 = "04df98b18300daf6c3aa7cc2d5e7ce8a8f430fed1787151daed0254d8dd4e64e",
+    strip_prefix = "oneDNN-3.11",
+    urls = [
+        "https://github.com/uxlfoundation/oneDNN/archive/refs/tags/v3.11.tar.gz",
+    ],
+)
+
 http_archive(
     name = "com_google_absl_py",
     sha256 = "8a3d0830e4eb4f66c4fa907c06edf6ce1c719ced811a12e26d9d3162f8471758",
