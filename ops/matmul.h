@@ -24,6 +24,7 @@
 #include <vector>
 
 // IWYU pragma: begin_exports
+#include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading.h"
@@ -639,6 +640,9 @@ class MMKeys {
 struct MMPerKey {
   MMAutoTune<MMConfig> autotune;
   MMAutoTune<MMParA> autotune_par_a;
+#if GEMMA_ONEDNN_BRGEMM
+  MMAutoTune<BRGeMMConfig> brgemm_autotune;
+#endif  // GEMMA_ONEDNN_BRGEMM
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive

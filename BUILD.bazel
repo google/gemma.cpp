@@ -27,6 +27,13 @@ exports_files([
     ".github/workflows/build.yml",
 ])
 
+# To enable OneDNN BRGeMM support, build with:
+#   bazel build --define gemma_onednn_brgemm=1 ...
+config_setting(
+    name = "gemma_onednn_brgemm",
+    define_values = {"gemma_onednn_brgemm": "1"},
+)
+
 cc_library(
     name = "basics",
     srcs = ["util/basics.cc"],
@@ -314,7 +321,17 @@ test_suite(
 cc_library(
     name = "matmul_env",
     srcs = ["ops/matmul.cc"],
-    hdrs = ["ops/matmul.h"],
+    hdrs = [
+        "ops/brgemm.h",
+        "ops/matmul.h",
+    ],
+    defines = select({
+        ":gemma_onednn_brgemm": [
+            "GEMMA_ONEDNN_BRGEMM=1",
+            "DNNL_EXPERIMENTAL_UKERNEL",
+        ],
+        "//conditions:default": [],
+    }),
     deps = [
         ":allocator",
         ":basics",
@@ -325,14 +342,20 @@ cc_library(
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
-    ],
+    ] + select({
+        ":gemma_onednn_brgemm": ["@onednn"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
     name = "matmul",
     # allow depending only on this target, without also matmul_env.
     hdrs = ["ops/matmul.h"],
-    textual_hdrs = ["ops/matmul-inl.h"],
+    textual_hdrs = [
+        "ops/brgemm-inl.h",
+        "ops/matmul-inl.h",
+    ],
     deps = [
         ":allocator",
         ":basics",
@@ -346,7 +369,10 @@ cc_library(
         "@highway//:hwy",
         "@highway//:nanobenchmark",
         "@highway//:profiler",
-    ],
+    ] + select({
+        ":gemma_onednn_brgemm": ["@onednn"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
@@ -363,6 +389,7 @@ cc_library(
         "ops/matmul_static.h",
     ],
     textual_hdrs = [
+        "ops/brgemm-inl.h",
         "ops/matmul_static-inl.h",
         "ops/matmul-inl.h",
     ],
@@ -379,7 +406,10 @@ cc_library(
         "@highway//:hwy",
         "@highway//:profiler",
         "@highway//:timer",
-    ],
+    ] + select({
+        ":gemma_onednn_brgemm": ["@onednn"],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(

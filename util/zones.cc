@@ -135,6 +135,8 @@ const char* CallerName(Callers caller) {
       return "Att.DotSoftmaxWeightedSum";
     case Callers::kBlobWriter:
       return "BlobWriter";
+    case Callers::kBRGeMM:
+      return "BRGeMM";
     case Callers::kCompress:
       return "Compress";
     case Callers::kFixupWeights:
