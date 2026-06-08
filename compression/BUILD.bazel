@@ -104,6 +104,7 @@ cc_test(
         ":int",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
+        "//third_party/grte:static_libs",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
