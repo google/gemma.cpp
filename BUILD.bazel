@@ -885,6 +885,7 @@ cc_test(
         ":benchmark_helper",
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "//io",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",

@@ -21,6 +21,7 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"
+#include "io/io.h"
 #include "hwy/base.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/profiler.h"
@@ -146,6 +147,8 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  testing::InitGoogleTest(&argc, argv);
+
   fprintf(stderr, "GemmaEnv setup..\n");
   gcpp::ConsumedArgs consumed(argc, argv);
   gcpp::GemmaArgs args(argc, argv, consumed);
@@ -154,7 +157,6 @@ int main(int argc, char** argv) {
   gcpp::GemmaEnv env(args);
   gcpp::s_env = &env;
 
-  testing::InitGoogleTest(&argc, argv);
 
   return RUN_ALL_TESTS();
 }
