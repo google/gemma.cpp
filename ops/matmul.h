@@ -25,6 +25,7 @@
 
 // IWYU pragma: begin_exports
 #include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM
+#include "ops/gilbert.h"
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading.h"
@@ -90,6 +91,25 @@ struct MMParallelNone {
     }
   }
 
+  // SFC = Space Filling Curve(specifically the Hilbert curve)
+  template <class Func>
+  void ForRangesSFC(ThreadingContext& ctx,
+                    const IndexRangePartition& ranges_mc,
+                    const IndexRangePartition& ranges_nc, size_t cluster_idx,
+                    const Func& func) const {
+    const size_t worker = ctx.Worker(cluster_idx);
+    const size_t W = ranges_mc.NumTasks();
+    const size_t H = ranges_nc.NumTasks();
+    const size_t num_tasks = W * H;
+
+    for (size_t task = 0; task < num_tasks; ++task) {
+      int x, y;
+      gilbert_d2xy(&x, &y, static_cast<int>(task), static_cast<int>(W),
+                   static_cast<int>(H));
+      func(ranges_mc.Range(x), ranges_nc.Range(y), worker);
+    }
+  }
+
   template <class Func>
   void ForRangeMC(ThreadingContext& ctx, const IndexRange& range_mc,
                   size_t cluster_idx, const Func& func) const {
@@ -135,6 +155,29 @@ struct MMParallelWithinCluster {
     ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
                              [&](uint64_t task, size_t worker) {
                                func(get_mc(task), get_nc(task), worker);
+                             });
+  }
+
+  template <class Func>
+  void ForRangesSFC(ThreadingContext& ctx,
+                    const IndexRangePartition& ranges_mc,
+                    const IndexRangePartition& ranges_nc, size_t cluster_idx,
+                    const Func& func) const {
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMClusterForSFC);
+
+    const size_t W = ranges_mc.NumTasks();
+    const size_t H = ranges_nc.NumTasks();
+    const size_t num_tasks = W * H;
+
+    ParallelForWithinCluster(num_tasks, ctx, cluster_idx, caller,
+                             [&](uint64_t task, size_t worker) {
+                               int x, y;
+                               gilbert_d2xy(&x, &y, static_cast<int>(task),
+                                            static_cast<int>(W),
+                                            static_cast<int>(H));
+                               func(ranges_mc.Range(x), ranges_nc.Range(y),
+                                    worker);
                              });
   }
 
@@ -205,6 +248,35 @@ struct MMParallelHierarchical {
                                          cluster_range.begin() + i;
                                      func(get_mc(task), get_nc(task), worker);
                                    });
+        });
+  }
+
+  template <class Func>
+  void ForRangesSFC(ThreadingContext& ctx,
+                    const IndexRangePartition& ranges_mc,
+                    const IndexRangePartition& ranges_nc,
+                    size_t caller_cluster_idx, const Func& func) const {
+    HWY_DASSERT(caller_cluster_idx == 0);
+    (void)caller_cluster_idx;
+    const hwy::pool::Caller caller =
+        ctx.pool_callers.Get(Callers::kMMHierForSFC);
+
+    const size_t W = ranges_mc.NumTasks();
+    const size_t H = ranges_nc.NumTasks();
+    const IndexRange all_range(0, W * H);
+
+    ParallelPartitionAcrossClusters(
+        all_range, /*task_multiple=*/1, /*inner_tasks=*/1, ctx, caller,
+        [&](const IndexRange& cluster_range, size_t cluster_idx) {
+          ParallelForWithinCluster(
+              cluster_range.Num(), ctx, cluster_idx, caller,
+              [&](uint64_t i, size_t worker) {
+                const size_t task = cluster_range.begin() + i;
+                int x, y;
+                gilbert_d2xy(&x, &y, static_cast<int>(task),
+                             static_cast<int>(W), static_cast<int>(H));
+                func(ranges_mc.Range(x), ranges_nc.Range(y), worker);
+              });
         });
   }
 
@@ -305,9 +377,9 @@ enum class MMOrder : uint8_t {
   kNT_MT_K,
   kNT_MT,  // Specialization of `kNT_MT_K` for a single K task with `MMSetC`.
 
-  // Resident C (`kK_M_NT`) should be good for large K relative to M and N.
-  // However, it does not (much) outperform `kNT_K` on SKX and Zen4. There are
-  // no kM* because we expect M (batch size) to be small relative to K and N.
+  // Space-filling curve (Hilbert curve) traversal over blocks of M and N.
+  kSFC_K,
+  kSFC,
 };
 
 // Tag types for `DispatchOrder`.
@@ -315,6 +387,8 @@ struct MMOrderNT_K {};
 struct MMOrderNT {};
 struct MMOrderNT_MT_K {};
 struct MMOrderNT_MT {};
+struct MMOrderSFC_K {};
+struct MMOrderSFC {};
 
 template <class Func, typename... Args>
 void DispatchOrder(MMOrder order, const Func& func, Args&&... args) {
@@ -327,6 +401,10 @@ void DispatchOrder(MMOrder order, const Func& func, Args&&... args) {
       return func(MMOrderNT_MT_K(), std::forward<Args>(args)...);
     case MMOrder::kNT_MT:
       return func(MMOrderNT_MT(), std::forward<Args>(args)...);
+    case MMOrder::kSFC_K:
+      return func(MMOrderSFC_K(), std::forward<Args>(args)...);
+    case MMOrder::kSFC:
+      return func(MMOrderSFC(), std::forward<Args>(args)...);
     default:
       HWY_UNREACHABLE;
   }
@@ -337,7 +415,8 @@ static inline bool IsOneMC(MMOrder order) {
 }
 
 static inline bool IsOneKC(MMOrder order) {
-  return order == MMOrder::kNT || order == MMOrder::kNT_MT;
+  return order == MMOrder::kNT || order == MMOrder::kNT_MT ||
+         order == MMOrder::kSFC;
 }
 
 static inline const char* StringFromOrder(MMOrder order) {
@@ -350,6 +429,10 @@ static inline const char* StringFromOrder(MMOrder order) {
       return "NT_MT_K";
     case MMOrder::kNT_MT:
       return "NT_MT";
+    case MMOrder::kSFC_K:
+      return "SFC_K";
+    case MMOrder::kSFC:
+      return "SFC";
     default:
       return nullptr;
   }

@@ -71,6 +71,10 @@ const char* ZoneName(Zones zone) {
       return "MM.NT_MT";
     case Zones::kMMNT:
       return "MM.NT";
+    case Zones::kMMSFC:
+      return "MM.SFC";
+    case Zones::kMMSFC_K:
+      return "MM.SFC_K";
     case Zones::kMMTwoMatMul:
       return "MM.TwoMatMul";
     case Zones::kOpsAddFrom:
@@ -153,12 +157,16 @@ const char* CallerName(Callers caller) {
       return "MM.ClusterForMCNC";
     case Callers::kMMClusterForN:
       return "MM.ClusterForN";
+    case Callers::kMMClusterForSFC:
+      return "MM.ClusterForSFC";
     case Callers::kMMHierForMC:
       return "MM.HierForMC";
     case Callers::kMMHierForMCNC:
       return "MM.HierForMCNC";
     case Callers::kMMHierForN:
       return "MM.HierForN";
+    case Callers::kMMHierForSFC:
+      return "MM.HierForSFC";
     case Callers::kOpsAddFromBatched:
       return "Ops.AddFromBatched";
     case Callers::kOpsMaybeLogitsSoftCapBatched:

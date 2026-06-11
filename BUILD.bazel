@@ -335,6 +335,7 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
+        ":gilbert",
         ":mat",
         ":threading",
         ":threading_context",
@@ -359,6 +360,7 @@ cc_library(
     deps = [
         ":allocator",
         ":basics",
+        ":gilbert",
         ":mat",
         ":matmul_env",
         ":threading",
@@ -519,6 +521,12 @@ cc_test(
         "@highway//:nanobenchmark",
         "@highway//:thread_pool",
     ],
+)
+
+cc_library(
+    name = "gilbert",
+    srcs = ["ops/gilbert.cc"],
+    hdrs = ["ops/gilbert.h"],
 )
 
 cc_test(

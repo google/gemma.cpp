@@ -156,6 +156,8 @@ set(SOURCES
   io/io.cc
   io/io.h
   ops/dot-inl.h
+  ops/gilbert.cc
+  ops/gilbert.h
   ops/matmul_static_bf16.cc
   ops/matmul_static_f32.cc
   ops/matmul_static_nuq.cc

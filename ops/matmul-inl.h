@@ -1039,6 +1039,71 @@ class MMLoops {
           }
         });
   }
+
+  // Parallel loops over mc/nc blocks of M/range_n via SFC, single K.
+  template <typename TB, typename TC, class Parallel>
+  static HWY_INLINE void Loop(MMOrderSFC, Parallel parallel,
+                              const StridedViewBF A, const MatPtrT<TB>& B,
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC);
+    HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
+
+    parallel.ForRangesSFC(
+        args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone mm_zone;
+          mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
+          MMKernel::B3A2C0(
+              A, B, range_mc, range_kc, range_nc, args, MMSetC(),
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
+
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                             MMSetC(), C2);
+          }
+          if constexpr (IsBF16<TC>()) {
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          }
+        });
+  }
+
+  // Parallel loops over mc/nc blocks of M/range_n via SFC, sequential K.
+  template <typename TB, typename TC, class Parallel>
+  static HWY_INLINE void Loop(MMOrderSFC_K, Parallel parallel,
+                              const StridedViewBF A, const MatPtrT<TB>& B,
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC_K);
+
+    parallel.ForRangesSFC(
+        args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone mm_zone;
+          mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
+          MMKernel::ForeachKC(
+              A, B, range_mc, args.ranges_kc, range_nc, args,
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
+
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                args, C2);
+          }
+
+          if constexpr (IsBF16<TC>()) {
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          }
+        });
+  }
 };  // MMLoops
 
 // Computes the matrix product `A * B * scale [+ add]` and stores it in `C`.
