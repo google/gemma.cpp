@@ -58,6 +58,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.cc }} ${{ matrix.cxx }}
 
+      - name: Setup CMake
+        if: runner.os == 'Windows'
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: '4.2'
+
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
 
@@ -70,7 +76,7 @@ jobs:
           -D CMAKE_CXX_COMPILER=${{ matrix.cxx || '' }}
           -D CMAKE_C_COMPILER_LAUNCHER=ccache
           -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
-          -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          -DCMAKE_POLICY_VERSION_MINIMUM="3.5"
           ${{ matrix.cc == 'gcc-15' && '-DCMAKE_CXX_FLAGS=-Wno-error=missing-declarations -Wno-error=missing-field-initializers' || '' }}
 
       - name: Build

@@ -23,8 +23,8 @@
         "name": "windows",
         "inherits": "__defaults__",
         "displayName": "Windows",
-        "description": "Visual Studio 2022 with Clang/LLVM frontend",
-        "generator": "Visual Studio 17 2022",
+        "description": "Visual Studio 2026 with Clang/LLVM frontend",
+        "generator": "Visual Studio 18 2026",
         "toolset": "ClangCL",
         "cacheVariables": {
           "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
@@ -39,8 +39,8 @@
         "name": "windows-dll",
         "inherits": "__defaults__",
         "displayName": "Windows DLL",
-        "description": "Visual Studio 2022 with Clang/LLVM frontend (DLL build)",
-        "generator": "Visual Studio 17 2022",
+        "description": "Visual Studio 2026 with Clang/LLVM frontend (DLL build)",
+        "generator": "Visual Studio 18 2026",
         "toolset": "ClangCL",
         "condition": {
           "type": "equals",
