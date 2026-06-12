@@ -156,7 +156,7 @@ class GemmaModel {
     return result;
   }
 
-  // For a PaliGemma model, sets the image to run on. Subseqent calls to
+  // For a PaliGemma model, sets the image to run on. Subsequent calls to
   // Generate* will use this image. Throws an error for other models.
   void SetImage(const py::array_t<float, py::array::c_style |
                                              py::array::forcecast>& image) {
@@ -174,7 +174,7 @@ class GemmaModel {
     int width = buffer.shape[1];
     float* ptr = static_cast<float*>(buffer.ptr);
     gcpp::Image c_image;
-    c_image.Set(height, width, ptr);
+    c_image.Set(width, height, ptr);
     const size_t image_size = config.vit_config.image_size;
     c_image.Resize(image_size, image_size);
     image_tokens_.reset(new gcpp::ImageTokens(

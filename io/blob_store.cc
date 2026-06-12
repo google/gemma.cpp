@@ -182,8 +182,13 @@ class BlobStore {
   bool ParseHeaderAndDirectoryV2(const File& file) {
     is_file_v2_ = true;
     // Read header from the end of the file.
-    size_t offset = file.FileSize() - sizeof(header_);
-    if (!file.Read(offset, sizeof(header_), &header_)) {
+    const uint64_t file_bytes = file.FileSize();
+    if (file_bytes < sizeof(header_)) {
+      HWY_WARN("File is too small to contain a BlobStore header.");
+      return false;
+    }
+    size_t pos = file_bytes - sizeof(header_);
+    if (!file.Read(pos, sizeof(header_), &header_)) {
       HWY_WARN("Failed to read BlobStore header.");
       return false;
     }
@@ -199,14 +204,20 @@ class BlobStore {
       return false;
     }
     directory_.resize(header_.num_blobs * 2);
-    const auto directory_bytes = 2 * kU128Bytes * header_.num_blobs;
-    offset -= directory_bytes;
-    // Read directory immediately before the header.
-    if (!file.Read(offset, directory_bytes, directory_.data())) {
+
+    // Read directory, which ends at the start of the header.
+    const size_t directory_bytes = 2 * kU128Bytes * header_.num_blobs;
+    if (directory_bytes > pos) {
+      HWY_WARN("Directory is larger than the file size.");
+      return false;
+    }
+    pos -= directory_bytes;
+    if (!file.Read(pos, directory_bytes, directory_.data())) {
       HWY_WARN("Failed to read BlobStore directory.");
       return false;
     }
-    HWY_ASSERT(IsValid(file.FileSize()));
+
+    HWY_ASSERT(IsValid(file_bytes));
     return true;
   }
 

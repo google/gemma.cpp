@@ -61,16 +61,18 @@ struct ServerState {
     std::chrono::steady_clock::time_point last_access;
   };
 
-  std::unordered_map<std::string, Session> sessions;
+  // Lock ordering: always acquire sessions_mutex before inference_mutex.
+  std::unordered_map<std::string, std::shared_ptr<Session>> sessions;
   std::mutex sessions_mutex;
   std::mutex inference_mutex;
 
-  // Cleanup old sessions after 30 minutes of inactivity
+  // Cleanup old sessions after 30 minutes of inactivity.
+  // Sessions currently in use are kept alive by shared_ptr held by handlers.
   void CleanupOldSessions() {
     std::lock_guard<std::mutex> lock(sessions_mutex);
     auto now = std::chrono::steady_clock::now();
     for (auto it = sessions.begin(); it != sessions.end();) {
-      if (now - it->second.last_access > std::chrono::minutes(30)) {
+      if (now - it->second->last_access > std::chrono::minutes(30)) {
         it = sessions.erase(it);
       } else {
         ++it;
@@ -78,15 +80,17 @@ struct ServerState {
     }
   }
 
-  // Get or create session with KV cache
-  Session& GetOrCreateSession(const std::string& session_id) {
+  // Get or create session with KV cache. Returns shared_ptr so the session
+  // remains alive even if erased from the map by cleanup.
+  std::shared_ptr<Session> GetOrCreateSession(const std::string& session_id) {
     std::lock_guard<std::mutex> lock(sessions_mutex);
     auto& session = sessions[session_id];
-    if (!session.kv_cache) {
-      session.kv_cache = std::make_unique<KVCache>(
+    if (!session) {
+      session = std::make_shared<Session>();
+      session->kv_cache = std::make_unique<KVCache>(
           gemma->Config(), InferenceArgs(), env->ctx.allocator);
     }
-    session.last_access = std::chrono::steady_clock::now();
+    session->last_access = std::chrono::steady_clock::now();
     return session;
   }
 };
@@ -185,9 +189,9 @@ void HandleGenerateContentNonStreaming(ServerState& state,
   try {
     json request = json::parse(req.body);
 
-    // Get or create session
+    // Get or create session (acquires sessions_mutex, then releases it).
     std::string session_id = request.value("sessionId", GenerateSessionId());
-    auto& session = state.GetOrCreateSession(session_id);
+    auto session = state.GetOrCreateSession(session_id);
 
     // Extract prompt from API format
     std::string prompt;
@@ -201,7 +205,7 @@ void HandleGenerateContentNonStreaming(ServerState& state,
       return;
     }
 
-    // Lock for inference
+    // Lock for inference (after sessions_mutex is released).
     std::lock_guard<std::mutex> lock(state.inference_mutex);
 
     // Set up runtime config
@@ -212,7 +216,7 @@ void HandleGenerateContentNonStreaming(ServerState& state,
     // Tokenize prompt
     std::vector<int> tokens = WrapAndTokenize(
         state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
-        state.gemma->Config().wrapping, session.abs_pos, prompt);
+        state.gemma->Config().wrapping, session->abs_pos, prompt);
 
     // Run inference with KV cache
     TimingInfo timing_info = {.verbosity = 0};
@@ -223,12 +227,12 @@ void HandleGenerateContentNonStreaming(ServerState& state,
     runtime_config.stream_token = [&output, &state, &session, &tokens](
                                       int token, float) {
       // Skip prompt tokens
-      if (session.abs_pos < tokens.size()) {
-        session.abs_pos++;
+      if (session->abs_pos < tokens.size()) {
+        session->abs_pos++;
         return true;
       }
 
-      session.abs_pos++;
+      session->abs_pos++;
 
       // Check for EOS
       if (state.gemma->Config().IsEOS(token)) {
@@ -243,15 +247,15 @@ void HandleGenerateContentNonStreaming(ServerState& state,
       return true;
     };
 
-    state.gemma->Generate(runtime_config, tokens, session.abs_pos, prefix_end,
-                          *session.kv_cache, *state.env, timing_info);
+    state.gemma->Generate(runtime_config, tokens, session->abs_pos, prefix_end,
+                          *session->kv_cache, *state.env, timing_info);
 
     // Create response
     json response = CreateAPIResponse(output.str(), false);
     response["usageMetadata"] = {
       {"promptTokenCount", tokens.size()},
-      {"candidatesTokenCount", session.abs_pos - tokens.size()},
-      {"totalTokenCount", session.abs_pos}
+      {"candidatesTokenCount", session->abs_pos - tokens.size()},
+      {"totalTokenCount", session->abs_pos}
     };
 
     res.set_content(response.dump(), "application/json");
@@ -279,9 +283,9 @@ void HandleGenerateContentStreaming(ServerState& state,
   try {
     json request = json::parse(req.body);
 
-    // Get or create session
+    // Get or create session (acquires sessions_mutex, then releases it).
     std::string session_id = request.value("sessionId", GenerateSessionId());
-    auto& session = state.GetOrCreateSession(session_id);
+    auto session = state.GetOrCreateSession(session_id);
 
     // Extract prompt from API format
     std::string prompt;
@@ -301,14 +305,16 @@ void HandleGenerateContentStreaming(ServerState& state,
     res.set_header("Connection", "keep-alive");
     res.set_header("X-Session-Id", session_id);
 
-    // Set up chunked content provider for SSE
+    // Set up chunked content provider for SSE. The lambda captures `session`
+    // by value (shared_ptr copy), keeping the session alive even if cleanup
+    // erases it from the map.
     res.set_chunked_content_provider(
-        "text/event-stream", [&state, request, prompt, session_id](
+        "text/event-stream", [&state, request, prompt, session](
                                  size_t offset, httplib::DataSink& sink) {
           try {
-            // Lock for inference
+            // Lock for inference (sessions_mutex is NOT held here —
+            // consistent ordering: sessions_mutex before inference_mutex).
             std::lock_guard<std::mutex> lock(state.inference_mutex);
-            auto& session = state.GetOrCreateSession(session_id);
 
             // Set up runtime config
             RuntimeConfig runtime_config = ParseGenerationConfig(request);
@@ -316,18 +322,18 @@ void HandleGenerateContentStreaming(ServerState& state,
             // Tokenize prompt
             std::vector<int> tokens = WrapAndTokenize(
                 state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
-                state.gemma->Config().wrapping, session.abs_pos, prompt);
+                state.gemma->Config().wrapping, session->abs_pos, prompt);
 
             // Stream token callback
             std::string accumulated_text;
             auto stream_token = [&](int token, float) {
               // Skip prompt tokens
-              if (session.abs_pos < tokens.size()) {
-                session.abs_pos++;
+              if (session->abs_pos < tokens.size()) {
+                session->abs_pos++;
                 return true;
               }
 
-              session.abs_pos++;
+              session->abs_pos++;
 
               // Check for EOS
               if (state.gemma->Config().IsEOS(token)) {
@@ -355,16 +361,16 @@ void HandleGenerateContentStreaming(ServerState& state,
             TimingInfo timing_info = {.verbosity = 0};
             size_t prefix_end = 0;
 
-            state.gemma->Generate(runtime_config, tokens, session.abs_pos,
-                                  prefix_end, *session.kv_cache, *state.env,
+            state.gemma->Generate(runtime_config, tokens, session->abs_pos,
+                                  prefix_end, *session->kv_cache, *state.env,
                                   timing_info);
 
             // Send final event using unified formatter
             json final_event = CreateAPIResponse("", false);
             final_event["usageMetadata"] = {
                 {"promptTokenCount", tokens.size()},
-                {"candidatesTokenCount", session.abs_pos - tokens.size()},
-                {"totalTokenCount", session.abs_pos}};
+                {"candidatesTokenCount", session->abs_pos - tokens.size()},
+                {"totalTokenCount", session->abs_pos}};
 
             std::string final_sse = "data: " + final_event.dump() + "\n\n";
             sink.write(final_sse.data(), final_sse.size());

@@ -163,14 +163,16 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
 }
 
 void Image::Set(int width, int height, const float* data) {
+  HWY_ASSERT(width > 0 && height > 0);
+  HWY_ASSERT(width <= SIZE_MAX / 3 && width * 3 <= SIZE_MAX / height);
   width_ = width;
   height_ = height;
-  int num_elements = width * height * 3;
+  const size_t num_elements = static_cast<size_t>(width) * height * 3;
   data_.resize(num_elements);
   data_.assign(data, data + num_elements);
   float min_value = std::numeric_limits<float>::infinity();
   float max_value = -std::numeric_limits<float>::infinity();
-  for (int i = 0; i < num_elements; ++i) {
+  for (size_t i = 0; i < num_elements; ++i) {
     if (data_[i] < min_value) min_value = data_[i];
     if (data_[i] > max_value) max_value = data_[i];
   }
@@ -178,14 +180,17 @@ void Image::Set(int width, int height, const float* data) {
   float in_range = max_value - min_value;
   if (in_range == 0.0f) in_range = 1.0f;
   float scale = 2.0f / in_range;
-  for (int i = 0; i < num_elements; ++i) {
+  for (size_t i = 0; i < num_elements; ++i) {
     data_[i] = (data_[i] - min_value) * scale - 1.0f;
   }
 }
 
 // This is surprisingly inexpensive for small images (2 ms).
 void Image::Resize(int new_width, int new_height) {
-  std::vector<float> new_data(new_width * new_height * 3);
+  HWY_ASSERT(new_width > 0 && new_height > 0);
+  HWY_ASSERT(new_width <= SIZE_MAX / 3 &&
+             new_width * 3 <= SIZE_MAX / new_height);
+  std::vector<float> new_data(static_cast<size_t>(new_width) * new_height * 3);
   // TODO: go to bilinear interpolation, or antialias.
   // E.g. consider WeightsSymmetric3Lowpass and SlowSymmetric3 from
   // jpegxl/lib/jxl/convolve_slow.cc
@@ -195,8 +200,8 @@ void Image::Resize(int new_width, int new_height) {
       int old_i = NearestNeighbor(i, new_height, height_);
       int old_j = NearestNeighbor(j, new_width, width_);
       for (int k = 0; k < 3; ++k) {
-        new_data[(i * new_width + j) * 3 + k] =
-            data_[(old_i * width_ + old_j) * 3 + k];
+        new_data[(static_cast<size_t>(i) * new_width + j) * 3 + k] =
+            data_[(static_cast<size_t>(old_i) * width_ + old_j) * 3 + k];
       }
     }
   }
@@ -228,7 +233,7 @@ void Image::GetPatch(size_t patch_num, const hwy::Divisor& div_patch_dim,
   const size_t patch_dim = div_patch_dim.GetDivisor();
   const size_t bytes_per_row = (patch_dim * kBytesPerPixel);
   const size_t in_bytes_to_next_row = (width_ * kBytesPerPixel);
-  HWY_ASSERT(size() == width_ * height_ * kNumChannels);
+  HWY_ASSERT(size() == static_cast<size_t>(width_) * height_ * kNumChannels);
   HWY_ASSERT(div_patch_dim.Remainder(width_) == 0);
   HWY_ASSERT(div_patch_dim.Remainder(height_) == 0);
   const size_t patches_x = div_patch_dim.Divide(width_);

@@ -252,11 +252,15 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
     active_conversation->abs_pos--;
   }
 
-  // Copy result buffer to output C-string (ensure null termination)
-  strncpy(output, result_buffer.c_str(), max_output_chars - 1);
-  output[max_output_chars - 1] = '\0';
-
-  return static_cast<int>(strlen(output));
+  // Copy result buffer to output C-string (ensure null termination).
+  if (max_output_chars <= 0) {
+    return 0;
+  }
+  const size_t n = static_cast<size_t>(max_output_chars);
+  const size_t copy_len = HWY_MIN(result_buffer.size(), n - 1);
+  memcpy(output, result_buffer.c_str(), copy_len);
+  output[copy_len] = '\0';
+  return static_cast<int>(copy_len);
 }
 
 // Public Generate method (wrapper for text-only)
