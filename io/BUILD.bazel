@@ -27,6 +27,7 @@ config_setting(
 FILE_DEPS = select({
     "//conditions:default": [
         # Placeholder for io deps, do not remove
+        "//net/grpc/internal/src/core/ext/event_engine:grpc_event_manager",
     ],
     ":android": [],
     # Placeholder 1 for internal build rules, do not remove
