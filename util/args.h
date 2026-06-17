@@ -68,6 +68,8 @@ class ConsumedArgs {
     return 0;
   }
 
+  void ClearUnconsumed() { consumed_.clear(); }
+
   void AbortIfUnconsumed() {
     const size_t i = FirstUnconsumed();
     if (HWY_UNLIKELY(i != 0)) {

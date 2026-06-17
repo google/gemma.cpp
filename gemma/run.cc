@@ -309,6 +309,7 @@ int main(int argc, char** argv) {
               "*Example Usage*\n\n./gemma --tokenizer tokenizer.spm "
               "--weights gemma2-2b-it-sfp.sbs\n\n");
       args.Help();
+      consumed.ClearUnconsumed();
       return 0;
     }
 
