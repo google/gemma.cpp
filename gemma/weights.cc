@@ -515,6 +515,7 @@ struct TensorToRead {
   // only for kReadBF16
   bool keep_type = false;
   Type prev_type;
+  size_t prev_packed_bytes = 0;
 };
 
 // Allocates multiple in parallel and binds to NUMA nodes.
@@ -533,6 +534,7 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
         MatPtr& mat = *tensor.mat;
 
         tensor.prev_type = mat.GetType();
+        tensor.prev_packed_bytes = mat.PackedBytes();
         // We only care about MatMul inputs; skip F32 or small tensors.
         if (tensor.prev_type == Type::kF32 || mat.Rows() < 1024) {
           tensor.keep_type = true;
@@ -596,7 +598,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                 // Validate blob size matches allocated buffer before any read.
                 // MapAll (line ~557) and MakeBatches (line ~645) both assert this;
                 // this path was the only one missing the check.
-                HWY_ASSERT_M(tensor.range.bytes == mat.PackedBytes(), mat.Name());
+                HWY_ASSERT_M(tensor.range.bytes == tensor.prev_packed_bytes,
+                             mat.Name());
 
                 if (tensor.keep_type) {
                   HWY_ASSERT(reader.file().Read(
