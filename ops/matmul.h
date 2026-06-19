@@ -419,6 +419,10 @@ static inline bool IsOneKC(MMOrder order) {
          order == MMOrder::kSFC;
 }
 
+static inline bool IsSFC(MMOrder order) {
+  return order == MMOrder::kSFC_K || order == MMOrder::kSFC;
+}
+
 static inline const char* StringFromOrder(MMOrder order) {
   switch (order) {
     case MMOrder::kNT_K:

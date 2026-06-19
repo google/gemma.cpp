@@ -274,8 +274,14 @@ class GenerateCandidates {
     }
 
     // We know `order` is multiple MC, where more/smaller values of `mc` are
-    // helpful, especially for two B, hence add iterations.
-    const size_t reps = 2 + num_B_;
+    // helpful, especially for two B. For SFC, smaller tile sizes ensure that
+    // a larger cluster of adjacent tiles along the space-filling curve path
+    // fits concurrently in L2/L3 cache, maximizing boundary data reuse (rows
+    // of A or cols of B) as the curve moves. Hence add more iterations.
+    size_t reps = 2 + num_B_;
+    if (IsSFC(order)) {
+      reps += 2;
+    }
     for (size_t rep = 0; rep < reps; ++rep) {
       prev = PrevDivisor(mr, prev, rounded_M, mr);
       if (prev == 0) break;  // none found
@@ -326,6 +332,9 @@ class GenerateCandidates {
       // Large L3, but its behavior and characteristics varies across platforms,
       // hence autotune a wider range of nc than the other dimensions.
       size_t reps = 9 + num_B_;
+      if (IsSFC(order)) {
+        reps += 2;
+      }
       // For small M, we can afford larger NC, hence allow fewer small options.
       if (max_M_ <= 2 * mr) reps -= 1;
 
