@@ -184,6 +184,7 @@ struct KVCache {
         .kv_cache = kv_cache,
         .k_cache = k_cache,
         .v_cache = v_cache,
+        .cache = this,
     };
   }
 
