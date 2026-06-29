@@ -19,8 +19,8 @@ std::optional<size_t> GetTileSizeBytes(gcpp::KVEncoding encoding,
 // Layout: K is [tile_size, qkv_dim] contiguous, V is [tile_size, qkv_dim]
 // contiguous.
 struct DecodedTile {
-  std::vector<float, hwy::AlignedAllocator<float>> k;
-  std::vector<float, hwy::AlignedAllocator<float>> v;
+  hwy::AlignedVector<float> k;
+  hwy::AlignedVector<float> v;
   size_t qkv_dim = 0;
   size_t tile_size = 0;
 
@@ -64,6 +64,31 @@ bool TranscodeTile(gcpp::KVEncoding src_encoding,
                    hwy::Span<const char> src_data,
                    gcpp::KVEncoding dst_encoding, hwy::Span<char> dst_data,
                    size_t qkv_dim);
+
+inline size_t KMatrixAccumulationOffset_BF16(size_t qkv_dim, size_t dim,
+                                             size_t token) {
+  size_t g = token / 8;
+  size_t t_in_g = token % 8;
+  size_t ch_g = dim / 4;
+  size_t ch_in_g = dim % 4;
+
+  return ch_g * 128 + g * 32 + t_in_g * 4 + ch_in_g;
+}
+
+inline size_t VMatrixAccumulationOffset_BF16(size_t qkv_dim, size_t token,
+                                             size_t dim) {
+  size_t g_t = token / 16;
+  size_t g_c = (dim % 4) / 2;
+  size_t sub_block = (dim / 4) * 4 + g_t * 2 + g_c;
+
+  size_t t_prime = token % 16;
+  size_t c_prime = dim % 2;
+  size_t g_t4 = t_prime / 4;
+  size_t t_double_prime = t_prime % 4;
+  size_t block_offset = g_t4 * 8 + c_prime * 4 + t_double_prime;
+
+  return sub_block * 32 + block_offset;
+}
 
 }  // namespace gcpp
 

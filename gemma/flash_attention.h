@@ -36,46 +36,54 @@
 namespace gcpp {
 
 // Passed to HWY_VISIT_TARGETS; declares for one target.
-#define GEMMA_DECL_FLASH_ATTENTION(TARGET, NAMESPACE)                        \
-  namespace NAMESPACE {                                                      \
-  void RMSNormAndPositionalEncoding(                                         \
-      size_t num_tokens, const QBatch& qbatch, MatPtrT<float>& q,            \
-      const MatPtr& query_norm_scale, size_t layer_idx,                      \
-      const AttentionActivationsPtrs& activations, ThreadingContext& ctx);   \
-                                                                             \
-  size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens, \
-                      size_t total_tasks, size_t target_parallelism);        \
-                                                                             \
-  void FlashAttention(size_t num_tokens, size_t target_parallelism,          \
-                      size_t layer_idx, const MatPtr& query_norm_scale,      \
-                      AttentionActivationsPtrs& activations, QBatch& qbatch, \
-                      ThreadingContext& ctx, AttentionImpl attention_impl);  \
-                                                                             \
-  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(                  \
-      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
-      const float* HWY_RESTRICT q_base,                                      \
-      hwy::Span<const size_t> start_pos_per_query,                           \
-      hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
-      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \
-      float* HWY_RESTRICT max_logits);                                       \
-                                                                             \
-  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(              \
-      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
-      const BF16* HWY_RESTRICT q_base,                                       \
-      hwy::Span<const size_t> start_pos_per_query,                           \
-      hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
-      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \
-      float* HWY_RESTRICT max_logits);                                       \
-                                                                             \
-  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(             \
-      hwy::Span<const MatPtr> kvs, size_t q_count,                           \
-      const int16_t* HWY_RESTRICT q_base, hwy::Span<const float> q_scales,   \
-      hwy::Span<const size_t> start_pos_per_query,                           \
-      hwy::Span<const size_t> last_pos_per_query, const float att_cap,       \
-      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,     \
-      float* HWY_RESTRICT max_logits);                                       \
-                                                                             \
-  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                \
+#define GEMMA_DECL_FLASH_ATTENTION(TARGET, NAMESPACE)                         \
+  namespace NAMESPACE {                                                       \
+  void RMSNormAndPositionalEncoding(                                          \
+      size_t num_tokens, const QBatch& qbatch, MatPtrT<float>& q,             \
+      const MatPtr& query_norm_scale, size_t layer_idx,                       \
+      const AttentionActivationsPtrs& activations, ThreadingContext& ctx);    \
+                                                                              \
+  size_t GetVTileSize(size_t kNF, size_t num_head_groups, size_t num_tokens,  \
+                      size_t total_tasks, size_t target_parallelism);         \
+                                                                              \
+  void FlashAttention(size_t num_tokens, size_t target_parallelism,           \
+                      size_t layer_idx, const MatPtr& query_norm_scale,       \
+                      AttentionActivationsPtrs& activations, QBatch& qbatch,  \
+                      ThreadingContext& ctx, AttentionImpl attention_impl);   \
+                                                                              \
+  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(                   \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                            \
+      const float* HWY_RESTRICT q_base,                                       \
+      hwy::Span<const size_t> start_pos_per_query,                            \
+      hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
+      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
+      float* HWY_RESTRICT max_logits);                                        \
+                                                                              \
+  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(               \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                            \
+      const BF16* HWY_RESTRICT q_base,                                        \
+      hwy::Span<const size_t> start_pos_per_query,                            \
+      hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
+      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
+      float* HWY_RESTRICT max_logits);                                        \
+                                                                              \
+  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(              \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                            \
+      const int16_t* HWY_RESTRICT q_base, hwy::Span<const float> q_scales,    \
+      hwy::Span<const size_t> start_pos_per_query,                            \
+      hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
+      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
+      float* HWY_RESTRICT max_logits);                                        \
+                                                                              \
+  void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation( \
+      hwy::Span<const MatPtr> kvs, size_t q_count,                            \
+      const BF16* HWY_RESTRICT q_base,                                        \
+      hwy::Span<const size_t> start_pos_per_query,                            \
+      hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
+      MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
+      float* HWY_RESTRICT max_logits);                                        \
+                                                                              \
+  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                 \
   }  // namespace NAMESPACE
 
 // Function declarations for each SIMD target. Allows direct call from the

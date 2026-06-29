@@ -67,6 +67,14 @@ using RowPtrsBF = RowPtrs<BF16>;
 // Copyable, (de)serializable via `fields.h` for `model_store.h`.
 class MatPtr : public IFields {
  public:
+  enum class Layout {
+    kFlat,
+    kBF16MatrixAccumulation,
+  };
+
+  Layout GetLayout() const { return layout_; }
+  void SetLayout(Layout layout) { layout_ = layout; }
+
   MatPtr() = default;
   // `name`: see `SetName`. Note that `stride` is initially `cols` and only
   // differs after deserializing, or calling `SetPtr`.
@@ -297,6 +305,9 @@ class MatPtr : public IFields {
   uint32_t stride_;
 
   float scale_ = 1.0f;  // multiplier for each value, for MatMul.
+
+ private:
+  Layout layout_ = Layout::kFlat;
 };
 
 // Non-type erased version of `MatPtr`: provides type-safe `Row()` and ensures

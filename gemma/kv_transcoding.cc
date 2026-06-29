@@ -1,10 +1,12 @@
 #include "gemma/kv_transcoding.h"
 
+#include <stdio.h>
+
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <optional>
-#include <cmath>
 
 #include "compression/types.h"
 #include "gemma/activations.h"
@@ -26,6 +28,7 @@ std::optional<size_t> GetTileSizeBytes(gcpp::KVEncoding encoding,
              kTileSize * 2 * sizeof(gcpp::KV_microscale_t);
     case gcpp::KVEncoding::kBF16:
     case gcpp::KVEncoding::kBF16TwoTranspositions:
+    case gcpp::KVEncoding::kBF16MatrixAccumulation:
       return qkv_dim * kTileSize * 2 * sizeof(gcpp::BF16);
     case gcpp::KVEncoding::kF32:
     case gcpp::KVEncoding::kF32TwoTranspositions:
@@ -47,7 +50,6 @@ inline size_t KOffset(bool transposed, size_t qkv_dim, size_t dim,
 
 inline size_t VOffset(bool transposed, size_t qkv_dim, size_t dim,
                       size_t token) {
-  HWY_DASSERT(dim < qkv_dim && token < kTileSize);
   return transposed ? ((token / 2) * qkv_dim * 2 + dim * 2 + (token % 2))
                     : (token * qkv_dim + dim);
 }
@@ -119,6 +121,52 @@ void EncodeTileBF16(bool transposed, size_t qkv_dim, const DecodedTile& decoded,
         data[v_start + VOffset(transposed, qkv_dim, dim, token)] =
             hwy::ConvertScalarTo<hwy::bfloat16_t>(val);
       });
+}
+
+void EncodeTileBF16MatrixAccumulation(size_t qkv_dim,
+                                      const DecodedTile& decoded,
+                                      hwy::Span<char> out_encoded_tile_data) {
+  gcpp::BF16* data =
+      HWY_RCAST_ALIGNED(gcpp::BF16*, out_encoded_tile_data.data());
+  const size_t tile_size = decoded.tile_size;
+  const size_t v_start = qkv_dim * tile_size;
+  const size_t num_groups = tile_size / 8;
+  const size_t num_ch_groups = qkv_dim / 4;
+
+  for (size_t ch_g = 0; ch_g < num_ch_groups; ++ch_g) {
+    for (size_t g = 0; g < num_groups; ++g) {
+      size_t base_offset = ch_g * 128 + g * 32;
+      // Pack K (8x4 block, token-major)
+      for (size_t t_in_g = 0; t_in_g < 8; ++t_in_g) {
+        size_t token = g * 8 + t_in_g;
+        for (size_t ch_in_g = 0; ch_in_g < 4; ++ch_in_g) {
+          size_t dim = ch_g * 4 + ch_in_g;
+          float val = decoded.k_elem(token, dim);
+          data[base_offset + t_in_g * 4 + ch_in_g] =
+              hwy::ConvertScalarTo<hwy::bfloat16_t>(val);
+        }
+      }
+    }
+  }
+
+  // Pack V (Contiguous SV-Blocked Layout)
+  for (size_t t = 0; t < tile_size; ++t) {
+    for (size_t c = 0; c < qkv_dim; ++c) {
+      float val = decoded.v_elem(t, c);
+      size_t g_t = t / 16;
+      size_t g_c = (c % 4) / 2;
+      size_t sub_block = (c / 4) * 4 + g_t * 2 + g_c;
+
+      size_t t_prime = t % 16;
+      size_t c_prime = c % 2;
+      size_t g_t4 = t_prime / 4;
+      size_t t_double_prime = t_prime % 4;
+      size_t block_offset = g_t4 * 8 + c_prime * 4 + t_double_prime;
+
+      size_t v_offset = sub_block * 32 + block_offset;
+      data[v_start + v_offset] = hwy::ConvertScalarTo<hwy::bfloat16_t>(val);
+    }
+  }
 }
 
 void EncodeTileInt8(bool transposed, size_t qkv_dim, const DecodedTile& decoded,
@@ -200,6 +248,50 @@ void DecodeTileBF16(bool transposed, size_t qkv_dim,
       });
 }
 
+void DecodeTileBF16MatrixAccumulation(size_t qkv_dim,
+                                      hwy::Span<const char> encoded_tile_data,
+                                      DecodedTile* out) {
+  const gcpp::BF16* data =
+      HWY_RCAST_ALIGNED(const gcpp::BF16*, encoded_tile_data.data());
+  const size_t tile_size = out->tile_size;
+  const size_t v_start = qkv_dim * tile_size;
+  const size_t num_groups = tile_size / 8;
+  const size_t num_ch_groups = qkv_dim / 4;
+
+  for (size_t ch_g = 0; ch_g < num_ch_groups; ++ch_g) {
+    for (size_t g = 0; g < num_groups; ++g) {
+      size_t base_offset = ch_g * 128 + g * 32;
+      // Unpack K (8x4 block, token-major)
+      for (size_t t_in_g = 0; t_in_g < 8; ++t_in_g) {
+        size_t token = g * 8 + t_in_g;
+        for (size_t ch_in_g = 0; ch_in_g < 4; ++ch_in_g) {
+          size_t dim = ch_g * 4 + ch_in_g;
+          out->k_elem(token, dim) = hwy::ConvertScalarTo<float>(
+              data[base_offset + t_in_g * 4 + ch_in_g]);
+        }
+      }
+    }
+  }
+
+  // Unpack V (Contiguous SV-Blocked Layout)
+  for (size_t t = 0; t < tile_size; ++t) {
+    for (size_t c = 0; c < qkv_dim; ++c) {
+      size_t g_t = t / 16;
+      size_t g_c = (c % 4) / 2;
+      size_t sub_block = (c / 4) * 4 + g_t * 2 + g_c;
+
+      size_t t_prime = t % 16;
+      size_t c_prime = c % 2;
+      size_t g_t4 = t_prime / 4;
+      size_t t_double_prime = t_prime % 4;
+      size_t block_offset = g_t4 * 8 + c_prime * 4 + t_double_prime;
+
+      size_t v_offset = sub_block * 32 + block_offset;
+      out->v_elem(t, c) = hwy::ConvertScalarTo<float>(data[v_start + v_offset]);
+    }
+  }
+}
+
 void DecodeTileInt8(bool transposed, size_t qkv_dim,
                     hwy::Span<const char> encoded_tile_data, DecodedTile* out) {
   const int8_t* k_data =
@@ -262,6 +354,10 @@ bool DecodeTile(KVEncoding encoding, hwy::Span<const char> encoded_tile_data,
       DecodeTileBF16(transposed, qkv_dim, encoded_tile_data, out);
       return true;
     }
+    case gcpp::KVEncoding::kBF16MatrixAccumulation: {
+      DecodeTileBF16MatrixAccumulation(qkv_dim, encoded_tile_data, out);
+      return true;
+    }
     case gcpp::KVEncoding::kInt8:
     case gcpp::KVEncoding::kInt8TwoTranspositions: {
       DecodeTileInt8(transposed, qkv_dim, encoded_tile_data, out);
@@ -290,6 +386,10 @@ bool EncodeTile(gcpp::KVEncoding encoding, const DecodedTile& decoded,
     case gcpp::KVEncoding::kBF16:
     case gcpp::KVEncoding::kBF16TwoTranspositions: {
       EncodeTileBF16(transposed, qkv_dim, decoded, out_encoded_tile_data);
+      return true;
+    }
+    case gcpp::KVEncoding::kBF16MatrixAccumulation: {
+      EncodeTileBF16MatrixAccumulation(qkv_dim, decoded, out_encoded_tile_data);
       return true;
     }
     case gcpp::KVEncoding::kInt8:

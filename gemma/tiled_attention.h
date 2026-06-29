@@ -16,33 +16,38 @@
 namespace gcpp {
 
 // Passed to HWY_VISIT_TARGETS; declares for one target.
-#define GEMMA_DECL_TILED_ATTENTION(TARGET, NAMESPACE)                         \
-  namespace NAMESPACE {                                                       \
-  void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,        \
-                      size_t layer_idx, const LayerWeightsPtrs& layer,        \
-                      AttentionActivationsPtrs& activations, QBatch& qbatch,  \
-                      MatMulEnv& env, int flags);                             \
-  void LocalAttentionForAllHeadsTokensAndBatch(                               \
-      AttentionImpl attention_impl, const size_t num_tokens,                  \
-      const size_t layer_idx, const LayerWeightsPtrs& layer,                  \
-      AttentionActivationsPtrs& activations, QBatch& qbatch,                  \
-      ThreadingContext& ctx);                                                 \
-                                                                              \
-  void CompressQueriesBF16(hwy::Span<const float* const> input, int qkv_dim,  \
-                           BF16* HWY_RESTRICT output);                        \
-  void CompressQueriesBF16Contiguous(const float* HWY_RESTRICT input,         \
-                                     int qkv_dim, size_t num_queries,         \
-                                     BF16* HWY_RESTRICT output);              \
-                                                                              \
-  void CompressQueriesInt16(hwy::Span<const float* const> input, int qkv_dim, \
-                            int16_t* HWY_RESTRICT output,                     \
-                            float* HWY_RESTRICT scale);                       \
-                                                                              \
-  void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,        \
-                                      int qkv_dim, size_t num_queries,        \
-                                      int16_t* HWY_RESTRICT output,           \
-                                      float* HWY_RESTRICT scale);             \
-  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                 \
+#define GEMMA_DECL_TILED_ATTENTION(TARGET, NAMESPACE)                          \
+  namespace NAMESPACE {                                                        \
+  void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,         \
+                      size_t layer_idx, const LayerWeightsPtrs& layer,         \
+                      AttentionActivationsPtrs& activations, QBatch& qbatch,   \
+                      MatMulEnv& env, int flags);                              \
+  void LocalAttentionForAllHeadsTokensAndBatch(                                \
+      AttentionImpl attention_impl, const size_t num_tokens,                   \
+      const size_t layer_idx, const LayerWeightsPtrs& layer,                   \
+      AttentionActivationsPtrs& activations, QBatch& qbatch,                   \
+      ThreadingContext& ctx);                                                  \
+                                                                               \
+  void CompressQueriesBF16(hwy::Span<const float* const> input, int qkv_dim,   \
+                           BF16* HWY_RESTRICT output);                         \
+  void CompressQueriesBF16Contiguous(const float* HWY_RESTRICT input,          \
+                                     int qkv_dim, size_t num_queries,          \
+                                     BF16* HWY_RESTRICT output);               \
+                                                                               \
+  void CompressQueriesInt16(hwy::Span<const float* const> input, int qkv_dim,  \
+                            int16_t* HWY_RESTRICT output,                      \
+                            float* HWY_RESTRICT scale);                        \
+                                                                               \
+  void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,         \
+                                      int qkv_dim, size_t num_queries,         \
+                                      int16_t* HWY_RESTRICT output,            \
+                                      float* HWY_RESTRICT scale);              \
+                                                                               \
+  void CompressAndTransposeQueriesMatrixAccumulation(const float* raw_queries, \
+                                                     BF16* packed_queries,     \
+                                                     size_t num_queries,       \
+                                                     size_t qkv_dim);          \
+  /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 
 // Function declarations for each SIMD target. Allows direct call from the

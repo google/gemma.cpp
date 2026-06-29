@@ -79,14 +79,19 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   // clang-format off
   if (runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16
+      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+      runtime_config.attention_impl == AttentionImpl::kFlashMatrixAccumulation
       ) {
     // clang-format on
     const size_t num_tiles =
         hwy::DivCeil(CappedSeqLen(config, inference_args), kTileSize);
     tiled_seq_len = num_tiles * kTileSize;
     Type kv_cache_type;
-    if (runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16
+    if (runtime_config.attention_impl ==
+        AttentionImpl::kFlashMatrixAccumulation) {
+      kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
+    } else if (runtime_config.attention_impl ==
+                   AttentionImpl::kFlashTransposedQsBF16
     ) {
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
     } else if (runtime_config.attention_impl ==
@@ -124,6 +129,10 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     }
     Extents2D extents(total_num_tiles, tile_length);
     compact_kv_cache_ptr = MatPtr("kv_tiled", kv_cache_type, extents);
+    if (runtime_config.attention_impl ==
+        AttentionImpl::kFlashMatrixAccumulation) {
+      compact_kv_cache_ptr.SetLayout(MatPtr::Layout::kBF16MatrixAccumulation);
+    }
     compact_kv_cache.AllocateFor(compact_kv_cache_ptr, allocator,
                                  MatPadding::kPacked);
     total_num_tiles = 0;
@@ -138,6 +147,10 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                       Extents2D(num_tiles_per_kv_head, tile_length));
         kv_ptr.SetPtr(compact_kv_cache_ptr.RowBytes(total_num_tiles),
                       compact_kv_cache_ptr.Stride());
+        if (runtime_config.attention_impl ==
+            AttentionImpl::kFlashMatrixAccumulation) {
+          kv_ptr.SetLayout(MatPtr::Layout::kBF16MatrixAccumulation);
+        }
         kv_head_ptrs.emplace_back(std::move(kv_ptr));
         total_num_tiles += num_tiles_per_kv_head;
       }

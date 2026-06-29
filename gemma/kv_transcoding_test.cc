@@ -9,6 +9,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "gemma/configs.h"
+#include "util/basics.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"  // For hwy::Span
 
@@ -90,6 +91,7 @@ INSTANTIATE_TEST_SUITE_P(
            EncodingTestCase{gcpp::KVEncoding::kF32TwoTranspositions, 1e-6f},
            EncodingTestCase{gcpp::KVEncoding::kBF16, 0.05f},
            EncodingTestCase{gcpp::KVEncoding::kBF16TwoTranspositions, 0.05f},
+           EncodingTestCase{gcpp::KVEncoding::kBF16MatrixAccumulation, 0.05f},
            EncodingTestCase{gcpp::KVEncoding::kInt8, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8TwoTranspositions, 0.1f}));
 
@@ -354,6 +356,76 @@ TEST(KVEncodingTest, LayoutValidationInt8TwoTranspositions) {
   // Offset in transposed V: t/2*8 + d*2 + t%2.
   // For t=1, d=3: 0*8 + 3*2 + 1 = 7.
   EXPECT_EQ(data[v_start + 7], 127);
+}
+
+TEST(KVEncodingTest, LayoutValidationBF16MatrixAccumulation) {
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 4;
+  gcpp::KVEncoding encoding = gcpp::KVEncoding::kBF16MatrixAccumulation;
+
+  DecodedTile original(qkv_dim, kTileSize);
+  for (size_t token = 0; token < kTileSize; ++token) {
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      original.k_elem(token, dim) = dim * kTileSize + token + 1;
+      original.v_elem(token, dim) =
+          token * qkv_dim + dim + 1 + qkv_dim * kTileSize;
+    }
+  }
+
+  size_t size = GetTileSizeBytes(encoding, qkv_dim).value();
+  std::vector<char> encoded(size);
+
+  ASSERT_TRUE(EncodeTile(encoding, original, qkv_dim,
+                         hwy::Span<char>(encoded.data(), encoded.size())));
+
+  const gcpp::BF16* data = reinterpret_cast<const gcpp::BF16*>(encoded.data());
+
+  // K Layout (8x4 block, token-major)
+  // base_offset = ch_g * 128 + g * 32.
+  // For qkv_dim = 4, ch_g = 0 is the only channel group.
+  // For g = 0 (tokens 0-7), base_offset = 0.
+  // K[t, c] is at offset t * 4 + c.
+  // original.k_elem(t, c) = c * 32 + t + 1.
+  // For t=0, c=0: original.k_elem(0,0) = 1. Offset = 0.
+  // For t=0, c=1: original.k_elem(0,1) = 33. Offset = 1.
+  // For t=1, c=0: original.k_elem(1,0) = 2. Offset = 4.
+  // For t=7, c=3: original.k_elem(7,3) = 3*32 + 7 + 1 = 104. Offset = 7 * 4 + 3
+  // = 31.
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[0]), 1.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[1]), 33.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[4]), 2.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[31]), 104.0f, 0.05f);
+
+  // For g = 1 (tokens 8-15), base_offset = 32.
+  // K[t_in_g, c] is at 32 + t_in_g * 4 + c.
+  // t=8 (t_in_g=0), c=0: original.k_elem(8,0) = 9. Offset = 32.
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[32]), 9.0f, 0.05f);
+
+  // V Layout (Contiguous SV-Blocked Layout)
+  // For qkv_dim = 4, ch_g = 0.
+  // V[t, c] is at v_start + sub_block * 32 + block_offset
+  // where:
+  //   g_t = t / 16, g_c = c / 2
+  //   sub_block = g_t * 2 + g_c
+  //   t' = t % 16, c' = c % 2
+  //   g_t4 = t' / 4, t'' = t' % 4
+  //   block_offset = g_t4 * 8 + c' * 4 + t''
+  // original.v_elem(t, c) = t * 4 + c + 1 + 128.
+  // v_start = 4 * 32 = 128 elements of BF16.
+  size_t v_start = qkv_dim * kTileSize;
+  // For t=0, c=0: original.v_elem(0,0) = 129. Offset = v_start + 0.
+  // For t=1, c=0: original.v_elem(1,0) = 133. Offset = v_start + 1.
+  // For t=0, c=1: original.v_elem(0,1) = 130. Offset = v_start + 4.
+  // For t=1, c=1: original.v_elem(1,1) = 134. Offset = v_start + 5.
+  // For t=2, c=0: original.v_elem(2,0) = 137. Offset = v_start + 2.
+  // For t=7, c=3: original.v_elem(7,3) = 7*4 + 3 + 1 + 128 = 160.
+  //               Offset = v_start + 47.
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 0]), 129.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 1]), 133.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 4]), 130.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 5]), 134.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 2]), 137.0f, 0.05f);
+  EXPECT_NEAR(hwy::ConvertScalarTo<float>(data[v_start + 47]), 160.0f, 0.05f);
 }
 
 }  // namespace

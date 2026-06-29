@@ -14,6 +14,7 @@
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "gemma/kv_cache.h"
+#include "gemma/kv_transcoding.h"
 #include "ops/matmul.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -152,6 +153,9 @@ static HWY_INLINE void ComputeQKVTransposedTile(
         std::vector<MatPtr> kv_ptrs =
             qbatch.KV(query_idx).cache->GetPointers(
                 layer_idx, kv_head, kv_heads, start_pos, is_global_layer);
+        const size_t v_offset = qkv_dim * KVCache::kTileSize;
+        const size_t tile_span_size = 2 * qkv_dim * KVCache::kTileSize;
+        const size_t k_size = qkv_dim * KVCache::kTileSize;
         size_t tile_offset = 0;
         if (!is_global_layer) {
           tile_offset = start_pos / KVCache::kTileSize;
@@ -173,13 +177,10 @@ static HWY_INLINE void ComputeQKVTransposedTile(
           tile_ptr = HWY_RCAST_ALIGNED(
               KV_T*,
               kv_ptrs[kv_ptr_idx].RowBytes(relative_tile_idx - absolute_rows));
-          PackedSpan<KV_T> tile_packed_span{tile_ptr,
-                                            2 * qkv_dim * KVCache::kTileSize};
+          PackedSpan<KV_T> tile_packed_span{tile_ptr, tile_span_size};
 
-          DecompressAndZeroPad(df, tile_packed_span, 0, k_tile_vec,
-                               qkv_dim * KVCache::kTileSize);
-          DecompressAndZeroPad(df, tile_packed_span,
-                               qkv_dim * KVCache::kTileSize, v_tile_vec,
+          DecompressAndZeroPad(df, tile_packed_span, 0, k_tile_vec, k_size);
+          DecompressAndZeroPad(df, tile_packed_span, v_offset, v_tile_vec,
                                qkv_dim * KVCache::kTileSize);
 
           size_t token_in_tile_idx = current_token_idx;
@@ -255,7 +256,21 @@ static HWY_INLINE void ComputeQKVTransposedTile(
               v_cache_values = v_buf;
             }
 
-            if (is_transposed_qs) {
+            const MatPtr& compact_kv_cache_ptr =
+                qbatch.KV(query_idx).cache->compact_kv_cache_ptr;
+            if (compact_kv_cache_ptr.GetType() == Type::kBF16 &&
+                compact_kv_cache_ptr.GetLayout() ==
+                    MatPtr::Layout::kBF16MatrixAccumulation) {
+              for (size_t dim = 0; dim < qkv_dim; ++dim) {
+                size_t k_offset = gcpp::KMatrixAccumulationOffset_BF16(
+                    qkv_dim, dim, in_tile_idx);
+                k_tile_vec[k_offset] = k_f32[dim];
+
+                size_t v_offset = gcpp::VMatrixAccumulationOffset_BF16(
+                    qkv_dim, in_tile_idx, dim);
+                v_tile_vec[v_offset] = v_cache_values[dim];
+              }
+            } else if (is_transposed_qs) {
               const int in_tile_idx_mod_2 = in_tile_idx % 2;
               for (int dim = 0; dim < qkv_dim; dim += 2) {
                 const int dim_mod_2 = dim % 2;
@@ -284,11 +299,11 @@ static HWY_INLINE void ComputeQKVTransposedTile(
 
             token_in_tile_idx++;
           }
-          Compress(k_tile_vec, qkv_dim * KVCache::kTileSize, tls,
-                   tile_packed_span, 0);
-          if (is_transposed_qs) {
+          Compress(k_tile_vec, k_size, tls, tile_packed_span, 0);
+          if (is_transposed_qs ||
+              attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
             Compress(v_tile_vec, qkv_dim * KVCache::kTileSize, tls,
-                     tile_packed_span, qkv_dim * KVCache::kTileSize);
+                     tile_packed_span, v_offset);
           }
           current_token_idx = token_in_tile_idx;
         }
@@ -397,6 +412,60 @@ static HWY_INLINE void MaybeResizeMatStorage(MatStorageT<T>& mat_storage,
     mat_storage = MatStorageT<T>(name, Extents2D(rows, cols), allocator,
                                  MatPadding::kOdd);
   }
+}
+
+template <typename QueryProvider>
+HWY_INLINE void CompressAndTransposeQueriesMatrixAccumulationImpl(
+    QueryProvider query_provider, BF16* packed_queries, size_t num_queries,
+    size_t qkv_dim) {
+  HWY_DASSERT(qkv_dim % 4 == 0);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::FixedTag<float, 4> df;
+  const hn::FixedTag<BF16, 8> dbf16;
+  constexpr size_t kL = 4;
+
+  size_t p = 0;
+  for (; p < num_queries / 2; ++p) {
+    const float* q0 = query_provider(2 * p);
+    const float* q1 = query_provider(2 * p + 1);
+    BF16* out = packed_queries + 2 * p * qkv_dim;
+
+    for (size_t d = 0; d < qkv_dim; d += kL) {
+      auto v0 = hn::LoadU(df, q0 + d);
+      auto v1 = hn::LoadU(df, q1 + d);
+      auto A = hn::OrderedDemote2To(dbf16, v0, v1);
+      hn::StoreU(A, dbf16, out + d * 2);
+    }
+  }
+
+  if (num_queries % 2 != 0) {
+    const float* q0 = query_provider(2 * p);
+    BF16* out = packed_queries + 2 * p * qkv_dim;
+    auto zero = hn::Zero(df);
+
+    for (size_t d = 0; d < qkv_dim; d += kL) {
+      auto v0 = hn::LoadU(df, q0 + d);
+      auto A = hn::OrderedDemote2To(dbf16, v0, zero);
+      hn::StoreU(A, dbf16, out + d * 2);
+    }
+  }
+}
+
+void CompressAndTransposeQueriesMatrixAccumulation(const float* raw_queries,
+                                                   BF16* packed_queries,
+                                                   size_t num_queries,
+                                                   size_t qkv_dim) {
+  CompressAndTransposeQueriesMatrixAccumulationImpl(
+      [&](size_t idx) { return raw_queries + idx * qkv_dim; }, packed_queries,
+      num_queries, qkv_dim);
+}
+
+void CompressAndTransposeQueriesMatrixAccumulationNonContiguous(
+    hwy::Span<const float* const> input, BF16* packed_queries, size_t qkv_dim) {
+  CompressAndTransposeQueriesMatrixAccumulationImpl(
+      [&](size_t idx) { return input[idx]; }, packed_queries, input.size(),
+      qkv_dim);
 }
 
 // clang-format off
@@ -616,6 +685,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data());
+
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
@@ -628,6 +698,18 @@ void LocalAttentionForAllHeadsTokensAndBatch(
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
               kv_ptrs, num_queries, int16_queries_ptr,
               hwy::Span<const float>(q_scales_ptr, num_queries),
+              hwy::Span<const size_t>(start_pos_per_query),
+              hwy::Span<const size_t>(last_pos_per_query),
+              activations.config.att_cap, att_out, exp_denominator_sums.data(),
+              max_logits.data());
+        } else if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+          HWY_DASSERT(activations.bf16_queries != nullptr);
+          BF16* bf16_queries_ptr = activations.bf16_queries->data() +
+                                   task_idx * num_queries * qkv_dim;
+          CompressAndTransposeQueriesMatrixAccumulationNonContiguous(
+              queries_ptrs_span, bf16_queries_ptr, qkv_dim);
+          DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
+              kv_ptrs, num_queries, bf16_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
@@ -725,10 +807,11 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
                 "query heads must be a multiple of key-value heads");
   (void)layer_config;  // only used in HWY_DASSERT
 
-  if (qbatch.KV(0).cache->compact_kv_cache_ptr.GetType() == Type::kBF16) {
+  const Type kv_type = qbatch.KV(0).cache->compact_kv_cache_ptr.GetType();
+  if (kv_type == Type::kBF16) {
     ComputeQKVTransposedTile<BF16>(num_tokens, layer_idx, layer, attention_impl,
                                    activations, qbatch, flags, env);
-  } else if (qbatch.KV(0).cache->compact_kv_cache_ptr.GetType() == Type::kF32) {
+  } else if (kv_type == Type::kF32) {
     ComputeQKVTransposedTile<float>(num_tokens, layer_idx, layer,
                                     attention_impl, activations, qbatch, flags,
                                     env);

@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <type_traits>  // std::enable_if_t
 #include <vector>
@@ -1835,10 +1836,205 @@ HWY_API VF PerBlock2x2MatMulMaybeEmulate(DN dn, VBF a, VBF b, VF c) {
   const auto b2 = hn::BitCast(dbf, hn::Per4LaneBlockShuffle<3, 1, 3, 1>(b_f));
 
   VF sum1 = hn::Zero(dn);
-  VF sum0 = hn::ReorderWidenMulAccumulate(dn, a1, b1, c, sum1);
+  VF sum0 = hn::ReorderWidenMulAccumulate(dn, a1, b1, hn::Zero(dn), sum1);
   sum0 = hn::ReorderWidenMulAccumulate(dn, a2, b2, sum0, sum1);
-  return hn::RearrangeToOddPlusEven(sum0, sum1);
+  return hn::Add(hn::RearrangeToOddPlusEven(sum0, sum1), c);
 #endif
+}
+
+static constexpr float kMaskedLogitVal =
+    -std::numeric_limits<float>::max() / 64.0f;
+
+template <int kVTileSize, class DF, class VF>
+HWY_INLINE void ApplySoftCap(DF df, float att_cap, float one_over_cap, VF& x0,
+                             VF& x1, VF& x2, VF& x3, VF& x4, VF& x5, VF& x6,
+                             VF& x7) {
+  if (att_cap > 0.0f) {
+    VF cap = hn::Set(df, att_cap);
+    VF one_over_cap_vec = hn::Set(df, one_over_cap);
+    x0 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x0, one_over_cap_vec)));
+    if constexpr (kVTileSize >= 2) {
+      x1 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x1, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 3) {
+      x2 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x2, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 4) {
+      x3 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x3, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 5) {
+      x4 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x4, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 6) {
+      x5 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x5, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 7) {
+      x6 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x6, one_over_cap_vec)));
+    }
+    if constexpr (kVTileSize >= 8) {
+      x7 = hn::Mul(cap, hn::CallFastTanh(df, hn::Mul(x7, one_over_cap_vec)));
+    }
+  }
+}
+
+template <int kNumQueries, class DF, class VF = hn::Vec<DF>,
+          typename DU = hn::ScalableTag<uint32_t>, class VU = hn::Vec<DU>>
+HWY_NOINLINE void ApplyMasking(DF df, DU du, size_t position,
+                               const size_t* HWY_RESTRICT first_pos_per_query,
+                               const size_t* HWY_RESTRICT last_pos_per_query,
+                               VF& x0_p0, VF& x0_p1, VF& x1_p0, VF& x1_p1,
+                               VF& x2_p0, VF& x2_p1, VF& x3_p0, VF& x3_p1,
+                               VF& x4_p0, VF& x4_p1, VF& x5_p0, VF& x5_p1,
+                               VF& x6_p0, VF& x6_p1, VF& x7_p0, VF& x7_p1) {
+  VU lane_indices = hn::Iota(du, 0);
+  HWY_LANES_CONSTEXPR size_t kTileSize = hn::Lanes(df);
+  auto per_lane_pos_p0 = hn::Add(hn::Set(du, position), lane_indices);
+  auto per_lane_pos_p1 =
+      hn::Add(hn::Set(du, position + kTileSize), lane_indices);
+
+  VF neg_inf = hn::Set(df, kMaskedLogitVal);
+
+  auto apply_mask_for_query = [&](int query_idx, VF& x_p0, VF& x_p1) HWY_ATTR {
+    const size_t first_pos = first_pos_per_query[query_idx];
+    const size_t last_pos = last_pos_per_query[query_idx];
+
+    auto valid_tokens_mask_p0 = hn::Ge(per_lane_pos_p0, hn::Set(du, first_pos));
+    valid_tokens_mask_p0 = hn::And(
+        valid_tokens_mask_p0, hn::Le(per_lane_pos_p0, hn::Set(du, last_pos)));
+    x_p0 =
+        hn::IfThenElse(hn::RebindMask(df, valid_tokens_mask_p0), x_p0, neg_inf);
+
+    auto valid_tokens_mask_p1 = hn::Ge(per_lane_pos_p1, hn::Set(du, first_pos));
+    valid_tokens_mask_p1 = hn::And(
+        valid_tokens_mask_p1, hn::Le(per_lane_pos_p1, hn::Set(du, last_pos)));
+    x_p1 =
+        hn::IfThenElse(hn::RebindMask(df, valid_tokens_mask_p1), x_p1, neg_inf);
+  };
+
+  if constexpr (kNumQueries >= 1) {
+    apply_mask_for_query(0, x0_p0, x0_p1);
+  }
+  if constexpr (kNumQueries >= 2) {
+    apply_mask_for_query(1, x1_p0, x1_p1);
+  }
+  if constexpr (kNumQueries >= 3) {
+    apply_mask_for_query(2, x2_p0, x2_p1);
+  }
+  if constexpr (kNumQueries >= 4) {
+    apply_mask_for_query(3, x3_p0, x3_p1);
+  }
+  if constexpr (kNumQueries >= 5) {
+    apply_mask_for_query(4, x4_p0, x4_p1);
+  }
+  if constexpr (kNumQueries >= 6) {
+    apply_mask_for_query(5, x5_p0, x5_p1);
+  }
+  if constexpr (kNumQueries >= 7) {
+    apply_mask_for_query(6, x6_p0, x6_p1);
+  }
+  if constexpr (kNumQueries >= 8) {
+    apply_mask_for_query(7, x7_p0, x7_p1);
+  }
+}
+
+template <int kNumQueries, class DF, class VF>
+HWY_INLINE void MultiplyByScale(DF df, const BF16* scales, VF& x0_p0, VF& x0_p1,
+                                VF& x1_p0, VF& x1_p1, VF& x2_p0, VF& x2_p1,
+                                VF& x3_p0, VF& x3_p1, VF& x4_p0, VF& x4_p1,
+                                VF& x5_p0, VF& x5_p1, VF& x6_p0, VF& x6_p1,
+                                VF& x7_p0, VF& x7_p1) {
+  const size_t kTileSize = hn::Lanes(df);
+  const PackedSpan<const BF16> scales_span =
+      MakeConstSpan(scales, 2 * kTileSize);
+  VF scales_p0, scales_p1;
+  Decompress2(df, scales_span, 0, scales_p0, scales_p1);
+  if constexpr (kNumQueries >= 1) {
+    x0_p0 = hn::Mul(x0_p0, scales_p0);
+    x0_p1 = hn::Mul(x0_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 2) {
+    x1_p0 = hn::Mul(x1_p0, scales_p0);
+    x1_p1 = hn::Mul(x1_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 3) {
+    x2_p0 = hn::Mul(x2_p0, scales_p0);
+    x2_p1 = hn::Mul(x2_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 4) {
+    x3_p0 = hn::Mul(x3_p0, scales_p0);
+    x3_p1 = hn::Mul(x3_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 5) {
+    x4_p0 = hn::Mul(x4_p0, scales_p0);
+    x4_p1 = hn::Mul(x4_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 6) {
+    x5_p0 = hn::Mul(x5_p0, scales_p0);
+    x5_p1 = hn::Mul(x5_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 7) {
+    x6_p0 = hn::Mul(x6_p0, scales_p0);
+    x6_p1 = hn::Mul(x6_p1, scales_p1);
+  }
+  if constexpr (kNumQueries >= 8) {
+    x7_p0 = hn::Mul(x7_p0, scales_p0);
+    x7_p1 = hn::Mul(x7_p1, scales_p1);
+  }
+}
+
+template <int kNumQueries, class DF, class VF>
+HWY_INLINE void ApplyQuantizationScale(
+    DF df, const float* HWY_RESTRICT q_scales, size_t query_idx, VF& x0_p0,
+    VF& x0_p1, VF& x1_p0, VF& x1_p1, VF& x2_p0, VF& x2_p1, VF& x3_p0, VF& x3_p1,
+    VF& x4_p0, VF& x4_p1, VF& x5_p0, VF& x5_p1, VF& x6_p0, VF& x6_p1, VF& x7_p0,
+    VF& x7_p1) {
+  auto apply_scale = [&](size_t i, VF& x_p0, VF& x_p1) HWY_ATTR {
+    size_t scale_idx = query_idx + i;
+    VF s = hn::Set(df, q_scales[scale_idx]);
+    x_p0 = hn::Mul(x_p0, s);
+    x_p1 = hn::Mul(x_p1, s);
+  };
+
+  if constexpr (kNumQueries >= 1) {
+    apply_scale(0, x0_p0, x0_p1);
+  }
+  if constexpr (kNumQueries >= 2) {
+    apply_scale(1, x1_p0, x1_p1);
+  }
+  if constexpr (kNumQueries >= 3) {
+    apply_scale(2, x2_p0, x2_p1);
+  }
+  if constexpr (kNumQueries >= 4) {
+    apply_scale(3, x3_p0, x3_p1);
+  }
+  if constexpr (kNumQueries >= 5) {
+    apply_scale(4, x4_p0, x4_p1);
+  }
+  if constexpr (kNumQueries >= 6) {
+    apply_scale(5, x5_p0, x5_p1);
+  }
+  if constexpr (kNumQueries >= 7) {
+    apply_scale(6, x6_p0, x6_p1);
+  }
+  if constexpr (kNumQueries >= 8) {
+    apply_scale(7, x7_p0, x7_p1);
+  }
+}
+
+template <size_t kTargetLanes = 4, class D, typename V>
+HWY_INLINE V SumReduceSegments(D d, V v) {
+  constexpr size_t L = HWY_MAX_LANES_D(D);
+  if constexpr (L <= kTargetLanes) {
+    return v;
+  } else {
+    using D_half = hn::Half<D>;
+    const D_half d_half;
+    auto lo = hn::LowerHalf(d_half, v);
+    auto hi = hn::UpperHalf(d_half, v);
+    auto sum = hn::Add(lo, hi);
+    auto reduced_half = SumReduceSegments<kTargetLanes>(d_half, sum);
+    return hn::ZeroExtendVector(d, reduced_half);
+  }
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

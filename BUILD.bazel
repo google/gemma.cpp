@@ -141,6 +141,7 @@ cc_library(
 cc_test(
     name = "flash_attention_test",
     srcs = ["gemma/flash_attention_test.cc"],
+    linkstatic = True,
     deps = [
         ":activations",
         ":attention",
@@ -601,6 +602,7 @@ cc_test(
     name = "kv_transcoding_test",
     srcs = ["gemma/kv_transcoding_test.cc"],
     deps = [
+        ":basics",
         ":configs",
         ":kv_transcoding",
         "//testing/base/public:gunit_main",
@@ -680,6 +682,7 @@ cc_library(
     ],
     textual_hdrs = [
         "gemma/gemma-inl.h",
+        "gemma/flash_attention_arm-inl.h",
     ],
     deps = [
         ":activations",
@@ -690,6 +693,7 @@ cc_library(
         ":mat",
         ":matmul",
         ":matmul_env",
+        ":matmul_static",
         ":ops",
         ":query",
         ":tensor_stats",
@@ -748,6 +752,7 @@ cc_library(
         ":flash_structs",
         ":gemma_args",
         ":kv_cache",
+        ":kv_transcoding",
         ":mat",
         ":matmul_env",
         ":model_store",

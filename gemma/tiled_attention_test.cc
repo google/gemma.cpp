@@ -97,13 +97,19 @@ struct AttentionTestEnv {
           bool transposed =
               attention_impl == AttentionImpl::kFlashTransposedQsBF16;
           gcpp::KVEncoding encoding;
-          const Type type = kv_caches.back().compact_kv_cache_ptr.GetType();
+          const MatPtr& compact_kv = kv_caches.back().compact_kv_cache_ptr;
+          const Type type = compact_kv.GetType();
+          const MatPtr::Layout layout = compact_kv.GetLayout();
           if (type == Type::kInt8) {
             encoding = transposed ? gcpp::KVEncoding::kInt8TwoTranspositions
                                   : gcpp::KVEncoding::kInt8;
           } else if (type == Type::kBF16) {
-            encoding = transposed ? gcpp::KVEncoding::kBF16TwoTranspositions
-                                  : gcpp::KVEncoding::kBF16;
+            if (layout == MatPtr::Layout::kBF16MatrixAccumulation) {
+              encoding = gcpp::KVEncoding::kBF16MatrixAccumulation;
+            } else {
+              encoding = transposed ? gcpp::KVEncoding::kBF16TwoTranspositions
+                                    : gcpp::KVEncoding::kBF16;
+            }
           } else {
             encoding = transposed ? gcpp::KVEncoding::kF32TwoTranspositions
                                   : gcpp::KVEncoding::kF32;
@@ -123,12 +129,15 @@ struct AttentionTestEnv {
       } else {
         FillMatPtrT(kv_caches.back().kv_cache);
       }
+    }
+
+    for (size_t q = 0; q < qbatch_size; ++q) {
       all_queries.Append({
           .prompt = PromptTokens({1, 2, 3}),
           .mutable_pos = static_cast<size_t>(last_pos),
           .initial_pos = 0,
           .prefix_end = 0,
-          .kv_cache = kv_caches.back().ToPtr(),
+          .kv_cache = kv_caches[q].ToPtr(),
       });
     }
 
@@ -730,6 +739,43 @@ void TestAttentionMultipleTokensBF16() {
   }
 }
 
+void TestAttentionMultipleTokensBF16MatrixAccumulation() {
+  int qkv_dim = 64;
+  int kv_seq_len = 64;
+  int num_kv_heads = 2;
+  int num_heads = 4;
+  int num_tokens = 2;
+  int last_pos = 62;  // so in the tbatch token 0 will have 63 and token 1
+                      // will have 64 tokens to attend to.
+  float att_cap = 10.0f;
+  int layer_idx = 0;
+  int layers_total = 1;
+  int qbatch_size = 2;
+  AttentionImpl attention_impl = AttentionImpl::kFlashMatrixAccumulation;
+  AttentionTestEnv test_env(qkv_dim, kv_seq_len, kv_seq_len, num_kv_heads,
+                            num_heads, num_tokens, last_pos, att_cap, layer_idx,
+                            layers_total, qbatch_size, attention_impl);
+  test_env.SetupWeights();
+  FillMatPtrT(test_env.activations->attention.pre_att_rms_out);
+  FillMatPtrT(test_env.activations->attention.q);
+  FillMatPtrT(test_env.activations->attention.att_out);
+  FillMatPtrT(test_env.activations->attention.softmax_max);
+  FillMatPtrT(test_env.activations->attention.softmax_d);
+
+  TiledAttention(attention_impl, num_tokens, layer_idx, *test_env.layer,
+                 test_env.activations->attention, *test_env.qbatch,
+                 test_env.env, kTiledFlags);
+  for (size_t i = 0; i < test_env.activations->attention.att_out.Rows(); ++i) {
+    EXPECT_TRUE(hwy::CompareArraySimilar(
+        AttentionMultipleTokensAttentionGoldens.data() +
+            i * test_env.activations->attention.att_out.Cols(),
+        test_env.activations->attention.att_out.Row(i),
+        test_env.activations->attention.att_out.Cols(), 1e-1,
+        hwy::TargetName(HWY_TARGET), __FILE__, __LINE__))
+        << "att_out mismatch for query: " << i;
+  }
+}
+
 void TestAttentionMultipleTokensInt8() {
   int qkv_dim = 64;
   int kv_seq_len = 64;
@@ -783,6 +829,9 @@ HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestCompressQueries);
 //                       TestLocalAttentionForAllHeadsTokensAndBatch);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestAttentionMultipleTokens);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestAttentionMultipleTokensBF16);
+HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
+                      TestAttentionMultipleTokensBF16MatrixAccumulation);
+
 // HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
 //                       TestAttentionMultipleTokensAttentionWindowSizeEdgeCase);
 
