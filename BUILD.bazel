@@ -416,18 +416,33 @@ cc_library(
 )
 
 cc_library(
+    name = "fp_arith",
+    hdrs = [
+        "ops/fp_arith.h",
+    ],
+    textual_hdrs = [
+        "ops/fp_arith-inl.h",
+    ],
+    deps = [
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
     name = "ops",
-    hdrs = ["ops/ops.h"],
+    hdrs = [
+        "ops/ops.h",
+    ],
     textual_hdrs = [
         "ops/dot-inl.h",
         "ops/sum-inl.h",
-        "ops/fp_arith-inl.h",
         "ops/ops-inl.h",
         "ops/fast_ops-inl.h",
     ],
     deps = [
         ":allocator",
         ":basics",
+        ":fp_arith",
         ":mat",
         ":matmul_env",  # MMOptions
         ":matmul_static",

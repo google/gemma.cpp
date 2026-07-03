@@ -22,57 +22,13 @@
 
 #include <vector>
 
+#include "ops/fp_arith.h"         // CascadedSummation
 #include "hwy/aligned_allocator.h"  // HWY_ALIGNMENT
 #include "hwy/base.h"               // ScalarAbs
 #include "hwy/contrib/sort/vqsort.h"
 #include "hwy/stats.h"
 
 namespace gcpp {
-
-// Returns `sum` and `err` such that `sum + err` is exactly equal to `a + b`,
-// despite floating-point rounding. `sum` is already the best estimate for the
-// addition, so do not directly add `err` to it.
-//
-// Knuth98/Moller65. Unlike FastTwoSum, this does not require any relative
-// ordering of the exponents of a and b. 6 ops.
-// TODO: move to and use in Highway stats.h?
-template <typename T, HWY_IF_FLOAT3264(T)>
-static inline T TwoSum(T a, T b, T& err) {
-  const T sum = a + b;
-  const T a2 = sum - b;
-  const T b2 = sum - a2;
-  const T err_a = a - a2;
-  const T err_b = b - b2;
-  err = err_a + err_b;
-  return sum;
-}
-
-// Accumulates numbers with about twice the precision of T using 7 * n FLOPS.
-// Rump/Ogita/Oishi08, Algorithm 6.11 in Handbook of Floating-Point Arithmetic.
-template <typename T>
-class CascadedSummation {
- public:
-  void Notify(T t) {
-    T err;
-    sum_ = TwoSum(sum_, t, err);
-    sum_err_ += err;
-  }
-
-  void Assimilate(const CascadedSummation& other) {
-    Notify(other.sum_);
-    sum_err_ += other.sum_err_;
-  }
-
-  // Allows users to observe how much difference the extra precision made.
-  T Err() const { return sum_err_; }
-
-  // Returns the sum of all `t` passed to `Notify`.
-  T Total() const { return sum_ + sum_err_; }
-
- private:
-  T sum_ = T{0};
-  T sum_err_ = T{0};
-};
 
 // Summarizes the error of a distortion (e.g. quantization) applied to a series
 // of numbers.

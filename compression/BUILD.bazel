@@ -31,6 +31,7 @@ cc_library(
     ],
     deps = [
         "//:basics",
+        "//:fp_arith",
         "@highway//:hwy",
         "@highway//:stats",
         "@highway//hwy/contrib/sort:vqsort",

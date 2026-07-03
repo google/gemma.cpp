@@ -164,7 +164,7 @@ bool Image::ReadPPM(const hwy::Span<const char>& buf) {
 
 void Image::Set(int width, int height, const float* data) {
   HWY_ASSERT(width > 0 && height > 0);
-  HWY_ASSERT(width <= SIZE_MAX / 3 && width * 3 <= SIZE_MAX / height);
+  HWY_ASSERT(width <= INT32_MAX / 3 && width * 3 <= INT32_MAX / height);
   width_ = width;
   height_ = height;
   const size_t num_elements = static_cast<size_t>(width) * height * 3;
@@ -188,8 +188,8 @@ void Image::Set(int width, int height, const float* data) {
 // This is surprisingly inexpensive for small images (2 ms).
 void Image::Resize(int new_width, int new_height) {
   HWY_ASSERT(new_width > 0 && new_height > 0);
-  HWY_ASSERT(new_width <= SIZE_MAX / 3 &&
-             new_width * 3 <= SIZE_MAX / new_height);
+  HWY_ASSERT(new_width <= INT32_MAX / 3 &&
+             new_width * 3 <= INT32_MAX / new_height);
   std::vector<float> new_data(static_cast<size_t>(new_width) * new_height * 3);
   // TODO: go to bilinear interpolation, or antialias.
   // E.g. consider WeightsSymmetric3Lowpass and SlowSymmetric3 from
