@@ -705,6 +705,7 @@ cc_library(
         ":configs",
         ":flash_structs",
         ":kv_cache",
+        ":kv_transcoding",
         ":mat",
         ":matmul",
         ":matmul_env",

@@ -90,6 +90,27 @@ inline size_t VMatrixAccumulationOffset_BF16(size_t qkv_dim, size_t token,
   return sub_block * 32 + block_offset;
 }
 
+inline size_t MatrixAccumulationOffset_Int8(size_t qkv_dim, size_t dim, size_t token) {
+  const size_t tg8 = token / 8;
+  const size_t t_in_g = token % 8;
+  const size_t ch_g = dim / 8;
+  const size_t ch_in_g = dim % 8;
+
+  const size_t block_start = (ch_g * 4 + tg8) * 64;
+  return block_start + t_in_g * 8 + ch_in_g;
+}
+
+inline size_t VMatrixAccumulationOffset_Int8(size_t qkv_dim, size_t token,
+                                             size_t dim) {
+  const size_t tg8 = token / 8;
+  const size_t t_in_g = token % 8;
+  const size_t ch_g = dim / 8;
+  const size_t ch_in_g = dim % 8;
+
+  const size_t block_start = (ch_g * 4 + tg8) * 64;
+  return block_start + ch_in_g * 8 + t_in_g;
+}
+
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_KV_TRANSCODING_H_

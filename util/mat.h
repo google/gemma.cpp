@@ -70,6 +70,7 @@ class MatPtr : public IFields {
   enum class Layout {
     kFlat,
     kBF16MatrixAccumulation,
+    kInt8MatrixAccumulation,
   };
 
   Layout GetLayout() const { return layout_; }

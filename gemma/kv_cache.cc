@@ -80,7 +80,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   if (runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashMatrixAccumulation
+      runtime_config.attention_impl == AttentionImpl::kFlashMatrixAccumulation ||
+      runtime_config.attention_impl == AttentionImpl::kInt8MatrixAccumulation
       ) {
     // clang-format on
     const size_t num_tiles =
@@ -95,12 +96,14 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     ) {
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
     } else if (runtime_config.attention_impl ==
-               AttentionImpl::kFlashTransposedQsInt16) {
+                   AttentionImpl::kFlashTransposedQsInt16 ||
+               runtime_config.attention_impl ==
+                   AttentionImpl::kInt8MatrixAccumulation) {
       if (runtime_config.kv_cache_type.has_value() &&
           runtime_config.kv_cache_type.value() != Type::kInt8) {
         HWY_WARN(
             "You are have set kv_cache_type to %s, but you are using "
-            "FlashTransposedQsInt16 attention implementation which only "
+            "an attention implementation which only "
             "supports Int8. kv_cache_type will be set to Int8.",
             runtime_config.kv_cache_type.value());
       }
@@ -132,6 +135,9 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     if (runtime_config.attention_impl ==
         AttentionImpl::kFlashMatrixAccumulation) {
       compact_kv_cache_ptr.SetLayout(MatPtr::Layout::kBF16MatrixAccumulation);
+    } else if (runtime_config.attention_impl ==
+               AttentionImpl::kInt8MatrixAccumulation) {
+      compact_kv_cache_ptr.SetLayout(MatPtr::Layout::kInt8MatrixAccumulation);
     }
     compact_kv_cache.AllocateFor(compact_kv_cache_ptr, allocator,
                                  MatPadding::kPacked);
@@ -150,6 +156,9 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         if (runtime_config.attention_impl ==
             AttentionImpl::kFlashMatrixAccumulation) {
           kv_ptr.SetLayout(MatPtr::Layout::kBF16MatrixAccumulation);
+        } else if (runtime_config.attention_impl ==
+                   AttentionImpl::kInt8MatrixAccumulation) {
+          kv_ptr.SetLayout(MatPtr::Layout::kInt8MatrixAccumulation);
         }
         kv_head_ptrs.emplace_back(std::move(kv_ptr));
         total_num_tiles += num_tiles_per_kv_head;

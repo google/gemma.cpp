@@ -24,6 +24,7 @@ std::optional<size_t> GetTileSizeBytes(gcpp::KVEncoding encoding,
   switch (encoding) {
     case gcpp::KVEncoding::kInt8:
     case gcpp::KVEncoding::kInt8TwoTranspositions:
+    case gcpp::KVEncoding::kInt8MatrixAccumulation:
       return qkv_dim * kTileSize * 2 * sizeof(int8_t) +
              kTileSize * 2 * sizeof(gcpp::KV_microscale_t);
     case gcpp::KVEncoding::kBF16:
@@ -169,6 +170,58 @@ void EncodeTileBF16MatrixAccumulation(size_t qkv_dim,
   }
 }
 
+void EncodeTileInt8MatrixAccumulation(size_t qkv_dim,
+                                      const DecodedTile& decoded,
+                                      hwy::Span<char> out_encoded_tile_data) {
+  HWY_DASSERT(qkv_dim % 8 == 0);
+  int8_t* k_data = HWY_RCAST_ALIGNED(int8_t*, out_encoded_tile_data.data());
+  int8_t* v_data = k_data + qkv_dim * kTileSize;
+  gcpp::KV_microscale_t* scales =
+      HWY_RCAST_ALIGNED(gcpp::KV_microscale_t*, v_data + kTileSize * qkv_dim);
+  gcpp::KV_microscale_t* k_scales = scales;
+  gcpp::KV_microscale_t* v_scales = scales + kTileSize;
+
+  AlignedFloatVector k_max_abs(kTileSize, 0.0f);
+  AlignedFloatVector v_max_abs(kTileSize, 0.0f);
+
+  for (size_t token = 0; token < kTileSize; ++token) {
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      k_max_abs[token] =
+          std::max(k_max_abs[token], std::abs(decoded.k_elem(token, dim)));
+      v_max_abs[token] =
+          std::max(v_max_abs[token], std::abs(decoded.v_elem(token, dim)));
+    }
+  }
+
+  AlignedFloatVector inv_scales_k(kTileSize);
+  AlignedFloatVector inv_scales_v(kTileSize);
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float scale_k = k_max_abs[token] == 0.0f ? 1.0f : k_max_abs[token] / 127.0f;
+    k_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_k);
+    float decoded_k = hwy::ConvertScalarTo<float>(k_scales[token]);
+    inv_scales_k[token] = decoded_k == 0.0f ? 0.0f : 1.0f / decoded_k;
+
+    float scale_v = v_max_abs[token] == 0.0f ? 1.0f : v_max_abs[token] / 127.0f;
+    v_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_v);
+    float decoded_v = hwy::ConvertScalarTo<float>(v_scales[token]);
+    inv_scales_v[token] = decoded_v == 0.0f ? 0.0f : 1.0f / decoded_v;
+  }
+
+  // 2. Quantize and pack K and V
+  for (size_t token = 0; token < kTileSize; ++token) {
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      size_t k_offset = MatrixAccumulationOffset_Int8(qkv_dim, dim, token);
+      k_data[k_offset] =
+          Quantize(decoded.k_elem(token, dim), inv_scales_k[token]);
+
+      // V transposed layout (channel-major within 2-token blocks)
+      size_t v_offset = VMatrixAccumulationOffset_Int8(qkv_dim, token, dim);
+      v_data[v_offset] =
+          Quantize(decoded.v_elem(token, dim), inv_scales_v[token]);
+    }
+  }
+}
+
 void EncodeTileInt8(bool transposed, size_t qkv_dim, const DecodedTile& decoded,
                     hwy::Span<char> out_encoded_tile_data) {
   int8_t* k_data = HWY_RCAST_ALIGNED(int8_t*, out_encoded_tile_data.data());
@@ -292,6 +345,33 @@ void DecodeTileBF16MatrixAccumulation(size_t qkv_dim,
   }
 }
 
+void DecodeTileInt8MatrixAccumulation(size_t qkv_dim,
+                                      hwy::Span<const char> encoded_tile_data,
+                                      DecodedTile* out) {
+  HWY_DASSERT(qkv_dim % 8 == 0);
+  const int8_t* k_data =
+      HWY_RCAST_ALIGNED(const int8_t*, encoded_tile_data.data());
+  const int8_t* v_data = k_data + qkv_dim * kTileSize;
+  const gcpp::KV_microscale_t* scales = HWY_RCAST_ALIGNED(
+      const gcpp::KV_microscale_t*, v_data + kTileSize * qkv_dim);
+  const gcpp::KV_microscale_t* k_scales = scales;
+  const gcpp::KV_microscale_t* v_scales = scales + kTileSize;
+
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float scale_k = hwy::ConvertScalarTo<float>(k_scales[token]);
+    float scale_v = hwy::ConvertScalarTo<float>(v_scales[token]);
+
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      size_t k_offset = MatrixAccumulationOffset_Int8(qkv_dim, dim, token);
+      out->k_elem(token, dim) = k_data[k_offset] * scale_k;
+
+      // V transposed layout (channel-major within 2-token blocks)
+      size_t v_offset = VMatrixAccumulationOffset_Int8(qkv_dim, token, dim);
+      out->v_elem(token, dim) = v_data[v_offset] * scale_v;
+    }
+  }
+}
+
 void DecodeTileInt8(bool transposed, size_t qkv_dim,
                     hwy::Span<const char> encoded_tile_data, DecodedTile* out) {
   const int8_t* k_data =
@@ -363,6 +443,10 @@ bool DecodeTile(KVEncoding encoding, hwy::Span<const char> encoded_tile_data,
       DecodeTileInt8(transposed, qkv_dim, encoded_tile_data, out);
       return true;
     }
+    case gcpp::KVEncoding::kInt8MatrixAccumulation: {
+      DecodeTileInt8MatrixAccumulation(qkv_dim, encoded_tile_data, out);
+      return true;
+    }
     default:
       return false;
   }
@@ -395,6 +479,10 @@ bool EncodeTile(gcpp::KVEncoding encoding, const DecodedTile& decoded,
     case gcpp::KVEncoding::kInt8:
     case gcpp::KVEncoding::kInt8TwoTranspositions: {
       EncodeTileInt8(transposed, qkv_dim, decoded, out_encoded_tile_data);
+      return true;
+    }
+    case gcpp::KVEncoding::kInt8MatrixAccumulation: {
+      EncodeTileInt8MatrixAccumulation(qkv_dim, decoded, out_encoded_tile_data);
       return true;
     }
     default:

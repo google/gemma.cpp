@@ -150,6 +150,7 @@ struct AttentionActivations {
   size_t qkv_dim;
   AlignedBF16Vector bf16_queries;
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries;
+  hwy::AlignedVector<int8_t> int8_queries;
   AlignedFloatVector float_queries;
   AlignedFloatVector q_scales;
 
@@ -202,6 +203,7 @@ struct AttentionActivationsPtrs {
         split_flash_params(split_flash_params),
         bf16_queries(nullptr),
         int16_queries(nullptr),
+        int8_queries(nullptr),
         float_queries(nullptr),
         q_scales(nullptr),
         div_seq_len(static_cast<uint32_t>(seq_len)),
@@ -227,6 +229,7 @@ struct AttentionActivationsPtrs {
     inv_timescale_global = activations.inv_timescale_global;
     bf16_queries = &activations.bf16_queries;
     int16_queries = &activations.int16_queries;
+    int8_queries = &activations.int8_queries;
     float_queries = &activations.float_queries;
     q_scales = &activations.q_scales;
   }
@@ -296,6 +299,7 @@ struct AttentionActivationsPtrs {
       sub_task_max_logits;
   AlignedBF16Vector* bf16_queries;
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>>* int16_queries;
+  hwy::AlignedVector<int8_t>* int8_queries;
   AlignedFloatVector* float_queries;
   AlignedFloatVector* q_scales;
   // Inverse timescales for RoPE computation.

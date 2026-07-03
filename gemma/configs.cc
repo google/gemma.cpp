@@ -737,6 +737,7 @@ constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
     {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
     {"flash_transposed_qs_int16", AttentionImpl::kFlashTransposedQsInt16},
     {"flash_matrix_accumulation", AttentionImpl::kFlashMatrixAccumulation},
+    {"int8_matrix_accumulation", AttentionImpl::kInt8MatrixAccumulation},
 };
 
 std::string GetAttentionImplName(AttentionImpl impl) {
@@ -771,6 +772,8 @@ std::string KVEncodingToString(KVEncoding encoding) {
       return "Int8TwoTranspositions";
     case KVEncoding::kBF16MatrixAccumulation:
       return "BF16MatrixAccumulation";
+    case KVEncoding::kInt8MatrixAccumulation:
+      return "Int8MatrixAccumulation";
     default:
       return "Unknown";
   }

@@ -421,8 +421,8 @@ HWY_INLINE void CompressAndTransposeQueriesMatrixAccumulationImpl(
   HWY_DASSERT(qkv_dim % 4 == 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::FixedTag<float, 4> df;
-  const hn::FixedTag<BF16, 8> dbf16;
+  const hn::Full128<float> df;
+  const hn::Full128<BF16> dbf16;
   constexpr size_t kL = 4;
 
   size_t p = 0;
@@ -466,6 +466,121 @@ void CompressAndTransposeQueriesMatrixAccumulationNonContiguous(
   CompressAndTransposeQueriesMatrixAccumulationImpl(
       [&](size_t idx) { return input[idx]; }, packed_queries, input.size(),
       qkv_dim);
+}
+
+template <typename QueryProvider>
+HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
+    QueryProvider query_provider, int8_t* HWY_RESTRICT packed_queries,
+    float* HWY_RESTRICT packed_scales, size_t num_queries, size_t qkv_dim) {
+  HWY_DASSERT(qkv_dim % 8 == 0);
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::Full128<float> df;
+  const hn::Full128<int16_t> di16;
+  const hn::Full128<int8_t> di8;
+
+  using V_F32 = hn::Vec<decltype(df)>;
+  using V_I32 = hn::Vec<hn::Repartition<int32_t, decltype(df)>>;
+  using V_I16 = hn::Vec<decltype(di16)>;
+  using V_I8 = hn::Vec<decltype(di8)>;
+
+  size_t p = 0;
+  for (; p < num_queries / 2; ++p) {
+    const float* q0 = query_provider(2 * p);
+    const float* q1 = query_provider(2 * p + 1);
+    int8_t* out = packed_queries + 2 * p * qkv_dim;
+    float* out_scale0 = packed_scales + 2 * p;
+    float* out_scale1 = packed_scales + (2 * p + 1);
+
+    // 1. Compute single scale per query over the entire qkv_dim
+    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const float>(q0, qkv_dim));
+    float max_abs_q1 = AbsMaxOfSpan(hwy::Span<const float>(q1, qkv_dim));
+
+    float scale0_raw = max_abs_q0 == 0.0f ? 1.0f : max_abs_q0 / 127.0f;
+    float scale1_raw = max_abs_q1 == 0.0f ? 1.0f : max_abs_q1 / 127.0f;
+
+    gcpp::KV_microscale_t scale0_bf16 =
+        hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale0_raw);
+    gcpp::KV_microscale_t scale1_bf16 =
+        hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale1_raw);
+
+    float scale0 = hwy::ConvertScalarTo<float>(scale0_bf16);
+    float scale1 = hwy::ConvertScalarTo<float>(scale1_bf16);
+
+    *out_scale0 = scale0;
+    *out_scale1 = scale1;
+
+    V_F32 inv_scale0 = hn::Set(df, 1.0f / scale0);
+    V_F32 inv_scale1 = hn::Set(df, 1.0f / scale1);
+
+    for (size_t d = 0; d < qkv_dim; d += 8) {
+      // 2. Load and quantize Q0 (8 channels)
+      V_F32 q0_L = hn::LoadU(df, q0 + d);
+      V_F32 q0_H = hn::LoadU(df, q0 + d + 4);
+      V_I32 q0_L_scaled = hn::NearestInt(hn::Mul(q0_L, inv_scale0));
+      V_I32 q0_H_scaled = hn::NearestInt(hn::Mul(q0_H, inv_scale0));
+      V_I16 q0_i16 = hn::OrderedDemote2To(di16, q0_L_scaled, q0_H_scaled);
+
+      // 3. Load and quantize Q1 (8 channels)
+      V_F32 q1_L = hn::LoadU(df, q1 + d);
+      V_F32 q1_H = hn::LoadU(df, q1 + d + 4);
+      V_I32 q1_L_scaled = hn::NearestInt(hn::Mul(q1_L, inv_scale1));
+      V_I32 q1_H_scaled = hn::NearestInt(hn::Mul(q1_H, inv_scale1));
+      V_I16 q1_i16 = hn::OrderedDemote2To(di16, q1_L_scaled, q1_H_scaled);
+
+      // 4. Pack in pairs at 128-bit boundary: 8 elements of Q0, then 8 elements
+      // of Q1
+      V_I8 packed = hn::OrderedDemote2To(di8, q0_i16, q1_i16);
+      hn::StoreU(packed, di8, out + d * 2);
+    }
+  }
+
+  if (num_queries % 2 != 0) {
+    const float* q0 = query_provider(2 * p);
+    int8_t* out = packed_queries + 2 * p * qkv_dim;
+    float* out_scale0 = packed_scales + 2 * p;
+    V_I16 zero_i16 = hn::Zero(di16);
+
+    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const float>(q0, qkv_dim));
+
+    float scale0_raw = max_abs_q0 == 0.0f ? 1.0f : max_abs_q0 / 127.0f;
+    gcpp::KV_microscale_t scale0_bf16 =
+        hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale0_raw);
+    float scale0 = hwy::ConvertScalarTo<float>(scale0_bf16);
+
+    *out_scale0 = scale0;
+
+    V_F32 inv_scale0 = hn::Set(df, 1.0f / scale0);
+
+    for (size_t d = 0; d < qkv_dim; d += 8) {
+      V_F32 q0_L = hn::LoadU(df, q0 + d);
+      V_F32 q0_H = hn::LoadU(df, q0 + d + 4);
+      V_I32 q0_L_scaled = hn::NearestInt(hn::Mul(q0_L, inv_scale0));
+      V_I32 q0_H_scaled = hn::NearestInt(hn::Mul(q0_H, inv_scale0));
+      V_I16 q0_i16 = hn::OrderedDemote2To(di16, q0_L_scaled, q0_H_scaled);
+
+      V_I8 packed = hn::OrderedDemote2To(di8, q0_i16, zero_i16);
+      hn::StoreU(packed, di8, out + d * 2);
+    }
+  }
+}
+
+void CompressAndQuantizeQueriesMatrixAccumulationInt8(const float* raw_queries,
+                                                      int8_t* packed_queries,
+                                                      float* packed_scales,
+                                                      size_t num_queries,
+                                                      size_t qkv_dim) {
+  CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
+      [&](size_t idx) { return raw_queries + idx * qkv_dim; }, packed_queries,
+      packed_scales, num_queries, qkv_dim);
+}
+
+void CompressAndQuantizeQueriesMatrixAccumulationInt8NonContiguous(
+    hwy::Span<const float* const> input, int8_t* packed_queries,
+    float* packed_scales, size_t qkv_dim) {
+  CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
+      [&](size_t idx) { return input[idx]; }, packed_queries, packed_scales,
+      input.size(), qkv_dim);
 }
 
 // clang-format off
@@ -538,6 +653,11 @@ void LocalAttentionForAllHeadsTokensAndBatch(
       num_sub_tasks * num_queries * qkv_dim >
           activations.int16_queries->size()) {
     activations.int16_queries->resize(num_sub_tasks * num_queries * qkv_dim);
+  }
+  if (activations.int8_queries != nullptr &&
+      num_sub_tasks * num_queries * qkv_dim >
+          activations.int8_queries->size()) {
+    activations.int8_queries->resize(num_sub_tasks * num_queries * qkv_dim);
   }
   if (activations.float_queries != nullptr &&
       num_sub_tasks * num_queries * qkv_dim >
@@ -710,6 +830,24 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               queries_ptrs_span, bf16_queries_ptr, qkv_dim);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
               kv_ptrs, num_queries, bf16_queries_ptr,
+              hwy::Span<const size_t>(start_pos_per_query),
+              hwy::Span<const size_t>(last_pos_per_query),
+              activations.config.att_cap, att_out, exp_denominator_sums.data(),
+              max_logits.data());
+        } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
+          HWY_DASSERT(activations.int8_queries != nullptr);
+          HWY_DASSERT(activations.q_scales != nullptr);
+          int8_t* int8_queries_ptr = activations.int8_queries->data() +
+                                     task_idx * num_queries * qkv_dim;
+          float* q_scales_ptr =
+              activations.q_scales->data() + task_idx * num_queries;
+
+          CompressAndQuantizeQueriesMatrixAccumulationInt8NonContiguous(
+              queries_ptrs_span, int8_queries_ptr, q_scales_ptr, qkv_dim);
+
+          DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(
+              kv_ptrs, num_queries, int8_queries_ptr,
+              hwy::Span<const float>(q_scales_ptr, num_queries),
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),

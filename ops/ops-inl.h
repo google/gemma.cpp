@@ -1789,20 +1789,23 @@ static HWY_INLINE VF8 Reduce8(DF df, VF x_0, VF x_1, VF x_2, VF x_3, VF x_4,
   return hn::Load(df8, buf);
 }
 
-template <class DN, class VI8, class VI32, HWY_IF_I32_D(DN)>
-HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DN dn, VI8 a, VI8 b, VI32 c) {
+template <class DI32, class VI8, class VI32, HWY_IF_I32_D(DI32)>
+HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DI32 di32, VI8 a, VI8 b, VI32 c) {
 #if HWY_NATIVE_PER_BLOCK_2X2_MATMUL_INT8
-  return hn::PerBlock2x2MatMul(dn, a, b, c);
+  return hn::PerBlock2x2MatMul(di32, a, b, c);
 #else
-  const hn::Repartition<int8_t, DN> di8;
-  constexpr size_t kMaxN = hn::MaxLanes(dn);
-  HWY_LANES_CONSTEXPR size_t N = hn::Lanes(dn);
-  HWY_ALIGN int8_t in_a[kMaxN * 4];
-  HWY_ALIGN int8_t in_b[kMaxN * 4];
+  const hn::Repartition<int8_t, DI32> di8;
+  constexpr size_t kMaxN = hn::MaxLanes(di32);
+  constexpr size_t kBufSize = kMaxN * 4;
+  HWY_ALIGN int8_t in_a[kBufSize];
+  HWY_ALIGN int8_t in_b[kBufSize];
   HWY_ALIGN int32_t expected[kMaxN];
+
   hn::Store(a, di8, in_a);
   hn::Store(b, di8, in_b);
-  hn::Store(c, dn, expected);
+  hn::Store(c, di32, expected);
+
+  HWY_LANES_CONSTEXPR size_t N = hn::Lanes(di32);
 
   for (size_t block = 0; block < N; block += 4) {
     const size_t block_i8 = block * 4;
@@ -1817,7 +1820,7 @@ HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DN dn, VI8 a, VI8 b, VI32 c) {
       }
     }
   }
-  return hn::Load(dn, expected);
+  return hn::Load(di32, expected);
 #endif
 }
 
