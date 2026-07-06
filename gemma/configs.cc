@@ -436,6 +436,65 @@ static ModelConfig ConfigGemma3_270M() {
   return config;
 }
 
+static ModelConfig ConfigBaseGemmaV4() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 0.0f;
+  config.final_cap = 0.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 106;
+  config.vocab_size = 262208;
+  return config;
+}
+
+
+static LayerConfig LayerConfigGemma4_26B_MoE_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 2112;
+  config.heads = 16;
+  config.kv_heads = 8;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.activation = ActivationType::Gelu;
+  config.post_qk = PostQKType::NormLocalRope;
+  config.use_qk_norm = true;
+  config.norm_v = true;
+
+  config.num_experts = 128;
+  config.num_experts_per_datapoint = 8;
+
+  return config;
+}
+
+static ModelConfig ConfigGemma4_26B_MoE() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_26B_MoE";
+  config.final_cap = 30.0f;
+  config.att_cap = 0.0f;
+  config.model = Model::GEMMA4_26B_MOE;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.use_global_timescale = true;
+  config.partial_rotary_factor = 0.25f;
+  config.model_dim = 2816;
+  config.vocab_size = kGemmaV3VocabSize;
+  config.max_seq_len = 32 * 1024;
+  config.num_layers = 30;
+  LayerConfig layer_config = LayerConfigGemma4_26B_MoE_LM(config.model_dim);
+  config.layer_configs = {config.num_layers, layer_config};
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    if (i % 6 == 5) {
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = 2;
+    }
+  }
+  config.secondary_eos_id = 106;  // <turn|> is the EOT for Gemma4 MoE
+  config.query_scale = QueryScaleType::One;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<30, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -468,6 +527,8 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_12B_LM();
     case Model::GEMMA3_27B_LM:
       return ConfigGemma3_27B_LM();
+    case Model::GEMMA4_26B_MOE:
+      return ConfigGemma4_26B_MoE();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -507,6 +568,8 @@ const char* ModelPrefix(Model model) {
       return "gemma3-12b-lm";
     case Model::GEMMA3_27B_LM:
       return "gemma3-27b-lm";
+    case Model::GEMMA4_26B_MOE:
+      return "gemma4-26b-moe";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -701,6 +764,9 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
+    case 30:
+      return Model::GEMMA4_26B_MOE;
+
     case 34:
       return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
                                          : Model::GEMMA3_4B_LM;

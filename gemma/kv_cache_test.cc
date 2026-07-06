@@ -19,6 +19,7 @@ TEST(KVCacheTest, KVCacheToPtrs) {
     model_config.layer_configs.push_back(LayerConfig());
     model_config.layer_configs.back().kv_heads = 4;
     model_config.layer_configs.back().qkv_dim = 256;
+    model_config.attention_window_sizes.push_back(1024);
   }
   InferenceArgs inference_args;
   inference_args.seq_len = 1024;

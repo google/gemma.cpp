@@ -65,6 +65,7 @@ PYBIND11_MODULE(configs, py_module) {
 
   enum_<PostNormType>(py_module, "PostNormType")
       .value("NoPostNorm", PostNormType::None)
+      .value("Scale", PostNormType::Scale)
   .value("Scale", PostNormType::Scale);
 
   enum_<PostQKType>(py_module, "PostQKType")

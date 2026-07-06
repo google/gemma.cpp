@@ -16,9 +16,11 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
+#include <math.h>  // isnan
 #include <stddef.h>
 #include <stdint.h>
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -88,6 +90,19 @@ class MatFinder {
   const TensorInfoRegistry& tensors_;
 };
 
+// Stores pre-converted float min/max for clamping activations. The BF16->float
+// conversion happens once at load time in Fixup(), not at every inference call.
+// Note: with a one-sided clamp (if min is inactive) IsActive() will
+// still return true. This is fine for the way it is used currently, but it's
+// worth noting if this is ever used in a context where the difference matters.
+struct ClampRange {
+  float min = -std::numeric_limits<float>::infinity();
+  float max = std::numeric_limits<float>::infinity();
+  bool IsActive() const {
+    return max != std::numeric_limits<float>::infinity();
+  }
+};
+
 // Per-layer weight metadata and pointers. The tensor data is owned by
 // `MatOwner`.
 struct LayerWeightsPtrs {
@@ -123,6 +138,7 @@ struct LayerWeightsPtrs {
         pre_ffw_norm_scale(finder_("pre_ff_ns")),
         post_attention_norm_scale(finder_("post_att_ns")),
         post_ffw_norm_scale(finder_("post_ff_ns")),
+        skip_scale(finder_("skip_scale")),
         ffw_gating_biases(finder_("ffw_gat_b")),
         ffw_output_biases(finder_("ffw_out_b")),
 
@@ -132,7 +148,23 @@ struct LayerWeightsPtrs {
         key_norm_scale(finder_("key_norm")),
         query_norm_scale(finder_("query_norm")),
 
+        router_scale(finder_("router_scale")),
+        p_expert_sc(finder_("p_expert_sc")),
+        post_ffw1_ns(finder_("post_ffw1_ns")),
+        post_ffw2_ns(finder_("post_ffw2_ns")),
+        pre_ffw2_ns(finder_("pre_ffw2_ns")),
+        moe_router(finder_("moe_router")),
+
         layer_config(config) {
+    if (layer_config.IsMoE()) {
+      for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
+        const std::string moe_suffix = MoESuffix(layer_idx, i);
+        MatFinder moe_finder(moe_suffix, tensors);
+        moe_gating_einsum_w1.emplace_back(moe_finder("gating1_w"));
+        moe_gating_einsum_w2.emplace_back(moe_finder("gating2_w"));
+        moe_linear_w.emplace_back(moe_finder("linear_w"));
+      }
+    }
   }
   ~LayerWeightsPtrs() = default;
 
@@ -174,6 +206,7 @@ struct LayerWeightsPtrs {
   MatPtr pre_ffw_norm_scale;         // at least BF16.
   MatPtr post_attention_norm_scale;  // at least BF16.
   MatPtr post_ffw_norm_scale;        // at least BF16.
+  MatPtr skip_scale;                 // at least BF16.
 
   MatPtrT<float> ffw_gating_biases;
   MatPtrT<float> ffw_output_biases;
@@ -183,6 +216,16 @@ struct LayerWeightsPtrs {
 
   MatPtr key_norm_scale;    // at least BF16.
   MatPtr query_norm_scale;  // at least BF16.
+  
+  MatPtr router_scale;
+  MatPtr p_expert_sc;
+  MatPtr post_ffw1_ns;
+  MatPtr post_ffw2_ns;
+  MatPtr pre_ffw2_ns;
+  MatPtr moe_router;
+  std::vector<MatPtr> moe_gating_einsum_w1;
+  std::vector<MatPtr> moe_gating_einsum_w2;
+  std::vector<MatPtr> moe_linear_w;
 
   const LayerConfig& layer_config;
 
@@ -228,6 +271,7 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(linear_w, kMaybeRead));
       func(TENSOR_ARGS(pre_attention_norm_scale, kMustRead));
       func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
+      func(TENSOR_ARGS(skip_scale, kMaybeRead));
     }
 
     if (layer_config.post_norm == PostNormType::Scale) {
@@ -237,6 +281,19 @@ struct LayerWeightsPtrs {
     if (layer_config.use_qk_norm) {
       func(TENSOR_ARGS(key_norm_scale, kMustRead));
       func(TENSOR_ARGS(query_norm_scale, kMustRead));
+    }
+    if (layer_config.IsMoE()) {
+      func(TENSOR_ARGS(moe_router, kMustRead));
+      func(TENSOR_ARGS(router_scale, kMustRead));
+      func(TENSOR_ARGS(p_expert_sc, kMustRead));
+      func(TENSOR_ARGS(post_ffw1_ns, kMustRead));
+      func(TENSOR_ARGS(post_ffw2_ns, kMustRead));
+      func(TENSOR_ARGS(pre_ffw2_ns, kMustRead));
+      for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
+        func(TENSOR_ARGS(moe_gating_einsum_w1[i], kMustRead));
+        func(TENSOR_ARGS(moe_gating_einsum_w2[i], kMustRead));
+        func(TENSOR_ARGS(moe_linear_w[i], kMustRead));
+      }
     }
 
     if (layer_config.ff_biases) {
@@ -256,7 +313,8 @@ struct LayerWeightsPtrs {
   // Must be called after reading weights via `ForEachTensor`.
   // TODO: exporters should bake this into the weights already.
   // WARNING: called from multiple threads; `mat_owners` requires a lock.
-  void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
+  void Fixup(Model model, std::vector<MatOwner>& mat_owners,
+             ThreadingContext& ctx);
 
  private:
   // Copies att_weights from `attn_vec_einsum_w`.

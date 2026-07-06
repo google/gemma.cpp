@@ -747,11 +747,13 @@ cc_library(
     name = "gemma_lib",
     srcs = [
         "gemma/gemma.cc",
+        "gemma/gemma4_moe.cc",
         "gemma/tiled_attention.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
         "gemma/gemma.h",
+        "gemma/gemma4_moe.h",
         "gemma/tiled_attention.h",
         "gemma/vit.h",
     ],
@@ -895,6 +897,27 @@ cc_test(
         ":gemma_lib",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//io",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_test(
+    name = "model_health_test",
+    srcs = ["evals/model_health_test.cc"],
+    linkstatic = True,
+    # Requires model files
+    tags = [
+        "local",
+        "manual",
+        "no_tap",
+    ],
+    deps = [
+        ":benchmark_helper",
+        ":configs",
+        ":cross_entropy",
+        ":gemma_lib",
+        "@googletest//:gtest_main",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],

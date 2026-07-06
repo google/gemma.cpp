@@ -92,6 +92,40 @@ void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
   }
 }
 
+void TransposeKVCacheRow_KEqV(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
+                              KV_t* HWY_RESTRICT v, size_t qkv_dim) {
+  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
+  for (size_t i = 0; i < qkv_dim; i += 2) {
+    k[i * kFloatsPerTile] = kv[i];
+    k[i * kFloatsPerTile + 1] = kv[i + 1];
+  }
+  for (size_t i = qkv_dim; i < kRoundedQkvDim; i += 2) {
+    k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
+    k[i * kFloatsPerTile + 1] = hwy::ConvertScalarTo<KV_t>(0.0f);
+  }
+  for (size_t i = 0; i < qkv_dim; i += kFloatsPerTile) {
+    if (i + kFloatsPerTile <= qkv_dim) {
+      for (size_t j = 0; j < kFloatsPerTile; j++) {
+        v[i * kFloatsPerTile + j] = kv[i + j];
+      }
+    } else {
+      for (size_t j = 0; j < qkv_dim - i; j++) {
+        v[i * kFloatsPerTile + j] = kv[i + j];
+      }
+      for (size_t j = qkv_dim - i; j < kFloatsPerTile; j++) {
+        v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
+      }
+    }
+  }
+  for (size_t i = hwy::RoundUpTo(qkv_dim, kFloatsPerTile); i < kRoundedQkvDim;
+       i += kFloatsPerTile) {
+    for (size_t j = 0; j < kFloatsPerTile; j++) {
+      v[i * kFloatsPerTile + j] = hwy::ConvertScalarTo<KV_t>(0.0f);
+    }
+  }
+}
+
 // Zeros out a part of k and v that corresponds to out-of-bounds cache
 // positions.
 void TransposeOOBKVCacheRow(KV_t* HWY_RESTRICT k, KV_t* HWY_RESTRICT v,
@@ -149,11 +183,17 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   const hwy::Divisor div_qbatch(qbatch.Size());
   const size_t num_interleaved = num_tokens * div_qbatch.GetDivisor();
   const LayerConfig& layer_config = layer.layer_config;
+  const size_t active_qkv_dim = layer_config.heads * layer_config.qkv_dim;
+  activations.q.OverrideCols(active_qkv_dim);
+  activations.q_bf.OverrideCols(active_qkv_dim);
+  activations.att_out.OverrideCols(active_qkv_dim);
+  activations.att_out_reps.OverrideCols(active_qkv_dim);
+
   const size_t qkv_dim = layer_config.qkv_dim;
   const size_t kv_heads = layer_config.kv_heads;
   const size_t cache_layer_size = layer_config.CacheLayerSize();
 
-  // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
+    // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w1,
              /*add=*/nullptr, env, activations.q);
@@ -167,18 +207,22 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
        ++interleaved_idx) {
     // Index into qbatch, within [0, qbatch.Size()]
     const size_t qi = div_qbatch.Remainder(interleaved_idx);
-    // Index along token sequence, within [0, num_tokens)
     const size_t token_idx = div_qbatch.Divide(interleaved_idx);
     const size_t cache_pos = qbatch.Pos(qi) + token_idx;
     // --seq_len must be large enough to avoid wraparound.
     HWY_DASSERT(cache_pos < activations.SeqLen());
 
+    const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
+        ? layer_idx * cache_layer_size
+        : qbatch.KV(qi).cache->layer_flat_offsets[layer_idx];
+
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
-        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_idx * cache_layer_size);
+        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_offset);
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
+
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
                       qbatch.KV(qi).k_cache);
@@ -228,8 +272,11 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         // --seq_len must be large enough to avoid wraparound.
         HWY_DASSERT(cache_pos < activations.SeqLen());
         auto& kv_cache = qbatch.KV(qi).kv_cache;
+        const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
+            ? layer_idx * cache_layer_size
+            : qbatch.KV(qi).cache->layer_flat_offsets[layer_idx];
         KV_t* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
-                                layer_idx * cache_layer_size +
+                                layer_offset +
                                 head * qkv_dim * 2;
         // Note that k_cache and v_cache are different shapes.
         // The innermost dimension of k is 2 values from qkv_dim because they
@@ -245,8 +292,15 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         if (layer.key_norm_scale.HasPtr()) {
           CallUpcasted(&layer.key_norm_scale, [&](const auto* weights_t) {
             RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, kv_f32,
-                           qkv_dim, env.ctx, worker);
+                                 qkv_dim, env.ctx, worker);
           });
+        } else if (layer_config.post_qk == PostQKType::NormLocalRope) {
+          RMSNormNoScaleInplace(kv_f32, qkv_dim, env.ctx, worker);
+        }
+
+        // Normalize V projections before caching.
+        if (layer_config.norm_v) {
+          RMSNormNoScaleInplace(kv_f32 + qkv_dim, qkv_dim, env.ctx, worker);
         }
 
         constexpr size_t offset = 0;  // placeholder, do not remove

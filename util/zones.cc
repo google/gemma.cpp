@@ -51,12 +51,24 @@ const char* ZoneName(Zones zone) {
       return "Gen.FFW";
     case Zones::kGenImageTokens:
       return "Gen.ImageTokens";
+    case Zones::kGenMoEFFW:
+      return "Gen.MoEFFW";
+    case Zones::kGenMoEFFWExperts:
+      return "Gen.MoEFFW.Experts";
+    case Zones::kGenMoEFFWExpertsChoose:
+      return "Gen.MoEFFW.Experts.Choose";
+    case Zones::kGenMoEFFWExpertsGather:
+      return "Gen.MoEFFW.Experts.Gather";
+    case Zones::kGenMoEFFWWeightedSum:
+      return "Gen.MoEFFW.WeightedSum";
     case Zones::kGenSampleTop1:
       return "Gen.SampleTop1";
     case Zones::kGenSampleTopK:
       return "Gen.SampleTopK";
     case Zones::kGenStats:
       return "Gen.Stats";
+    case Zones::kGenTotalTransformerLayer:
+      return "Gen.TotalTransformerLayer";
     case Zones::kMMDecompressA:
       return "MM.DecompressA";
     case Zones::kMMDispatch:
@@ -94,6 +106,8 @@ const char* ZoneName(Zones zone) {
       return "Ops.RMSNormInplace";
     case Zones::kOpsRmsNormMul:
       return "Ops.RMSNormMul";
+    case Zones::kOpsRmsNormNoScaleInplace:
+      return "Ops.RMSNormNoScaleInplace";
     case Zones::kOpsRope:
       return "Ops.Rope";
     case Zones::kOpsRopeAndMulBy:
@@ -121,6 +135,8 @@ hwy::ProfilerFlags ZoneFlags(Zones zone) {
     case Zones::kGenEmbeddingMatmul:
     case Zones::kGenFFW:
     case Zones::kGenImageTokens:
+    case Zones::kGenMoEFFW:
+    case Zones::kGenTotalTransformerLayer:
       return hwy::ProfilerFlags::kInclusive;
     default:
       return hwy::ProfilerFlags::kDefault;
@@ -167,14 +183,26 @@ const char* CallerName(Callers caller) {
       return "MM.HierForN";
     case Callers::kMMHierForSFC:
       return "MM.HierForSFC";
+    case Callers::kMoEChooseExperts:
+      return "MoE.ChooseExperts";
+    case Callers::kMoEComputeAllExpertOutputs:
+      return "MoE.ComputeAllExpertOutputs";
+    case Callers::kMoEWeightedSumOfExperts:
+      return "MoE.WeightedSumOfExperts";
     case Callers::kOpsAddFromBatched:
       return "Ops.AddFromBatched";
+    case Callers::kOpsGroupedRMSNormBatched:
+      return "Ops.GroupedRMSNormBatched";
+    case Callers::kOpsGroupedRMSNormInplaceBatched:
+      return "Ops.GroupedRMSNormInplaceBatched";
     case Callers::kOpsMaybeLogitsSoftCapBatched:
       return "Ops.MaybeLogitsSoftCapBatched";
     case Callers::kOpsRMSNormBatched:
       return "Ops.RMSNormBatched";
     case Callers::kOpsRMSNormInplaceBatched:
       return "Ops.RMSNormInplaceBatched";
+    case Callers::kOpsRMSNormNoScaleInplaceBatched:
+      return "Ops.RMSNormNoScaleInplaceBatched";
     case Callers::kReadAllToBF16:
       return "ReadAllToBF16";
     case Callers::kReadBatches:

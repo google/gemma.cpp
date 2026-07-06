@@ -132,6 +132,8 @@ set(SOURCES
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
+  gemma/gemma4_moe.cc
+  gemma/gemma4_moe.h
   gemma/kv_cache.cc
   gemma/kv_cache.h
   gemma/kv_transcoding.cc

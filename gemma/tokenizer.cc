@@ -107,12 +107,18 @@ bool GemmaTokenizer::Decode(const std::vector<int>& ids,
 // Negligible CPU time in the ctor body.
 GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
                                      Model model) {
-  sot_user_.reserve(3);
-  if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return;
-  sot_model_.reserve(3);
-  HWY_ASSERT(tokenizer.Encode("<start_of_turn>model\n", &sot_model_));
-  eot_.reserve(2);
-  HWY_ASSERT(tokenizer.Encode("<end_of_turn>\n", &eot_));
+  if (model == Model::GEMMA4_26B_MOE) {
+    sot_user_ = {105, 2364, 107};
+    sot_model_ = {105, 4368, 107, 100, 45518, 107, 101};
+    eot_ = {106, 107};
+  } else {
+    sot_user_.reserve(3);
+    if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return;
+    sot_model_.reserve(3);
+    HWY_ASSERT(tokenizer.Encode("<start_of_turn>model\n", &sot_model_));
+    eot_.reserve(2);
+    HWY_ASSERT(tokenizer.Encode("<end_of_turn>\n", &eot_));
+  }
 
   HWY_ASSERT(tokenizer.Encode("\n", &pali_sep_));
   vlm_soi_.reserve(2);

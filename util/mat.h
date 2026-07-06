@@ -141,7 +141,7 @@ class MatPtr : public IFields {
   uint8_t** GetRowPtrs() const { return row_ptrs_; }
 
   // A single row counts as packed because there is no padding between rows.
-  bool IsPacked() const { return (stride_ == cols_) || (Rows() == 1); }
+  bool IsPacked() const { return (stride_ == Cols()) || (Rows() == 1); }
 
   const void* Packed() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
@@ -188,8 +188,10 @@ class MatPtr : public IFields {
   size_t Rows() const {
     return override_rows_ == 0 ? private_rows_ : override_rows_;
   }
-  size_t Cols() const { return cols_; }
-  Extents2D Extents() const { return Extents2D(Rows(), cols_); }
+  size_t Cols() const {
+    return override_cols_ == 0 ? cols_ : override_cols_;
+  }
+  Extents2D Extents() const { return Extents2D(Rows(), Cols()); }
   bool IsEmpty() const { return Rows() == 0 || cols_ == 0; }
   bool SameShape(const MatPtr& other) const {
     return Rows() == other.Rows() && Cols() == other.Cols();
@@ -211,8 +213,16 @@ class MatPtr : public IFields {
                 private_rows_);
     }
     override_rows_ = static_cast<uint32_t>(rows);
-    num_elements_ = static_cast<uint32_t>(
-        ComputeNumElements(type_, Extents2D(override_rows_, cols_)));
+    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
+  }
+
+  void OverrideCols(size_t cols) {
+    if (HWY_UNLIKELY(cols > stride_)) {
+      HWY_ABORT("%s: cols %zu > stride_ %u\n", name_.c_str(), cols,
+                stride_);
+    }
+    override_cols_ = static_cast<uint32_t>(cols);
+    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
   }
 
   // Changes the number of rows and columns without reallocating the memory.
@@ -292,6 +302,7 @@ class MatPtr : public IFields {
   uint32_t cols_ = 0;
 
   uint32_t override_rows_ = 0;  // not serialized
+  uint32_t override_cols_ = 0;  // not serialized
 
   // Non-owning pointer, must not be freed. The underlying memory must outlive
   // this object.

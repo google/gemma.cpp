@@ -90,6 +90,8 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
           RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q_row,
                          layer_config.qkv_dim, ctx, worker);
         });
+      } else if (layer_config.post_qk == PostQKType::NormLocalRope) {
+        RMSNormNoScaleInplace(q_row, layer_config.qkv_dim, ctx, worker);
       }
       PositionalEncodingQK(q_row, layer_idx, activations, ctx, worker, pos,
                            query_scale);

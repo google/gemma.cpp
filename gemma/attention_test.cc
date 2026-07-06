@@ -87,7 +87,7 @@ struct TestModelState {
                           state.mat_owners, 44);
     AllocateAndFillRandom(layer.linear_w, state.ctx.allocator, state.mat_owners,
                           45);
-    layer.Fixup(state.mat_owners, state.ctx);
+    layer.Fixup(config.model, state.mat_owners, state.ctx);
   }
 
   ModelConfig config;

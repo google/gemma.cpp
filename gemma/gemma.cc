@@ -42,6 +42,7 @@
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
+#include "gemma/gemma4_moe.h"       // includes highway.h
 #include "gemma/tiled_attention.h"  // includes highway.h
 #include "gemma/vit.h"              // includes highway.h
 
@@ -102,6 +103,12 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
                                           Activations& activations,
                                           QBatch& qbatch, MatMulEnv& env) {
   const LayerConfig& layer_config = layer.layer_config;
+  if (layer_config.IsMoE() &&
+      activations.attention.config.model == Model::GEMMA4_26B_MOE) {
+    Gemma4MoETransformerLayer(num_tokens, layer_idx, layer, activations,
+                              qbatch, env);
+    return;
+  }
 
   RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
                  activations.attention.pre_att_rms_out, env.ctx);
@@ -583,6 +590,15 @@ static void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
 void SetWeightStats(const LayerWeightsPtrs& layer, Activations& a,
                     ThreadingContext& ctx) {
   const size_t layer_idx = layer.layer_idx;
+  if (layer.layer_config.IsMoE()) {
+    const size_t expert_idx = 0;
+    a.s_w_expert_in1.Notify(layer_idx, layer.moe_gating_einsum_w1[expert_idx],
+                            ctx, kTensorStatsIsWeight);
+    a.s_w_expert_in2.Notify(layer_idx, layer.moe_gating_einsum_w2[expert_idx],
+                            ctx, kTensorStatsIsWeight);
+    a.s_w_expert_hidden.Notify(layer_idx, layer.moe_linear_w[expert_idx], ctx,
+                               kTensorStatsIsWeight);
+  }
   a.s_w_gating_einsum_w1.Notify(layer_idx, layer.gating_einsum_w1, ctx,
                                 kTensorStatsIsWeight);
   a.s_w_gating_einsum_w2.Notify(layer_idx, layer.gating_einsum_w2, ctx,

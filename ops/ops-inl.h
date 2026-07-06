@@ -615,6 +615,130 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void MulByConstAndAdd(const float c,
                                 });
 }
 
+// Same as `RMSNormInplace` without weights (no learned scale).
+// Same as above, but in-place (`x == out`).
+template <typename VecT>
+HWY_NOINLINE void RMSNormNoScaleInplace(VecT* HWY_RESTRICT inout,
+                                        const size_t size,
+                                        ThreadingContext& ctx,
+                                        const size_t worker) {
+  GCPP_ZONE(ctx, worker, Zones::kOpsRmsNormNoScaleInplace);
+
+  const float mul = detail::RMSNormMul(inout, size, ctx, worker);
+  MulByConst(mul, inout, size);
+}
+
+// RMSNormInplace without scale parameters.
+template <typename InOutT>
+void RMSNormNoScaleInplaceBatched(
+    MatPtrT<InOutT>& inout, ThreadingContext& ctx, size_t cluster_idx = 0,
+    Parallelism parallelism = Parallelism::kFlat) {
+  ParallelFor(parallelism, inout.Rows(), ctx, cluster_idx,
+              Callers::kOpsRMSNormNoScaleInplaceBatched,
+              [&](uint64_t token_idx, size_t worker) {
+                RMSNormNoScaleInplace(inout.Row(token_idx), inout.Cols(), ctx,
+                                      worker);
+              });
+}
+
+// Grouped RMSNorm: applies RMSNorm independently to each group.
+template <typename XT, typename WT, typename OT>
+static HWY_NOINLINE void GroupedRMSNorm(const XT* HWY_RESTRICT x,
+                                        const WT* HWY_RESTRICT weight,
+                                        OT* HWY_RESTRICT out, const size_t size,
+                                        const size_t num_groups,
+                                        ThreadingContext& ctx,
+                                        const size_t worker) {
+  HWY_DASSERT(reinterpret_cast<uintptr_t>(out) !=
+              reinterpret_cast<uintptr_t>(x));
+  HWY_DASSERT(size % num_groups == 0);
+  const size_t group_size = size / num_groups;
+  for (size_t i = 0; i < size; i += group_size) {
+    RMSNorm(x + i, weight, i, out + i, group_size, ctx, worker);
+  }
+}
+
+// Same as above, but in-place (`x == out`).
+template <typename WT, typename XT>
+static HWY_NOINLINE void GroupedRMSNormInplace(
+    const WT* HWY_RESTRICT weight, XT* HWY_RESTRICT inout, const size_t size,
+    const size_t num_groups, ThreadingContext& ctx, const size_t worker) {
+  HWY_DASSERT(size % num_groups == 0);
+  const size_t group_size = size / num_groups;
+  for (size_t i = 0; i < size; i += group_size) {
+    RMSNormInplace(weight, i, inout + i, group_size, ctx, worker);
+  }
+}
+
+template <typename XT, typename OT>
+void GroupedRMSNormBatched(
+    const MatPtrT<XT>& activations, const MatPtr& weights, MatPtrT<OT>& out,
+    const size_t num_groups, ThreadingContext& ctx, size_t cluster_idx = 0,
+    Parallelism parallelism = Parallelism::kFlat) {
+  CallUpcasted(&weights, [&](const auto* weights_t) {
+    ParallelFor(parallelism, activations.Rows(), ctx, cluster_idx,
+                Callers::kOpsGroupedRMSNormBatched,
+                [&](uint64_t token_idx, size_t worker) {
+                  GroupedRMSNorm(activations.Row(token_idx),
+                                 weights_t->PackedScale1(), out.Row(token_idx),
+                                 activations.Cols(), num_groups, ctx, worker);
+                });
+  });
+}
+
+template <typename InOutT>
+void GroupedRMSNormInplaceBatched(
+    const MatPtr& weights, MatPtrT<InOutT>& inout, const size_t num_groups,
+    ThreadingContext& ctx, size_t cluster_idx = 0,
+    Parallelism parallelism = Parallelism::kFlat) {
+  CallUpcasted(&weights, [&](const auto* weights_t) {
+    ParallelFor(parallelism, inout.Rows(), ctx, cluster_idx,
+                Callers::kOpsGroupedRMSNormInplaceBatched,
+                [&](uint64_t token_idx, size_t worker) {
+                  GroupedRMSNormInplace(weights_t->PackedScale1(),
+                                        inout.Row(token_idx), inout.Cols(),
+                                        num_groups, ctx, worker);
+                });
+  });
+}
+
+// Returns inclusive prefix sum for 4-lane vectors.
+template <class D, class V, HWY_IF_LANES_D(D, 4)>
+HWY_INLINE V InclusivePrefixSum4(D d, V DCBA) {
+  const V CBAz = hn::Slide1Up(d, DCBA);
+  const V DC_CB_BA_A = hn::Add(DCBA, CBAz);
+  const V BA_A_z_z = hn::ShiftLeftLanes<2>(d, DC_CB_BA_A);
+  return hn::Add(BA_A_z_z, DC_CB_BA_A);
+}
+
+template <typename T, HWY_IF_T_SIZE(T, 4)>
+T ExclusivePrefixSum(const T* HWY_RESTRICT in, size_t size,
+                     T* HWY_RESTRICT out) {
+  HWY_DASSERT(hwy::IsAligned(in, 16));
+  HWY_DASSERT(hwy::IsAligned(out, 16));
+  const hn::FixedTag<T, 4> d;
+  using V = hn::Vec<decltype(d)>;
+
+  T sum = T{0};
+
+  size_t i = 0;
+  if (HWY_LIKELY(size >= 4)) {
+    for (; i <= size - 4; i += 4) {
+      const V v = hn::Load(d, in + i);
+      const V inclusive = InclusivePrefixSum4(d, v);
+      const T vec_sum = hn::ExtractLane(inclusive, 3);
+      const V exclusive = hn::Add(hn::Slide1Up(d, inclusive), hn::Set(d, sum));
+      sum += vec_sum;
+      hn::Store(exclusive, d, out + i);
+    }
+  }
+
+  for (; i < size; ++i) {
+    out[i] = sum;
+    sum += in[i];
+  }
+  return sum;  // grand total
+}
 template <class DF, class VF = hn::Vec<DF>>
 HWY_INLINE HWY_MAYBE_UNUSED void MulAdd4(DF df, const VF common, const VF c0,
                                          const VF c1, const VF c2, const VF c3,

@@ -40,11 +40,21 @@ typedef std::vector<BF16, hwy::AlignedAllocator<BF16>> AlignedBF16Vector;
 
 // Returns the scale value to use for the query in the attention computation.
 // Also called by ops_test.
+static inline size_t MaxQkvDim(const ModelConfig& config) {
+  size_t max_dim = 0;
+  for (const auto& lc : config.layer_configs) {
+    max_dim = HWY_MAX(max_dim, lc.qkv_dim);
+  }
+  return max_dim;
+}
+
 static inline float ChooseQueryScale(const ModelConfig& config) {
   const LayerConfig& layer_config = config.layer_configs[0];
   if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
     return 1.0f /
            sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
+  if (config.query_scale == QueryScaleType::One)
+    return 1.0f;
   // QueryScaleType::SqrtKeySize
   return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
 }
@@ -57,6 +67,7 @@ struct AttentionActivations {
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : heads(layer_config.heads),
         qkv_dim(layer_config.qkv_dim),
+        max_qkv_dim(MaxQkvDim(config)),
         rep_factor(max_workers *
                    AttentionActivations::kThreadReplicationFactor /
                    layer_config.heads),
@@ -64,32 +75,33 @@ struct AttentionActivations {
         // is still MHA and does not use an external KV cache.
         q(MatFactory("q", batch_size,
                      config.vocab_size == 0
-                         ? layer_config.heads * 3 * layer_config.qkv_dim
-                         : layer_config.heads * layer_config.qkv_dim,
+                         ? layer_config.heads * 3 * max_qkv_dim
+                         : layer_config.heads * max_qkv_dim,
                      allocator)),
         q_bf(MatFactory("q_bf", batch_size,
                         config.vocab_size == 0
-                            ? layer_config.heads * 3 * layer_config.qkv_dim
-                            : layer_config.heads * layer_config.qkv_dim,
+                            ? layer_config.heads * 3 * max_qkv_dim
+                            : layer_config.heads * max_qkv_dim,
                         allocator)),
-        vit_Q(MatFactory("Q2", batch_size, layer_config.qkv_dim, allocator)),
+
+        vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
         vit_K_T(MatFactory(
             "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
             layer_config.heads *
-                hwy::RoundUpTo(layer_config.qkv_dim, kMaxBF16PerVector),
+                hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         vit_V_T(MatFactory(
             "V2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
             layer_config.heads *
-                hwy::RoundUpTo(layer_config.qkv_dim, kMaxBF16PerVector),
+                hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
                                    config.model_dim, allocator)),
         att_out(MatFactory("att_out", batch_size,
-                           layer_config.heads * layer_config.qkv_dim,
+                           layer_config.heads * max_qkv_dim,
                            allocator)),
         att_out_reps(MatFactory("att_out", batch_size * rep_factor,
-                                layer_config.heads * layer_config.qkv_dim,
+                                layer_config.heads * max_qkv_dim,
                                 allocator)),
         softmax_max(MatFactory("softmax_max", batch_size, layer_config.heads,
                                allocator)),
@@ -102,8 +114,12 @@ struct AttentionActivations {
             CreateInvTimescale(allocator, layer_config.qkv_dim,
                                layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
-            allocator, layer_config.qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)) {
+            allocator,
+            config.partial_rotary_factor < 1.0f
+                ? max_qkv_dim
+                : max_qkv_dim / 4,
+            layer_config.post_qk == PostQKType::HalfRope, 1000000.0,
+            config.partial_rotary_factor)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -148,6 +164,7 @@ struct AttentionActivations {
 
   size_t heads;
   size_t qkv_dim;
+  size_t max_qkv_dim;
   AlignedBF16Vector bf16_queries;
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries;
   hwy::AlignedVector<int8_t> int8_queries;
@@ -314,6 +331,21 @@ struct AttentionActivationsPtrs {
   float query_scale;
 };
 
+static inline size_t MoEBatchSize(const LayerConfig& layer_config,
+                                  size_t batch_size) {
+  return layer_config.IsMoE() ? batch_size : 0;
+}
+
+struct PerToken {
+  float weight;
+  uint16_t expert_idx;
+  uint16_t row_idx;
+};
+static_assert(sizeof(PerToken) == 8);
+// Multiple to round up experts_per_token to avoid false sharing.
+HWY_INLINE_VAR constexpr size_t kPerTokenPerLine =
+    HWY_ALIGNMENT / sizeof(PerToken);
+
 struct Activations {
   Activations(const RuntimeConfig& runtime_config, const ModelConfig& config,
               size_t batch_size, size_t seq_len, ThreadingContext& ctx,
@@ -339,7 +371,20 @@ struct Activations {
         s_ffw_in(config.num_layers, max_workers),
         s_ffw_hidden(config.num_layers, max_workers),
         s_ffw_out(config.num_layers, max_workers),
-
+        router_in(MatFactory("router_in",
+                             MoEBatchSize(layer_config, batch_size),
+                             config.model_dim, ctx.allocator)),
+        router_logits(
+            MatFactory("router_logits", MoEBatchSize(layer_config, batch_size),
+                       layer_config.NumExperts(), ctx.allocator)),
+        s_router_in(config.num_layers, max_workers),
+        s_router_logits(config.num_layers, max_workers),
+        s_expert_in(config.num_layers, max_workers),
+        s_expert_hidden(config.num_layers, max_workers),
+        s_expert_out(config.num_layers, max_workers),
+        s_w_expert_in1(config.num_layers, max_workers),
+        s_w_expert_in2(config.num_layers, max_workers),
+        s_w_expert_hidden(config.num_layers, max_workers),
         s_w_gating_einsum_w1(config.num_layers, max_workers),
         s_w_gating_einsum_w2(config.num_layers, max_workers),
         s_w_linear_w(config.num_layers, max_workers),
@@ -360,6 +405,34 @@ struct Activations {
     C2.AllocateAndAttachRowPtrs(row_ptrs);
     ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
 
+    if (layer_config.IsMoE()) {
+      router_logits.AllocateAndAttachRowPtrs(row_ptrs);
+
+      const size_t experts_per_token =
+          layer_config.NumExpertsPerDatapoint();
+      per_token_stride = hwy::RoundUpTo(
+          layer_config.NumExpertsPerDatapoint(), kPerTokenPerLine);
+      per_token = ctx.allocator.Alloc<PerToken>(batch_size * per_token_stride);
+      expert_tokens =
+          ctx.allocator.Alloc<uint16_t>(batch_size * experts_per_token);
+
+      const size_t num_clusters = ctx.pools.NumClusters();
+      per_cluster.reserve(num_clusters);
+      for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+        per_cluster.emplace_back(config, layer_config, batch_size,
+                                 ctx.allocator, row_ptrs);
+      }
+
+      const size_t num_experts = layer_config.NumExperts();
+      ffw_expert_out.reserve(num_experts);
+      for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
+        ffw_expert_out.emplace_back(MatFactory(
+            "ffw_partial_out", MoEBatchSize(layer_config, batch_size),
+            config.model_dim, ctx.allocator));
+        ffw_expert_out.back().AllocateAndAttachRowPtrs(row_ptrs);
+      }
+    }
+
     // Note that BindC on any MatMul output considerably slows down Prefill.
   }
 
@@ -367,6 +440,14 @@ struct Activations {
     s_ffw_in.ReduceAndPrint("ffw_in");
     s_ffw_hidden.ReduceAndPrint("ffw_hidden");
     s_ffw_out.ReduceAndPrint("ffw_out");
+    s_router_in.ReduceAndPrint("router_in");
+    s_router_logits.ReduceAndPrint("router_logits");
+    s_expert_in.ReduceAndPrint("expert_in");
+    s_expert_hidden.ReduceAndPrint("expert_hidden");
+    s_expert_out.ReduceAndPrint("expert_out");
+    s_w_expert_in1.ReduceAndPrint("w_expert_in1");
+    s_w_expert_in2.ReduceAndPrint("w_expert_in2");
+    s_w_expert_hidden.ReduceAndPrint("w_expert_hidden");
   }
 
   // Negligible CPU time.
@@ -405,6 +486,49 @@ struct Activations {
   TensorStats s_ffw_hidden;  // after Activation+gating
   TensorStats s_ffw_out;
 
+  // For MoE layers. These are used outside the expert-parallel loop:
+  MatStorageT<BF16> router_in;
+  MatStorageT<float> router_logits;  // batch_size x num_experts
+
+  size_t per_token_stride;           // padded experts_per_token
+  AlignedPtr<PerToken[]> per_token;  // batch_size x per_token_stride
+
+  PerToken* GetPerToken(size_t token_idx) {
+    return &per_token[token_idx * per_token_stride];
+  }
+
+  AlignedPtr<uint16_t[]> expert_tokens;  // ragged array
+
+  struct PerCluster {
+    PerCluster(const ModelConfig& config, const LayerConfig& layer_config,
+               size_t batch_size, Allocator& allocator,
+               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
+        : moe_C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
+                            allocator)),
+          moe_C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim,
+                            allocator)),
+          ffw_expert_in(MatFactory("ffw_partial_in",
+                                   MoEBatchSize(layer_config, batch_size),
+                                   config.model_dim, allocator)) {
+      moe_C1.AllocateAndAttachRowPtrs(row_ptrs);
+      moe_C2.AllocateAndAttachRowPtrs(row_ptrs);
+      ffw_expert_in.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+    MatStorageT<BF16> moe_C1;
+    MatStorageT<BF16> moe_C2;
+    MatStorageT<BF16> ffw_expert_in;
+  };
+  std::vector<PerCluster> per_cluster;
+  std::vector<MatStorageT<BF16>> ffw_expert_out;
+
+  TensorStats s_router_in;
+  TensorStats s_router_logits;
+  TensorStats s_expert_in;
+  TensorStats s_expert_hidden;  // after Activation+gating
+  TensorStats s_expert_out;
+  TensorStats s_w_expert_in1;
+  TensorStats s_w_expert_in2;
+  TensorStats s_w_expert_hidden;  // after Activation+gating
   TensorStats s_w_gating_einsum_w1;
   TensorStats s_w_gating_einsum_w2;
   TensorStats s_w_linear_w;

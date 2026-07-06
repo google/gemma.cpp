@@ -17,6 +17,7 @@
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_KV_CACHE_H_
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <optional>
 #include <vector>
@@ -94,14 +95,23 @@ struct KVCache {
   // Returns the default size of a row in k_cache or v_cache, before scaling by
   // 2 * kNF.
   size_t KOrVDefaultCols() const {
-    return num_layers * kv_heads * rounded_qkv_dim;
+    if (k_v_cols == 0) {
+      return num_layers * kv_heads * rounded_qkv_dim;
+    }
+    return k_v_cols;
   }
+
 
   // Returns an offset into a row of k_cache or v_cache at a position that is
   // aligned to the tile size (a multiple of 2kNF).
   size_t KOrVOffset(const size_t layer_idx, const size_t kv_head_idx,
                     const size_t kNF) const {
-    return (layer_idx * kv_heads + kv_head_idx) * rounded_qkv_dim * 2 * kNF;
+    if (layer_k_v_offsets.empty()) {
+      return (layer_idx * kv_heads + kv_head_idx) * rounded_qkv_dim * 2 * kNF;
+    }
+    size_t layer_offset = layer_k_v_offsets[layer_idx];
+    size_t head_offset = kv_head_idx * rounded_qkv_dims[layer_idx];
+    return (layer_offset + head_offset) * 2 * kNF;
   }
 
   // Returns an offset into k_cache at any given position.
@@ -122,6 +132,15 @@ struct KVCache {
   size_t kv_heads = 0;
   size_t qkv_dim = 0;
   size_t rounded_qkv_dim = 0;
+
+  // Cumulative non-uniform offset tables
+  std::vector<uint32_t> layer_flat_offsets;
+  std::vector<uint32_t> layer_k_v_offsets;
+  std::vector<uint32_t> rounded_qkv_dims;
+  // Total columns in k_cache/v_cache as initially allocated (before the
+  // one-time reshape by MaybeReshapeCache that accounts for SIMD vector width).
+  // Used as a sentinel: if cache.Cols() == k_v_cols, reshape hasn't happened.
+  uint32_t k_v_cols = 0;
 
   static constexpr size_t kTileSize = 32;
   std::optional<uint32_t> tiled_seq_len = std::nullopt;
