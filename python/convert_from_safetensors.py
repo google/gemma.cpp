@@ -226,7 +226,7 @@ def _get_layer_config(dims: Dict[str, Any]):
       ],
   }
   if dims["has_post_norm"]:  # See longer comment above.
-    config["llm-layers"] += [
+    config["llm-layers"] += [  # pyrefly: ignore[bad-assignment]
         (
             "language_model.model.layers.%d.input_layernorm.weight",
             (model_dim,),
@@ -249,7 +249,7 @@ def _get_layer_config(dims: Dict[str, Any]):
         ),
     ]
   else:
-    config["llm-layers"] += [
+    config["llm-layers"] += [  # pyrefly: ignore[bad-assignment]
         (
             "language_model.model.layers.%d.input_layernorm.weight",
             (model_dim,),
