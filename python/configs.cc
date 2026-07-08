@@ -54,12 +54,12 @@ PYBIND11_MODULE(configs, py_module) {
 
   enum_<gcpp::PostNormType>(py_module, "PostNormType")
       .value("NoPostNorm", gcpp::PostNormType::None)
-      .value("Scale", gcpp::PostNormType::Scale)
-  .value("Scale", gcpp::PostNormType::Scale);
+      .value("Scale", gcpp::PostNormType::Scale);
 
   enum_<gcpp::PostQKType>(py_module, "PostQKType")
       .value("Rope", gcpp::PostQKType::Rope)
-  .value("HalfRope", gcpp::PostQKType::HalfRope);
+      .value("HalfRope", gcpp::PostQKType::HalfRope)
+      .value("NormLocalRope", gcpp::PostQKType::NormLocalRope);
 
   enum_<gcpp::ActivationType>(py_module, "ActivationType")
       .value("Gelu", gcpp::ActivationType::Gelu)
@@ -103,6 +103,8 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA3_4B_LM", gcpp::Model::GEMMA3_4B_LM)
       .value("GEMMA3_12B_LM", gcpp::Model::GEMMA3_12B_LM)
       .value("GEMMA3_27B_LM", gcpp::Model::GEMMA3_27B_LM)
+      .value("GEMMA4_26B_MOE", gcpp::Model::GEMMA4_26B_MOE)
+      .value("GEMMA4_2B", gcpp::Model::GEMMA4_2B)
       .value("DEEPSEEK4_FLASH", gcpp::Model::DEEPSEEK4_FLASH)
       .value("T5GEMMA_S_S", gcpp::Model::T5GEMMA_S_S)
       // Insert new models above this line.

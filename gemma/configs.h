@@ -169,7 +169,7 @@ enum class PostQKType {
 
 static inline bool EnumValid(PostQKType type) {
   return static_cast<size_t>(type) <
-         static_cast<size_t>(PostNormType::kSentinel);
+         static_cast<size_t>(PostQKType::kSentinel);
 }
 
 // FFW activation function.
