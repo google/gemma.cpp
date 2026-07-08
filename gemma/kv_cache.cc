@@ -41,6 +41,18 @@ static size_t CappedSeqLen(const ModelConfig& config,
   return inference_args.seq_len;
 }
 
+static const std::vector<LayerConfig>& KVLayerConfigs(
+    const ModelConfig& config) {
+  return config.is_encoder_decoder ? config.decoder_layer_configs
+                                   : config.layer_configs;
+}
+
+static const std::vector<uint32_t>& KVAttentionWindowSizes(
+    const ModelConfig& config) {
+  return config.is_encoder_decoder ? config.decoder_attention_window_sizes
+                                   : config.attention_window_sizes;
+}
+
 KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
                  size_t kv_heads, size_t qkv_dim, const Allocator& allocator)
     : num_layers(num_layers),
@@ -120,9 +132,10 @@ static void InitDSState(const ModelConfig& config, const Allocator& allocator,
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const Allocator& allocator)
     : allocator_(allocator) {
-  HWY_ASSERT(config.num_layers > 0);
-  HWY_ASSERT(config.num_layers == config.layer_configs.size());
-  num_layers = config.num_layers;
+  const std::vector<LayerConfig>& kv_layer_configs = KVLayerConfigs(config);
+
+  HWY_ASSERT(!kv_layer_configs.empty());
+  num_layers = kv_layer_configs.size();
 
   // 1. Build non-uniform offset tables dynamically
   layer_flat_offsets.resize(num_layers, 0);
@@ -134,20 +147,20 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
   for (size_t i = 0; i < num_layers; ++i) {
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
-    flat_accum += config.layer_configs[i].CacheLayerSize();
+    flat_accum += kv_layer_configs[i].CacheLayerSize();
 
     layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
     size_t rounded_dim =
-        hwy::RoundUpTo(config.layer_configs[i].qkv_dim, kMaxBF16PerVector);
+        hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
     rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
-    k_v_accum += config.layer_configs[i].kv_heads * rounded_dim;
+    k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
   // Since we also store legacy homogeneous variables, we default them to Layer
   // 0 values.
-  kv_heads = config.layer_configs[0].kv_heads;
-  qkv_dim = config.layer_configs[0].qkv_dim;
+  kv_heads = kv_layer_configs[0].kv_heads;
+  qkv_dim = kv_layer_configs[0].qkv_dim;
   rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
 
   const size_t rows = CappedSeqLen(config, inference_args);
@@ -173,8 +186,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const RuntimeConfig& runtime_config,
                  const Allocator& allocator)
     : allocator_(allocator) {
+  const std::vector<LayerConfig>& kv_layer_configs = KVLayerConfigs(config);
+  const std::vector<uint32_t>& kv_attention_window_sizes =
+      KVAttentionWindowSizes(config);
 
-  num_layers = config.num_layers;
+  num_layers = kv_layer_configs.size();
 
   // 1. Build non-uniform offset tables dynamically
   layer_flat_offsets.resize(num_layers, 0);
@@ -188,23 +204,23 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
   for (size_t i = 0; i < num_layers; ++i) {
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
-    flat_accum += config.layer_configs[i].CacheLayerSize();
+    flat_accum += kv_layer_configs[i].CacheLayerSize();
 
     layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
     size_t rounded_dim =
-        hwy::RoundUpTo(config.layer_configs[i].qkv_dim, kMaxBF16PerVector);
+        hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
     rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
-    k_v_accum += config.layer_configs[i].kv_heads * rounded_dim;
+    k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
 
-    max_qkv_dim = HWY_MAX(max_qkv_dim, config.layer_configs[i].qkv_dim);
-    max_kv_heads = HWY_MAX(max_kv_heads, config.layer_configs[i].kv_heads);
+    max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
+    max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
   // Since we also store legacy homogeneous variables (used by tests/old code),
   // we default them to Layer 0 values.
-  kv_heads = config.layer_configs[0].kv_heads;
-  qkv_dim = config.layer_configs[0].qkv_dim;
+  kv_heads = kv_layer_configs[0].kv_heads;
+  qkv_dim = kv_layer_configs[0].qkv_dim;
   rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
 
   // clang-format off
@@ -279,17 +295,17 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
     for (size_t i = 0; i < num_layers; ++i) {
       size_t num_tiles =
-          num_tiles_per_head(config.attention_window_sizes[i],
+          num_tiles_per_head(kv_attention_window_sizes[i],
                              runtime_config.prefill_tbatch_size,
                              config.max_seq_len) *
-          config.layer_configs[i].kv_heads;
+          kv_layer_configs[i].kv_heads;
 
-      size_t tile_len = 2 * config.layer_configs[i].qkv_dim * kTileSize;
+      size_t tile_len = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         tile_len += 2 * sizeof(BF16) * kTileSize;
       }
 
-      if (config.IsGlobalLayer(i)) {
+      if (kv_attention_window_sizes[i] == config.max_seq_len) {
         total_global_num_tiles += num_tiles;
         global_tile_length = tile_len;
       } else {
@@ -344,15 +360,14 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     kv_head_ptrs.clear();
     kv_head_ptrs.reserve(num_layers * max_kv_heads);
     for (size_t i = 0; i < num_layers; ++i) {
-      size_t layer_tile_length =
-            2 * config.layer_configs[i].qkv_dim * kTileSize;
+      size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         layer_tile_length += 2 * sizeof(BF16) * kTileSize;
       }
-      bool is_global = config.IsGlobalLayer(i);
-      for (size_t kv = 0; kv < config.layer_configs[i].kv_heads; ++kv) {
+      bool is_global = kv_attention_window_sizes[i] == config.max_seq_len;
+      for (size_t kv = 0; kv < kv_layer_configs[i].kv_heads; ++kv) {
         size_t num_tiles_per_kv_head =
-            num_tiles_per_head(config.attention_window_sizes[i],
+            num_tiles_per_head(kv_attention_window_sizes[i],
                                runtime_config.prefill_tbatch_size,
                                config.max_seq_len);
         MatPtr kv_ptr("kv_ptr", kv_cache_type,

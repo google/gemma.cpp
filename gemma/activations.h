@@ -367,7 +367,8 @@ struct Activations {
   Activations(const RuntimeConfig& runtime_config, const ModelConfig& config,
               size_t batch_size, size_t seq_len, ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : layer_config(config.layer_configs[0]),
+      : layer_config(config.is_encoder_decoder ? config.decoder_layer_configs[0]
+                                                : config.layer_configs[0]),
         moe_layer_config(MoELayerConfig(config)),
         mla_dims(config),
 
@@ -391,9 +392,15 @@ struct Activations {
         ple_token_emb(config.num_layers * config.ple_dim),
 
         max_workers(ctx.pools.MaxWorkers()),
-        s_ffw_in(config.num_layers, max_workers),
-        s_ffw_hidden(config.num_layers, max_workers),
-        s_ffw_out(config.num_layers, max_workers),
+        s_ffw_in(config.is_encoder_decoder ? config.decoder_num_layers
+                                            : config.num_layers,
+                 max_workers),
+        s_ffw_hidden(config.is_encoder_decoder ? config.decoder_num_layers
+                                               : config.num_layers,
+                     max_workers),
+        s_ffw_out(config.is_encoder_decoder ? config.decoder_num_layers
+                                             : config.num_layers,
+                  max_workers),
         router_in(MatFactory("router_in",
                              MoEBatchSize(moe_layer_config, batch_size),
                              config.model_dim, ctx.allocator)),
@@ -448,17 +455,41 @@ struct Activations {
                                               : config.rope_theta,
             config.yarn_factor, config.yarn_orig_seq_len, config.yarn_beta_fast,
             config.yarn_beta_slow)),
-        s_router_in(config.num_layers, max_workers),
-        s_router_logits(config.num_layers, max_workers),
-        s_expert_in(config.num_layers, max_workers),
-        s_expert_hidden(config.num_layers, max_workers),
-        s_expert_out(config.num_layers, max_workers),
-        s_w_expert_in1(config.num_layers, max_workers),
-        s_w_expert_in2(config.num_layers, max_workers),
-        s_w_expert_hidden(config.num_layers, max_workers),
-        s_w_gating_einsum_w1(config.num_layers, max_workers),
-        s_w_gating_einsum_w2(config.num_layers, max_workers),
-        s_w_linear_w(config.num_layers, max_workers),
+        s_router_in(config.is_encoder_decoder ? config.decoder_num_layers
+                                              : config.num_layers,
+                    max_workers),
+        s_router_logits(config.is_encoder_decoder ? config.decoder_num_layers
+                                                  : config.num_layers,
+                        max_workers),
+        s_expert_in(config.is_encoder_decoder ? config.decoder_num_layers
+                                              : config.num_layers,
+                    max_workers),
+        s_expert_hidden(config.is_encoder_decoder ? config.decoder_num_layers
+                                                  : config.num_layers,
+                        max_workers),
+        s_expert_out(config.is_encoder_decoder ? config.decoder_num_layers
+                                               : config.num_layers,
+                     max_workers),
+        s_w_expert_in1(config.is_encoder_decoder ? config.decoder_num_layers
+                                                 : config.num_layers,
+                       max_workers),
+        s_w_expert_in2(config.is_encoder_decoder ? config.decoder_num_layers
+                                                 : config.num_layers,
+                       max_workers),
+        s_w_expert_hidden(config.is_encoder_decoder ? config.decoder_num_layers
+                                                    : config.num_layers,
+                          max_workers),
+        s_w_gating_einsum_w1(config.is_encoder_decoder
+                                  ? config.decoder_num_layers
+                                  : config.num_layers,
+                              max_workers),
+        s_w_gating_einsum_w2(config.is_encoder_decoder
+                                  ? config.decoder_num_layers
+                                  : config.num_layers,
+                              max_workers),
+        s_w_linear_w(config.is_encoder_decoder ? config.decoder_num_layers
+                                               : config.num_layers,
+                     max_workers),
         attention_impl(runtime_config.attention_impl),
         attention_storage(config, layer_config, batch_size, seq_len,
                           runtime_config, ctx.pools.MaxWorkers(), ctx.allocator,
