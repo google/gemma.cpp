@@ -45,5 +45,23 @@ TEST(KVCacheTest, KVCacheToPtrs) {
   }
 }
 
+TEST(KVCacheTest, EncoderDecoderUsesDecoderLayerConfig) {
+  ModelConfig model_config(Model::T5GEMMA_S_S, Type::kSFP,
+                           PromptWrapping::GEMMA_PT);
+  ASSERT_TRUE(model_config.is_encoder_decoder);
+  ASSERT_FALSE(model_config.decoder_layer_configs.empty());
+  InferenceArgs inference_args;
+  inference_args.seq_len = 128;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+
+  KVCache cache(model_config, inference_args, ctx.allocator);
+
+  EXPECT_EQ(cache.num_layers, model_config.decoder_layer_configs.size());
+  EXPECT_EQ(cache.kv_heads, model_config.decoder_layer_configs[0].kv_heads);
+  EXPECT_EQ(cache.qkv_dim, model_config.decoder_layer_configs[0].qkv_dim);
+  EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
+}
+
 }  // namespace
 }  // namespace gcpp

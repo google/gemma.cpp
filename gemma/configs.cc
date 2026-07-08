@@ -666,6 +666,56 @@ LayerConfig ModelConfig::MTPLayerConfig() const {
   return lc;
 }
 
+static ModelConfig ConfigBaseT5Gemma() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 50.0f;
+  config.final_cap = 30.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 107;
+  return config;
+}
+
+static LayerConfig LayerConfigT5GemmaS(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 1024;
+  config.heads = 8;
+  config.kv_heads = 8;
+  config.qkv_dim = 64;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::Scale;
+  return config;
+}
+
+static ModelConfig ConfigT5Gemma_S_S() {
+  ModelConfig config = ConfigBaseT5Gemma();
+  config.display_name = "T5Gemma_S_S";
+  config.model = Model::T5GEMMA_S_S;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.model_dim = 512;
+  config.vocab_size = kVocabSize;
+  config.max_seq_len = 8192;
+  LayerConfig layer_config = LayerConfigT5GemmaS(config.model_dim);
+  config.is_encoder_decoder = true;
+  config.encoder_num_layers = 8;
+  config.encoder_layer_configs = {config.encoder_num_layers, layer_config};
+  config.encoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  config.decoder_num_layers = 8;
+  config.decoder_layer_configs = {config.decoder_num_layers, layer_config};
+  config.decoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+
+  // TODO: Update users of `layer_configs` to route encoder-decoder models
+  // through the explicit encoder/decoder stacks above.
+  config.num_layers = 8;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -704,6 +754,8 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma4_2B();
     case Model::DEEPSEEK4_FLASH:
       return ConfigDeepSeek4_Flash();
+    case Model::T5GEMMA_S_S:
+      return ConfigT5Gemma_S_S();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -749,6 +801,8 @@ const char* ModelPrefix(Model model) {
       return "gemma4-2b";
     case Model::DEEPSEEK4_FLASH:
       return "deepseek4-flash";
+    case Model::T5GEMMA_S_S:
+      return "t5gemma-s-s";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -932,6 +986,14 @@ bool ModelConfig::OverwriteWithCanonical() {
 
 Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
+    case 8:
+      if (layer_types & kDeducedT5Gemma) {
+        return Model::T5GEMMA_S_S;
+      }
+      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+               blob_path.path.c_str(), layers, layer_types);
+      return Model::UNKNOWN;
+
     case 18:
       return Model::GEMMA3_270M;
 

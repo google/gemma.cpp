@@ -53,4 +53,27 @@ TEST(ConfigsTest, TestAttentionImpl) {
   ASSERT_EQ(GetAttentionImpl("invalid"), AttentionImpl::kFlash);
 }
 
+TEST(ConfigsTest, T5GemmaKVCacheUsesDecoderLayers) {
+  ModelConfig config(Model::T5GEMMA_S_S, Type::kSFP, PromptWrapping::GEMMA_PT);
+  ASSERT_TRUE(config.is_encoder_decoder);
+  ASSERT_FALSE(config.decoder_layer_configs.empty());
+
+  const size_t expected_cols = config.decoder_layer_configs.size() *
+                               config.decoder_layer_configs[0].CacheLayerSize();
+  EXPECT_EQ(config.KVCacheCols(), expected_cols);
+}
+
+TEST(ConfigsTest, DeduceT5GemmaSS) {
+  EXPECT_EQ(DeduceModel(Path("t5gemma-s-s.sbs"), 8, kDeducedT5Gemma),
+            Model::T5GEMMA_S_S);
+}
+
+TEST(ConfigsTest, T5GemmaBF16Specifier) {
+  ModelConfig config("t5gemma-s-s-bf16-it");
+  EXPECT_EQ(config.model, Model::T5GEMMA_S_S);
+  EXPECT_EQ(config.weight, Type::kBF16);
+  EXPECT_EQ(config.wrapping, PromptWrapping::GEMMA_IT);
+  EXPECT_TRUE(config.is_encoder_decoder);
+}
+
 }  // namespace gcpp
