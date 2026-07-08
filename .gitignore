@@ -1,11 +1,12 @@
 # Build directories
 .cache/
-bazel-*/
+bazel-*
 build-*/
 build/
 
 # Python cache
 python/*/__pycache__
+python/__pycache__
 
 # Model files
 *.sbs
@@ -23,3 +24,10 @@ python/*/__pycache__
 # Local development
 .env
 .env.local
+.venv
+
+# OS Files
+.DS_Store
+
+# Temporary
+.temp/
