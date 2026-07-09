@@ -211,6 +211,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   Path prompt_file;
   std::string eot_line;
   std::string attention_impl;
+  std::string kv_cache_type;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -266,6 +267,10 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
         2);
     visitor(attention_impl, "attention_impl", std::string("flash"),
             "Attention implementation to use. See configs.cc for options.", 2);
+    visitor(kv_cache_type, "kv_cache_type", std::string(""),
+            "KV cache data type (f32, bf16, int8). If empty, deduced from "
+            "attention_impl.",
+            2);
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
@@ -288,6 +293,17 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     runtime_config.temperature = temperature;
     runtime_config.top_k = top_k;
     runtime_config.attention_impl = GetAttentionImpl(attention_impl);
+    if (!kv_cache_type.empty()) {
+      if (kv_cache_type == "int8" || kv_cache_type == "i8") {
+        runtime_config.kv_cache_type = Type::kInt8;
+      } else if (kv_cache_type == "bf16") {
+        runtime_config.kv_cache_type = Type::kBF16;
+      } else if (kv_cache_type == "f32" || kv_cache_type == "float") {
+        runtime_config.kv_cache_type = Type::kF32;
+      } else {
+        HWY_ABORT("Unknown kv_cache_type: %s\n", kv_cache_type.c_str());
+      }
+    }
   }
 };
 
