@@ -46,7 +46,7 @@ namespace HWY_NAMESPACE {
 
 static HWY_INLINE void MergeOnlineSoftmax(
     const float* HWY_RESTRICT other_att_out, const float other_softmax_max,
-    const float other_softmax_d, int qkv_dim,
+    const float other_softmax_d, size_t qkv_dim,
     float* HWY_RESTRICT accumulator_att_out, float& accumulator_softmax_max,
     float& accumulator_softmax_d) {
   if (other_softmax_d == 0.0f) {
@@ -605,11 +605,14 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     const size_t layer_idx, const LayerWeightsPtrs& layer,
     AttentionActivationsPtrs& activations, QBatch& qbatch,
     ThreadingContext& ctx) {
+  constexpr size_t kQueriesPerSubtask = 32;
   const size_t heads_per_kv_head =
       layer.layer_config.heads / layer.layer_config.kv_heads;
+  const hwy::Divisor div_heads_per_kv_head(heads_per_kv_head);
+  const hwy::Divisor div_kv_heads(layer.layer_config.kv_heads);
 
-  int core_count = ctx.pools.MaxWorkers();
-  int task_multiplier = 1;
+  size_t core_count = ctx.pools.MaxWorkers();
+  size_t task_multiplier = 1;
   while (qbatch.Size() * layer.layer_config.kv_heads * task_multiplier <
          core_count * 2) {
     task_multiplier++;
@@ -630,12 +633,16 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     // amount of work is small.
     task_multiplier = 1;
   }
-  [[maybe_unused]] int num_tasks = qbatch.Size() * layer.layer_config.kv_heads;
-  [[maybe_unused]] int num_sub_tasks =
-      qbatch.Size() * layer.layer_config.kv_heads * task_multiplier;
+  size_t num_queries = num_query_tokens * heads_per_kv_head;
+  size_t num_query_tasks = hwy::DivCeil(num_queries, kQueriesPerSubtask);
+  [[maybe_unused]] size_t num_tasks =
+      qbatch.Size() * layer.layer_config.kv_heads * num_query_tasks;
+  [[maybe_unused]] size_t num_sub_tasks =
+      qbatch.Size() * layer.layer_config.kv_heads * num_query_tasks *
+      task_multiplier;
   HWY_DASSERT_M(activations.q.Rows() == num_query_tokens * qbatch.Size(),
                 "qbatch size mismatch");
-  int qkv_dim = layer.layer_config.qkv_dim;
+  size_t qkv_dim = layer.layer_config.qkv_dim;
 
   // sizes of all should be in sync
   if (num_sub_tasks > activations.sub_task_att_out->size()) {
@@ -643,32 +650,48 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     activations.sub_task_exp_denominator_sums->resize(num_sub_tasks);
     activations.sub_task_max_logits->resize(num_sub_tasks);
   }
-  int num_queries = num_query_tokens * heads_per_kv_head;
-  if (activations.bf16_queries != nullptr &&
-      num_sub_tasks * num_queries * qkv_dim >
-          activations.bf16_queries->size()) {
-    activations.bf16_queries->resize(num_sub_tasks * num_queries * qkv_dim);
+  size_t max_queries_per_subtask = std::min(num_queries, kQueriesPerSubtask);
+  if (attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+      attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+    if (activations.bf16_queries != nullptr &&
+        num_sub_tasks * max_queries_per_subtask * qkv_dim >
+            activations.bf16_queries->size()) {
+      activations.bf16_queries->resize(num_sub_tasks * max_queries_per_subtask *
+                                       qkv_dim);
+    }
+  } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
+    if (activations.int16_queries != nullptr &&
+        num_sub_tasks * max_queries_per_subtask * qkv_dim >
+            activations.int16_queries->size()) {
+      activations.int16_queries->resize(num_sub_tasks * max_queries_per_subtask *
+                                        qkv_dim);
+    }
+    if (activations.q_scales != nullptr &&
+        num_sub_tasks * max_queries_per_subtask >
+            activations.q_scales->size()) {
+      activations.q_scales->resize(num_sub_tasks * max_queries_per_subtask);
+    }
+  } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
+    if (activations.int8_queries != nullptr &&
+        num_sub_tasks * max_queries_per_subtask * qkv_dim >
+            activations.int8_queries->size()) {
+      activations.int8_queries->resize(num_sub_tasks * max_queries_per_subtask *
+                                       qkv_dim);
+    }
+    if (activations.q_scales != nullptr &&
+        num_sub_tasks * max_queries_per_subtask >
+            activations.q_scales->size()) {
+      activations.q_scales->resize(num_sub_tasks * max_queries_per_subtask);
+    }
+  } else {
+    if (activations.float_queries != nullptr &&
+        num_sub_tasks * max_queries_per_subtask * qkv_dim >
+            activations.float_queries->size()) {
+      activations.float_queries->resize(num_sub_tasks * max_queries_per_subtask *
+                                        qkv_dim);
+    }
   }
-  if (activations.int16_queries != nullptr &&
-      num_sub_tasks * num_queries * qkv_dim >
-          activations.int16_queries->size()) {
-    activations.int16_queries->resize(num_sub_tasks * num_queries * qkv_dim);
-  }
-  if (activations.int8_queries != nullptr &&
-      num_sub_tasks * num_queries * qkv_dim >
-          activations.int8_queries->size()) {
-    activations.int8_queries->resize(num_sub_tasks * num_queries * qkv_dim);
-  }
-  if (activations.float_queries != nullptr &&
-      num_sub_tasks * num_queries * qkv_dim >
-          activations.float_queries->size()) {
-    activations.float_queries->resize(num_sub_tasks * num_queries * qkv_dim);
-  }
-  if (activations.q_scales != nullptr &&
-      num_sub_tasks * num_queries > activations.q_scales->size()) {
-    activations.q_scales->resize(num_sub_tasks * num_queries);
-  }
-  std::vector<int> skip_sub_task(num_sub_tasks, 0);
+  std::vector<uint8_t> skip_sub_task(num_sub_tasks, 0);
 
   // This loop parallelizes over qbatch, kv_head and substrings of context
   // tokens. Each parallel invocation handles all query tokens of the given
@@ -679,9 +702,12 @@ void LocalAttentionForAllHeadsTokensAndBatch(
       [&](size_t task_idx, size_t worker) HWY_ATTR {
         size_t main_task_idx = task_idx / task_multiplier;
         size_t sub_task_idx = task_idx % task_multiplier;
+        size_t query_task_idx = main_task_idx % num_query_tasks;
+        size_t qbatch_and_kv_head_idx = main_task_idx / num_query_tasks;
         size_t current_qbatch_idx =
-            main_task_idx / layer.layer_config.kv_heads;
-        size_t kv_head_idx = main_task_idx % layer.layer_config.kv_heads;
+            div_kv_heads.Divide(qbatch_and_kv_head_idx);
+        size_t kv_head_idx =
+            div_kv_heads.Remainder(qbatch_and_kv_head_idx);
         // First and last context token we will attend to.
         size_t global_start_context_pos = StartPos(
             qbatch.Pos(current_qbatch_idx), activations.config, layer_idx);
@@ -714,17 +740,18 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             std::min(last_context_pos,
                      start_context_pos + context_tokens_per_sub_task - 1);
         // pre-initialize memory [to avoid racy resizes laters].
-        int num_queries = num_query_tokens * heads_per_kv_head;
+        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
+        size_t query_end_idx = std::min(num_queries, query_start_idx + kQueriesPerSubtask);
+        size_t sub_num_queries = query_end_idx - query_start_idx;
         std::vector<float*> queries_ptrs;
-        queries_ptrs.reserve(num_queries);
-        for (int token_idx = 0; token_idx < num_query_tokens; ++token_idx) {
-          for (int q_head_idx = 0; q_head_idx < heads_per_kv_head;
-               ++q_head_idx) {
-            queries_ptrs.push_back(
-                activations.q.Row(token_idx * qbatch.Size() +
-                                  current_qbatch_idx) +
-                (kv_head_idx * heads_per_kv_head + q_head_idx) * qkv_dim);
-          }
+        queries_ptrs.reserve(sub_num_queries);
+        for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
+          size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
+          size_t q_head_idx = div_heads_per_kv_head.Remainder(q_idx);
+          queries_ptrs.push_back(
+              activations.q.Row(token_idx * qbatch.Size() +
+                                current_qbatch_idx) +
+              (kv_head_idx * heads_per_kv_head + q_head_idx) * qkv_dim);
         }
         hwy::Span<float*> queries_ptrs_span(queries_ptrs.data(),
                                             queries_ptrs.size());
@@ -735,17 +762,17 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             activations.sub_task_exp_denominator_sums->at(task_idx);
         AlignedFloatVector& max_logits =
             activations.sub_task_max_logits->at(task_idx);
-        MaybeResizeMatStorage(att_out, num_queries, qkv_dim, "att_out",
+        MaybeResizeMatStorage(att_out, sub_num_queries, qkv_dim, "att_out",
                               ctx.allocator);
-        for (int i = 0; i < num_queries; ++i) {
+        for (size_t i = 0; i < sub_num_queries; ++i) {
           hwy::ZeroBytes(att_out.Row(i),
                          att_out.Cols() * sizeof(decltype(att_out.Row(i)[0])));
         }
 
-        int num_queries_rounded_to_8 = hwy::RoundUpTo(num_queries, 8);
+        size_t num_queries_rounded_to_8 = hwy::RoundUpTo(sub_num_queries, 8);
         exp_denominator_sums.resize(num_queries_rounded_to_8);
         max_logits.resize(num_queries_rounded_to_8);
-        for (int i = 0; i < num_queries_rounded_to_8; ++i) {
+        for (size_t i = 0; i < num_queries_rounded_to_8; ++i) {
           exp_denominator_sums[i] = 0.0f;
           max_logits[i] = -std::numeric_limits<float>::max() / 2.0f;
         }
@@ -761,14 +788,15 @@ void LocalAttentionForAllHeadsTokensAndBatch(
 
         std::vector<size_t, hwy::AlignedAllocator<size_t>> start_pos_per_query;
         std::vector<size_t, hwy::AlignedAllocator<size_t>> last_pos_per_query;
-        start_pos_per_query.reserve(num_queries);
-        last_pos_per_query.reserve(num_queries);
+        start_pos_per_query.reserve(sub_num_queries);
+        last_pos_per_query.reserve(sub_num_queries);
         // Position of the first token in the first tile whose pointer was
         // returned above. Allows for handling of token positions relative to
         // the KV tiles returned above.
         size_t rounded_down_global_start_pos =
             hwy::RoundDownTo(global_start_context_pos, KVCache::kTileSize);
-        for (int token_idx = 0; token_idx < num_query_tokens; ++token_idx) {
+        for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
+          size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
           int64_t global_query_pos =
               qbatch.Pos(current_qbatch_idx) + token_idx;
           // Intersect context to attend to for this specific query token
@@ -787,20 +815,18 @@ void LocalAttentionForAllHeadsTokensAndBatch(
           // Turn token position into KV-tile relative token positions.
           query_last_context_pos -= rounded_down_global_start_pos;
           query_start_context_pos -= rounded_down_global_start_pos;
-          for (int q_head_idx = 0; q_head_idx < heads_per_kv_head;
-               ++q_head_idx) {
-            start_pos_per_query.push_back(query_start_context_pos);
-            last_pos_per_query.push_back(query_last_context_pos);
-          }
+          start_pos_per_query.push_back(static_cast<size_t>(query_start_context_pos));
+          last_pos_per_query.push_back(static_cast<size_t>(query_last_context_pos));
         }
 
         if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
-          BF16* bf16_queries_ptr = activations.bf16_queries->data() +
-                                   task_idx * num_queries * qkv_dim;
+          BF16* bf16_queries_ptr =
+              activations.bf16_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
           CompressQueriesBF16(queries_ptrs_span, qkv_dim, bf16_queries_ptr);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
-              kv_ptrs, num_queries, bf16_queries_ptr,
+              kv_ptrs, sub_num_queries, bf16_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
@@ -809,27 +835,29 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
-          int16_t* int16_queries_ptr = activations.int16_queries->data() +
-                                       task_idx * num_queries * qkv_dim;
-          float* q_scales_ptr =
-              activations.q_scales->data() + task_idx * num_queries;
+          int16_t* int16_queries_ptr =
+              activations.int16_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
+          float* q_scales_ptr = activations.q_scales->data() +
+                                task_idx * max_queries_per_subtask;
           CompressQueriesInt16(queries_ptrs_span, qkv_dim, int16_queries_ptr,
                                q_scales_ptr);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
-              kv_ptrs, num_queries, int16_queries_ptr,
-              hwy::Span<const float>(q_scales_ptr, num_queries),
+              kv_ptrs, sub_num_queries, int16_queries_ptr,
+              hwy::Span<const float>(q_scales_ptr, sub_num_queries),
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data());
         } else if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
-          BF16* bf16_queries_ptr = activations.bf16_queries->data() +
-                                   task_idx * num_queries * qkv_dim;
+          BF16* bf16_queries_ptr =
+              activations.bf16_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
           CompressAndTransposeQueriesMatrixAccumulationNonContiguous(
               queries_ptrs_span, bf16_queries_ptr, qkv_dim);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
-              kv_ptrs, num_queries, bf16_queries_ptr,
+              kv_ptrs, sub_num_queries, bf16_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
@@ -837,32 +865,34 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
-          int8_t* int8_queries_ptr = activations.int8_queries->data() +
-                                     task_idx * num_queries * qkv_dim;
-          float* q_scales_ptr =
-              activations.q_scales->data() + task_idx * num_queries;
+          int8_t* int8_queries_ptr =
+              activations.int8_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
+          float* q_scales_ptr = activations.q_scales->data() +
+                                task_idx * max_queries_per_subtask;
 
           CompressAndQuantizeQueriesMatrixAccumulationInt8NonContiguous(
               queries_ptrs_span, int8_queries_ptr, q_scales_ptr, qkv_dim);
 
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(
-              kv_ptrs, num_queries, int8_queries_ptr,
-              hwy::Span<const float>(q_scales_ptr, num_queries),
+              kv_ptrs, sub_num_queries, int8_queries_ptr,
+              hwy::Span<const float>(q_scales_ptr, sub_num_queries),
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data());
         } else {
           HWY_DASSERT(activations.float_queries != nullptr);
-          float* contiguous_queries_ptr = activations.float_queries->data() +
-                                          task_idx * num_queries * qkv_dim;
-          for (int i = 0; i < num_queries; ++i) {
+          float* contiguous_queries_ptr =
+              activations.float_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
+          for (size_t i = 0; i < sub_num_queries; ++i) {
             hwy::CopyBytes(queries_ptrs_span[i],
                            contiguous_queries_ptr + i * qkv_dim,
                            qkv_dim * sizeof(float));
           }
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
-              kv_ptrs, num_queries, contiguous_queries_ptr,
+              kv_ptrs, sub_num_queries, contiguous_queries_ptr,
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
@@ -876,56 +906,59 @@ void LocalAttentionForAllHeadsTokensAndBatch(
       Parallelism::kFlat, num_tasks, ctx,
       /*cluster_idx=*/0, Callers::kFlashAttention,
       [&](size_t main_task_idx, size_t worker) HWY_ATTR {
-        size_t current_qbatch_idx = main_task_idx / layer.layer_config.kv_heads;
-        size_t kv_head_idx = main_task_idx % layer.layer_config.kv_heads;
-        for (int token_idx = 0; token_idx < num_query_tokens; ++token_idx) {
-          for (int head_in_group_idx = 0; head_in_group_idx < heads_per_kv_head;
-               ++head_in_group_idx) {
-            const size_t batch_index =
-                current_qbatch_idx * num_query_tokens + token_idx;
-            const size_t q_head_idx =
-                kv_head_idx * heads_per_kv_head + head_in_group_idx;
-            const size_t att_out_row_idx =
-                token_idx * heads_per_kv_head + head_in_group_idx;
-            const size_t activations_att_out_start_idx = q_head_idx * qkv_dim;
-            auto& att_out_0 = activations.sub_task_att_out->at(
-                main_task_idx * task_multiplier + 0);
-            auto& exp_denominator_sums_0 =
-                activations.sub_task_exp_denominator_sums->at(
-                    main_task_idx * task_multiplier + 0);
-            auto& max_logits_0 = activations.sub_task_max_logits->at(
-                main_task_idx * task_multiplier + 0);
+        size_t query_task_idx = main_task_idx % num_query_tasks;
+        size_t qbatch_and_kv_head_idx = main_task_idx / num_query_tasks;
+        size_t current_qbatch_idx =
+            div_kv_heads.Divide(qbatch_and_kv_head_idx);
+        size_t kv_head_idx =
+            div_kv_heads.Remainder(qbatch_and_kv_head_idx);
 
-            hwy::CopyBytes(att_out_0.Row(att_out_row_idx),
-                           activations.att_out.Row(batch_index) +
-                               activations_att_out_start_idx,
-                           qkv_dim * sizeof(float));
-            activations.softmax_d.Row(batch_index)[q_head_idx] =
-                exp_denominator_sums_0[token_idx * heads_per_kv_head +
-                                       head_in_group_idx];
-            activations.softmax_max.Row(batch_index)[q_head_idx] =
-                max_logits_0[token_idx * heads_per_kv_head + head_in_group_idx];
-            for (int sub_task_idx = 1; sub_task_idx < task_multiplier;
-                 ++sub_task_idx) {
-              int task_idx = main_task_idx * task_multiplier + sub_task_idx;
-              if (skip_sub_task[task_idx] == 1) {
-                continue;
-              }
-              auto& att_out = activations.sub_task_att_out->at(task_idx);
-              auto& exp_denominator_sums =
-                  activations.sub_task_exp_denominator_sums->at(task_idx);
-              auto& max_logits = activations.sub_task_max_logits->at(task_idx);
-              MergeOnlineSoftmax(
-                  att_out.Row(att_out_row_idx),
-                  max_logits[token_idx * heads_per_kv_head + head_in_group_idx],
-                  exp_denominator_sums[token_idx * heads_per_kv_head +
-                                       head_in_group_idx],
-                  qkv_dim,
-                  activations.att_out.Row(batch_index) +
-                      activations_att_out_start_idx,
-                  activations.softmax_max.Row(batch_index)[q_head_idx],
-                  activations.softmax_d.Row(batch_index)[q_head_idx]);
+        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
+        size_t query_end_idx = std::min(num_queries, query_start_idx + kQueriesPerSubtask);
+
+        for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
+          size_t sub_q_idx = q_idx - query_start_idx;
+          size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
+          size_t head_in_group_idx = div_heads_per_kv_head.Remainder(q_idx);
+
+          const size_t batch_index =
+              current_qbatch_idx * num_query_tokens + token_idx;
+          const size_t q_head_idx =
+              kv_head_idx * heads_per_kv_head + head_in_group_idx;
+          const size_t activations_att_out_start_idx = q_head_idx * qkv_dim;
+          auto& att_out_0 = activations.sub_task_att_out->at(
+              main_task_idx * task_multiplier + 0);
+          auto& exp_denominator_sums_0 =
+              activations.sub_task_exp_denominator_sums->at(
+                  main_task_idx * task_multiplier + 0);
+          auto& max_logits_0 = activations.sub_task_max_logits->at(
+              main_task_idx * task_multiplier + 0);
+
+          hwy::CopyBytes(att_out_0.Row(sub_q_idx),
+                         activations.att_out.Row(batch_index) +
+                             activations_att_out_start_idx,
+                         qkv_dim * sizeof(float));
+          activations.softmax_d.Row(batch_index)[q_head_idx] =
+              exp_denominator_sums_0[sub_q_idx];
+          activations.softmax_max.Row(batch_index)[q_head_idx] =
+              max_logits_0[sub_q_idx];
+          for (size_t sub_task_idx = 1; sub_task_idx < task_multiplier;
+               ++sub_task_idx) {
+            size_t task_idx = main_task_idx * task_multiplier + sub_task_idx;
+            if (skip_sub_task[task_idx] == 1) {
+              continue;
             }
+            auto& att_out = activations.sub_task_att_out->at(task_idx);
+            auto& exp_denominator_sums =
+                activations.sub_task_exp_denominator_sums->at(task_idx);
+            auto& max_logits = activations.sub_task_max_logits->at(task_idx);
+            MergeOnlineSoftmax(
+                att_out.Row(sub_q_idx), max_logits[sub_q_idx],
+                exp_denominator_sums[sub_q_idx], qkv_dim,
+                activations.att_out.Row(batch_index) +
+                    activations_att_out_start_idx,
+                activations.softmax_max.Row(batch_index)[q_head_idx],
+                activations.softmax_d.Row(batch_index)[q_head_idx]);
           }
         }
       });
