@@ -333,17 +333,12 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::Full128<float> df_4;
   const hn::Full128<hwy::bfloat16_t> dbf8;
-  const hn::Full64<hwy::bfloat16_t> dbf4;
-  const hn::Full64<int16_t> di16_4;
   const hn::Full128<int16_t> di16_8;
-  const hn::Full64<int8_t> di8_8;
   const hn::Full128<int8_t> di8_16;
 
   using VF4 = hn::Vec<decltype(df_4)>;
   using VBF8 = hn::Vec<decltype(dbf8)>;
-  using VI16_4 = hn::Vec<decltype(di16_4)>;
   using VI16_8 = hn::Vec<decltype(di16_8)>;
-  using VI8_8 = hn::Vec<decltype(di8_8)>;
   using VI8_16 = hn::Vec<decltype(di8_16)>;
   using VI32 = hn::Vec<hn::Repartition<int32_t, decltype(df_4)>>;
 
@@ -1075,8 +1070,8 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
           step_pos > max_last_pos_per_group[loop_idx]) {
         float* softmax_buf_ptr =
             softmax_buf.data() + query_idx * kBlockSize + step_idx * kBf16Lanes;
-        for (int q = 0; q < kNumQueries; ++q) {
-          for (int t = 0; t < kBf16Lanes; ++t) {
+        for (size_t q = 0; q < kNumQueries; ++q) {
+          for (size_t t = 0; t < kBf16Lanes; ++t) {
             softmax_buf_ptr[q * kBlockSize + t] = kMaskedLogitVal;
           }
         }

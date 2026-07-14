@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <cstdio>
 
 #include <algorithm>
 #include <cmath>
@@ -907,36 +908,18 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidth(
   HWY_DASSERT(kNumQueries <= 8);
   HWY_DASSERT(gcpp::KVCache::kTileSize >=
               hn::Lanes(df) * 2);  // So we can decompress 2 lanes at a time.
-  sum0_p0 = hn::Zero(df);
-  sum0_p1 = hn::Zero(df);
-  if constexpr (kNumQueries >= 2) {
-    sum1_p0 = hn::Zero(df);
-    sum1_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 3) {
-    sum2_p0 = hn::Zero(df);
-    sum2_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 4) {
-    sum3_p0 = hn::Zero(df);
-    sum3_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 5) {
-    sum4_p0 = hn::Zero(df);
-    sum4_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 6) {
-    sum5_p0 = hn::Zero(df);
-    sum5_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 7) {
-    sum6_p0 = hn::Zero(df);
-    sum6_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 8) {
-    sum7_p0 = hn::Zero(df);
-    sum7_p1 = hn::Zero(df);
-  }
+  auto zero_init = [&](VQ_T& s0, VQ_T& s1) HWY_ATTR {
+    s0 = hn::Zero(df);
+    s1 = hn::Zero(df);
+  };
+  zero_init(sum0_p0, sum0_p1);
+  if constexpr (kNumQueries >= 2) zero_init(sum1_p0, sum1_p1);
+  if constexpr (kNumQueries >= 3) zero_init(sum2_p0, sum2_p1);
+  if constexpr (kNumQueries >= 4) zero_init(sum3_p0, sum3_p1);
+  if constexpr (kNumQueries >= 5) zero_init(sum4_p0, sum4_p1);
+  if constexpr (kNumQueries >= 6) zero_init(sum5_p0, sum5_p1);
+  if constexpr (kNumQueries >= 7) zero_init(sum6_p0, sum6_p1);
+  if constexpr (kNumQueries >= 8) zero_init(sum7_p0, sum7_p1);
 
   for (size_t i = 0; i < qkv_dim; ++i) {
     VQ_T k_vec1, k_vec2;
@@ -1124,36 +1107,18 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
   HWY_DASSERT(kNumQueries <= 8);
   HWY_DASSERT(gcpp::KVCache::kTileSize >=
               hn::Lanes(df) * 2);  // So we can decompress 2 lanes at a time.
-  sum0_p0 = hn::Zero(df);
-  sum0_p1 = hn::Zero(df);
-  if constexpr (kNumQueries >= 2) {
-    sum1_p0 = hn::Zero(df);
-    sum1_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 3) {
-    sum2_p0 = hn::Zero(df);
-    sum2_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 4) {
-    sum3_p0 = hn::Zero(df);
-    sum3_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 5) {
-    sum4_p0 = hn::Zero(df);
-    sum4_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 6) {
-    sum5_p0 = hn::Zero(df);
-    sum5_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 7) {
-    sum6_p0 = hn::Zero(df);
-    sum6_p1 = hn::Zero(df);
-  }
-  if constexpr (kNumQueries >= 8) {
-    sum7_p0 = hn::Zero(df);
-    sum7_p1 = hn::Zero(df);
-  }
+  auto zero_init = [&](VF& s0, VF& s1) HWY_ATTR {
+    s0 = hn::Zero(df);
+    s1 = hn::Zero(df);
+  };
+  zero_init(sum0_p0, sum0_p1);
+  if constexpr (kNumQueries >= 2) zero_init(sum1_p0, sum1_p1);
+  if constexpr (kNumQueries >= 3) zero_init(sum2_p0, sum2_p1);
+  if constexpr (kNumQueries >= 4) zero_init(sum3_p0, sum3_p1);
+  if constexpr (kNumQueries >= 5) zero_init(sum4_p0, sum4_p1);
+  if constexpr (kNumQueries >= 6) zero_init(sum5_p0, sum5_p1);
+  if constexpr (kNumQueries >= 7) zero_init(sum6_p0, sum6_p1);
+  if constexpr (kNumQueries >= 8) zero_init(sum7_p0, sum7_p1);
   VF helper_sum0_p0 = hn::Zero(df), helper_sum0_p1 = hn::Zero(df);
   VF helper_sum1_p0 = hn::Zero(df), helper_sum1_p1 = hn::Zero(df);
   VF helper_sum2_p0 = hn::Zero(df), helper_sum2_p1 = hn::Zero(df);
@@ -1205,36 +1170,25 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
     }
   }
 #if HWY_NATIVE_DOT_BF16 == 0
-  sum0_p0 = hn::Add(sum0_p0, helper_sum0_p0);
-  sum0_p1 = hn::Add(sum0_p1, helper_sum0_p1);
-  if constexpr (kNumQueries >= 2) {
-    sum1_p0 = hn::Add(sum1_p0, helper_sum1_p0);
-    sum1_p1 = hn::Add(sum1_p1, helper_sum1_p1);
-  }
-  if constexpr (kNumQueries >= 3) {
-    sum2_p0 = hn::Add(sum2_p0, helper_sum2_p0);
-    sum2_p1 = hn::Add(sum2_p1, helper_sum2_p1);
-  }
-  if constexpr (kNumQueries >= 4) {
-    sum3_p0 = hn::Add(sum3_p0, helper_sum3_p0);
-    sum3_p1 = hn::Add(sum3_p1, helper_sum3_p1);
-  }
-  if constexpr (kNumQueries >= 5) {
-    sum4_p0 = hn::Add(sum4_p0, helper_sum4_p0);
-    sum4_p1 = hn::Add(sum4_p1, helper_sum4_p1);
-  }
-  if constexpr (kNumQueries >= 6) {
-    sum5_p0 = hn::Add(sum5_p0, helper_sum5_p0);
-    sum5_p1 = hn::Add(sum5_p1, helper_sum5_p1);
-  }
-  if constexpr (kNumQueries >= 7) {
-    sum6_p0 = hn::Add(sum6_p0, helper_sum6_p0);
-    sum6_p1 = hn::Add(sum6_p1, helper_sum6_p1);
-  }
-  if constexpr (kNumQueries >= 8) {
-    sum7_p0 = hn::Add(sum7_p0, helper_sum7_p0);
-    sum7_p1 = hn::Add(sum7_p1, helper_sum7_p1);
-  }
+  auto add_helper = [&](VF& s0, VF& s1, const VF& h0, const VF& h1) HWY_ATTR {
+    s0 = hn::Add(s0, h0);
+    s1 = hn::Add(s1, h1);
+  };
+  add_helper(sum0_p0, sum0_p1, helper_sum0_p0, helper_sum0_p1);
+  if constexpr (kNumQueries >= 2)
+    add_helper(sum1_p0, sum1_p1, helper_sum1_p0, helper_sum1_p1);
+  if constexpr (kNumQueries >= 3)
+    add_helper(sum2_p0, sum2_p1, helper_sum2_p0, helper_sum2_p1);
+  if constexpr (kNumQueries >= 4)
+    add_helper(sum3_p0, sum3_p1, helper_sum3_p0, helper_sum3_p1);
+  if constexpr (kNumQueries >= 5)
+    add_helper(sum4_p0, sum4_p1, helper_sum4_p0, helper_sum4_p1);
+  if constexpr (kNumQueries >= 6)
+    add_helper(sum5_p0, sum5_p1, helper_sum5_p0, helper_sum5_p1);
+  if constexpr (kNumQueries >= 7)
+    add_helper(sum6_p0, sum6_p1, helper_sum6_p0, helper_sum6_p1);
+  if constexpr (kNumQueries >= 8)
+    add_helper(sum7_p0, sum7_p1, helper_sum7_p0, helper_sum7_p1);
 #endif
 }
 
@@ -1262,8 +1216,518 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
 // Need to be have multiple of 4 elements alocated and
 // be initizalized If you need to compute over multiple chunks of kv's you can
 // keep values between calls to this function and avoid explicit merge.
-template <typename KV_T, typename Q_T>
-HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogits(
+#ifndef BENCHMARK_BLOCK_SIZE_BF16
+#define BENCHMARK_BLOCK_SIZE_BF16 256
+#endif
+
+#ifndef BENCHMARK_BLOCK_SIZE_INT8
+#define BENCHMARK_BLOCK_SIZE_INT8 64
+#endif
+
+template <int kNumQueriesPerLoop, typename KV_T, typename Q_T, class DF,
+          class DU>
+static HWY_INLINE void ComputeQKMacroTile(
+    DF df, DU du, const hwy::Span<const MatPtrT<KV_T>>& kvs,
+    size_t current_kv_idx, size_t current_kv_start_offset,
+    const Q_T* HWY_RESTRICT q_base, size_t qkv_dim, size_t q_count,
+    size_t position, size_t actual_block_size, size_t step_size,
+    const size_t* HWY_RESTRICT min_start_pos_per_group,
+    const size_t* HWY_RESTRICT max_last_pos_per_group,
+    float* HWY_RESTRICT softmax_buf_ptr, size_t kBlockSize,
+    size_t macro_block_start_pos) {
+  using VF = hn::Vec<DF>;
+  constexpr int kTileSize = gcpp::KVCache::kTileSize;
+  size_t actual_steps = actual_block_size / step_size;
+
+  for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+    size_t step_pos = position + step_idx * step_size;
+
+    size_t kv_idx = current_kv_idx;
+    size_t kv_offset = current_kv_start_offset;
+    // Check and shift KV chunks continuously
+    while (kv_idx + 1 < kvs.size() &&
+           step_pos - kv_offset >= kvs[kv_idx].Rows() * kTileSize) {
+      kv_offset += kvs[kv_idx].Rows() * kTileSize;
+      kv_idx++;
+    }
+
+    size_t tile_idx = (step_pos - kv_offset) / kTileSize;
+    // Cap to valid bounds in case step_pos exceeds the total allocated KV
+    // caches
+    if (tile_idx >= kvs[kv_idx].Rows()) {
+      tile_idx = kvs[kv_idx].Rows() - 1;
+    }
+
+    const size_t pos_in_tile = step_pos % kTileSize;
+    const KV_T* tile_base =
+        reinterpret_cast<const KV_T*>(kvs[kv_idx].RowBytes(tile_idx));
+
+    auto process_q_bundle = [&]<int kNumQueries>(size_t query_idx) HWY_ATTR {
+      size_t loop_idx = query_idx / kNumQueriesPerLoop;
+      if (step_pos + step_size <= min_start_pos_per_group[loop_idx] ||
+          step_pos > max_last_pos_per_group[loop_idx]) {
+        return;
+      }
+
+      VF x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1;
+      VF x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1;
+      const Q_T* HWY_RESTRICT q_group = q_base + query_idx * qkv_dim;
+
+      if constexpr (IsF32<Q_T>()) {
+        const KV_T* k_transposed_tile = tile_base + pos_in_tile;
+        QDotKTilexUpTo8TransposedKDoubleWidth<kNumQueries>(
+            df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
+            x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
+            x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
+      } else if constexpr (IsBF16<Q_T>()) {
+        const KV_T* k_transposed_tile = tile_base + pos_in_tile * 2;
+        QDotKTilexUpTo8TransposedKDoubleWidthBF16<kNumQueries>(
+            df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
+            x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
+            x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
+      } else if constexpr (IsInt16<Q_T>()) {
+        const KV_T* k_transposed_tile = tile_base + pos_in_tile * 2;
+        QDotKTilexUpTo8TransposedKDoubleWidthInt16<kNumQueries>(
+            df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
+            x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
+            x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
+      }
+
+      float* softmax_buf_step_ptr = softmax_buf_ptr + query_idx * kBlockSize +
+                                    (step_pos - macro_block_start_pos);
+      auto store_logits = [&](const VF& x_p0, const VF& x_p1,
+                              size_t q) HWY_ATTR {
+        hn::StoreU(x_p0, df, softmax_buf_step_ptr + q * kBlockSize + 0);
+        hn::StoreU(x_p1, df,
+                   softmax_buf_step_ptr + q * kBlockSize + hn::Lanes(df));
+      };
+
+      if constexpr (kNumQueries >= 1) store_logits(x_0_p_0, x_0_p_1, 0);
+      if constexpr (kNumQueries >= 2) store_logits(x_1_p_0, x_1_p_1, 1);
+      if constexpr (kNumQueries >= 3) store_logits(x_2_p_0, x_2_p_1, 2);
+      if constexpr (kNumQueries >= 4) store_logits(x_3_p_0, x_3_p_1, 3);
+      if constexpr (kNumQueries >= 5) store_logits(x_4_p_0, x_4_p_1, 4);
+      if constexpr (kNumQueries >= 6) store_logits(x_5_p_0, x_5_p_1, 5);
+      if constexpr (kNumQueries >= 7) store_logits(x_6_p_0, x_6_p_1, 6);
+      if constexpr (kNumQueries >= 8) store_logits(x_7_p_0, x_7_p_1, 7);
+    };
+
+    size_t q_idx = 0;
+    while (q_idx + kNumQueriesPerLoop <= q_count) {
+      process_q_bundle.template operator()<kNumQueriesPerLoop>(q_idx);
+      q_idx += kNumQueriesPerLoop;
+    }
+    if (q_idx < q_count) {
+      size_t rem_q = q_count - q_idx;
+      if (rem_q >= 8) {
+        process_q_bundle.template operator()<8>(q_idx);
+        q_idx += 8;
+        rem_q -= 8;
+      }
+      if (rem_q >= 4) {
+        process_q_bundle.template operator()<4>(q_idx);
+        q_idx += 4;
+        rem_q -= 4;
+      }
+      if (rem_q >= 2) {
+        process_q_bundle.template operator()<2>(q_idx);
+        q_idx += 2;
+        rem_q -= 2;
+      }
+      if (rem_q >= 1) {
+        process_q_bundle.template operator()<1>(q_idx);
+      }
+    }
+  }
+}
+
+template <int kNumQueries, typename Q_T, typename KV_T, class DF, class DU,
+          class VF = hn::Vec<DF>>
+static HWY_INLINE void UpdateOnlineSoftmaxAndPackSingleQuery(
+    DF df, DU du, float* HWY_RESTRICT q_logits, size_t actual_block_size,
+    size_t q,  // global query index
+    float* HWY_RESTRICT max_logits, float* HWY_RESTRICT exp_denominator_sums,
+    size_t q_offset,  // local query index in the group
+    float* HWY_RESTRICT scales_old, float* HWY_RESTRICT q_scales_new,
+    size_t step_size, void* HWY_RESTRICT step_consts_buf,
+    float* HWY_RESTRICT step_q_scales_s_buf_ptr, size_t actual_steps,
+    const BF16* const* HWY_RESTRICT step_microscaling_v_ptrs,
+    const BF16* const* HWY_RESTRICT step_microscaling_k_ptrs, float q_scale_val,
+    float att_cap, float one_over_cap, size_t position, size_t first_pos,
+    size_t last_pos) {
+  constexpr size_t kMaxLanes = hn::MaxLanes(df);
+  const size_t L_f = hn::Lanes(df);
+  const size_t unroll_step = 4 * L_f;
+  using DI16 = hn::Repartition<int16_t, DF>;
+  const DI16 di16;
+  using DBF = hn::Repartition<BF16, DF>;
+  const DBF dbf;
+  using D1 = hn::CappedTag<float, 1>;
+  const D1 d1;
+
+  VF v_max = hn::Set(df, kMaskedLogitVal);
+
+  for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+    size_t step_pos = position + step_idx * step_size;
+    float* ptr = q_logits + step_idx * step_size;
+    VF p0 = hn::LoadU(df, ptr);
+    VF p1 = hn::LoadU(df, ptr + L_f);
+
+    if constexpr (IsInt8<KV_T>()) {
+      const PackedSpan<const BF16> scales_span =
+          MakeConstSpan(step_microscaling_k_ptrs[step_idx], 2 * L_f);
+      VF scales_p0, scales_p1;
+      Decompress2(df, scales_span, 0, scales_p0, scales_p1);
+      p0 = hn::Mul(p0, scales_p0);
+      p1 = hn::Mul(p1, scales_p1);
+    }
+    if constexpr (IsInt16<Q_T>()) {
+      VF s = hn::Set(df, q_scale_val);
+      p0 = hn::Mul(p0, s);
+      p1 = hn::Mul(p1, s);
+    }
+    if (att_cap > 0.0f) {
+      VF cap = hn::Set(df, att_cap);
+      VF one_over_cap_vec = hn::Set(df, one_over_cap);
+      p0 = hn::Mul(cap, hn::FastTanh(df, hn::Mul(p0, one_over_cap_vec)));
+      p1 = hn::Mul(cap, hn::FastTanh(df, hn::Mul(p1, one_over_cap_vec)));
+    }
+    if (step_pos < first_pos || step_pos + step_size - 1 > last_pos) {
+      ApplyMasking<1>(df, du, step_pos, &first_pos, &last_pos, p0, p1, p0, p1,
+                      p0, p1, p0, p1, p0, p1, p0, p1, p0, p1, p0, p1);
+    }
+
+    hn::StoreU(p0, df, ptr);
+    hn::StoreU(p1, df, ptr + L_f);
+    v_max = hn::Max(v_max, hn::Max(p0, p1));
+  }
+  float known_block_max = hn::ReduceMax(df, v_max);
+
+  float old_m = max_logits[q];
+  float old_sum = exp_denominator_sums[q];
+  float new_m = std::max(old_m, known_block_max);
+
+  float block_sum = 0.0f;
+  VF v_sum0 = hn::Zero(df);
+  VF v_sum1 = hn::Zero(df);
+  VF v_sum2 = hn::Zero(df);
+  VF v_sum3 = hn::Zero(df);
+  VF v_new_m = hn::Set(df, new_m);
+
+  size_t t = 0;
+  for (; t + unroll_step <= actual_block_size; t += unroll_step) {
+    VF v_logits0 = hn::LoadU(df, q_logits + t);
+    VF v_logits1 = hn::LoadU(df, q_logits + t + L_f);
+    VF v_logits2 = hn::LoadU(df, q_logits + t + 2 * L_f);
+    VF v_logits3 = hn::LoadU(df, q_logits + t + 3 * L_f);
+
+    VF v_exp0 = hn::FastExpMinusOrZero(df, hn::Sub(v_logits0, v_new_m));
+    VF v_exp1 = hn::FastExpMinusOrZero(df, hn::Sub(v_logits1, v_new_m));
+    VF v_exp2 = hn::FastExpMinusOrZero(df, hn::Sub(v_logits2, v_new_m));
+    VF v_exp3 = hn::FastExpMinusOrZero(df, hn::Sub(v_logits3, v_new_m));
+
+    hn::StoreU(v_exp0, df, q_logits + t);
+    hn::StoreU(v_exp1, df, q_logits + t + L_f);
+    hn::StoreU(v_exp2, df, q_logits + t + 2 * L_f);
+    hn::StoreU(v_exp3, df, q_logits + t + 3 * L_f);
+
+    v_sum0 = hn::Add(v_sum0, v_exp0);
+    v_sum1 = hn::Add(v_sum1, v_exp1);
+    v_sum2 = hn::Add(v_sum2, v_exp2);
+    v_sum3 = hn::Add(v_sum3, v_exp3);
+  }
+  for (; t + L_f <= actual_block_size; t += L_f) {
+    VF v_logits = hn::LoadU(df, q_logits + t);
+    VF v_exp = hn::FastExpMinusOrZero(df, hn::Sub(v_logits, v_new_m));
+    hn::StoreU(v_exp, df, q_logits + t);
+    v_sum0 = hn::Add(v_sum0, v_exp);
+  }
+  v_sum0 = hn::Add(hn::Add(v_sum0, v_sum1), hn::Add(v_sum2, v_sum3));
+  if (t < actual_block_size) {
+    const size_t remaining = actual_block_size - t;
+    auto mask = hn::FirstN(df, remaining);
+    VF v_logits = hn::LoadN(df, q_logits + t, remaining);
+    VF v_exp = hn::FastExpMinusOrZero(df, hn::Sub(v_logits, v_new_m));
+    hn::StoreN(v_exp, df, q_logits + t, remaining);
+    v_sum0 = hn::MaskedAddOr(v_sum0, mask, v_sum0, v_exp);
+  }
+  block_sum = hn::ReduceSum(df, v_sum0);
+
+  float scale_old = 1.0f;
+  float q_scale = 0.0f;
+  float new_sum = old_sum;
+
+  if (new_m > kMaskedLogitVal) {
+    float exp_diff = 1.0f;
+    if (old_m != new_m) {
+      auto v_diff = hn::Set(d1, old_m - new_m);
+      auto v_exp = hn::FastExpMinusOrZero(d1, v_diff);
+      exp_diff = hn::GetLane(v_exp);
+    }
+    new_sum = old_sum * exp_diff + block_sum;
+
+    if (new_sum > 0.0f) {
+      scale_old = (old_sum * exp_diff) / new_sum;
+      q_scale = 1.0f / new_sum;
+    }
+  } else {
+    new_m = old_m;
+  }
+
+  scales_old[q_offset] = scale_old;
+  q_scales_new[q_offset] = q_scale;
+  max_logits[q] = new_m;
+  exp_denominator_sums[q] = new_sum;
+
+  for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+    const float* ptr = q_logits + step_idx * step_size;
+    VF p0 = hn::LoadU(df, ptr);
+    VF p1 = hn::LoadU(df, ptr + L_f);
+
+    if constexpr (IsF32<Q_T>() || IsBF16<Q_T>()) {
+      VF s = hn::Set(df, q_scale);
+      p0 = hn::Mul(p0, s);
+      p1 = hn::Mul(p1, s);
+    } else if constexpr (IsInt16<Q_T>()) {
+      float step_max_v_scale = 1.0f;
+      if constexpr (IsInt8<KV_T>()) {
+        const PackedSpan<const BF16> scales_span =
+            MakeConstSpan(step_microscaling_v_ptrs[step_idx], 2 * L_f);
+        VF v_scales_p0, v_scales_p1;
+        Decompress2(df, scales_span, 0, v_scales_p0, v_scales_p1);
+        step_max_v_scale = hn::ReduceMax(df, hn::Max(v_scales_p0, v_scales_p1));
+      }
+      float step_max_val = std::max(
+          std::max(hn::ReduceMax(df, p0), hn::ReduceMax(df, p1)), 0.0f);
+      if (step_max_val > 1e-10f && q_scale > 0.0f) {
+        float eff_v_scale = std::max(step_max_v_scale, 1e-10f);
+        float scale_to_int16 = 32767.0f / (step_max_val * eff_v_scale);
+        VF s_int16 = hn::Set(df, scale_to_int16);
+        p0 = hn::Mul(p0, s_int16);
+        p1 = hn::Mul(p1, s_int16);
+        step_q_scales_s_buf_ptr[step_idx * kNumQueries + q_offset] =
+            q_scale * step_max_val * (eff_v_scale / 32767.0f);
+      } else {
+        p0 = hn::Zero(df);
+        p1 = hn::Zero(df);
+        step_q_scales_s_buf_ptr[step_idx * kNumQueries + q_offset] = 0.0f;
+      }
+    }
+
+    if constexpr (IsInt8<KV_T>()) {
+      const PackedSpan<const BF16> scales_span =
+          MakeConstSpan(step_microscaling_v_ptrs[step_idx], 2 * L_f);
+      VF v_scales_p0, v_scales_p1;
+      Decompress2(df, scales_span, 0, v_scales_p0, v_scales_p1);
+      p0 = hn::Mul(p0, v_scales_p0);
+      p1 = hn::Mul(p1, v_scales_p1);
+    }
+
+    if constexpr (IsF32<Q_T>()) {
+      float* dst = ((float*)step_consts_buf) +
+                   step_idx * (kNumQueries * 2 * kMaxLanes) +
+                   q_offset * 2 * kMaxLanes;
+      hn::Store(p0, df, dst);
+      hn::Store(p1, df, dst + kMaxLanes);
+    } else if constexpr (IsInt16<Q_T>()) {
+      int16_t* dst = ((int16_t*)step_consts_buf) +
+                     step_idx * (kNumQueries * 2 * kMaxLanes) +
+                     q_offset * 2 * kMaxLanes;
+      auto i0 =
+          hn::OrderedDemote2To(di16, hn::NearestInt(p0), hn::NearestInt(p1));
+      hn::Store(i0, di16, dst);
+    } else {
+      BF16* dst = ((BF16*)step_consts_buf) +
+                  step_idx * (kNumQueries * 2 * kMaxLanes) +
+                  q_offset * 2 * kMaxLanes;
+      auto bf0 = hn::OrderedDemote2To(dbf, p0, p1);
+      hn::Store(bf0, dbf, dst);
+    }
+  }
+}
+
+template <typename Q_T>
+using FlashStepBufT =
+    hwy::If<IsF32<Q_T>(), float,
+            std::conditional_t<IsInt16<Q_T>(), int16_t, BF16>>;
+
+template <int kNumQueries, int kNumQueriesPerLoop, typename KV_T, typename Q_T,
+          class DF, class DU>
+static HWY_INLINE void ComputeSoftmaxAndSVBundle(
+    DF df, DU du, const hwy::Span<const MatPtrT<KV_T>>& kvs,
+    size_t current_kv_idx, size_t current_kv_start_offset, size_t q_base_idx,
+    size_t actual_q_count, size_t qkv_dim, const float* HWY_RESTRICT q_scales,
+    size_t position, size_t actual_block_size, size_t step_size, float att_cap,
+    float one_over_cap, const size_t* HWY_RESTRICT start_pos_per_query,
+    const size_t* HWY_RESTRICT last_pos_per_query,
+    const size_t* HWY_RESTRICT min_start_pos_per_group,
+    const size_t* HWY_RESTRICT max_last_pos_per_group,
+    const float* HWY_RESTRICT softmax_buf_ptr, float* HWY_RESTRICT max_logits,
+    float* HWY_RESTRICT exp_denominator_sums,
+    float* HWY_RESTRICT C_accumulators_ptr, size_t kBlockSize,
+    FlashStepBufT<Q_T>* HWY_RESTRICT step_consts_buf,
+    const KV_T** HWY_RESTRICT step_v_tiles,
+    const BF16** HWY_RESTRICT step_microscaling_v_ptrs,
+    const BF16** HWY_RESTRICT step_microscaling_k_ptrs,
+    const float** HWY_RESTRICT step_q_scales_s_ptrs,
+    float* HWY_RESTRICT step_q_scales_s_buf) {
+  constexpr int kTileSize = gcpp::KVCache::kTileSize;
+  size_t actual_steps = actual_block_size / step_size;
+  size_t loop_idx = q_base_idx / kNumQueriesPerLoop;
+  if (position + actual_block_size <= min_start_pos_per_group[loop_idx] ||
+      position > max_last_pos_per_group[loop_idx]) {
+    return;
+  }
+
+  HWY_ALIGN float scales_old[kNumQueriesPerLoop];
+  HWY_ALIGN float q_scales_new[kNumQueriesPerLoop];
+  bool any_query_active = false;
+  for (size_t i = 0; i < kNumQueriesPerLoop; ++i) {
+    scales_old[i] = 1.0f;
+    q_scales_new[i] = 0.0f;
+  }
+
+  for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+    size_t step_pos = position + step_idx * step_size;
+    size_t kv_idx = current_kv_idx;
+    size_t kv_offset = current_kv_start_offset;
+    // Check and shift KV chunks continuously
+    while (kv_idx + 1 < kvs.size() &&
+           step_pos - kv_offset >= kvs[kv_idx].Rows() * kTileSize) {
+      kv_offset += kvs[kv_idx].Rows() * kTileSize;
+      kv_idx++;
+    }
+
+    size_t tile_idx = (step_pos - kv_offset) / kTileSize;
+    if (tile_idx >= kvs[kv_idx].Rows()) {
+      tile_idx = kvs[kv_idx].Rows() - 1;
+    }
+
+    size_t pos_in_tile = step_pos % kTileSize;
+    const KV_T* tile_base =
+        reinterpret_cast<const KV_T*>(kvs[kv_idx].RowBytes(tile_idx));
+    step_v_tiles[step_idx] =
+        tile_base + qkv_dim * kTileSize + pos_in_tile * qkv_dim;
+
+    if constexpr (IsInt8<KV_T>()) {
+      const BF16* microscaling_scales_k =
+          reinterpret_cast<const BF16*>(tile_base + qkv_dim * 2 * kTileSize) +
+          pos_in_tile;
+      const BF16* microscaling_scales_v = microscaling_scales_k + kTileSize;
+      step_microscaling_k_ptrs[step_idx] = microscaling_scales_k;
+      step_microscaling_v_ptrs[step_idx] = microscaling_scales_v;
+    }
+    if constexpr (IsInt16<Q_T>()) {
+      step_q_scales_s_ptrs[step_idx] =
+          step_q_scales_s_buf + step_idx * kNumQueries;
+    }
+
+  }
+
+  for (size_t q_offset = 0; q_offset < actual_q_count; ++q_offset) {
+    size_t q = q_base_idx + q_offset;
+    if (position + actual_block_size <= start_pos_per_query[q] ||
+        position > last_pos_per_query[q]) {
+      continue;
+    }
+    any_query_active = true;
+    float* q_logits = ((float*)softmax_buf_ptr) + q * kBlockSize;
+    float q_scale_val = q_scales ? q_scales[q] : 1.0f;
+    size_t first_pos = start_pos_per_query[q];
+    size_t last_pos = last_pos_per_query[q];
+
+    UpdateOnlineSoftmaxAndPackSingleQuery<kNumQueries, Q_T, KV_T>(
+        df, du, q_logits, actual_block_size, q, max_logits,
+        exp_denominator_sums, q_offset, scales_old, q_scales_new, step_size,
+        step_consts_buf, IsInt16<Q_T>() ? step_q_scales_s_buf : nullptr,
+        actual_steps, step_microscaling_v_ptrs, step_microscaling_k_ptrs,
+        q_scale_val, att_cap, one_over_cap, position, first_pos, last_pos);
+  }
+  if (!any_query_active) {
+    return;
+  }
+
+  MatPtrT<float> group_out("group_out", Extents2D(kNumQueriesPerLoop, qkv_dim));
+  group_out.SetPtr(C_accumulators_ptr + q_base_idx * qkv_dim, qkv_dim);
+
+  if constexpr (IsF32<Q_T>()) {
+    MulByConstAndAddTileUpTo8<kNumQueries>(
+        df, scales_old, actual_steps, step_consts_buf, step_v_tiles, group_out);
+  } else if constexpr (IsInt16<Q_T>()) {
+    MulByConstAndAddTileUpTo8_BF16_Int16<kNumQueries>(
+        df, scales_old, actual_steps, step_consts_buf, step_v_tiles, group_out,
+        step_q_scales_s_ptrs);
+  } else {
+    MulByConstAndAddTileUpTo8_BF16<kNumQueries>(
+        df, scales_old, actual_steps, step_consts_buf, step_v_tiles, group_out);
+  }
+}
+
+template <int kNumQueriesPerLoop, typename KV_T, typename Q_T>
+struct TileFlashAttentionWorkspaceLayout {
+  using StepBufT = FlashStepBufT<Q_T>;
+
+  size_t padded_q_count;
+  size_t c_accum_offset, c_accum_bytes;
+  size_t softmax_offset, softmax_bytes;
+  size_t pos_data_offset, pos_data_bytes;
+  size_t step_consts_offset, step_consts_bytes;
+  size_t step_v_tiles_offset, step_v_tiles_bytes;
+  size_t step_mv_offset, step_mv_bytes;
+  size_t step_mk_offset, step_mk_bytes;
+  size_t step_qp_offset, step_qp_bytes;
+  size_t step_qb_offset, step_qb_bytes;
+  size_t total_bytes;
+
+  constexpr TileFlashAttentionWorkspaceLayout(size_t q_count, size_t qkv_dim,
+                                              size_t kBlockSize,
+                                              size_t num_loops)
+      : padded_q_count(hwy::RoundUpTo(
+            q_count, HWY_MAX(size_t{16}, size_t(kNumQueriesPerLoop)))),
+        c_accum_offset(0),
+        c_accum_bytes(hwy::RoundUpTo(padded_q_count * qkv_dim * sizeof(float),
+                                     HWY_ALIGNMENT)),
+        softmax_offset(c_accum_offset + c_accum_bytes),
+        softmax_bytes(hwy::RoundUpTo(
+            padded_q_count * kBlockSize * sizeof(float), HWY_ALIGNMENT)),
+        pos_data_offset(softmax_offset + softmax_bytes),
+        pos_data_bytes(
+            hwy::RoundUpTo(2 * num_loops * sizeof(size_t), HWY_ALIGNMENT)),
+        step_consts_offset(pos_data_offset + pos_data_bytes),
+        step_consts_bytes(
+            hwy::RoundUpTo(256 * kNumQueriesPerLoop * 2 * 16 * sizeof(StepBufT),
+                           HWY_ALIGNMENT)),
+        step_v_tiles_offset(step_consts_offset + step_consts_bytes),
+        step_v_tiles_bytes(
+            hwy::RoundUpTo(256 * sizeof(const KV_T*), HWY_ALIGNMENT)),
+        step_mv_offset(step_v_tiles_offset + step_v_tiles_bytes),
+        step_mv_bytes(hwy::RoundUpTo(
+            (IsInt8<KV_T>() ? 256 : 1) * sizeof(const BF16*), HWY_ALIGNMENT)),
+        step_mk_offset(step_mv_offset + step_mv_bytes),
+        step_mk_bytes(hwy::RoundUpTo(
+            (IsInt8<KV_T>() ? 256 : 1) * sizeof(const BF16*), HWY_ALIGNMENT)),
+        step_qp_offset(step_mk_offset + step_mk_bytes),
+        step_qp_bytes(hwy::RoundUpTo(
+            (IsInt16<Q_T>() ? 256 : 1) * sizeof(const float*), HWY_ALIGNMENT)),
+        step_qb_offset(step_qp_offset + step_qp_bytes),
+        step_qb_bytes(hwy::RoundUpTo(
+            (IsInt16<Q_T>() ? (256 * kNumQueriesPerLoop) : 1) * sizeof(float),
+            HWY_ALIGNMENT)),
+        total_bytes(step_qb_offset + step_qb_bytes) {}
+};
+
+template <int kNumQueriesPerLoop, typename KV_T, typename Q_T>
+static size_t ComputeTileFlashAttentionWorkspaceBytes(size_t q_count,
+                                                      size_t qkv_dim,
+                                                      size_t kBlockSize,
+                                                      size_t num_loops) {
+  return TileFlashAttentionWorkspaceLayout<kNumQueriesPerLoop, KV_T, Q_T>(
+             q_count, qkv_dim, kBlockSize, num_loops)
+      .total_bytes;
+}
+
+template <int kNumQueriesPerLoop, typename KV_T, typename Q_T>
+HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
     const hwy::Span<const MatPtrT<KV_T>> kvs, size_t q_count,
     const Q_T* HWY_RESTRICT q_base, const hwy::Span<const float> q_scales,
     hwy::Span<const size_t> start_pos_per_query,
@@ -1272,258 +1736,174 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogits(
     float* HWY_RESTRICT max_logits) {
   using DF = hn::ScalableTag<float>;
   const DF df;
-  using VF = hn::Vec<DF>;
   using DU = hn::ScalableTag<uint32_t>;
-  [[maybe_unused]] const DU du;
+  const DU du;
+
   constexpr int kTileSize = gcpp::KVCache::kTileSize;
   HWY_LANES_CONSTEXPR size_t kHTileSize = hn::Lanes(df);
-
-  constexpr int kNumQueriesPerLoop =
-      (!HWY_ARCH_X86 || (HWY_TARGET <= HWY_AVX3)) ? 8 : 4;
 
   const size_t num_loops = hwy::DivCeil(q_count, kNumQueriesPerLoop);
   const size_t qkv_dim = att_out.Cols();
   HWY_DASSERT(kHTileSize <= hn::MaxLanes(df));
 
+  constexpr size_t kBlockSize =
+      IsInt8<KV_T>() ? BENCHMARK_BLOCK_SIZE_INT8 : BENCHMARK_BLOCK_SIZE_BF16;
   HWY_LANES_CONSTEXPR size_t step_size = 2 * kHTileSize;
+
   size_t smallest_start_pos = std::numeric_limits<size_t>::max();
   size_t largest_last_pos = std::numeric_limits<size_t>::min();
   for (size_t i = 0; i < start_pos_per_query.size(); ++i) {
     smallest_start_pos = std::min(smallest_start_pos, start_pos_per_query[i]);
     largest_last_pos = std::max(largest_last_pos, last_pos_per_query[i]);
   }
-  // start / end positions per group of 4 queries.
-  std::vector<size_t, hwy::AlignedAllocator<size_t>> pos_data(num_loops * 4);
-  hwy::Span<size_t> min_start_pos_per_group(pos_data.data(), num_loops);
-  hwy::Span<size_t> max_start_pos_per_group(pos_data.data() + num_loops,
-                                            num_loops);
-  hwy::Span<size_t> min_last_pos_per_group(pos_data.data() + 2 * num_loops,
-                                           num_loops);
-  hwy::Span<size_t> max_last_pos_per_group(pos_data.data() + 3 * num_loops,
-                                           num_loops);
+
+  TileFlashAttentionWorkspaceLayout<kNumQueriesPerLoop, KV_T, Q_T> layout(
+      q_count, qkv_dim, kBlockSize, num_loops);
+  const size_t padded_q_count = layout.padded_q_count;
+
+  // Use AllocateAlignedBytes to avoid the cost of zeroing out
+  // (value-initialization).
+  auto workspace = hwy::AllocateAligned<uint8_t>(layout.total_bytes);
+  uint8_t* raw_ptr = workspace.get();
+
+  float* C_accumulators_ptr =
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset);
+  float* softmax_buf_ptr =
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.softmax_offset);
+  size_t* pos_data_ptr =
+      HWY_RCAST_ALIGNED(size_t*, raw_ptr + layout.pos_data_offset);
+  FlashStepBufT<Q_T>* step_consts_buf = HWY_RCAST_ALIGNED(
+      FlashStepBufT<Q_T>*, raw_ptr + layout.step_consts_offset);
+  const KV_T** step_v_tiles =
+      HWY_RCAST_ALIGNED(const KV_T**, raw_ptr + layout.step_v_tiles_offset);
+  const BF16** step_microscaling_v_ptrs =
+      HWY_RCAST_ALIGNED(const BF16**, raw_ptr + layout.step_mv_offset);
+  const BF16** step_microscaling_k_ptrs =
+      HWY_RCAST_ALIGNED(const BF16**, raw_ptr + layout.step_mk_offset);
+  const float** step_q_scales_s_ptrs =
+      HWY_RCAST_ALIGNED(const float**, raw_ptr + layout.step_qp_offset);
+  float* step_q_scales_s_buf =
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.step_qb_offset);
+
+  hwy::Span<float> c_accumulators_span(C_accumulators_ptr,
+                                       padded_q_count * qkv_dim);
+  std::fill(c_accumulators_span.begin(), c_accumulators_span.end(), 0.0f);
+  hwy::Span<float> softmax_buf_span(softmax_buf_ptr,
+                                    padded_q_count * kBlockSize);
+  hwy::Span<size_t> min_start_pos_per_group(pos_data_ptr, num_loops);
+  hwy::Span<size_t> max_last_pos_per_group(pos_data_ptr + num_loops, num_loops);
 
   for (size_t i = 0; i < num_loops; ++i) {
     size_t min_start = std::numeric_limits<size_t>::max();
-    size_t max_start = 0;
-    size_t min_last = std::numeric_limits<size_t>::max();
     size_t max_last = 0;
     for (int j = 0; j < kNumQueriesPerLoop; ++j) {
       if (i * kNumQueriesPerLoop + j < q_count) {
         min_start = std::min(min_start,
                              start_pos_per_query[i * kNumQueriesPerLoop + j]);
-        max_start = std::max(max_start,
-                             start_pos_per_query[i * kNumQueriesPerLoop + j]);
-        min_last =
-            std::min(min_last, last_pos_per_query[i * kNumQueriesPerLoop + j]);
         max_last =
             std::max(max_last, last_pos_per_query[i * kNumQueriesPerLoop + j]);
       }
     }
     min_start_pos_per_group[i] = min_start;
-    max_start_pos_per_group[i] = max_start;
-    min_last_pos_per_group[i] = min_last;
     max_last_pos_per_group[i] = max_last;
   }
+
   const size_t base_pos = smallest_start_pos - (smallest_start_pos % kTileSize);
   const size_t rem = smallest_start_pos % kTileSize;
   const size_t num_skipped_sub_tiles = rem / step_size;
   size_t position = base_pos + num_skipped_sub_tiles * step_size;
   [[maybe_unused]] float one_over_cap = 1.0f / att_cap;
-  std::vector<MatPtrT<float>> att_out_per_query;
-  att_out_per_query.reserve(num_loops);
-  for (size_t i = 0; i < num_loops; ++i) {
-    att_out_per_query.emplace_back("att_out",
-                                   Extents2D(kNumQueriesPerLoop, qkv_dim));
-    att_out_per_query.back().SetPtr(att_out.Row(i * kNumQueriesPerLoop),
-                                    att_out.Stride());
-  }
+
   size_t current_kv_start_offset = 0;
   size_t current_kv_idx = 0;
 
-  HWY_ALIGN float q_scales_s[8];
-  float* q_scales_s_ptr = nullptr;
-  if constexpr (IsInt16<Q_T>()) {
-    q_scales_s_ptr = q_scales_s;
-  }
-  float max_v_scale = 1.0f;
-  auto inner_loop = [&]<int kNumQueries>(size_t query_idx) HWY_ATTR {
-    size_t loop_idx = query_idx / kNumQueriesPerLoop;
-    if (position + step_size <= min_start_pos_per_group[loop_idx] ||
-        position > max_last_pos_per_group[loop_idx]) {
-      return;
-    }
-    VF x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1;
-    VF x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1;
-    const size_t pos_in_tile = position % kTileSize;
-    // tile base can point to same tile as previous loop iteration, hence no
-    // HWY_RESTRICT
-    // KVs are unaligned and we only use unaligned loads in this implementation.
-    const KV_T* tile_base =
-        reinterpret_cast<const KV_T*>(kvs[current_kv_idx].RowBytes(
-                         (position - current_kv_start_offset) / kTileSize));
+  while (position <= largest_last_pos) {
+    std::fill(softmax_buf_ptr, softmax_buf_ptr + padded_q_count * kBlockSize,
+              kMaskedLogitVal);
 
-    const KV_T* v_tile =
-        tile_base + qkv_dim * kTileSize + (pos_in_tile)*qkv_dim;
+    // Call precisely with kBlockSize and allow bounded logic inside macros
+    // instead of manually chunking
+    ComputeQKMacroTile<kNumQueriesPerLoop>(
+        df, du, kvs, current_kv_idx, current_kv_start_offset, q_base, qkv_dim,
+        q_count, position, kBlockSize, step_size,
+        min_start_pos_per_group.data(), max_last_pos_per_group.data(),
+        softmax_buf_ptr, kBlockSize, position);
 
-    const Q_T* HWY_RESTRICT q_group = q_base + query_idx * qkv_dim;
+    auto dispatch_sv = [&]<int kQ>(size_t q_base_idx,
+                                   size_t actual_q_count) HWY_ATTR {
+      ComputeSoftmaxAndSVBundle<kQ, kNumQueriesPerLoop, KV_T, Q_T>(
+          df, du, kvs, current_kv_idx, current_kv_start_offset, q_base_idx,
+          actual_q_count, qkv_dim, q_scales.data(), position, kBlockSize,
+          step_size, att_cap, one_over_cap, start_pos_per_query.data(),
+          last_pos_per_query.data(), min_start_pos_per_group.data(),
+          max_last_pos_per_group.data(), softmax_buf_ptr, max_logits,
+          exp_denominator_sums, C_accumulators_ptr, kBlockSize, step_consts_buf,
+          step_v_tiles, step_microscaling_v_ptrs, step_microscaling_k_ptrs,
+          step_q_scales_s_ptrs, step_q_scales_s_buf);
+    };
+    size_t q_base_idx = 0;
 
-    if constexpr (IsF32<Q_T>()) {
-      const KV_T* k_transposed_tile = tile_base + pos_in_tile;
-      QDotKTilexUpTo8TransposedKDoubleWidth<kNumQueries>(
-          df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
-          x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
-          x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    } else if constexpr (IsBF16<Q_T>()) {
-      const KV_T* k_transposed_tile = tile_base + pos_in_tile * 2;
-      QDotKTilexUpTo8TransposedKDoubleWidthBF16<kNumQueries>(
-          df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
-          x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
-          x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    } else if constexpr (IsInt16<Q_T>()) {
-      const KV_T* k_transposed_tile = tile_base + pos_in_tile * 2;
-      QDotKTilexUpTo8TransposedKDoubleWidthInt16<kNumQueries>(
-          df, q_group, k_transposed_tile, qkv_dim, x_0_p_0, x_0_p_1, x_1_p_0,
-          x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
-          x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    } else {
-      static_assert(false,
-                    "Query type not supported, only float, BF16, and "
-                    "Int16 are supported");
-    }
-    // microscaling
-    // TODO: Change to more generic function to inform if we should use
-    // microscaling or not.
-    constexpr bool kUseMicroScaling = IsInt8<KV_T>();
-    if constexpr (kUseMicroScaling) {
-      // After end of the tile, we have kTileSize * 2 bfloat16 for the
-      // microscaling scales for K and V.
-      const BF16* microscaling_scales_k =
-          reinterpret_cast<const BF16*>(tile_base + qkv_dim * 2 * kTileSize) +
-          pos_in_tile;
-      MultiplyByScale<kNumQueries>(df, microscaling_scales_k, x_0_p_0, x_0_p_1,
-                                   x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0,
-                                   x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1,
-                                   x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    }
-    if constexpr (IsInt16<Q_T>()) {
-      ApplyQuantizationScale<kNumQueries>(
-          df, q_scales.data(), query_idx, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1,
-          x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0,
-          x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
+    // 1. Loop to process the full chunks
+    while (q_base_idx + kNumQueriesPerLoop <= q_count) {
+      dispatch_sv.template operator()<kNumQueriesPerLoop>(q_base_idx,
+                                                          kNumQueriesPerLoop);
+      q_base_idx += kNumQueriesPerLoop;
     }
 
-    constexpr int kFirstHalfAmountOfQueries = std::min(kNumQueries, 4);
-    constexpr int kSecondHalfAmountOfQueries =
-        kNumQueries - kFirstHalfAmountOfQueries;
-    ApplySoftCap<kFirstHalfAmountOfQueries * 2>(
-        df, att_cap, one_over_cap, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0,
-        x_2_p_1, x_3_p_0, x_3_p_1);
-    if constexpr (kNumQueries > 4) {
-      ApplySoftCap<kSecondHalfAmountOfQueries * 2>(
-          df, att_cap, one_over_cap, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1,
-          x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    }
-
-    if (position < max_start_pos_per_group[loop_idx] ||
-        position + step_size - 1 > min_last_pos_per_group[loop_idx]) {
-      ApplyMasking<kNumQueries>(
-          df, du, position, start_pos_per_query.data() + query_idx,
-          last_pos_per_query.data() + query_idx, x_0_p_0, x_0_p_1, x_1_p_0,
-          x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1,
-          x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    }
-    HWY_ALIGN float scales[kNumQueriesPerLoop];
-
-    for (size_t i = 0; i < kNumQueriesPerLoop; ++i) {
-      scales[i] = 1.0f;
-    }
-
-    if constexpr (IsInt16<Q_T>() && kUseMicroScaling) {
-      if (query_idx == 0) {  // update only when needed
-        const BF16* microscaling_scales_v =
-            reinterpret_cast<const BF16*>(tile_base + qkv_dim * 2 * kTileSize) +
-            kTileSize + pos_in_tile;
-        const PackedSpan<const BF16> scales_span =
-            MakeConstSpan(microscaling_scales_v, 2 * hn::Lanes(df));
-        VF v_scales_p0, v_scales_p1;
-        Decompress2(df, scales_span, 0, v_scales_p0, v_scales_p1);
-        max_v_scale = hn::ReduceMax(df, hn::Max(v_scales_p0, v_scales_p1));
+    // 2. Ladder of ifs (Direct capacity checks)
+    if constexpr (kNumQueriesPerLoop > 4) {
+      if (q_base_idx + 4 <= q_count) {
+        dispatch_sv.template operator()<4>(q_base_idx, 4);
+        q_base_idx += 4;
       }
     }
 
-    FlashAttentionTileStepAndApplySoftCap<kNumQueries>(
-        df, 0.0f, 1.0f, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1,
-        x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0, x_6_p_1,
-        x_7_p_0, x_7_p_1, max_logits, exp_denominator_sums, scales, query_idx,
-        q_scales_s_ptr, max_v_scale);
-    if constexpr (kUseMicroScaling) {
-      const BF16* microscaling_scales_v =
-          reinterpret_cast<const BF16*>(tile_base + qkv_dim * 2 * kTileSize) +
-          kTileSize + pos_in_tile;
-      MultiplyByScale<kNumQueries>(df, microscaling_scales_v, x_0_p_0, x_0_p_1,
-                                   x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1, x_3_p_0,
-                                   x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1,
-                                   x_6_p_0, x_6_p_1, x_7_p_0, x_7_p_1);
-    }
-    MatPtrT<float> offset_out = att_out_per_query[loop_idx];
-    const size_t group_offset = query_idx % kNumQueriesPerLoop;
-    if (group_offset > 0) {
-      offset_out.SetPtr(offset_out.Row(group_offset), offset_out.Stride());
+    if constexpr (kNumQueriesPerLoop > 2) {
+      if (q_base_idx + 2 <= q_count) {
+        dispatch_sv.template operator()<2>(q_base_idx, 2);
+        q_base_idx += 2;
+      }
     }
 
-    if constexpr (IsF32<Q_T>()) {
-      MulByConstAndAddTileUpTo8<kNumQueries>(
-          df, scales, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1,
-          x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0,
-          x_6_p_1, x_7_p_0, x_7_p_1, v_tile, offset_out);
-    } else if constexpr (IsInt16<Q_T>()) {
-      MulByConstAndAddTileUpTo8_BF16_Int16<kNumQueries>(
-          df, scales, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1,
-          x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0,
-          x_6_p_1, x_7_p_0, x_7_p_1, v_tile, offset_out, q_scales_s);
-    } else {
-      MulByConstAndAddTileUpTo8_BF16<kNumQueries>(
-          df, scales, x_0_p_0, x_0_p_1, x_1_p_0, x_1_p_1, x_2_p_0, x_2_p_1,
-          x_3_p_0, x_3_p_1, x_4_p_0, x_4_p_1, x_5_p_0, x_5_p_1, x_6_p_0,
-          x_6_p_1, x_7_p_0, x_7_p_1, v_tile, offset_out);
+    if constexpr (kNumQueriesPerLoop > 1) {
+      if (q_base_idx + 1 <= q_count) {
+        dispatch_sv.template operator()<1>(q_base_idx, 1);
+        q_base_idx += 1;
+      }
     }
-  };
 
-  while (position <= largest_last_pos) {
-    while (position - current_kv_start_offset >=
-           kvs[current_kv_idx].Rows() * kTileSize) {
+    position += kBlockSize;
+    while (position <= largest_last_pos && current_kv_idx + 1 < kvs.size() &&
+           position - current_kv_start_offset >=
+               kvs[current_kv_idx].Rows() * kTileSize) {
       current_kv_start_offset += kvs[current_kv_idx].Rows() * kTileSize;
       current_kv_idx++;
     }
-    size_t query_idx = 0;
-    for (; query_idx + kNumQueriesPerLoop <= q_count;
-         query_idx += kNumQueriesPerLoop) {
-      inner_loop.template operator()<kNumQueriesPerLoop>(query_idx);
-    }
-    if (query_idx < q_count) {
-      size_t rem = q_count - query_idx;
-      if (rem >= 4) {
-        inner_loop.template operator()<4>(query_idx);
-        query_idx += 4;
-        rem -= 4;
-      }
-      switch (rem) {
-        case 1:
-          inner_loop.template operator()<1>(query_idx);
-          break;
-        case 2:
-          inner_loop.template operator()<2>(query_idx);
-          break;
-        case 3:
-          inner_loop.template operator()<3>(query_idx);
-          break;
-        default:
-          break;
-      }
-    }
-
-    position += step_size;
   }
+
+  using VF = hn::Vec<DF>;
+  for (size_t qi = 0; qi < q_count; ++qi) {
+    float* out = att_out.Row(qi);
+    const float* accum = C_accumulators_ptr + qi * qkv_dim;
+    for (size_t d = 0; d < qkv_dim; d += hn::Lanes(df)) {
+      VF v = hn::LoadU(df, accum + d);
+      hn::StoreU(v, df, out + d);
+    }
+  }
+}
+
+template <typename KV_T, typename Q_T>
+HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogits(
+    const hwy::Span<const MatPtrT<KV_T>> kvs, size_t q_count,
+    const Q_T* HWY_RESTRICT q_base, const hwy::Span<const float> q_scales,
+    hwy::Span<const size_t> start_pos_per_query,
+    hwy::Span<const size_t> last_pos_per_query, const float att_cap,
+    MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
+    float* HWY_RESTRICT max_logits) {
+  constexpr int kDefaultChunkSize = (HWY_REGISTERS >= 32) ? 8 : 4;
+  TileFlashAttentionReturnExpSumsAndMaxLogitsImpl<kDefaultChunkSize>(
+      kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
+      att_cap, att_out, exp_denominator_sums, max_logits);
 }
 
 void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
@@ -2289,7 +2669,6 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   }
 }
 
-// NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();

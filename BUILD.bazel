@@ -594,7 +594,7 @@ cc_test(
         ":gemma_args",
         ":kv_cache",
         ":threading_context",
-        "//testing/base/public:gunit_main",
+        "@googletest//:gtest_main",
         "@highway//:hwy",
     ],
 )
@@ -620,7 +620,7 @@ cc_test(
         ":basics",
         ":configs",
         ":kv_transcoding",
-        "//testing/base/public:gunit_main",
+        "@googletest//:gtest_main",
         "@highway//:hwy",
     ],
 )
@@ -705,7 +705,6 @@ cc_library(
         ":configs",
         ":flash_structs",
         ":kv_cache",
-        ":kv_transcoding",
         ":mat",
         ":matmul",
         ":matmul_env",

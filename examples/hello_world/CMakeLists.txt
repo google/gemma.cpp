@@ -18,7 +18,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG c971dbe61bd2751923e3458666450bf95dfbbd98)
+FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa)
 FetchContent_MakeAvailable(highway)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)

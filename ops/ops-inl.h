@@ -1041,158 +1041,48 @@ static HWY_INLINE void LoadAndMulUpTo8Times2(
 
 template <int32_t N, class DF, class VF = hn::Vec<DF>, typename VType>
 HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8(
-    DF df, const float* HWY_RESTRICT scales, const VF& c0_p0, const VF& c0_p1,
-    const VF& c1_p0, const VF& c1_p1, const VF& c2_p0, const VF& c2_p1,
-    const VF& c3_p0, const VF& c3_p1, const VF& c4_p0, const VF& c4_p1,
-    const VF& c5_p0, const VF& c5_p1, const VF& c6_p0, const VF& c6_p1,
-    const VF& c7_p0, const VF& c7_p1, const VType* HWY_RESTRICT v_tile,
-    MatPtrT<float>& out) {
+    DF df, const float* HWY_RESTRICT scales_old, size_t actual_steps,
+    const float* HWY_RESTRICT step_consts,
+    const VType* const* HWY_RESTRICT step_v_tiles, MatPtrT<float>& out) {
   static_assert(N <= 8);
   namespace hn = hwy::HWY_NAMESPACE;
   const size_t qkv_dim = out.Cols();
   constexpr size_t kMaxLanes = hn::MaxLanes(df);
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
 
-  PackedSpan<const VType> v_span = MakeConstSpan(v_tile, qkv_dim * 2 * NF);
-
   size_t i = 0;
-  HWY_DASSERT(qkv_dim % (NF * 2) == 0);
-  HWY_ALIGN float consts_buffer[kMaxLanes * N * 2];
-  hn::Store(c0_p0, df, consts_buffer);
-  hn::Store(c0_p1, df, consts_buffer + kMaxLanes);
-  if constexpr (N >= 2) {
-    hn::Store(c1_p0, df, consts_buffer + 2 * kMaxLanes);
-    hn::Store(c1_p1, df, consts_buffer + 3 * kMaxLanes);
-  }
-  if constexpr (N >= 3) {
-    hn::Store(c2_p0, df, consts_buffer + 4 * kMaxLanes);
-    hn::Store(c2_p1, df, consts_buffer + 5 * kMaxLanes);
-  }
-  if constexpr (N >= 4) {
-    hn::Store(c3_p0, df, consts_buffer + 6 * kMaxLanes);
-    hn::Store(c3_p1, df, consts_buffer + 7 * kMaxLanes);
-  }
-  if constexpr (N >= 5) {
-    hn::Store(c4_p0, df, consts_buffer + 8 * kMaxLanes);
-    hn::Store(c4_p1, df, consts_buffer + 9 * kMaxLanes);
-  }
-  if constexpr (N >= 6) {
-    hn::Store(c5_p0, df, consts_buffer + 10 * kMaxLanes);
-    hn::Store(c5_p1, df, consts_buffer + 11 * kMaxLanes);
-  }
-  if constexpr (N >= 7) {
-    hn::Store(c6_p0, df, consts_buffer + 12 * kMaxLanes);
-    hn::Store(c6_p1, df, consts_buffer + 13 * kMaxLanes);
-  }
-  if constexpr (N >= 8) {
-    hn::Store(c7_p0, df, consts_buffer + 14 * kMaxLanes);
-    hn::Store(c7_p1, df, consts_buffer + 15 * kMaxLanes);
-  }
   HWY_DASSERT(qkv_dim % (NF * 2) == 0);
   while (i + NF * 2 <= qkv_dim) {
     VF out0_0, out1_0, out2_0, out3_0, out4_0, out5_0, out6_0, out7_0;
     VF out0_1, out1_1, out2_1, out3_1, out4_1, out5_1, out6_1, out7_1;
-    LoadAndMulUpTo8Times2<N>(df, out, i, scales, out0_0, out0_1, out1_0, out1_1,
-                             out2_0, out2_1, out3_0, out3_1, out4_0, out4_1,
-                             out5_0, out5_1, out6_0, out6_1, out7_0, out7_1);
-    for (int lane = 0; lane < NF; ++lane) {
-      VF xI1, xI2;
-      Decompress2(df, v_span, qkv_dim * lane + i, xI1, xI2);
+    LoadAndMulUpTo8Times2<N>(df, out, i, scales_old, out0_0, out0_1, out1_0,
+                             out1_1, out2_0, out2_1, out3_0, out3_1, out4_0,
+                             out4_1, out5_0, out5_1, out6_0, out6_1, out7_0,
+                             out7_1);
 
-      out0_0 = hn::MulAdd(xI1, hn::Set(df, consts_buffer[lane + 0 * kMaxLanes]),
-                          out0_0);
-      out0_1 = hn::MulAdd(xI2, hn::Set(df, consts_buffer[lane + 0 * kMaxLanes]),
-                          out0_1);
-      if constexpr (N >= 2) {
-        out1_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 2 * kMaxLanes]), out1_0);
-        out1_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 2 * kMaxLanes]), out1_1);
-      }
-      if constexpr (N >= 3) {
-        out2_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 4 * kMaxLanes]), out2_0);
-        out2_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 4 * kMaxLanes]), out2_1);
-      }
-      if constexpr (N >= 4) {
-        out3_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 6 * kMaxLanes]), out3_0);
-        out3_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 6 * kMaxLanes]), out3_1);
-      }
-      if constexpr (N >= 5) {
-        out4_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 8 * kMaxLanes]), out4_0);
-        out4_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 8 * kMaxLanes]), out4_1);
-      }
-      if constexpr (N >= 6) {
-        out5_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 10 * kMaxLanes]), out5_0);
-        out5_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 10 * kMaxLanes]), out5_1);
-      }
-      if constexpr (N >= 7) {
-        out6_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 12 * kMaxLanes]), out6_0);
-        out6_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 12 * kMaxLanes]), out6_1);
-      }
-      if constexpr (N >= 8) {
-        out7_0 = hn::MulAdd(
-            xI1, hn::Set(df, consts_buffer[lane + 14 * kMaxLanes]), out7_0);
-        out7_1 = hn::MulAdd(
-            xI2, hn::Set(df, consts_buffer[lane + 14 * kMaxLanes]), out7_1);
-      }
-      VF xI3, xI4;
-      Decompress2(df, v_span, qkv_dim * (NF + lane) + i, xI3, xI4);
+    for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+      const float* consts_buffer = step_consts + step_idx * (N * 2 * kMaxLanes);
+      const VType* v_tile = step_v_tiles[step_idx];
+      PackedSpan<const VType> v_span = MakeConstSpan(v_tile, qkv_dim * 2 * NF);
 
-      out0_0 = hn::MulAdd(xI3, hn::Set(df, consts_buffer[lane + 1 * kMaxLanes]),
-                          out0_0);
-      out0_1 = hn::MulAdd(xI4, hn::Set(df, consts_buffer[lane + 1 * kMaxLanes]),
-                          out0_1);
-      if constexpr (N >= 2) {
-        out1_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 3 * kMaxLanes]), out1_0);
-        out1_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 3 * kMaxLanes]), out1_1);
-      }
-      if constexpr (N >= 3) {
-        out2_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 5 * kMaxLanes]), out2_0);
-        out2_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 5 * kMaxLanes]), out2_1);
-      }
-      if constexpr (N >= 4) {
-        out3_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 7 * kMaxLanes]), out3_0);
-        out3_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 7 * kMaxLanes]), out3_1);
-      }
-      if constexpr (N >= 5) {
-        out4_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 9 * kMaxLanes]), out4_0);
-        out4_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 9 * kMaxLanes]), out4_1);
-      }
-      if constexpr (N >= 6) {
-        out5_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 11 * kMaxLanes]), out5_0);
-        out5_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 11 * kMaxLanes]), out5_1);
-      }
-      if constexpr (N >= 7) {
-        out6_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 13 * kMaxLanes]), out6_0);
-        out6_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 13 * kMaxLanes]), out6_1);
-      }
-      if constexpr (N >= 8) {
-        out7_0 = hn::MulAdd(
-            xI3, hn::Set(df, consts_buffer[lane + 15 * kMaxLanes]), out7_0);
-        out7_1 = hn::MulAdd(
-            xI4, hn::Set(df, consts_buffer[lane + 15 * kMaxLanes]), out7_1);
+      for (size_t t = 0; t < 2 * NF; ++t) {
+        VF xI1, xI2;
+        Decompress2(df, v_span, qkv_dim * t + i, xI1, xI2);
+
+        auto mul_add = [&](int j, VF& o0, VF& o1) HWY_ATTR {
+          const auto c = hn::Set(df, consts_buffer[t + 2 * j * kMaxLanes]);
+          o0 = hn::MulAdd(xI1, c, o0);
+          o1 = hn::MulAdd(xI2, c, o1);
+        };
+
+        mul_add(0, out0_0, out0_1);
+        if constexpr (N >= 2) mul_add(1, out1_0, out1_1);
+        if constexpr (N >= 3) mul_add(2, out2_0, out2_1);
+        if constexpr (N >= 4) mul_add(3, out3_0, out3_1);
+        if constexpr (N >= 5) mul_add(4, out4_0, out4_1);
+        if constexpr (N >= 6) mul_add(5, out5_0, out5_1);
+        if constexpr (N >= 7) mul_add(6, out6_0, out6_1);
+        if constexpr (N >= 8) mul_add(7, out7_0, out7_1);
       }
     }
     StoreUpTo8Times2<N>(df, out, i, out0_0, out0_1, out1_0, out1_1, out2_0,
@@ -1204,15 +1094,13 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8(
   HWY_DASSERT(qkv_dim == i);
 }
 
-// Specialized version for BF16 models that uses int16 quantization for V.
 template <int32_t N, class DF, class VF = hn::Vec<DF>>
 HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16_Int16(
-    DF df, const float* HWY_RESTRICT scales, const VF& c0_p0, const VF& c0_p1,
-    const VF& c1_p0, const VF& c1_p1, const VF& c2_p0, const VF& c2_p1,
-    const VF& c3_p0, const VF& c3_p1, const VF& c4_p0, const VF& c4_p1,
-    const VF& c5_p0, const VF& c5_p1, const VF& c6_p0, const VF& c6_p1,
-    const VF& c7_p0, const VF& c7_p1, const int8_t* HWY_RESTRICT v_tile,
-    MatPtrT<float>& out, const float* HWY_RESTRICT q_scales_s) {
+    DF df, const float* HWY_RESTRICT scales_old, size_t actual_steps,
+    const int16_t* HWY_RESTRICT step_cs_i16,
+    const int8_t* const* HWY_RESTRICT step_v_tiles,
+    MatPtrT<float>& out,
+    const float* const* HWY_RESTRICT step_q_scales_s) {
   static_assert(N <= 8);
   namespace hn = hwy::HWY_NAMESPACE;
   const size_t qkv_dim = out.Cols();
@@ -1230,117 +1118,102 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16_Int16(
   const hn::Half<DI8> di8_half;
   HWY_LANES_CONSTEXPR size_t kInt16Lanes = hn::Lanes(di16);
 
-  HWY_ALIGN int16_t cs_i16[N * kMaxLanes * 2];
-
-  auto quantize_s_and_store = [&](int j, const VF& p0, const VF& p1) HWY_ATTR {
-    auto i0 =
-        hn::OrderedDemote2To(di16, hn::NearestInt(p0), hn::NearestInt(p1));
-    hn::Store(i0, di16, cs_i16 + j * kMaxLanes * 2);
-  };
-
-  quantize_s_and_store(0, c0_p0, c0_p1);
-  if constexpr (N >= 2) quantize_s_and_store(1, c1_p0, c1_p1);
-  if constexpr (N >= 3) quantize_s_and_store(2, c2_p0, c2_p1);
-  if constexpr (N >= 4) quantize_s_and_store(3, c3_p0, c3_p1);
-  if constexpr (N >= 5) quantize_s_and_store(4, c4_p0, c4_p1);
-  if constexpr (N >= 6) quantize_s_and_store(5, c5_p0, c5_p1);
-  if constexpr (N >= 7) quantize_s_and_store(6, c6_p0, c6_p1);
-  if constexpr (N >= 8) quantize_s_and_store(7, c7_p0, c7_p1);
-
   size_t i = 0;
   HWY_DASSERT(qkv_dim % (NF * 2) == 0);
   while (i + 2 * NF <= qkv_dim) {
-    VI32 acc0_0 = hn::Zero(di32), acc0_1 = hn::Zero(di32);
-    VI32 acc1_0 = hn::Zero(di32), acc1_1 = hn::Zero(di32);
-    VI32 acc2_0 = hn::Zero(di32), acc2_1 = hn::Zero(di32);
-    VI32 acc3_0 = hn::Zero(di32), acc3_1 = hn::Zero(di32);
-    VI32 acc4_0 = hn::Zero(di32), acc4_1 = hn::Zero(di32);
-    VI32 acc5_0 = hn::Zero(di32), acc5_1 = hn::Zero(di32);
-    VI32 acc6_0 = hn::Zero(di32), acc6_1 = hn::Zero(di32);
-    VI32 acc7_0 = hn::Zero(di32), acc7_1 = hn::Zero(di32);
+    VF out0_0, out1_0, out2_0, out3_0, out4_0, out5_0, out6_0, out7_0;
+    VF out0_1, out1_1, out2_1, out3_1, out4_1, out5_1, out6_1, out7_1;
+    LoadAndMulUpTo8Times2<N>(df, out, i, scales_old, out0_0, out0_1, out1_0,
+                             out1_1, out2_0, out2_1, out3_0, out3_1, out4_0,
+                             out4_1, out5_0, out5_1, out6_0, out6_1, out7_0,
+                             out7_1);
 
-    VI32 acc0_o_0 = hn::Zero(di32), acc0_o_1 = hn::Zero(di32);
-    VI32 acc1_o_0 = hn::Zero(di32), acc1_o_1 = hn::Zero(di32);
-    VI32 acc2_o_0 = hn::Zero(di32), acc2_o_1 = hn::Zero(di32);
-    VI32 acc3_o_0 = hn::Zero(di32), acc3_o_1 = hn::Zero(di32);
-    VI32 acc4_o_0 = hn::Zero(di32), acc4_o_1 = hn::Zero(di32);
-    VI32 acc5_o_0 = hn::Zero(di32), acc5_o_1 = hn::Zero(di32);
-    VI32 acc6_o_0 = hn::Zero(di32), acc6_o_1 = hn::Zero(di32);
-    VI32 acc7_o_0 = hn::Zero(di32), acc7_o_1 = hn::Zero(di32);
+    for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+      const int16_t* cs_i16 = step_cs_i16 + step_idx * (N * kMaxLanes * 2);
+      const int8_t* v_tile = step_v_tiles[step_idx];
+      const float* q_scales_s = step_q_scales_s[step_idx];
 
-    for (int lane = 0; lane < NF; ++lane) {
-      VI16 vi_first8, vi_next8;
+      VI32 acc0_0 = hn::Zero(di32), acc0_1 = hn::Zero(di32);
+      VI32 acc1_0 = hn::Zero(di32), acc1_1 = hn::Zero(di32);
+      VI32 acc2_0 = hn::Zero(di32), acc2_1 = hn::Zero(di32);
+      VI32 acc3_0 = hn::Zero(di32), acc3_1 = hn::Zero(di32);
+      VI32 acc4_0 = hn::Zero(di32), acc4_1 = hn::Zero(di32);
+      VI32 acc5_0 = hn::Zero(di32), acc5_1 = hn::Zero(di32);
+      VI32 acc6_0 = hn::Zero(di32), acc6_1 = hn::Zero(di32);
+      VI32 acc7_0 = hn::Zero(di32), acc7_1 = hn::Zero(di32);
 
-      const int8_t* v_ptr = v_tile + 2 * qkv_dim * lane + i * 2;
+      VI32 acc0_o_0 = hn::Zero(di32), acc0_o_1 = hn::Zero(di32);
+      VI32 acc1_o_0 = hn::Zero(di32), acc1_o_1 = hn::Zero(di32);
+      VI32 acc2_o_0 = hn::Zero(di32), acc2_o_1 = hn::Zero(di32);
+      VI32 acc3_o_0 = hn::Zero(di32), acc3_o_1 = hn::Zero(di32);
+      VI32 acc4_o_0 = hn::Zero(di32), acc4_o_1 = hn::Zero(di32);
+      VI32 acc5_o_0 = hn::Zero(di32), acc5_o_1 = hn::Zero(di32);
+      VI32 acc6_o_0 = hn::Zero(di32), acc6_o_1 = hn::Zero(di32);
+      VI32 acc7_o_0 = hn::Zero(di32), acc7_o_1 = hn::Zero(di32);
 
-      auto v8_t0 = hn::LoadU(di8_half, v_ptr);
-      auto v16_t0 = hn::PromoteTo(di16, v8_t0);
+      for (size_t token_pair_idx = 0; token_pair_idx < NF; ++token_pair_idx) {
+        VI16 vi_first8, vi_next8;
 
-      auto v8_t1 = hn::LoadU(di8_half, v_ptr + kInt16Lanes);
-      auto v16_t1 = hn::PromoteTo(di16, v8_t1);
+        const int8_t* v_ptr = v_tile + 2 * qkv_dim * token_pair_idx + i * 2;
 
-      vi_first8 = v16_t0;
-      vi_next8 = v16_t1;
+        auto v8_t0 = hn::LoadU(di8_half, v_ptr);
+        auto v16_t0 = hn::PromoteTo(di16, v8_t0);
 
-      auto mul_acc = [&](int j, VI32& a0, VI32& a_o0, VI32& a1,
-                         VI32& a_o1) HWY_ATTR {
-        int16_t s0 = cs_i16[2 * lane + j * kMaxLanes * 2];
-        int16_t s1 = cs_i16[2 * lane + 1 + j * kMaxLanes * 2];
+        auto v8_t1 = hn::LoadU(di8_half, v_ptr + kInt16Lanes);
+        auto v16_t1 = hn::PromoteTo(di16, v8_t1);
 
-        int32_t s01;
-        hwy::CopySameSize(&s0, reinterpret_cast<int16_t*>(&s01));
-        hwy::CopySameSize(&s1, reinterpret_cast<int16_t*>(&s01) + 1);
-        VI16 sj = hn::BitCast(di16, hn::Set(di32, s01));
+        vi_first8 = v16_t0;
+        vi_next8 = v16_t1;
 
-        a0 = hn::ReorderWidenMulAccumulate(di32, vi_first8, sj, a0, a_o0);
-        a1 = hn::ReorderWidenMulAccumulate(di32, vi_next8, sj, a1, a_o1);
+        auto mul_acc = [&](int j, VI32& a0, VI32& a_o0, VI32& a1,
+                           VI32& a_o1) HWY_ATTR {
+          const int32_t* s_ptr = reinterpret_cast<const int32_t*>(
+              &cs_i16[2 * token_pair_idx + j * kMaxLanes * 2]);
+          VI16 sj = hn::BitCast(di16, hn::Set(di32, *s_ptr));
+
+          a0 = hn::ReorderWidenMulAccumulate(di32, vi_first8, sj, a0, a_o0);
+          a1 = hn::ReorderWidenMulAccumulate(di32, vi_next8, sj, a1, a_o1);
+        };
+
+        mul_acc(0, acc0_0, acc0_o_0, acc0_1, acc0_o_1);
+        if constexpr (N >= 2) mul_acc(1, acc1_0, acc1_o_0, acc1_1, acc1_o_1);
+        if constexpr (N >= 3) mul_acc(2, acc2_0, acc2_o_0, acc2_1, acc2_o_1);
+        if constexpr (N >= 4) mul_acc(3, acc3_0, acc3_o_0, acc3_1, acc3_o_1);
+        if constexpr (N >= 5) mul_acc(4, acc4_0, acc4_o_0, acc4_1, acc4_o_1);
+        if constexpr (N >= 6) mul_acc(5, acc5_0, acc5_o_0, acc5_1, acc5_o_1);
+        if constexpr (N >= 7) mul_acc(6, acc6_0, acc6_o_0, acc6_1, acc6_o_1);
+        if constexpr (N >= 8) mul_acc(7, acc7_0, acc7_o_0, acc7_1, acc7_o_1);
+      }
+
+      auto convert_and_add = [&](int j, VI32& a0, VI32& a_o0, VI32& a1,
+                                 VI32& a_o1, VF& o0, VF& o1) HWY_ATTR {
+        VF f0 = hn::ConvertTo(df, hn::RearrangeToOddPlusEven(a0, a_o0));
+        VF f1 = hn::ConvertTo(df, hn::RearrangeToOddPlusEven(a1, a_o1));
+
+        VF scale_new = hn::Set(df, q_scales_s[j]);
+        o0 = hn::MulAdd(f0, scale_new, o0);
+        o1 = hn::MulAdd(f1, scale_new, o1);
       };
 
-      mul_acc(0, acc0_0, acc0_o_0, acc0_1, acc0_o_1);
-      if constexpr (N >= 2) mul_acc(1, acc1_0, acc1_o_0, acc1_1, acc1_o_1);
-      if constexpr (N >= 3) mul_acc(2, acc2_0, acc2_o_0, acc2_1, acc2_o_1);
-      if constexpr (N >= 4) mul_acc(3, acc3_0, acc3_o_0, acc3_1, acc3_o_1);
-      if constexpr (N >= 5) mul_acc(4, acc4_0, acc4_o_0, acc4_1, acc4_o_1);
-      if constexpr (N >= 6) mul_acc(5, acc5_0, acc5_o_0, acc5_1, acc5_o_1);
-      if constexpr (N >= 7) mul_acc(6, acc6_0, acc6_o_0, acc6_1, acc6_o_1);
-      if constexpr (N >= 8) mul_acc(7, acc7_0, acc7_o_0, acc7_1, acc7_o_1);
+      convert_and_add(0, acc0_0, acc0_o_0, acc0_1, acc0_o_1, out0_0, out0_1);
+      if constexpr (N >= 2)
+        convert_and_add(1, acc1_0, acc1_o_0, acc1_1, acc1_o_1, out1_0, out1_1);
+      if constexpr (N >= 3)
+        convert_and_add(2, acc2_0, acc2_o_0, acc2_1, acc2_o_1, out2_0, out2_1);
+      if constexpr (N >= 4)
+        convert_and_add(3, acc3_0, acc3_o_0, acc3_1, acc3_o_1, out3_0, out3_1);
+      if constexpr (N >= 5)
+        convert_and_add(4, acc4_0, acc4_o_0, acc4_1, acc4_o_1, out4_0, out4_1);
+      if constexpr (N >= 6)
+        convert_and_add(5, acc5_0, acc5_o_0, acc5_1, acc5_o_1, out5_0, out5_1);
+      if constexpr (N >= 7)
+        convert_and_add(6, acc6_0, acc6_o_0, acc6_1, acc6_o_1, out6_0, out6_1);
+      if constexpr (N >= 8)
+        convert_and_add(7, acc7_0, acc7_o_0, acc7_1, acc7_o_1, out7_0, out7_1);
     }
-
-    auto convert_and_add = [&](int j, VI32& a0, VI32& a_o0, VI32& a1,
-                               VI32& a_o1) HWY_ATTR {
-      VF f0 = hn::ConvertTo(df, hn::RearrangeToOddPlusEven(a0, a_o0));
-      VF f1 = hn::ConvertTo(df, hn::RearrangeToOddPlusEven(a1, a_o1));
-
-      VF o0 = hn::Load(df, out.Row(j) + i);
-      VF o1 = hn::Load(df, out.Row(j) + i + NF);
-
-      VF scale_old = hn::Set(df, scales[j]);
-      o0 = hn::Mul(o0, scale_old);
-      o1 = hn::Mul(o1, scale_old);
-
-      VF scale_new = hn::Set(df, q_scales_s[j]);
-      o0 = hn::MulAdd(f0, scale_new, o0);
-      o1 = hn::MulAdd(f1, scale_new, o1);
-
-      hn::Store(o0, df, out.Row(j) + i);
-      hn::Store(o1, df, out.Row(j) + i + NF);
-    };
-
-    convert_and_add(0, acc0_0, acc0_o_0, acc0_1, acc0_o_1);
-    if constexpr (N >= 2)
-      convert_and_add(1, acc1_0, acc1_o_0, acc1_1, acc1_o_1);
-    if constexpr (N >= 3)
-      convert_and_add(2, acc2_0, acc2_o_0, acc2_1, acc2_o_1);
-    if constexpr (N >= 4)
-      convert_and_add(3, acc3_0, acc3_o_0, acc3_1, acc3_o_1);
-    if constexpr (N >= 5)
-      convert_and_add(4, acc4_0, acc4_o_0, acc4_1, acc4_o_1);
-    if constexpr (N >= 6)
-      convert_and_add(5, acc5_0, acc5_o_0, acc5_1, acc5_o_1);
-    if constexpr (N >= 7)
-      convert_and_add(6, acc6_0, acc6_o_0, acc6_1, acc6_o_1);
-    if constexpr (N >= 8)
-      convert_and_add(7, acc7_0, acc7_o_0, acc7_1, acc7_o_1);
+    StoreUpTo8Times2<N>(df, out, i, out0_0, out0_1, out1_0, out1_1, out2_0,
+                        out2_1, out3_0, out3_1, out4_0, out4_1, out5_0, out5_1,
+                        out6_0, out6_1, out7_0, out7_1);
 
     i += 2 * NF;
   }
@@ -1348,10 +1221,9 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16_Int16(
 
 template <int32_t N, class DF, class VF = hn::Vec<DF>, typename VType>
 HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
-    DF df, const float* HWY_RESTRICT scales, VF c0_p0, VF c0_p1, VF c1_p0,
-    VF c1_p1, VF c2_p0, VF c2_p1, VF c3_p0, VF c3_p1, VF c4_p0, VF c4_p1,
-    VF c5_p0, VF c5_p1, VF c6_p0, VF c6_p1, VF c7_p0, VF c7_p1,
-    VType* HWY_RESTRICT v_tile, MatPtrT<float>& out) {
+    DF df, const float* HWY_RESTRICT scales_old, size_t actual_steps,
+    const BF16* HWY_RESTRICT step_cs,
+    const VType* const* HWY_RESTRICT step_v_tiles, MatPtrT<float>& out) {
   static_assert(N <= 8);
   namespace hn = hwy::HWY_NAMESPACE;
   const size_t qkv_dim = out.Cols();
@@ -1360,32 +1232,6 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
   using DBF = hn::ScalableTag<BF16>;
   const DBF dbf;
   using VBF = hn::Vec<DBF>;
-  PackedSpan<const VType> v_span = MakeConstSpan(v_tile, qkv_dim * 2 * NF);
-  HWY_ALIGN BF16 cs[N * kMaxLanes * 2];
-  PackedSpan<BF16> cs_span = MakeSpan(cs, N * kMaxLanes * 2);
-  float* cs_as_float = HWY_RCAST_ALIGNED(float*, cs);
-  Compress2(df, c0_p0, c0_p1, cs_span, 0);
-  if constexpr (N >= 2) {
-    Compress2(df, c1_p0, c1_p1, cs_span, kMaxLanes * 2);
-  }
-  if constexpr (N >= 3) {
-    Compress2(df, c2_p0, c2_p1, cs_span, 2 * kMaxLanes * 2);
-  }
-  if constexpr (N >= 4) {
-    Compress2(df, c3_p0, c3_p1, cs_span, 3 * kMaxLanes * 2);
-  }
-  if constexpr (N >= 5) {
-    Compress2(df, c4_p0, c4_p1, cs_span, 4 * kMaxLanes * 2);
-  }
-  if constexpr (N >= 6) {
-    Compress2(df, c5_p0, c5_p1, cs_span, 5 * kMaxLanes * 2);
-  }
-  if constexpr (N >= 7) {
-    Compress2(df, c6_p0, c6_p1, cs_span, 6 * kMaxLanes * 2);
-  }
-  if constexpr (N >= 8) {
-    Compress2(df, c7_p0, c7_p1, cs_span, 7 * kMaxLanes * 2);
-  }
   size_t i = 0;
   HWY_DASSERT(qkv_dim % (NF * 2) == 0);
   while (i + NF * 2 <= qkv_dim) {
@@ -1393,6 +1239,10 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
     VF out0_1, out1_1, out2_1, out3_1;
     VF out4_0, out5_0, out6_0, out7_0;
     VF out4_1, out5_1, out6_1, out7_1;
+    LoadAndMulUpTo8Times2<N>(df, out, i, scales_old, out0_0, out0_1, out1_0,
+                             out1_1, out2_0, out2_1, out3_0, out3_1, out4_0,
+                             out4_1, out5_0, out5_1, out6_0, out6_1, out7_0,
+                             out7_1);
     VF helper_out0_0 = hn::Zero(df), helper_out0_1 = hn::Zero(df),
        helper_out1_0 = hn::Zero(df), helper_out1_1 = hn::Zero(df),
        helper_out2_0 = hn::Zero(df), helper_out2_1 = hn::Zero(df),
@@ -1401,122 +1251,61 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
        helper_out5_0 = hn::Zero(df), helper_out5_1 = hn::Zero(df),
        helper_out6_0 = hn::Zero(df), helper_out6_1 = hn::Zero(df),
        helper_out7_0 = hn::Zero(df), helper_out7_1 = hn::Zero(df);
-    LoadAndMulUpTo8Times2<N>(df, out, i, scales, out0_0, out0_1, out1_0, out1_1,
-                             out2_0, out2_1, out3_0, out3_1, out4_0, out4_1,
-                             out5_0, out5_1, out6_0, out6_1, out7_0, out7_1);
-    for (int lane = 0; lane < NF; ++lane) {
-      VBF xI, xI2;
-      Decompress2(dbf, v_span, 2 * qkv_dim * lane + i * 2, xI, xI2);
+    for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+      const BF16* cs = step_cs + step_idx * (N * kMaxLanes * 2);
+      const float* cs_as_float = HWY_RCAST_ALIGNED(const float*, cs);
+      const VType* v_tile = step_v_tiles[step_idx];
+      PackedSpan<const VType> v_span = MakeConstSpan(v_tile, qkv_dim * 2 * NF);
 
-      // Set pair of c scales for 2 value vectors
-      out0_0 = hn::ReorderWidenMulAccumulate(
-          df, xI, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_0,
-          helper_out0_0);
-      out0_1 = hn::ReorderWidenMulAccumulate(
-          df, xI2, hn::BitCast(dbf, hn::Set(df, cs_as_float[lane])), out0_1,
-          helper_out0_1);
-      if constexpr (N >= 2) {
-        out1_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
-            out1_0, helper_out1_0);
-        out1_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + kMaxLanes])),
-            out1_1, helper_out1_1);
-      }
-      if constexpr (N >= 3) {
-        out2_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
-            out2_0, helper_out2_0);
-        out2_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 2 * kMaxLanes])),
-            out2_1, helper_out2_1);
-      }
-      if constexpr (N >= 4) {
-        out3_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
-            out3_0, helper_out3_0);
-        out3_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 3 * kMaxLanes])),
-            out3_1, helper_out3_1);
-      }
-      if constexpr (N >= 5) {
-        out4_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
-            out4_0, helper_out4_0);
-        out4_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 4 * kMaxLanes])),
-            out4_1, helper_out4_1);
-      }
-      if constexpr (N >= 6) {
-        out5_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
-            out5_0, helper_out5_0);
-        out5_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 5 * kMaxLanes])),
-            out5_1, helper_out5_1);
-      }
-      if constexpr (N >= 7) {
-        out6_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
-            out6_0, helper_out6_0);
-        out6_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 6 * kMaxLanes])),
-            out6_1, helper_out6_1);
-      }
-      if constexpr (N >= 8) {
-        out7_0 = hn::ReorderWidenMulAccumulate(
-            df, xI,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
-            out7_0, helper_out7_0);
-        out7_1 = hn::ReorderWidenMulAccumulate(
-            df, xI2,
-            hn::BitCast(dbf, hn::Set(df, cs_as_float[lane + 7 * kMaxLanes])),
-            out7_1, helper_out7_1);
+      for (size_t token_pair_idx = 0; token_pair_idx < NF; ++token_pair_idx) {
+        VBF xI, xI2;
+        Decompress2(dbf, v_span, 2 * qkv_dim * token_pair_idx + i * 2, xI, xI2);
+
+        // Set pair of c scales for 2 value vectors
+        auto mul_acc = [&](int j, VF& o0, VF& h0, VF& o1, VF& h1) HWY_ATTR {
+          VBF cs_pair = hn::BitCast(
+              dbf, hn::Set(df, cs_as_float[token_pair_idx + j * kMaxLanes]));
+          o0 = hn::ReorderWidenMulAccumulate(df, xI, cs_pair, o0, h0);
+          o1 = hn::ReorderWidenMulAccumulate(df, xI2, cs_pair, o1, h1);
+        };
+
+        mul_acc(0, out0_0, helper_out0_0, out0_1, helper_out0_1);
+        if constexpr (N >= 2)
+          mul_acc(1, out1_0, helper_out1_0, out1_1, helper_out1_1);
+        if constexpr (N >= 3)
+          mul_acc(2, out2_0, helper_out2_0, out2_1, helper_out2_1);
+        if constexpr (N >= 4)
+          mul_acc(3, out3_0, helper_out3_0, out3_1, helper_out3_1);
+        if constexpr (N >= 5)
+          mul_acc(4, out4_0, helper_out4_0, out4_1, helper_out4_1);
+        if constexpr (N >= 6)
+          mul_acc(5, out5_0, helper_out5_0, out5_1, helper_out5_1);
+        if constexpr (N >= 7)
+          mul_acc(6, out6_0, helper_out6_0, out6_1, helper_out6_1);
+        if constexpr (N >= 8)
+          mul_acc(7, out7_0, helper_out7_0, out7_1, helper_out7_1);
       }
     }
 #if HWY_NATIVE_DOT_BF16 == 0
-    out0_0 = hn::Add(out0_0, helper_out0_0);
-    out0_1 = hn::Add(out0_1, helper_out0_1);
-    if constexpr (N >= 2) {
-      out1_0 = hn::Add(out1_0, helper_out1_0);
-      out1_1 = hn::Add(out1_1, helper_out1_1);
-    }
-    if constexpr (N >= 3) {
-      out2_0 = hn::Add(out2_0, helper_out2_0);
-      out2_1 = hn::Add(out2_1, helper_out2_1);
-    }
-    if constexpr (N >= 4) {
-      out3_0 = hn::Add(out3_0, helper_out3_0);
-      out3_1 = hn::Add(out3_1, helper_out3_1);
-    }
-    if constexpr (N >= 5) {
-      out4_0 = hn::Add(out4_0, helper_out4_0);
-      out4_1 = hn::Add(out4_1, helper_out4_1);
-    }
-    if constexpr (N >= 6) {
-      out5_0 = hn::Add(out5_0, helper_out5_0);
-      out5_1 = hn::Add(out5_1, helper_out5_1);
-    }
-    if constexpr (N >= 7) {
-      out6_0 = hn::Add(out6_0, helper_out6_0);
-      out6_1 = hn::Add(out6_1, helper_out6_1);
-    }
-    if constexpr (N >= 8) {
-      out7_0 = hn::Add(out7_0, helper_out7_0);
-      out7_1 = hn::Add(out7_1, helper_out7_1);
-    }
+    auto add_helper = [&](VF& o0, VF& o1, const VF& h0, const VF& h1) HWY_ATTR {
+      o0 = hn::Add(o0, h0);
+      o1 = hn::Add(o1, h1);
+    };
+    add_helper(out0_0, out0_1, helper_out0_0, helper_out0_1);
+    if constexpr (N >= 2)
+      add_helper(out1_0, out1_1, helper_out1_0, helper_out1_1);
+    if constexpr (N >= 3)
+      add_helper(out2_0, out2_1, helper_out2_0, helper_out2_1);
+    if constexpr (N >= 4)
+      add_helper(out3_0, out3_1, helper_out3_0, helper_out3_1);
+    if constexpr (N >= 5)
+      add_helper(out4_0, out4_1, helper_out4_0, helper_out4_1);
+    if constexpr (N >= 6)
+      add_helper(out5_0, out5_1, helper_out5_0, helper_out5_1);
+    if constexpr (N >= 7)
+      add_helper(out6_0, out6_1, helper_out6_0, helper_out6_1);
+    if constexpr (N >= 8)
+      add_helper(out7_0, out7_1, helper_out7_0, helper_out7_1);
 #endif
     StoreUpTo8Times2<N>(df, out, i, out0_0, out0_1, out1_0, out1_1, out2_0,
                         out2_1, out3_0, out3_1, out4_0, out4_1, out5_0, out5_1,
@@ -2006,7 +1795,7 @@ HWY_INLINE void ApplySoftCap(DF df, float att_cap, float one_over_cap, VF& x0,
 
 template <int kNumQueries, class DF, class VF = hn::Vec<DF>,
           typename DU = hn::ScalableTag<uint32_t>, class VU = hn::Vec<DU>>
-HWY_NOINLINE void ApplyMasking(DF df, DU du, size_t position,
+HWY_INLINE void ApplyMasking(DF df, DU du, size_t position,
                                const size_t* HWY_RESTRICT first_pos_per_query,
                                const size_t* HWY_RESTRICT last_pos_per_query,
                                VF& x0_p0, VF& x0_p1, VF& x1_p0, VF& x1_p1,
@@ -2146,6 +1935,37 @@ HWY_INLINE void ApplyQuantizationScale(
   if constexpr (kNumQueries >= 8) {
     apply_scale(7, x7_p0, x7_p1);
   }
+}
+
+template <int kNumQueries, class DF, class VF>
+HWY_INLINE void MultiplyByScaleAndQuantScale(
+    DF df, const BF16* scales, const float* HWY_RESTRICT q_scales,
+    size_t query_idx, VF& x0_p0, VF& x0_p1, VF& x1_p0, VF& x1_p1, VF& x2_p0,
+    VF& x2_p1, VF& x3_p0, VF& x3_p1, VF& x4_p0, VF& x4_p1, VF& x5_p0, VF& x5_p1,
+    VF& x6_p0, VF& x6_p1, VF& x7_p0, VF& x7_p1) {
+  const size_t kTileSize = hn::Lanes(df);
+  const PackedSpan<const BF16> scales_span =
+      MakeConstSpan(scales, 2 * kTileSize);
+  VF scales_p0, scales_p1;
+  Decompress2(df, scales_span, 0, scales_p0, scales_p1);
+
+  auto apply_both = [&](size_t i, VF& x_p0, VF& x_p1) HWY_ATTR {
+    size_t scale_idx = query_idx + i;
+    VF s = hn::Set(df, q_scales[scale_idx]);
+    x_p0 = hn::Mul(x_p0, scales_p0);
+    x_p1 = hn::Mul(x_p1, scales_p1);
+    x_p0 = hn::Mul(x_p0, s);
+    x_p1 = hn::Mul(x_p1, s);
+  };
+
+  if constexpr (kNumQueries >= 1) apply_both(0, x0_p0, x0_p1);
+  if constexpr (kNumQueries >= 2) apply_both(1, x1_p0, x1_p1);
+  if constexpr (kNumQueries >= 3) apply_both(2, x2_p0, x2_p1);
+  if constexpr (kNumQueries >= 4) apply_both(3, x3_p0, x3_p1);
+  if constexpr (kNumQueries >= 5) apply_both(4, x4_p0, x4_p1);
+  if constexpr (kNumQueries >= 6) apply_both(5, x5_p0, x5_p1);
+  if constexpr (kNumQueries >= 7) apply_both(6, x6_p0, x6_p1);
+  if constexpr (kNumQueries >= 8) apply_both(7, x7_p0, x7_p1);
 }
 
 template <size_t kTargetLanes = 4, class D, typename V>
