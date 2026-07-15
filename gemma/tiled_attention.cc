@@ -605,7 +605,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     const size_t layer_idx, const LayerWeightsPtrs& layer,
     AttentionActivationsPtrs& activations, QBatch& qbatch,
     ThreadingContext& ctx) {
-  constexpr size_t kQueriesPerSubtask = 32;
+  constexpr size_t kQueriesPerSubtask = 128;
   const size_t heads_per_kv_head =
       layer.layer_config.heads / layer.layer_config.kv_heads;
   const hwy::Divisor div_heads_per_kv_head(heads_per_kv_head);
