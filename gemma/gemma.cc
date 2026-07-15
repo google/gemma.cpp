@@ -63,6 +63,7 @@
 
 #include "gemma/configs.h"
 #include "gemma/model_store.h"
+#include "gemma/tokenizer.h"
 #include "gemma/weights.h"
 #include "io/blob_store.h"
 #include "io/io.h"  // Path
@@ -245,9 +246,6 @@ static HWY_INLINE void EmbedTokenFromWeights(int token, size_t x_row,
   });
 }
 
-static constexpr int kT5GemmaPadId = 0;
-static constexpr int kT5GemmaBosId = 2;
-
 static void StreamAndUpdateEOS(size_t qi, size_t pos, int token,
                                float prob, const ModelConfig& config,
                                const RuntimeConfig& runtime_config,
@@ -290,7 +288,7 @@ static void InitT5GemmaEncoderCache(const ModelConfig& config,
   }
   cache.pad_mask.resize(cache.source_len);
   for (size_t i = 0; i < cache.source_len; ++i) {
-    cache.pad_mask[i] = prompt[i] == kT5GemmaPadId ? 1 : 0;
+    cache.pad_mask[i] = prompt[i] == T5GEMMA_PAD_ID ? 1 : 0;
   }
 }
 
@@ -306,7 +304,7 @@ static void AttachT5GemmaEncoderCaches(
                             allocator);
     all_queries[qi].t5gemma_encoder_cache = &encoder_caches[qi];
     all_queries[qi].mutable_pos = 0;
-    all_queries[qi].prev_token = kT5GemmaBosId;
+    all_queries[qi].prev_token = BOS_ID;
   }
 }
 
@@ -329,11 +327,6 @@ static HWY_INLINE bool T5GemmaEncoderCanAttend(const ModelConfig& config,
   const size_t distance = query_pos > key_pos ? query_pos - key_pos
                                               : key_pos - query_pos;
   return distance <= window_size;
-}
-
-static HWY_INLINE float T5GemmaMaybeSoftCap(float score, float cap) {
-  if (cap == 0.0f) return score;
-  return cap * tanhf(score / cap);
 }
 
 static void T5GemmaApplyRope(const LayerConfig& layer_config,
@@ -404,7 +397,7 @@ static void T5GemmaEncoderAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * key[dim];
         }
-        score = T5GemmaMaybeSoftCap(score, config.att_cap);
+        score = MaybeLogitsSoftCap(config.att_cap, score);
         max_score = std::max(max_score, score);
       }
 
@@ -424,7 +417,7 @@ static void T5GemmaEncoderAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * key[dim];
         }
-        score = T5GemmaMaybeSoftCap(score, config.att_cap);
+        score = MaybeLogitsSoftCap(config.att_cap, score);
         const float weight = expf(score - max_score);
         denom += weight;
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
@@ -495,7 +488,7 @@ static void T5GemmaEncoderLayerReference(
 static void T5GemmaEncode(const ModelConfig& config, const WeightsPtrs& weights,
                           const PromptTokens& prompt,
                           T5GemmaEncoderCache& encoder_cache,
-                          MatMulEnv& env) {
+                          Activations& activations, MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbed);
   HWY_ASSERT(config.is_encoder_decoder);
   HWY_ASSERT(encoder_cache.source_len == prompt.size());
@@ -508,58 +501,22 @@ static void T5GemmaEncode(const ModelConfig& config, const WeightsPtrs& weights,
                           weights.t5gemma_encoder_embedding,
                           encoder_cache.hidden_states);
     HWY_DASSERT(encoder_cache.pad_mask[pos] ==
-                (prompt[pos] == kT5GemmaPadId ? 1 : 0));
+                (prompt[pos] == T5GEMMA_PAD_ID ? 1 : 0));
   }
 
-  const LayerConfig& layer_config = config.encoder_layer_configs[0];
   const size_t source_len = encoder_cache.source_len;
-  MatStorageT<BF16> pre_att_rms_out(
-      MatFactory("t5_e_pre_att", source_len, config.model_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> q(
-      MatFactory("t5_e_q", source_len,
-                 layer_config.heads * layer_config.qkv_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> kv(
-      MatFactory("t5_e_kv", source_len,
-                 2 * layer_config.kv_heads * layer_config.qkv_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> att_out(
-      MatFactory("t5_e_att_out", source_len,
-                 layer_config.heads * layer_config.qkv_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> att_sums(
-      MatFactory("t5_e_att_sums", source_len, config.model_dim,
-                 env.ctx.allocator));
-  MatStorageT<BF16> pre_ffw_rms_out(
-      MatFactory("t5_e_pre_ffw", source_len, config.model_dim,
-                 env.ctx.allocator));
-  MatStorageT<BF16> c1(
-      MatFactory("t5_e_c1", source_len, layer_config.ff_hidden_dim,
-                 env.ctx.allocator));
-  MatStorageT<BF16> c2(
-      MatFactory("t5_e_c2", source_len, layer_config.ff_hidden_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> ffw_out(
-      MatFactory("t5_e_ffw_out", source_len, config.model_dim,
-                 env.ctx.allocator));
-  MatStorageT<float> inv_timescale =
-      CreateInvTimescale(env.ctx.allocator, layer_config.qkv_dim,
-                         layer_config.post_qk == PostQKType::HalfRope);
-  q.AllocateAndAttachRowPtrs(env.row_ptrs);
-  kv.AllocateAndAttachRowPtrs(env.row_ptrs);
-  att_out.AllocateAndAttachRowPtrs(env.row_ptrs);
-  att_sums.AllocateAndAttachRowPtrs(env.row_ptrs);
-  c1.AllocateAndAttachRowPtrs(env.row_ptrs);
-  c2.AllocateAndAttachRowPtrs(env.row_ptrs);
-  ffw_out.AllocateAndAttachRowPtrs(env.row_ptrs);
+  activations.SetT5EncoderSourceLen(source_len);
 
   for (size_t layer_idx = 0; layer_idx < weights.t5gemma_encoder_layers.size();
        ++layer_idx) {
     T5GemmaEncoderLayerReference(
         config, layer_idx, weights.t5gemma_encoder_layers[layer_idx],
-        encoder_cache, pre_att_rms_out, q, kv, att_out, att_sums,
-        pre_ffw_rms_out, c1, c2, ffw_out, inv_timescale, env);
+        encoder_cache, activations.t5_encoder_pre_att_rms_out,
+        activations.t5_encoder_q, activations.t5_encoder_kv,
+        activations.t5_encoder_att_out, activations.t5_encoder_att_sums,
+        activations.t5_encoder_pre_ffw_rms_out, activations.t5_encoder_c1,
+        activations.t5_encoder_c2, activations.t5_encoder_ffw_out,
+        activations.t5_encoder_inv_timescale, env);
   }
   RMSNormInplaceBatched(weights.t5gemma_encoder_final_norm_scale,
                         encoder_cache.hidden_states, env.ctx);
@@ -590,12 +547,13 @@ static void T5GemmaPrecomputeCrossAttentionKV(
 static void T5GemmaEncodeAllQueries(const ModelConfig& config,
                                     const WeightsPtrs& weights,
                                     AllQueries& all_queries,
-                                    MatMulEnv& env) {
+                                    Activations& activations, MatMulEnv& env) {
   for (size_t qi = 0; qi < all_queries.NumQueries(); ++qi) {
     T5GemmaEncoderCache* encoder_cache =
         all_queries[qi].t5gemma_encoder_cache;
-    HWY_ASSERT(encoder_cache != nullptr);
-    T5GemmaEncode(config, weights, all_queries[qi].prompt, *encoder_cache, env);
+    HWY_DASSERT(encoder_cache != nullptr);
+    T5GemmaEncode(config, weights, all_queries[qi].prompt, *encoder_cache,
+                  activations, env);
     T5GemmaPrecomputeCrossAttentionKV(weights, *encoder_cache, env);
   }
 }
@@ -730,7 +688,7 @@ static void T5GemmaDecoderSelfAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * hwy::ConvertScalarTo<float>(key[dim]);
         }
-        score = T5GemmaMaybeSoftCap(score, config.att_cap);
+        score = MaybeLogitsSoftCap(config.att_cap, score);
         max_score = std::max(max_score, score);
       }
 
@@ -746,7 +704,7 @@ static void T5GemmaDecoderSelfAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * hwy::ConvertScalarTo<float>(key[dim]);
         }
-        score = T5GemmaMaybeSoftCap(score, config.att_cap);
+        score = MaybeLogitsSoftCap(config.att_cap, score);
         const float weight = expf(score - max_score);
         denom += weight;
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
@@ -782,16 +740,16 @@ static void T5GemmaDecoderCrossAttentionReference(
 
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     const T5GemmaEncoderCache* encoder_cache = qbatch.T5EncoderCache(qi);
-    HWY_ASSERT(encoder_cache != nullptr);
-    HWY_ASSERT(layer_idx < encoder_cache->cross_keys.size());
-    HWY_ASSERT(layer_idx < encoder_cache->cross_values.size());
+    HWY_DASSERT(encoder_cache != nullptr);
+    HWY_DASSERT(layer_idx < encoder_cache->cross_keys.size());
+    HWY_DASSERT(layer_idx < encoder_cache->cross_values.size());
     const size_t source_len = encoder_cache->source_len;
     const MatStorageT<float>& cross_k = encoder_cache->cross_keys[layer_idx];
     const MatStorageT<float>& cross_v = encoder_cache->cross_values[layer_idx];
-    HWY_ASSERT(cross_k.Rows() == source_len);
-    HWY_ASSERT(cross_v.Rows() == source_len);
-    HWY_ASSERT(cross_k.Cols() == kv_heads * qkv_dim);
-    HWY_ASSERT(cross_v.Cols() == kv_heads * qkv_dim);
+    HWY_DASSERT(cross_k.Rows() == source_len);
+    HWY_DASSERT(cross_v.Rows() == source_len);
+    HWY_DASSERT(cross_k.Cols() == kv_heads * qkv_dim);
+    HWY_DASSERT(cross_v.Cols() == kv_heads * qkv_dim);
 
     for (size_t head = 0; head < heads; ++head) {
       const size_t kv_head = head / heads_per_kv;
@@ -805,8 +763,8 @@ static void T5GemmaDecoderCrossAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * key[dim];
         }
-        score = T5GemmaMaybeSoftCap(score / sqrtf(static_cast<float>(qkv_dim)),
-                                    config.att_cap);
+        score = MaybeLogitsSoftCap(
+            config.att_cap, score / sqrtf(static_cast<float>(qkv_dim)));
         max_score = std::max(max_score, score);
       }
 
@@ -823,8 +781,8 @@ static void T5GemmaDecoderCrossAttentionReference(
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * key[dim];
         }
-        score = T5GemmaMaybeSoftCap(score / sqrtf(static_cast<float>(qkv_dim)),
-                                    config.att_cap);
+        score = MaybeLogitsSoftCap(
+            config.att_cap, score / sqrtf(static_cast<float>(qkv_dim)));
         const float weight = expf(score - max_score);
         denom += weight;
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
@@ -1019,7 +977,7 @@ static void T5GemmaGenerateT(const ModelConfig& config,
   hwy::BitSet4096<> non_eos;
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     non_eos.Set(qi);
-    qbatch.PrevToken(qi) = kT5GemmaBosId;
+    qbatch.PrevToken(qi) = BOS_ID;
   }
 
   const SampleFunc sample_token =
@@ -1761,11 +1719,11 @@ void GenerateSingleT(const PromptTokens& prompt, size_t pos, size_t prefix_end,
                            hwy::Span<KVCache>(&kv_cache, 1));
     AttachT5GemmaEncoderCaches(config, all_queries, encoder_caches,
                                env.ctx.allocator);
-    timing_info.prefill_start = hwy::platform::Now();
-    T5GemmaEncodeAllQueries(config, weights, all_queries, env);
-    timing_info.NotifyPrefill(T5GemmaPromptTokenCount(all_queries));
     Activations activations(runtime_config, config, /*batch_size=*/1,
                             kv_cache.SeqLen(), env.ctx, env.row_ptrs);
+    timing_info.prefill_start = hwy::platform::Now();
+    T5GemmaEncodeAllQueries(config, weights, all_queries, activations, env);
+    timing_info.NotifyPrefill(T5GemmaPromptTokenCount(all_queries));
     QBatch qbatch(/*start=*/0, /*max_size=*/1, all_queries);
     T5GemmaGenerateT(config, runtime_config, engine, weights, activations,
                      qbatch, env, timing_info);
@@ -1793,14 +1751,14 @@ void GenerateBatchT(const ModelConfig& config,
     std::vector<T5GemmaEncoderCache> encoder_caches;
     AttachT5GemmaEncoderCaches(config, all_queries, encoder_caches,
                                env.ctx.allocator);
-    timing_info.prefill_start = hwy::platform::Now();
-    T5GemmaEncodeAllQueries(config, weights, all_queries, env);
-    timing_info.NotifyPrefill(T5GemmaPromptTokenCount(all_queries));
     const size_t max_batch_size = HWY_MAX(runtime_config.decode_qbatch_size,
                                           runtime_config.prefill_tbatch_size);
     Activations activations(runtime_config, config, max_batch_size,
                             all_queries[0].kv_cache.SeqLen(), env.ctx,
                             env.row_ptrs);
+    timing_info.prefill_start = hwy::platform::Now();
+    T5GemmaEncodeAllQueries(config, weights, all_queries, activations, env);
+    timing_info.NotifyPrefill(T5GemmaPromptTokenCount(all_queries));
     QBatch qbatch(/*start=*/0, runtime_config.decode_qbatch_size, all_queries);
     T5GemmaGenerateT(config, runtime_config, engine, weights, activations,
                      qbatch, env, timing_info);

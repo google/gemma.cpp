@@ -29,6 +29,7 @@ namespace gcpp {
 class Tokenizer;
 
 constexpr int BOS_ID = 2;  // beginning of sequence
+constexpr int T5GEMMA_PAD_ID = 0;
 
 // To avoid the complexity of storing the tokenizer into testdata/ or
 // downloading from gs://, while still always writing a blob for the tokenizer,
