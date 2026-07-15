@@ -157,8 +157,18 @@ struct KVCache {
   // Each tile (containing kTileSize elements from the sequence) can be thought
   // of as storing K^T and V, where K is shaped [kTileSize, qkv_dim].
 
-  // Type erased kv cache. It's compact because local layers are allocated as
-  // circular buffers.
+  // Models like Gemma 4 26B use different key/value head dimensions for local
+  // attention layers (e.g. qkv_dim = 256) vs. global attention layers
+  // (e.g. qkv_dim = 512).
+  // Separate storage buffers are maintained for local and global layers so that
+  // local layer tile pointers inherit their native stride (e.g. 16,384 bytes)
+  // and global layer tile pointers inherit theirs (e.g. 32,768 bytes).
+  MatPtr compact_local_kv_cache_ptr;
+  MatOwner compact_local_kv_cache;
+  MatPtr compact_global_kv_cache_ptr;
+  MatOwner compact_global_kv_cache;
+
+  // Legacy/Fallback compact kv cache pointer
   MatPtr compact_kv_cache_ptr;
   MatOwner compact_kv_cache;
   // Pointers to the raw KV storage indexed by layer and head. This helps

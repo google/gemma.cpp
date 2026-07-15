@@ -42,6 +42,8 @@
 
 namespace gcpp {
 
+static std::mutex g_mat_owners_mutex;
+
 // Copies att_weights from `attn_vec_einsum_w`.
 void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
                                       const Allocator& allocator) {
@@ -68,8 +70,7 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
     mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
   }
@@ -174,8 +175,7 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
   att_weights.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(att_weights, ctx.allocator,
                                   MatPadding::kPacked);
@@ -242,8 +242,7 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
   gating_einsum_w2.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(gating_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
@@ -303,6 +302,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
 
     qkv_einsum_w1.SetType(Type::kI8);
     {
+      std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
       mat_owners.emplace_back();
       mat_owners.back().AllocateFor(qkv_einsum_w1, ctx.allocator,
                                     MatPadding::kPacked);
@@ -338,8 +338,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
   qkv_einsum_w2.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(qkv_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
@@ -421,29 +420,35 @@ void LayerWeightsPtrs::Fixup(Model model,
     // This applies to Gemma 4 global layers; the model check will be expanded.
     if (model == Model::GEMMA4_26B_MOE &&
         layer_config.kv_heads == 2 && layer_config.qkv_dim == 512) {
-      const size_t row_bytes =
-          qkv_einsum_w2.Stride() * qkv_einsum_w2.ElementBytes();
+      const size_t old_stride = qkv_einsum_w2.Stride();
+      const size_t elem_bytes = qkv_einsum_w2.ElementBytes();
+      const size_t old_row_bytes = old_stride * elem_bytes;
       const size_t kv_heads = layer_config.kv_heads;
-      const size_t total_bytes = qkv_einsum_w2.Rows() * row_bytes;
+      const size_t total_bytes = qkv_einsum_w2.Rows() * old_row_bytes;
       hwy::AlignedFreeUniquePtr<uint8_t[]> tmp =
           hwy::AllocateAligned<uint8_t>(total_bytes);
       hwy::CopyBytes(qkv_einsum_w2.RowBytes(0), tmp.get(), total_bytes);
 
       {
+        std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
         mat_owners.emplace_back();
         mat_owners.back().AllocateFor(qkv_einsum_w2, ctx.allocator,
                                       MatPadding::kPacked);
       }
 
+      const size_t new_row_bytes = qkv_einsum_w2.Cols() * elem_bytes;
       const size_t qkv_dim = layer_config.qkv_dim;
-      const size_t head_bytes = qkv_dim * row_bytes;
       const uint8_t* src_ptr = tmp.get();
       for (size_t i = 0; i < kv_heads; ++i) {
-        hwy::CopyBytes(src_ptr + i * head_bytes,
-                       qkv_einsum_w2.RowBytes(2 * i * qkv_dim), head_bytes);
-        hwy::CopyBytes(src_ptr + (kv_heads + i) * head_bytes,
-                       qkv_einsum_w2.RowBytes((2 * i + 1) * qkv_dim),
-                       head_bytes);
+        for (size_t row = 0; row < qkv_dim; ++row) {
+          hwy::CopyBytes(src_ptr + (i * qkv_dim + row) * old_row_bytes,
+                         qkv_einsum_w2.RowBytes((2 * i) * qkv_dim + row),
+                         new_row_bytes);
+          hwy::CopyBytes(
+              src_ptr + ((kv_heads + i) * qkv_dim + row) * old_row_bytes,
+              qkv_einsum_w2.RowBytes((2 * i + 1) * qkv_dim + row),
+              new_row_bytes);
+        }
       }
     }
   }
