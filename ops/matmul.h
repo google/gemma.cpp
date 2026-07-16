@@ -127,11 +127,17 @@ struct MMParallelWithinCluster {
     const hwy::pool::Caller caller =
         ctx.pool_callers.Get(Callers::kMMClusterForN);
 
-    ParallelPartitionWithinCluster(
-        range_n, n_multiple, inner_tasks, ctx, cluster_idx, caller,
-        [&](const IndexRange& worker_range, size_t worker) {
-          func(worker_range, worker);
-        });
+    size_t num_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+    size_t worker_tasks = num_workers * inner_tasks;
+    if (hwy::DivCeil(range_n.Num(), worker_tasks) > kMaxNC) {
+      worker_tasks = hwy::DivCeil(range_n.Num(), kMaxNC);
+    }
+    const IndexRangePartition worker_ranges =
+        StaticPartition(range_n, worker_tasks, n_multiple);
+    ParallelForWithinCluster(worker_ranges.NumTasks(), ctx, cluster_idx, caller,
+                             [&](uint64_t w_task, size_t worker) {
+                               func(worker_ranges.Range(w_task), worker);
+                             });
   }
 
   template <class Func>
@@ -204,15 +210,34 @@ struct MMParallelHierarchical {
     (void)caller_cluster_idx;
     const hwy::pool::Caller caller = ctx.pool_callers.Get(Callers::kMMHierForN);
 
-    // Assign clusters (if any) a sub-range of `range_n` (typically hundreds).
-    ParallelPartitionAcrossClusters(
-        range_n, n_multiple, /*inner_tasks=*/1, ctx, caller,
-        [&](const IndexRange& cluster_range, size_t cluster_idx) {
-          ParallelPartitionWithinCluster(
-              cluster_range, n_multiple, inner_tasks, ctx, cluster_idx, caller,
-              [&](const IndexRange& worker_range, size_t worker) {
-                func(worker_range, worker);
-              });
+    // Calculate cluster task count to enforce kMaxNC cap per worker
+    size_t num_clusters = ctx.pools.NumClusters();
+    size_t cluster_tasks = num_clusters;
+    size_t workers_per_cluster = ctx.pools.Cluster(0).NumWorkers();
+    const size_t max_cluster_range_size =
+        workers_per_cluster * inner_tasks * kMaxNC;
+    if (hwy::DivCeil(range_n.Num(), cluster_tasks) > max_cluster_range_size) {
+      cluster_tasks = hwy::DivCeil(range_n.Num(), max_cluster_range_size);
+    }
+
+    const IndexRangePartition cluster_ranges =
+        StaticPartition(range_n, cluster_tasks, n_multiple);
+
+    ParallelForAcrossClusters(
+        cluster_ranges.NumTasks(), ctx, caller,
+        [&](uint64_t task, size_t cluster_idx) {
+          const IndexRange cluster_range = cluster_ranges.Range(task);
+          size_t num_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+          size_t worker_tasks = num_workers * inner_tasks;
+          if (hwy::DivCeil(cluster_range.Num(), worker_tasks) > kMaxNC) {
+            worker_tasks = hwy::DivCeil(cluster_range.Num(), kMaxNC);
+          }
+          const IndexRangePartition worker_ranges =
+              StaticPartition(cluster_range, worker_tasks, n_multiple);
+          ParallelForWithinCluster(worker_ranges.NumTasks(), ctx, cluster_idx,
+                                   caller, [&](uint64_t w_task, size_t worker) {
+                                     func(worker_ranges.Range(w_task), worker);
+                                   });
         });
   }
 

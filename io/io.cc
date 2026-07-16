@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -261,7 +262,22 @@ uint64_t IOBatch::Read(const File& file) const {
   }
 #endif  // GEMMA_IO_PREADV
 
-  // preadv disabled or no handle: use normal reads (higher kernel overhead).
+  // If no handle (remote FUSE), allocate a temporary buffer to do a single
+  // read.
+  const uint64_t total_bytes = TotalBytes();
+  std::unique_ptr<uint8_t[]> temp_buf(new (std::nothrow) uint8_t[total_bytes]);
+  if (temp_buf) {
+    if (!file.Read(offset_, total_bytes, temp_buf.get())) return 0;
+    uint8_t* src = temp_buf.get();
+    for (const IOSpan& span : spans_) {
+      std::memcpy(span.mem, src, span.bytes);
+      src += span.bytes;
+    }
+    return total_bytes;
+  }
+
+  // Fallback if allocation fails: use normal reads (higher kernel/network
+  // overhead).
   uint64_t total = 0;
   uint64_t offset = offset_;
   for (const IOSpan& span : spans_) {

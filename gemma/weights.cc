@@ -429,6 +429,10 @@ void LayerWeightsPtrs::Fixup(Model model,
           hwy::AllocateAligned<uint8_t>(total_bytes);
       hwy::CopyBytes(qkv_einsum_w2.RowBytes(0), tmp.get(), total_bytes);
 
+      const size_t row_bytes_old = row_bytes;
+      const size_t cols_bytes =
+          qkv_einsum_w2.Cols() * qkv_einsum_w2.ElementBytes();
+
       {
         std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
         mat_owners.emplace_back();
