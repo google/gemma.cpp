@@ -52,12 +52,6 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-ThreadingArgs SingleThreadArgs() {
-  ThreadingArgs args;
-  args.max_lps = 1;
-  return args;
-}
-
 // Implementation for the currently compiled SIMD target.
 class SbsWriterImpl : public ISbsWriter {
   template <typename Packed>
@@ -98,7 +92,7 @@ class SbsWriterImpl : public ISbsWriter {
 
  public:
   SbsWriterImpl(const std::string& sbs_path)
-      : ctx_(SingleThreadArgs()), writer_(gcpp::Path(sbs_path), ctx_) {}
+      : ctx_(ThreadingArgs()), writer_(gcpp::Path(sbs_path), ctx_) {}
 
   void Insert(const char* name, F32Span weights, Type type,
               const TensorInfo& tensor_info) override {

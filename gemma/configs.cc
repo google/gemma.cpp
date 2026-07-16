@@ -990,9 +990,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       if (layer_types & kDeducedT5Gemma) {
         return Model::T5GEMMA_S_S;
       }
-      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
-               blob_path.path.c_str(), layers, layer_types);
-      return Model::UNKNOWN;
+      // Unknown 8-layer model.
+      break;
 
     case 18:
       return Model::GEMMA3_270M;
@@ -1033,10 +1032,11 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     return Model::PALIGEMMA2_772M_224;
     */
     default:
-      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
-               blob_path.path.c_str(), layers, layer_types);
-      return Model::UNKNOWN;
+      break;
   }
+  HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+           blob_path.path.c_str(), layers, layer_types);
+  return Model::UNKNOWN;
 }
 
 constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {

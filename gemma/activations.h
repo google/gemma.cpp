@@ -373,6 +373,7 @@ struct Activations {
         mla_dims(config),
         num_layers(config.is_encoder_decoder ? config.decoder_num_layers
                                              : config.num_layers),
+        encoder_seq_len(config.is_encoder_decoder ? seq_len : 0),
 
         x(MatFactory("x", batch_size, config.model_dim, ctx.allocator)),
         x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
@@ -393,45 +394,45 @@ struct Activations {
             MatFactory("gate_out", batch_size, config.ple_dim, ctx.allocator)),
         ple_token_emb(config.num_layers * config.ple_dim),
         t5_encoder_pre_att_rms_out(MatFactory(
-            "t5_e_pre_att", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_pre_att", encoder_seq_len,
             config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
         t5_encoder_q(MatFactory(
-            "t5_e_q", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_q", encoder_seq_len,
             config.is_encoder_decoder ? config.encoder_layer_configs[0].heads *
                                             config.encoder_layer_configs[0].qkv_dim
                                       : 0,
             ctx.allocator)),
         t5_encoder_kv(MatFactory(
-            "t5_e_kv", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_kv", encoder_seq_len,
             config.is_encoder_decoder
                 ? 2 * config.encoder_layer_configs[0].kv_heads *
                       config.encoder_layer_configs[0].qkv_dim
                 : 0,
             ctx.allocator)),
         t5_encoder_att_out(MatFactory(
-            "t5_e_att_out", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_att_out", encoder_seq_len,
             config.is_encoder_decoder ? config.encoder_layer_configs[0].heads *
                                             config.encoder_layer_configs[0].qkv_dim
                                       : 0,
             ctx.allocator)),
         t5_encoder_att_sums(MatFactory(
-            "t5_e_att_sums", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_att_sums", encoder_seq_len,
             config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
         t5_encoder_pre_ffw_rms_out(MatFactory(
-            "t5_e_pre_ffw", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_pre_ffw", encoder_seq_len,
             config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
         t5_encoder_c1(MatFactory(
-            "t5_e_c1", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_c1", encoder_seq_len,
             config.is_encoder_decoder ? config.encoder_layer_configs[0].ff_hidden_dim
                                       : 0,
             ctx.allocator)),
         t5_encoder_c2(MatFactory(
-            "t5_e_c2", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_c2", encoder_seq_len,
             config.is_encoder_decoder ? config.encoder_layer_configs[0].ff_hidden_dim
                                       : 0,
             ctx.allocator)),
         t5_encoder_ffw_out(MatFactory(
-            "t5_e_ffw_out", config.is_encoder_decoder ? seq_len : 0,
+            "t5_e_ffw_out", encoder_seq_len,
             config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
         t5_encoder_inv_timescale(
             config.is_encoder_decoder
@@ -664,6 +665,7 @@ struct Activations {
   const LayerConfig& moe_layer_config;  // layer with the most experts
   MLADims mla_dims;
   const size_t num_layers;
+  const size_t encoder_seq_len;
 
   MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul

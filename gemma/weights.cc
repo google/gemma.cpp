@@ -185,8 +185,7 @@ static void InitAttWeightsGeneric(const LayerConfig& layer_config,
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
     mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
   }
