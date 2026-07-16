@@ -177,6 +177,8 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& layer_config = layer.layer_config;
+  activations.C1.OverrideCols(layer_config.ff_hidden_dim);
+  activations.C2.OverrideCols(layer_config.ff_hidden_dim);
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
 

@@ -91,7 +91,7 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
           RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, q_row,
                          layer_config.qkv_dim, ctx, worker);
         });
-      } else if (layer_config.post_qk == PostQKType::NormLocalRope) {
+      } else if (layer_config.post_qk == PostQKType::NormLocalRope || layer_config.use_qk_norm) {
         RMSNormNoScaleInplace(q_row, layer_config.qkv_dim, ctx, worker);
       }
       PositionalEncodingQK(q_row, layer_idx, activations, ctx, worker, pos,
@@ -2610,6 +2610,11 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   const size_t seq_len =
       static_cast<size_t>(activations.div_seq_len.GetDivisor());
 
+  // Resolve KV cache layer index
+  const size_t kv_layer_idx = (layer_config.kv_share_layer_idx >= 0)
+                                  ? static_cast<size_t>(layer_config.kv_share_layer_idx)
+                                  : layer_idx;
+
   using DF = hn::ScalableTag<float>;
   const DF df;
   const size_t kNF = hn::Lanes(df);
@@ -2618,7 +2623,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   ParallelFor(
       Parallelism::kWithinCluster, activations.q.Rows(), ctx,
       /*cluster_idx=*/0, Callers::kFlashAttention,
-      [&](size_t row, size_t worker) {
+      [&](size_t row, size_t worker) HWY_ATTR {
         CompressPerThread tls;
         const hn::ScalableTag<float> df;
         CompressTraits<BF16>::Compress(
@@ -2642,14 +2647,14 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                                            kRoundedQkvDim * 2 * kNF));
     kT.SetPtr(
         kT_cache.Row(0) + qbatch.KV(param.qi_index)
-                              .cache->KOrVOffset(layer_idx, param.kv_head, kNF),
+                              .cache->KOrVOffset(kv_layer_idx, param.kv_head, kNF),
         kT_cache.Stride());
     auto& vT_cache = qbatch.KV(param.qi_index).v_cache;
     MatPtrT<KV_t> vT("v_T_view", Extents2D(hwy::DivCeil(seq_len, 2 * kNF),
                                            kRoundedQkvDim * 2 * kNF));
     vT.SetPtr(
         vT_cache.Row(0) + qbatch.KV(param.qi_index)
-                              .cache->KOrVOffset(layer_idx, param.kv_head, kNF),
+                              .cache->KOrVOffset(kv_layer_idx, param.kv_head, kNF),
         vT_cache.Stride());
     MatPtrT<float>& att_out =
         param.i_of_n == 0 ? activations.att_out : activations.att_out_reps;

@@ -80,12 +80,60 @@ KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
   // fires. The 2-arg constructor path relies on k_v_cols == 0 to skip reshape.
 }
 
+// Support heterogeneous layer configurations (common in Gemma 4 architectures),
+// where different layers can have varying attention shapes (e.g., mixing local
+// layers with smaller qkv_dim/more heads and global layers with larger
+// qkv_dim/fewer heads).
+//
+// Rather than assuming uniform layer sizes, we dynamically compute and store
+// cumulative offsets for each layer to allow correct indexing into the
+// flattened KV cache.
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const Allocator& allocator)
-    : KVCache(
-          Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
-          config.layer_configs.size(), config.layer_configs[0].kv_heads,
-          config.layer_configs[0].qkv_dim, allocator) {}
+    : allocator_(allocator) {
+  HWY_ASSERT(config.num_layers > 0);
+  HWY_ASSERT(config.num_layers == config.layer_configs.size());
+  num_layers = config.num_layers;
+
+  // 1. Build non-uniform offset tables dynamically
+  layer_flat_offsets.resize(num_layers, 0);
+  layer_k_v_offsets.resize(num_layers, 0);
+  rounded_qkv_dims.resize(num_layers, 0);
+
+  size_t flat_accum = 0;
+  size_t k_v_accum = 0;
+
+  for (size_t i = 0; i < num_layers; ++i) {
+    layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
+    flat_accum += config.layer_configs[i].CacheLayerSize();
+
+    layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
+    size_t rounded_dim =
+        hwy::RoundUpTo(config.layer_configs[i].qkv_dim, kMaxBF16PerVector);
+    rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
+    k_v_accum += config.layer_configs[i].kv_heads * rounded_dim;
+  }
+  k_v_cols = static_cast<uint32_t>(k_v_accum);
+
+  // Since we also store legacy homogeneous variables, we default them to Layer
+  // 0 values.
+  kv_heads = config.layer_configs[0].kv_heads;
+  qkv_dim = config.layer_configs[0].qkv_dim;
+  rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
+
+  const size_t rows = CappedSeqLen(config, inference_args);
+  const size_t cols = config.KVCacheCols();
+  kv_cache = MatStorageT<KV_t>("kv", Extents2D(rows, cols), allocator,
+                               MatPadding::kOdd);
+  k_cache = MatStorageT<KV_t>(
+      "k", Extents2D(hwy::RoundUpTo(rows, kMaxBF16PerVector), k_v_cols),
+      allocator, MatPadding::kPacked);
+  v_cache = MatStorageT<KV_t>(
+      "v", Extents2D(hwy::RoundUpTo(rows, kMaxBF16PerVector), k_v_cols),
+      allocator, MatPadding::kPacked);
+  const size_t num_tiles = hwy::DivCeil(rows, kTileSize);
+  tiled_seq_len = num_tiles * kTileSize;
+}
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const RuntimeConfig& runtime_config,
@@ -109,7 +157,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     flat_accum += config.layer_configs[i].CacheLayerSize();
 
     layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
-    size_t rounded_dim = hwy::RoundUpTo(config.layer_configs[i].qkv_dim, kMaxBF16PerVector);
+    size_t rounded_dim =
+        hwy::RoundUpTo(config.layer_configs[i].qkv_dim, kMaxBF16PerVector);
     rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
     k_v_accum += config.layer_configs[i].kv_heads * rounded_dim;
 
@@ -139,12 +188,14 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         allocator, MatPadding::kOdd);
     k_cache = MatStorageT<KV_t>(
         "k",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args), kMaxBF16PerVector),
+        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
+                                 kMaxBF16PerVector),
                   k_v_cols),
         allocator, MatPadding::kPacked);
     v_cache = MatStorageT<KV_t>(
         "v",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args), kMaxBF16PerVector),
+        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
+                                 kMaxBF16PerVector),
                   k_v_cols),
         allocator, MatPadding::kPacked);
     const size_t num_tiles =

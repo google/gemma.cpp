@@ -470,7 +470,7 @@ static LayerConfig LayerConfigGemma4_26B_MoE_LM(size_t model_dim) {
 static ModelConfig ConfigGemma4_26B_MoE() {
   ModelConfig config = ConfigBaseGemmaV4();
   config.display_name = "Gemma4_26B_MoE";
-  config.final_cap = 30.0f;
+  config.final_cap = 0.0f;
   config.att_cap = 0.0f;
   config.model = Model::GEMMA4_26B_MOE;
   config.wrapping = PromptWrapping::GEMMA_IT;
@@ -492,6 +492,62 @@ static ModelConfig ConfigGemma4_26B_MoE() {
   config.query_scale = QueryScaleType::One;
   config.attention_window_sizes = RepeatedAttentionWindowSizes<30, 6>(
       {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_2B_Local(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 6144;
+  config.heads = 8;
+  config.kv_heads = 1;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.activation = ActivationType::Gelu;
+  config.post_qk = PostQKType::NormLocalRope;
+  config.use_qk_norm = true;
+  config.norm_v = true;
+  config.ple_dim = 256;
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_2B_Global(size_t model_dim) {
+  LayerConfig config = LayerConfigGemma4_2B_Local(model_dim);
+  config.qkv_dim = 512;
+  return config;
+}
+
+// Until we have the audio checkpoints included, we use the LM config directly.
+static ModelConfig ConfigGemma4_2B() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_2B";
+  config.model = Model::GEMMA4_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 1536;
+  config.vocab_size = kGemmaV3VocabSize;  // 262144
+  config.max_seq_len = 128 * 1024;
+  config.final_cap = 0.0f;
+  config.ple_dim = 256;
+  config.num_layers = 35;
+  config.use_global_timescale = true;
+  config.partial_rotary_factor = 0.25f;
+  config.query_scale = QueryScaleType::One;
+  LayerConfig local_config = LayerConfigGemma4_2B_Local(config.model_dim);
+  config.layer_configs = {config.num_layers, local_config};
+  // Global attention layers: [4, 9, 14, 19, 24, 29, 34] (stride 5)
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    if (i % 5 == 4) {
+      config.layer_configs[i] = LayerConfigGemma4_2B_Global(config.model_dim);
+    }
+  }
+  // Double-wide MLP for last 20 layers (KV-shared layers 15-34)
+  for (size_t i = 15; i < config.num_layers; ++i) {
+    config.layer_configs[i].ff_hidden_dim = 12288;
+    config.layer_configs[i].kv_share_layer_idx = (i % 5 == 4) ? 14 : 13;
+  }
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<35, 5>(
+      {512, 512, 512, 512, config.max_seq_len});
   return config;
 }
 
@@ -529,6 +585,8 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B_LM();
     case Model::GEMMA4_26B_MOE:
       return ConfigGemma4_26B_MoE();
+    case Model::GEMMA4_2B:
+      return ConfigGemma4_2B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -570,6 +628,8 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b-lm";
     case Model::GEMMA4_26B_MOE:
       return "gemma4-26b-moe";
+    case Model::GEMMA4_2B:
+      return "gemma4-2b";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -770,6 +830,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 34:
       return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
                                          : Model::GEMMA3_4B_LM;
+    case 35:
+      return Model::GEMMA4_2B;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -784,7 +846,6 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 62:
       return (layer_types & kDeducedViT) ? Model::GEMMA3_27B
                                          : Model::GEMMA3_27B_LM;
-
     // TODO: detect these.
     /*
     return Model::GEMMA2_772M;

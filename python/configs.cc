@@ -142,6 +142,7 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("activation", &LayerConfig::activation)
       .def_readwrite("post_qk", &LayerConfig::post_qk)
       .def_readwrite("use_qk_norm", &LayerConfig::use_qk_norm)
+      .def_readwrite("kv_share_layer_idx", &LayerConfig::kv_share_layer_idx)
       .def_readwrite("internal", &LayerConfig::internal);
 
   class_<VitConfig>(py_module, "VitConfig")

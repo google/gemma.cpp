@@ -507,8 +507,10 @@ void Gemma4MoETransformerLayer(size_t num_tokens, const size_t layer_idx,
   // Apply skip_scale AFTER residual connection
   // (HF: hidden_states *= self.layer_scalar, applied to full output)
   if (layer.skip_scale.HasPtr()) {
-    const float skip_scale_val = hwy::ConvertScalarTo<float>(
-        *static_cast<const BF16*>(layer.skip_scale.Packed()));
+    const float skip_scale_val = CallUpcastedActivation(
+        &layer.skip_scale, [](const auto* mat) -> float {
+          return hwy::ConvertScalarTo<float>(mat->Row(0)[0]);
+        });
     for (size_t r = 0; r < num_tokens; ++r) {
       MulByConst(skip_scale_val, activations.x.Row(r), activations.x.Cols());
     }

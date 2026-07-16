@@ -105,8 +105,8 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   const LayerConfig& layer_config = layer.layer_config;
   if (layer_config.IsMoE() &&
       activations.attention.config.model == Model::GEMMA4_26B_MOE) {
-    Gemma4MoETransformerLayer(num_tokens, layer_idx, layer, activations,
-                              qbatch, env);
+    Gemma4MoETransformerLayer(num_tokens, layer_idx, layer, activations, qbatch,
+                              env);
     return;
   }
 
@@ -136,6 +136,71 @@ static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
 
   ResidualConnection(activations.ffw_out, activations.x, layer,
                      /*is_attention=*/false, env.ctx);
+  if (layer_config.ple_dim > 0) {
+    // 1. Gate: [batch, model_dim] @ [model_dim, ple_dim] -> [batch, ple_dim]
+    // Use activations.x_bf to convert activations.x
+    for (size_t r = 0; r < num_tokens; ++r) {
+      for (size_t c = 0; c < layer_config.model_dim; ++c) {
+        activations.x_bf.Row(r)[c] = BF16(activations.x.Row(r)[c]);
+      }
+    }
+
+    // Use pre-allocated activations.gate_out (BF16)
+    CallMatMul(activations.x_bf, layer.ple_gate, /*add=*/nullptr, env,
+               activations.gate_out);
+
+    // 2. Activation and Element-wise multiply
+    const size_t ple_dim = layer_config.ple_dim;
+    const size_t layer_offset = layer_idx * ple_dim;
+
+    ParallelFor(Parallelism::kFlat, num_tokens, env.ctx, /*cluster_idx=*/0,
+                Callers::kActivationBatched,
+                [&](uint64_t token_idx, size_t worker) HWY_ATTR {
+                  BF16* g_row = activations.gate_out.Row(token_idx);
+                  const float* p_row =
+                      activations.ple_embeds.Row(token_idx) + layer_offset;
+                  namespace hn = hwy::HWY_NAMESPACE;
+                  using DF = hn::ScalableTag<float>;
+                  const DF df;
+                  Decompress1AndCompressInplace(
+                      df, g_row, ple_dim, p_row, 0,
+                      [](auto df, auto v_gate, auto v_embed) HWY_ATTR {
+                        return hn::Mul(Gelu(df, v_gate), v_embed);
+                      });
+                });
+
+    // 3. Projection: [batch, ple_dim] @ [ple_dim, model_dim] -> [batch,
+    // model_dim]
+    CallMatMul(activations.gate_out, layer.ple_proj, /*add=*/nullptr, env,
+               activations.ffw_out);
+
+    // 4. Norm and Residual Add
+    RMSNormInplaceBatched(layer.post_ple_ns, activations.ffw_out, env.ctx);
+
+    ParallelFor(Parallelism::kFlat, num_tokens, env.ctx, /*cluster_idx=*/0,
+                Callers::kOpsAddFromBatched,
+                [&](uint64_t token_idx, size_t worker) {
+                  AddFrom(activations.ffw_out.Row(token_idx),
+                          activations.x.Row(token_idx), layer_config.model_dim,
+                          env.ctx, worker);
+                });
+  }
+
+  if (layer.skip_scale.HasPtr()) {
+    float skip_scale_val = 1.0f;
+    if (layer.skip_scale.GetType() == Type::kF32) {
+      skip_scale_val = static_cast<const float*>(layer.skip_scale.Packed())[0];
+    } else if (layer.skip_scale.GetType() == Type::kBF16) {
+      skip_scale_val = hwy::ConvertScalarTo<float>(
+          static_cast<const BF16*>(layer.skip_scale.Packed())[0]);
+    } else {
+      HWY_ABORT("Unexpected skip_scale type: %d",
+                static_cast<int>(layer.skip_scale.GetType()));
+    }
+    for (size_t r = 0; r < activations.x.Rows(); ++r) {
+      MulByConst(skip_scale_val, activations.x.Row(r), activations.x.Cols());
+    }
+  }
 }
 
 // Returns the scale value to use for the embedding (basically sqrt model_dim).
@@ -205,6 +270,82 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
   return image_token_position;
 }
 
+static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
+                                              const std::vector<int>& tokens,
+                                              const ModelConfig& config,
+                                              const WeightsPtrs& weights,
+                                              Activations& activations,
+                                              MatMulEnv& env) {
+  if (config.ple_dim == 0) return;
+
+  // 1. Convert activations.x (float) to activations.x_bf (BF16)
+  for (size_t r = 0; r < tbatch_size; ++r) {
+    for (size_t c = 0; c < config.model_dim; ++c) {
+      activations.x_bf.Row(r)[c] = BF16(activations.x.Row(r)[c]);
+    }
+  }
+
+  // 2. CallMatMul for the context projection (with folded scale)
+  const float scale_proj = 1.0f / sqrtf(static_cast<float>(config.model_dim));
+  MatPtr scaled_ple_model_proj = weights.ple_model_proj;
+  scaled_ple_model_proj.SetScale(scaled_ple_model_proj.Scale() * scale_proj);
+
+  CallMatMul(activations.x_bf, scaled_ple_model_proj, /*add=*/nullptr, env,
+             activations.ple_embeds);
+
+  // 3. Apply the model projection scale (Folded into MatMul above, so this is empty)
+  const size_t ple_total_dim = config.num_layers * config.ple_dim;
+
+  // 4. RMSNorm (applied to each layer's embedding independently)
+  CallUpcasted(&weights.ple_proj_norm, [&](const auto* weights_t) {
+    ParallelFor(Parallelism::kFlat, tbatch_size, env.ctx, /*cluster_idx=*/0,
+                Callers::kOpsRMSNormInplaceBatched,
+                [&](uint64_t token_idx, size_t worker) {
+                  float* row = activations.ple_embeds.Row(token_idx);
+                  for (size_t layer = 0; layer < config.num_layers; ++layer) {
+                    float* slice = row + layer * config.ple_dim;
+                    RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
+                                   slice, config.ple_dim, env.ctx, worker);
+                  }
+                });
+  });
+
+  // 5. Add token embedding and apply input scale
+  const float scale_input = 1.0f / sqrtf(2.0f);
+  // Use pre-allocated activations.ple_token_emb
+  float* token_emb = activations.ple_token_emb.data();
+  for (size_t r = 0; r < tbatch_size; ++r) {
+    int token = tokens[r];
+    CallUpcasted(&weights.ple_embeddings, [&](const auto* weights_t) HWY_ATTR {
+      const size_t embedding_ofs = token * weights_t->Stride();
+      const auto embedding_span =
+          MakeSpan(weights_t->Row(0), embedding_ofs + ple_total_dim);
+      const hn::ScalableTag<float> df;
+      DecompressAndZeroPad(df, embedding_span, embedding_ofs, token_emb,
+                           ple_total_dim);
+
+      const float token_scale =
+          sqrtf(static_cast<float>(config.ple_dim)) * weights_t->Scale();
+      const float scaled_token_scale = token_scale * scale_input;
+      float* out_row = activations.ple_embeds.Row(r);
+
+      // Vectorized embedding loop (aligned with precomputed scale intent)
+      using DF = hn::ScalableTag<float>;
+      using VF = hn::Vec<DF>;
+      const DF df_float;
+      const VF v_scale_input = hn::Set(df_float, scale_input);
+      const VF v_scaled_token_scale = hn::Set(df_float, scaled_token_scale);
+
+      Decompress1AndCompressInplace(
+          df_float, out_row, ple_total_dim, token_emb, /*p1_ofs=*/0,
+          [&](DF df, VF v_out, VF v_emb) HWY_ATTR -> VF {
+            VF v_scaled_out = hn::Mul(v_out, v_scale_input);
+            return hn::MulAdd(v_emb, v_scaled_token_scale, v_scaled_out);
+          });
+    });
+  }
+}
+
 // Populates KV cache for batches of tokens from one query at a time. This is
 // called if prompts are longer than the query batch size, and also in
 // prefix-LM mode (end > 0), which must see all tokens in one batch.
@@ -265,11 +406,18 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
 
       // Fill activations.x (much faster than TransformerLayer).
       size_t image_token_position = 0;
+      std::vector<int> tbatch_tokens;
+      if (config.ple_dim > 0) {
+        tbatch_tokens.reserve(tbatch_size);
+      }
       for (size_t ti = 0; ti < tbatch_size; ++ti) {
         const size_t pos = qbatch_1.Pos(0) + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
         HWY_DASSERT(pos_in_prompt < prompt_size);
         const int token = qbatch_1.Prompt(0)[pos_in_prompt];
+        if (config.ple_dim > 0) {
+          tbatch_tokens.push_back(token);
+        }
         image_token_position = EmbedMMToken(
             token, ti, pos, pos_in_prompt, config, weights, activations.x,
             env.ctx, runtime_config.image_tokens, image_token_position);
@@ -281,6 +429,10 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
           // if we need to attend to the last token because it is in the prefix.
           HWY_ASSERT(attend_to_last_token);
         }
+      }
+      if (config.ple_dim > 0) {
+        ComputePLEEmbeddings(tbatch_size, tbatch_tokens, config, weights,
+                             activations, env);
       }
 
       // Transformer with one batch of tokens from a single query. No need to
@@ -336,9 +488,21 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
   }
 
   // TODO: parallelize?
+  std::vector<int> tbatch_tokens;
+  if (config.ple_dim > 0) {
+    tbatch_tokens.reserve(qbatch.Size());
+  }
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    EmbedMMToken(qbatch.PrevToken(qi), qi, qbatch.Pos(qi),
+    const int token = qbatch.PrevToken(qi);
+    if (config.ple_dim > 0) {
+      tbatch_tokens.push_back(token);
+    }
+    EmbedMMToken(token, qi, qbatch.Pos(qi),
                  /*pos_in_prompt=*/0, config, weights, activations.x, env.ctx);
+  }
+  if (config.ple_dim > 0) {
+    ComputePLEEmbeddings(qbatch.Size(), tbatch_tokens, config, weights,
+                         activations, env);
   }
 
   for (size_t layer_idx = 0; layer_idx < weights.c_layers.size(); ++layer_idx) {

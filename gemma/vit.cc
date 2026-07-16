@@ -306,6 +306,7 @@ void FFWVit(const LayerWeightsPtrs& layer, Activations& activations,
             MatMulEnv& env) {
   PROFILER_ZONE("Gen.FFW.ViT");
   const LayerConfig& layer_config = layer.layer_config;
+  activations.C1.OverrideCols(layer_config.ff_hidden_dim);
 
   const bool add_bias = layer_config.ff_biases;
   const float* bias1 = add_bias ? layer.vit.linear_0_b.PackedScale1() : nullptr;

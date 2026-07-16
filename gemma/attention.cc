@@ -191,13 +191,20 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
 
   const size_t qkv_dim = layer_config.qkv_dim;
   const size_t kv_heads = layer_config.kv_heads;
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
 
-    // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
+  // Resolve KV cache layer index and skip flag
+  const size_t kv_layer_idx = (layer_config.kv_share_layer_idx >= 0)
+                                  ? static_cast<size_t>(layer_config.kv_share_layer_idx)
+                                  : layer_idx;
+  const bool skip_kv = (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
+  const size_t cache_layer_size = activations.config.layer_configs[kv_layer_idx].CacheLayerSize();
+
+  // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w1,
              /*add=*/nullptr, env, activations.q);
 
+  if (skip_kv) return;
   // Set up MatMul row pointers for writing to KV, which consists of
   // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
   // because rows are computed modulo seq_len.
@@ -213,8 +220,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
     HWY_DASSERT(cache_pos < activations.SeqLen());
 
     const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
-        ? layer_idx * cache_layer_size
-        : qbatch.KV(qi).cache->layer_flat_offsets[layer_idx];
+        ? kv_layer_idx * cache_layer_size
+        : qbatch.KV(qi).cache->layer_flat_offsets[kv_layer_idx];
 
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
         qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_offset);
@@ -256,12 +263,12 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         auto& k_cache = qbatch.KV(qi).k_cache;
         KV_t* HWY_RESTRICT k =
             k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->KOffset(layer_idx, head, kFloatsPerVector,
+            qbatch.KV(qi).cache->KOffset(kv_layer_idx, head, kFloatsPerVector,
                                          cache_pos);
         auto& v_cache = qbatch.KV(qi).v_cache;
         KV_t* HWY_RESTRICT v =
             v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->VOffset(layer_idx, head, kFloatsPerVector,
+            qbatch.KV(qi).cache->VOffset(kv_layer_idx, head, kFloatsPerVector,
                                          cache_pos);
         if (token_idx >= num_tokens) {
           // Create a zero-filled K/V pair for padding for out-of-sequence
@@ -273,8 +280,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         HWY_DASSERT(cache_pos < activations.SeqLen());
         auto& kv_cache = qbatch.KV(qi).kv_cache;
         const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
-            ? layer_idx * cache_layer_size
-            : qbatch.KV(qi).cache->layer_flat_offsets[layer_idx];
+            ? kv_layer_idx * cache_layer_size
+            : qbatch.KV(qi).cache->layer_flat_offsets[kv_layer_idx];
         KV_t* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
                                 layer_offset +
                                 head * qkv_dim * 2;
@@ -294,7 +301,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
             RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, kv_f32,
                                  qkv_dim, env.ctx, worker);
           });
-        } else if (layer_config.post_qk == PostQKType::NormLocalRope) {
+        } else if (layer_config.post_qk == PostQKType::NormLocalRope || layer_config.use_qk_norm) {
           RMSNormNoScaleInplace(kv_f32, qkv_dim, env.ctx, worker);
         }
 

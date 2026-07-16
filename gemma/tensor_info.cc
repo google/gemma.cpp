@@ -121,6 +121,39 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .shape = {config.vit_config.model_dim},
                      .min_size = Type::kBF16,
                  });
+  // Per-Layer Embedding (PLE) model-level tensors.
+  if (config.ple_dim > 0) {
+    Add(no_suffix,
+        {
+            .base_name = "ple_embeddings",
+            .source_names = {"embedder/per_layer_embeddings"},
+            .preshape = {config.vocab_size,
+                         config.num_layers * config.ple_dim},
+            .axes = {0, 1},
+            .shape = {config.vocab_size,
+                      config.num_layers * config.ple_dim},
+            .min_size = Type::kBF16,
+        });
+    Add(no_suffix,
+        {
+            .base_name = "ple_model_proj",
+            .source_names = {"embedder/per_layer_model_projection/w"},
+            .preshape = {config.model_dim,
+                         config.num_layers * config.ple_dim},
+            .axes = {1, 0},
+            .shape = {config.num_layers * config.ple_dim,
+                      config.model_dim},
+            .min_size = Type::kBF16,
+        });
+    Add(no_suffix, {
+                       .base_name = "ple_proj_norm",
+                       .source_names =
+                           {"embedder/per_layer_projection_norm/scale"},
+                       .axes = {0},
+                       .shape = {config.ple_dim},
+                       .min_size = Type::kBF16,
+                   });
+  }
 }
 
 // Returns the tensors for the given image layer config.
@@ -407,6 +440,30 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                   .shape = {1},
                   .min_size = Type::kBF16,
               });
+  // Per-Layer Embedding (PLE) per-layer tensors.
+  if (layer_config.ple_dim > 0) {
+    Add(suffix,
+        {
+            .base_name = "ple_gate",
+            .source_names = {"per_layer_input_gate/w"},
+            .axes = {1, 0},
+            .shape = {layer_config.ple_dim, config.model_dim},
+        });
+    Add(suffix,
+        {
+            .base_name = "ple_proj",
+            .source_names = {"per_layer_projection/w"},
+            .axes = {1, 0},
+            .shape = {config.model_dim, layer_config.ple_dim},
+        });
+    Add(suffix, {
+                    .base_name = "post_ple_ns",
+                    .source_names = {"post_per_layer_input_norm/scale"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+  }
   Add(suffix, {
                   .base_name = "ffw_gat_b",
                   .source_names = {"mlp_block/ffw_up/b"},

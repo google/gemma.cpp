@@ -35,6 +35,8 @@ namespace gcpp {
 
 constexpr size_t kMaxBF16PerVector = HWY_ARCH_MAX_BYTES / sizeof(BF16);
 
+HWY_INLINE_VAR constexpr int kSkipKV = 1;
+
 HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
 
 #ifndef GEMMA_FUSED_FFN
@@ -131,7 +133,7 @@ enum class PostQKType {
   Rope,
   HalfRope,
   NormLocalRope = 8,  // Norm without scale, and rope for local attention layers
-  kSentinel  // must be last
+  kSentinel           // must be last
 };
 
 static inline bool EnumValid(PostQKType type) {
@@ -221,6 +223,7 @@ enum class Model {
   GEMMA3_12B_LM,
   GEMMA3_27B_LM,
   GEMMA4_26B_MOE,
+  GEMMA4_2B,
   kSentinel,
 };
 
@@ -303,6 +306,8 @@ struct LayerConfig : public IFields {
     visitor(norm_v);
     visitor(num_experts);
     visitor(num_experts_per_datapoint);
+    visitor(ple_dim);
+    visitor(kv_share_layer_idx);
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -338,6 +343,8 @@ struct LayerConfig : public IFields {
   bool norm_v = false;  // Normalize V projections before caching.
   uint32_t num_experts = 0;
   uint32_t num_experts_per_datapoint = 0;
+  uint32_t ple_dim = 0;  // Per-Layer Embedding dimension (0 = disabled).
+  int kv_share_layer_idx = -1;
   InternalLayerConfig internal;
 };
 
@@ -437,6 +444,7 @@ struct ModelConfig : public IFields {
 
     visitor(use_global_timescale);
     visitor(partial_rotary_factor);
+    visitor(ple_dim);
 
     // Append new fields here, then update `python/configs.cc`.
   }
@@ -552,7 +560,9 @@ struct ModelConfig : public IFields {
 
   InternalModelConfig internal;
   bool use_global_timescale = false;  // for Gemma 3
-  float partial_rotary_factor = 1.0f;  // Fraction of dims with RoPE (0.25 for Gemma4 MoE).
+  float partial_rotary_factor =
+      1.0f;              // Fraction of dims with RoPE (0.25 for Gemma4 MoE).
+  uint32_t ple_dim = 0;  // Per-Layer Embedding dimension (0 = disabled).
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.

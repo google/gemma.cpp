@@ -47,6 +47,14 @@ static inline size_t MaxQkvDim(const ModelConfig& config) {
   }
   return max_dim;
 }
+static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
+  size_t max_dim = 0;
+  for (const auto& lc : config.layer_configs) {
+    max_dim = HWY_MAX(max_dim, static_cast<size_t>(lc.ff_hidden_dim));
+  }
+  return max_dim;
+}
+
 
 static inline float ChooseQueryScale(const ModelConfig& config) {
   const LayerConfig& layer_config = config.layer_configs[0];
@@ -115,9 +123,7 @@ struct AttentionActivations {
                                layer_config.post_qk == PostQKType::HalfRope)),
         inv_timescale_global(CreateInvTimescale(
             allocator,
-            config.partial_rotary_factor < 1.0f
-                ? max_qkv_dim
-                : max_qkv_dim / 4,
+            max_qkv_dim,
             layer_config.post_qk == PostQKType::HalfRope, 1000000.0,
             config.partial_rotary_factor)) {
     // Batch size can be 0 in experimental code so do not assert.
@@ -360,12 +366,18 @@ struct Activations {
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
                                    config.model_dim, ctx.allocator)),
-        C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
+        C1(MatFactory("C1", batch_size, MaxFFHiddenDim(config),
                       ctx.allocator)),
-        C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim,
+        C2(MatFactory("C2", batch_size, MaxFFHiddenDim(config),
                       ctx.allocator)),
         ffw_out(
             MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
+        ple_embeds(
+            MatFactory("ple_embeds", batch_size,
+                       config.num_layers * config.ple_dim, ctx.allocator)),
+        gate_out(
+            MatFactory("gate_out", batch_size, config.ple_dim, ctx.allocator)),
+        ple_token_emb(config.num_layers * config.ple_dim),
 
         max_workers(ctx.pools.MaxWorkers()),
         s_ffw_in(config.num_layers, max_workers),
@@ -401,6 +413,10 @@ struct Activations {
     x.AllocateAndAttachRowPtrs(row_ptrs);
     x_bf.AllocateAndAttachRowPtrs(row_ptrs);
     logits.AllocateAndAttachRowPtrs(row_ptrs);
+    if (config.ple_dim > 0) {
+      ple_embeds.AllocateAndAttachRowPtrs(row_ptrs);
+      gate_out.AllocateAndAttachRowPtrs(row_ptrs);
+    }
     C1.AllocateAndAttachRowPtrs(row_ptrs);
     C2.AllocateAndAttachRowPtrs(row_ptrs);
     ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
@@ -461,6 +477,10 @@ struct Activations {
     C1.OverrideRows(batch_size);
     C2.OverrideRows(batch_size);
     ffw_out.OverrideRows(batch_size);
+    if (layer_config.ple_dim > 0) {
+      ple_embeds.OverrideRows(batch_size);
+      gate_out.OverrideRows(batch_size);
+    }
 
     attention_storage.SetBatchSize(batch_size);
     // `AttentionActivationsPtrs` holds `MatPtrT` which also require updating;
@@ -480,6 +500,9 @@ struct Activations {
   MatStorageT<BF16> C1;
   MatStorageT<BF16> C2;
   MatStorageT<float> ffw_out;
+  MatStorageT<float> ple_embeds;
+  MatStorageT<BF16> gate_out;
+  std::vector<float> ple_token_emb;
 
   const size_t max_workers;
   TensorStats s_ffw_in;

@@ -155,6 +155,10 @@ struct LayerWeightsPtrs {
         pre_ffw2_ns(finder_("pre_ffw2_ns")),
         moe_router(finder_("moe_router")),
 
+        ple_gate(finder_("ple_gate")),
+        ple_proj(finder_("ple_proj")),
+        post_ple_ns(finder_("post_ple_ns")),
+
         layer_config(config) {
     if (layer_config.IsMoE()) {
       for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
@@ -227,6 +231,10 @@ struct LayerWeightsPtrs {
   std::vector<MatPtr> moe_gating_einsum_w2;
   std::vector<MatPtr> moe_linear_w;
 
+  MatPtr ple_gate;
+  MatPtr ple_proj;
+  MatPtr post_ple_ns;
+
   const LayerConfig& layer_config;
 
   // Calls `func(TensorArgs)` for each tensor which is in use for the
@@ -296,6 +304,12 @@ struct LayerWeightsPtrs {
       }
     }
 
+    if (layer_config.ple_dim > 0) {
+      func(TENSOR_ARGS(ple_gate, kMustRead));
+      func(TENSOR_ARGS(ple_proj, kMustRead));
+      func(TENSOR_ARGS(post_ple_ns, kMustRead));
+    }
+
     if (layer_config.ff_biases) {
       func(TENSOR_ARGS(ffw_gating_biases, kMustRead));
       func(TENSOR_ARGS(ffw_output_biases, kMustRead));
@@ -345,6 +359,9 @@ struct WeightsPtrs {
         vit_img_head_bias(finder_("img_head_bias")),
         vit_img_head_kernel(finder_("img_head_kernel")),
         mm_embed_norm(finder_("mm_embed_norm")),
+        ple_embeddings(finder_("ple_embeddings")),
+        ple_model_proj(finder_("ple_model_proj")),
+        ple_proj_norm(finder_("ple_proj_norm")),
         c_layers() {
     c_layers.reserve(config_.layer_configs.size());
     for (size_t idx = 0; idx < config_.layer_configs.size(); ++idx) {
@@ -381,6 +398,10 @@ struct WeightsPtrs {
 
   MatPtr mm_embed_norm;  // at least BF16.
 
+  MatPtr ple_embeddings;
+  MatPtr ple_model_proj;
+  MatPtr ple_proj_norm;
+
   std::vector<LayerWeightsPtrs> c_layers;
   std::vector<LayerWeightsPtrs> vit_layers;
 
@@ -402,6 +423,12 @@ struct WeightsPtrs {
     LayerWeightsPtrs* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
+
+    if (config_.ple_dim > 0) {
+      func(TENSOR_ARGS(ple_embeddings, kMustRead));
+      func(TENSOR_ARGS(ple_model_proj, kMustRead));
+      func(TENSOR_ARGS(ple_proj_norm, kMustRead));
+    }
 
     if (!config_.vit_config.layer_configs.empty()) {  // Vit parts.
       func(TENSOR_ARGS(vit_encoder_norm_bias, kMustRead));

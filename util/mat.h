@@ -157,7 +157,7 @@ class MatPtr : public IFields {
   size_t PackedBytes() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
     // num_elements_ already includes the NUQ tables.
-    return num_elements_ * element_bytes_;
+    return static_cast<size_t>(num_elements_) * element_bytes_;
   }
 
   // Works for any kind of padding and element type.

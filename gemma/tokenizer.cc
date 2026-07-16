@@ -111,6 +111,10 @@ GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
     sot_user_ = {105, 2364, 107};
     sot_model_ = {105, 4368, 107, 100, 45518, 107, 101};
     eot_ = {106, 107};
+  } else if (model == Model::GEMMA4_2B) {
+    sot_user_ = {105, 2364, 107};
+    sot_model_ = {105, 4368, 107};
+    eot_ = {106, 107};
   } else {
     sot_user_.reserve(3);
     if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return;
