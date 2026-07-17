@@ -42,8 +42,6 @@ GemmaEnv::GemmaEnv(const GemmaArgs& args)
       env_(ctx_),
       gemma_(args, ctx_) {
   const ModelConfig& config = gemma_.Config();
-  // Only allocate one for starters because GenerateBatch might not be called.
-  kv_caches_.push_back(KVCache(config, args.inference, ctx_.allocator));
 
   if (args.inference.verbosity >= 2) {
     ShowConfig(args, config, gemma_.WeightReadMode(), ctx_);
@@ -57,6 +55,10 @@ GemmaEnv::GemmaEnv(const GemmaArgs& args)
       .verbosity = args.inference.verbosity,
   };
   args.inference.CopyTo(runtime_config_);
+
+  // Only allocate one for starters because GenerateBatch might not be called.
+  kv_caches_.push_back(
+      KVCache(config, args.inference, runtime_config_, ctx_.allocator));
 }
 
 QueryResult GemmaEnv::QueryModel(const std::vector<int>& tokens) {
@@ -130,8 +132,8 @@ QueryResultAndMetrics GemmaEnv::BatchQueryModelWithMetrics(
 
   // Ensure we have at least one KVCache per query.
   while (kv_caches_.size() < num_queries) {
-    kv_caches_.push_back(
-        KVCache(gemma_.Config(), gemma_.Inference(), ctx_.allocator));
+    kv_caches_.push_back(KVCache(gemma_.Config(), gemma_.Inference(),
+                                runtime_config_, ctx_.allocator));
   }
   const hwy::Span<KVCache> kv_caches(&kv_caches_[0], num_queries);
 
