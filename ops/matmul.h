@@ -131,7 +131,8 @@ struct MMParallelWithinCluster {
         range_n, n_multiple, inner_tasks, ctx, cluster_idx, caller,
         [&](const IndexRange& worker_range, size_t worker) {
           func(worker_range, worker);
-        });
+        },
+        kMaxNC);
   }
 
   template <class Func>
@@ -212,7 +213,8 @@ struct MMParallelHierarchical {
               cluster_range, n_multiple, inner_tasks, ctx, cluster_idx, caller,
               [&](const IndexRange& worker_range, size_t worker) {
                 func(worker_range, worker);
-              });
+              },
+              kMaxNC);
         });
   }
 
