@@ -420,7 +420,7 @@ struct Gemma4MoE {
   }
 };
 
-void Gemma4MoETransformerLayer(size_t num_tokens, const size_t layer_idx,
+void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
                                const LayerWeightsPtrs& layer,
                                Activations& activations, QBatch& qbatch,
                                MatMulEnv& env) {

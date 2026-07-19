@@ -41,7 +41,9 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
+#include "deepseek/deepseek.h"   // includes highway.h
 #include "gemma/gemma-inl.h"
+#include "gemma/generate_internal.h"
 #include "gemma/gemma4_moe.h"       // includes highway.h
 #include "gemma/tiled_attention.h"  // includes highway.h
 #include "gemma/vit.h"              // includes highway.h
@@ -97,12 +99,17 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
   }
 }
 
-static HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
+HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
                                           const size_t layer_idx,
                                           const LayerWeightsPtrs& layer,
                                           Activations& activations,
                                           QBatch& qbatch, MatMulEnv& env) {
   const LayerConfig& layer_config = layer.layer_config;
+  if (layer_config.type == LayerAttentionType::kDeepSeekMLA) {
+    DeepSeekTransformerLayer(num_tokens, layer_idx, layer, activations, qbatch,
+                             env);
+    return;
+  }
   if (layer_config.IsMoE() &&
       activations.attention.config.model == Model::GEMMA4_26B_MOE) {
     Gemma4MoETransformerLayer(num_tokens, layer_idx, layer, activations, qbatch,
@@ -220,12 +227,12 @@ static float EmbeddingScaling(size_t model_dim) {
 // if -2 locations with appropriate begin/end image tokens are created by the
 // calling application.
 // Returns new image_token_position.
-static HWY_NOINLINE size_t
+HWY_NOINLINE size_t
 EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
              const ModelConfig& model_config, const WeightsPtrs& weights,
              MatStorageT<float>& x, ThreadingContext& ctx,
-             const ImageTokens* image_tokens = nullptr,
-             size_t image_token_position = 0) {
+             const ImageTokens* image_tokens,
+             size_t image_token_position) {
   GCPP_ZONE(ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbed);
 
   // Image tokens just need to be copied.
@@ -245,7 +252,9 @@ EmbedMMToken(int token, size_t x_row, size_t pos, size_t pos_in_prompt,
   }
 
   const size_t model_dim = model_config.model_dim;
-  const float emb_scaling = EmbeddingScaling(model_dim);
+  // DeepSeek does not scale embeddings by sqrt(model_dim).
+  const float emb_scaling =
+      model_config.HasMLA() ? 1.0f : EmbeddingScaling(model_dim);
 
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
@@ -410,6 +419,7 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
       if (config.ple_dim > 0) {
         tbatch_tokens.reserve(tbatch_size);
       }
+      activations.token_ids.resize(tbatch_size);
       for (size_t ti = 0; ti < tbatch_size; ++ti) {
         const size_t pos = qbatch_1.Pos(0) + ti;
         const size_t pos_in_prompt = tbatch_start + ti;
@@ -418,6 +428,7 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
         if (config.ple_dim > 0) {
           tbatch_tokens.push_back(token);
         }
+        activations.token_ids[ti] = token;
         image_token_position = EmbedMMToken(
             token, ti, pos, pos_in_prompt, config, weights, activations.x,
             env.ctx, runtime_config.image_tokens, image_token_position);
@@ -435,12 +446,28 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
                              activations, env);
       }
 
+      // mHC (DeepSeek V4): fan the embeddings out into residual streams.
+      DeepSeekMaybeInitHCStreams(activations, env);
+
       // Transformer with one batch of tokens from a single query. No need to
       // set `PrevToken` because we already did the embedding above.
       for (size_t layer_idx = 0; layer_idx < config.layer_configs.size();
            ++layer_idx) {
         TransformerLayer(tbatch_size, layer_idx, *weights.GetLayer(layer_idx),
                          activations, qbatch_1, env);
+      }
+
+      // Speculative decoding (DeepSeek V4): keep the MTP block's KV cache in
+      // sync with the prompt. Row ti pairs with the next prompt token, which
+      // is always available because prefill stops before the last token.
+      if (HWY_UNLIKELY(runtime_config.use_mtp && !weights.mtp_layers.empty() &&
+                       prefix_end_this_query == 0)) {
+        std::vector<int> next(tbatch_size);
+        for (size_t ti = 0; ti < tbatch_size; ++ti) {
+          next[ti] = qbatch_1.Prompt(0)[tbatch_start + ti + 1];
+        }
+        DeepSeekMTPStep(tbatch_size, next.data(), /*compute_logits=*/false,
+                        weights, activations, qbatch_1, env);
       }
 
       qbatch_1.MutablePos(0) += tbatch_size;
@@ -472,7 +499,7 @@ static void MaybeObserve(const RuntimeConfig& runtime_config,
 // Embeds PrevToken (one from each query) and calls each TransformerLayer.
 // Called by query-batched `PrefillQBatch` and `GenerateT`, but not the
 // token-batched `PrefillTBatch`, which supports image embedding.
-static HWY_NOINLINE void Transformer(const ModelConfig& config,
+HWY_NOINLINE void Transformer(const ModelConfig& config,
                                      const RuntimeConfig& runtime_config,
                                      const WeightsPtrs& weights,
                                      Activations& activations, QBatch& qbatch,
@@ -492,18 +519,24 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
   if (config.ple_dim > 0) {
     tbatch_tokens.reserve(qbatch.Size());
   }
+  activations.token_ids.resize(qbatch.Size());
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
     const int token = qbatch.PrevToken(qi);
     if (config.ple_dim > 0) {
       tbatch_tokens.push_back(token);
     }
+    activations.token_ids[qi] = token;
     EmbedMMToken(token, qi, qbatch.Pos(qi),
-                 /*pos_in_prompt=*/0, config, weights, activations.x, env.ctx);
+                 /*pos_in_prompt=*/0, config, weights, activations.x, env.ctx,
+                 /*image_tokens=*/nullptr, /*image_token_position=*/0);
   }
   if (config.ple_dim > 0) {
     ComputePLEEmbeddings(qbatch.Size(), tbatch_tokens, config, weights,
                          activations, env);
   }
+
+  // mHC (DeepSeek V4): fan the embedding out into parallel residual streams.
+  DeepSeekMaybeInitHCStreams(activations, env);
 
   for (size_t layer_idx = 0; layer_idx < weights.c_layers.size(); ++layer_idx) {
     TransformerLayer(/*num_tokens=*/1, layer_idx, *weights.GetLayer(layer_idx),
@@ -511,6 +544,9 @@ static HWY_NOINLINE void Transformer(const ModelConfig& config,
 
     MaybeObserve(runtime_config, activations, qbatch, layer_idx);
   }
+
+  // mHC: collapse the residual streams back into x before the final norm.
+  DeepSeekMaybeFinalizeHCStreams(weights, activations, env);
 }
 
 // Populates KV cache for the batch queries, one token at a time.
@@ -587,6 +623,33 @@ static void StreamAndUpdateEOS(const size_t qi, size_t pos, int token,
   if (HWY_UNLIKELY(config.IsEOS(token))) non_eos.Clear(qi);
 }
 
+// Final norm x -> x_bf. DeepSeek V4 checkpoints store the true norm scale;
+// gemma weights are exported as scale-1 for the (1 + w) RMSNorm. Shared with
+// the speculative driver (deepseek_spec.cc), which must match this exactly.
+HWY_NOINLINE void FinalNormBatched(const ModelConfig& config,
+                                   const WeightsPtrs& weights,
+                                   Activations& activations, MatMulEnv& env) {
+  if (HWY_UNLIKELY(config.model_family_version == 4 && config.HasMLA())) {
+    DeepSeekFinalNorm(weights, activations, env);
+  } else {
+    RMSNormBatched(activations.x, weights.final_norm_scale, activations.x_bf,
+                   env.ctx);
+  }
+}
+
+// Logits from x_bf (after FinalNormBatched). DeepSeek models have an untied
+// output head; others reuse the input embedding. Also shared with the
+// speculative driver.
+HWY_NOINLINE void FinalLogits(const WeightsPtrs& weights,
+                              Activations& activations, MatMulEnv& env) {
+  GCPP_ZONE(env.ctx, /*worker=*/0, Zones::kGenEmbeddingMatmul);
+  const MatPtr& output_head = weights.lm_head.HasPtr()
+                                  ? weights.lm_head
+                                  : weights.embedder_input_embedding;
+  CallMatMul(activations.x_bf, output_head,
+             /*add=*/nullptr, env, activations.logits);
+}
+
 // Must be called after Transformer: either after prefill, or during decode.
 // Computes logits, samples and streams the token.
 static void SampleAndStream(const ModelConfig& config,
@@ -598,17 +661,11 @@ static void SampleAndStream(const ModelConfig& config,
                             TimingInfo& timing_info) {
   HWY_DASSERT(qbatch.Size() == activations.x.Rows());
 
-  RMSNormBatched(activations.x, weights.final_norm_scale, activations.x_bf,
-                 env.ctx);
+  FinalNormBatched(config, weights, activations, env);
 
   MaybeObserve(runtime_config, activations, qbatch, -1);
 
-  {
-    GCPP_ZONE(env.ctx, /*worker=*/0, Zones::kGenEmbeddingMatmul);
-    // Compute logits from last layer activations.
-    CallMatMul(activations.x_bf, weights.embedder_input_embedding,
-               /*add=*/nullptr, env, activations.logits);
-  }
+  FinalLogits(weights, activations, env);
   PROFILER_ZONE("Gen.Softcap+Sample+Stream");
 
   MaybeLogitsSoftCapBatched(config.final_cap, activations.logits, non_eos,
@@ -675,7 +732,7 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
   };
 }
 
-static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
+size_t PrefillTBatchOrQBatch(const ModelConfig& config,
                                     const RuntimeConfig& runtime_config,
                                     const WeightsPtrs& weights,
                                     Activations& activations, QBatch& qbatch,
@@ -736,7 +793,7 @@ static size_t PrefillTBatchOrQBatch(const ModelConfig& config,
   return max_gen_steps;
 }
 
-static void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
+void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
                                            const RuntimeConfig& runtime_config,
                                            QBatch& qbatch,
                                            hwy::BitSet4096<>& non_eos,
@@ -778,6 +835,19 @@ static void GenerateT(const ModelConfig& config,
                       TimingInfo& timing_info) {
   for (const LayerWeightsPtrs& layer : weights.c_layers) {
     SetWeightStats(layer, activations, env.ctx);
+  }
+
+  if (HWY_UNLIKELY(runtime_config.use_mtp)) {
+    if (!weights.mtp_layers.empty() && qbatch.Size() == 1 &&
+        runtime_config.top_k == 1 && !runtime_config.sample_func &&
+        !runtime_config.accept_token) {
+      GenerateSpecV4(config, runtime_config, weights, activations, qbatch,
+                     env, timing_info);
+      return;
+    }
+    HWY_WARN(
+        "use_mtp requires MTP weights, a single query and top_k == 1 (greedy);"
+        " falling back to normal decoding.");
   }
 
   MaybePrint(2, timing_info.verbosity, "[ BEGIN PHASE: prefill ]");

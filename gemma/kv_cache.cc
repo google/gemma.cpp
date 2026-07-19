@@ -80,6 +80,35 @@ KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
   // fires. The 2-arg constructor path relies on k_v_cols == 0 to skip reshape.
 }
 
+// Allocates and zero-initializes the DeepSeek V4 incremental compressor state
+// if any layer needs it, and fills the per-layer offset table.
+static void InitDSState(const ModelConfig& config, const Allocator& allocator,
+                        MatStorageT<float>& ds_state,
+                        MatStorageT<float>& ds_state_snapshot,
+                        std::vector<uint32_t>& ds_state_offsets) {
+  const size_t num_layers = config.layer_configs.size();
+  ds_state_offsets.resize(num_layers, 0);
+  size_t accum = 0;
+  for (size_t i = 0; i < num_layers; ++i) {
+    ds_state_offsets[i] = static_cast<uint32_t>(accum);
+    accum += config.layer_configs[i].DSStateSize();
+  }
+  // The MTP block is dense (no compressor state), but give it an offset entry
+  // so `ds_state_offsets[num_layers]` is valid.
+  if (config.num_mtp_layers > 0) {
+    ds_state_offsets.push_back(static_cast<uint32_t>(accum));
+  }
+  if (accum == 0) return;
+  ds_state = MatStorageT<float>("ds_state", Extents2D(1, accum), allocator,
+                                MatPadding::kPacked);
+  ZeroInit(ds_state);
+  // Boundary snapshot for speculative decoding: state after the committed
+  // token of a verify step, restored if the draft is rejected.
+  ds_state_snapshot = MatStorageT<float>("ds_snap", Extents2D(1, accum),
+                                         allocator, MatPadding::kPacked);
+  ZeroInit(ds_state_snapshot);
+}
+
 // Support heterogeneous layer configurations (common in Gemma 4 architectures),
 // where different layers can have varying attention shapes (e.g., mixing local
 // layers with smaller qkv_dim/more heads and global layers with larger
@@ -133,6 +162,12 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       allocator, MatPadding::kPacked);
   const size_t num_tiles = hwy::DivCeil(rows, kTileSize);
   tiled_seq_len = num_tiles * kTileSize;
+  // Trailing segment for the MTP block (indexed as layer `num_layers`).
+  if (config.num_mtp_layers > 0) {
+    layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+  }
+  InitDSState(config, allocator, ds_state, ds_state_snapshot,
+              ds_state_offsets);
 }
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
@@ -350,6 +385,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
         allocator, MatPadding::kOdd);
   }
+  if (config.num_mtp_layers > 0) {
+    layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+  }
+  InitDSState(config, allocator, ds_state, ds_state_snapshot,
+              ds_state_offsets);
 }
 
 KVCache KVCache::Copy() {
@@ -366,6 +406,17 @@ KVCache KVCache::Copy() {
                                   ? copy.compact_global_kv_cache_ptr
                                   : copy.compact_local_kv_cache_ptr;
   copy.tiled_seq_len = tiled_seq_len;
+  if (ds_state.Rows() > 0) {
+    copy.ds_state = MatStorageT<float>("ds_state", ds_state.Extents(),
+                                       allocator_, MatPadding::kPacked);
+    CopyMat(ds_state, copy.ds_state);
+    copy.ds_state_snapshot = MatStorageT<float>(
+        "ds_snap", ds_state_snapshot.Extents(), allocator_,
+        MatPadding::kPacked);
+    CopyMat(ds_state_snapshot, copy.ds_state_snapshot);
+    copy.ds_state_offsets = ds_state_offsets;
+  }
+  copy.layer_flat_offsets = layer_flat_offsets;
   return copy;
 }
 

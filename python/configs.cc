@@ -61,7 +61,13 @@ PYBIND11_MODULE(configs, py_module) {
 
   enum_<LayerAttentionType>(py_module, "LayerAttentionType")
       .value("kGemma", LayerAttentionType::kGemma)
-      .value("kVit", LayerAttentionType::kVit);
+      .value("kVit", LayerAttentionType::kVit)
+      .value("kDeepSeekMLA", LayerAttentionType::kDeepSeekMLA);
+
+  enum_<AttentionVariant>(py_module, "AttentionVariant")
+      .value("kDense", AttentionVariant::kDense)
+      .value("kCSA", AttentionVariant::kCSA)
+      .value("kHCA", AttentionVariant::kHCA);
 
   enum_<PostNormType>(py_module, "PostNormType")
       .value("NoPostNorm", PostNormType::None)
@@ -73,7 +79,14 @@ PYBIND11_MODULE(configs, py_module) {
   .value("HalfRope", PostQKType::HalfRope);
 
   enum_<ActivationType>(py_module, "ActivationType")
-  .value("Gelu", ActivationType::Gelu);
+      .value("Gelu", ActivationType::Gelu)
+  .value("Silu", ActivationType::Silu);
+
+  enum_<RouterScoreFunc>(py_module, "RouterScoreFunc")
+      .value("kSigmoidGatingCompat", RouterScoreFunc::kSigmoidGatingCompat)
+      .value("kSoftmax", RouterScoreFunc::kSoftmax)
+      .value("kSigmoid", RouterScoreFunc::kSigmoid)
+      .value("kSqrtSoftplus", RouterScoreFunc::kSqrtSoftplus);
 
   enum_<QueryScaleType>(py_module, "QueryScaleType")
       .value("SqrtKeySize", QueryScaleType::SqrtKeySize)
@@ -101,6 +114,7 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA3_4B_LM", Model::GEMMA3_4B_LM)
       .value("GEMMA3_12B_LM", Model::GEMMA3_12B_LM)
       .value("GEMMA3_27B_LM", Model::GEMMA3_27B_LM)
+      .value("DEEPSEEK4_FLASH", Model::DEEPSEEK4_FLASH)
       // Insert new models above this line.
   .value("PALIGEMMA_448", Model::PALIGEMMA_448);
 
@@ -143,6 +157,28 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("post_qk", &LayerConfig::post_qk)
       .def_readwrite("use_qk_norm", &LayerConfig::use_qk_norm)
       .def_readwrite("kv_share_layer_idx", &LayerConfig::kv_share_layer_idx)
+      .def_readwrite("norm_v", &LayerConfig::norm_v)
+      .def_readwrite("num_experts", &LayerConfig::num_experts)
+      .def_readwrite("num_experts_per_datapoint",
+                     &LayerConfig::num_experts_per_datapoint)
+      .def_readwrite("kv_lora_rank", &LayerConfig::kv_lora_rank)
+      .def_readwrite("q_lora_rank", &LayerConfig::q_lora_rank)
+      .def_readwrite("rope_head_dim", &LayerConfig::rope_head_dim)
+      .def_readwrite("v_head_dim", &LayerConfig::v_head_dim)
+      .def_readwrite("attention_variant", &LayerConfig::attention_variant)
+      .def_readwrite("kv_compression_rate", &LayerConfig::kv_compression_rate)
+      .def_readwrite("indexer_heads", &LayerConfig::indexer_heads)
+      .def_readwrite("indexer_head_dim", &LayerConfig::indexer_head_dim)
+      .def_readwrite("indexer_top_k", &LayerConfig::indexer_top_k)
+      .def_readwrite("num_shared_experts", &LayerConfig::num_shared_experts)
+      .def_readwrite("sigmoid_gating", &LayerConfig::sigmoid_gating)
+      .def_readwrite("use_routing_bias", &LayerConfig::use_routing_bias)
+      .def_readwrite("o_lora_rank", &LayerConfig::o_lora_rank)
+      .def_readwrite("o_groups", &LayerConfig::o_groups)
+      .def_readwrite("swiglu_limit", &LayerConfig::swiglu_limit)
+      .def_readwrite("route_scale", &LayerConfig::route_scale)
+      .def_readwrite("router_score", &LayerConfig::router_score)
+      .def_readwrite("hash_routing", &LayerConfig::hash_routing)
       .def_readwrite("internal", &LayerConfig::internal);
 
   class_<VitConfig>(py_module, "VitConfig")
@@ -186,6 +222,18 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("internal", &ModelConfig::internal)
       .def_readwrite("use_global_timescale",
                      &ModelConfig::use_global_timescale)
+      .def_readwrite("partial_rotary_factor",
+                     &ModelConfig::partial_rotary_factor)
+      .def_readwrite("hc_mult", &ModelConfig::hc_mult)
+      .def_readwrite("rope_theta", &ModelConfig::rope_theta)
+      .def_readwrite("compress_rope_theta", &ModelConfig::compress_rope_theta)
+      .def_readwrite("yarn_orig_seq_len", &ModelConfig::yarn_orig_seq_len)
+      .def_readwrite("yarn_factor", &ModelConfig::yarn_factor)
+      .def_readwrite("yarn_beta_fast", &ModelConfig::yarn_beta_fast)
+      .def_readwrite("yarn_beta_slow", &ModelConfig::yarn_beta_slow)
+      .def_readwrite("hc_sinkhorn_iters", &ModelConfig::hc_sinkhorn_iters)
+      .def_readwrite("hc_eps", &ModelConfig::hc_eps)
+      .def_readwrite("num_mtp_layers", &ModelConfig::num_mtp_layers)
 
       .def("add_layer_config", &ModelConfig::AddLayerConfig,
            arg("layer_config"))

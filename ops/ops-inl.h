@@ -223,7 +223,10 @@ float RMSNormMul(const VT* HWY_RESTRICT x, const size_t size,
 
 }  // namespace detail
 
-template <typename XT, typename WT, typename OT>
+// `kPlainWeight = false`: gemma weights are exported as scale-1 and scaled by
+// (1 + weight). `kPlainWeight = true`: the checkpoint stores the true scale
+// (DeepSeek), so the weight multiplies directly.
+template <bool kPlainWeight = false, typename XT, typename WT, typename OT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
     const XT* HWY_RESTRICT x, const WT* HWY_RESTRICT weight, const size_t w_ofs,
     OT* HWY_RESTRICT out, const size_t size, ThreadingContext& ctx,
@@ -240,13 +243,17 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNorm(
   Decompress2AndCompressTo(DF(), out, size, x, weight, w_ofs,
                            [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
                              const VF m = hn::Mul(*pmul, vx);
-                             // (1+weight) * m = m + weight*m = one FMA.
-                             return hn::MulAdd(m, vw, m);
+                             if constexpr (kPlainWeight) {
+                               return hn::Mul(m, vw);
+                             } else {
+                               // (1+weight) * m = m + weight*m = one FMA.
+                               return hn::MulAdd(m, vw, m);
+                             }
                            });
 }
 
 // Same as RMSNorm, but its HWY_RESTRICT forbids passing the same pointer.
-template <typename WT, typename XT>
+template <bool kPlainWeight = false, typename WT, typename XT>
 HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
     const WT* HWY_RESTRICT weight, const size_t w_ofs, XT* HWY_RESTRICT inout,
     const size_t size, ThreadingContext& ctx, const size_t worker) {
@@ -261,8 +268,12 @@ HWY_NOINLINE HWY_MAYBE_UNUSED void RMSNormInplace(
   Decompress1AndCompressInplace(DF(), inout, size, weight, w_ofs,
                                 [pmul](DF /*df*/, VF vx, VF vw) HWY_ATTR -> VF {
                                   const VF m = hn::Mul(*pmul, vx);
-                                  // (1+weight) * m = m + weight*m = one FMA.
-                                  return hn::MulAdd(m, vw, m);
+                                  if constexpr (kPlainWeight) {
+                                    return hn::Mul(m, vw);
+                                  } else {
+                                    // (1+weight) * m = m + weight*m = one FMA.
+                                    return hn::MulAdd(m, vw, m);
+                                  }
                                 });
 }
 
@@ -497,7 +508,8 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void AddFrom(const XT* HWY_RESTRICT x,
 }
 
 // Simple loops unless/until batch sizes are large enough to parallelize.
-template <typename XT, typename OT>
+// See RMSNorm for `kPlainWeight`.
+template <bool kPlainWeight = false, typename XT, typename OT>
 void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
                     MatPtrT<OT>& out, ThreadingContext& ctx,
                     size_t cluster_idx = 0) {
@@ -509,14 +521,15 @@ void RMSNormBatched(const MatPtrT<XT>& activations, const MatPtr& weights,
     ParallelFor(Parallelism::kFlat, activations.Rows(), ctx, cluster_idx,
                 Callers::kOpsRMSNormBatched,
                 [&](uint64_t token_idx, size_t worker) {
-                  RMSNorm(activations.Row(token_idx), weights_t->PackedScale1(),
-                          /*w_ofs=*/0, out.Row(token_idx), activations.Cols(),
-                          ctx, worker);
+                  RMSNorm<kPlainWeight>(activations.Row(token_idx),
+                                        weights_t->PackedScale1(),
+                                        /*w_ofs=*/0, out.Row(token_idx),
+                                        activations.Cols(), ctx, worker);
                 });
   });
 }
 
-template <typename XT>
+template <bool kPlainWeight = false, typename XT>
 void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
                            ThreadingContext& ctx, size_t cluster_idx = 0) {
   HWY_DASSERT(weights.Rows() == 1);
@@ -526,9 +539,10 @@ void RMSNormInplaceBatched(const MatPtr& weights, MatPtrT<XT>& inout,
     ParallelFor(Parallelism::kFlat, inout.Rows(), ctx, cluster_idx,
                 Callers::kOpsRMSNormInplaceBatched,
                 [&](uint64_t token_idx, size_t worker) {
-                  RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0,
-                                 inout.Row(token_idx), inout.Cols(), ctx,
-                                 worker);
+                  RMSNormInplace<kPlainWeight>(weights_t->PackedScale1(),
+                                               /*w_ofs=*/0,
+                                               inout.Row(token_idx),
+                                               inout.Cols(), ctx, worker);
                 });
   });
 }
