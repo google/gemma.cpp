@@ -180,6 +180,11 @@ struct RuntimeConfig {
 
   // Whether to use continuous batching.
   bool use_continuous_batching = false;
+
+  // DeepSeek V4: greedy self-speculative decoding with the multi-token-
+  // prediction block. Requires num_mtp_layers > 0 weights, a single query and
+  // top_k == 1; otherwise falls back to normal decoding with a warning.
+  bool use_mtp = false;
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

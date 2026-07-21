@@ -18,7 +18,14 @@ include(FetchContent)
 
 project(gemma)
 
-set(CMAKE_CXX_STANDARD 17)
+# MSVC rejects the designated initializers used throughout this codebase in
+# C++17 mode (C7555); they are standard in C++20.
+if(MSVC)
+  set(GEMMA_CXX_STANDARD 20)
+else()
+  set(GEMMA_CXX_STANDARD 17)
+endif()
+set(CMAKE_CXX_STANDARD ${GEMMA_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -116,6 +123,13 @@ set(SOURCES
   compression/int-inl.h
   compression/types.h
   compression/test_util-inl.h
+  deepseek/deepseek.cc
+  deepseek/deepseek.h
+  deepseek/deepseek_dims.h
+  deepseek/deepseek_spec.cc
+  deepseek/deepseek_tensors.cc
+  deepseek/dsv4_tokenizer.cc
+  deepseek/dsv4_tokenizer.h
   evals/benchmark_helper.cc
   evals/benchmark_helper.h
   evals/cross_entropy.cc
@@ -132,6 +146,7 @@ set(SOURCES
   gemma/gemma-inl.h
   gemma/gemma.cc
   gemma/gemma.h
+  gemma/generate_internal.h
   gemma/gemma4_moe.cc
   gemma/gemma4_moe.h
   gemma/kv_cache.cc
@@ -214,14 +229,15 @@ FetchContent_GetProperties(sentencepiece)
 ## Library Target
 
 add_library(libgemma ${SOURCES})
-set_property(TARGET libgemma PROPERTY CXX_STANDARD 17)
+set_property(TARGET libgemma PROPERTY CXX_STANDARD ${GEMMA_CXX_STANDARD})
 set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
-target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static)
+target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static
+                      nlohmann_json::nlohmann_json)
 target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
-target_compile_options(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+target_compile_options(libgemma PRIVATE $<$<AND:$<PLATFORM_ID:Windows>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-Wno-deprecated-declarations>)
 if(GEMMA_ONEDNN_BRGEMM)
   target_compile_definitions(libgemma PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
   target_link_libraries(libgemma dnnl)
@@ -231,7 +247,7 @@ install(TARGETS libgemma DESTINATION lib)
 # Shared library target for C# interop
 if(BUILD_GEMMA_DLL)
     add_library(gemma_shared SHARED ${SOURCES})
-set_property(TARGET gemma_shared PROPERTY CXX_STANDARD 17)
+set_property(TARGET gemma_shared PROPERTY CXX_STANDARD ${GEMMA_CXX_STANDARD})
 set_target_properties(gemma_shared PROPERTIES
     PREFIX ""
     OUTPUT_NAME "gemma"
@@ -249,7 +265,7 @@ target_compile_definitions(gemma_shared
     GEMMA_EXPORTS
     $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>
 )
-target_compile_options(gemma_shared PRIVATE $<$<PLATFORM_ID:Windows>:-Wno-deprecated-declarations>)
+target_compile_options(gemma_shared PRIVATE $<$<AND:$<PLATFORM_ID:Windows>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-Wno-deprecated-declarations>)
 if(GEMMA_ONEDNN_BRGEMM)
   target_compile_definitions(gemma_shared PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
   target_link_libraries(gemma_shared PRIVATE dnnl)
@@ -264,6 +280,14 @@ endif()
 add_executable(gemma gemma/run.cc)
 target_link_libraries(gemma libgemma hwy hwy_contrib)
 install(TARGETS gemma DESTINATION bin)
+
+# DeepSeek V4 safetensors -> sbs converter.
+add_executable(convert_dsv4 deepseek/convert_dsv4.cc)
+target_link_libraries(convert_dsv4 libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
+
+# DeepSeek V4 generation driver (chat template + HF BPE tokenization in C++).
+add_executable(run_dsv4 deepseek/run_dsv4.cc)
+target_link_libraries(run_dsv4 libgemma hwy hwy_contrib)
 
 add_executable(single_benchmark evals/benchmark.cc)
 target_link_libraries(single_benchmark libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
@@ -296,6 +320,7 @@ set(GEMMA_TEST_FILES
   compression/distortion_test.cc
   compression/nuq_test.cc
   compression/sfp_test.cc
+  deepseek/deepseek_test.cc
   gemma/gemma_args_test.cc
   gemma/tensor_info_test.cc
   io/blob_store_test.cc

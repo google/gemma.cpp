@@ -148,6 +148,12 @@ class TensorInfoRegistry {
                             const LayerConfig& layer_config,
                             size_t img_layer_idx);
 
+  // DeepSeek registrations; defined in deepseek/deepseek_tensors.cc.
+  void AddDeepSeekModelTensors(const ModelConfig& config);
+  void AddDeepSeekLayerTensors(const ModelConfig& config,
+                               const LayerConfig& layer_config,
+                               const std::string& suffix);
+
   std::vector<TensorInfo> tensors_;
   // Includes entries for base name *and* the suffixed name for each layer.
   std::unordered_map<std::string, size_t> idx_from_name_;

@@ -23,6 +23,7 @@
 #include <atomic>
 #include <vector>
 
+#include "deepseek/deepseek_dims.h"  // MLADims, CreateYarnInvTimescale
 #include "gemma/configs.h"     // ModelConfig
 #include "gemma/flash_structs.h"
 #include "gemma/gemma_args.h"  // AttentionImpl
@@ -342,6 +343,16 @@ static inline size_t MoEBatchSize(const LayerConfig& layer_config,
   return layer_config.IsMoE() ? batch_size : 0;
 }
 
+// Returns the layer config with the most experts. Models whose first layers
+// are dense (e.g. DeepSeek) still need MoE buffers sized for later layers.
+static inline const LayerConfig& MoELayerConfig(const ModelConfig& config) {
+  const LayerConfig* best = &config.layer_configs[0];
+  for (const LayerConfig& lc : config.layer_configs) {
+    if (lc.NumExperts() > best->NumExperts()) best = &lc;
+  }
+  return *best;
+}
+
 struct PerToken {
   float weight;
   uint16_t expert_idx;
@@ -357,6 +368,8 @@ struct Activations {
               size_t batch_size, size_t seq_len, ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
       : layer_config(config.layer_configs[0]),
+        moe_layer_config(MoELayerConfig(config)),
+        mla_dims(config),
 
         x(MatFactory("x", batch_size, config.model_dim, ctx.allocator)),
         x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
@@ -366,15 +379,13 @@ struct Activations {
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
                                    config.model_dim, ctx.allocator)),
-        C1(MatFactory("C1", batch_size, MaxFFHiddenDim(config),
-                      ctx.allocator)),
-        C2(MatFactory("C2", batch_size, MaxFFHiddenDim(config),
-                      ctx.allocator)),
+        C1(MatFactory("C1", batch_size, MaxFFHiddenDim(config), ctx.allocator)),
+        C2(MatFactory("C2", batch_size, MaxFFHiddenDim(config), ctx.allocator)),
         ffw_out(
             MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
-        ple_embeds(
-            MatFactory("ple_embeds", batch_size,
-                       config.num_layers * config.ple_dim, ctx.allocator)),
+        ple_embeds(MatFactory("ple_embeds", batch_size,
+                              config.num_layers * config.ple_dim,
+                              ctx.allocator)),
         gate_out(
             MatFactory("gate_out", batch_size, config.ple_dim, ctx.allocator)),
         ple_token_emb(config.num_layers * config.ple_dim),
@@ -384,11 +395,59 @@ struct Activations {
         s_ffw_hidden(config.num_layers, max_workers),
         s_ffw_out(config.num_layers, max_workers),
         router_in(MatFactory("router_in",
-                             MoEBatchSize(layer_config, batch_size),
+                             MoEBatchSize(moe_layer_config, batch_size),
                              config.model_dim, ctx.allocator)),
-        router_logits(
-            MatFactory("router_logits", MoEBatchSize(layer_config, batch_size),
-                       layer_config.NumExperts(), ctx.allocator)),
+        router_logits(MatFactory("router_logits",
+                                 MoEBatchSize(moe_layer_config, batch_size),
+                                 moe_layer_config.NumExperts(), ctx.allocator)),
+        mla_q_a(MatFactory("mla_q_a", mla_dims.Any() ? batch_size : 0,
+                           mla_dims.q_lora_rank, ctx.allocator)),
+        mla_kv_a(MatFactory("mla_kv_a", mla_dims.Any() ? batch_size : 0,
+                            mla_dims.kv_a_dim, ctx.allocator)),
+        idx_q(MatFactory("idx_q", mla_dims.indexer_dim > 0 ? batch_size : 0,
+                         mla_dims.indexer_dim, ctx.allocator)),
+        idx_weights(MatFactory("idx_weights",
+                               mla_dims.indexer_dim > 0 ? batch_size : 0,
+                               MaxIndexerHeads(config), ctx.allocator)),
+        comp_kv(MatFactory("comp_kv", mla_dims.comp_dim > 0 ? batch_size : 0,
+                           mla_dims.comp_dim, ctx.allocator)),
+        comp_gate(MatFactory("comp_gate",
+                             mla_dims.comp_dim > 0 ? batch_size : 0,
+                             mla_dims.comp_dim, ctx.allocator)),
+        idxc_kv(MatFactory("idxc_kv", mla_dims.idxc_dim > 0 ? batch_size : 0,
+                           mla_dims.idxc_dim, ctx.allocator)),
+        idxc_gate(MatFactory("idxc_gate",
+                             mla_dims.idxc_dim > 0 ? batch_size : 0,
+                             mla_dims.idxc_dim, ctx.allocator)),
+        mla_o_in(MatFactory("mla_o_in", mla_dims.o_in_dim > 0 ? batch_size : 0,
+                            mla_dims.o_in_dim, ctx.allocator)),
+        mla_o_group(MatFactory(
+            "mla_o_group", mla_dims.o_mid_dim > 0 ? batch_size : 0,
+            mla_dims.o_mid_dim > 0 ? MaxOLoraRank(config) : 0, ctx.allocator)),
+        mla_o_mid(MatFactory("mla_o_mid",
+                             mla_dims.o_mid_dim > 0 ? batch_size : 0,
+                             mla_dims.o_mid_dim, ctx.allocator)),
+        hc_streams(MatFactory("hc_streams", config.hc_mult > 1 ? batch_size : 0,
+                              config.hc_mult * config.model_dim,
+                              ctx.allocator)),
+        hc_tmp(MatFactory("hc_tmp", config.hc_mult > 1 ? batch_size : 0,
+                          config.hc_mult * config.model_dim, ctx.allocator)),
+        hc_mixes(MatFactory("hc_mixes", config.hc_mult > 1 ? batch_size : 0,
+                            (2 + config.hc_mult) * config.hc_mult,
+                            ctx.allocator)),
+        hc_post_w(MatFactory("hc_post_w", config.hc_mult > 1 ? batch_size : 0,
+                             config.hc_mult, ctx.allocator)),
+        hc_comb(MatFactory("hc_comb", config.hc_mult > 1 ? batch_size : 0,
+                           config.hc_mult * config.hc_mult, ctx.allocator)),
+        mla_inv_timescale(CreateInvTimescale(
+            ctx.allocator, HWY_MAX(mla_dims.rope_head_dim, size_t{2}),
+            /*half_rope=*/false, config.rope_theta)),
+        mla_inv_timescale_c(CreateYarnInvTimescale(
+            ctx.allocator, HWY_MAX(mla_dims.rope_head_dim, size_t{2}),
+            config.compress_rope_theta > 0.0f ? config.compress_rope_theta
+                                              : config.rope_theta,
+            config.yarn_factor, config.yarn_orig_seq_len, config.yarn_beta_fast,
+            config.yarn_beta_slow)),
         s_router_in(config.num_layers, max_workers),
         s_router_logits(config.num_layers, max_workers),
         s_expert_in(config.num_layers, max_workers),
@@ -421,13 +480,36 @@ struct Activations {
     C2.AllocateAndAttachRowPtrs(row_ptrs);
     ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
 
-    if (layer_config.IsMoE()) {
+    if (mla_dims.Any()) {
+      mla_q_a.AllocateAndAttachRowPtrs(row_ptrs);
+      mla_kv_a.AllocateAndAttachRowPtrs(row_ptrs);
+      if (mla_dims.indexer_dim > 0) {
+        idx_q.AllocateAndAttachRowPtrs(row_ptrs);
+        idx_weights.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.comp_dim > 0) {
+        comp_kv.AllocateAndAttachRowPtrs(row_ptrs);
+        comp_gate.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.idxc_dim > 0) {
+        idxc_kv.AllocateAndAttachRowPtrs(row_ptrs);
+        idxc_gate.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.o_mid_dim > 0) {
+        mla_o_group.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+    }
+    if (config.hc_mult > 1) {
+      hc_mixes.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+
+    if (moe_layer_config.IsMoE()) {
       router_logits.AllocateAndAttachRowPtrs(row_ptrs);
 
       const size_t experts_per_token =
-          layer_config.NumExpertsPerDatapoint();
+          moe_layer_config.NumExpertsPerDatapoint();
       per_token_stride = hwy::RoundUpTo(
-          layer_config.NumExpertsPerDatapoint(), kPerTokenPerLine);
+          moe_layer_config.NumExpertsPerDatapoint(), kPerTokenPerLine);
       per_token = ctx.allocator.Alloc<PerToken>(batch_size * per_token_stride);
       expert_tokens =
           ctx.allocator.Alloc<uint16_t>(batch_size * experts_per_token);
@@ -435,15 +517,15 @@ struct Activations {
       const size_t num_clusters = ctx.pools.NumClusters();
       per_cluster.reserve(num_clusters);
       for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-        per_cluster.emplace_back(config, layer_config, batch_size,
+        per_cluster.emplace_back(config, moe_layer_config, batch_size,
                                  ctx.allocator, row_ptrs);
       }
 
-      const size_t num_experts = layer_config.NumExperts();
+      const size_t num_experts = moe_layer_config.NumExperts();
       ffw_expert_out.reserve(num_experts);
       for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
         ffw_expert_out.emplace_back(MatFactory(
-            "ffw_partial_out", MoEBatchSize(layer_config, batch_size),
+            "ffw_partial_out", MoEBatchSize(moe_layer_config, batch_size),
             config.model_dim, ctx.allocator));
         ffw_expert_out.back().AllocateAndAttachRowPtrs(row_ptrs);
       }
@@ -482,6 +564,35 @@ struct Activations {
       gate_out.OverrideRows(batch_size);
     }
 
+    if (mla_dims.Any()) {
+      mla_q_a.OverrideRows(batch_size);
+      mla_kv_a.OverrideRows(batch_size);
+      if (mla_dims.indexer_dim > 0) {
+        idx_q.OverrideRows(batch_size);
+        idx_weights.OverrideRows(batch_size);
+      }
+      if (mla_dims.comp_dim > 0) {
+        comp_kv.OverrideRows(batch_size);
+        comp_gate.OverrideRows(batch_size);
+      }
+      if (mla_dims.idxc_dim > 0) {
+        idxc_kv.OverrideRows(batch_size);
+        idxc_gate.OverrideRows(batch_size);
+      }
+      if (mla_dims.o_mid_dim > 0) {
+        mla_o_in.OverrideRows(batch_size);
+        mla_o_group.OverrideRows(batch_size);
+        mla_o_mid.OverrideRows(batch_size);
+      }
+    }
+    if (hc_streams.Cols() > 0 && hc_streams.Rows() > 0) {
+      hc_streams.OverrideRows(batch_size);
+      hc_tmp.OverrideRows(batch_size);
+      hc_mixes.OverrideRows(batch_size);
+      hc_post_w.OverrideRows(batch_size);
+      hc_comb.OverrideRows(batch_size);
+    }
+
     attention_storage.SetBatchSize(batch_size);
     // `AttentionActivationsPtrs` holds `MatPtrT` which also require updating;
     // their row override is not updated when the underlying storage changes.
@@ -489,6 +600,8 @@ struct Activations {
   }
 
   const LayerConfig& layer_config;
+  const LayerConfig& moe_layer_config;  // layer with the most experts
+  MLADims mla_dims;
 
   MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
@@ -513,6 +626,35 @@ struct Activations {
   MatStorageT<BF16> router_in;
   MatStorageT<float> router_logits;  // batch_size x num_experts
 
+  // DeepSeek MLA (zero-sized unless a layer uses MLA).
+  MatStorageT<float> mla_q_a;   // batch_size x q_lora_rank
+  MatStorageT<float> mla_kv_a;  // batch_size x (kv_lora_rank + rope_head_dim)
+  MatStorageT<float> idx_q;     // batch_size x (idx_heads * idx_head_dim)
+  // V4: per-head indexer score weights (weights_proj output).
+  MatStorageT<float> idx_weights;  // batch_size x indexer_heads
+  // V4 compressor projections of the layer input.
+  MatStorageT<float> comp_kv;    // batch_size x (coff * latent)
+  MatStorageT<float> comp_gate;  // batch_size x (coff * latent)
+  MatStorageT<float> idxc_kv;    // batch_size x (coff * indexer_head_dim)
+  MatStorageT<float> idxc_gate;  // batch_size x (coff * indexer_head_dim)
+  // V4 grouped low-rank output projection scratch.
+  MatStorageT<float> mla_o_in;     // batch_size x (heads/groups * qkv_dim)
+  MatStorageT<float> mla_o_group;  // batch_size x o_lora_rank
+  MatStorageT<float> mla_o_mid;    // batch_size x (o_groups * o_lora_rank)
+  // Manifold-constrained hyper-connections: parallel residual streams,
+  // [batch_size, hc_mult * model_dim] (zero-sized unless hc_mult > 1).
+  MatStorageT<float> hc_streams;
+  MatStorageT<float> hc_tmp;
+  // Per-token dynamic mHC weights: raw mixes and the split post/comb parts
+  // persisted between the block's read and write phases.
+  MatStorageT<float> hc_mixes;   // batch_size x (2 + hc_mult) * hc_mult
+  MatStorageT<float> hc_post_w;  // batch_size x hc_mult
+  MatStorageT<float> hc_comb;    // batch_size x hc_mult^2
+  // RoPE timescales for the decoupled MLA rope dims: raw/sliding-window path
+  // and the compressed path (separate theta + YaRN interpolation).
+  MatStorageT<float> mla_inv_timescale;
+  MatStorageT<float> mla_inv_timescale_c;
+
   size_t per_token_stride;           // padded experts_per_token
   AlignedPtr<PerToken[]> per_token;  // batch_size x per_token_stride
 
@@ -521,6 +663,16 @@ struct Activations {
   }
 
   AlignedPtr<uint16_t[]> expert_tokens;  // ragged array
+
+  // Token ids of the current batch rows, for DeepSeek V4 hash routing.
+  // Filled by the embedding step; empty if unused.
+  std::vector<int32_t> token_ids;
+
+  // Speculative decoding (DeepSeek V4 MTP): if >= 0, the compressor pass
+  // copies each layer's KVCache::ds_state slice to ds_state_snapshot after
+  // processing this batch row. Set to the index of the last committed token
+  // of a verify step (0 for [committed, draft]); -1 disables.
+  int ds_snapshot_after = -1;
 
   struct PerCluster {
     PerCluster(const ModelConfig& config, const LayerConfig& layer_config,

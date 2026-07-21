@@ -115,8 +115,9 @@ struct BlobIO {
 class BlobStore {
   static constexpr uint32_t kMagic = 0x0A534253;  // SBS\n
 
-  // Upper limit to avoid allocating a huge vector.
-  static constexpr size_t kMaxBlobs = 16 * 1024;
+  // Upper limit to avoid allocating a huge vector. Large MoE models
+  // (DeepSeek-V4: 256 experts x 3 mats x 41 layers) exceed the old 16K cap.
+  static constexpr size_t kMaxBlobs = 1024 * 1024;
 
   // Returns the size of padded header and directory, which is also the start of
   // the first payload for V1. `num_blobs` is `NumBlobs()` if the header is

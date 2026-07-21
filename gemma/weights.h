@@ -154,6 +154,38 @@ struct LayerWeightsPtrs {
         post_ffw2_ns(finder_("post_ffw2_ns")),
         pre_ffw2_ns(finder_("pre_ffw2_ns")),
         moe_router(finder_("moe_router")),
+        moe_router_bias(finder_("moe_r_bias")),
+
+        mla_q_a(finder_("mla_q_a")),
+        mla_q_a_norm(finder_("mla_q_a_ns")),
+        mla_q_b(finder_("mla_q_b")),
+        mla_kv_a(finder_("mla_kv_a")),
+        mla_kv_a_norm(finder_("mla_kv_a_ns")),
+        mla_kv_b(finder_("mla_kv_b")),
+        mla_o_a(finder_("mla_o_a")),
+        mla_o_b(finder_("mla_o_b")),
+        attn_sink(finder_("attn_sink")),
+        mla_pool_w(finder_("mla_pool_w")),
+        mla_pool_b(finder_("mla_pool_b")),
+        comp_wkv(finder_("comp_wkv")),
+        comp_wgate(finder_("comp_wgate")),
+        comp_ape(finder_("comp_ape")),
+        comp_norm(finder_("comp_ns")),
+        idx_q_w(finder_("idx_q_w")),
+        idx_k_w(finder_("idx_k_w")),
+        idx_w_proj(finder_("idx_w_proj")),
+        idxc_wkv(finder_("idxc_wkv")),
+        idxc_wgate(finder_("idxc_wgate")),
+        idxc_ape(finder_("idxc_ape")),
+        idxc_norm(finder_("idxc_ns")),
+        hash_tid2eid(finder_("hash_tid2eid")),
+
+        hc_att_fn(finder_("hc_att_fn")),
+        hc_att_base(finder_("hc_att_base")),
+        hc_att_scale(finder_("hc_att_scale")),
+        hc_ffw_fn(finder_("hc_ffw_fn")),
+        hc_ffw_base(finder_("hc_ffw_base")),
+        hc_ffw_scale(finder_("hc_ffw_scale")),
 
         ple_gate(finder_("ple_gate")),
         ple_proj(finder_("ple_proj")),
@@ -227,9 +259,51 @@ struct LayerWeightsPtrs {
   MatPtr post_ffw2_ns;
   MatPtr pre_ffw2_ns;
   MatPtr moe_router;
+  MatPtr moe_router_bias;  // DeepSeek aux-loss-free routing bias.
   std::vector<MatPtr> moe_gating_einsum_w1;
   std::vector<MatPtr> moe_gating_einsum_w2;
   std::vector<MatPtr> moe_linear_w;
+
+  // DeepSeek Multi-head Latent Attention.
+  MatPtr mla_q_a;        // [q_lora_rank, model_dim]
+  MatPtr mla_q_a_norm;   // [q_lora_rank]
+  MatPtr mla_q_b;        // [heads * qkv_dim, q_lora_rank or model_dim]
+  MatPtr mla_kv_a;       // [KVLatentDim, model_dim]
+  MatPtr mla_kv_a_norm;  // V4: [KVLatentDim]; V3: [kv_lora_rank]
+  MatPtr mla_kv_b;       // V3 only: [heads * (nope + v_head_dim), kv_lora_rank]
+  // V4 grouped low-rank output projection and attention sink.
+  MatPtr mla_o_a;     // [o_groups * o_lora_rank, heads/o_groups * qkv_dim]
+  MatPtr mla_o_b;     // [model_dim, o_groups * o_lora_rank]
+  MatPtr attn_sink;   // [heads] f32
+  MatPtr mla_pool_w;  // V3 only: [KVLatentDim]
+  MatPtr mla_pool_b;  // V3 only: [kv_compression_rate]
+  // V4 learned gated compressor (rate > 1).
+  MatPtr comp_wkv;    // [coff * KVLatentDim, model_dim]
+  MatPtr comp_wgate;  // [coff * KVLatentDim, model_dim]
+  MatPtr comp_ape;    // [rate, coff * KVLatentDim] f32
+  MatPtr comp_norm;   // [KVLatentDim]
+  // Lightning indexer. V4: idx_q_w is [heads*head_dim, q_lora_rank] over qr;
+  // V3: [heads*head_dim, model_dim] over x with idx_k_w keys.
+  MatPtr idx_q_w;
+  MatPtr idx_k_w;     // V3 only
+  MatPtr idx_w_proj;  // V4: [indexer_heads, model_dim]
+  // V4 indexer's own compressor.
+  MatPtr idxc_wkv;    // [coff * indexer_head_dim, model_dim]
+  MatPtr idxc_wgate;  // [coff * indexer_head_dim, model_dim]
+  MatPtr idxc_ape;    // [rate, coff * indexer_head_dim] f32
+  MatPtr idxc_norm;   // [indexer_head_dim]
+  // Hash routing (V4 first n_hash_layers): per-token-id expert indices.
+  MatPtr hash_tid2eid;  // [vocab_size, experts_per_token] f32
+
+  // Manifold-constrained hyper-connections (empty unless hc_mult > 1).
+  // Per-token dynamic weights: mixes = hc_fn @ flatten(streams) * rsqrt(ms),
+  // then split into read/write/mixing weights via sigmoid / Sinkhorn-Knopp.
+  MatPtr hc_att_fn;     // [(2 + hc_mult) * hc_mult, hc_mult * model_dim] f32
+  MatPtr hc_att_base;   // [(2 + hc_mult) * hc_mult] f32
+  MatPtr hc_att_scale;  // [3] f32
+  MatPtr hc_ffw_fn;
+  MatPtr hc_ffw_base;
+  MatPtr hc_ffw_scale;
 
   MatPtr ple_gate;
   MatPtr ple_proj;
@@ -272,6 +346,54 @@ struct LayerWeightsPtrs {
       func(TENSOR_ARGS(qkv_einsum_w1, kMaybeRead));
       func(TENSOR_ARGS(qkv_einsum_w2, kMaybeRead));
     }
+    if (layer_config.type == LayerAttentionType::kDeepSeekMLA) {
+      if (layer_config.q_lora_rank > 0) {
+        func(TENSOR_ARGS(mla_q_a, kMustRead));
+        func(TENSOR_ARGS(mla_q_a_norm, kMustRead));
+      }
+      func(TENSOR_ARGS(mla_q_b, kMustRead));
+      func(TENSOR_ARGS(mla_kv_a, kMustRead));
+      func(TENSOR_ARGS(mla_kv_a_norm, kMustRead));
+      if (layer_config.IsV4MLA()) {
+        func(TENSOR_ARGS(mla_o_a, kMustRead));
+        func(TENSOR_ARGS(mla_o_b, kMustRead));
+        func(TENSOR_ARGS(attn_sink, kMustRead));
+        if (layer_config.HasCompressor()) {
+          func(TENSOR_ARGS(comp_wkv, kMustRead));
+          func(TENSOR_ARGS(comp_wgate, kMustRead));
+          func(TENSOR_ARGS(comp_ape, kMustRead));
+          func(TENSOR_ARGS(comp_norm, kMustRead));
+        }
+        if (layer_config.HasIndexer()) {
+          func(TENSOR_ARGS(idx_q_w, kMustRead));
+          func(TENSOR_ARGS(idx_w_proj, kMustRead));
+          func(TENSOR_ARGS(idxc_wkv, kMustRead));
+          func(TENSOR_ARGS(idxc_wgate, kMustRead));
+          func(TENSOR_ARGS(idxc_ape, kMustRead));
+          func(TENSOR_ARGS(idxc_norm, kMustRead));
+        }
+      } else {
+        func(TENSOR_ARGS(att_weights, kMustRead));  // o_proj, stored directly
+        func(TENSOR_ARGS(mla_kv_b, kMustRead));
+        if (layer_config.kv_compression_rate > 1) {
+          func(TENSOR_ARGS(mla_pool_w, kMustRead));
+          func(TENSOR_ARGS(mla_pool_b, kMustRead));
+        }
+        if (layer_config.indexer_heads > 0) {
+          func(TENSOR_ARGS(idx_q_w, kMustRead));
+          func(TENSOR_ARGS(idx_k_w, kMustRead));
+        }
+      }
+      // Registered only when the model config has hc_mult > 1.
+      if (hc_att_fn.Rows() > 0) {
+        func(TENSOR_ARGS(hc_att_fn, kMustRead));
+        func(TENSOR_ARGS(hc_att_base, kMustRead));
+        func(TENSOR_ARGS(hc_att_scale, kMustRead));
+        func(TENSOR_ARGS(hc_ffw_fn, kMustRead));
+        func(TENSOR_ARGS(hc_ffw_base, kMustRead));
+        func(TENSOR_ARGS(hc_ffw_scale, kMustRead));
+      }
+    }
     {
       func(TENSOR_ARGS(gating_einsum_w, kMaybeRead));
       func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
@@ -292,11 +414,21 @@ struct LayerWeightsPtrs {
     }
     if (layer_config.IsMoE()) {
       func(TENSOR_ARGS(moe_router, kMustRead));
-      func(TENSOR_ARGS(router_scale, kMustRead));
-      func(TENSOR_ARGS(p_expert_sc, kMustRead));
-      func(TENSOR_ARGS(post_ffw1_ns, kMustRead));
-      func(TENSOR_ARGS(post_ffw2_ns, kMustRead));
-      func(TENSOR_ARGS(pre_ffw2_ns, kMustRead));
+      if (layer_config.type == LayerAttentionType::kDeepSeekMLA) {
+        // DeepSeek MoE: no router scale / per-expert scale / extra norms.
+        if (layer_config.use_routing_bias) {
+          func(TENSOR_ARGS(moe_router_bias, kMustRead));
+        }
+        if (layer_config.hash_routing) {
+          func(TENSOR_ARGS(hash_tid2eid, kMustRead));
+        }
+      } else {
+        func(TENSOR_ARGS(router_scale, kMustRead));
+        func(TENSOR_ARGS(p_expert_sc, kMustRead));
+        func(TENSOR_ARGS(post_ffw1_ns, kMustRead));
+        func(TENSOR_ARGS(post_ffw2_ns, kMustRead));
+        func(TENSOR_ARGS(pre_ffw2_ns, kMustRead));
+      }
       for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
         func(TENSOR_ARGS(moe_gating_einsum_w1[i], kMustRead));
         func(TENSOR_ARGS(moe_gating_einsum_w2[i], kMustRead));
@@ -351,6 +483,18 @@ struct WeightsPtrs {
         finder_("", tensors_),  // no suffix because these are per-model.
         embedder_input_embedding(finder_("c_embedding")),
         final_norm_scale(finder_("c_final_norm")),
+        lm_head(finder_("lm_head")),
+        hc_head_fn(finder_("hc_head_fn")),
+        hc_head_base(finder_("hc_head_base")),
+        hc_head_scale(finder_("hc_head_scale")),
+        mtp_e_proj(finder_("mtp_e_proj")),
+        mtp_h_proj(finder_("mtp_h_proj")),
+        mtp_enorm(finder_("mtp_enorm")),
+        mtp_hnorm(finder_("mtp_hnorm")),
+        mtp_norm(finder_("mtp_norm")),
+        mtp_hc_fn(finder_("mtp_hc_fn")),
+        mtp_hc_base(finder_("mtp_hc_base")),
+        mtp_hc_scale(finder_("mtp_hc_scale")),
         vit_encoder_norm_bias(finder_("enc_norm_bias")),
         vit_encoder_norm_scale(finder_("enc_norm_scale")),
         vit_img_embedding_bias(finder_("img_emb_bias")),
@@ -372,6 +516,13 @@ struct WeightsPtrs {
       const LayerConfig& layer_config = config_.vit_config.layer_configs[idx];
       vit_layers.emplace_back(idx, layer_config, tensors_);
     }
+    if (config_.num_mtp_layers > 0) {
+      // The multi-token-prediction block: an extra layer at index
+      // `num_layers`, outside the main stack (see `MTPLayerConfig`).
+      mtp_layer_config = config_.MTPLayerConfig();
+      mtp_layers.emplace_back(config_.layer_configs.size(), mtp_layer_config,
+                              tensors_);
+    }
   }
 
   ~WeightsPtrs() = default;
@@ -384,6 +535,22 @@ struct WeightsPtrs {
   // TODO: switch to SFP?
   MatPtr embedder_input_embedding;
   MatPtr final_norm_scale;  // at least BF16.
+  MatPtr lm_head;           // untied output head (DeepSeek); empty if tied.
+  // mHC head collapse (DeepSeek V4; empty unless hc_mult > 1).
+  MatPtr hc_head_fn;     // [hc_mult, hc_mult * model_dim] f32
+  MatPtr hc_head_base;   // [hc_mult] f32
+  MatPtr hc_head_scale;  // [1] f32
+
+  // Multi-token-prediction extras (DeepSeek V4; empty unless
+  // num_mtp_layers > 0). The MTP block itself is in `mtp_layers`.
+  MatPtr mtp_e_proj;    // [model_dim, model_dim]
+  MatPtr mtp_h_proj;    // [model_dim, model_dim]
+  MatPtr mtp_enorm;     // [model_dim]
+  MatPtr mtp_hnorm;     // [model_dim]
+  MatPtr mtp_norm;      // [model_dim] final norm before the shared head
+  MatPtr mtp_hc_fn;     // [hc_mult, hc_mult * model_dim] f32
+  MatPtr mtp_hc_base;   // [hc_mult] f32
+  MatPtr mtp_hc_scale;  // [1] f32
 
   // Vit parts.
   MatPtr vit_encoder_norm_bias;   // at least BF16.
@@ -404,6 +571,10 @@ struct WeightsPtrs {
 
   std::vector<LayerWeightsPtrs> c_layers;
   std::vector<LayerWeightsPtrs> vit_layers;
+  // Multi-token-prediction block (0 or 1 entries). `mtp_layer_config` must
+  // outlive `mtp_layers`, whose elements hold a reference to it.
+  LayerConfig mtp_layer_config;
+  std::vector<LayerWeightsPtrs> mtp_layers;
 
   const LayerWeightsPtrs* GetLayer(size_t layer) const {
     return &c_layers[layer];
@@ -423,6 +594,26 @@ struct WeightsPtrs {
     LayerWeightsPtrs* other_layer2 = nullptr;
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
+    if (config_.HasMLA()) {
+      func(TENSOR_ARGS(lm_head, kMustRead));
+    }
+    if (config_.hc_mult > 1) {
+      func(TENSOR_ARGS(hc_head_fn, kMustRead));
+      func(TENSOR_ARGS(hc_head_base, kMustRead));
+      func(TENSOR_ARGS(hc_head_scale, kMustRead));
+    }
+    if (config_.num_mtp_layers > 0) {
+      func(TENSOR_ARGS(mtp_e_proj, kMustRead));
+      func(TENSOR_ARGS(mtp_h_proj, kMustRead));
+      func(TENSOR_ARGS(mtp_enorm, kMustRead));
+      func(TENSOR_ARGS(mtp_hnorm, kMustRead));
+      func(TENSOR_ARGS(mtp_norm, kMustRead));
+      if (config_.hc_mult > 1) {
+        func(TENSOR_ARGS(mtp_hc_fn, kMustRead));
+        func(TENSOR_ARGS(mtp_hc_base, kMustRead));
+        func(TENSOR_ARGS(mtp_hc_scale, kMustRead));
+      }
+    }
 
     if (config_.ple_dim > 0) {
       func(TENSOR_ARGS(ple_embeddings, kMustRead));
@@ -448,6 +639,12 @@ struct WeightsPtrs {
       if (other1) other_layer1 = other1->GetLayer(layer_idx);
       if (other2) other_layer2 = other2->GetLayer(layer_idx);
       GetLayer(layer_idx)->ForEachTensor(other_layer1, other_layer2, func);
+    }
+
+    for (size_t idx = 0; idx < mtp_layers.size(); ++idx) {
+      other_layer1 = other1 ? &other1->mtp_layers[idx] : nullptr;
+      other_layer2 = other2 ? &other2->mtp_layers[idx] : nullptr;
+      mtp_layers[idx].ForEachTensor(other_layer1, other_layer2, func);
     }
 
     HWY_ASSERT(config_.vit_config.layer_configs.empty() == vit_layers.empty());

@@ -698,7 +698,9 @@ class MMKeys {
     // Dynamic allocation because the test checks many more dimensions than
     // would be reasonable to pre-allocate. DIY for alignment and padding.
     if (HWY_UNLIKELY(num_unique_ >= capacity_)) {
-      const size_t NU64 = vector_bytes / sizeof(Key);
+      // `vector_bytes` may be as small as 1 (unknown-target fallback in
+      // hwy::VectorBytes); ensure nonzero capacity for the allocation below.
+      const size_t NU64 = HWY_MAX(size_t{1}, vector_bytes / sizeof(Key));
       // Start at one vector so the size is always a multiple of N.
       if (HWY_UNLIKELY(capacity_ == 0)) {
         capacity_ = hwy::DivCeil(NU64, 2);  // will be doubled below

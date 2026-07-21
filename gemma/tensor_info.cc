@@ -58,6 +58,7 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .shape = {config.model_dim},
                      .min_size = Type::kBF16,
                  });
+  AddDeepSeekModelTensors(config);
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},
@@ -702,12 +703,19 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                   .shape = {1},
                   .min_size = Type::kBF16,
               });
-  Add(suffix,
-      {
-          .base_name = "att_w",
-          .shape = {config.model_dim, layer_config.heads, layer_config.qkv_dim},
-          .cols_take_extra_dims = true,
-      });
+  // The direct per-head output projection is not used by V4 MLA (which has
+  // the grouped low-rank wo_a/wo_b pair instead).
+  if (!layer_config.IsV4MLA()) {
+    Add(suffix, {
+                    .base_name = "att_w",
+                    .shape = {config.model_dim, layer_config.heads,
+                              layer_config.IsMLA() ? layer_config.v_head_dim
+                                                   : layer_config.qkv_dim},
+                    .cols_take_extra_dims = true,
+                });
+  }
+
+  AddDeepSeekLayerTensors(config, layer_config, suffix);
 }
 
 TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
@@ -719,6 +727,12 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
   AddModelTensors(config);
   for (size_t i = 0; i < config.layer_configs.size(); ++i) {
     AddLayerTensors(config, config.layer_configs[i], i);
+  }
+  if (config.num_mtp_layers > 0) {
+    // The MTP block is a full extra layer registered at index `num_layers`
+    // (suffix `_43` for DeepSeek-V4-Flash), outside the main stack.
+    AddLayerTensors(config, config.MTPLayerConfig(),
+                    config.layer_configs.size());
   }
   for (size_t i = 0; i < config.vit_config.layer_configs.size(); ++i) {
     AddImageLayerTensors(config, config.vit_config.layer_configs[i], i);

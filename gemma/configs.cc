@@ -551,6 +551,121 @@ static ModelConfig ConfigGemma4_2B() {
   return config;
 }
 
+static LayerConfig LayerConfigDeepSeek4_Flash(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 2048;  // moe_inter_dim: shared + routed expert width
+  config.heads = 64;
+  config.kv_heads = 1;  // unused by MLA; kept consistent for legacy fields
+  // Per-head query dim = head_dim = nope (448) + decoupled rope (64).
+  config.qkv_dim = 512;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::None;
+  config.type = LayerAttentionType::kDeepSeekMLA;
+  config.activation = ActivationType::Silu;
+  config.use_qk_norm = false;
+
+  config.kv_lora_rank = 448;  // head_dim (512) - rope_head_dim (64)
+  config.q_lora_rank = 1024;
+  config.rope_head_dim = 64;
+  config.v_head_dim = 512;  // V4: value = the full 512-wide latent
+  config.o_lora_rank = 1024;
+  config.o_groups = 8;
+  config.attention_variant = AttentionVariant::kCSA;  // per-layer, see below
+  config.kv_compression_rate = 4;
+  config.indexer_heads = 64;
+  config.indexer_head_dim = 128;
+  config.indexer_top_k = 512;
+
+  config.num_experts = 256;
+  config.num_experts_per_datapoint = 6;
+  config.num_shared_experts = 1;
+  config.sigmoid_gating = false;
+  config.router_score = RouterScoreFunc::kSqrtSoftplus;
+  config.route_scale = 1.5f;
+  config.swiglu_limit = 10.0f;
+  config.use_routing_bias = true;
+  return config;
+}
+
+static ModelConfig ConfigDeepSeek4_Flash() {
+  ModelConfig config;
+  config.model_family_version = 4;
+  config.display_name = "DeepSeek4_Flash";
+  config.model = Model::DEEPSEEK4_FLASH;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 4096;
+  config.vocab_size = 129280;
+  // The released model supports 1,048,576 tokens (max_position_embeddings, via
+  // YaRN). Capped here pending sliding-window / paged KV caches.
+  config.max_seq_len = 131072;
+  config.num_layers = 43;
+  config.hc_mult = 4;
+  config.eos_id = 1;
+  config.secondary_eos_id = 1;
+  LayerConfig layer_config = LayerConfigDeepSeek4_Flash(config.model_dim);
+  config.layer_configs = {config.num_layers, layer_config};
+
+  // Per-layer attention from the released `compress_ratios`
+  // [0, 0, 4, 128, 4, 128, ..., 4, 0] (index 43 is the unmodeled MTP layer):
+  //   0   -> pure sliding-window attention (no compressed entries),
+  //   4   -> CSA with the lightning indexer,
+  //   128 -> HCA (heavy pooling, no indexer).
+  // Layers 0-1 use ratio 0; from layer 2 on, even layers are CSA and odd
+  // layers HCA. All layers are MoE; the first 3 use hash routing (per-token-id
+  // expert table, no routing bias).
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    LayerConfig& lc = config.layer_configs[i];
+    if (i < 2) {
+      lc.SetDenseAttention();
+    } else if ((i % 2) == 0) {
+      lc.attention_variant = AttentionVariant::kCSA;
+      lc.kv_compression_rate = 4;
+      lc.indexer_heads = 64;
+      lc.indexer_head_dim = 128;
+      lc.indexer_top_k = 512;
+    } else {
+      lc.attention_variant = AttentionVariant::kHCA;
+      lc.kv_compression_rate = 128;
+      lc.indexer_heads = 0;
+      lc.indexer_head_dim = 0;
+      lc.indexer_top_k = 0;
+    }
+    if (i < 3) {
+      lc.hash_routing = true;
+      lc.use_routing_bias = false;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // Sliding window of raw latents; compressed entries cover the rest of the
+  // history on CSA/HCA layers.
+  config.attention_window_sizes = FixedAttentionWindowSizes<43>(128);
+
+  config.rope_theta = 10000.0f;
+  config.compress_rope_theta = 160000.0f;
+  config.yarn_orig_seq_len = 65536;
+  config.yarn_factor = 16.0f;
+  config.yarn_beta_fast = 32.0f;
+  config.yarn_beta_slow = 1.0f;
+  config.hc_sinkhorn_iters = 20;
+  config.hc_eps = 1e-6f;
+  // The `mtp.0.*` multi-token-prediction block: one extra transformer layer
+  // (dense MLA + MoE) used only for speculative decoding.
+  config.num_mtp_layers = 1;
+  return config;
+}
+
+// The MTP block has the attention shape of the dense layers (no compressor,
+// no indexer) and the learned-gate MoE of layers >= 3 (no hash routing).
+LayerConfig ModelConfig::MTPLayerConfig() const {
+  HWY_ASSERT(num_mtp_layers > 0 && !layer_configs.empty());
+  LayerConfig lc = layer_configs[0];
+  lc.SetDenseAttention();
+  lc.hash_routing = false;
+  lc.use_routing_bias = true;
+  return lc;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -587,6 +702,8 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma4_26B_MoE();
     case Model::GEMMA4_2B:
       return ConfigGemma4_2B();
+    case Model::DEEPSEEK4_FLASH:
+      return ConfigDeepSeek4_Flash();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -630,6 +747,8 @@ const char* ModelPrefix(Model model) {
       return "gemma4-26b-moe";
     case Model::GEMMA4_2B:
       return "gemma4-2b";
+    case Model::DEEPSEEK4_FLASH:
+      return "deepseek4-flash";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }

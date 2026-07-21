@@ -532,6 +532,10 @@ void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
               Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
                 VitLayer(layer)->Fixup(config_.model, mat_owners, ctx);
               });
+
+  for (LayerWeightsPtrs& mtp : mtp_layers) {
+    mtp.Fixup(config_.model, mat_owners, ctx);
+  }
 }
 
 std::vector<uint32_t> WeightsPtrs::AddTensorDataToWriter(

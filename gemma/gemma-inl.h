@@ -45,6 +45,12 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
+// Silu(x) = x * sigmoid(x), used by DeepSeek models.
+template <class D, HWY_IF_F32_D(D)>
+HWY_INLINE hn::Vec<D> Silu(D d, hn::Vec<D> v) {
+  return hn::Mul(v, Sigmoid(d, v));
+}
+
 // For use by Vit even if !GEMMA_FUSED_FFN.
 template <typename T1, typename T2>
 void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
@@ -54,16 +60,29 @@ void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  // ActivationType::Gelu
-  if (c2 == nullptr) {  // No multiplier, just Gelu.
-    Gelu(c1, count);
+
+  if (c2 == nullptr) {  // No multiplier, just the activation.
+    if (activation == ActivationType::Silu) {
+      DecompressAndCompressInplace(DF(), c1, count,
+                                   [](DF df, VF v)
+                                       HWY_ATTR -> VF { return Silu(df, v); });
+    } else {  // ActivationType::Gelu
+      Gelu(c1, count);
+    }
     return;
   };
-  // Has multiplier, Gelu(c1) * c2.
-  Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
-                                [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
-                                  return hn::Mul(v2, Gelu(df, v1));
-                                });
+  // Has multiplier, act(c1) * c2.
+  if (activation == ActivationType::Silu) {
+    Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
+                                  [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+                                    return hn::Mul(v2, Silu(df, v1));
+                                  });
+  } else {  // ActivationType::Gelu
+    Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
+                                  [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+                                    return hn::Mul(v2, Gelu(df, v1));
+                                  });
+  }
 }
 
 // No C2 multiplier - used by Vit.
@@ -97,14 +116,27 @@ static inline void Activation(ActivationType activation, const RowPtrsBF C1,
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  // ActivationType::Gelu
-  // Gated: Gelu(c1) * c2.
-  for (size_t ir = 0; ir < range_r.Num(); ++ir) {
-    Decompress1AndCompressInplace(
-        DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols, C2.Row(ir),
-        /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
-          return hn::Mul(v2, Gelu(df, v1));
-        });
+
+  // Gated: activation(c1) * c2.
+  // A lambda crashes clang in SVE builds, hence duplicate the loop.
+  if (activation == ActivationType::Silu) {
+    for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+      Decompress1AndCompressInplace(
+          DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols,
+          C2.Row(ir),
+          /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+            return hn::Mul(v2, Silu(df, v1));
+          });
+    }
+  } else {  // ActivationType::Gelu
+    for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+      Decompress1AndCompressInplace(
+          DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols,
+          C2.Row(ir),
+          /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+            return hn::Mul(v2, Gelu(df, v1));
+          });
+    }
   }
 }
 

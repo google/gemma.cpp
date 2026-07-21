@@ -137,6 +137,19 @@ struct KVCache {
   std::vector<uint32_t> layer_flat_offsets;
   std::vector<uint32_t> layer_k_v_offsets;
   std::vector<uint32_t> rounded_qkv_dims;
+
+  // DeepSeek V4 per-query incremental compressor state (kv_state/score_state
+  // per layer, plus the indexer compressor's on CSA layers), f32. One row;
+  // `ds_state_offsets[layer]` is the element offset of a layer's segment.
+  // Zero-sized unless the model has V4 compressor layers. deepseek.cc
+  // re-initializes a layer's segment when it processes cache position 0.
+  MatStorageT<float> ds_state;
+  // Same layout as `ds_state`: per-layer boundary snapshot for speculative
+  // decoding (state after the committed token of a verify step). Written by
+  // deepseek.cc when `Activations::ds_snapshot_after` is set; restored
+  // wholesale by the driver when a draft is rejected.
+  MatStorageT<float> ds_state_snapshot;
+  std::vector<uint32_t> ds_state_offsets;
   // Total columns in k_cache/v_cache as initially allocated (before the
   // one-time reshape by MaybeReshapeCache that accounts for SIMD vector width).
   // Used as a sentinel: if cache.Cols() == k_v_cols, reshape hasn't happened.

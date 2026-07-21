@@ -222,7 +222,10 @@ cc_test(
 
 cc_library(
     name = "tensor_info",
-    srcs = ["gemma/tensor_info.cc"],
+    srcs = [
+        "deepseek/deepseek_tensors.cc",
+        "gemma/tensor_info.cc",
+    ],
     hdrs = ["gemma/tensor_info.h"],
     deps = [
         ":basics",
@@ -626,11 +629,23 @@ cc_test(
 )
 
 cc_library(
+    name = "deepseek_dims",
+    hdrs = ["deepseek/deepseek_dims.h"],
+    deps = [
+        ":allocator",
+        ":configs",
+        ":mat",
+        "@highway//:hwy",
+    ],
+)
+
+cc_library(
     name = "activations",
     hdrs = ["gemma/activations.h"],
     deps = [
         ":basics",
         ":configs",
+        ":deepseek_dims",
         ":flash_structs",
         ":gemma_args",
         ":kv_cache",
@@ -745,14 +760,18 @@ cc_library(
 cc_library(
     name = "gemma_lib",
     srcs = [
+        "deepseek/deepseek.cc",
+        "deepseek/deepseek_spec.cc",
         "gemma/gemma.cc",
         "gemma/gemma4_moe.cc",
         "gemma/tiled_attention.cc",
         "gemma/vit.cc",
     ],
     hdrs = [
+        "deepseek/deepseek.h",
         "gemma/gemma.h",
         "gemma/gemma4_moe.h",
+        "gemma/generate_internal.h",
         "gemma/tiled_attention.h",
         "gemma/vit.h",
     ],
@@ -784,6 +803,7 @@ cc_library(
         "//io",
         "//io:blob_store",
         "//paligemma:image",
+        "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
         "@highway//:profiler",

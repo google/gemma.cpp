@@ -77,10 +77,29 @@ static inline bool EnumValid(PromptWrapping wrapping) {
 enum class LayerAttentionType {
   kGemma,
   kVit,
+  // DeepSeek-style Multi-head Latent Attention (V3/V4 family): a per-token
+  // compressed KV latent plus a decoupled RoPE key, optionally with
+  // sequence-axis compression (CSA/HCA) selected via `AttentionVariant`.
+  kDeepSeekMLA,
 };
 
 static inline bool EnumValid(LayerAttentionType type) {
-  return type == LayerAttentionType::kGemma || type == LayerAttentionType::kVit;
+  return type == LayerAttentionType::kGemma ||
+         type == LayerAttentionType::kVit ||
+         type == LayerAttentionType::kDeepSeekMLA;
+}
+
+// Sequence-axis KV compression variant for `kDeepSeekMLA` layers.
+enum class AttentionVariant {
+  kDense = 0,  // attend to every cached latent (no pooling, no indexer)
+  kCSA,        // Compressed Sparse Attention: pooled KV + top-k indexer
+  kHCA,        // Heavily Compressed Attention: heavy pooling, dense attention
+  kSentinel    // must be last
+};
+
+static inline bool EnumValid(AttentionVariant variant) {
+  return static_cast<size_t>(variant) <
+         static_cast<size_t>(AttentionVariant::kSentinel);
 }
 
 // Values stated explicitly to allow for semantic reordering
@@ -144,12 +163,27 @@ static inline bool EnumValid(PostQKType type) {
 // FFW activation function.
 enum class ActivationType {
   Gelu,
-  kSentinel  // must be last
+  Silu,         // used by DeepSeek models
 };
 
+// MoE router scoring function. `kSigmoidGatingCompat` (the default) defers to
+// the legacy `LayerConfig::sigmoid_gating` bool so that older serialized
+// configs keep their behavior.
+enum class RouterScoreFunc {
+  kSigmoidGatingCompat = 0,
+  kSoftmax,
+  kSigmoid,
+  kSqrtSoftplus,  // sqrt(softplus(x)), used by DeepSeek V4
+  kSentinel       // must be last
+};
+
+static inline bool EnumValid(RouterScoreFunc func) {
+  return static_cast<size_t>(func) <
+         static_cast<size_t>(RouterScoreFunc::kSentinel);
+}
+
 static inline bool EnumValid(ActivationType type) {
-  return static_cast<size_t>(type) <
-         static_cast<size_t>(ActivationType::kSentinel);
+  return (type == ActivationType::Gelu || type == ActivationType::Silu);
 }
 
 // Attention query scale.
@@ -157,12 +191,12 @@ enum class QueryScaleType {
   SqrtKeySize,
   SqrtModelDimDivNumHeads,
   One,
-  kSentinel  // must be last
 };
 
 static inline bool EnumValid(QueryScaleType type) {
-  return static_cast<size_t>(type) <
-         static_cast<size_t>(QueryScaleType::kSentinel);
+  return type == QueryScaleType::SqrtKeySize ||
+         type == QueryScaleType::SqrtModelDimDivNumHeads ||
+         type == QueryScaleType::One;
 }
 
 // Residual connection type.
@@ -224,6 +258,7 @@ enum class Model {
   GEMMA3_27B_LM,
   GEMMA4_26B_MOE,
   GEMMA4_2B,
+  DEEPSEEK4_FLASH,
   kSentinel,
 };
 
@@ -308,6 +343,24 @@ struct LayerConfig : public IFields {
     visitor(num_experts_per_datapoint);
     visitor(ple_dim);
     visitor(kv_share_layer_idx);
+    visitor(kv_lora_rank);
+    visitor(q_lora_rank);
+    visitor(rope_head_dim);
+    visitor(v_head_dim);
+    visitor(attention_variant);
+    visitor(kv_compression_rate);
+    visitor(indexer_heads);
+    visitor(indexer_head_dim);
+    visitor(indexer_top_k);
+    visitor(num_shared_experts);
+    visitor(sigmoid_gating);
+    visitor(use_routing_bias);
+    visitor(o_lora_rank);
+    visitor(o_groups);
+    visitor(swiglu_limit);
+    visitor(route_scale);
+    visitor(router_score);
+    visitor(hash_routing);
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -320,10 +373,72 @@ struct LayerConfig : public IFields {
 
   bool IsMoE() const { return NumExperts() > 0; }
 
+  // DeepSeek-style Multi-head Latent Attention?
+  bool IsMLA() const { return kv_lora_rank > 0; }
+
+  // DeepSeek V4-style MLA: single wide shared K=V latent, grouped low-rank
+  // output projection (wo_a/wo_b), learned gated compressor, attention sink.
+  bool IsV4MLA() const { return IsMLA() && o_lora_rank > 0; }
+
+  // Query head dim without the decoupled RoPE part (MLA only).
+  size_t NopeHeadDim() const {
+    HWY_DASSERT(qkv_dim >= rope_head_dim);
+    return qkv_dim - rope_head_dim;
+  }
+
+  // Width of one cached latent row (c_kv + decoupled RoPE key).
+  size_t KVLatentDim() const { return kv_lora_rank + rope_head_dim; }
+
+  // V4 compressor: ratio-4 layers use overlapping windows (doubled dims).
+  size_t CompressorCoff() const { return kv_compression_rate == 4 ? 2 : 1; }
+
+  bool HasCompressor() const { return IsV4MLA() && kv_compression_rate > 1; }
+  bool HasIndexer() const { return indexer_heads > 0 && indexer_top_k > 0; }
+
+  // Plain sliding-window attention: no sequence compression, no indexer
+  // (DeepSeek V4 layers 0-1 and the MTP block). Keep in sync with
+  // HasCompressor/HasIndexer and CacheLayerSize.
+  void SetDenseAttention() {
+    attention_variant = AttentionVariant::kDense;
+    kv_compression_rate = 1;
+    indexer_heads = 0;
+    indexer_head_dim = 0;
+    indexer_top_k = 0;
+  }
+
   // Returns whether all fields match.
   bool TestEqual(const LayerConfig& other, bool print) const;
 
-  size_t CacheLayerSize() const { return kv_heads * qkv_dim * 2; }
+  size_t CacheLayerSize() const {
+    if (IsMLA()) {
+      // MLA caches a single latent (c_kv + RoPE key) per token, shared across
+      // all heads.
+      size_t size = KVLatentDim();
+      if (IsV4MLA()) {
+        // V4 additionally caches, at the last row of each sealed block, the
+        // compressor output (same width as the latent) and, on CSA layers,
+        // the indexer's own compressed entry.
+        if (HasCompressor()) size += KVLatentDim();
+        if (HasIndexer()) size += indexer_head_dim;
+      }
+      return size;
+    }
+    return kv_heads * qkv_dim * 2;
+  }
+
+  // f32 elements of per-query incremental compressor state for this layer:
+  // (kv_state + score_state) for the attention compressor and, on CSA layers,
+  // for the indexer's compressor. See `Compressor` in the DeepSeek V4
+  // reference implementation.
+  size_t DSStateSize() const {
+    if (!HasCompressor()) return 0;
+    const size_t coff = CompressorCoff();
+    size_t size = 2 * (coff * kv_compression_rate) * (coff * KVLatentDim());
+    if (HasIndexer()) {
+      size += 2 * (coff * kv_compression_rate) * (coff * indexer_head_dim);
+    }
+    return size;
+  }
 
   // Multi-Head Attention?
   bool IsMHA() const { return heads == kv_heads; }
@@ -345,6 +460,39 @@ struct LayerConfig : public IFields {
   uint32_t num_experts_per_datapoint = 0;
   uint32_t ple_dim = 0;  // Per-Layer Embedding dimension (0 = disabled).
   int kv_share_layer_idx = -1;
+
+  // DeepSeek MLA (all zero for other models). `qkv_dim` is the per-head query
+  // dim (nope + rope); `rope_head_dim` is the decoupled RoPE sub-dim.
+  uint32_t kv_lora_rank = 0;   // latent KV compression rank; 0 = no MLA
+  uint32_t q_lora_rank = 0;    // query compression rank; 0 = direct q proj
+  uint32_t rope_head_dim = 0;  // decoupled RoPE key/query dim
+  uint32_t v_head_dim = 0;     // per-head value dim after up-projection
+  AttentionVariant attention_variant = AttentionVariant::kDense;
+  uint32_t kv_compression_rate = 1;  // sequence pooling rate (CSA=4, HCA=128)
+  uint32_t indexer_heads = 0;        // lightning indexer (CSA); 0 = disabled
+  uint32_t indexer_head_dim = 0;
+  uint32_t indexer_top_k = 0;  // compressed entries selected per query
+
+  // DeepSeek MoE extensions.
+  uint32_t num_shared_experts = 0;  // uses the layer's dense FFN tensors
+  bool sigmoid_gating = false;      // sigmoid routing instead of softmax
+  bool use_routing_bias = false;    // aux-loss-free bias added for selection
+
+  // DeepSeek V4 grouped low-rank output projection: heads are split into
+  // `o_groups` groups; each group's concatenated outputs go through a
+  // per-group [o_lora_rank, heads/o_groups * qkv_dim] wo_a, then the
+  // concatenated group outputs through wo_b. 0 = V3-style direct o-proj.
+  uint32_t o_lora_rank = 0;
+  uint32_t o_groups = 1;
+
+  // DeepSeek V4 MoE: SwiGLU clamp (0 = disabled), routed expert weight scale,
+  // router scoring function, and hash-based routing (expert indices read from
+  // a per-token-id table instead of top-k over scores).
+  float swiglu_limit = 0.0f;
+  float route_scale = 1.0f;
+  RouterScoreFunc router_score = RouterScoreFunc::kSigmoidGatingCompat;
+  bool hash_routing = false;
+
   InternalLayerConfig internal;
 };
 
@@ -445,9 +593,33 @@ struct ModelConfig : public IFields {
     visitor(use_global_timescale);
     visitor(partial_rotary_factor);
     visitor(ple_dim);
+    visitor(hc_mult);
+
+    visitor(rope_theta);
+    visitor(compress_rope_theta);
+    visitor(yarn_orig_seq_len);
+    visitor(yarn_factor);
+    visitor(yarn_beta_fast);
+    visitor(yarn_beta_slow);
+    visitor(hc_sinkhorn_iters);
+    visitor(hc_eps);
+    visitor(num_mtp_layers);
 
     // Append new fields here, then update `python/configs.cc`.
   }
+
+  // Any layer using DeepSeek-style Multi-head Latent Attention?
+  bool HasMLA() const {
+    for (const auto& lc : layer_configs) {
+      if (lc.IsMLA()) return true;
+    }
+    return false;
+  }
+
+  // Synthesized config for the multi-token-prediction block (DeepSeek V4):
+  // a full extra layer (dense MLA + MoE) used for speculative decoding, not
+  // part of the main stack. Only valid when `num_mtp_layers > 0`.
+  LayerConfig MTPLayerConfig() const;
 
   // Returns whether all fields match except `model` and `display_name`, and
   // some others that are not yet set by config_converter.py. This is for
@@ -510,6 +682,8 @@ struct ModelConfig : public IFields {
     for (const auto& lc : layer_configs) {
       cols += lc.CacheLayerSize();
     }
+    // The MTP block caches its latents in an extra trailing segment.
+    if (num_mtp_layers > 0) cols += MTPLayerConfig().CacheLayerSize();
     return cols;
   }
 
@@ -563,6 +737,29 @@ struct ModelConfig : public IFields {
   float partial_rotary_factor =
       1.0f;              // Fraction of dims with RoPE (0.25 for Gemma4 MoE).
   uint32_t ple_dim = 0;  // Per-Layer Embedding dimension (0 = disabled).
+  // Manifold-constrained hyper-connections (DeepSeek V4): number of parallel
+  // residual streams. 0 or 1 = conventional residual connections.
+  uint32_t hc_mult = 0;
+
+  // RoPE base frequency for the raw/sliding-window attention path.
+  float rope_theta = 10000.0f;
+  // DeepSeek V4: separate base frequency for compressed-attention layers
+  // (query, window keys and compressed keys all use this on those layers).
+  // 0 = same as rope_theta.
+  float compress_rope_theta = 0.0f;
+  // YaRN frequency interpolation, applied only to the compressed-path
+  // timescales. 0 = disabled.
+  uint32_t yarn_orig_seq_len = 0;
+  float yarn_factor = 1.0f;
+  float yarn_beta_fast = 32.0f;
+  float yarn_beta_slow = 1.0f;
+  // mHC dynamic Sinkhorn-Knopp projection parameters (DeepSeek V4).
+  uint32_t hc_sinkhorn_iters = 20;
+  float hc_eps = 1e-6f;
+  // Number of multi-token-prediction blocks (DeepSeek V4: 1). The MTP block
+  // is an extra transformer layer used for speculative decoding; it is not
+  // counted in `num_layers` and never runs as part of the main stack.
+  uint32_t num_mtp_layers = 0;
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
