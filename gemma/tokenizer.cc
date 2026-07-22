@@ -19,89 +19,49 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gemma/configs.h"  // PromptWrapping
-#include "hwy/base.h"         // HWY_ASSERT
-#include "hwy/profiler.h"
-// copybara:import_next_line:sentencepiece
-#include "src/sentencepiece_processor.h"
+#include "tokenizer/sentencepiece_tokenizer.h"
 
 namespace gcpp {
 
 // Set this to true to debug tokenizer tokens.
 constexpr bool kShowTokenization = false;
 
-class GemmaTokenizer::Impl {
- public:
-  Impl() = default;
-  // Loads the tokenizer from a serialized proto.
-  explicit Impl(const std::string& tokenizer_proto) {
-    if (tokenizer_proto == kMockTokenizer) return;
-    PROFILER_ZONE("Startup.tokenizer");
-    spp_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
-    if (!spp_->LoadFromSerializedProto(tokenizer_proto).ok()) {
-      HWY_ABORT("Failed to load tokenizer from %zu byte serialized proto.",
-                tokenizer_proto.size());
-    }
-  }
-
-  std::string Serialize() const {
-    return spp_ ? spp_->serialized_model_proto() : kMockTokenizer;
-  }
-
-  bool Encode(const std::string& input,
-              std::vector<std::string>* pieces) const {
-    return spp_ && spp_->Encode(input, pieces).ok();
-  }
-
-  bool Encode(const std::string& input, std::vector<int>* ids) const {
-    if constexpr (kShowTokenization) {
-      bool is_ok = spp_ && spp_->Encode(input, ids).ok();
-      for (int i = 0; i < static_cast<int>(ids->size()); i++) {
-        fprintf(stderr, "%3d: %d\n", i, (*ids)[i]);
-      }
-      return is_ok;
-    } else {
-      return spp_ && spp_->Encode(input, ids).ok();
-    }
-  }
-
-  // Given a sequence of ids, decodes it into a detokenized output.
-  bool Decode(const std::vector<int>& ids, std::string* detokenized) const {
-    return spp_ && spp_->Decode(ids, detokenized).ok();
-  }
-
- private:
-  std::unique_ptr<sentencepiece::SentencePieceProcessor> spp_;
-};
-
-GemmaTokenizer::GemmaTokenizer(const std::string& tokenizer_proto)
-    : impl_(std::make_unique<Impl>(tokenizer_proto)) {
-  HWY_ASSERT(impl_);
+GemmaTokenizer::GemmaTokenizer(const std::string& tokenizer_proto) {
+  if (tokenizer_proto == kMockTokenizer) return;
+  impl_ = CreateSentencePieceTokenizer(tokenizer_proto);
 }
+
+GemmaTokenizer::GemmaTokenizer(std::unique_ptr<Tokenizer> impl)
+    : impl_(std::move(impl)) {}
 
 // Default suffices, but they must be defined after GemmaTokenizer::Impl.
 GemmaTokenizer::~GemmaTokenizer() = default;
 GemmaTokenizer::GemmaTokenizer(GemmaTokenizer&& other) = default;
 GemmaTokenizer& GemmaTokenizer::operator=(GemmaTokenizer&& other) = default;
 
-std::string GemmaTokenizer::Serialize() const { return impl_->Serialize(); }
-
-bool GemmaTokenizer::Encode(const std::string& input,
-                            std::vector<std::string>* pieces) const {
-  return impl_->Encode(input, pieces);
+std::string GemmaTokenizer::Serialize() const {
+  return impl_ ? impl_->Serialize() : kMockTokenizer;
 }
 
 bool GemmaTokenizer::Encode(const std::string& input,
                             std::vector<int>* ids) const {
-  return impl_->Encode(input, ids);
+  if (!impl_ || !impl_->Encode(input, *ids)) return false;
+  if constexpr (kShowTokenization) {
+    for (int i = 0; i < static_cast<int>(ids->size()); i++) {
+      fprintf(stderr, "%3d: %d\n", i, (*ids)[i]);
+    }
+  }
+  return true;
 }
 
 // Given a sequence of ids, decodes it into a detokenized output.
 bool GemmaTokenizer::Decode(const std::vector<int>& ids,
                             std::string* detokenized) const {
-  return impl_->Decode(ids, detokenized);
+  return impl_ && impl_->Decode(ids, *detokenized);
 }
 
 // Negligible CPU time in the ctor body.

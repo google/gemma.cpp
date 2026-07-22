@@ -81,6 +81,10 @@ PYBIND11_MODULE(configs, py_module) {
   enum_<gcpp::ResidualType>(py_module, "ResidualType")
   .value("Add", gcpp::ResidualType::Add);
 
+  enum_<gcpp::TokenizerKind>(py_module, "TokenizerKind")
+      .value("kSentencePiece", gcpp::TokenizerKind::kSentencePiece)
+      .value("kHfBpe", gcpp::TokenizerKind::kHfBpe);
+
   enum_<gcpp::Model>(py_module, "Model")
       .value("UNKNOWN", gcpp::Model::UNKNOWN)
       .value("CUSTOM", gcpp::Model::CUSTOM)
@@ -226,6 +230,7 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("hc_sinkhorn_iters", &gcpp::ModelConfig::hc_sinkhorn_iters)
       .def_readwrite("hc_eps", &gcpp::ModelConfig::hc_eps)
       .def_readwrite("num_mtp_layers", &gcpp::ModelConfig::num_mtp_layers)
+      .def_readwrite("tokenizer_kind", &gcpp::ModelConfig::tokenizer_kind)
 
       .def("add_layer_config", &gcpp::ModelConfig::AddLayerConfig,
            arg("layer_config"))

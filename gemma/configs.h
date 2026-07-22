@@ -52,6 +52,18 @@ enum class PromptWrapping {
   kSentinel  // must be last
 };
 
+// Which tokenizer engine the `.sbs` tokenizer blob targets.
+enum class TokenizerKind {
+  kSentencePiece = 0,  // blob is a SentencePiece proto
+  kHfBpe = 1,  // blob is a compact BPE format built from HF `tokenizer.json`
+  kSentinel    // must be last
+};
+
+static inline bool EnumValid(TokenizerKind kind) {
+  return static_cast<size_t>(kind) <
+         static_cast<size_t>(TokenizerKind::kSentinel);
+}
+
 // This is used in `ModelConfig.Specifier`, so the strings will not change,
 // though new ones may be added.
 static inline const char* WrappingSuffix(PromptWrapping wrapping) {
@@ -605,6 +617,8 @@ struct ModelConfig : public IFields {
     visitor(hc_eps);
     visitor(num_mtp_layers);
 
+    visitor(tokenizer_kind);
+
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -760,6 +774,8 @@ struct ModelConfig : public IFields {
   // is an extra transformer layer used for speculative decoding; it is not
   // counted in `num_layers` and never runs as part of the main stack.
   uint32_t num_mtp_layers = 0;
+
+  TokenizerKind tokenizer_kind = TokenizerKind::kSentencePiece;
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.

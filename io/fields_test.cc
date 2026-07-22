@@ -287,16 +287,19 @@ TEST(FieldsTest, TestInvalidString) {
   // Too long
   new_fields.new_str.assign(257, 'a');
   EXPECT_TRUE(new_fields.Write().empty());
+}
 
-  // First byte not ASCII
-  new_fields.new_str.assign("123");
-  new_fields.new_str[0] = 128;
-  EXPECT_TRUE(new_fields.Write().empty());
+// Verify non-ASCII strings are accepted.
+TEST(FieldsTest, TestNonAsciiString) {
+  NewFields new_fields;
+  new_fields.new_str = "你好世界";  // "Hello World" in Chinese
+  const std::vector<uint32_t> storage = new_fields.Write();
+  EXPECT_FALSE(storage.empty());
 
-  // Upper byte in later u32 not ASCII
-  new_fields.new_str.assign("ABCDEFGH");
-  new_fields.new_str[7] = 255;
-  EXPECT_TRUE(new_fields.Write().empty());
+  NewFields copy;
+  const ReadResult result = copy.Read(Span(storage), 0);
+  CheckConsumedAll(result, storage.size());
+  EXPECT_EQ("你好世界", copy.new_str);
 }
 
 // Write two structs to the same storage.

@@ -57,7 +57,7 @@ class VisitorBase : public IFieldsVisitor {
   // Return bool to avoid having to check AnyInvalid() after calling.
   bool CheckStringLength(uint32_t num_u32) {
     // Disallow long strings for safety, and to prevent them being used for
-    // arbitrary data (we also require them to be ASCII).
+    // arbitrary data.
     if (HWY_UNLIKELY(num_u32 > 64)) {
       NotifyInvalid("String num_u32=%u too large\n", num_u32);
       return false;
@@ -67,8 +67,8 @@ class VisitorBase : public IFieldsVisitor {
 
   bool CheckStringU32(uint32_t u32, uint32_t i, uint32_t num_u32) {
     // Although strings are zero-padded to u32, an entire u32 should not be
-    // zero, and upper bits should not be set (ASCII-only).
-    if (HWY_UNLIKELY(u32 == 0 || (u32 & 0x80808080))) {
+    // zero.
+    if (HWY_UNLIKELY(u32 == 0)) {
       NotifyInvalid("Invalid characters %x at %u of %u\n", u32, i, num_u32);
       return false;
     }

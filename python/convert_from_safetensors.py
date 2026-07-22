@@ -70,6 +70,90 @@ def compute_scale(x: np.ndarray) -> float:
   return max(1.0, magnitude / 1.875)
 
 
+def pack_bpe_tokenizer(tokenizer_json_path: str) -> bytes:
+  """Packs a HuggingFace tokenizer.json into compact binary format."""
+  import struct  # pylint: disable=g-import-not-at-top
+
+  with open(tokenizer_json_path, "r", encoding="utf-8") as f:
+    j = json.load(f)
+
+  model = j.get("model", {})
+  if model.get("type") != "BPE":
+    raise ValueError("tokenizer.json model.type must be 'BPE'")
+
+  vocab = model.get("vocab", {})
+  merges = model.get("merges", [])
+  added_tokens = j.get("added_tokens", [])
+
+  vocab_map = {}
+  max_id = max(vocab.values()) if vocab else 0
+  id_to_token = [""] * (max_id + 1)
+  for token, tid in vocab.items():
+    vocab_map[token] = tid
+    id_to_token[tid] = token
+
+  added_ids = []
+  for at in added_tokens:
+    content = at.get("content")
+    tid = at.get("id")
+    if not content:
+      continue
+    vocab_map[content] = tid
+    if tid >= len(id_to_token):
+      id_to_token.extend([""] * (tid - len(id_to_token) + 1))
+    id_to_token[tid] = content
+    added_ids.append(tid)
+  added_ids.sort()
+
+  merge_ranks = []
+  for rank, m in enumerate(merges):
+    if not isinstance(m, list) or len(m) != 2:
+      raise ValueError(f"merges[{rank}] is not a [left, right] array")
+
+    left, right = m
+    if left in vocab_map and right in vocab_map and (left + right) in vocab_map:
+      merge_ranks.append((rank, vocab_map[left], vocab_map[right]))
+
+  bpe_flags = 1 << 1  # kFlagSpaceReplace
+  if any(f"<0x{b:02X}>" in vocab_map for b in range(256)):
+    bpe_flags |= 1 << 0  # kFlagByteFallback
+
+  unk = model.get("unk_token", "")
+  unk_id = vocab_map.get(unk, 0)
+
+  by_rank = sorted(merge_ranks, key=lambda x: x[0])
+
+  payload_words = []
+  payload_words.append(bpe_flags)
+  payload_words.append(unk_id)
+
+  # vocab (vector of strings)
+  payload_words.append(len(id_to_token))
+  for token in id_to_token:
+    token_bytes = token.encode("utf-8")
+    num_u32 = (len(token_bytes) + 3) // 4
+    payload_words.append(num_u32)
+    padded_bytes = token_bytes + b"\0" * (num_u32 * 4 - len(token_bytes))
+    for i in range(num_u32):
+      u32 = struct.unpack("=I", padded_bytes[i*4:(i+1)*4])[0]
+      payload_words.append(u32)
+
+  # merges (vector of u32)
+  payload_words.append(len(by_rank) * 2)
+  for _, left_id, right_id in by_rank:
+    payload_words.append(left_id)
+    payload_words.append(right_id)
+
+  # added_ids (vector of u32)
+  payload_words.append(len(added_ids))
+  payload_words.extend(added_ids)
+
+  # IFields header is just the count of following u32s!
+  total_words = [len(payload_words)] + payload_words
+
+  return struct.pack(f"={len(total_words)}I", *total_words)
+
+
 def _is_float_param(param_name: str) -> bool:
   """Returns whether the tensor should be stored as float32."""
   for prefix in [
@@ -88,7 +172,14 @@ def _is_float_param(param_name: str) -> bool:
 
 def _is_bf16_param(param_name: str) -> bool:
   """Returns whether the tensor should be stored as bf16."""
-  for prefix in ["pre_", "post_", "c_", "img_head_kernel"]:
+  for prefix in [
+      "pre_",
+      "post_",
+      "c_",
+      "img_head_kernel",
+      "query_norm",
+      "key_norm",
+  ]:
     if param_name.startswith(prefix):
       return True
   return False
@@ -512,7 +603,9 @@ def export_paligemma_sbs(
   # Write everything to the sbs file.
   assert model_specifier.startswith("paligemma")
   sbs_config = configs.ModelConfig(model_specifier)
-  writer.write(sbs_config, tokenizer_file)
+  with open(tokenizer_file, "rb") as f:
+    tokenizer_blob = f.read()
+  writer.write(sbs_config, tokenizer_blob)
 
   # Write the metadata for manual inspection.
   with open(csv_file, "w") as csv_handle:
@@ -736,7 +829,14 @@ def export_gemma3_lm_sbs(
     print(f"WARNING: leftover params not consumed: {list(params.keys())[:10]}")
 
   sbs_config = configs.ModelConfig(model_specifier)
-  writer.write(sbs_config, tokenizer_file)
+  if tokenizer_file.endswith(".json"):
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kHfBpe
+    tokenizer_blob = pack_bpe_tokenizer(tokenizer_file)
+  else:
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kSentencePiece
+    with open(tokenizer_file, "rb") as f:
+      tokenizer_blob = f.read()
+  writer.write(sbs_config, tokenizer_blob)
 
   with open(csv_file, "w") as csv_handle:
     csv.writer(csv_handle).writerows(metadata)
@@ -745,15 +845,14 @@ def export_gemma3_lm_sbs(
 _MODEL_SPECIFIER = flags.DEFINE_string(
     "model_specifier",
     None,
-    "String specifying model, size, weight, wrapping (ModelConfig.Specifier)",
-    required=True,
+    "String specifying model, size, weight, wrapping (ModelConfig.Specifier)"
+    " (Required)",
 )
 
 _LOAD_PATH = flags.DEFINE_string(
     "load_path",
     None,
-    "Path to the safetensors index.json file to read",
-    required=True,
+    "Path to the safetensors index.json file to read (Required)",
 )
 _TOKENIZER_FILE = flags.DEFINE_string(
     "tokenizer_file",
@@ -771,12 +870,41 @@ _SBS_FILE = flags.DEFINE_string(
     "Path to the sbs file to write",
 )
 
+_PACK_TOKENIZER = flags.DEFINE_bool(
+    "pack_tokenizer",
+    False,
+    "If true, only pack the tokenizer provided in --tokenizer_file and exit.",
+    required=False,
+)
+_OUTPUT_PACKED = flags.DEFINE_string(
+    "output_packed",
+    None,
+    "Path to write the packed tokenizer file (used with --pack_tokenizer)",
+    required=False,
+)
+
 
 def main(argv: Sequence[str]) -> None:
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
   logging.use_python_logging()
   logging.set_verbosity(logging.INFO)
+
+  if _PACK_TOKENIZER.value:
+    if not _TOKENIZER_FILE.value:
+      raise app.UsageError("--tokenizer_file is required for --pack_tokenizer")
+    tokenizer_blob = pack_bpe_tokenizer(_TOKENIZER_FILE.value)
+    out_file = _OUTPUT_PACKED.value or (_TOKENIZER_FILE.value + ".packed")
+    with open(out_file, "wb") as f:
+      f.write(tokenizer_blob)
+    logging.info("Packed tokenizer written to %s", out_file)
+    return
+
+  if not _MODEL_SPECIFIER.value or not _LOAD_PATH.value:
+    raise app.UsageError(
+        "Missing required flags: --model_specifier and --load_path"
+    )
+
   model_specifier = _MODEL_SPECIFIER.value
   load_path = _LOAD_PATH.value
   tokenizer_file = _TOKENIZER_FILE.value

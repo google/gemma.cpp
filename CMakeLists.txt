@@ -192,6 +192,11 @@ set(SOURCES
   paligemma/image.h
   paligemma/paligemma_helper.cc
   paligemma/paligemma_helper.h
+  tokenizer/bpe_tokenizer.cc
+  tokenizer/bpe_tokenizer.h
+  tokenizer/sentencepiece_tokenizer.cc
+  tokenizer/sentencepiece_tokenizer.h
+  tokenizer/tokenizer.h
   util/allocator.cc
   util/allocator.h
   util/basics.cc

@@ -34,6 +34,7 @@
 #include "io/blob_store.h"
 #include "io/fields.h"
 #include "io/io.h"  // Path
+#include "tokenizer/bpe_tokenizer.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -58,12 +59,8 @@ static void WarnIfExtra(const IFields::ReadResult& result, const char* name) {
   }
 }
 
-// Returns the serialized tokenizer (std::string is required for proto).
-// Reads it from a blob or from a separate file if pre-2025.
-static std::string ReadTokenizer(BlobReader& reader,
-                                 const Path& tokenizer_path) {
-  PROFILER_ZONE("Startup.ReadTokenizer");
-
+// Reads the raw `tokenizer` blob bytes, or empty if absent.
+static std::string ReadTokenizerBlob(BlobReader& reader) {
   std::string tokenizer;
   // Check prevents `CallWithSpan` from printing a warning.
   if (reader.Find(kTokenizerName)) {
@@ -76,27 +73,51 @@ static std::string ReadTokenizer(BlobReader& reader,
           "instead specify a tokenizer file via --tokenizer.");
     }
   }
+  return tokenizer;
+}
 
-  // Read actual tokenizer from blob.
-  if (!tokenizer.empty() && tokenizer != kMockTokenizer) {
+// Constructs the tokenizer.
+static GemmaTokenizer ReadTokenizer(BlobReader& reader,
+                                    const Path& tokenizer_path,
+                                    const ModelConfig& config) {
+  PROFILER_ZONE("Startup.ReadTokenizer");
+
+  if (config.tokenizer_kind == TokenizerKind::kHfBpe) {
+    const std::string blob = ReadTokenizerBlob(reader);
+    if (!blob.empty() && blob != kMockTokenizer) {
+      return GemmaTokenizer(CreateBpeTokenizer(blob));
+    }
+    if (!tokenizer_path.Empty()) {
+      HWY_WARN("No separate tokenizer file is supported for HF BPE models. "
+               "Tests may continue but inference will fail. %s.",
+               tokenizer_path.path.c_str());
+      return GemmaTokenizer(kMockTokenizer);
+    }
+    HWY_WARN("BlobStore has no HuggingFace BPE tokenizer specified. Tests may "
+             "continue but inference will fail.");
+    return GemmaTokenizer(kMockTokenizer);
+  }
+
+  // SentencePiece: the blob is a SentencePiece proto.
+  const std::string blob = ReadTokenizerBlob(reader);
+  if (!blob.empty() && blob != kMockTokenizer) {
     if (!tokenizer_path.Empty()) {
       HWY_WARN("--weights has tokenizer but overriding with %s.",
                tokenizer_path.path.c_str());
-      return ReadFileToString(tokenizer_path);
+      return GemmaTokenizer(ReadFileToString(tokenizer_path));
     }
-
-    return tokenizer;
+    return GemmaTokenizer(blob);
   }
 
   // No blob but user specified path to file: read it or abort.
   if (!tokenizer_path.Empty()) {
-    return ReadFileToString(tokenizer_path);
+    return GemmaTokenizer(ReadFileToString(tokenizer_path));
   }
 
   HWY_WARN(
       "BlobStore does not contain a tokenizer and no --tokenizer was "
       "specified. Tests may continue but inference will fail.");
-  return kMockTokenizer;
+  return GemmaTokenizer(kMockTokenizer);
 }
 
 using KeyVec = std::vector<std::string>;
@@ -393,7 +414,7 @@ void ModelStore::CreateMatPtrs(BlobReader& reader) {
 ModelStore::ModelStore(BlobReader& reader, const Path& tokenizer_path,
                        Tristate wrapping)
     : config_(ReadOrDeduceConfig(reader, wrapping)),
-      tokenizer_(ReadTokenizer(reader, tokenizer_path)) {
+      tokenizer_(ReadTokenizer(reader, tokenizer_path, config_)) {
   if (!ReadMatPtrs(reader)) {  // Pre-2025 format.
     CreateMatPtrs(reader);
     scales_ = ReadScales(reader, config_);

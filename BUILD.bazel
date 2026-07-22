@@ -220,6 +220,30 @@ cc_test(
     ],
 )
 
+genrule(
+    name = "packed_tokenizer",
+    srcs = ["tokenizer/testdata/tokenizer.json"],
+    outs = ["tokenizer/testdata/tokenizer.packed"],
+    cmd = "$(location //python:convert_from_safetensors) --pack_tokenizer --tokenizer_file $(location tokenizer/testdata/tokenizer.json) --output_packed $@",
+    tools = ["//python:convert_from_safetensors"],
+)
+
+cc_test(
+    name = "bpe_tokenizer_test",
+    srcs = ["tokenizer/bpe_tokenizer_test.cc"],
+    data = [
+        "testdata/frankenstein.txt",
+        "tokenizer/testdata/tokenizer.json",
+        "tokenizer/testdata/tokenizer.model",
+        ":packed_tokenizer",
+    ],
+    deps = [
+        ":tokenizer",
+        "//testing/base/public:gunit_main",  # buildcleaner: keep
+        "//io",
+    ],
+)
+
 cc_library(
     name = "tensor_info",
     srcs = [
@@ -252,10 +276,21 @@ cc_library(
 
 cc_library(
     name = "tokenizer",
-    srcs = ["gemma/tokenizer.cc"],
-    hdrs = ["gemma/tokenizer.h"],
+    srcs = [
+        "gemma/tokenizer.cc",
+        "tokenizer/bpe_tokenizer.cc",
+        "tokenizer/sentencepiece_tokenizer.cc",
+    ],
+    hdrs = [
+        "gemma/tokenizer.h",
+        "tokenizer/bpe_tokenizer.h",
+        "tokenizer/sentencepiece_tokenizer.h",
+        "tokenizer/tokenizer.h",
+    ],
     deps = [
+        ":basics",
         ":configs",
+        "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
         "@com_google_sentencepiece//:sentencepiece_processor",

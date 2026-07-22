@@ -44,7 +44,7 @@ class ISbsWriter {
                       const TensorInfo& tensor_info) = 0;
 
   virtual void Write(const ModelConfig& config,
-                     const std::string& tokenizer_path) = 0;
+                     const std::string& tokenizer_blob) = 0;
 };
 
 // Non-virtual class used by pybind that calls the interface's virtual methods.
@@ -58,8 +58,8 @@ class SbsWriter {
     impl_->Insert(name, weights, type, tensor_info);
   }
 
-  void Write(const ModelConfig& config, const std::string& tokenizer_path) {
-    impl_->Write(config, tokenizer_path);
+  void Write(const ModelConfig& config, const std::string& tokenizer_blob) {
+    impl_->Write(config, tokenizer_blob);
   }
 
  private:
