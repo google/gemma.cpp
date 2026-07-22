@@ -87,7 +87,10 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
   const int kFlags = 0;
   if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
       activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
+      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
+      activations.attention_impl == AttentionImpl::kInt8MatrixAccumulation ||
+      activations.attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
     TiledAttention(activations.attention_impl, num_tokens, layer_idx, layer,
                    activations.attention, qbatch, env, kFlags);
     return;

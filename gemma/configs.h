@@ -125,6 +125,7 @@ enum class KVEncoding {
   kInt8TwoTranspositions = 6,
   kBF16MatrixAccumulation = 7,
   kInt8MatrixAccumulation = 8,
+  kInt8VNNITwoTranspositions = 9,
 };
 
 // Returns a string representation of the KVEncoding.
@@ -141,6 +142,7 @@ enum class AttentionImpl {
   kFlashTransposedQsInt16,
   kFlashMatrixAccumulation,
   kInt8MatrixAccumulation,
+  kFlashTransposedQsInt8,
   kSentinel,
 };
 
