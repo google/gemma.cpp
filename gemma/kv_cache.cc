@@ -227,6 +227,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   if (runtime_config.attention_impl == AttentionImpl::kFlash ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
       runtime_config.attention_impl == AttentionImpl::kFlashMatrixAccumulation ||
       runtime_config.attention_impl == AttentionImpl::kInt8MatrixAccumulation
@@ -262,6 +263,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     } else if (runtime_config.attention_impl ==
                    AttentionImpl::kFlashTransposedQsInt16 ||
                runtime_config.attention_impl ==
+                   AttentionImpl::kFlashTransposedQsInt8 ||
+               runtime_config.attention_impl ==
                    AttentionImpl::kInt8MatrixAccumulation) {
       if (runtime_config.kv_cache_type.has_value() &&
           runtime_config.kv_cache_type.value() != Type::kInt8) {
@@ -281,6 +284,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     if (kv_cache_type == Type::kInt8) {
       // microscaling
       max_tile_length += 2 * sizeof(BF16) * kTileSize;
+      if (runtime_config.attention_impl ==
+          AttentionImpl::kFlashTransposedQsInt8) {
+        // K sums
+        max_tile_length += sizeof(int32_t) * kTileSize;
+      }
     }
     auto num_tiles_per_head = [](size_t window_size, size_t prefill_tbatch_size,
                                  size_t max_seq_len) {
@@ -303,6 +311,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       size_t tile_len = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         tile_len += 2 * sizeof(BF16) * kTileSize;
+        if (runtime_config.attention_impl ==
+            AttentionImpl::kFlashTransposedQsInt8) {
+          // K sums
+          tile_len += sizeof(int32_t) * kTileSize;
+        }
       }
 
       if (kv_attention_window_sizes[i] == config.max_seq_len) {
@@ -363,6 +376,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         layer_tile_length += 2 * sizeof(BF16) * kTileSize;
+        if (runtime_config.attention_impl ==
+            AttentionImpl::kFlashTransposedQsInt8) {
+          // K sums
+          layer_tile_length += sizeof(int32_t) * kTileSize;
+        }
       }
       bool is_global = kv_attention_window_sizes[i] == config.max_seq_len;
       for (size_t kv = 0; kv < kv_layer_configs[i].kv_heads; ++kv) {

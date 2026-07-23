@@ -32,18 +32,13 @@
 #include "ops/ops-inl.h"
 #include "hwy/contrib/math/fast_math-inl.h"
 
-#ifndef BENCHMARK_BLOCK_SIZE_BF16
-#define BENCHMARK_BLOCK_SIZE_BF16 128
-#endif
-
-#ifndef BENCHMARK_BLOCK_SIZE_INT8
-#define BENCHMARK_BLOCK_SIZE_INT8 512
-#endif
-
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+
+constexpr size_t kArmBlockSizeBf16 = 128;
+constexpr size_t kArmBlockSizeInt8 = 512;
 
 struct TileAttentionGroupParams {
   size_t smallest_start_pos;
@@ -344,7 +339,7 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
 
   const size_t num_groups = actual_block_size / 8;
   const size_t num_qp = 4;
-  constexpr size_t kBlockSize = BENCHMARK_BLOCK_SIZE_INT8;
+  constexpr size_t kBlockSize = kArmBlockSizeInt8;
 
   // Process 2 queries at a time to reduce L1 working set and avoid large macros
   HWY_ALIGN float w_buf[2 * kBlockSize];
@@ -471,14 +466,14 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
     size_t ch_g = ch_base / 8;
 
     // Initialize accumulators: up to 4 query pairs x 4 channel pairs
-    VI32 acc00 = hn::Zero(di32), acc01 = hn::Zero(di32),
-         acc02 = hn::Zero(di32), acc03 = hn::Zero(di32);
-    VI32 acc10 = hn::Zero(di32), acc11 = hn::Zero(di32),
-         acc12 = hn::Zero(di32), acc13 = hn::Zero(di32);
-    VI32 acc20 = hn::Zero(di32), acc21 = hn::Zero(di32),
-         acc22 = hn::Zero(di32), acc23 = hn::Zero(di32);
-    VI32 acc30 = hn::Zero(di32), acc31 = hn::Zero(di32),
-         acc32 = hn::Zero(di32), acc33 = hn::Zero(di32);
+    VI32 acc00 = hn::Zero(di32), acc01 = hn::Zero(di32), acc02 = hn::Zero(di32),
+         acc03 = hn::Zero(di32);
+    VI32 acc10 = hn::Zero(di32), acc11 = hn::Zero(di32), acc12 = hn::Zero(di32),
+         acc13 = hn::Zero(di32);
+    VI32 acc20 = hn::Zero(di32), acc21 = hn::Zero(di32), acc22 = hn::Zero(di32),
+         acc23 = hn::Zero(di32);
+    VI32 acc30 = hn::Zero(di32), acc31 = hn::Zero(di32), acc32 = hn::Zero(di32),
+         acc33 = hn::Zero(di32);
 
     // 3. Accumulate over steps in int32
     for (size_t g = 0; g < num_groups; ++g) {
@@ -497,14 +492,13 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
       // bytes (4 query pairs) regardless of kNumQueries.
       const int8_t* q_w_ptr = q_weights_pre + g * 64;
 
-      auto load_A = [&](size_t idx) HWY_ATTR {
-        return hn::LoadU(di8, q_w_ptr + idx * 16);
-      };
+      auto load_A = [&](size_t idx)
+                        HWY_ATTR { return hn::LoadU(di8, q_w_ptr + idx * 16); };
 
-      Accumulate4x4Grid<kNumQueries>(di32, load_A, B0, B1, B2, B3, acc00,
-                                     acc01, acc02, acc03, acc10, acc11, acc12,
-                                     acc13, acc20, acc21, acc22, acc23, acc30,
-                                     acc31, acc32, acc33);
+      Accumulate4x4Grid<kNumQueries>(di32, load_A, B0, B1, B2, B3, acc00, acc01,
+                                     acc02, acc03, acc10, acc11, acc12, acc13,
+                                     acc20, acc21, acc22, acc23, acc30, acc31,
+                                     acc32, acc33);
     }
 
     // 4. Dequantize and write back
@@ -578,7 +572,7 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
   using VF4 = hn::Vec<decltype(df4)>;
 
   constexpr size_t kBf16Lanes = kRegBytes / sizeof(BF16);
-  constexpr size_t kBlockSize = BENCHMARK_BLOCK_SIZE_BF16;
+  constexpr size_t kBlockSize = kArmBlockSizeBf16;
 
   using KV_PTR_T = const KV_T*;
   // Dynamically scale the tile pointer buffer with the block size.
@@ -986,7 +980,7 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   constexpr int kNumQueriesPerLoop = 8;
   constexpr size_t kTileSize = 32;
   constexpr size_t kBlockSize =
-      IsInt8<KV_T>() ? BENCHMARK_BLOCK_SIZE_INT8 : BENCHMARK_BLOCK_SIZE_BF16;
+      IsInt8<KV_T>() ? kArmBlockSizeInt8 : kArmBlockSizeBf16;
   const size_t kStepsPerTile =
       std::max(size_t(1), KVCache::kTileSize / kBf16Lanes);
 
@@ -1063,7 +1057,7 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
     size_t macro_tile_start_pos = position;
 
     auto inner_loop_qk = [&]<int kNumQueries>(size_t query_idx,
-                             size_t step_idx) HWY_ATTR {
+                                              size_t step_idx) HWY_ATTR {
       size_t loop_idx = query_idx / kNumQueriesPerLoop;
       size_t step_pos = position + step_idx * kBf16Lanes;
       if (step_pos + kBf16Lanes <= min_start_pos_per_group[loop_idx] ||

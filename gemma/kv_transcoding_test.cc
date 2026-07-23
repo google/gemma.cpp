@@ -102,6 +102,7 @@ INSTANTIATE_TEST_SUITE_P(
            EncodingTestCase{gcpp::KVEncoding::kBF16MatrixAccumulation, 0.05f},
            EncodingTestCase{gcpp::KVEncoding::kInt8, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8TwoTranspositions, 0.1f},
+           EncodingTestCase{gcpp::KVEncoding::kInt8VNNITwoTranspositions, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8MatrixAccumulation, 0.02f}));
 
 TEST(KVEncodingTest, ConvertTileFloat32ToBfloat16) {
@@ -146,9 +147,13 @@ TEST(KVEncodingTest, PairwiseConversion) {
   constexpr size_t qkv_dim = 256;
 
   std::vector<gcpp::KVEncoding> encodings = {
-      gcpp::KVEncoding::kF32,  gcpp::KVEncoding::kF32TwoTranspositions,
-      gcpp::KVEncoding::kBF16, gcpp::KVEncoding::kBF16TwoTranspositions,
-      gcpp::KVEncoding::kInt8, gcpp::KVEncoding::kInt8TwoTranspositions};
+      gcpp::KVEncoding::kF32,
+      gcpp::KVEncoding::kF32TwoTranspositions,
+      gcpp::KVEncoding::kBF16,
+      gcpp::KVEncoding::kBF16TwoTranspositions,
+      gcpp::KVEncoding::kInt8,
+      gcpp::KVEncoding::kInt8TwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions};
 
   for (auto src : encodings) {
     for (auto dst : encodings) {
