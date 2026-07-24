@@ -36,6 +36,22 @@ http_archive(
     ],
 )
 
+# Same oneDNN v3.11 source as @onednn, but built for the THREADPOOL CPU runtime
+# (the matmul-primitive backend, GEMMA_ONEDNN_MATMUL) rather than SEQ (BRGeMM).
+# oneDNN's CPU runtime is a whole-library compile-time choice, so the two cannot
+# share one build; this is a separate repo with a different build_file. The
+# tarball and sha256 are identical, so Bazel's download cache is shared and only
+# the arm selected by //:gemma_onednn_matmul actually compiles.
+http_archive(
+    name = "onednn_tp",
+    build_file = "@//bazel:onednn_threadpool.BUILD",
+    sha256 = "04df98b18300daf6c3aa7cc2d5e7ce8a8f430fed1787151daed0254d8dd4e64e",
+    strip_prefix = "oneDNN-3.11",
+    urls = [
+        "https://github.com/uxlfoundation/oneDNN/archive/refs/tags/v3.11.tar.gz",
+    ],
+)
+
 http_archive(
     name = "com_google_absl_py",
     sha256 = "8a3d0830e4eb4f66c4fa907c06edf6ce1c719ced811a12e26d9d3162f8471758",

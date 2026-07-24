@@ -25,6 +25,7 @@
 
 // IWYU pragma: begin_exports
 #include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM
+#include "ops/onednn_matmul.h"  // GEMMA_ONEDNN_MATMUL
 #include "ops/gilbert.h"
 #include "util/basics.h"
 #include "util/mat.h"
@@ -732,6 +733,11 @@ struct MMPerKey {
 #if GEMMA_ONEDNN_BRGEMM
   MMAutoTune<BRGeMMConfig> brgemm_autotune;
 #endif  // GEMMA_ONEDNN_BRGEMM
+#if GEMMA_ONEDNN_MATMUL
+  // Set true once the oneDNN matmul-primitive path handled this shape, so the
+  // benchmark can exclude the first (JIT + weight-reorder) call from timings.
+  bool onednn_built = false;
+#endif  // GEMMA_ONEDNN_MATMUL
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive

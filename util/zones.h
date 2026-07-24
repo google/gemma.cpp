@@ -107,6 +107,7 @@ enum class Callers {  // Keep sorted
   kMoEChooseExperts,
   kMoEComputeAllExpertOutputs,
   kMoEWeightedSumOfExperts,
+  kOneDnnMatMul,
   kOpsAddFromBatched,
   kOpsGroupedRMSNormBatched,
   kOpsGroupedRMSNormInplaceBatched,
