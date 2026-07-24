@@ -175,6 +175,19 @@ the Abseil library. `bazel/sentencepiece.patch` changes the code to support
 Abseil as a standalone dependency without third_party/ prefixes, similar to the
 transforms we apply to Gemma via Copybara.
 
+## Profiling
+
+Gemma.cpp is instrumented with Highway's profiler (`hwy/profiler.h`). Zones
+cover prefill, attention, MatMul and weight loading (see `util/zones.h`).
+Profiling is disabled by default and can be enabled at build time:
+
+*   CMake: `cmake -B build -DGEMMA_ENABLE_PROFILER=ON ...`
+*   Bazel: add `--config=profiler` to the build command.
+
+Benchmarks such as `gemma_batch_bench` and `bench_matmul` print per-zone call
+counts and self-times via `PROFILER_PRINT_RESULTS()`. For performance
+measurements we recommend `gemma_batch_bench`.
+
 ## Debugging
 
 At the first sign of incorrect or unexpected results, we recommend running with
