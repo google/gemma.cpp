@@ -13,7 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Convert a PaliGemma[1/2] model from SafeTensors to gemma.cpp format."""
+"""Convert selected safetensors checkpoints to gemma.cpp SBS format.
+
+Supported families currently include PaliGemma, Gemma 3 LM variants, and
+T5Gemma S/S.
+"""
+
 # Tested with:
 # - PG1: huggingface.co/google/paligemma-3b-pt-224
 # - PG1: huggingface.co/merve/paligemma_vqav2
@@ -29,6 +34,7 @@
 
 from collections.abc import Sequence
 import csv
+import glob
 import json
 import os
 import sys
@@ -40,6 +46,19 @@ from absl import logging
 import numpy as np
 import safetensors
 import torch
+
+
+def _add_bazel_python_paths() -> None:
+  """Adds local Bazel extension outputs for direct script execution."""
+  repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+  bazel_bins = [os.path.join(repo_root, "bazel-bin")]
+  bazel_bins += glob.glob(os.path.join(repo_root, "bazel-out", "*", "bin"))
+  for path in [repo_root] + bazel_bins:
+    if os.path.isdir(path) and path not in sys.path:
+      sys.path.insert(0, path)
+
+
+_add_bazel_python_paths()
 
 from compression.python import compression
 from python import configs
@@ -152,6 +171,16 @@ def pack_bpe_tokenizer(tokenizer_json_path: str) -> bytes:
   total_words = [len(payload_words)] + payload_words
 
   return struct.pack(f"={len(total_words)}I", *total_words)
+
+
+def _get_safetensor_files(load_path: str) -> list[str]:
+  """Returns all safetensor files referenced by load_path."""
+  if load_path.endswith(".json"):
+    with open(load_path, "r") as f:
+      j_obj = json.load(f)
+    files = list(set(j_obj["weight_map"].values()))
+    return [os.path.join(os.path.dirname(load_path), f) for f in files]
+  return [load_path]
 
 
 def _is_float_param(param_name: str) -> bool:
@@ -842,6 +871,306 @@ def export_gemma3_lm_sbs(
     csv.writer(csv_handle).writerows(metadata)
 
 
+def export_t5gemma_sbs(
+    model_specifier: str,
+    load_path: str,
+    tokenizer_file: str,
+    csv_file: str,
+    sbs_file: str,
+    weight_type: str = "bf16",
+) -> None:
+  """Exports an sbs file from a T5Gemma safetensors checkpoint."""
+  if not model_specifier.startswith("t5gemma-s-s"):
+    raise ValueError(
+        "Only T5Gemma S/S is currently supported by this converter path; got "
+        f"{model_specifier!r}."
+    )
+  if weight_type not in ("bf16", "sfp"):
+    raise ValueError(
+        f"T5Gemma weight_type must be 'bf16' or 'sfp'; got {weight_type!r}."
+    )
+  requested_bf16 = "-bf16" in model_specifier
+  requested_sfp = "-sfp" in model_specifier
+  if requested_bf16 and weight_type != "bf16":
+    raise ValueError(
+        f"model_specifier {model_specifier!r} requests BF16, but "
+        f"--t5gemma_weight_type={weight_type} was passed."
+    )
+  if requested_sfp and weight_type != "sfp":
+    raise ValueError(
+        f"model_specifier {model_specifier!r} requests SFP, but "
+        f"--t5gemma_weight_type={weight_type} was passed."
+    )
+
+  params: Dict[str, Any] = {}
+  for file in _get_safetensor_files(load_path):
+    with safetensors.safe_open(file, framework="pt") as f:
+      for k in f.keys():
+        params[k] = f.get_tensor(k)
+
+  config_path = os.path.join(os.path.dirname(load_path), "config.json")
+  hf_config = None
+  if os.path.exists(config_path):
+    with open(config_path, "r") as f:
+      hf_config = json.load(f)
+    if not hf_config.get("is_encoder_decoder", False):
+      raise ValueError("T5Gemma checkpoint config is not encoder-decoder.")
+
+  enc_embed = params["model.encoder.embed_tokens.weight"]
+  dec_embed = params["model.decoder.embed_tokens.weight"]
+  vocab_size, model_dim = enc_embed.shape
+  assert dec_embed.shape == (vocab_size, model_dim)
+
+  hidden_dim = params["model.encoder.layers.0.mlp.gate_proj.weight"].shape[0]
+  head_dim = (
+      hf_config["encoder"]["head_dim"]
+      if hf_config is not None and "encoder" in hf_config
+      else 64
+  )
+  num_heads = (
+      params["model.encoder.layers.0.self_attn.q_proj.weight"].shape[0]
+      // head_dim
+  )
+  num_kv_heads = (
+      params["model.encoder.layers.0.self_attn.k_proj.weight"].shape[0]
+      // head_dim
+  )
+  num_encoder_layers = len(
+      set([
+          k.split(".")[3]
+          for k in params
+          if k.startswith("model.encoder.layers.")
+      ])
+  )
+  num_decoder_layers = len(
+      set([
+          k.split(".")[3]
+          for k in params
+          if k.startswith("model.decoder.layers.")
+      ])
+  )
+
+  print(
+      f"T5Gemma: vocab={vocab_size} dim={model_dim} hidden={hidden_dim} "
+      f"heads={num_heads} kv_heads={num_kv_heads} head_dim={head_dim} "
+      f"enc_layers={num_encoder_layers} dec_layers={num_decoder_layers}"
+  )
+  if (
+      vocab_size != 256000
+      or model_dim != 512
+      or hidden_dim != 1024
+      or num_heads != 8
+      or num_kv_heads != 8
+      or head_dim != 64
+      or num_encoder_layers != 8
+      or num_decoder_layers != 8
+  ):
+    raise ValueError(
+        "Only T5Gemma S/S is currently supported; checkpoint dimensions were "
+        f"vocab={vocab_size}, dim={model_dim}, hidden={hidden_dim}, "
+        f"heads={num_heads}, kv_heads={num_kv_heads}, head_dim={head_dim}, "
+        f"enc_layers={num_encoder_layers}, dec_layers={num_decoder_layers}."
+    )
+
+  writer = compression.SbsWriter(sbs_file)
+  metadata = []
+  scales = {}
+
+  def t5gemma_tensor_type(sbs_name):
+    """Returns the storage type for a T5Gemma tensor."""
+    if weight_type == "bf16":
+      return configs.Type.kBF16
+    if (
+        "embedding" in sbs_name
+        or "norm" in sbs_name
+        or "_pre_" in sbs_name
+        or "_post_" in sbs_name
+    ):
+      return configs.Type.kBF16
+    return configs.Type.kSFP
+
+  def add_data(param_name, data, expected_shape, sbs_name, layer_index=None):
+    if not isinstance(expected_shape, tuple):
+      expected_shape = (expected_shape,)
+    print(f"Writing {param_name} with shape {data.shape} e:{expected_shape}")
+    assert data.shape == expected_shape, param_name
+    assert isinstance(data, torch.Tensor)
+    data = data.to(torch.float32).numpy()
+    data = np.array(data)
+
+    if layer_index is not None:
+      param_name = param_name % layer_index
+      sbs_name = sbs_name + f"_{layer_index}"
+
+    value = flatten_f32(data)
+    scale = compute_scale(value)
+    both_names = param_name + "::" + sbs_name
+    metadata.append((both_names, data.dtype, data.shape, scale))
+    packed = t5gemma_tensor_type(sbs_name)
+    if packed == configs.Type.kSFP:
+      assert scale == 1.0, f"Scale for {both_names} is not 1.0"
+      scales[sbs_name] = scale
+
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
+    sys.stdout.flush()
+
+  def add_qkv(prefix, sbs_name, i):
+    q = params.pop(f"{prefix}.{i}.self_attn.q_proj.weight")
+    k = params.pop(f"{prefix}.{i}.self_attn.k_proj.weight")
+    v = params.pop(f"{prefix}.{i}.self_attn.v_proj.weight")
+    q = q.reshape(num_heads, head_dim, model_dim)
+    k = k.reshape(num_kv_heads, head_dim, model_dim)
+    v = v.reshape(num_kv_heads, head_dim, model_dim)
+    stacked = torch.stack((k, v), dim=0)
+    transposed = stacked.transpose(0, 1)
+    kv = transposed.reshape(2 * num_kv_heads, head_dim, model_dim)
+    qkv = torch.cat([q, kv], dim=0)
+    add_data(
+        f"{prefix}.%d.self_attn.qkv_proj.weight",
+        qkv,
+        (num_heads + 2 * num_kv_heads, head_dim, model_dim),
+        sbs_name,
+        i,
+    )
+
+  def add_att(prefix, sbs_name, i, attn_name="self_attn"):
+    o = params.pop(f"{prefix}.{i}.{attn_name}.o_proj.weight")
+    o = o.reshape(model_dim, num_heads, head_dim).permute(1, 0, 2)
+    add_data(
+        f"{prefix}.%d.{attn_name}.o_proj.weight",
+        o,
+        (num_heads, model_dim, head_dim),
+        sbs_name,
+        i,
+    )
+
+  def add_gating(prefix, sbs_name, i):
+    gate = params.pop(f"{prefix}.{i}.mlp.gate_proj.weight")
+    up = params.pop(f"{prefix}.{i}.mlp.up_proj.weight")
+    assert gate.shape == up.shape == (hidden_dim, model_dim)
+    gating = torch.stack([gate, up], dim=0)
+    add_data(
+        f"{prefix}.%d.mlp.gating_einsum.weight",
+        gating,
+        (2, hidden_dim, model_dim),
+        sbs_name,
+        i,
+    )
+
+  def add_cross_projection(prefix, hf_name, sbs_name, i):
+    w = params.pop(f"{prefix}.{i}.cross_attn.{hf_name}_proj.weight")
+    heads = num_heads if hf_name == "q" else num_kv_heads
+    w = w.reshape(heads, head_dim, model_dim)
+    add_data(
+        f"{prefix}.%d.cross_attn.{hf_name}_proj.weight",
+        w,
+        (heads, head_dim, model_dim),
+        sbs_name,
+        i,
+    )
+
+  add_data(
+      "model.encoder.embed_tokens.weight",
+      params.pop("model.encoder.embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "enc_embedding",
+  )
+  add_data(
+      "model.decoder.embed_tokens.weight",
+      params.pop("model.decoder.embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "dec_embedding",
+  )
+  add_data(
+      "model.encoder.norm.weight",
+      params.pop("model.encoder.norm.weight"),
+      (model_dim,),
+      "enc_final_norm",
+  )
+  add_data(
+      "model.decoder.norm.weight",
+      params.pop("model.decoder.norm.weight"),
+      (model_dim,),
+      "dec_final_norm",
+  )
+
+  enc_prefix = "model.encoder.layers"
+  for i in range(num_encoder_layers):
+    add_qkv(enc_prefix, "e_qkv", i)
+    add_att(enc_prefix, "e_att", i)
+    add_gating(enc_prefix, "e_gate", i)
+    add_data(
+        f"{enc_prefix}.%d.mlp.down_proj.weight",
+        params.pop(f"{enc_prefix}.{i}.mlp.down_proj.weight"),
+        (model_dim, hidden_dim),
+        "e_lin",
+        i,
+    )
+    for hf_name, sbs_name in [
+        ("pre_self_attn_layernorm", "e_pre_att"),
+        ("post_self_attn_layernorm", "e_post_att"),
+        ("pre_feedforward_layernorm", "e_pre_ff"),
+        ("post_feedforward_layernorm", "e_post_ff"),
+    ]:
+      add_data(
+          f"{enc_prefix}.%d.{hf_name}.weight",
+          params.pop(f"{enc_prefix}.{i}.{hf_name}.weight"),
+          (model_dim,),
+          sbs_name,
+          i,
+      )
+
+  dec_prefix = "model.decoder.layers"
+  for i in range(num_decoder_layers):
+    add_qkv(dec_prefix, "d_qkv", i)
+    add_att(dec_prefix, "d_att", i)
+    add_cross_projection(dec_prefix, "q", "dc_q", i)
+    add_cross_projection(dec_prefix, "k", "dc_k", i)
+    add_cross_projection(dec_prefix, "v", "dc_v", i)
+    add_att(dec_prefix, "dc_att", i, attn_name="cross_attn")
+    add_gating(dec_prefix, "d_gate", i)
+    add_data(
+        f"{dec_prefix}.%d.mlp.down_proj.weight",
+        params.pop(f"{dec_prefix}.{i}.mlp.down_proj.weight"),
+        (model_dim, hidden_dim),
+        "d_lin",
+        i,
+    )
+    for hf_name, sbs_name in [
+        ("pre_self_attn_layernorm", "d_pre_sa"),
+        ("post_self_attn_layernorm", "d_post_sa"),
+        ("pre_cross_attn_layernorm", "d_pre_ca"),
+        ("post_cross_attn_layernorm", "d_post_ca"),
+        ("pre_feedforward_layernorm", "d_pre_ff"),
+        ("post_feedforward_layernorm", "d_post_ff"),
+    ]:
+      add_data(
+          f"{dec_prefix}.%d.{hf_name}.weight",
+          params.pop(f"{dec_prefix}.{i}.{hf_name}.weight"),
+          (model_dim,),
+          sbs_name,
+          i,
+      )
+
+  assert not params, "Some params were not used: %s" % params.keys()
+
+  sbs_model_specifier = model_specifier
+  if sbs_model_specifier == "t5gemma-s-s":
+    sbs_model_specifier = f"t5gemma-s-s-{weight_type}"
+  sbs_config = configs.ModelConfig(sbs_model_specifier)
+  if not sbs_config.is_encoder_decoder:
+    raise ValueError(
+        f"{sbs_model_specifier!r} is not an encoder-decoder config."
+    )
+  writer.write(sbs_config, tokenizer_file)
+
+  with open(csv_file, "w") as csv_handle:
+    csv.writer(csv_handle).writerows(metadata)
+
+
 _MODEL_SPECIFIER = flags.DEFINE_string(
     "model_specifier",
     None,
@@ -868,6 +1197,13 @@ _SBS_FILE = flags.DEFINE_string(
     "sbs_file",
     "/tmp/gemmacpp.sbs",
     "Path to the sbs file to write",
+)
+_T5GEMMA_WEIGHT_TYPE = flags.DEFINE_enum(
+    "t5gemma_weight_type",
+    "bf16",
+    ["bf16", "sfp"],
+    "For T5Gemma only, choose BF16 for parity/debug correctness or SFP for a "
+    "smaller experimental mixed BF16/SFP file.",
 )
 
 _PACK_TOKENIZER = flags.DEFINE_bool(
@@ -910,6 +1246,7 @@ def main(argv: Sequence[str]) -> None:
   tokenizer_file = _TOKENIZER_FILE.value
   metadata_file = _METADATA_FILE.value
   sbs_file = _SBS_FILE.value
+  t5gemma_weight_type = _T5GEMMA_WEIGHT_TYPE.value
 
   logging.info(
       "\n====\nReading %s from %s and %s, writing to %s\n====",
@@ -926,10 +1263,19 @@ def main(argv: Sequence[str]) -> None:
     export_gemma3_lm_sbs(
         model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
     )
+  elif model_specifier.startswith("t5gemma"):
+    export_t5gemma_sbs(
+        model_specifier,
+        load_path,
+        tokenizer_file,
+        metadata_file,
+        sbs_file,
+        weight_type=t5gemma_weight_type,
+    )
   else:
     raise app.UsageError(
         f"Unsupported model_specifier {model_specifier!r}. Expected a "
-        "'paligemma*' or 'gemma3-*-lm-*' specifier."
+        "'paligemma*', 'gemma3-*-lm-*', or 't5gemma*' specifier."
     )
 
 

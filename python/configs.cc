@@ -53,13 +53,13 @@ PYBIND11_MODULE(configs, py_module) {
       .value("kHCA", gcpp::AttentionVariant::kHCA);
 
   enum_<gcpp::PostNormType>(py_module, "PostNormType")
-      .value("NoPostNorm", gcpp::PostNormType::None)
       .value("Scale", gcpp::PostNormType::Scale)
-  .value("Scale", gcpp::PostNormType::Scale);
+      .value("NoPostNorm", gcpp::PostNormType::None);
 
   enum_<gcpp::PostQKType>(py_module, "PostQKType")
       .value("Rope", gcpp::PostQKType::Rope)
-  .value("HalfRope", gcpp::PostQKType::HalfRope);
+      .value("HalfRope", gcpp::PostQKType::HalfRope)
+      .value("NormLocalRope", gcpp::PostQKType::NormLocalRope);
 
   enum_<gcpp::ActivationType>(py_module, "ActivationType")
       .value("Gelu", gcpp::ActivationType::Gelu)
@@ -103,7 +103,10 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA3_4B_LM", gcpp::Model::GEMMA3_4B_LM)
       .value("GEMMA3_12B_LM", gcpp::Model::GEMMA3_12B_LM)
       .value("GEMMA3_27B_LM", gcpp::Model::GEMMA3_27B_LM)
+      .value("GEMMA4_26B_MOE", gcpp::Model::GEMMA4_26B_MOE)
+      .value("GEMMA4_2B", gcpp::Model::GEMMA4_2B)
       .value("DEEPSEEK4_FLASH", gcpp::Model::DEEPSEEK4_FLASH)
+      .value("T5GEMMA_S_S", gcpp::Model::T5GEMMA_S_S)
       // Insert new models above this line.
   .value("PALIGEMMA_448", gcpp::Model::PALIGEMMA_448);
 
@@ -231,6 +234,20 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("hc_eps", &gcpp::ModelConfig::hc_eps)
       .def_readwrite("num_mtp_layers", &gcpp::ModelConfig::num_mtp_layers)
       .def_readwrite("tokenizer_kind", &gcpp::ModelConfig::tokenizer_kind)
+      .def_readwrite("is_encoder_decoder",
+                     &gcpp::ModelConfig::is_encoder_decoder)
+      .def_readwrite("encoder_num_layers",
+                     &gcpp::ModelConfig::encoder_num_layers)
+      .def_readwrite("encoder_layer_configs",
+                     &gcpp::ModelConfig::encoder_layer_configs)
+      .def_readwrite("encoder_attention_window_sizes",
+                     &gcpp::ModelConfig::encoder_attention_window_sizes)
+      .def_readwrite("decoder_num_layers",
+                     &gcpp::ModelConfig::decoder_num_layers)
+      .def_readwrite("decoder_layer_configs",
+                     &gcpp::ModelConfig::decoder_layer_configs)
+      .def_readwrite("decoder_attention_window_sizes",
+                     &gcpp::ModelConfig::decoder_attention_window_sizes)
 
       .def("add_layer_config", &gcpp::ModelConfig::AddLayerConfig,
            arg("layer_config"))

@@ -367,9 +367,13 @@ struct Activations {
   Activations(const RuntimeConfig& runtime_config, const ModelConfig& config,
               size_t batch_size, size_t seq_len, ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : layer_config(config.layer_configs[0]),
+      : layer_config(config.is_encoder_decoder ? config.decoder_layer_configs[0]
+                                               : config.layer_configs[0]),
         moe_layer_config(MoELayerConfig(config)),
         mla_dims(config),
+        num_layers(config.is_encoder_decoder ? config.decoder_num_layers
+                                             : config.num_layers),
+        encoder_seq_len(config.is_encoder_decoder ? seq_len : 0),
 
         x(MatFactory("x", batch_size, config.model_dim, ctx.allocator)),
         x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
@@ -389,11 +393,63 @@ struct Activations {
         gate_out(
             MatFactory("gate_out", batch_size, config.ple_dim, ctx.allocator)),
         ple_token_emb(config.num_layers * config.ple_dim),
+        t5_encoder_pre_att_rms_out(MatFactory(
+            "t5_e_pre_att", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_q(
+            MatFactory("t5_e_q", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_kv(
+            MatFactory("t5_e_kv", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? 2 * config.encoder_layer_configs[0].kv_heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_att_out(
+            MatFactory("t5_e_att_out", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_att_sums(MatFactory(
+            "t5_e_att_sums", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_pre_ffw_rms_out(MatFactory(
+            "t5_e_pre_ffw", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_c1(
+            MatFactory("t5_e_c1", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].ff_hidden_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_c2(
+            MatFactory("t5_e_c2", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].ff_hidden_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_ffw_out(MatFactory(
+            "t5_e_ffw_out", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_inv_timescale(
+            config.is_encoder_decoder
+                ? CreateInvTimescale(ctx.allocator,
+                                     config.encoder_layer_configs[0].qkv_dim,
+                                     config.encoder_layer_configs[0].post_qk ==
+                                         PostQKType::HalfRope)
+                : MatStorageT<float>()),
 
         max_workers(ctx.pools.MaxWorkers()),
-        s_ffw_in(config.num_layers, max_workers),
-        s_ffw_hidden(config.num_layers, max_workers),
-        s_ffw_out(config.num_layers, max_workers),
+        s_ffw_in(num_layers, max_workers),
+        s_ffw_hidden(num_layers, max_workers),
+        s_ffw_out(num_layers, max_workers),
         router_in(MatFactory("router_in",
                              MoEBatchSize(moe_layer_config, batch_size),
                              config.model_dim, ctx.allocator)),
@@ -448,17 +504,17 @@ struct Activations {
                                               : config.rope_theta,
             config.yarn_factor, config.yarn_orig_seq_len, config.yarn_beta_fast,
             config.yarn_beta_slow)),
-        s_router_in(config.num_layers, max_workers),
-        s_router_logits(config.num_layers, max_workers),
-        s_expert_in(config.num_layers, max_workers),
-        s_expert_hidden(config.num_layers, max_workers),
-        s_expert_out(config.num_layers, max_workers),
-        s_w_expert_in1(config.num_layers, max_workers),
-        s_w_expert_in2(config.num_layers, max_workers),
-        s_w_expert_hidden(config.num_layers, max_workers),
-        s_w_gating_einsum_w1(config.num_layers, max_workers),
-        s_w_gating_einsum_w2(config.num_layers, max_workers),
-        s_w_linear_w(config.num_layers, max_workers),
+        s_router_in(num_layers, max_workers),
+        s_router_logits(num_layers, max_workers),
+        s_expert_in(num_layers, max_workers),
+        s_expert_hidden(num_layers, max_workers),
+        s_expert_out(num_layers, max_workers),
+        s_w_expert_in1(num_layers, max_workers),
+        s_w_expert_in2(num_layers, max_workers),
+        s_w_expert_hidden(num_layers, max_workers),
+        s_w_gating_einsum_w1(num_layers, max_workers),
+        s_w_gating_einsum_w2(num_layers, max_workers),
+        s_w_linear_w(num_layers, max_workers),
         attention_impl(runtime_config.attention_impl),
         attention_storage(config, layer_config, batch_size, seq_len,
                           runtime_config, ctx.pools.MaxWorkers(), ctx.allocator,
@@ -501,6 +557,16 @@ struct Activations {
     }
     if (config.hc_mult > 1) {
       hc_mixes.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+
+    if (config.is_encoder_decoder) {
+      t5_encoder_q.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_kv.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_att_out.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_att_sums.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_c1.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_c2.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
     }
 
     if (moe_layer_config.IsMoE()) {
@@ -602,6 +668,8 @@ struct Activations {
   const LayerConfig& layer_config;
   const LayerConfig& moe_layer_config;  // layer with the most experts
   MLADims mla_dims;
+  const size_t num_layers;
+  const size_t encoder_seq_len;
 
   MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
@@ -616,6 +684,30 @@ struct Activations {
   MatStorageT<float> ple_embeds;
   MatStorageT<BF16> gate_out;
   std::vector<float> ple_token_emb;
+
+  void SetT5EncoderSourceLen(size_t source_len) {
+    t5_encoder_pre_att_rms_out.OverrideRows(source_len);
+    t5_encoder_q.OverrideRows(source_len);
+    t5_encoder_kv.OverrideRows(source_len);
+    t5_encoder_att_out.OverrideRows(source_len);
+    t5_encoder_att_sums.OverrideRows(source_len);
+    t5_encoder_pre_ffw_rms_out.OverrideRows(source_len);
+    t5_encoder_c1.OverrideRows(source_len);
+    t5_encoder_c2.OverrideRows(source_len);
+    t5_encoder_ffw_out.OverrideRows(source_len);
+  }
+
+  // T5Gemma encoder scratch storage.
+  MatStorageT<BF16> t5_encoder_pre_att_rms_out;
+  MatStorageT<float> t5_encoder_q;
+  MatStorageT<float> t5_encoder_kv;
+  MatStorageT<float> t5_encoder_att_out;
+  MatStorageT<float> t5_encoder_att_sums;
+  MatStorageT<BF16> t5_encoder_pre_ffw_rms_out;
+  MatStorageT<BF16> t5_encoder_c1;
+  MatStorageT<BF16> t5_encoder_c2;
+  MatStorageT<float> t5_encoder_ffw_out;
+  MatStorageT<float> t5_encoder_inv_timescale;
 
   const size_t max_workers;
   TensorStats s_ffw_in;

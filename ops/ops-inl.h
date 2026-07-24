@@ -1508,6 +1508,12 @@ static HWY_NOINLINE void LogitsSoftCap(const float cap, Logits logits,
 }
 
 // Calls LogitsSoftCap if cap != 0.0f.
+static HWY_INLINE HWY_MAYBE_UNUSED float MaybeLogitsSoftCap(const float cap,
+                                                            const float logit) {
+  if (cap == 0.0f) return logit;
+  return cap * tanhf(logit / cap);
+}
+
 static HWY_INLINE HWY_MAYBE_UNUSED void MaybeLogitsSoftCap(
     const float cap, Logits logits, ThreadingContext& ctx,
     const size_t worker) {

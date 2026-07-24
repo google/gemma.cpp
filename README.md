@@ -140,6 +140,7 @@ re-running with a different setting, be sure to delete all files in the `build/`
 directory with `rm -rf build/*`.
 
 #### Unix-like Platforms
+
 ```sh
 cmake -B build
 ```
@@ -268,6 +269,41 @@ rests on its surface. The building has a window on the side, and a flag on top.
 A tall tree stands in front of the building, and a window on the building is
 visible from the water. The water is green, and the sky is blue.
 ```
+
+### T5Gemma Encoder-Decoder Model
+
+This repository includes experimental support for the T5Gemma S/S
+encoder-decoder model. Convert a local Hugging Face safetensors checkpoint to
+SBS with:
+
+```sh
+python3 python/convert_from_safetensors.py \
+--model_specifier=t5gemma-s-s \
+--load_path /path/to/t5gemma/model.safetensors \
+--tokenizer_file /path/to/t5gemma/tokenizer.model \
+--sbs_file t5gemma-s-s-it.sbs \
+--metadata_file t5gemma-s-s-it.csv
+```
+
+The default T5Gemma conversion writes an all-BF16 SBS file, which is useful for
+Hugging Face parity checks and is currently the recommended path. To write a
+smaller experimental mixed BF16/SFP file, add `--t5gemma_weight_type=sfp`.
+
+Then run:
+
+```sh
+./gemma \
+--tokenizer /path/to/t5gemma/tokenizer.model \
+--weights t5gemma-s-s-it.sbs \
+--model t5gemma-s-s \
+--prompt "Hello"
+```
+
+The first supported runtime path is fresh seq2seq generation. Multi-turn reuse
+of decoder KV cache with new encoder inputs is intentionally not supported yet.
+Instruction-tuned T5Gemma checkpoints use the default instruction wrapping. For
+base/pre-trained checkpoints or raw Hugging Face token parity checks, pass
+`--wrapping=0` to use pre-trained wrapping instead.
 
 ### Migrating to single-file format
 

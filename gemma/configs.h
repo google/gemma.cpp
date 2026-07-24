@@ -170,8 +170,7 @@ enum class PostQKType {
 };
 
 static inline bool EnumValid(PostQKType type) {
-  return static_cast<size_t>(type) <
-         static_cast<size_t>(PostNormType::kSentinel);
+  return static_cast<size_t>(type) < static_cast<size_t>(PostQKType::kSentinel);
 }
 
 // FFW activation function.
@@ -273,6 +272,8 @@ enum class Model {
   GEMMA4_26B_MOE,
   GEMMA4_2B,
   DEEPSEEK4_FLASH,
+  // T5Gemma family - starting with S/S.
+  T5GEMMA_S_S,
   kSentinel,
 };
 
@@ -620,6 +621,15 @@ struct ModelConfig : public IFields {
     visitor(num_mtp_layers);
 
     visitor(tokenizer_kind);
+    visitor(is_encoder_decoder);
+    if (is_encoder_decoder) {
+      visitor(encoder_num_layers);
+      visitor(encoder_layer_configs);
+      visitor(encoder_attention_window_sizes);
+      visitor(decoder_num_layers);
+      visitor(decoder_layer_configs);
+      visitor(decoder_attention_window_sizes);
+    }
 
     // Append new fields here, then update `python/configs.cc`.
   }
@@ -661,6 +671,16 @@ struct ModelConfig : public IFields {
         attention_window_sizes[i] = new_max_seq_len;
       }
     }
+    for (size_t i = 0; i < encoder_attention_window_sizes.size(); ++i) {
+      if (encoder_attention_window_sizes[i] == max_seq_len) {
+        encoder_attention_window_sizes[i] = new_max_seq_len;
+      }
+    }
+    for (size_t i = 0; i < decoder_attention_window_sizes.size(); ++i) {
+      if (decoder_attention_window_sizes[i] == max_seq_len) {
+        decoder_attention_window_sizes[i] = new_max_seq_len;
+      }
+    }
     max_seq_len = new_max_seq_len;
   }
 
@@ -690,10 +710,23 @@ struct ModelConfig : public IFields {
     for (const auto& layer_config : layer_configs) {
       num_heads = HWY_MAX(num_heads, layer_config.heads);
     }
+    for (const auto& layer_config : encoder_layer_configs) {
+      num_heads = HWY_MAX(num_heads, layer_config.heads);
+    }
+    for (const auto& layer_config : decoder_layer_configs) {
+      num_heads = HWY_MAX(num_heads, layer_config.heads);
+    }
     return num_heads;
   }
 
   size_t KVCacheCols() const {
+    if (is_encoder_decoder) {
+      size_t cols = 0;
+      for (const auto& lc : decoder_layer_configs) {
+        cols += lc.CacheLayerSize();
+      }
+      return cols;
+    }
     size_t cols = 0;
     for (const auto& lc : layer_configs) {
       cols += lc.CacheLayerSize();
@@ -778,6 +811,17 @@ struct ModelConfig : public IFields {
   uint32_t num_mtp_layers = 0;
 
   TokenizerKind tokenizer_kind = TokenizerKind::kSentencePiece;
+
+  // Text encoder-decoder models such as T5Gemma have separate encoder and
+  // decoder stacks. Existing decoder-only models leave these fields at their
+  // defaults and continue to use `layer_configs`.
+  bool is_encoder_decoder = false;
+  uint32_t encoder_num_layers = 0;
+  std::vector<LayerConfig> encoder_layer_configs;
+  std::vector<uint32_t> encoder_attention_window_sizes;
+  uint32_t decoder_num_layers = 0;
+  std::vector<LayerConfig> decoder_layer_configs;
+  std::vector<uint32_t> decoder_attention_window_sizes;
 };
 
 // Returns the sub-config for the ViT model of the PaliGemma model.
@@ -787,6 +831,8 @@ enum DeducedLayerTypes {
   kDeducedViT = 2,
   kDeduced448 = 4,  // For ViT, 448x448 resolution instead of 224x224.
   kDeducedKqNorm = 8,
+  kDeducedT5Gemma = 16,
+  kDeducedMoE = 32,
 };
 
 // layer_types is one or more of `DeducedLayerTypes`.

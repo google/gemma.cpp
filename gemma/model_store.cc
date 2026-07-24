@@ -245,6 +245,8 @@ static int DeduceLayerTypes(const BlobReader& reader) {
   int layer_types = 0;
   bool has_key_norm = false;
   bool has_query_norm = false;
+  bool has_t5gemma_encoder = false;
+  bool has_t5gemma_decoder = false;
   for (size_t key_idx = 0; key_idx < reader.Keys().size(); ++key_idx) {
     const std::string& key = reader.Keys()[key_idx];
     if (key.find("qkv_ein_w") != std::string::npos) {  // NOLINT
@@ -262,9 +264,23 @@ static int DeduceLayerTypes(const BlobReader& reader) {
     if (key.find("query_norm") != std::string::npos) {  // NOLINT
       has_query_norm = true;
     }
+    if (key.find("moe_router") != std::string::npos) {  // NOLINT
+      layer_types |= kDeducedMoE;
+    }
+    if (key.find("enc_embedding") != std::string::npos ||  // NOLINT
+        key.find("e_qkv_") != std::string::npos) {         // NOLINT
+      has_t5gemma_encoder = true;
+    }
+    if (key.find("dec_embedding") != std::string::npos ||  // NOLINT
+        key.find("d_qkv_") != std::string::npos) {         // NOLINT
+      has_t5gemma_decoder = true;
+    }
   }
   if (has_key_norm && has_query_norm) {
     layer_types |= kDeducedKqNorm;
+  }
+  if (has_t5gemma_encoder && has_t5gemma_decoder) {
+    layer_types |= kDeducedT5Gemma;
   }
   return layer_types;
 }
