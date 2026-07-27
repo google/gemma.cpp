@@ -98,7 +98,8 @@ HWY_EXPORT(CallSoftmax);
 
 float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
-                          MatMulEnv& env, int verbosity) {
+                          MatMulEnv& env, int verbosity,
+                          AttentionImpl attention_impl) {
   const BatchStreamFunc stream_token = [](size_t, size_t, int, float) {
     return true;
   };
@@ -138,6 +139,7 @@ float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
       .max_generated_tokens = max_generated_tokens - 1,
       .temperature = 0.0f,
       .verbosity = verbosity,
+      .attention_impl = attention_impl,
       .batch_stream_token = stream_token,
       .sample_func = sample_token,
   };
