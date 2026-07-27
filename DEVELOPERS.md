@@ -188,6 +188,23 @@ Benchmarks such as `gemma_batch_bench` and `bench_matmul` print per-zone call
 counts and self-times via `PROFILER_PRINT_RESULTS()`. For performance
 measurements we recommend `gemma_batch_bench`.
 
+## Attention implementations
+
+The attention kernel can be configured at runtime via `--attention_impl`.
+
+*   `flash` (default)
+*   `flash_transposed_qs`
+*   `flash_transposed_qs_bf16`
+*   `flash_transposed_qs_int16`
+*   `flash_transposed_qs_int8`
+*   `flash_matrix_accumulation`
+*   `int8_matrix_accumulation`
+
+The KV cache type is determined from the chosen implementation unless
+overridden with `--kv_cache_type`. Some implementations require a specific type
+and warn if asked for another. See the `KVCache` constructor in
+`gemma/kv_cache.cc` for more details.
+
 ## Debugging
 
 At the first sign of incorrect or unexpected results, we recommend running with
