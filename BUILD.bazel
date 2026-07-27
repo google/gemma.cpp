@@ -425,6 +425,7 @@ cc_library(
         "ops/matmul_static_nuq.cc",
         "ops/matmul_static_sfp.cc",
         "ops/matmul_static_i8.cc",
+        "ops/matmul_static_q4_0.cc",
     ],
     hdrs = [
         "ops/matmul_static.h",

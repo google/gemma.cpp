@@ -69,18 +69,42 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
+  const MatPadding padding = (att_weights.GetType() == Type::kQ4_0)
+                                 ? MatPadding::kPacked
+                                 : MatPadding::kOdd;
   {
     std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
-    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
+    mat_owners.back().AllocateFor(att_weights, allocator, padding);
   }
 
-  const size_t T_bytes = att_weights.ElementBytes();
-  for (size_t m = 0; m < model_dim; ++m) {
-    uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
-    for (size_t h = 0; h < heads; ++h) {
-      hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
-                     out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+  if (att_weights.GetType() == Type::kQ4_0) {
+    const size_t cols = heads * qkv_dim;
+    const size_t src_row_bytes = Q4_0Stream::PackedEnd(qkv_dim);
+    const size_t dst_row_bytes = Q4_0Stream::PackedEnd(cols);
+    HWY_ASSERT(dst_row_bytes == heads * src_row_bytes);
+
+
+
+    uint8_t* dst_ptr = att_weights.RowBytes(0);
+    const uint8_t* src_ptr = attn_vec_einsum_w.RowBytes(0);
+
+    for (size_t m = 0; m < model_dim; ++m) {
+      uint8_t* dst_row = dst_ptr + m * dst_row_bytes;
+      for (size_t h = 0; h < heads; ++h) {
+        size_t src_row_idx = h * model_dim + m;
+        const uint8_t* src_row = src_ptr + src_row_idx * src_row_bytes;
+        hwy::CopyBytes(src_row, dst_row + h * src_row_bytes, src_row_bytes);
+      }
+    }
+  } else {
+    const size_t T_bytes = att_weights.ElementBytes();
+    for (size_t m = 0; m < model_dim; ++m) {
+      uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
+      for (size_t h = 0; h < heads; ++h) {
+        hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
+                       out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+      }
     }
   }
   att_weights.SetScale(attn_vec_einsum_w.Scale());
@@ -108,9 +132,16 @@ void LayerWeightsPtrs::SplitW1() {
   HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
   HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
 
-  const size_t stride = gating_einsum_w.Stride();
-  gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
-  gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
+  if (gating_einsum_w.GetType() == Type::kQ4_0) {
+    const size_t stride = gating_einsum_w.Stride();
+    uint8_t* base_ptr = gating_einsum_w.RowBytes(0);
+    gating_einsum_w1.SetPtr(base_ptr, stride);
+    gating_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(ff_hidden_dim * stride), stride);
+  } else {
+    const size_t stride = gating_einsum_w.Stride();
+    gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
+    gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
+  }
   gating_einsum_w1.SetType(gating_einsum_w.GetType());
   gating_einsum_w2.SetType(gating_einsum_w.GetType());
   gating_einsum_w1.SetScale(gating_einsum_w.Scale());
@@ -155,9 +186,16 @@ void LayerWeightsPtrs::SplitAttW1() {
   HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
   HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
 
-  const size_t stride = qkv_einsum_w.Stride();
-  qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
-  qkv_einsum_w2.SetPtr(qkv_einsum_w.RowBytes(w1_rows), stride);
+  if (qkv_einsum_w.GetType() == Type::kQ4_0) {
+    const size_t stride = qkv_einsum_w.Stride();
+    uint8_t* base_ptr = qkv_einsum_w.RowBytes(0);
+    qkv_einsum_w1.SetPtr(base_ptr, stride);
+    qkv_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(w1_rows * stride), stride);
+  } else {
+    const size_t stride = qkv_einsum_w.Stride();
+    qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
+    qkv_einsum_w2.SetPtr(qkv_einsum_w.RowBytes(w1_rows), stride);
+  }
   qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
   qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
   qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
@@ -841,6 +879,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                     return DecompressToBF16<BF16>(*tensor.mat, buf);
                   case Type::kSFP:
                     return DecompressToBF16<SfpStream>(*tensor.mat, buf);
+                  case Type::kQ4_0:
+                    return DecompressToBF16<Q4_0Stream>(*tensor.mat, buf);
                   default:
                     HWY_ABORT("Unsupported type %s",
                               TypeName(tensor.prev_type));
@@ -886,7 +926,15 @@ static std::vector<IOBatch> MakeBatches(
         row_bytes += mem_stride_bytes;
       }
     }
-    HWY_ASSERT(offset == range.End());
+    if (offset != range.End()) {
+      HWY_ABORT(
+          "MISMATCH tensor %zu '%s': offset=%zu range.End()=%zu "
+          "range.bytes=%zu rows=%zu cols=%zu elem=%zu packed=%d",
+          i, tensors[i].mat->Name(), static_cast<size_t>(offset),
+          static_cast<size_t>(range.End()),
+          static_cast<size_t>(range.bytes), mat.Rows(), mat.Cols(),
+          mat.ElementBytes(), mat.IsPacked());
+    }
   }
 
   HWY_ASSERT(batches.size() >= tensors.size());
@@ -963,7 +1011,10 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
 
   // Enumerate all weights (negligible cost).
   ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-    const MatPadding padding = (t.flags & TensorArgs::kPacked)
+    const bool is_compressed = t.mat.GetType() == Type::kNUQ ||
+                               t.mat.GetType() == Type::kI8 ||
+                               t.mat.GetType() == Type::kQ4_0;
+    const MatPadding padding = (is_compressed || (t.flags & TensorArgs::kPacked))
                                    ? MatPadding::kPacked
                                    : MatPadding::kOdd;
     size_t key_idx;

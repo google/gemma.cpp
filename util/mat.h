@@ -283,6 +283,8 @@ class MatPtr : public IFields {
       num_elements = NuqStream::PackedEnd(num_elements);
     } else if (type == Type::kI8) {
       num_elements = I8Stream::PackedEnd(num_elements);
+    } else if (type == Type::kQ4_0) {
+      num_elements = Q4_0Stream::PackedEnd(num_elements);
     }
     return num_elements;
   }
@@ -438,6 +440,9 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
   } else if (base->GetType() == Type::kI8) {
     const MatPtrT<I8Stream> mat(*base);
     return func(&mat, std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kQ4_0) {
+    const MatPtrT<Q4_0Stream> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
   }
@@ -472,6 +477,10 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
   } else if (base1->GetType() == Type::kI8) {
     const MatPtrT<I8Stream> mat1(*base1);
     const MatPtrT<I8Stream> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kQ4_0) {
+    const MatPtrT<Q4_0Stream> mat1(*base1);
+    const MatPtrT<Q4_0Stream> mat2(*base2);
     return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));

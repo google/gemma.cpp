@@ -91,6 +91,15 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "q4_0",
+    textual_hdrs = ["q4_0-inl.h"],
+    deps = [
+        ":types",
+        "@highway//:hwy",
+    ],
+)
+
 cc_test(
     name = "int_test",
     size = "small",
@@ -103,6 +112,26 @@ cc_test(
     tags = ["hwy_ops_test"],
     deps = [
         ":int",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+    ],
+)
+
+cc_test(
+    name = "q4_0_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["q4_0_test.cc"],
+    features = ["fully_static_link"],
+    linkstatic = True,
+    local_defines = ["HWY_IS_TEST"],
+    # for test_suite.
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":compress",
+        ":q4_0",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//:test_util",
         "@highway//:hwy",
@@ -176,6 +205,7 @@ cc_library(
         ":distortion",
         ":int",
         ":nuq",
+        ":q4_0",
         ":sfp",
         "//:basics",
         "//:mat",

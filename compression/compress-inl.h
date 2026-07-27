@@ -50,6 +50,7 @@
 #include "compression/int-inl.h"
 #include "compression/nuq-inl.h"
 #include "compression/sfp-inl.h"
+#include "compression/q4_0-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -635,6 +636,40 @@ struct CompressTraits<I8Stream> {
       D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
       Raw* raw, const size_t num) {
     IntCodec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
+  }
+};
+
+// Q4_0 block quantization.
+template <>
+struct CompressTraits<Q4_0Stream> {
+  using Packed = Q4_0Stream;
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
+                                  size_t num, CompressPerThread& tls,
+                                  const PackedSpan<Packed>& packed,
+                                  const size_t packed_ofs) {
+    Q4_0Codec::Enc(df, raw, num, packed, packed_ofs);
+  }
+
+  template <class D>
+  static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
+                               const size_t packed_ofs, hn::Vec<D>& raw0,
+                               hn::Vec<D>& raw1) {
+    Q4_0Codec::Dec2(d, packed, packed_ofs, raw0, raw1);
+  }
+
+  static float ToFloatSlow(const Packed x) {
+    // TODO(philculliton): Support dequantizing single elements for debugging.
+    HWY_DASSERT(!"Not supported");
+    return 0.0f;
+  }
+
+  template <class D, typename Raw>
+  static HWY_INLINE void DecompressAndZeroPad(
+      D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      Raw* raw, const size_t num) {
+    Q4_0Codec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
   }
 };
 

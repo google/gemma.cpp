@@ -125,6 +125,7 @@ set(SOURCES
   compression/compress.cc
   compression/compress.h
   compression/nuq-inl.h
+  compression/q4_0-inl.h
   compression/sfp-inl.h
   compression/int-inl.h
   compression/types.h
@@ -186,6 +187,7 @@ set(SOURCES
   ops/matmul_static_nuq.cc
   ops/matmul_static_sfp.cc
   ops/matmul_static_i8.cc
+  ops/matmul_static_q4_0.cc
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
@@ -330,6 +332,7 @@ set(GEMMA_TEST_FILES
   compression/compress_test.cc
   compression/distortion_test.cc
   compression/nuq_test.cc
+  compression/q4_0_test.cc
   compression/sfp_test.cc
   deepseek/deepseek_test.cc
   gemma/gemma_args_test.cc

@@ -306,7 +306,8 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                     qkv_dim, in_tile_idx, dim);
                 v_tile_vec[v_offset] = v_cache_values[dim];
               }
-            } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
+            } else if (attention_impl ==
+                       AttentionImpl::kInt8MatrixAccumulation) {
               for (size_t dim = 0; dim < qkv_dim; ++dim) {
                 size_t k_offset = gcpp::MatrixAccumulationOffset_Int8(
                     qkv_dim, dim, in_tile_idx);
