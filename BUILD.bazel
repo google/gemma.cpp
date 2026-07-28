@@ -1049,6 +1049,23 @@ cc_binary(
 )
 
 cc_binary(
+    name = "attention_benchmark",
+    srcs = ["evals/attention_benchmark.cc"],
+    deps = [
+        ":args",
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":mat",
+        ":threading_context",
+        ":tokenizer",
+        "//io",
+        "@highway//:abort_header_only",
+        "@highway//:timer",
+    ],
+)
+
+cc_binary(
     name = "single_benchmark",
     srcs = ["evals/benchmark.cc"],
     deps = [
