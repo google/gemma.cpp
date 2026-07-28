@@ -274,6 +274,9 @@ enum class Model {
   DEEPSEEK4_FLASH,
   // T5Gemma family - starting with S/S.
   T5GEMMA_S_S,
+  QWEN3_600M,
+  QWEN3_2B,  // 1.7B rounded up for readability.
+  QWEN3_4B,
   kSentinel,
 };
 
@@ -288,6 +291,11 @@ static inline bool IsPaliGemma(Model model) {
     return true;
   }
   return false;
+}
+
+static inline bool IsQwen3(Model model) {
+  return model == Model::QWEN3_600M || model == Model::QWEN3_2B ||
+         model == Model::QWEN3_4B;
 }
 
 static inline bool IsObsolete(Model model) {
@@ -640,6 +648,15 @@ struct ModelConfig : public IFields {
       if (lc.IsMLA()) return true;
     }
     return false;
+  }
+
+  bool IsQwen3() const {
+    return gcpp::IsQwen3(model);
+  }
+
+  bool HasLmHead() const {
+    // QWEN3_4B has tied embeddings and thus no separate LM head.
+    return model == Model::QWEN3_600M || model == Model::QWEN3_2B || HasMLA();
   }
 
   // Synthesized config for the multi-token-prediction block (DeepSeek V4):

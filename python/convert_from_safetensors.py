@@ -133,9 +133,23 @@ def pack_bpe_tokenizer(tokenizer_json_path: str) -> bytes:
     if left in vocab_map and right in vocab_map and (left + right) in vocab_map:
       merge_ranks.append((rank, vocab_map[left], vocab_map[right]))
 
-  bpe_flags = 1 << 1  # kFlagSpaceReplace
-  if any(f"<0x{b:02X}>" in vocab_map for b in range(256)):
-    bpe_flags |= 1 << 0  # kFlagByteFallback
+  def _json_has_byte_level(obj) -> bool:
+    if isinstance(obj, dict):
+      if obj.get("type") == "ByteLevel":
+        return True
+      return any(_json_has_byte_level(v) for v in obj.values())
+    elif isinstance(obj, list):
+      return any(_json_has_byte_level(v) for v in obj)
+    return False
+
+  if _json_has_byte_level(j.get("pre_tokenizer")) or _json_has_byte_level(
+      j.get("decoder")
+  ):
+    bpe_flags = 1 << 2  # kFlagByteLevel
+  else:
+    bpe_flags = 1 << 1  # kFlagSpaceReplace
+    if any(f"<0x{b:02X}>" in vocab_map for b in range(256)):
+      bpe_flags |= 1 << 0  # kFlagByteFallback
 
   unk = model.get("unk_token", "")
   unk_id = vocab_map.get(unk, 0)
@@ -668,7 +682,9 @@ def export_gemma3_lm_sbs(
       for k in f.keys():
         # TranslateGemma checkpoints sometimes still ship the vision tower /
         # projector tensors. Silently drop them — this is the LM-only path.
-        if k.startswith("vision_tower.") or k.startswith("multi_modal_projector."):
+        if k.startswith("vision_tower.") or k.startswith(
+            "multi_modal_projector."
+        ):
           continue
         params[k] = f.get_tensor(k)
 
@@ -1220,6 +1236,225 @@ _OUTPUT_PACKED = flags.DEFINE_string(
 )
 
 
+def export_qwen3_lm_sbs(
+    model_specifier: str,
+    load_path: str,
+    tokenizer_file: str,
+    csv_file: str,
+    sbs_file: str,
+) -> None:
+  """Exports sbs file from a text-only Qwen 3 safetensors checkpoint."""
+  if load_path.endswith(".json"):
+    with open(load_path, "r") as f:
+      j_obj = json.load(f)
+    files = list(set(j_obj["weight_map"].values()))
+    files = [os.path.join(os.path.dirname(load_path), f) for f in files]
+  else:
+    files = [load_path]
+
+  params: Dict[str, Any] = {}
+  for file in files:
+    with safetensors.safe_open(file, framework="pt") as f:
+      for k in f.keys():
+        params[k] = f.get_tensor(k)
+
+  if "model.embed_tokens.weight" not in params:
+    raise ValueError(
+        "Could not locate 'model.embed_tokens.weight' in checkpoint."
+    )
+  llm_prefix = "model."
+
+  embed_tokens = params[f"{llm_prefix}embed_tokens.weight"]
+  vocab_size, model_dim = embed_tokens.shape
+  hidden_dim = params[f"{llm_prefix}layers.0.mlp.gate_proj.weight"].shape[0]
+
+  has_qk_norm = f"{llm_prefix}layers.0.self_attn.q_norm.weight" in params
+  assert (
+      has_qk_norm
+  ), "Qwen 3 checkpoints without QK Norm are not supported yet."
+  head_dim = params[f"{llm_prefix}layers.0.self_attn.q_norm.weight"].shape[0]
+
+  num_q_heads = (
+      params[f"{llm_prefix}layers.0.self_attn.q_proj.weight"].shape[0]
+      // head_dim
+  )
+  num_kv_heads = (
+      params[f"{llm_prefix}layers.0.self_attn.k_proj.weight"].shape[0]
+      // head_dim
+  )
+  num_layers = len(
+      set([k for k in params.keys() if k.endswith("input_layernorm.weight")])
+  )
+
+  print(
+      f"Qwen3 LM: vocab={vocab_size} dim={model_dim} hidden={hidden_dim} "
+      f"q_heads={num_q_heads} kv_heads={num_kv_heads} "
+      f"head_dim={head_dim} layers={num_layers} qk_norm={has_qk_norm}"
+  )
+
+  writer = compression.SbsWriter(sbs_file)
+  metadata = []
+  scales = {}
+
+  def add_data(param_name, data, expected_shape, sbs_name, layer_index=None):
+    if not isinstance(expected_shape, tuple):
+      expected_shape = (expected_shape,)
+    print(f"Writing {param_name} with shape {data.shape} e:{expected_shape}")
+    assert data.shape == expected_shape, param_name
+
+    assert isinstance(data, torch.Tensor)
+    data = data.to(torch.float32).numpy()
+    data = np.array(data)
+
+    if layer_index is not None:
+      param_name = param_name % layer_index
+      sbs_name = sbs_name + f"_{layer_index}"
+
+    value = flatten_f32(data)
+    scale = compute_scale(value)
+    both_names = param_name + "::" + sbs_name
+    metadata.append((both_names, data.dtype, data.shape, scale))
+
+    if _is_float_param(sbs_name):
+      packed = configs.Type.kF32
+    elif _is_bf16_param(sbs_name):
+      packed = configs.Type.kBF16
+    else:
+      packed = configs.Type.kSFP
+      assert scale == 1.0, f"Scale for {both_names} is not 1.0"
+      scales[sbs_name] = scale
+    sys.stdout.flush()
+
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
+
+  def add_qkv_einsum(i):
+    q = params.pop(f"{llm_prefix}layers.{i}.self_attn.q_proj.weight")
+    k = params.pop(f"{llm_prefix}layers.{i}.self_attn.k_proj.weight")
+    v = params.pop(f"{llm_prefix}layers.{i}.self_attn.v_proj.weight")
+    n_kv = k.shape[0] // head_dim
+    q = q.reshape(num_q_heads, head_dim, model_dim)
+    k = k.reshape(n_kv, head_dim, model_dim)
+    v = v.reshape(n_kv, head_dim, model_dim)
+    stacked = torch.stack((k, v), dim=0)  # (2, K, H, D)
+    transposed = stacked.transpose(0, 1)  # (K, 2, H, D)
+    reshaped = transposed.reshape(2 * n_kv, head_dim, model_dim)
+    qkv = torch.cat([q, reshaped], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.qkv_proj.weight",
+        qkv,
+        (num_q_heads + 2 * n_kv, head_dim, model_dim),
+        "qkv_ein",
+        i,
+    )
+
+  def add_att_einsum(i):
+    o = params.pop(f"{llm_prefix}layers.{i}.self_attn.o_proj.weight")
+    o = o.reshape(model_dim, num_q_heads, head_dim).permute(1, 0, 2)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.o_proj.weight",
+        o,
+        (num_q_heads, model_dim, head_dim),
+        "att_ein",
+        i,
+    )
+
+  def add_gating_einsum(i):
+    gate = params.pop(f"{llm_prefix}layers.{i}.mlp.gate_proj.weight")
+    up = params.pop(f"{llm_prefix}layers.{i}.mlp.up_proj.weight")
+    assert gate.shape == up.shape == (hidden_dim, model_dim)
+    gating = torch.stack([gate, up], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.mlp.gating_einsum.weight",
+        gating,
+        (2, hidden_dim, model_dim),
+        "gating_ein",
+        i,
+    )
+
+  # Non-layer tensors.
+  add_data(
+      f"{llm_prefix}embed_tokens.weight",
+      params.pop(f"{llm_prefix}embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "c_embedding",
+  )
+  add_data(
+      f"{llm_prefix}norm.weight",
+      params.pop(f"{llm_prefix}norm.weight") - 1.0,
+      (model_dim,),
+      "c_final_norm",
+  )
+  # 4B model has no lm_head.weight.
+  if "lm_head.weight" in params:
+    add_data(
+        "lm_head.weight",
+        params.pop("lm_head.weight"),
+        (vocab_size, model_dim),
+        "lm_head",
+    )
+
+  for i in range(num_layers):
+    add_att_einsum(i)
+    add_gating_einsum(i)
+    add_qkv_einsum(i)
+    add_data(
+        f"{llm_prefix}layers.%d.mlp.down_proj.weight",
+        params.pop(f"{llm_prefix}layers.{i}.mlp.down_proj.weight"),
+        (model_dim, hidden_dim),
+        "linear_w",
+        i,
+    )
+    # Qwen3 has only two pre norms.
+    add_data(
+        f"{llm_prefix}layers.%d.input_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.input_layernorm.weight") - 1.0,
+        (model_dim,),
+        "pre_att_ns",
+        i,
+    )
+    add_data(
+        f"{llm_prefix}layers.%d.post_attention_layernorm.weight",
+        params.pop(f"{llm_prefix}layers.{i}.post_attention_layernorm.weight")
+        - 1.0,
+        (model_dim,),
+        "pre_ff_ns",
+        i,
+    )
+
+    if has_qk_norm:
+      add_data(
+          f"{llm_prefix}layers.%d.self_attn.q_norm.weight",
+          params.pop(f"{llm_prefix}layers.{i}.self_attn.q_norm.weight") - 1.0,
+          (head_dim,),
+          "query_norm",
+          i,
+      )
+      add_data(
+          f"{llm_prefix}layers.%d.self_attn.k_norm.weight",
+          params.pop(f"{llm_prefix}layers.{i}.self_attn.k_norm.weight") - 1.0,
+          (head_dim,),
+          "key_norm",
+          i,
+      )
+
+  if params:
+    print(f"WARNING: leftover params not consumed: {list(params.keys())[:10]}")
+
+  sbs_config = configs.ModelConfig(model_specifier)
+  if tokenizer_file.endswith(".json"):
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kHfBpe
+    tokenizer_blob = pack_bpe_tokenizer(tokenizer_file)
+  else:
+    raise ValueError("Qwen3 LM requires a HF BPE tokenizer.")
+  writer.write(sbs_config, tokenizer_blob)
+
+  with open(csv_file, "w") as csv_handle:
+    csv.writer(csv_handle).writerows(metadata)
+
+
 def main(argv: Sequence[str]) -> None:
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
@@ -1272,10 +1507,14 @@ def main(argv: Sequence[str]) -> None:
         sbs_file,
         weight_type=t5gemma_weight_type,
     )
+  elif model_specifier.startswith("qwen3-"):
+    export_qwen3_lm_sbs(
+        model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+    )
   else:
     raise app.UsageError(
         f"Unsupported model_specifier {model_specifier!r}. Expected a "
-        "'paligemma*', 'gemma3-*-lm-*', or 't5gemma*' specifier."
+        "'paligemma*', 'gemma3-*-lm-*', 'qwen3-*', or 't5gemma*' specifier."
     )
 
 

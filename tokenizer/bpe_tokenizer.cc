@@ -46,7 +46,7 @@ constexpr const char* kSpaceRepl = "\xe2\x96\x81";
 // (the corresponding behavior is fixed); reserved so readers can branch later.
 constexpr uint32_t kFlagByteFallback = 1u << 0;
 constexpr uint32_t kFlagSpaceReplace = 1u << 1;
-
+constexpr uint32_t kFlagByteLevel = 1u << 2;
 
 class BpeTokenizer : public Tokenizer {
  public:
@@ -69,6 +69,7 @@ class BpeTokenizer : public Tokenizer {
   };
 
   void LoadByteTokens();
+  void BuildByteLevelMaps();
   const std::string& IdToToken(int id) const;
   int IdByteValue(int id) const;
   int MatchAddedToken(std::string_view input, size_t i, size_t* len) const;
@@ -76,6 +77,9 @@ class BpeTokenizer : public Tokenizer {
                           std::vector<int>* ids) const;
   std::string Normalize(std::string_view text) const;
   void EncodeSpan(std::string_view text, std::vector<int>* ids) const;
+  void EncodeSpanByteLevel(std::string_view text, std::vector<int>* ids) const;
+  bool DecodeByteLevel(hwy::Span<const int> ids,
+                       std::string& detokenized) const;
   void MergeSymbols(std::vector<int>* sym_id) const;
 
   std::unordered_map<std::string, int> vocab_;
@@ -86,7 +90,11 @@ class BpeTokenizer : public Tokenizer {
   std::unordered_map<std::string, int> added_tokens_;
   std::unordered_set<unsigned char> added_first_bytes_;
   std::vector<size_t> added_lengths_;  // distinct, descending
+  std::vector<std::string> byte_to_token_;
+  std::unordered_map<uint32_t, int> unicode_to_byte_;
+
   int unk_id_ = 0;
+  bool byte_level_ = false;
 };
 
 
@@ -121,6 +129,196 @@ size_t Utf8Len(unsigned char c) {
 uint64_t PairKey(int left, int right) {
   return (static_cast<uint64_t>(static_cast<uint32_t>(left)) << 32) |
          static_cast<uint32_t>(right);
+}
+
+struct CodePoint {
+  uint32_t cp;
+  uint32_t off;
+  uint32_t len;
+};
+
+std::vector<CodePoint> DecodeUtf8(std::string_view s) {
+  std::vector<CodePoint> out;
+  out.reserve(s.size());
+  size_t i = 0;
+  while (i < s.size()) {
+    const unsigned char c0 = static_cast<unsigned char>(s[i]);
+    size_t len = Utf8Len(c0);
+    if (i + len > s.size()) len = 1;  // truncated: treat lead as a single byte
+    uint32_t cp = c0;
+    if (len == 2) {
+      cp = ((c0 & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu);
+    } else if (len == 3) {
+      cp = ((c0 & 0x0Fu) << 12) |
+           ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
+           (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
+    } else if (len == 4) {
+      cp = ((c0 & 0x07u) << 18) |
+           ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 12) |
+           ((static_cast<unsigned char>(s[i + 2]) & 0x3Fu) << 6) |
+           (static_cast<unsigned char>(s[i + 3]) & 0x3Fu);
+    }
+    out.push_back({cp, static_cast<uint32_t>(i), static_cast<uint32_t>(len)});
+    i += len;
+  }
+  return out;
+}
+
+std::string Utf8Encode(uint32_t cp) {
+  std::string o;
+  if (cp < 0x80) {
+    o.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    o.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    o.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    o.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    o.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    o.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    o.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    o.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+  return o;
+}
+
+bool IsAsciiWs(uint32_t cp) {
+  return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == '\f' ||
+         cp == '\v';
+}
+
+bool IsWhitespace(uint32_t cp) {
+  if (IsAsciiWs(cp)) return true;
+  switch (cp) {
+    case 0x85:    // NEL
+    case 0xA0:    // NBSP
+    case 0x1680:  // OGHAM SPACE MARK
+    case 0x2028:  // LINE SEPARATOR
+    case 0x2029:  // PARAGRAPH SEPARATOR
+    case 0x202F:  // NARROW NBSP
+    case 0x205F:  // MEDIUM MATHEMATICAL SPACE
+    case 0x3000:  // IDEOGRAPHIC SPACE
+      return true;
+    default:
+      break;
+  }
+  return cp >= 0x2000 && cp <= 0x200A;
+}
+
+bool IsNumber(uint32_t cp) { return cp >= '0' && cp <= '9'; }
+
+bool IsLetter(uint32_t cp) {
+  if ((cp >= 'a' && cp <= 'z') || (cp >= 'A' && cp <= 'Z')) return true;
+  if (cp < 0x80) return false;
+  return !IsWhitespace(cp) && !IsNumber(cp);
+}
+
+uint32_t AsciiLower(uint32_t c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+
+std::vector<std::string> Gpt2Split(std::string_view text) {
+  std::vector<std::string> pieces;
+  const std::vector<CodePoint> cps = DecodeUtf8(text);
+  const size_t n = cps.size();
+  const auto range = [&](size_t a, size_t b) -> std::string {
+    if (a >= b) return std::string();
+    const size_t off = cps[a].off;
+    const size_t end = cps[b - 1].off + cps[b - 1].len;
+    return std::string(text.substr(off, end - off));
+  };
+  const auto is_d = [](uint32_t c) {
+    return !IsWhitespace(c) && !IsLetter(c) && !IsNumber(c);
+  };
+
+  size_t k = 0;
+  while (k < n) {
+    // A: contractions.
+    if (cps[k].cp == '\'' && k + 1 < n) {
+      const uint32_t c1 = AsciiLower(cps[k + 1].cp);
+      if (k + 2 < n) {
+        const uint32_t c2 = AsciiLower(cps[k + 2].cp);
+        if ((c1 == 'r' && c2 == 'e') || (c1 == 'v' && c2 == 'e') ||
+            (c1 == 'l' && c2 == 'l')) {
+          pieces.push_back(range(k, k + 3));
+          k += 3;
+          continue;
+        }
+      }
+      if (c1 == 's' || c1 == 't' || c1 == 'm' || c1 == 'd') {
+        pieces.push_back(range(k, k + 2));
+        k += 2;
+        continue;
+      }
+    }
+    // B: optional non-letter/number lead, then one or more letters.
+    {
+      size_t p = k;
+      if (p < n && cps[p].cp != '\r' && cps[p].cp != '\n' &&
+          !IsLetter(cps[p].cp) && !IsNumber(cps[p].cp) && p + 1 < n &&
+          IsLetter(cps[p + 1].cp)) {
+        ++p;
+      }
+      if (p < n && IsLetter(cps[p].cp)) {
+        while (p < n && IsLetter(cps[p].cp)) ++p;
+        pieces.push_back(range(k, p));
+        k = p;
+        continue;
+      }
+    }
+    // C: a single number.
+    if (IsNumber(cps[k].cp)) {
+      pieces.push_back(range(k, k + 1));
+      ++k;
+      continue;
+    }
+    // D: optional space, then symbols, then trailing newlines.
+    {
+      const bool space = cps[k].cp == ' ';
+      const size_t q = space ? k + 1 : k;
+      if (q < n && is_d(cps[q].cp)) {
+        size_t r = q;
+        while (r < n && is_d(cps[r].cp)) ++r;
+        while (r < n && (cps[r].cp == '\r' || cps[r].cp == '\n')) ++r;
+        pieces.push_back(range(k, r));
+        k = r;
+        continue;
+      }
+    }
+    // E/F/G: whitespace runs.
+    {
+      size_t p = k;
+      while (p < n && IsWhitespace(cps[p].cp)) ++p;
+      if (p > k) {
+        bool found_nl = false;
+        size_t last_nl = k;
+        for (size_t j = k; j < p; ++j) {
+          if (cps[j].cp == '\n' || cps[j].cp == '\r') {
+            found_nl = true;
+            last_nl = j;
+          }
+        }
+        if (found_nl) {  // E: `\s*[\r\n]+`
+          pieces.push_back(range(k, last_nl + 1));
+          k = last_nl + 1;
+        } else if (p == n) {  // F: trailing whitespace at end of text
+          pieces.push_back(range(k, p));
+          k = p;
+        } else if (p - k >= 2) {  // F: leave the last space for the next word
+          pieces.push_back(range(k, p - 1));
+          k = p - 1;
+        } else {  // G: a lone space before a non-space
+          pieces.push_back(range(k, p));
+          k = p;
+        }
+        continue;
+      }
+    }
+    // Safety net: never stall.
+    pieces.push_back(range(k, k + 1));
+    ++k;
+  }
+  return pieces;
 }
 
 // A candidate merge popped from the priority queue: lower `rank` merges first,
@@ -200,11 +398,15 @@ std::string BpeTokenizer::Serialize() const {
   BpeTokenizerBlob blob;
   blob.unk_id = static_cast<uint32_t>(unk_id_);
   blob.vocab = id_to_token_;
-  blob.flags = kFlagSpaceReplace;
-  for (int b : byte_id_) {
-    if (b >= 0) {
-      blob.flags |= kFlagByteFallback;
-      break;
+  if (byte_level_) {
+    blob.flags |= kFlagByteLevel;
+  } else {
+    blob.flags = kFlagSpaceReplace;
+    for (int b : byte_id_) {
+      if (b >= 0) {
+        blob.flags |= kFlagByteFallback;
+        break;
+      }
     }
   }
 
@@ -235,6 +437,9 @@ bool BpeTokenizer::Encode(std::string_view input,
 
 bool BpeTokenizer::Decode(hwy::Span<const int> ids,
                           std::string& detokenized) const {
+  if (byte_level_) {
+    return DecodeByteLevel(ids, detokenized);
+  }
   detokenized.clear();
   std::string pending_bytes;  // accumulates consecutive byte-fallback tokens
   for (int id : ids) {
@@ -329,7 +534,64 @@ bool BpeTokenizer::Deserialize(std::string_view data) {
   added_lengths_.assign(lengths.begin(), lengths.end());
   std::sort(added_lengths_.begin(), added_lengths_.end(), std::greater<>());
 
-  LoadByteTokens();
+  byte_level_ = (blob.flags & kFlagByteLevel) != 0;
+  if (byte_level_) {
+    BuildByteLevelMaps();
+  } else {
+    LoadByteTokens();
+  }
+  return true;
+}
+
+// Builds the GPT-2 `bytes_to_unicode` alphabet.
+void BpeTokenizer::BuildByteLevelMaps() {
+  byte_to_token_.assign(256, std::string());
+  unicode_to_byte_.clear();
+  unicode_to_byte_.reserve(512);
+  std::vector<bool> direct(256, false);
+  const auto mark = [&](int lo, int hi) {
+    for (int b = lo; b <= hi; ++b) direct[b] = true;
+  };
+  mark('!', '~');    // 0x21..0x7E
+  mark(0xA1, 0xAC);  // ¡..¬
+  mark(0xAE, 0xFF);  // ®..ÿ
+  int n = 0;
+  for (int b = 0; b < 256; ++b) {
+    const uint32_t cp = direct[b] ? static_cast<uint32_t>(b) : (256u + n++);
+    byte_to_token_[b] = Utf8Encode(cp);
+    unicode_to_byte_[cp] = b;
+  }
+}
+
+void BpeTokenizer::EncodeSpanByteLevel(std::string_view text,
+                                       std::vector<int>* ids) const {
+  for (const std::string& piece : Gpt2Split(text)) {
+    std::vector<int> sym_id;
+    sym_id.reserve(piece.size());
+    for (char c : piece) {
+      const std::string& tok = byte_to_token_[static_cast<unsigned char>(c)];
+      const auto it = vocab_.find(tok);
+      sym_id.push_back(it != vocab_.end() ? it->second : unk_id_);
+    }
+    MergeSymbols(&sym_id);
+    ids->insert(ids->end(), sym_id.begin(), sym_id.end());
+  }
+}
+
+bool BpeTokenizer::DecodeByteLevel(hwy::Span<const int> ids,
+                                   std::string& detokenized) const {
+  detokenized.clear();
+  for (int id : ids) {
+    const std::string& tok = IdToToken(id);
+    for (const CodePoint& c : DecodeUtf8(tok)) {
+      const auto it = unicode_to_byte_.find(c.cp);
+      if (it != unicode_to_byte_.end()) {
+        detokenized.push_back(static_cast<char>(it->second));
+      } else {
+        detokenized.append(tok, c.off, c.len);
+      }
+    }
+  }
   return true;
 }
 
@@ -403,6 +665,10 @@ std::string BpeTokenizer::Normalize(std::string_view text) const {
 void BpeTokenizer::EncodeSpan(std::string_view text,
                               std::vector<int>* ids) const {
   if (text.empty()) return;
+  if (byte_level_) {
+    EncodeSpanByteLevel(text, ids);
+    return;
+  }
   const std::string norm = Normalize(text);
 
   // Initial symbols: one per whole-character vocab entry, else byte-fallback.

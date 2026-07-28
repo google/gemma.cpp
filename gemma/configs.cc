@@ -716,6 +716,85 @@ static ModelConfig ConfigT5Gemma_S_S() {
   return config;
 }
 
+static ModelConfig ConfigBaseQwen3() {
+  ModelConfig config = ConfigNoSSM();
+  config.vocab_size = 151936;
+  config.max_seq_len = 32768;
+  config.eos_id = 151645;
+  config.secondary_eos_id = 151643;
+  return config;
+}
+
+static LayerConfig LayerConfigQwen3(size_t model_dim, size_t ff_hidden_dim,
+                                    size_t heads, size_t kv_heads,
+                                    size_t qkv_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = ff_hidden_dim;
+  config.heads = heads;
+  config.kv_heads = kv_heads;
+  config.qkv_dim = qkv_dim;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::None;
+  config.activation = ActivationType::Silu;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigQwen3_600M() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_0.6B";
+  config.model = Model::QWEN3_600M;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 1024;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 3072, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_2B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_1.7B";
+  config.model = Model::QWEN3_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2048;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 6144, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_4B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_4B";
+  config.model = Model::QWEN3_4B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2560;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 9728, 32, 8, 128);
+  config.num_layers = 36;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<36>(config.max_seq_len);
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -756,6 +835,12 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigDeepSeek4_Flash();
     case Model::T5GEMMA_S_S:
       return ConfigT5Gemma_S_S();
+    case Model::QWEN3_600M:
+      return ConfigQwen3_600M();
+    case Model::QWEN3_2B:
+      return ConfigQwen3_2B();
+    case Model::QWEN3_4B:
+      return ConfigQwen3_4B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -803,6 +888,12 @@ const char* ModelPrefix(Model model) {
       return "deepseek4-flash";
     case Model::T5GEMMA_S_S:
       return "t5gemma-s-s";
+    case Model::QWEN3_600M:
+      return "qwen3-0_6b";
+    case Model::QWEN3_2B:
+      return "qwen3-2b";
+    case Model::QWEN3_4B:
+      return "qwen3-4b";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -1004,6 +1095,13 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
+    case 28:
+      if (blob_path.path.find("qwen3-2b") != std::string::npos ||
+          blob_path.path.find("qwen3-1_7b") != std::string::npos) {
+        return Model::QWEN3_2B;
+      }
+      return Model::QWEN3_600M;
+
     case 30:
       return Model::GEMMA4_26B_MOE;
 
@@ -1012,6 +1110,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
                                          : Model::GEMMA3_4B_LM;
     case 35:
       return Model::GEMMA4_2B;
+    case 36:
+      return Model::QWEN3_4B;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448

@@ -108,6 +108,9 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA4_2B", gcpp::Model::GEMMA4_2B)
       .value("DEEPSEEK4_FLASH", gcpp::Model::DEEPSEEK4_FLASH)
       .value("T5GEMMA_S_S", gcpp::Model::T5GEMMA_S_S)
+      .value("QWEN3_600M", gcpp::Model::QWEN3_600M)
+      .value("QWEN3_2B", gcpp::Model::QWEN3_2B)
+      .value("QWEN3_4B", gcpp::Model::QWEN3_4B)
       // Insert new models above this line.
   .value("PALIGEMMA_448", gcpp::Model::PALIGEMMA_448);
 

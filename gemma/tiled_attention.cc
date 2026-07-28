@@ -118,9 +118,6 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
   // This computes Q and stores it in activations.q.
-  // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
-  // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
-  // This computes Q and stores it in activations.q.
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w1,
              /*add=*/nullptr, env, activations.q);
 
@@ -162,7 +159,7 @@ static HWY_INLINE void ComputeQKVTransposedTile(
         const bool is_global_layer =
             activations.config.IsGlobalLayer(layer_idx);
         std::vector<MatPtr> kv_ptrs = qbatch.KV(query_idx).cache->GetPointers(
-            kv_layer_idx, kv_head, kv_heads, start_pos, is_global_layer);
+            kv_layer_idx, kv_head, start_pos, is_global_layer);
         const size_t v_offset = qkv_dim * KVCache::kTileSize;
         const size_t tile_span_size = 2 * qkv_dim * KVCache::kTileSize;
         const size_t k_size = qkv_dim * KVCache::kTileSize;
@@ -939,7 +936,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         std::vector<MatPtr> kv_ptrs =
             qbatch.KV(current_qbatch_idx)
                 .cache->GetPointers(
-                    layer_idx, kv_head_idx, layer.layer_config.kv_heads,
+                    layer_idx, kv_head_idx,
                     global_start_context_pos,
                     activations.config.IsGlobalLayer(layer_idx));
 
@@ -1149,6 +1146,10 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,
                 "query heads must be a multiple of key-value heads");
   (void)layer_config;  // only used in HWY_DASSERT
+
+  const size_t active_qkv_dim = layer_config.heads * layer_config.qkv_dim;
+  activations.q.OverrideCols(active_qkv_dim);
+  activations.att_out.OverrideCols(active_qkv_dim);
 
   const Type kv_type = qbatch.KV(0).cache->compact_kv_cache_ptr.GetType();
   if (kv_type == Type::kBF16) {

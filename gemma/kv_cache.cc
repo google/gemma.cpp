@@ -78,14 +78,18 @@ KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
       allocator_(allocator) {
   layer_flat_offsets.resize(num_layers, 0);
   layer_k_v_offsets.resize(num_layers, 0);
+  layer_kv_head_offsets.resize(num_layers, 0);
   rounded_qkv_dims.resize(num_layers, static_cast<uint32_t>(rounded_qkv_dim));
   size_t flat_accum = 0;
   size_t k_v_accum = 0;
+  size_t kv_head_accum = 0;
   for (size_t i = 0; i < num_layers; ++i) {
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
     flat_accum += 2 * kv_heads * qkv_dim;
     layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
     k_v_accum += kv_heads * rounded_qkv_dim;
+    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
+    kv_head_accum += kv_heads;
   }
   // NOTE: k_v_cols is intentionally left at 0 (default). It serves as a
   // sentinel for MaybeReshapeCache: when k_v_cols == cache.Cols(), the reshape
@@ -140,10 +144,12 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   // 1. Build non-uniform offset tables dynamically
   layer_flat_offsets.resize(num_layers, 0);
   layer_k_v_offsets.resize(num_layers, 0);
+  layer_kv_head_offsets.resize(num_layers, 0);
   rounded_qkv_dims.resize(num_layers, 0);
 
   size_t flat_accum = 0;
   size_t k_v_accum = 0;
+  size_t kv_head_accum = 0;
 
   for (size_t i = 0; i < num_layers; ++i) {
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
@@ -154,6 +160,9 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
     rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
     k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
+
+    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
+    kv_head_accum += config.layer_configs[i].kv_heads;
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
@@ -195,10 +204,12 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   // 1. Build non-uniform offset tables dynamically
   layer_flat_offsets.resize(num_layers, 0);
   layer_k_v_offsets.resize(num_layers, 0);
+  layer_kv_head_offsets.resize(num_layers, 0);
   rounded_qkv_dims.resize(num_layers, 0);
 
   size_t flat_accum = 0;
   size_t k_v_accum = 0;
+  size_t kv_head_accum = 0;
   size_t max_qkv_dim = 0;
   size_t max_kv_heads = 0;
 
@@ -211,6 +222,9 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
     rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
     k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
+
+    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
+    kv_head_accum += config.layer_configs[i].kv_heads;
 
     max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
     max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
@@ -370,7 +384,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     size_t local_tiles_processed = 0;
     size_t global_tiles_processed = 0;
     kv_head_ptrs.clear();
-    kv_head_ptrs.reserve(num_layers * max_kv_heads);
+    kv_head_ptrs.reserve(kv_head_accum);
     for (size_t i = 0; i < num_layers; ++i) {
       size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
@@ -446,6 +460,9 @@ KVCache KVCache::Copy() {
     copy.ds_state_offsets = ds_state_offsets;
   }
   copy.layer_flat_offsets = layer_flat_offsets;
+  copy.layer_k_v_offsets = layer_k_v_offsets;
+  copy.rounded_qkv_dims = rounded_qkv_dims;
+  copy.layer_kv_head_offsets = layer_kv_head_offsets;
   return copy;
 }
 

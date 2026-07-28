@@ -46,6 +46,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "gemma/attention.h"  // includes highway.h
+#include "gemma/tiled_attention.h"
 #include "gemma/gemma-inl.h"
 #include "ops/ops-inl.h"
 
@@ -454,8 +455,18 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
   HWY_DASSERT(layer.layer_config.type == LayerAttentionType::kGemma);
   HWY_DASSERT(qbatch.PrefixEnd(0) == 0);  // expect causal attention
   int flags = 0;
-  GemmaAttention(num_tokens, kv_cache_layer_idx, layer, activations.attention,
-                 qbatch, env, activations.attention_impl, flags);
+  if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
+      activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
+      activations.attention_impl == AttentionImpl::kInt8MatrixAccumulation ||
+      activations.attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+    TiledAttention(activations.attention_impl, num_tokens, kv_cache_layer_idx, layer,
+                   activations.attention, qbatch, env, flags);
+  } else {
+    GemmaAttention(num_tokens, kv_cache_layer_idx, layer, activations.attention,
+                   qbatch, env, activations.attention_impl, flags);
+  }
 
   post_norm(layer.layer_config.post_norm, layer.post_attention_norm_scale,
             activations.attention.att_sums);
