@@ -129,6 +129,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         .max_generated_tokens = 30,
         .temperature = 0.0f,
         .verbosity = env.Verbosity(),
+        .attention_impl = env.MutableConfig().attention_impl,
         .stream_token = stream_token,
     };
     env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,

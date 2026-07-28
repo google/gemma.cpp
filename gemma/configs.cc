@@ -1139,6 +1139,7 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   return Model::UNKNOWN;
 }
 
+// NOTE: keep the `--attention_impl` help text in `gemma_args.h` synced
 constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
     {"flash", AttentionImpl::kFlash},
     {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
@@ -1160,8 +1161,15 @@ AttentionImpl GetAttentionImpl(const std::string& impl_name) {
   for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
     if (name == impl_name) return attention_impl;
   }
-  HWY_WARN("Unknown attention implementation: %s. Using kFlash.\n",
-           impl_name.c_str());
+  std::string valid;
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (!valid.empty()) {
+      valid += ", ";
+    }
+    valid += name;
+  }
+  HWY_WARN("Unknown attention implementation: %s. Valid: %s. Using kFlash.\n",
+           impl_name.c_str(), valid.c_str());
   return AttentionImpl::kFlash;
 }
 

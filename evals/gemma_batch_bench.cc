@@ -37,8 +37,7 @@ GemmaEnv* s_env = nullptr;
 class GemmaBatchBench : public ::testing::Test {
  protected:
   std::vector<std::string> BatchGemmaReply(
-      const std::vector<std::string>& inputs, AttentionImpl attention_impl) {
-    s_env->MutableConfig().attention_impl = attention_impl;
+      const std::vector<std::string>& inputs) {
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 2;
     std::vector<std::string> replies;
@@ -131,8 +130,7 @@ TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
   const std::vector<std::string> inputs = GenerateInputs();
   // Run multiple times so that auto-tuning is closer to complete.
   for (size_t rep = 0; rep < 4; ++rep) {
-    std::vector<std::string> responses =
-        BatchGemmaReply(inputs, AttentionImpl::kFlash);
+    std::vector<std::string> responses = BatchGemmaReply(inputs);
     for (size_t i = 0; i < HWY_MIN(hwy::Unpredictable1() * 3, responses.size());
          ++i) {
       fprintf(stderr, "Rep %zu batch answer %zu '%s'\n\n", rep, i,

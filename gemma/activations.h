@@ -96,22 +96,18 @@ struct AttentionActivations {
         vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
         vit_K_T(MatFactory(
             "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
-            layer_config.heads *
-                hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         vit_V_T(MatFactory(
             "V2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
-            layer_config.heads *
-                hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
                                    config.model_dim, allocator)),
         att_out(MatFactory("att_out", batch_size,
-                           layer_config.heads * max_qkv_dim,
-                           allocator)),
+                           layer_config.heads * max_qkv_dim, allocator)),
         att_out_reps(MatFactory("att_out", batch_size * rep_factor,
-                                layer_config.heads * max_qkv_dim,
-                                allocator)),
+                                layer_config.heads * max_qkv_dim, allocator)),
         softmax_max(MatFactory("softmax_max", batch_size, layer_config.heads,
                                allocator)),
         softmax_d(
@@ -119,14 +115,18 @@ struct AttentionActivations {
         att_sums(
             MatFactory("att_sums", batch_size, config.model_dim, allocator)),
 
+        k_tile_vec(MatFactory("k_tile_vec", batch_size * layer_config.kv_heads,
+                              KVCache::kTileSize * max_qkv_dim, allocator)),
+        v_tile_vec(MatFactory("v_tile_vec", batch_size * layer_config.kv_heads,
+                              KVCache::kTileSize * max_qkv_dim, allocator)),
+
         inv_timescale(
             CreateInvTimescale(allocator, layer_config.qkv_dim,
                                layer_config.post_qk == PostQKType::HalfRope)),
-        inv_timescale_global(CreateInvTimescale(
-            allocator,
-            max_qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope, 1000000.0,
-            config.partial_rotary_factor)) {
+        inv_timescale_global(
+            CreateInvTimescale(allocator, max_qkv_dim,
+                               layer_config.post_qk == PostQKType::HalfRope,
+                               1000000.0, config.partial_rotary_factor)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -225,6 +225,9 @@ struct AttentionActivationsPtrs {
       : config(config),
         flash_params(flash_params),
         split_flash_params(split_flash_params),
+        sub_task_att_out(nullptr),
+        sub_task_exp_denominator_sums(nullptr),
+        sub_task_max_logits(nullptr),
         bf16_queries(nullptr),
         int16_queries(nullptr),
         int8_queries(nullptr),
@@ -251,6 +254,11 @@ struct AttentionActivationsPtrs {
     att_sums = activations.att_sums;
     inv_timescale = activations.inv_timescale;
     inv_timescale_global = activations.inv_timescale_global;
+    k_tile_vec = activations.k_tile_vec;
+    v_tile_vec = activations.v_tile_vec;
+    sub_task_att_out = &activations.sub_task_att_out;
+    sub_task_exp_denominator_sums = &activations.sub_task_exp_denominator_sums;
+    sub_task_max_logits = &activations.sub_task_max_logits;
     bf16_queries = &activations.bf16_queries;
     int16_queries = &activations.int16_queries;
     int8_queries = &activations.int8_queries;

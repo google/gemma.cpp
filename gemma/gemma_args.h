@@ -271,7 +271,11 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
         "When a newline is encountered, that signals the end of the turn.",
         2);
     visitor(attention_impl, "attention_impl", std::string("flash"),
-            "Attention implementation to use. See configs.cc for options.", 2);
+            "Attention implementation (flash, flash_transposed_qs, "
+            "flash_transposed_qs_bf16, flash_transposed_qs_int16, "
+            "flash_transposed_qs_int8, flash_matrix_accumulation, "
+            "int8_matrix_accumulation).",
+            2);
     visitor(kv_cache_type, "kv_cache_type", std::string(""),
             "KV cache data type (f32, bf16, int8). If empty, deduced from "
             "attention_impl.",
