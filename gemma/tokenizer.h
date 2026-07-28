@@ -78,6 +78,7 @@ class GemmaChatTemplate {
   std::vector<int> pali_sep_;
   std::vector<int> vlm_soi_;
   std::vector<int> vlm_eoi_;
+  bool prepend_bos_ = true;
 };
 
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,

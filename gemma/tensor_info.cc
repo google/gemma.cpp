@@ -59,6 +59,16 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .min_size = Type::kBF16,
                  });
   AddDeepSeekModelTensors(config);
+  if (config.HasLmHead()) {
+    Add(no_suffix,
+        {
+            .base_name = "lm_head",
+            .source_names = {"lm_head/weight", "lm_head.weight", "lm_head"},
+            .axes = {0, 1},
+            .shape = {config.vocab_size, config.model_dim},
+            .min_size = Type::kBF16,
+        });
+  }
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},

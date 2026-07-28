@@ -16,7 +16,6 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
-#include <math.h>  // isnan
 #include <stddef.h>
 #include <stdint.h>
 
@@ -252,7 +251,7 @@ struct LayerWeightsPtrs {
 
   MatPtr key_norm_scale;    // at least BF16.
   MatPtr query_norm_scale;  // at least BF16.
-  
+
   MatPtr router_scale;
   MatPtr p_expert_sc;
   MatPtr post_ffw1_ns;
@@ -788,7 +787,7 @@ struct WeightsPtrs {
 
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
-    if (config_.HasMLA()) {
+    if (config_.HasLmHead()) {
       func(TENSOR_ARGS(lm_head, kMustRead));
     }
     if (config_.hc_mult > 1) {

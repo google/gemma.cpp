@@ -223,15 +223,18 @@ static float EmbeddingScaling(size_t model_dim) {
       hwy::ConvertScalarTo<BF16>(sqrtf(static_cast<float>(model_dim))));
 }
 
+static bool HasEmbeddingScaling(const ModelConfig& model_config) {
+  return !(model_config.IsQwen3() || model_config.HasMLA());
+}
+
 static HWY_INLINE void EmbedTokenFromWeights(int token, size_t x_row,
                                              const ModelConfig& model_config,
                                              const MatPtr& embedding,
                                              MatStorageT<float>& x) {
   const size_t model_dim = model_config.model_dim;
-  // DeepSeek does not scale embeddings by sqrt(model_dim).
+  // Qwen3/DeepSeekV4 does not scale embeddings by sqrt(model_dim).
   const float emb_scaling =
-      model_config.HasMLA() ? 1.0f : EmbeddingScaling(model_dim);
-
+      HasEmbeddingScaling(model_config) ? EmbeddingScaling(model_dim) : 1.0f;
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
 
