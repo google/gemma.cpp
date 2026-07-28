@@ -74,12 +74,12 @@ struct KVCache {
   // layers start_pos might be in a middle of the first tile. At start_pos %
   // kTileSize
   std::vector<MatPtr> GetPointers(int layer_idx, int kv_head_idx,
-                                                int num_kv_heads, int start_pos,
+                                                int start_pos,
                                                 bool is_global_layer) {
     if (!IsTiled()) {
       HWY_ABORT("This function is only meant to be used with tiled KV caches.");
     }
-    MatPtr& source_ptr = kv_head_ptrs[layer_idx * num_kv_heads + kv_head_idx];
+    MatPtr& source_ptr = kv_head_ptrs[layer_kv_head_offsets[layer_idx] + kv_head_idx];
     if (is_global_layer) {
       return {source_ptr};
     }
@@ -137,6 +137,7 @@ struct KVCache {
   std::vector<uint32_t> layer_flat_offsets;
   std::vector<uint32_t> layer_k_v_offsets;
   std::vector<uint32_t> rounded_qkv_dims;
+  std::vector<uint32_t> layer_kv_head_offsets;
 
   // DeepSeek V4 per-query incremental compressor state (kv_state/score_state
   // per layer, plus the indexer compressor's on CSA layers), f32. One row;
@@ -189,7 +190,7 @@ struct KVCache {
   // number of tiles in storage. All pointers point into compact_kv_cache.
 
   // To access the tiles of (layer_idx, head_idx), index the array with
-  // layer_idx * num_kv_heads + kv_head_idx.
+  // layer_kv_head_offsets[layer_idx] + kv_head_idx.
   // Or use GetPointers function.
 
   // The returned MatPtr will have one tile per row. The number of rows for
