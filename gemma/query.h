@@ -16,6 +16,9 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_QUERY_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_QUERY_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <vector>
 
 #include "gemma/gemma_args.h"
@@ -25,6 +28,14 @@
 #include "hwy/base.h"
 
 namespace gcpp {
+
+struct T5GemmaEncoderCache {
+  MatStorageT<float> hidden_states;
+  std::vector<MatStorageT<float>> cross_keys;
+  std::vector<MatStorageT<float>> cross_values;
+  std::vector<uint8_t> pad_mask;
+  size_t source_len = 0;
+};
 
 struct PerQuery {
   PromptTokens prompt;
@@ -40,6 +51,10 @@ struct PerQuery {
   size_t prefix_end;
 
   KVCachePtr kv_cache;
+
+  // Non-owning pointer to encoder outputs for encoder-decoder models. The
+  // owner lives alongside the query batch during generation.
+  T5GemmaEncoderCache* t5gemma_encoder_cache = nullptr;
 
   // Previous token generated for this query, or the last prompt token. Will be
   // fed into the next Transformer() call.
@@ -161,6 +176,9 @@ class QBatch {
     return queries_[QueryIdx(qi)].prefix_end;
   }
   KVCachePtr& KV(size_t qi) const { return queries_[QueryIdx(qi)].kv_cache; }
+  T5GemmaEncoderCache*& T5EncoderCache(size_t qi) const {
+    return queries_[QueryIdx(qi)].t5gemma_encoder_cache;
+  }
   int& PrevToken(size_t qi) { return queries_[QueryIdx(qi)].prev_token; }
 
   // let query_idx_[to] point to the from in the queries_; this is only used if

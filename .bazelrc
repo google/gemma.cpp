@@ -1,1 +1,4 @@
 common --enable_bzlmod
+
+# Use global copt so the define also reaches @highway.
+build:profiler --copt=-DPROFILER_ENABLED=1

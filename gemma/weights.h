@@ -16,7 +16,6 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_WEIGHTS_H_
 
-#include <math.h>  // isnan
 #include <stddef.h>
 #include <stdint.h>
 
@@ -252,7 +251,7 @@ struct LayerWeightsPtrs {
 
   MatPtr key_norm_scale;    // at least BF16.
   MatPtr query_norm_scale;  // at least BF16.
-  
+
   MatPtr router_scale;
   MatPtr p_expert_sc;
   MatPtr post_ffw1_ns;
@@ -474,6 +473,147 @@ struct LayerWeightsPtrs {
   void SplitAttW1();
 };
 
+struct T5GemmaEncoderLayerWeightsPtrs {
+  T5GemmaEncoderLayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
+                                 const TensorInfoRegistry& tensors)
+      : layer_idx(layer_idx),
+        finder_(LayerSuffix(layer_idx), tensors),
+        qkv_einsum_w(finder_("e_qkv")),
+        qkv_einsum_w1(finder_("e_qkv1")),
+        qkv_einsum_w2(finder_("e_qkv2")),
+        attn_vec_einsum_w(finder_("e_att")),
+        att_weights(finder_("e_att_w")),
+        gating_einsum_w(finder_("e_gate")),
+        gating_einsum_w1(finder_("e_gate1")),
+        gating_einsum_w2(finder_("e_gate2")),
+        linear_w(finder_("e_lin")),
+        pre_attention_norm_scale(finder_("e_pre_att")),
+        post_attention_norm_scale(finder_("e_post_att")),
+        pre_ffw_norm_scale(finder_("e_pre_ff")),
+        post_ffw_norm_scale(finder_("e_post_ff")),
+        layer_config(config) {}
+
+  const size_t layer_idx;
+  const MatFinder finder_;
+
+  MatPtr qkv_einsum_w;
+  MatPtr qkv_einsum_w1;
+  MatPtr qkv_einsum_w2;
+  MatPtr attn_vec_einsum_w;
+  MatPtr att_weights;
+  MatPtr gating_einsum_w;
+  MatPtr gating_einsum_w1;
+  MatPtr gating_einsum_w2;
+  MatPtr linear_w;
+  MatPtr pre_attention_norm_scale;   // at least BF16.
+  MatPtr post_attention_norm_scale;  // at least BF16.
+  MatPtr pre_ffw_norm_scale;         // at least BF16.
+  MatPtr post_ffw_norm_scale;        // at least BF16.
+
+  const LayerConfig& layer_config;
+
+  template <class Func>
+  void ForEachTensor(T5GemmaEncoderLayerWeightsPtrs* other1,
+                     T5GemmaEncoderLayerWeightsPtrs* other2, Func func) {
+    func(TENSOR_ARGS(qkv_einsum_w, kMustRead));
+    func(TENSOR_ARGS(qkv_einsum_w1, kMaybeRead));
+    func(TENSOR_ARGS(qkv_einsum_w2, kMaybeRead));
+    func(TENSOR_ARGS(attn_vec_einsum_w, kMustRead));
+    func(TENSOR_ARGS(att_weights, kMaybeRead));
+    func(TENSOR_ARGS(gating_einsum_w, kMustRead));
+    func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
+    func(TENSOR_ARGS(gating_einsum_w2, kMaybeRead));
+    func(TENSOR_ARGS(linear_w, kMustRead));
+    func(TENSOR_ARGS(pre_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(post_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
+    func(TENSOR_ARGS(post_ffw_norm_scale, kMustRead));
+  }
+
+  void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
+};
+
+struct T5GemmaDecoderLayerWeightsPtrs {
+  T5GemmaDecoderLayerWeightsPtrs(size_t layer_idx, const LayerConfig& config,
+                                 const TensorInfoRegistry& tensors)
+      : layer_idx(layer_idx),
+        finder_(LayerSuffix(layer_idx), tensors),
+        self_qkv_einsum_w(finder_("d_qkv")),
+        self_qkv_einsum_w1(finder_("d_qkv1")),
+        self_qkv_einsum_w2(finder_("d_qkv2")),
+        self_attn_vec_einsum_w(finder_("d_att")),
+        self_att_weights(finder_("d_att_w")),
+        cross_q_einsum_w(finder_("dc_q")),
+        cross_k_einsum_w(finder_("dc_k")),
+        cross_v_einsum_w(finder_("dc_v")),
+        cross_attn_vec_einsum_w(finder_("dc_att")),
+        cross_att_weights(finder_("dc_att_w")),
+        gating_einsum_w(finder_("d_gate")),
+        gating_einsum_w1(finder_("d_gate1")),
+        gating_einsum_w2(finder_("d_gate2")),
+        linear_w(finder_("d_lin")),
+        pre_self_attention_norm_scale(finder_("d_pre_sa")),
+        post_self_attention_norm_scale(finder_("d_post_sa")),
+        pre_cross_attention_norm_scale(finder_("d_pre_ca")),
+        post_cross_attention_norm_scale(finder_("d_post_ca")),
+        pre_ffw_norm_scale(finder_("d_pre_ff")),
+        post_ffw_norm_scale(finder_("d_post_ff")),
+        layer_config(config) {}
+
+  const size_t layer_idx;
+  const MatFinder finder_;
+
+  MatPtr self_qkv_einsum_w;
+  MatPtr self_qkv_einsum_w1;
+  MatPtr self_qkv_einsum_w2;
+  MatPtr self_attn_vec_einsum_w;
+  MatPtr self_att_weights;
+  MatPtr cross_q_einsum_w;
+  MatPtr cross_k_einsum_w;
+  MatPtr cross_v_einsum_w;
+  MatPtr cross_attn_vec_einsum_w;
+  MatPtr cross_att_weights;
+  MatPtr gating_einsum_w;
+  MatPtr gating_einsum_w1;
+  MatPtr gating_einsum_w2;
+  MatPtr linear_w;
+  MatPtr pre_self_attention_norm_scale;    // at least BF16.
+  MatPtr post_self_attention_norm_scale;   // at least BF16.
+  MatPtr pre_cross_attention_norm_scale;   // at least BF16.
+  MatPtr post_cross_attention_norm_scale;  // at least BF16.
+  MatPtr pre_ffw_norm_scale;               // at least BF16.
+  MatPtr post_ffw_norm_scale;              // at least BF16.
+
+  const LayerConfig& layer_config;
+
+  template <class Func>
+  void ForEachTensor(T5GemmaDecoderLayerWeightsPtrs* other1,
+                     T5GemmaDecoderLayerWeightsPtrs* other2, Func func) {
+    func(TENSOR_ARGS(self_qkv_einsum_w, kMustRead));
+    func(TENSOR_ARGS(self_qkv_einsum_w1, kMaybeRead));
+    func(TENSOR_ARGS(self_qkv_einsum_w2, kMaybeRead));
+    func(TENSOR_ARGS(self_attn_vec_einsum_w, kMustRead));
+    func(TENSOR_ARGS(self_att_weights, kMaybeRead));
+    func(TENSOR_ARGS(cross_q_einsum_w, kMustRead));
+    func(TENSOR_ARGS(cross_k_einsum_w, kMustRead));
+    func(TENSOR_ARGS(cross_v_einsum_w, kMustRead));
+    func(TENSOR_ARGS(cross_attn_vec_einsum_w, kMustRead));
+    func(TENSOR_ARGS(cross_att_weights, kMaybeRead));
+    func(TENSOR_ARGS(gating_einsum_w, kMustRead));
+    func(TENSOR_ARGS(gating_einsum_w1, kMaybeRead));
+    func(TENSOR_ARGS(gating_einsum_w2, kMaybeRead));
+    func(TENSOR_ARGS(linear_w, kMustRead));
+    func(TENSOR_ARGS(pre_self_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(post_self_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(pre_cross_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(post_cross_attention_norm_scale, kMustRead));
+    func(TENSOR_ARGS(pre_ffw_norm_scale, kMustRead));
+    func(TENSOR_ARGS(post_ffw_norm_scale, kMustRead));
+  }
+
+  void Fixup(std::vector<MatOwner>& mat_owners, ThreadingContext& ctx);
+};
+
 // Holds layer-independent weight metadata and pointers plus per-layer
 // `LayerWeightsPtrs`. The tensor data is owned by `MatOwner`.
 struct WeightsPtrs {
@@ -495,6 +635,10 @@ struct WeightsPtrs {
         mtp_hc_fn(finder_("mtp_hc_fn")),
         mtp_hc_base(finder_("mtp_hc_base")),
         mtp_hc_scale(finder_("mtp_hc_scale")),
+        t5gemma_encoder_embedding(finder_("enc_embedding")),
+        t5gemma_decoder_embedding(finder_("dec_embedding")),
+        t5gemma_encoder_final_norm_scale(finder_("enc_final_norm")),
+        t5gemma_decoder_final_norm_scale(finder_("dec_final_norm")),
         vit_encoder_norm_bias(finder_("enc_norm_bias")),
         vit_encoder_norm_scale(finder_("enc_norm_scale")),
         vit_img_embedding_bias(finder_("img_emb_bias")),
@@ -507,10 +651,23 @@ struct WeightsPtrs {
         ple_model_proj(finder_("ple_model_proj")),
         ple_proj_norm(finder_("ple_proj_norm")),
         c_layers() {
-    c_layers.reserve(config_.layer_configs.size());
-    for (size_t idx = 0; idx < config_.layer_configs.size(); ++idx) {
-      const LayerConfig& layer_config = config_.layer_configs[idx];
-      c_layers.emplace_back(idx, layer_config, tensors_);
+    if (config_.is_encoder_decoder) {
+      t5gemma_encoder_layers.reserve(config_.encoder_layer_configs.size());
+      for (size_t idx = 0; idx < config_.encoder_layer_configs.size(); ++idx) {
+        const LayerConfig& layer_config = config_.encoder_layer_configs[idx];
+        t5gemma_encoder_layers.emplace_back(idx, layer_config, tensors_);
+      }
+      t5gemma_decoder_layers.reserve(config_.decoder_layer_configs.size());
+      for (size_t idx = 0; idx < config_.decoder_layer_configs.size(); ++idx) {
+        const LayerConfig& layer_config = config_.decoder_layer_configs[idx];
+        t5gemma_decoder_layers.emplace_back(idx, layer_config, tensors_);
+      }
+    } else {
+      c_layers.reserve(config_.layer_configs.size());
+      for (size_t idx = 0; idx < config_.layer_configs.size(); ++idx) {
+        const LayerConfig& layer_config = config_.layer_configs[idx];
+        c_layers.emplace_back(idx, layer_config, tensors_);
+      }
     }
     for (size_t idx = 0; idx < config_.vit_config.layer_configs.size(); ++idx) {
       const LayerConfig& layer_config = config_.vit_config.layer_configs[idx];
@@ -552,6 +709,12 @@ struct WeightsPtrs {
   MatPtr mtp_hc_base;   // [hc_mult] f32
   MatPtr mtp_hc_scale;  // [1] f32
 
+  // T5Gemma text encoder-decoder parts.
+  MatPtr t5gemma_encoder_embedding;         // at least BF16.
+  MatPtr t5gemma_decoder_embedding;         // at least BF16.
+  MatPtr t5gemma_encoder_final_norm_scale;  // at least BF16.
+  MatPtr t5gemma_decoder_final_norm_scale;  // at least BF16.
+
   // Vit parts.
   MatPtr vit_encoder_norm_bias;   // at least BF16.
   MatPtr vit_encoder_norm_scale;  // at least BF16.
@@ -575,6 +738,8 @@ struct WeightsPtrs {
   // outlive `mtp_layers`, whose elements hold a reference to it.
   LayerConfig mtp_layer_config;
   std::vector<LayerWeightsPtrs> mtp_layers;
+  std::vector<T5GemmaEncoderLayerWeightsPtrs> t5gemma_encoder_layers;
+  std::vector<T5GemmaDecoderLayerWeightsPtrs> t5gemma_decoder_layers;
 
   const LayerWeightsPtrs* GetLayer(size_t layer) const {
     return &c_layers[layer];
@@ -592,9 +757,37 @@ struct WeightsPtrs {
   void ForEachTensor(WeightsPtrs* other1, WeightsPtrs* other2, Func func) {
     LayerWeightsPtrs* other_layer1 = nullptr;
     LayerWeightsPtrs* other_layer2 = nullptr;
+    if (config_.is_encoder_decoder) {
+      func(TENSOR_ARGS(t5gemma_encoder_embedding, kMustRead));
+      func(TENSOR_ARGS(t5gemma_decoder_embedding, kMustRead));
+      func(TENSOR_ARGS(t5gemma_encoder_final_norm_scale, kMustRead));
+      func(TENSOR_ARGS(t5gemma_decoder_final_norm_scale, kMustRead));
+
+      for (size_t layer_idx = 0; layer_idx < t5gemma_encoder_layers.size();
+           ++layer_idx) {
+        auto* other_t5_layer1 =
+            other1 ? &other1->t5gemma_encoder_layers[layer_idx] : nullptr;
+        auto* other_t5_layer2 =
+            other2 ? &other2->t5gemma_encoder_layers[layer_idx] : nullptr;
+        t5gemma_encoder_layers[layer_idx].ForEachTensor(other_t5_layer1,
+                                                        other_t5_layer2, func);
+      }
+
+      for (size_t layer_idx = 0; layer_idx < t5gemma_decoder_layers.size();
+           ++layer_idx) {
+        auto* other_t5_layer1 =
+            other1 ? &other1->t5gemma_decoder_layers[layer_idx] : nullptr;
+        auto* other_t5_layer2 =
+            other2 ? &other2->t5gemma_decoder_layers[layer_idx] : nullptr;
+        t5gemma_decoder_layers[layer_idx].ForEachTensor(other_t5_layer1,
+                                                        other_t5_layer2, func);
+      }
+      return;
+    }
+
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
-    if (config_.HasMLA()) {
+    if (config_.HasLmHead()) {
       func(TENSOR_ARGS(lm_head, kMustRead));
     }
     if (config_.hc_mult > 1) {

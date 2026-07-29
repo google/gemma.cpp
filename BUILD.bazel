@@ -443,6 +443,7 @@ cc_library(
         "ops/matmul_static_nuq.cc",
         "ops/matmul_static_sfp.cc",
         "ops/matmul_static_i8.cc",
+        "ops/matmul_static_q4_0.cc",
     ],
     hdrs = [
         "ops/matmul_static.h",
@@ -1064,6 +1065,23 @@ cc_binary(
         "//paligemma:image",
         "@highway//:hwy",
         "@highway//:profiler",
+    ],
+)
+
+cc_binary(
+    name = "attention_benchmark",
+    srcs = ["evals/attention_benchmark.cc"],
+    deps = [
+        ":args",
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":mat",
+        ":threading_context",
+        ":tokenizer",
+        "//io",
+        "@highway//:abort_header_only",
+        "@highway//:timer",
     ],
 )
 

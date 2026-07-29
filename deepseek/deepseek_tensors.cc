@@ -58,16 +58,9 @@ void TensorInfoRegistry::AddDeepSeekModelTensors(const ModelConfig& config) {
                    });
   };
 
-  if (config.HasMLA()) {
-    // DeepSeek models have an untied output head.
-    Add(no_suffix, {
-                       .base_name = "lm_head",
-                       .source_names = {"lm_head.weight", "lm_head"},
-                       .axes = {0, 1},
-                       .shape = {config.vocab_size, config.model_dim},
-                       .min_size = Type::kBF16,
-                   });
-  }
+  // DeepSeek models have an untied output head.
+  // Note: This is now moved to gemma/tensor_info.cc.
+
   if (config.hc_mult > 1) {
     add_hc_collapse("hc_head", "");
   }

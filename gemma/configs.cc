@@ -666,6 +666,135 @@ LayerConfig ModelConfig::MTPLayerConfig() const {
   return lc;
 }
 
+static ModelConfig ConfigBaseT5Gemma() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 50.0f;
+  config.final_cap = 30.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 107;
+  return config;
+}
+
+static LayerConfig LayerConfigT5GemmaS(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 1024;
+  config.heads = 8;
+  config.kv_heads = 8;
+  config.qkv_dim = 64;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::Scale;
+  return config;
+}
+
+static ModelConfig ConfigT5Gemma_S_S() {
+  ModelConfig config = ConfigBaseT5Gemma();
+  config.display_name = "T5Gemma_S_S";
+  config.model = Model::T5GEMMA_S_S;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.model_dim = 512;
+  config.vocab_size = kVocabSize;
+  config.max_seq_len = 8192;
+  LayerConfig layer_config = LayerConfigT5GemmaS(config.model_dim);
+  config.is_encoder_decoder = true;
+  config.encoder_num_layers = 8;
+  config.encoder_layer_configs = {config.encoder_num_layers, layer_config};
+  config.encoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  config.decoder_num_layers = 8;
+  config.decoder_layer_configs = {config.decoder_num_layers, layer_config};
+  config.decoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+
+  // TODO: Update users of `layer_configs` to route encoder-decoder models
+  // through the explicit encoder/decoder stacks above.
+  config.num_layers = 8;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  return config;
+}
+
+static ModelConfig ConfigBaseQwen3() {
+  ModelConfig config = ConfigNoSSM();
+  config.vocab_size = 151936;
+  config.max_seq_len = 32768;
+  config.eos_id = 151645;
+  config.secondary_eos_id = 151643;
+  return config;
+}
+
+static LayerConfig LayerConfigQwen3(size_t model_dim, size_t ff_hidden_dim,
+                                    size_t heads, size_t kv_heads,
+                                    size_t qkv_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = ff_hidden_dim;
+  config.heads = heads;
+  config.kv_heads = kv_heads;
+  config.qkv_dim = qkv_dim;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::None;
+  config.activation = ActivationType::Silu;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigQwen3_600M() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_0.6B";
+  config.model = Model::QWEN3_600M;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 1024;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 3072, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_2B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_1.7B";
+  config.model = Model::QWEN3_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2048;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 6144, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_4B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_4B";
+  config.model = Model::QWEN3_4B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2560;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 9728, 32, 8, 128);
+  config.num_layers = 36;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<36>(config.max_seq_len);
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -704,6 +833,14 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma4_2B();
     case Model::DEEPSEEK4_FLASH:
       return ConfigDeepSeek4_Flash();
+    case Model::T5GEMMA_S_S:
+      return ConfigT5Gemma_S_S();
+    case Model::QWEN3_600M:
+      return ConfigQwen3_600M();
+    case Model::QWEN3_2B:
+      return ConfigQwen3_2B();
+    case Model::QWEN3_4B:
+      return ConfigQwen3_4B();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -749,6 +886,14 @@ const char* ModelPrefix(Model model) {
       return "gemma4-2b";
     case Model::DEEPSEEK4_FLASH:
       return "deepseek4-flash";
+    case Model::T5GEMMA_S_S:
+      return "t5gemma-s-s";
+    case Model::QWEN3_600M:
+      return "qwen3-0_6b";
+    case Model::QWEN3_2B:
+      return "qwen3-2b";
+    case Model::QWEN3_4B:
+      return "qwen3-4b";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -932,6 +1077,13 @@ bool ModelConfig::OverwriteWithCanonical() {
 
 Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
+    case 8:
+      if (layer_types & kDeducedT5Gemma) {
+        return Model::T5GEMMA_S_S;
+      }
+      // Unknown 8-layer model.
+      break;
+
     case 18:
       return Model::GEMMA3_270M;
 
@@ -943,6 +1095,13 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
+    case 28:
+      if (blob_path.path.find("qwen3-2b") != std::string::npos ||
+          blob_path.path.find("qwen3-1_7b") != std::string::npos) {
+        return Model::QWEN3_2B;
+      }
+      return Model::QWEN3_600M;
+
     case 30:
       return Model::GEMMA4_26B_MOE;
 
@@ -951,6 +1110,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
                                          : Model::GEMMA3_4B_LM;
     case 35:
       return Model::GEMMA4_2B;
+    case 36:
+      return Model::QWEN3_4B;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -971,17 +1132,20 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     return Model::PALIGEMMA2_772M_224;
     */
     default:
-      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
-               blob_path.path.c_str(), layers, layer_types);
-      return Model::UNKNOWN;
+      break;
   }
+  HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+           blob_path.path.c_str(), layers, layer_types);
+  return Model::UNKNOWN;
 }
 
+// NOTE: keep the `--attention_impl` help text in `gemma_args.h` synced
 constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
     {"flash", AttentionImpl::kFlash},
     {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
     {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
     {"flash_transposed_qs_int16", AttentionImpl::kFlashTransposedQsInt16},
+    {"flash_transposed_qs_int8", AttentionImpl::kFlashTransposedQsInt8},
     {"flash_matrix_accumulation", AttentionImpl::kFlashMatrixAccumulation},
     {"int8_matrix_accumulation", AttentionImpl::kInt8MatrixAccumulation},
 };
@@ -997,8 +1161,15 @@ AttentionImpl GetAttentionImpl(const std::string& impl_name) {
   for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
     if (name == impl_name) return attention_impl;
   }
-  HWY_WARN("Unknown attention implementation: %s. Using kFlash.\n",
-           impl_name.c_str());
+  std::string valid;
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (!valid.empty()) {
+      valid += ", ";
+    }
+    valid += name;
+  }
+  HWY_WARN("Unknown attention implementation: %s. Valid: %s. Using kFlash.\n",
+           impl_name.c_str(), valid.c_str());
   return AttentionImpl::kFlash;
 }
 
@@ -1016,6 +1187,8 @@ std::string KVEncodingToString(KVEncoding encoding) {
       return "Int8";
     case KVEncoding::kInt8TwoTranspositions:
       return "Int8TwoTranspositions";
+    case KVEncoding::kInt8VNNITwoTranspositions:
+      return "Int8VNNITwoTranspositions";
     case KVEncoding::kBF16MatrixAccumulation:
       return "BF16MatrixAccumulation";
     case KVEncoding::kInt8MatrixAccumulation:

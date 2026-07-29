@@ -184,7 +184,7 @@ float GemmaEnv::CrossEntropy(const std::string& input) {
   prompt.insert(prompt.begin(), BOS_ID);
   return ComputeCrossEntropy(*GetGemma(), /*max_generated_tokens=*/3072, prompt,
                              MutableKVCache(), env_,
-                             /*verbosity=*/0) /
+                             /*verbosity=*/0, runtime_config_.attention_impl) /
          static_cast<int>(input.size());
 }
 

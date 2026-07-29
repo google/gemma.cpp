@@ -43,6 +43,15 @@ namespace gcpp {
                                       int16_t* HWY_RESTRICT output,            \
                                       float* HWY_RESTRICT scale);              \
                                                                                \
+  void CompressQueriesInt8(hwy::Span<const float* const> input, int qkv_dim,   \
+                           int8_t* HWY_RESTRICT output,                        \
+                           float* HWY_RESTRICT scale);                         \
+                                                                               \
+  void CompressQueriesInt8Contiguous(const float* HWY_RESTRICT input,          \
+                                     int qkv_dim, size_t num_queries,          \
+                                     int8_t* HWY_RESTRICT output,              \
+                                     float* HWY_RESTRICT scale);               \
+                                                                               \
   void CompressAndTransposeQueriesMatrixAccumulation(const float* raw_queries, \
                                                      BF16* packed_queries,     \
                                                      size_t num_queries,       \

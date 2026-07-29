@@ -551,6 +551,7 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
   }
 
   hwy::Span<const MatPtr> kvs(&kv, 1);
+
   if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {
     std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries(num_queries *
                                                                 qkv_dim);
@@ -571,6 +572,18 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
 
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
         kvs, num_queries, int16_queries.data(), q_scales,
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
+        exp_denominator_sums.data(), max_logits.data());
+  } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+    std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries(
+        num_queries * qkv_dim);
+    AlignedFloatVector q_scales(num_queries);
+    CompressQueriesInt8Contiguous(q_all.data(), qkv_dim, num_queries,
+                                  int8_queries.data(), q_scales.data());
+
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
+        kvs, num_queries, int8_queries.data(), q_scales,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
         exp_denominator_sums.data(), max_logits.data());
@@ -667,9 +680,8 @@ void TestTiledFlashAttentionBF16() {
 }
 
 void TestTiledFlashAttentionInt8() {
-  RunTiledFlashAttentionTest<int8_t>(gcpp::KVEncoding::kInt8,
-                                     AttentionImpl::kFlash, 5e-3f, 2e-2f,
-                                     1e-3f);
+  RunTiledFlashAttentionTest<int8_t>(
+      gcpp::KVEncoding::kInt8, AttentionImpl::kFlash, 5e-3f, 2e-2f, 1e-3f);
 }
 
 void TestTiledFlashAttentionInt8BF16() {
@@ -682,6 +694,12 @@ void TestTiledFlashAttentionInt8Int16() {
   RunTiledFlashAttentionTest<int8_t>(gcpp::KVEncoding::kInt8TwoTranspositions,
                                      AttentionImpl::kFlashTransposedQsInt16,
                                      5e-3f, 2e-2f, 1e-3f);
+}
+
+void TestTiledFlashAttentionInt8VNNI() {
+  RunTiledFlashAttentionTest<int8_t>(
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashTransposedQsInt8, 5e-3f, 2e-2f, 1e-3f);
 }
 
 void TestTiledFlashAttentionBF16MatrixAccumulation() {
@@ -721,10 +739,12 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
 }
 
 template <typename KV_T>
-void RunTiledFlashAttentionDifferentialTest(
-    size_t kv_seq_len, float tol, float tol_exp, float tol_max,
-    gcpp::KVEncoding ref_encoding, gcpp::KVEncoding opt_encoding,
-    AttentionImpl opt_impl, const char* type_name) {
+void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
+                                            float tol_exp, float tol_max,
+                                            gcpp::KVEncoding ref_encoding,
+                                            gcpp::KVEncoding opt_encoding,
+                                            AttentionImpl opt_impl,
+                                            const char* type_name) {
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   if (hn::Lanes(dbf) > 32) {
     GTEST_SKIP() << "Skipping MatrixAccumulation test for target with register "
@@ -777,11 +797,10 @@ void RunTiledFlashAttentionDifferentialTest(
   // Set up Optimized cache (Matrix Accumulation)
   size_t opt_tile_size_bytes = *gcpp::GetTileSizeBytes(opt_encoding, qkv_dim);
   size_t opt_tile_size_in_elements = opt_tile_size_bytes / sizeof(KV_T);
-  MatStorageT<KV_T> kv(
-      "kv",
-      Extents2D(padded_kv_seq_len / gcpp::KVCache::kTileSize,
-                opt_tile_size_in_elements),
-      ctx.allocator, MatPadding::kPacked);
+  MatStorageT<KV_T> kv("kv",
+                       Extents2D(padded_kv_seq_len / gcpp::KVCache::kTileSize,
+                                 opt_tile_size_in_elements),
+                       ctx.allocator, MatPadding::kPacked);
   PopulateTestKVCache(kv, opt_encoding, qkv_dim);
 
   AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
@@ -870,7 +889,8 @@ void RunTiledFlashAttentionDifferentialTest(
       if (failures < 5) {
         EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_ref[i],
                     tol_exp)
-            << "i=" << i << " (Type: " << type_name << ", SeqLen: " << kv_seq_len << ")";
+            << "i=" << i << " (Type: " << type_name
+            << ", SeqLen: " << kv_seq_len << ")";
       }
       failures++;
     }
@@ -879,7 +899,8 @@ void RunTiledFlashAttentionDifferentialTest(
     if (diff_max >= tol_max) {
       if (failures < 5) {
         EXPECT_NEAR(max_logits[i], max_logits_ref[i], tol_max)
-            << "i=" << i << " (Type: " << type_name << ", SeqLen: " << kv_seq_len << ")";
+            << "i=" << i << " (Type: " << type_name
+            << ", SeqLen: " << kv_seq_len << ")";
       }
       failures++;
     }
@@ -896,7 +917,8 @@ void RunTiledFlashAttentionDifferentialTest(
       if (diff >= tol) {
         if (failures < 5) {
           EXPECT_NEAR(v_out, v_ref, tol)
-              << "i=" << i << " j=" << j << " (Type: " << type_name << ", SeqLen: " << kv_seq_len << ")";
+              << "i=" << i << " j=" << j << " (Type: " << type_name
+              << ", SeqLen: " << kv_seq_len << ")";
         }
         failures++;
       }
@@ -913,16 +935,14 @@ void RunTiledFlashAttentionDifferentialTest(
 
 void TestTiledFlashAttentionBF16MatrixAccumulationLargeVerification() {
   RunTiledFlashAttentionDifferentialTest<BF16>(
-      2048, 1.0e-1f, 1.1e-1f, 1e-4f,
-      gcpp::KVEncoding::kBF16TwoTranspositions,
+      2048, 1.0e-1f, 1.1e-1f, 1e-4f, gcpp::KVEncoding::kBF16TwoTranspositions,
       gcpp::KVEncoding::kBF16MatrixAccumulation,
       AttentionImpl::kFlashMatrixAccumulation, "BF16");
 }
 
 void TestTiledFlashAttentionInt8MatrixAccumulationLargeVerification() {
   RunTiledFlashAttentionDifferentialTest<int8_t>(
-      1024, 1.5e-1f, 5.0, 8.0e-2f,
-      gcpp::KVEncoding::kInt8TwoTranspositions,
+      1024, 1.5e-1f, 5.0, 8.0e-2f, gcpp::KVEncoding::kInt8TwoTranspositions,
       gcpp::KVEncoding::kInt8MatrixAccumulation,
       AttentionImpl::kInt8MatrixAccumulation, "Int8");
 }

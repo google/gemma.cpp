@@ -70,6 +70,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
   target_compile_definitions(hwy PUBLIC HWY_DISABLED_TARGETS=HWY_AVX10_2)
 endif()
 
+option(GEMMA_ENABLE_PROFILER "Enable Highway's profiler (per-zone timings)" OFF)
+if (GEMMA_ENABLE_PROFILER)
+  # PUBLIC: reaches Highway's profiler.cc and all targets linking hwy.
+  target_compile_definitions(hwy PUBLIC PROFILER_ENABLED=1)
+endif()
+
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
 ## cmake is invoked with -DSPM_ENABLE_SHARED=OFF and -DSPM_ABSL_PROVIDER=module
 FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 9045b2f60fa2b323dfac0eaef8fc17565036f9f9 EXCLUDE_FROM_ALL)
@@ -150,6 +156,7 @@ set(SOURCES
   compression/compress.cc
   compression/compress.h
   compression/nuq-inl.h
+  compression/q4_0-inl.h
   compression/sfp-inl.h
   compression/int-inl.h
   compression/types.h
@@ -211,6 +218,7 @@ set(SOURCES
   ops/matmul_static_nuq.cc
   ops/matmul_static_sfp.cc
   ops/matmul_static_i8.cc
+  ops/matmul_static_q4_0.cc
   ops/matmul-inl.h
   ops/matmul.cc
   ops/matmul.h
@@ -365,6 +373,7 @@ set(GEMMA_TEST_FILES
   compression/compress_test.cc
   compression/distortion_test.cc
   compression/nuq_test.cc
+  compression/q4_0_test.cc
   compression/sfp_test.cc
   deepseek/deepseek_test.cc
   gemma/gemma_args_test.cc

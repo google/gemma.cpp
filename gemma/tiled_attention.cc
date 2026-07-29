@@ -108,14 +108,13 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   const size_t kv_heads = layer_config.kv_heads;
 
   // Resolve KV cache layer index and skip flag
-  const size_t kv_layer_idx = (layer_config.kv_share_layer_idx >= 0)
-                                  ? static_cast<size_t>(layer_config.kv_share_layer_idx)
-                                  : layer_idx;
-  const bool skip_kv = (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
+  const size_t kv_layer_idx =
+      (layer_config.kv_share_layer_idx >= 0)
+          ? static_cast<size_t>(layer_config.kv_share_layer_idx)
+          : layer_idx;
+  const bool skip_kv =
+      (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
 
-  // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
-  // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
-  // This computes Q and stores it in activations.q.
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
   // This computes Q and stores it in activations.q.
@@ -140,7 +139,8 @@ static HWY_INLINE void ComputeQKVTransposedTile(
 
   bool is_transposed_qs =
       attention_impl == AttentionImpl::kFlashTransposedQsBF16
-      || attention_impl == AttentionImpl::kFlashTransposedQsInt16;
+      || attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      attention_impl == AttentionImpl::kFlashTransposedQsInt8;
 
   hn::ScalableTag<float> df;
   static hwy::Divisor tile_size_divisor(KVCache::kTileSize);
@@ -159,7 +159,7 @@ static HWY_INLINE void ComputeQKVTransposedTile(
         const bool is_global_layer =
             activations.config.IsGlobalLayer(layer_idx);
         std::vector<MatPtr> kv_ptrs = qbatch.KV(query_idx).cache->GetPointers(
-            kv_layer_idx, kv_head, kv_heads, start_pos, is_global_layer);
+            kv_layer_idx, kv_head, start_pos, is_global_layer);
         const size_t v_offset = qkv_dim * KVCache::kTileSize;
         const size_t tile_span_size = 2 * qkv_dim * KVCache::kTileSize;
         const size_t k_size = qkv_dim * KVCache::kTileSize;
@@ -248,15 +248,34 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                 const hn::Vec<decltype(df)> v_inv_scale =
                     hn::Set(df, inv_scale);
                 const size_t lanes = hn::Lanes(df);
+
+                const hn::Rebind<int32_t, decltype(df)> di32;
+                auto sum_vec = hn::Zero(di32);
+                bool is_k = scale_idx < KVCache::kTileSize;
+
                 size_t i = 0;
                 for (; i + lanes <= dim; i += lanes) {
-                  hn::StoreU(hn::Mul(hn::LoadU(df, values + i), v_inv_scale),
-                             df, values + i);
+                  auto scaled = hn::Mul(hn::LoadU(df, values + i), v_inv_scale);
+                  hn::StoreU(scaled, df, values + i);
+                  if (is_k &&
+                      attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+                    sum_vec = hn::Add(sum_vec, hn::NearestInt(scaled));
+                  }
                 }
                 if (HWY_UNLIKELY(i < dim)) {
-                  hn::StoreN(
-                      hn::Mul(hn::LoadN(df, values + i, dim - i), v_inv_scale),
-                      df, values + i, dim - i);
+                  auto scaled =
+                      hn::Mul(hn::LoadN(df, values + i, dim - i), v_inv_scale);
+                  hn::StoreN(scaled, df, values + i, dim - i);
+                  if (is_k &&
+                      attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+                    sum_vec = hn::Add(sum_vec, hn::NearestInt(scaled));
+                  }
+                }
+                if (is_k &&
+                    attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+                  int32_t* k_sums_ptr = reinterpret_cast<int32_t*>(
+                      scales_ptr + 2 * KVCache::kTileSize);
+                  k_sums_ptr[scale_idx] = hn::ReduceSum(di32, sum_vec);
                 }
               };
 
@@ -283,6 +302,47 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                 size_t v_offset = gcpp::VMatrixAccumulationOffset_BF16(
                     qkv_dim, in_tile_idx, dim);
                 v_tile_vec[v_offset] = v_cache_values[dim];
+              }
+            } else if (attention_impl ==
+                       AttentionImpl::kInt8MatrixAccumulation) {
+              for (size_t dim = 0; dim < qkv_dim; ++dim) {
+                size_t k_offset = gcpp::MatrixAccumulationOffset_Int8(
+                    qkv_dim, dim, in_tile_idx);
+                k_tile_vec[k_offset] = k_f32[dim];
+
+                size_t v_offset_local = gcpp::VMatrixAccumulationOffset_Int8(
+                    qkv_dim, in_tile_idx, dim);
+                v_tile_vec[v_offset_local] = v_cache_values[dim];
+              }
+            } else if (attention_impl ==
+                       AttentionImpl::kFlashTransposedQsInt8) {
+              for (int dim = 0; dim < qkv_dim; ++dim) {
+                // K VNNI layout: [qkv_dim/4, kTileSize, 4]
+                size_t k_offset = (dim - dim % 4) * KVCache::kTileSize +
+                                  in_tile_idx * 4 + (dim % 4);
+                k_tile_vec[k_offset] = k_f32[dim];
+
+                // V VNNI layout: [kTileSize/4, qkv_dim, 4]
+                size_t v_offset_local =
+                    (in_tile_idx - in_tile_idx % 4) * qkv_dim + dim * 4 +
+                    (in_tile_idx % 4);
+                v_tile_vec[v_offset_local] = v_cache_values[dim];
+              }
+            } else if (attention_impl ==
+                           AttentionImpl::kFlashTransposedQsBF16 &&
+                       std::is_same_v<KV_T, int8_t>) {
+              for (int dim = 0; dim < qkv_dim; dim += 2) {
+                const int dim_mod_2 = dim % 2;
+                k_tile_vec[(dim - dim_mod_2) * KVCache::kTileSize +
+                           in_tile_idx * 2] = k_f32[dim];
+                k_tile_vec[(dim - dim_mod_2) * KVCache::kTileSize +
+                           in_tile_idx * 2 + 1] = k_f32[dim + 1];
+              }
+              for (int dim = 0; dim < qkv_dim; ++dim) {
+                size_t v_offset_local =
+                    (in_tile_idx - in_tile_idx % 4) * qkv_dim + dim * 4 +
+                    (in_tile_idx % 4);
+                v_tile_vec[v_offset_local] = v_cache_values[dim];
               }
             } else if (is_transposed_qs) {
               const int in_tile_idx_mod_2 = in_tile_idx % 2;
@@ -315,7 +375,8 @@ static HWY_INLINE void ComputeQKVTransposedTile(
           }
           Compress(k_tile_vec, k_size, tls, tile_packed_span, 0);
           if (is_transposed_qs ||
-              attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+              attention_impl == AttentionImpl::kFlashMatrixAccumulation ||
+              attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
             Compress(v_tile_vec, qkv_dim * KVCache::kTileSize, tls,
                      tile_packed_span, v_offset);
           }
@@ -415,6 +476,74 @@ void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,
                                     float* HWY_RESTRICT scale) {
   CompressQueriesBF16orInt16Contiguous(input, qkv_dim, num_queries, output,
                                        scale);
+}
+
+template <class DF>
+static HWY_INLINE void CompressSingleQueryInt8(DF df, const float* q_ptr,
+                                               int qkv_dim, int8_t* out_ptr,
+                                               float* scale_out) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  const size_t lanes = hn::Lanes(df);
+  const hn::ScalableTag<int8_t> d_out_full;
+  const hn::ScalableTag<int16_t> d16;
+
+  HWY_DASSERT(scale_out != nullptr);
+  float max_abs = AbsMaxOfSpan(hwy::Span<const float>(q_ptr, qkv_dim));
+  float s = max_abs == 0.0f ? 1.0f : 127.0f / max_abs;
+  *scale_out = 1.0f / s;
+  const hn::Vec<DF> scale_vec = hn::Set(df, s);
+
+  HWY_DASSERT(qkv_dim % (4 * lanes) == 0);
+
+  for (size_t i = 0; i < qkv_dim; i += 4 * lanes) {
+    hn::Vec<DF> x0 = hn::LoadU(df, q_ptr + i);
+    hn::Vec<DF> x1 = hn::LoadU(df, q_ptr + i + lanes);
+    hn::Vec<DF> x2 = hn::LoadU(df, q_ptr + i + 2 * lanes);
+    hn::Vec<DF> x3 = hn::LoadU(df, q_ptr + i + 3 * lanes);
+
+    x0 = hn::Mul(x0, scale_vec);
+    x1 = hn::Mul(x1, scale_vec);
+    x2 = hn::Mul(x2, scale_vec);
+    x3 = hn::Mul(x3, scale_vec);
+
+    const hn::Vec<decltype(d16)> demoted16_0 =
+        hn::OrderedDemote2To(d16, hn::NearestInt(x0), hn::NearestInt(x1));
+    const hn::Vec<decltype(d16)> demoted16_1 =
+        hn::OrderedDemote2To(d16, hn::NearestInt(x2), hn::NearestInt(x3));
+    const hn::Vec<decltype(d_out_full)> demoted8 =
+        hn::OrderedDemote2To(d_out_full, demoted16_0, demoted16_1);
+    const hn::Vec<decltype(d_out_full)> biased8 =
+        hn::Add(demoted8, hn::Set(d_out_full, static_cast<int8_t>(-128)));
+    hn::StoreU(biased8, d_out_full, out_ptr + i);
+  }
+}
+
+void CompressQueriesInt8(hwy::Span<const float* const> input, int qkv_dim,
+                         int8_t* HWY_RESTRICT output,
+                         float* HWY_RESTRICT scale) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+  const size_t num_queries = input.size();
+
+  for (size_t q = 0; q < num_queries; ++q) {
+    CompressSingleQueryInt8(df, input[q], qkv_dim, output + q * qkv_dim,
+                            scale + q);
+  }
+}
+
+void CompressQueriesInt8Contiguous(const float* HWY_RESTRICT input, int qkv_dim,
+                                   size_t num_queries,
+                                   int8_t* HWY_RESTRICT output,
+                                   float* HWY_RESTRICT scale) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  const DF df;
+
+  for (size_t q = 0; q < num_queries; ++q) {
+    CompressSingleQueryInt8(df, input + q * qkv_dim, qkv_dim,
+                            output + q * qkv_dim, scale + q);
+  }
 }
 
 template <typename T>
@@ -685,6 +814,18 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             activations.q_scales->size()) {
       activations.q_scales->resize(num_sub_tasks * max_queries_per_subtask);
     }
+  } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+    if (activations.int8_queries != nullptr &&
+        num_sub_tasks * max_queries_per_subtask * qkv_dim >
+            activations.int8_queries->size()) {
+      activations.int8_queries->resize(num_sub_tasks * max_queries_per_subtask *
+                                       qkv_dim);
+    }
+    if (activations.q_scales != nullptr &&
+        num_sub_tasks * max_queries_per_subtask >
+            activations.q_scales->size()) {
+      activations.q_scales->resize(num_sub_tasks * max_queries_per_subtask);
+    }
   } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
     if (activations.int8_queries != nullptr &&
         num_sub_tasks * max_queries_per_subtask * qkv_dim >
@@ -795,7 +936,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         std::vector<MatPtr> kv_ptrs =
             qbatch.KV(current_qbatch_idx)
                 .cache->GetPointers(
-                    layer_idx, kv_head_idx, layer.layer_config.kv_heads,
+                    layer_idx, kv_head_idx,
                     global_start_context_pos,
                     activations.config.IsGlobalLayer(layer_idx));
 
@@ -887,6 +1028,23 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               queries_ptrs_span, int8_queries_ptr, q_scales_ptr, qkv_dim);
 
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(
+              kv_ptrs, sub_num_queries, int8_queries_ptr,
+              hwy::Span<const float>(q_scales_ptr, sub_num_queries),
+              hwy::Span<const size_t>(start_pos_per_query),
+              hwy::Span<const size_t>(last_pos_per_query),
+              activations.config.att_cap, att_out, exp_denominator_sums.data(),
+              max_logits.data());
+        } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+          HWY_DASSERT(activations.int8_queries != nullptr);
+          HWY_DASSERT(activations.q_scales != nullptr);
+          int8_t* int8_queries_ptr =
+              activations.int8_queries->data() +
+              task_idx * max_queries_per_subtask * qkv_dim;
+          float* q_scales_ptr =
+              activations.q_scales->data() + task_idx * max_queries_per_subtask;
+          CompressQueriesInt8(queries_ptrs_span, qkv_dim, int8_queries_ptr,
+                              q_scales_ptr);
+          DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
               kv_ptrs, sub_num_queries, int8_queries_ptr,
               hwy::Span<const float>(q_scales_ptr, sub_num_queries),
               hwy::Span<const size_t>(start_pos_per_query),
@@ -988,6 +1146,10 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,
                 "query heads must be a multiple of key-value heads");
   (void)layer_config;  // only used in HWY_DASSERT
+
+  const size_t active_qkv_dim = layer_config.heads * layer_config.qkv_dim;
+  activations.q.OverrideCols(active_qkv_dim);
+  activations.att_out.OverrideCols(active_qkv_dim);
 
   const Type kv_type = qbatch.KV(0).cache->compact_kv_cache_ptr.GetType();
   if (kv_type == Type::kBF16) {

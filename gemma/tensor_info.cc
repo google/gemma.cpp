@@ -59,6 +59,16 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .min_size = Type::kBF16,
                  });
   AddDeepSeekModelTensors(config);
+  if (config.HasLmHead()) {
+    Add(no_suffix,
+        {
+            .base_name = "lm_head",
+            .source_names = {"lm_head/weight", "lm_head.weight", "lm_head"},
+            .axes = {0, 1},
+            .shape = {config.vocab_size, config.model_dim},
+            .min_size = Type::kBF16,
+        });
+  }
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},
@@ -133,7 +143,6 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
             .axes = {0, 1},
             .shape = {config.vocab_size,
                       config.num_layers * config.ple_dim},
-            .min_size = Type::kBF16,
         });
     Add(no_suffix,
         {
@@ -155,6 +164,38 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                        .min_size = Type::kBF16,
                    });
   }
+}
+
+void TensorInfoRegistry::AddT5GemmaModelTensors(const ModelConfig& config) {
+  const std::string no_suffix;
+  Add(no_suffix, {
+                     .base_name = "enc_embedding",
+                     .source_names = {"model.encoder.embed_tokens.weight"},
+                     .axes = {0, 1},
+                     .shape = {config.vocab_size, config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "dec_embedding",
+                     .source_names = {"model.decoder.embed_tokens.weight"},
+                     .axes = {0, 1},
+                     .shape = {config.vocab_size, config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "enc_final_norm",
+                     .source_names = {"model.encoder.norm.weight"},
+                     .axes = {0},
+                     .shape = {config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "dec_final_norm",
+                     .source_names = {"model.decoder.norm.weight"},
+                     .axes = {0},
+                     .shape = {config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
 }
 
 // Returns the tensors for the given image layer config.
@@ -323,6 +364,237 @@ void TensorInfoRegistry::AddImageLayerTensors(const ModelConfig& config,
                                "/LayerNorm_1/scale"},
           .axes = {0},
           .shape = {config.vit_config.model_dim},
+          .min_size = Type::kBF16,
+      });
+}
+
+void TensorInfoRegistry::AddT5GemmaEncoderLayerTensors(
+    const ModelConfig& config, const LayerConfig& layer_config,
+    const size_t layer_idx) {
+  const std::string suffix = LayerSuffix(layer_idx);
+  Add(suffix, {
+                  .base_name = "e_qkv",
+                  .source_names = {"model.encoder.layers.self_attn.qkv"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.heads + 2 * layer_config.kv_heads,
+                            layer_config.qkv_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_qkv1",
+                  .shape = {layer_config.heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_qkv2",
+                  .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "e_att",
+          .source_names = {"model.encoder.layers.self_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "e_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate",
+                  .source_names = {"model.encoder.layers.mlp.gating_einsum"},
+                  .axes = {0, 1, 2},
+                  .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate1",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate2",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_lin",
+                  .source_names = {"model.encoder.layers.mlp.down_proj.weight"},
+                  .axes = {0, 1},
+                  .shape = {config.model_dim, layer_config.ff_hidden_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_pre_att",
+                  .source_names =
+                      {"model.encoder.layers.pre_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "e_post_att",
+                  .source_names =
+                      {"model.encoder.layers.post_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "e_pre_ff",
+                  .source_names =
+                      {"model.encoder.layers.pre_feedforward_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix,
+      {
+          .base_name = "e_post_ff",
+          .source_names =
+              {"model.encoder.layers.post_feedforward_layernorm.weight"},
+          .axes = {0},
+          .shape = {config.model_dim},
+          .min_size = Type::kBF16,
+      });
+}
+
+void TensorInfoRegistry::AddT5GemmaDecoderLayerTensors(
+    const ModelConfig& config, const LayerConfig& layer_config,
+    const size_t layer_idx) {
+  const std::string suffix = LayerSuffix(layer_idx);
+  Add(suffix, {
+                  .base_name = "d_qkv",
+                  .source_names = {"model.decoder.layers.self_attn.qkv"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.heads + 2 * layer_config.kv_heads,
+                            layer_config.qkv_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_qkv1",
+                  .shape = {layer_config.heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_qkv2",
+                  .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "d_att",
+          .source_names = {"model.decoder.layers.self_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "d_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "dc_q",
+          .source_names = {"model.decoder.layers.cross_attn.q_proj"},
+          .axes = {0, 1, 2},
+          .shape = {layer_config.heads, layer_config.qkv_dim, config.model_dim},
+      });
+  Add(suffix, {
+                  .base_name = "dc_k",
+                  .source_names = {"model.decoder.layers.cross_attn.k_proj"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.kv_heads, layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "dc_v",
+                  .source_names = {"model.decoder.layers.cross_attn.v_proj"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.kv_heads, layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "dc_att",
+          .source_names = {"model.decoder.layers.cross_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "dc_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate",
+                  .source_names = {"model.decoder.layers.mlp.gating_einsum"},
+                  .axes = {0, 1, 2},
+                  .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate1",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate2",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_lin",
+                  .source_names = {"model.decoder.layers.mlp.down_proj.weight"},
+                  .axes = {0, 1},
+                  .shape = {config.model_dim, layer_config.ff_hidden_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_sa",
+                  .source_names =
+                      {"model.decoder.layers.pre_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_post_sa",
+                  .source_names =
+                      {"model.decoder.layers.post_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_ca",
+                  .source_names =
+                      {"model.decoder.layers.pre_cross_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_post_ca",
+                  .source_names =
+                      {"model.decoder.layers.post_cross_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_ff",
+                  .source_names =
+                      {"model.decoder.layers.pre_feedforward_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix,
+      {
+          .base_name = "d_post_ff",
+          .source_names =
+              {"model.decoder.layers.post_feedforward_layernorm.weight"},
+          .axes = {0},
+          .shape = {config.model_dim},
           .min_size = Type::kBF16,
       });
 }
@@ -723,10 +995,23 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
   // in case those are changed without updating this. Better to allocate a bit
   // more than to 1.5-2x the size if too little.
   tensors_.reserve(10 + 32 * config.layer_configs.size() +
-                   24 * config.vit_config.layer_configs.size());
+                   24 * config.vit_config.layer_configs.size() +
+                   8 * config.encoder_layer_configs.size() +
+                   14 * config.decoder_layer_configs.size());
   AddModelTensors(config);
-  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
-    AddLayerTensors(config, config.layer_configs[i], i);
+  if (config.is_encoder_decoder) {
+    AddT5GemmaModelTensors(config);
+    for (size_t i = 0; i < config.encoder_layer_configs.size(); ++i) {
+      AddT5GemmaEncoderLayerTensors(config, config.encoder_layer_configs[i], i);
+    }
+    for (size_t i = 0; i < config.decoder_layer_configs.size(); ++i) {
+      AddT5GemmaDecoderLayerTensors(config, config.decoder_layer_configs[i], i);
+    }
+  }
+  if (!config.is_encoder_decoder) {
+    for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+      AddLayerTensors(config, config.layer_configs[i], i);
+    }
   }
   if (config.num_mtp_layers > 0) {
     // The MTP block is a full extra layer registered at index `num_layers`

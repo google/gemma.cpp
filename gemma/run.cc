@@ -208,6 +208,11 @@ void ReplGemma(const GemmaArgs& args, const Gemma& gemma, KVCache& kv_cache,
                                config.wrapping, abs_pos, prompt_string);
       prompt_size = prompt.size();
     }
+    if (config.is_encoder_decoder) {
+      // Encoder-decoder models consume the source prompt in the encoder, then
+      // stream only decoder outputs.
+      prompt_size = 0;
+    }
 
     if constexpr (kVerboseLogTokens) {
       for (int i = 0; i < prompt_size; ++i) {

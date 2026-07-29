@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "hwy/base.h"
 #include "gemma/configs.h"  // PromptWrapping
 #include "tokenizer/sentencepiece_tokenizer.h"
 
@@ -75,6 +76,11 @@ GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
     sot_user_ = {105, 2364, 107};
     sot_model_ = {105, 4368, 107};
     eot_ = {106, 107};
+  } else if (IsQwen3(model)) {
+    prepend_bos_ = false;
+    HWY_ASSERT(tokenizer.Encode("<|im_start|>user\n", &sot_user_));
+    HWY_ASSERT(tokenizer.Encode("<|im_start|>assistant\n", &sot_model_));
+    HWY_ASSERT(tokenizer.Encode("<|im_end|>\n", &eot_));
   } else {
     sot_user_.reserve(3);
     if (!tokenizer.Encode("<start_of_turn>user\n", &sot_user_)) return;
@@ -101,7 +107,9 @@ std::vector<int> GemmaChatTemplate::Apply(size_t pos,
 
   // Start with BOS, or prepend end_of_turn if this is a continuation.
   if (pos == 0) {
-    out.push_back(BOS_ID);
+    if (prepend_bos_) {
+      out.push_back(BOS_ID);
+    }
   } else {
     out.insert(out.cend(), eot_.cbegin(), eot_.cend());
   }

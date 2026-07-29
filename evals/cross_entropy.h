@@ -24,9 +24,11 @@
 
 namespace gcpp {
 
+// Defaults match a plain RuntimeConfig, so existing callers are unaffected.
 float ComputeCrossEntropy(const Gemma& gemma, size_t max_generated_tokens,
                           const std::vector<int>& prompt, KVCache& kv_cache,
-                          MatMulEnv& env, int verbosity);
+                          MatMulEnv& env, int verbosity,
+                          AttentionImpl attention_impl = AttentionImpl::kFlash);
 
 }  // namespace gcpp
 
