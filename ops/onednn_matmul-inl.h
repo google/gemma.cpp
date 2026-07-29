@@ -73,7 +73,7 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
                                          const MatPtrT<TB>& B, RowPtrs<TC> C,
                                          size_t M, size_t K, size_t N,
                                          float scale,
-                                         const float* HWY_RESTRICT add,
+                                         const float* add,
                                          ThreadingContext& ctx,
                                          size_t cluster_idx) {
   static_assert(IsBF16<TA>() && IsBF16<TB>(),
@@ -97,8 +97,8 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     const int64_t lda = static_cast<int64_t>(A.Stride());
     const int64_t ldb = static_cast<int64_t>(B.Stride());
 
-    // Build oneDNN primitive
-    // JIT-compiled kernel will be us from the 2nd call onward.
+    // Build oneDNN primitive once
+    // JIT-compiled kernel will be used from the 2nd call onward.
 
     // A: [M,K] bf16, actual leading dim lda (handles non-packed A directly).
     const dnnl::memory::desc src_md({Mi, Ki}, dt::bf16, dims{lda, 1});
@@ -135,13 +135,13 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     dnnl::matmul prim(pd);
 
     // Weights cache: B reordered into the kernel's layout, keyed on the B
-    // pointer and shape. Reorder happens once per distinct B. The key omits M,
-    // but oneDNN's layout can be M-dependent and running against a wrongly-packed
-    // B is silently wrong, so we reuse an entry only if its actual
-    // layout equals the one this primitive wants. Large shape like those seen in
-    // gemma are M-independent.
+    // pointer alone. Reorder happens once per distinct B. The key carries no
+    // shape, but oneDNN's layout can be M-dependent and running against a
+    // wrongly-packed B is silently wrong, so we reuse an entry only if its
+    // actual layout equals the one this primitive wants. Large shapes like
+    // those seen in gemma are M-independent.
     const uintptr_t B_ptr = reinterpret_cast<uintptr_t>(B.Row(0));
-    const OneDnnWeightsKey w_key{B_ptr, K, N};
+    const OneDnnWeightsKey w_key{B_ptr};
     auto& w_cache = GetOneDnnWeightsCache();
     auto w_it = w_cache.find(w_key);
     const bool needs_reorder =

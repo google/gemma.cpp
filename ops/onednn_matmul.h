@@ -118,14 +118,13 @@ class HwyThreadPoolAdapter : public dnnl::threadpool_interop::threadpool_iface {
 };
 
 // ---------------------------------------------------------------------------
-// Reordered-weights cache
-// cache key: the packed weights depend on the source B
-// pointer and its logical shape {K,N}.
+// Reordered-weights cache keyed by B pointer.
+// The caller separately checks the stored layout
+// against the one the primitive wants.
 struct OneDnnWeightsKey {
   uintptr_t B_ptr;
-  size_t K, N;
   bool operator==(const OneDnnWeightsKey& o) const {
-    return B_ptr == o.B_ptr && K == o.K && N == o.N;
+    return B_ptr == o.B_ptr;
   }
 };
 
@@ -133,8 +132,6 @@ struct OneDnnWeightsKeyHash {
   size_t operator()(const OneDnnWeightsKey& k) const {
     size_t h = 14695981039346656037ULL;
     h = (h ^ k.B_ptr) * 1099511628211ULL;
-    h = (h ^ k.K) * 1099511628211ULL;
-    h = (h ^ k.N) * 1099511628211ULL;
     return h;
   }
 };
