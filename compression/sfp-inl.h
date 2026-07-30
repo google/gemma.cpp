@@ -212,6 +212,34 @@ class SfpCodec {
 // Generic is only required for partial vectors (too small for tables).
 #undef SFP_IF_GENERIC_DEC
 #define SFP_IF_GENERIC_DEC(D) HWY_IF_V_SIZE_LE_D(D, 32)
+
+#elif HWY_TARGET_IS_NEON
+  // Decodes u8 `encoded` into `lo` and `hi` bytes of bf16. 9 ops (NEON).
+  template <class D, HWY_IF_U8_D(D), HWY_IF_V_SIZE_D(D, 16)>
+  static HWY_INLINE void DecBytes(D d, hn::Vec<D> encoded, hn::Vec<D>& lo,
+                                  hn::Vec<D>& hi) {
+    const hn::Vec<D> k80 = hn::Set(d, 0x80u);
+    HWY_DASSERT(hn::AllTrue(d, hn::Ne(encoded, k80)));  // -0 is reserved
+    const hn::Vec<D> em = hn::AndNot(k80, encoded);
+
+    // One 16-entry lookup on `em >> 3` folds both exponent biases: 0x34 + i for
+    // the two-mantissa-bit range, and 0x38 + (em >> 4) for the three-bit range,
+    // where the duplicated upper half supplies the extra shift.
+    alignas(16) static constexpr uint8_t kTblHi[16] = {
+        0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B,
+        0x3C, 0x3C, 0x3D, 0x3D, 0x3E, 0x3E, 0x3F, 0x3F};
+    const hn::Vec<D> e7 =
+        hn::TableLookupBytes(hn::LoadU(d, kTblHi), hn::ShiftRight<3>(em));
+    hi = hn::IfThenZeroElse(hn::Eq(em, hn::Zero(d)), e7);
+    hi = hn::BitwiseIfThenElse(k80, encoded, hi);  // Insert sign bit
+
+    // `lo = em << (5 - (em >> 6))`: 5 for two mantissa bits, 4 for three.
+    lo = hn::Shl(em, hn::Sub(hn::Set(d, 5u), hn::ShiftRight<6>(em)));
+  }
+
+// Generic is only required for partial vectors (too small for the table).
+#undef SFP_IF_GENERIC_DEC
+#define SFP_IF_GENERIC_DEC(D) HWY_IF_V_SIZE_LE_D(D, 8)
 #else
 // Always enable the generic decoder.
 #undef SFP_IF_GENERIC_DEC
