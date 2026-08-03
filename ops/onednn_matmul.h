@@ -118,9 +118,11 @@ class HwyThreadPoolAdapter : public dnnl::threadpool_interop::threadpool_iface {
 };
 
 // ---------------------------------------------------------------------------
-// Reordered-weights cache keyed by B pointer.
-// The caller separately checks the stored layout
-// against the one the primitive wants.
+// Reordered-weights cache keyed by B pointer. Lives in
+// `MatMulEnv::PerCluster::onednn_weights` so that independent instances within
+// one binary do not share entries, and so that concurrent per-cluster `MatMul`
+// calls do not insert into one map. The caller separately checks the stored
+// layout against the one the primitive wants.
 struct OneDnnWeightsKey {
   uintptr_t B_ptr;
   bool operator==(const OneDnnWeightsKey& o) const {
@@ -140,12 +142,9 @@ struct OneDnnWeightsEntry {
   dnnl::memory packed;
 };
 
-inline auto& GetOneDnnWeightsCache() {
-  static std::unordered_map<OneDnnWeightsKey, OneDnnWeightsEntry,
-                            OneDnnWeightsKeyHash>
-      cache;
-  return cache;
-}
+using OneDnnWeightsCache =
+    std::unordered_map<OneDnnWeightsKey, OneDnnWeightsEntry,
+                       OneDnnWeightsKeyHash>;
 
 }  // namespace gcpp
 

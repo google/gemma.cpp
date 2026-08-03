@@ -77,6 +77,9 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     using dims = dnnl::memory::dims;
     dnnl::engine& engine = OneDnnEngine();
     ThreadingContext& ctx = env.ctx;
+    // Both oneDNN-owned buffers below are per cluster, because `MatMul` can be
+    // called concurrently, once per cluster, for the same `env`.
+    MatMulEnv::PerCluster& per_cluster = env.per_cluster[cluster_idx];
 
     const hwy::pool::Caller caller =
         ctx.pool_callers.Get(Callers::kOneDnnMatMul);
@@ -137,7 +140,7 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     // those seen in gemma are M-independent.
     const uintptr_t B_ptr = reinterpret_cast<uintptr_t>(B.Row(0));
     const OneDnnWeightsKey w_key{B_ptr};
-    auto& w_cache = GetOneDnnWeightsCache();
+    OneDnnWeightsCache& w_cache = per_cluster.onednn_weights;
     auto w_it = w_cache.find(w_key);
     const bool needs_reorder =
         w_it == w_cache.end() || w_it->second.packed.get_desc() != weights_md;
@@ -167,8 +170,7 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     // other concurrent `MatMul` call, as oneDNN requires.
     const dnnl::memory::desc scratchpad_md = pd.scratchpad_desc();
     const size_t scratchpad_size = scratchpad_md.get_size();
-    hwy::AlignedVector<uint8_t>& sp_buf =
-        env.per_cluster[cluster_idx].onednn_scratch;
+    hwy::AlignedVector<uint8_t>& sp_buf = per_cluster.onednn_scratch;
     if (sp_buf.size() < scratchpad_size) {
       sp_buf.resize(scratchpad_size ? scratchpad_size : 1);
     }
