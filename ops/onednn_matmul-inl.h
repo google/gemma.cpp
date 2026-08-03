@@ -49,7 +49,7 @@ namespace HWY_NAMESPACE {
 // oneDNN data type for the C element type (only f32/bf16 outputs are used).
 template <typename TC>
 constexpr dnnl::memory::data_type OneDnnDstType() {
-  if constexpr (hwy::IsSame<TC, float>()) {
+  if constexpr (IsF32<TC>()) {
     return dnnl::memory::data_type::f32;
   } else {
     static_assert(IsBF16<TC>(), "OneDnn matmul path expects f32 or bf16 C.");
