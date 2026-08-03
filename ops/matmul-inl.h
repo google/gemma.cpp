@@ -1196,7 +1196,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
     if (M > 1) {
       const float scale = A.Scale() * B.Scale();
-      if (DoMatMul_OneDnn(A, B, C_rows, M, K, N, scale, add, env.ctx,
+      if (DoMatMul_OneDnn(A, B, C_rows, M, K, N, scale, add, env,
                           cluster_idx)) {
         per_key.onednn_built = true;
         return &per_key;

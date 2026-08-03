@@ -761,9 +761,20 @@ struct MatMulEnv {
   struct PerCluster {
     MMKeys keys;
     std::vector<MMPerKey> per_key;
+#if GEMMA_ONEDNN_MATMUL
+    // Reused buffer for oneDNN's user-managed scratchpad.
+    // Per cluster because `MatMul` can be called concurrently, 
+    // once per cluster, for the same `MatMulEnv`, and oneDNN 
+    // requires that concurrent executions not share a scratchpad.
+    hwy::AlignedVector<uint8_t> onednn_scratch;
+    static constexpr size_t kOneDnnBytes = sizeof(onednn_scratch);
+#else
+    static constexpr size_t kOneDnnBytes = 0;
+#endif  // GEMMA_ONEDNN_MATMUL
     // Prevents false sharing.
     HWY_MEMBER_VAR_MAYBE_UNUSED uint8_t
-        padding[HWY_ALIGNMENT - sizeof(MMKeys) - sizeof(per_key)];
+        padding[HWY_ALIGNMENT - sizeof(MMKeys) - sizeof(per_key) -
+                kOneDnnBytes];
   };
   std::vector<PerCluster> per_cluster;
 

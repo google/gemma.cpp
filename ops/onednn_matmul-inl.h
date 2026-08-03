@@ -20,13 +20,13 @@
 #include <stdint.h>
 
 #include <unordered_map>
-#include <vector>
 
 #include "ops/matmul.h"
 #include "ops/onednn_matmul.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "util/zones.h"
+#include "hwy/aligned_allocator.h"  // AlignedVector
 #include "hwy/base.h"
 
 // Include guard for (potentially) SIMD code.
@@ -46,12 +46,6 @@ namespace HWY_NAMESPACE {
 
 #if GEMMA_ONEDNN_MATMUL
 
-// Thread-local byte buffer for oneDNN's user-managed scratchpad.
-inline std::vector<uint8_t>& GetOneDnnScratchpad() {
-  static thread_local std::vector<uint8_t> scratch;
-  return scratch;
-}
-
 // oneDNN data type for the C element type (only f32/bf16 outputs are used).
 template <typename TC>
 constexpr dnnl::memory::data_type OneDnnDstType() {
@@ -66,7 +60,7 @@ constexpr dnnl::memory::data_type OneDnnDstType() {
 // Computes C[M,N] = scale * (A[M,K] * B[N,K]^T) (+ add) using the dnnl::matmul
 // primitive, parallelized via the threadpool adapter. Scale and the optional
 // per-column bias are fused into the primitive, which writes final values
-// Returns false (with no writes to C) on any failure and 
+// Returns false (with no writes to C) on any failure and
 // allows the caller to fall back to the stock path.
 template <typename TA, typename TB, typename TC>
 static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
@@ -74,7 +68,7 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
                                          size_t M, size_t K, size_t N,
                                          float scale,
                                          const float* add,
-                                         ThreadingContext& ctx,
+                                         MatMulEnv& env,
                                          size_t cluster_idx) {
   static_assert(IsBF16<TA>() && IsBF16<TB>(),
                 "OneDnn matmul path expects BF16 A and B.");
@@ -82,6 +76,7 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     using dt = dnnl::memory::data_type;
     using dims = dnnl::memory::dims;
     dnnl::engine& engine = OneDnnEngine();
+    ThreadingContext& ctx = env.ctx;
 
     const hwy::pool::Caller caller =
         ctx.pool_callers.Get(Callers::kOneDnnMatMul);
@@ -168,10 +163,12 @@ static HWY_NOINLINE bool DoMatMul_OneDnn(const MatPtrT<TA>& A,
     dnnl::memory scale_mem({{1}, dt::f32, dnnl::memory::format_tag::x}, engine,
                            &scale);
 
-    // User-managed scratchpad
+    // User-managed scratchpad. This cluster's buffer is not shared with any
+    // other concurrent `MatMul` call, as oneDNN requires.
     const dnnl::memory::desc scratchpad_md = pd.scratchpad_desc();
     const size_t scratchpad_size = scratchpad_md.get_size();
-    std::vector<uint8_t>& sp_buf = GetOneDnnScratchpad();
+    hwy::AlignedVector<uint8_t>& sp_buf =
+        env.per_cluster[cluster_idx].onednn_scratch;
     if (sp_buf.size() < scratchpad_size) {
       sp_buf.resize(scratchpad_size ? scratchpad_size : 1);
     }
