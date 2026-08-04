@@ -244,6 +244,21 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "bpe_tokenizer_benchmark_test",
+    srcs = ["tokenizer/bpe_tokenizer_benchmark_test.cc"],
+    data = [
+        "testdata/frankenstein.txt",
+        "tokenizer/testdata/tokenizer.model",
+        ":packed_tokenizer",
+    ],
+    deps = [
+        ":tokenizer",
+        "//testing/base/public:gunit_main",  # buildcleaner: keep
+        "//io",
+    ],
+)
+
 cc_library(
     name = "tensor_info",
     srcs = [
