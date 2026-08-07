@@ -153,12 +153,16 @@ AttentionImpl GetAttentionImpl(const std::string& impl);
 enum class PostNormType {
   None,
   Scale,
-  kSentinel  // must be last
 };
 
 static inline bool EnumValid(PostNormType type) {
-  return static_cast<size_t>(type) <
-         static_cast<size_t>(PostNormType::kSentinel);
+  switch (type) {
+    case PostNormType::None:
+    case PostNormType::Scale:
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Post qk projection operation type.
@@ -166,11 +170,17 @@ enum class PostQKType {
   Rope,
   HalfRope,
   NormLocalRope = 8,  // Norm without scale, and rope for local attention layers
-  kSentinel           // must be last
 };
 
 static inline bool EnumValid(PostQKType type) {
-  return static_cast<size_t>(type) < static_cast<size_t>(PostQKType::kSentinel);
+  switch (type) {
+    case PostQKType::Rope:
+    case PostQKType::HalfRope:
+    case PostQKType::NormLocalRope:
+      return true;
+    default:
+      return false;
+  }
 }
 
 // FFW activation function.
@@ -215,12 +225,15 @@ static inline bool EnumValid(QueryScaleType type) {
 // Residual connection type.
 enum class ResidualType {
   Add,
-  kSentinel  // must be last
 };
 
 static inline bool EnumValid(ResidualType type) {
-  return static_cast<size_t>(type) <
-         static_cast<size_t>(ResidualType::kSentinel);
+  switch (type) {
+    case ResidualType::Add:
+      return true;
+    default:
+      return false;
+  }
 }
 
 template <size_t kNum>
@@ -314,6 +327,13 @@ void ForEachModel(const Func& func) {
   }
 }
 
+static inline bool& IsInternalActive() {
+  static bool active = false;
+  return active;
+}
+
+static inline bool IsInternal(Model model) { return false; }
+
 static inline bool EnumValid(Model model) {
   // Valid for purposes of serialization, even if unknown.
   if (model == Model::UNKNOWN) return true;
@@ -360,7 +380,10 @@ struct LayerConfig : public IFields {
     visitor(activation);
     visitor(post_qk);
     visitor(use_qk_norm);
-    internal.VisitFields(visitor);
+    // Visiting includes size prefix, whereas calling VisitFields would inline.
+    if (IsInternalActive()) {
+      visitor(internal);
+    }
     visitor(norm_v);
     visitor(num_experts);
     visitor(num_experts_per_datapoint);
@@ -611,7 +634,10 @@ struct ModelConfig : public IFields {
 
     visitor(scale_base_names);
 
-    internal.VisitFields(visitor);
+    // Visiting includes size prefix, whereas calling VisitFields would inline.
+    if (IsInternal(model)) {
+      visitor(internal);
+    }
 
     visitor(use_global_timescale);
     visitor(partial_rotary_factor);
