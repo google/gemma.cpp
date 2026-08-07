@@ -213,8 +213,8 @@ class SfpCodec {
 #undef SFP_IF_GENERIC_DEC
 #define SFP_IF_GENERIC_DEC(D) HWY_IF_V_SIZE_LE_D(D, 32)
 
-#elif HWY_TARGET_IS_NEON
-  // Decodes u8 `encoded` into `lo` and `hi` bytes of bf16. 9 ops (NEON).
+#elif HWY_TARGET_IS_NEON || HWY_TARGET == HWY_SVE2_128
+  // Decodes u8 `encoded` into `lo` and `hi` bytes of bf16. 9 ops (NEON, SVE2).
   template <class D, HWY_IF_U8_D(D), HWY_IF_V_SIZE_D(D, 16)>
   static HWY_INLINE void DecBytes(D d, hn::Vec<D> encoded, hn::Vec<D>& lo,
                                   hn::Vec<D>& hi) {
