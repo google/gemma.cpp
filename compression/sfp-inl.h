@@ -213,9 +213,9 @@ class SfpCodec {
 #undef SFP_IF_GENERIC_DEC
 #define SFP_IF_GENERIC_DEC(D) HWY_IF_V_SIZE_LE_D(D, 32)
 
-#elif HWY_TARGET_IS_NEON || HWY_TARGET == HWY_SVE2_128
-  // Decodes u8 `encoded` into `lo` and `hi` bytes of bf16. 9 ops (NEON, SVE2).
-  template <class D, HWY_IF_U8_D(D), HWY_IF_V_SIZE_D(D, 16)>
+#elif HWY_TARGET_IS_NEON || HWY_TARGET_IS_SVE
+  // Decodes u8 `encoded` into `lo` and `hi` bytes of bf16. 9 ops (NEON, SVE).
+  template <class D, HWY_IF_U8_D(D), HWY_IF_V_SIZE_GT_D(D, 8)>
   static HWY_INLINE void DecBytes(D d, hn::Vec<D> encoded, hn::Vec<D>& lo,
                                   hn::Vec<D>& hi) {
     const hn::Vec<D> k80 = hn::Set(d, 0x80u);
@@ -229,7 +229,7 @@ class SfpCodec {
         0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B,
         0x3C, 0x3C, 0x3D, 0x3D, 0x3E, 0x3E, 0x3F, 0x3F};
     const hn::Vec<D> e7 =
-        hn::TableLookupBytes(hn::LoadU(d, kTblHi), hn::ShiftRight<3>(em));
+        hn::TableLookupBytes(hn::LoadDup128(d, kTblHi), hn::ShiftRight<3>(em));
     hi = hn::IfThenZeroElse(hn::Eq(em, hn::Zero(d)), e7);
     hi = hn::BitwiseIfThenElse(k80, encoded, hi);  // Insert sign bit
 
