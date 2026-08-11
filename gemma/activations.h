@@ -723,7 +723,7 @@ struct Activations {
   TensorStats s_ffw_out;
 
   // For MoE layers. These are used outside the expert-parallel loop:
-  MatStorageT<BF16> router_in;
+  MatStorageT<float> router_in;
   MatStorageT<float> router_logits;  // batch_size x num_experts
 
   // DeepSeek MLA (zero-sized unless a layer uses MLA).

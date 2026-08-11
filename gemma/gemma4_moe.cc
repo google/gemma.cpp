@@ -112,34 +112,29 @@ struct Gemma4MoE {
 
     for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
       const float* pre_ffw_row = activations.x.Row(token_idx);
-      BF16* router_in_row = activations.router_in.Row(token_idx);
-
-      for (size_t col = 0; col < model_dim; ++col) {
-        router_in_row[col] = hwy::ConvertScalarTo<BF16>(pre_ffw_row[col]);
-      }
+      float* router_in_row = activations.router_in.Row(token_idx);
+      std::copy_n(pre_ffw_row, model_dim, router_in_row);
     }
 
     RMSNormNoScaleInplaceBatched(activations.router_in, env.ctx);
 
-    // TODO(philculliton): Use a float buffer for router_in to avoid the
-    // BF16->float->BF16 round-trip, and precompute scale_factor * router_scale
-    // once rather than per-token. Per the CL comment: we are converting to
-    // bf16, but then converting back to float below. Should we set up a
-    // router_in_row_f32 so we can just keep it as float? (That would help if
-    // num_tokens>>1, because we could precompute * scale_factor once.)
-    for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
-      BF16* router_in_row = activations.router_in.Row(token_idx);
-      if (has_router_scale) {
-        for (size_t col = 0; col < model_dim; ++col) {
-          router_in_row[col] = hwy::ConvertScalarTo<BF16>(
-              hwy::ConvertScalarTo<float>(router_in_row[col]) * scale_factor *
-              hwy::ConvertScalarTo<float>(scale_ptr[col]));
-        }
-      } else {
-        for (size_t col = 0; col < model_dim; ++col) {
-          router_in_row[col] = hwy::ConvertScalarTo<BF16>(
-              hwy::ConvertScalarTo<float>(router_in_row[col]) * scale_factor);
-        }
+    namespace hn = hwy::HWY_NAMESPACE;
+    using DF = hn::ScalableTag<float>;
+    using VF = hn::Vec<DF>;
+
+    if (has_router_scale) {
+      for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+        float* router_in_row = activations.router_in.Row(token_idx);
+        Decompress1AndCompressInplace(
+            DF(), router_in_row, model_dim, scale_ptr, 0,
+            [scale_factor](DF df, VF inout, VF scale) HWY_ATTR {
+              return hn::Mul(inout, hn::Mul(scale, hn::Set(df, scale_factor)));
+            });
+      }
+    } else {
+      for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
+        float* router_in_row = activations.router_in.Row(token_idx);
+        MulByConst(scale_factor, router_in_row, model_dim);
       }
     }
 
