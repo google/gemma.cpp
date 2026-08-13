@@ -690,6 +690,36 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "deepseek_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["deepseek/deepseek_test.cc"],
+    linkstatic = True,
+    local_defines = ["HWY_IS_TEST"],
+    deps = [
+        ":activations",
+        ":allocator",
+        ":basics",
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":matmul_env",
+        ":matmul_static",
+        ":ops",
+        ":test_util",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:types",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:nanobenchmark",  # buildcleaner: keep
+    ],
+)
+
 cc_library(
     name = "activations",
     hdrs = ["gemma/activations.h"],
@@ -854,6 +884,7 @@ cc_library(
         "//io",
         "//io:blob_store",
         "//paligemma:image",
+        "@highway//:algo",
         "@highway//:bit_set",
         "@highway//:hwy",
         "@highway//:nanobenchmark",  # timer
@@ -1132,5 +1163,62 @@ cc_binary(
         "@highway//:hwy",
         "@highway//:profiler",
         "@nlohmann_json//:json",
+    ],
+)
+
+cc_binary(
+    name = "convert_dsv4",
+    srcs = ["deepseek/convert_dsv4.cc"],
+    deps = [
+        ":args",
+        ":basics",
+        ":configs",
+        ":gemma_lib",
+        ":mat",
+        ":model_store",
+        ":tensor_info",
+        ":threading_context",
+        ":tokenizer",
+        ":weights",
+        "//compression:compress",
+        "//compression:types",
+        "//io",
+        "//io:blob_store",
+        "@highway//:abort_header_only",
+        "@highway//:hwy",
+        "@nlohmann_json//:json",
+    ],
+)
+
+cc_library(
+    name = "dsv4_tokenizer",
+    srcs = ["deepseek/dsv4_tokenizer.cc"],
+    hdrs = [
+        "deepseek/dsv4_tokenizer.h",
+        "deepseek/dsv4_unicode_ranges.inc",
+    ],
+    deps = [
+        "@highway//:hwy",
+        "@nlohmann_json//:json",
+    ],
+)
+
+cc_binary(
+    name = "run_dsv4",
+    srcs = ["deepseek/run_dsv4.cc"],
+    deps = [
+        ":args",
+        ":basics",
+        ":configs",
+        ":dsv4_tokenizer",
+        ":gemma_args",
+        ":gemma_lib",
+        ":kv_cache",
+        ":mat",
+        ":matmul_env",
+        ":ops",
+        ":threading_context",
+        "@highway//:hwy",
+        "@highway//:profiler",
     ],
 )

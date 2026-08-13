@@ -112,15 +112,17 @@ static void InitDSState(const ModelConfig& config, const Allocator& allocator,
   // The MTP block is dense (no compressor state), but give it an offset entry
   // so `ds_state_offsets[num_layers]` is valid.
   if (config.num_mtp_layers > 0) {
-    ds_state_offsets.push_back(static_cast<uint32_t>(accum));
+    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+      ds_state_offsets.push_back(static_cast<uint32_t>(accum));
+    }
   }
   if (accum == 0) return;
   ds_state = MatStorageT<float>("ds_state", Extents2D(1, accum), allocator,
                                 MatPadding::kPacked);
   ZeroInit(ds_state);
-  // Boundary snapshot for speculative decoding: state after the committed
-  // token of a verify step, restored if the draft is rejected.
-  ds_state_snapshot = MatStorageT<float>("ds_snap", Extents2D(1, accum),
+  // Boundary snapshot for speculative decoding: state after each verified
+  // token of a verify step, restored if a draft is rejected.
+  ds_state_snapshot = MatStorageT<float>("ds_snap", Extents2D(32, accum),
                                          allocator, MatPadding::kPacked);
   ZeroInit(ds_state_snapshot);
 }
@@ -186,7 +188,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   tiled_seq_len = num_tiles * kTileSize;
   // Trailing segment for the MTP block (indexed as layer `num_layers`).
   if (config.num_mtp_layers > 0) {
-    layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+    const size_t mtp_size = config.MTPLayerConfig().CacheLayerSize();
+    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+      layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+      flat_accum += mtp_size;
+    }
   }
   InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
 }
@@ -430,7 +436,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         allocator, MatPadding::kOdd);
   }
   if (config.num_mtp_layers > 0) {
-    layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+    const size_t mtp_size = config.MTPLayerConfig().CacheLayerSize();
+    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+      layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
+      flat_accum += mtp_size;
+    }
   }
   InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
 }

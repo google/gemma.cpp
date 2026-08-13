@@ -29,6 +29,9 @@
 
 namespace gcpp {
 
+// DSpark speculative noise/mask token ID for parallel draft positions.
+static constexpr int kDSNoiseTokenId = 128799;
+
 static inline size_t MaxIndexerHeads(const ModelConfig& config) {
   size_t max_heads = 0;
   for (const LayerConfig& lc : config.layer_configs) {

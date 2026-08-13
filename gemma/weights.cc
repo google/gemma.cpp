@@ -646,7 +646,7 @@ static void HWY_MAYBE_UNUSED SplitW1NUQ(const LayerConfig& layer_config) {
 // Zero-initializes only the allocated tensors in `*this`.
 void WeightsPtrs::ZeroInit() {
   ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
-    if (!t.mat.HasPtr()) return;
+    if (!t.mat.HasPtr() || t.mat.GetType() == Type::kUnknown) return;
     gcpp::ZeroInit(t.mat);
   });
 }
@@ -1010,15 +1010,16 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
   std::vector<TensorToRead> tensors;
 
   // Enumerate all weights (negligible cost).
-  ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-    const bool is_compressed = t.mat.GetType() == Type::kNUQ ||
-                               t.mat.GetType() == Type::kI8 ||
-                               t.mat.GetType() == Type::kQ4_0;
-    const MatPadding padding = (is_compressed || (t.flags & TensorArgs::kPacked))
-                                   ? MatPadding::kPacked
-                                   : MatPadding::kOdd;
+  ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     size_t key_idx;
     if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
+      const bool is_compressed = t.mat.GetType() == Type::kNUQ ||
+                                 t.mat.GetType() == Type::kI8 ||
+                                 t.mat.GetType() == Type::kQ4_0;
+      const MatPadding padding =
+          (is_compressed || (t.flags & TensorArgs::kPacked))
+              ? MatPadding::kPacked
+              : MatPadding::kOdd;
       tensors.push_back(
           {.mat = &t.mat, .range = reader.Range(key_idx), .padding = padding});
       return;

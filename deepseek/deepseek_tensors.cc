@@ -65,8 +65,44 @@ void TensorInfoRegistry::AddDeepSeekModelTensors(const ModelConfig& config) {
     add_hc_collapse("hc_head", "");
   }
   if (config.num_mtp_layers > 0) {
-    // Multi-token-prediction block extras (DeepSeek V4 `mtp.0.*`). The block
-    // itself is registered as an extra layer, see the ctor.
+    Add(no_suffix, {
+                       .base_name = "mtp_main_proj",
+                       .source_names = {"mtp.0.main_proj.weight"},
+                       .axes = {0, 1},
+                       .shape = {config.model_dim, 3 * config.model_dim},
+                   });
+    Add(no_suffix, {
+                       .base_name = "mtp_main_norm",
+                       .source_names = {"mtp.0.main_norm.weight"},
+                       .axes = {0},
+                       .shape = {config.model_dim},
+                       .min_size = Type::kBF16,
+                   });
+    const std::string last_mtp =
+        "mtp." + std::to_string(config.num_mtp_layers > 0
+                                    ? config.num_mtp_layers - 1
+                                    : 0) +
+        ".";
+    Add(no_suffix, {
+                       .base_name = "mtp_markov_w1",
+                       .source_names = {last_mtp + "markov_head.markov_w1.weight",
+                                        "mtp.0.markov_head.markov_w1.weight"},
+                       .axes = {0, 1},
+                       .shape = {config.vocab_size, 256},
+                   });
+    Add(no_suffix, {
+                       .base_name = "mtp_markov_w2",
+                       .source_names = {last_mtp + "markov_head.markov_w2.weight",
+                                        "mtp.0.markov_head.markov_w2.weight"},
+                       .axes = {0, 1},
+                       .shape = {config.vocab_size, 256},
+                   });
+    Add(no_suffix, {
+                       .base_name = "mtp_conf_proj",
+                       .source_names = {"mtp.0.confidence_head.proj.weight"},
+                       .axes = {0, 1},
+                       .shape = {1, config.model_dim + 256},
+                   });
     Add(no_suffix, {
                        .base_name = "mtp_e_proj",
                        .source_names = {"mtp.0.e_proj.weight"},
@@ -95,12 +131,13 @@ void TensorInfoRegistry::AddDeepSeekModelTensors(const ModelConfig& config) {
                    });
     Add(no_suffix, {
                        .base_name = "mtp_norm",
-                       .source_names = {"mtp.0.norm.weight"},
+                       .source_names = {last_mtp + "norm.weight",
+                                        "mtp.0.norm.weight"},
                        .axes = {0},
                        .shape = {config.model_dim},
                        .min_size = Type::kBF16,
                    });
-    add_hc_collapse("mtp_hc", "mtp.0.");
+    add_hc_collapse("mtp_hc", last_mtp);
   }
 }
 

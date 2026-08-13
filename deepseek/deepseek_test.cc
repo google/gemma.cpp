@@ -193,7 +193,7 @@ void TestDeepSeekTiny() {
   // "gating_ein" alias (mutually exclusive with the split w1/w2 tensors) and
   // the optional skip_scale.
   uint64_t seed = 1;
-  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     const char* name = t.mat.Name();
     if (strncmp(name, "gating_ein", 10) == 0) return;
     if (strncmp(name, "skip_scale", 10) == 0) return;
@@ -204,7 +204,7 @@ void TestDeepSeekTiny() {
   {
     LayerWeightsPtrs* layer = weights.GetLayer(3);
     const uint32_t num_experts = layer->layer_config.NumExperts();
-    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) {
+    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) HWY_ATTR {
       return static_cast<float>((r + c) % num_experts);
     });
   }
@@ -212,10 +212,10 @@ void TestDeepSeekTiny() {
   // weights.
   for (size_t i = 0; i < config.num_layers; ++i) {
     LayerWeightsPtrs* layer = weights.GetLayer(i);
-    SetF32(layer->hc_att_scale, [](size_t, size_t) { return 0.1f; });
-    SetF32(layer->hc_ffw_scale, [](size_t, size_t) { return 0.1f; });
+    SetF32(layer->hc_att_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+    SetF32(layer->hc_ffw_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
   }
-  SetF32(weights.hc_head_scale, [](size_t, size_t) { return 0.1f; });
+  SetF32(weights.hc_head_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
 
   InferenceArgs inference_args;
   RuntimeConfig runtime_config;
@@ -297,7 +297,8 @@ static std::vector<int> GreedyGenerate(const ModelConfig& config,
   runtime_config.top_k = 1;  // greedy
   runtime_config.verbosity = 0;
   runtime_config.use_mtp = use_mtp;
-  runtime_config.batch_stream_token = [&](size_t, size_t, int token, float) {
+  runtime_config.batch_stream_token =
+      [&](size_t, size_t, int token, float) HWY_ATTR {
     if (++seen <= prompt_size) return true;
     generated.push_back(token);
     return true;
@@ -336,7 +337,7 @@ void TestDeepSeekMTPEquivalence() {
   WeightsPtrs weights(config);
   ASSERT_EQ(weights.mtp_layers.size(), size_t{1});
   uint64_t seed = 100;
-  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     const char* name = t.mat.Name();
     if (strncmp(name, "gating_ein", 10) == 0) return;
     if (strncmp(name, "skip_scale", 10) == 0) return;
@@ -345,25 +346,25 @@ void TestDeepSeekMTPEquivalence() {
   {
     LayerWeightsPtrs* layer = weights.GetLayer(3);
     const uint32_t num_experts = layer->layer_config.NumExperts();
-    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) {
+    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) HWY_ATTR {
       return static_cast<float>((r + c) % num_experts);
     });
   }
   for (size_t i = 0; i < config.num_layers; ++i) {
     LayerWeightsPtrs* layer = weights.GetLayer(i);
-    SetF32(layer->hc_att_scale, [](size_t, size_t) { return 0.1f; });
-    SetF32(layer->hc_ffw_scale, [](size_t, size_t) { return 0.1f; });
+    SetF32(layer->hc_att_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+    SetF32(layer->hc_ffw_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
   }
-  SetF32(weights.hc_head_scale, [](size_t, size_t) { return 0.1f; });
+  SetF32(weights.hc_head_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
   SetF32(weights.mtp_layers[0].hc_att_scale,
-         [](size_t, size_t) { return 0.1f; });
+         [](size_t, size_t) HWY_ATTR { return 0.1f; });
   SetF32(weights.mtp_layers[0].hc_ffw_scale,
-         [](size_t, size_t) { return 0.1f; });
-  SetF32(weights.mtp_hc_scale, [](size_t, size_t) { return 0.1f; });
+         [](size_t, size_t) HWY_ATTR { return 0.1f; });
+  SetF32(weights.mtp_hc_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
 
   // Sparse output head: only tokens 3/7/11 can win, with O(1) margins; the
   // remaining rows are exactly zero, so their logits tie at 0.0 bitwise.
-  SetF32(weights.lm_head, [](size_t r, size_t c) {
+  SetF32(weights.lm_head, [](size_t r, size_t c) HWY_ATTR {
     if (r != 3 && r != 7 && r != 11) return 0.0f;
     return 2.0f *
            sinf(131.3f * static_cast<float>(r) + 0.71f * static_cast<float>(c));
@@ -377,15 +378,15 @@ void TestDeepSeekMTPEquivalence() {
       config, weights, prompt_vec, kMaxTokens, /*use_mtp=*/false, ctx, env);
   EXPECT_EQ(ref.size(), kMaxTokens);
 
-  for (int regime = 0; regime < 2; ++regime) {
+  for (size_t regime = 0; regime < 2; ++regime) {
     if (regime == 1) {
       // Corrupt the MTP input projections: drafts become unrelated to the
       // main model's output, so most verify steps reject and roll back.
-      SetF32(weights.mtp_e_proj, [](size_t r, size_t c) {
+      SetF32(weights.mtp_e_proj, [](size_t r, size_t c) HWY_ATTR {
         return 0.5f * cosf(17.7f * static_cast<float>(r) -
                            1.3f * static_cast<float>(c));
       });
-      SetF32(weights.mtp_h_proj, [](size_t r, size_t c) {
+      SetF32(weights.mtp_h_proj, [](size_t r, size_t c) HWY_ATTR {
         return 0.5f * sinf(3.9f * static_cast<float>(r) +
                            11.1f * static_cast<float>(c));
       });
@@ -415,7 +416,7 @@ void TestDeepSeekVerifyStepState() {
   const ModelConfig config = TinyDeepSeekConfig();
   WeightsPtrs weights(config);
   uint64_t seed = 500;
-  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
+  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     const char* name = t.mat.Name();
     if (strncmp(name, "gating_ein", 10) == 0) return;
     if (strncmp(name, "skip_scale", 10) == 0) return;
@@ -424,16 +425,16 @@ void TestDeepSeekVerifyStepState() {
   {
     LayerWeightsPtrs* layer = weights.GetLayer(3);
     const uint32_t num_experts = layer->layer_config.NumExperts();
-    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) {
+    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) HWY_ATTR {
       return static_cast<float>((r + c) % num_experts);
     });
   }
   for (size_t i = 0; i < config.num_layers; ++i) {
     LayerWeightsPtrs* layer = weights.GetLayer(i);
-    SetF32(layer->hc_att_scale, [](size_t, size_t) { return 0.1f; });
-    SetF32(layer->hc_ffw_scale, [](size_t, size_t) { return 0.1f; });
+    SetF32(layer->hc_att_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+    SetF32(layer->hc_ffw_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
   }
-  SetF32(weights.hc_head_scale, [](size_t, size_t) { return 0.1f; });
+  SetF32(weights.hc_head_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
 
   InferenceArgs inference_args;
   RuntimeConfig runtime_config;
@@ -453,7 +454,7 @@ void TestDeepSeekVerifyStepState() {
   std::vector<int> tokens(kTotal);
   std::iota(tokens.begin(), tokens.end(), 2);
 
-  const auto embed = [&](int token, size_t row, Activations& acts) {
+  const auto embed = [&](int token, size_t row, Activations& acts) HWY_ATTR {
     MatPtrT<float> emb(weights.embedder_input_embedding);
     memcpy(acts.x.Row(row), emb.Row(static_cast<size_t>(token)),
            config.model_dim * sizeof(float));
@@ -475,12 +476,12 @@ void TestDeepSeekVerifyStepState() {
   Activations aB(runtime_config, config, kPrompt, spec_kv.SeqLen(), ctx,
                  env.row_ptrs);
 
-  const auto layers = [&](Activations& a, QBatch& q, size_t num_tokens) {
+  const auto layers = [&](Activations& a, QBatch& q, size_t num_tokens) HWY_ATTR {
     for (size_t l = 0; l < config.num_layers; ++l) {
       DeepSeekTransformerLayer(num_tokens, l, *weights.GetLayer(l), a, q, env);
     }
   };
-  const auto step1 = [&](Activations& a, QBatch& q, int tok) {
+  const auto step1 = [&](Activations& a, QBatch& q, int tok) HWY_ATTR {
     a.SetBatchSize(1);
     a.token_ids.assign(1, tok);
     embed(tok, 0, a);
@@ -488,7 +489,7 @@ void TestDeepSeekVerifyStepState() {
     layers(a, q, 1);
     q.MutablePos(0) += 1;
   };
-  const auto step2 = [&](Activations& a, QBatch& q, int tok0, int tok1) {
+  const auto step2 = [&](Activations& a, QBatch& q, int tok0, int tok1) HWY_ATTR {
     a.SetBatchSize(2);
     a.token_ids.assign(2, tok0);
     a.token_ids[1] = tok1;
@@ -500,7 +501,7 @@ void TestDeepSeekVerifyStepState() {
     a.ds_snapshot_after = -1;
   };
 
-  const auto prefill = [&](Activations& a, QBatch& q) {
+  const auto prefill = [&](Activations& a, QBatch& q) HWY_ATTR {
     a.SetBatchSize(kPrompt);
     a.token_ids.resize(kPrompt);
     for (size_t i = 0; i < kPrompt; ++i) {
@@ -568,6 +569,111 @@ void TestDeepSeekVerifyStepState() {
   EXPECT_EQ(kv_mismatches, size_t{0});
 }
 
+void TestDeepSeekDSpark() {
+  ThreadingContext ctx({});
+  MatMulEnv env(ctx);
+  std::vector<MatOwner> mat_owners;
+
+  ModelConfig config = TinyDeepSeekConfig();
+  config.num_mtp_layers = 3;
+  config.eos_id = static_cast<int>(config.vocab_size);
+  config.secondary_eos_id = static_cast<int>(config.vocab_size);
+
+  WeightsPtrs weights(config);
+  ASSERT_EQ(weights.mtp_layers.size(), size_t{3});
+  uint64_t seed = 200;
+  weights.ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
+    const char* name = t.mat.Name();
+    if (strncmp(name, "gating_ein", 10) == 0) return;
+    if (strncmp(name, "skip_scale", 10) == 0) return;
+    AllocateAndFillRandom(t.mat, ctx.allocator, mat_owners, ++seed);
+  });
+  {
+    LayerWeightsPtrs* layer = weights.GetLayer(3);
+    const uint32_t num_experts = layer->layer_config.NumExperts();
+    SetF32(layer->hash_tid2eid, [&](size_t r, size_t c) HWY_ATTR {
+      return static_cast<float>((r + c) % num_experts);
+    });
+  }
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    LayerWeightsPtrs* layer = weights.GetLayer(i);
+    SetF32(layer->hc_att_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+    SetF32(layer->hc_ffw_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+  }
+  SetF32(weights.hc_head_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+  for (size_t l = 0; l < weights.mtp_layers.size(); ++l) {
+    SetF32(weights.mtp_layers[l].hc_att_scale,
+           [](size_t, size_t) HWY_ATTR { return 0.0f; });
+    SetF32(weights.mtp_layers[l].hc_ffw_scale,
+           [](size_t, size_t) HWY_ATTR { return 0.0f; });
+  }
+  SetF32(weights.mtp_hc_scale, [](size_t, size_t) HWY_ATTR { return 0.1f; });
+
+  SetF32(weights.lm_head, [](size_t r, size_t c) HWY_ATTR {
+    if (r != 3 && r != 7 && r != 11) return 0.0f;
+    return 2.0f *
+           sinf(131.3f * static_cast<float>(r) + 0.71f * static_cast<float>(c));
+  });
+
+  // Align DSpark MTP weights with base model output in regime 0.
+  SetF32(weights.mtp_main_proj, [](size_t r, size_t c) HWY_ATTR {
+    return (r % 3 == 0 && c < 64) ? 0.2f : 0.0f;
+  });
+  SetF32(weights.mtp_main_norm, [](size_t, size_t) HWY_ATTR { return 1.0f; });
+  SetF32(weights.mtp_norm, [](size_t, size_t) HWY_ATTR { return 1.0f; });
+
+  // Rank-256 Markov transition bias: predicts dominant token 3 for high acceptance.
+  SetF32(weights.mtp_markov_w1, [](size_t r, size_t c) HWY_ATTR {
+    if (r == 3 && c == 0) return 3.0f;
+    if (r == 7 && c == 1) return 3.0f;
+    if (r == 11 && c == 2) return 3.0f;
+    return 0.0f;
+  });
+  SetF32(weights.mtp_markov_w2, [](size_t r, size_t c) HWY_ATTR {
+    if (r == 3 && c == 0) return 5.0f;
+    if (r == 7 && c == 1) return 5.0f;
+    if (r == 11 && c == 2) return 5.0f;
+    return 0.0f;
+  });
+
+  // Confidence head: positive bias for high speculative confidence (>0.9).
+  SetF32(weights.mtp_conf_proj, [](size_t, size_t c) HWY_ATTR {
+    return (c == 0) ? 2.5f : 0.01f;
+  });
+
+  std::vector<int> prompt_vec(12);
+  std::iota(prompt_vec.begin(), prompt_vec.end(), 2);
+  const size_t kMaxTokens = 40;
+
+  const std::vector<int> ref = GreedyGenerate(
+      config, weights, prompt_vec, kMaxTokens, /*use_mtp=*/false, ctx, env);
+  EXPECT_EQ(ref.size(), kMaxTokens);
+
+  for (size_t regime = 0; regime < 2; ++regime) {
+    if (regime == 1) {
+      SetF32(weights.mtp_main_proj, [](size_t r, size_t c) HWY_ATTR {
+        return 0.5f * cosf(17.7f * static_cast<float>(r) -
+                           1.3f * static_cast<float>(c));
+      });
+      SetF32(weights.mtp_markov_w1, [](size_t r, size_t c) HWY_ATTR {
+        return 0.2f * sinf(static_cast<float>(r * 256 + c));
+      });
+    }
+    const std::vector<int> spec = GreedyGenerate(
+        config, weights, prompt_vec, kMaxTokens, /*use_mtp=*/true, ctx, env);
+    ASSERT_EQ(spec.size(), kMaxTokens) << "regime " << regime;
+    EXPECT_EQ(ref[0], spec[0]) << "regime " << regime;
+    for (size_t i = 0; i < spec.size(); ++i) {
+      const int t = spec[i];
+      ASSERT_TRUE(t == 0 || t == 3 || t == 7 || t == 11)
+          << "regime " << regime << ": unreachable token " << t << " at " << i;
+    }
+    if (regime == 0) {
+      EXPECT_EQ(spec, ref) << "Exact token equivalence with base greedy decode";
+    }
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -579,6 +685,7 @@ HWY_BEFORE_TEST(DeepSeekTest);
 HWY_EXPORT_AND_TEST_P(DeepSeekTest, TestDeepSeekTiny);
 HWY_EXPORT_AND_TEST_P(DeepSeekTest, TestDeepSeekVerifyStepState);
 HWY_EXPORT_AND_TEST_P(DeepSeekTest, TestDeepSeekMTPEquivalence);
+HWY_EXPORT_AND_TEST_P(DeepSeekTest, TestDeepSeekDSpark);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

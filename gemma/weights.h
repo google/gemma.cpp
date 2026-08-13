@@ -450,7 +450,7 @@ struct LayerWeightsPtrs {
   // Zero-initializes all allocated tensors in the layer.
   void ZeroInit() {
     ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
-      if (!t.mat.HasPtr()) return;
+      if (!t.mat.HasPtr() || t.mat.GetType() == Type::kUnknown) return;
       gcpp::ZeroInit(t.mat);
     });
   }
@@ -635,6 +635,11 @@ struct WeightsPtrs {
         mtp_hc_fn(finder_("mtp_hc_fn")),
         mtp_hc_base(finder_("mtp_hc_base")),
         mtp_hc_scale(finder_("mtp_hc_scale")),
+        mtp_main_proj(finder_("mtp_main_proj")),
+        mtp_main_norm(finder_("mtp_main_norm")),
+        mtp_markov_w1(finder_("mtp_markov_w1")),
+        mtp_markov_w2(finder_("mtp_markov_w2")),
+        mtp_conf_proj(finder_("mtp_conf_proj")),
         t5gemma_encoder_embedding(finder_("enc_embedding")),
         t5gemma_decoder_embedding(finder_("dec_embedding")),
         t5gemma_encoder_final_norm_scale(finder_("enc_final_norm")),
@@ -674,11 +679,13 @@ struct WeightsPtrs {
       vit_layers.emplace_back(idx, layer_config, tensors_);
     }
     if (config_.num_mtp_layers > 0) {
-      // The multi-token-prediction block: an extra layer at index
+      // The multi-token-prediction block: extra layer(s) starting at index
       // `num_layers`, outside the main stack (see `MTPLayerConfig`).
       mtp_layer_config = config_.MTPLayerConfig();
-      mtp_layers.emplace_back(config_.layer_configs.size(), mtp_layer_config,
-                              tensors_);
+      for (size_t idx = 0; idx < config_.num_mtp_layers; ++idx) {
+        mtp_layers.emplace_back(config_.layer_configs.size() + idx,
+                                mtp_layer_config, tensors_);
+      }
     }
   }
 
@@ -708,6 +715,13 @@ struct WeightsPtrs {
   MatPtr mtp_hc_fn;     // [hc_mult, hc_mult * model_dim] f32
   MatPtr mtp_hc_base;   // [hc_mult] f32
   MatPtr mtp_hc_scale;  // [1] f32
+
+  // DSpark multi-layer target feature fusion and Markov refinement head.
+  MatPtr mtp_main_proj;        // [model_dim, 3 * model_dim]
+  MatPtr mtp_main_norm;        // [model_dim]
+  MatPtr mtp_markov_w1;        // [vocab_size, markov_rank]
+  MatPtr mtp_markov_w2;        // [vocab_size, markov_rank]
+  MatPtr mtp_conf_proj;        // [1, model_dim + markov_rank]
 
   // T5Gemma text encoder-decoder parts.
   MatPtr t5gemma_encoder_embedding;         // at least BF16.
@@ -796,15 +810,45 @@ struct WeightsPtrs {
       func(TENSOR_ARGS(hc_head_scale, kMustRead));
     }
     if (config_.num_mtp_layers > 0) {
-      func(TENSOR_ARGS(mtp_e_proj, kMustRead));
-      func(TENSOR_ARGS(mtp_h_proj, kMustRead));
-      func(TENSOR_ARGS(mtp_enorm, kMustRead));
-      func(TENSOR_ARGS(mtp_hnorm, kMustRead));
-      func(TENSOR_ARGS(mtp_norm, kMustRead));
-      if (config_.hc_mult > 1) {
-        func(TENSOR_ARGS(mtp_hc_fn, kMustRead));
-        func(TENSOR_ARGS(mtp_hc_base, kMustRead));
-        func(TENSOR_ARGS(mtp_hc_scale, kMustRead));
+      if (mtp_main_proj.HasPtr() && mtp_main_proj.GetType() != Type::kUnknown) {
+        func(TENSOR_ARGS(mtp_main_proj, kMustRead));
+        func(TENSOR_ARGS(mtp_main_norm, kMustRead));
+        func(TENSOR_ARGS(mtp_norm, kMustRead));
+        func(TENSOR_ARGS(mtp_markov_w1, kMustRead));
+        func(TENSOR_ARGS(mtp_markov_w2, kMustRead));
+        func(TENSOR_ARGS(mtp_conf_proj, kMustRead));
+        if (config_.hc_mult > 1) {
+          func(TENSOR_ARGS(mtp_hc_fn, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_base, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_scale, kMustRead));
+        }
+      } else if (mtp_e_proj.HasPtr() && mtp_e_proj.GetType() != Type::kUnknown) {
+        func(TENSOR_ARGS(mtp_e_proj, kMustRead));
+        func(TENSOR_ARGS(mtp_h_proj, kMustRead));
+        func(TENSOR_ARGS(mtp_enorm, kMustRead));
+        func(TENSOR_ARGS(mtp_hnorm, kMustRead));
+        func(TENSOR_ARGS(mtp_norm, kMustRead));
+        if (config_.hc_mult > 1) {
+          func(TENSOR_ARGS(mtp_hc_fn, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_base, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_scale, kMustRead));
+        }
+      } else {
+        func(TENSOR_ARGS(mtp_main_proj, kMaybeRead));
+        func(TENSOR_ARGS(mtp_main_norm, kMaybeRead));
+        func(TENSOR_ARGS(mtp_markov_w1, kMaybeRead));
+        func(TENSOR_ARGS(mtp_markov_w2, kMaybeRead));
+        func(TENSOR_ARGS(mtp_conf_proj, kMaybeRead));
+        func(TENSOR_ARGS(mtp_e_proj, kMaybeRead));
+        func(TENSOR_ARGS(mtp_h_proj, kMaybeRead));
+        func(TENSOR_ARGS(mtp_enorm, kMaybeRead));
+        func(TENSOR_ARGS(mtp_hnorm, kMaybeRead));
+        func(TENSOR_ARGS(mtp_norm, kMustRead));
+        if (config_.hc_mult > 1) {
+          func(TENSOR_ARGS(mtp_hc_fn, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_base, kMustRead));
+          func(TENSOR_ARGS(mtp_hc_scale, kMustRead));
+        }
       }
     }
 

@@ -444,7 +444,8 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
     const MatPtrT<Q4_0Stream> mat(*base);
     return func(&mat, std::forward<Args>(args)...);
   } else {
-    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+    HWY_ABORT("Unhandled type %s for tensor %s.", TypeName(base->GetType()),
+              base->Name());
   }
 }
 
@@ -483,7 +484,8 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
     const MatPtrT<Q4_0Stream> mat2(*base2);
     return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else {
-    HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));
+    HWY_ABORT("Unhandled type %s for tensors %s and %s.",
+              TypeName(base1->GetType()), base1->Name(), base2->Name());
   }
 }
 

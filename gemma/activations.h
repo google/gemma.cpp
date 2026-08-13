@@ -49,7 +49,10 @@ static inline size_t MaxQkvDim(const ModelConfig& config) {
   return max_dim;
 }
 static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
-  size_t max_dim = 0;
+  size_t max_dim = config.model_dim;
+  if (config.num_mtp_layers > 1) {
+    max_dim = HWY_MAX(max_dim, size_t{256});
+  }
   for (const auto& lc : config.layer_configs) {
     max_dim = HWY_MAX(max_dim, static_cast<size_t>(lc.ff_hidden_dim));
   }
@@ -494,6 +497,9 @@ struct Activations {
         hc_streams(MatFactory("hc_streams", config.hc_mult > 1 ? batch_size : 0,
                               config.hc_mult * config.model_dim,
                               ctx.allocator)),
+        dspark_main_hiddens(MatFactory(
+            "dspark_hiddens", config.num_mtp_layers > 0 ? batch_size : 0,
+            3 * config.model_dim, ctx.allocator)),
         hc_tmp(MatFactory("hc_tmp", config.hc_mult > 1 ? batch_size : 0,
                           config.hc_mult * config.model_dim, ctx.allocator)),
         hc_mixes(MatFactory("hc_mixes", config.hc_mult > 1 ? batch_size : 0,
@@ -666,6 +672,9 @@ struct Activations {
       hc_post_w.OverrideRows(batch_size);
       hc_comb.OverrideRows(batch_size);
     }
+    if (dspark_main_hiddens.Cols() > 0 && dspark_main_hiddens.Rows() > 0) {
+      dspark_main_hiddens.OverrideRows(batch_size);
+    }
 
     attention_storage.SetBatchSize(batch_size);
     // `AttentionActivationsPtrs` holds `MatPtrT` which also require updating;
@@ -744,6 +753,7 @@ struct Activations {
   // Manifold-constrained hyper-connections: parallel residual streams,
   // [batch_size, hc_mult * model_dim] (zero-sized unless hc_mult > 1).
   MatStorageT<float> hc_streams;
+  MatStorageT<float> dspark_main_hiddens;
   MatStorageT<float> hc_tmp;
   // Per-token dynamic mHC weights: raw mixes and the split post/comb parts
   // persisted between the block's read and write phases.

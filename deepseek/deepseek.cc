@@ -72,6 +72,7 @@
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
 #include "ops/ops-inl.h"
+#include "hwy/contrib/algo/minmax-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -95,13 +96,34 @@ static constexpr uint32_t DSFloatToUint32Sortkey(float val) {
 }
 
 // Copies a small 1D/row tensor of any weight type to f32.
-static void ReadRowF32(const MatPtr& w, size_t row, float* HWY_RESTRICT out,
-                       size_t n) {
-  CallUpcastedActivation(&w, [&](const auto* t) {
-    for (size_t i = 0; i < n; ++i) {
-      out[i] = hwy::ConvertScalarTo<float>(t->Row(row)[i]);
+void ReadRowF32(const MatPtr& w, size_t row, float* HWY_RESTRICT out,
+                size_t n) {
+  if (w.GetType() == Type::kF32) {
+    MatPtrT<float> wf(w);
+    const float* src = wf.Row(row);
+    hwy::CopyBytes(src, out, n * sizeof(float));
+    if (wf.Scale() != 1.0f) {
+      MulByConst(wf.Scale(), out, n);
     }
+    return;
+  }
+  CallUpcasted(&w, [&](const auto* weights_t) {
+    const size_t ofs = row * weights_t->Stride();
+    HWY_ASSERT(weights_t->Cols() == n);
+    const auto span = MakeSpan(weights_t->Row(0), ofs + n);
+    DecompressAndZeroPad(hn::ScalableTag<float>(), span, ofs, out, n);
+    MulByConst(weights_t->Scale(), out, n);
   });
+}
+
+void ReadRowBF16(const MatPtr& w, size_t row, BF16* HWY_RESTRICT out,
+                 size_t n) {
+  HWY_ALIGN float tmp[256];
+  HWY_ASSERT(n <= 256);
+  ReadRowF32(w, row, tmp, n);
+  const hn::ScalableTag<float> df;
+  CompressPerThread tls;
+  CompressTraits<BF16>::Compress(df, tmp, n, tls, MakeSpan(out, n), 0);
 }
 
 // Returns the element offset of this layer's segment within a flat KV cache
@@ -119,7 +141,11 @@ static size_t LatentLayerOffset(const KVCachePtr& kv, size_t layer_idx,
 // default gemma RMSNorm* would apply 1 + w to weights exported as scale-1).
 static void ScaledRMSNorm(const MatPtr& w, float* HWY_RESTRICT x, size_t n,
                           ThreadingContext& ctx, size_t worker) {
-  CallUpcastedActivation(&w, [&](const auto* t) {
+  if (!w.HasPtr()) {
+    RMSNormNoScaleInplace(x, n, ctx, worker);
+    return;
+  }
+  CallUpcasted(&w, [&](const auto* t) {
     RMSNormInplace</*kPlainWeight=*/true>(t->PackedScale1(), /*w_ofs=*/0, x, n,
                                           ctx, worker);
   });
@@ -301,7 +327,7 @@ static HWY_NOINLINE void HCReadDynamic(const MatPtr& fn_w, const MatPtr& base_w,
             }
           }
         }
-        memcpy(comb, c, hc_mult * hc_mult * sizeof(float));
+        hwy::CopyBytes(c, comb, hc_mult * hc_mult * sizeof(float));
       });
 }
 
@@ -333,7 +359,7 @@ static HWY_NOINLINE void HCWriteDynamic(const MatPtrT<T>& block_out,
           }
           MulByConstAndAdd(post[j], out, tmp + j * model_dim, model_dim);
         }
-        memcpy(s, tmp, hc_mult * model_dim * sizeof(float));
+        hwy::CopyBytes(tmp, s, hc_mult * model_dim * sizeof(float));
       });
 }
 
@@ -348,7 +374,7 @@ void DeepSeekMaybeInitHCStreams(Activations& activations, MatMulEnv& env) {
                 const float* HWY_RESTRICT x = activations.x.Row(token_idx);
                 float* HWY_RESTRICT s = activations.hc_streams.Row(token_idx);
                 for (size_t i = 0; i < hc_mult; ++i) {
-                  memcpy(s + i * model_dim, x, model_dim * sizeof(float));
+                  hwy::CopyBytes(x, s + i * model_dim, model_dim * sizeof(float));
                 }
               });
 }
@@ -469,7 +495,7 @@ static bool CompressorStep(const float* HWY_RESTRICT kv_row,
   const size_t offset = (coff == 2 ? rate : 0) + slot;
   float* HWY_RESTRICT kv_dst = state.kv_state + offset * width;
   float* HWY_RESTRICT score_dst = state.score_state + offset * width;
-  memcpy(kv_dst, kv_row, width * sizeof(float));
+  hwy::CopyBytes(kv_row, kv_dst, width * sizeof(float));
   {
     const float* HWY_RESTRICT ape_row = ape + slot * width;
     size_t i = 0;
@@ -524,10 +550,10 @@ static bool CompressorStep(const float* HWY_RESTRICT kv_row,
 
   if (coff == 2) {
     // Shift: the sealed block becomes the next block's overlap window.
-    memcpy(state.kv_state, state.kv_state + rate * width,
-           rate * width * sizeof(float));
-    memcpy(state.score_state, state.score_state + rate * width,
-           rate * width * sizeof(float));
+    hwy::CopyBytes(state.kv_state + rate * width, state.kv_state,
+                   rate * width * sizeof(float));
+    hwy::CopyBytes(state.score_state + rate * width, state.score_state,
+                   rate * width * sizeof(float));
   }
   return true;
 }
@@ -711,15 +737,14 @@ static HWY_NOINLINE void DeepSeekRunCompressors(
             CompressPerThread tls;
             Compress(entry, idx_dim, tls, MakeSpan(dst, idx_dim), 0);
           }
-          // Speculative decoding: snapshot this layer's state at the
-          // committed/draft boundary so a rejected draft can be rolled back.
-          if (HWY_UNLIKELY(static_cast<int>(token_idx) ==
-                           activations.ds_snapshot_after) &&
-              cache->ds_state_snapshot.Rows() > 0) {
+          // Speculative decoding: snapshot this layer's state at each verified
+          // boundary so a rejected draft can be rolled back to any position.
+          if (HWY_UNLIKELY(activations.ds_snapshot_after >= 0 &&
+                           token_idx < cache->ds_state_snapshot.Rows())) {
             const size_t ofs = cache->ds_state_offsets[layer_idx];
-            memcpy(cache->ds_state_snapshot.Row(0) + ofs,
-                   cache->ds_state.Row(0) + ofs,
-                   lc.DSStateSize() * sizeof(float));
+            hwy::CopyBytes(cache->ds_state.Row(0) + ofs,
+                           cache->ds_state_snapshot.Row(token_idx) + ofs,
+                           lc.DSStateSize() * sizeof(float));
           }
         }
       });
@@ -827,7 +852,7 @@ static HWY_NOINLINE void DeepSeekIndexerSelect(
                                  idx_dim);
           }
           for (size_t b = nb; b < 4; ++b) {  // dummies; results ignored
-            memcpy(k_f[b], k_f[0], idx_dim * sizeof(float));
+            hwy::CopyBytes(k_f[0], k_f[b], idx_dim * sizeof(float));
           }
           HWY_ALIGN float s4[4] = {0.0f, 0.0f, 0.0f, 0.0f};
           for (size_t h = 0; h < idx_heads; ++h) {
@@ -892,9 +917,6 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
   const hwy::Divisor div_qbatch(static_cast<uint32_t>(qbatch.Size()));
   const size_t num_interleaved = num_tokens * qbatch.Size();
 
-  att.q.OverrideCols(heads * qkv_dim);
-  activations.mla_kv_a.OverrideCols(kv_a_dim);
-
   // ---- Projections (tiled MatMul).
   if (lc.q_lora_rank > 0) {
     activations.mla_q_a.OverrideCols(lc.q_lora_rank);
@@ -909,21 +931,43 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
   CallMatMul(att.pre_att_rms_out, layer.mla_kv_a, /*add=*/nullptr, env,
              activations.mla_kv_a);
 
+  const bool is_mtp = (layer_idx >= config.num_layers);
+  const size_t start_pos = qbatch.Pos(0);
+
+  // In DSpark MTP, write main_kv (target layer features) at start_pos.
+  if (is_mtp && activations.x_bf.Rows() > 0) {
+    MatPtrT<BF16> main_x_view("main_x", Extents2D(1, config.model_dim));
+    main_x_view.SetPtr(activations.x_bf.Row(0), config.model_dim);
+    HWY_ALIGN float main_kv[kDSMaxLatentDim];
+    MatPtrT<float> main_kv_view("main_kv", Extents2D(1, kv_a_dim));
+    main_kv_view.SetPtr(main_kv, kv_a_dim);
+    CallMatMul(main_x_view, layer.mla_kv_a, /*add=*/nullptr, env, main_kv_view);
+    ScaledRMSNorm(layer.mla_kv_a_norm, main_kv, kv_a_dim, env.ctx, 0);
+    Rope(main_kv + kv_a_dim - rope_dim, rope_dim, inv_ts,
+         static_cast<int>(start_pos), env.ctx, 0);
+    KV_t* HWY_RESTRICT dst =
+        qbatch.KV(0).kv_cache.Row(start_pos) +
+        LatentLayerOffset(qbatch.KV(0), layer_idx, lc);
+    CompressPerThread tls;
+    Compress(main_kv, kv_a_dim, tls, MakeSpan(dst, kv_a_dim), 0);
+  }
+
   // ---- Normalize the full latent, RoPE the decoupled key, write to cache.
   ParallelFor(
       Parallelism::kFlat, num_interleaved, env.ctx, /*cluster_idx=*/0,
       Callers::kAttComputeQKV, [&](size_t task, size_t worker) HWY_ATTR {
         const size_t qi = div_qbatch.Remainder(static_cast<uint32_t>(task));
         const size_t token_idx = div_qbatch.Divide(static_cast<uint32_t>(task));
-        const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-        HWY_DASSERT(cache_pos < att.SeqLen());
+        const size_t kv_pos = is_mtp ? start_pos + 1 + token_idx
+                                     : qbatch.Pos(qi) + token_idx;
+        HWY_DASSERT(kv_pos < att.SeqLen());
         float* HWY_RESTRICT kv = activations.mla_kv_a.Row(task);
         // V4: kv_norm covers the full latent (rope applied after).
         ScaledRMSNorm(layer.mla_kv_a_norm, kv, kv_a_dim, env.ctx, worker);
         Rope(kv + kv_a_dim - rope_dim, rope_dim, inv_ts,
-             static_cast<int>(cache_pos), env.ctx, worker);
+             static_cast<int>(kv_pos), env.ctx, worker);
         KV_t* HWY_RESTRICT dst =
-            qbatch.KV(qi).kv_cache.Row(cache_pos) +
+            qbatch.KV(qi).kv_cache.Row(kv_pos) +
             LatentLayerOffset(qbatch.KV(qi), layer_idx, lc);
         CompressPerThread tls;
         Compress(kv, kv_a_dim, tls, MakeSpan(dst, kv_a_dim), 0);
@@ -959,15 +1003,17 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
             div_qbatch.Remainder(static_cast<uint32_t>(interleaved_idx));
         const size_t token_idx =
             div_qbatch.Divide(static_cast<uint32_t>(interleaved_idx));
-        const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-        const size_t end = cache_pos + 1;
+        const bool is_mtp = (layer_idx >= activations.attention.config.num_layers);
+        const size_t start_pos = qbatch.Pos(qi);
+        const size_t q_pos = start_pos + token_idx;
+        const size_t end = is_mtp ? (start_pos + 1 + num_tokens) : (q_pos + 1);
 
         float* HWY_RESTRICT q = att.q.Row(interleaved_idx) + head * qkv_dim;
         // Per-head RMS (no scale), then RoPE the decoupled part. This task
         // owns the range.
         RMSNormNoScaleInplace(q, qkv_dim, env.ctx, worker);
         Rope(q + qkv_dim - rope_dim, rope_dim, inv_ts,
-             static_cast<int>(cache_pos), env.ctx, worker);
+             static_cast<int>(q_pos), env.ctx, worker);
 
         const size_t layer_offset =
             LatentLayerOffset(qbatch.KV(qi), layer_idx, lc);
@@ -1021,11 +1067,11 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
 
         // Inverse-RoPE the rope dims of the output (values carry rotation).
         Rope(softmax.acc + kv_a_dim - rope_dim, rope_dim, inv_ts,
-             -static_cast<int>(cache_pos), env.ctx, worker);
+             -static_cast<int>(q_pos), env.ctx, worker);
 
         float* HWY_RESTRICT out =
             att.att_out.Row(interleaved_idx) + head * qkv_dim;
-        memcpy(out, softmax.acc, kv_a_dim * sizeof(float));
+        hwy::CopyBytes(softmax.acc, out, kv_a_dim * sizeof(float));
       });
 
   // ---- Grouped low-rank output projection.
@@ -1267,14 +1313,20 @@ struct DeepSeekMoE {
     }
 
     // Hidden layer -> output layer, via a buffer of the expert's exact width.
-    MatStorageT<BF16> C1_narrow("C1_n",
-                                Extents2D(expert_size, expert_ff_hidden_dim),
-                                env.ctx.allocator, MatPadding::kOdd);
-    for (size_t i = 0; i < expert_size; ++i) {
-      memcpy(C1_narrow.Row(i), C1.Row(i), expert_ff_hidden_dim * sizeof(BF16));
+    if (C1.Cols() == expert_ff_hidden_dim) {
+      CallMatMul(C1, layer.moe_linear_w[expert_idx],
+                 /*add=*/nullptr, env, expert_out, options);
+    } else {
+      MatStorageT<BF16> C1_narrow("C1_n",
+                                  Extents2D(expert_size, expert_ff_hidden_dim),
+                                  env.ctx.allocator, MatPadding::kOdd);
+      for (size_t i = 0; i < expert_size; ++i) {
+        hwy::CopyBytes(C1.Row(i), C1_narrow.Row(i),
+                       expert_ff_hidden_dim * sizeof(BF16));
+      }
+      CallMatMul(C1_narrow, layer.moe_linear_w[expert_idx],
+                 /*add=*/nullptr, env, expert_out, options);
     }
-    CallMatMul(C1_narrow, layer.moe_linear_w[expert_idx],
-               /*add=*/nullptr, env, expert_out, options);
   }
 
   static HWY_NOINLINE void ComputeAllExpertOutputs(
@@ -1471,6 +1523,89 @@ void DeepSeekTransformerLayer(size_t num_tokens, size_t layer_idx,
   }
 }
 
+void DeepSeekMaybeSaveDSparkTarget(size_t layer_idx,
+                                   Activations& activations) {
+  if (HWY_LIKELY(activations.dspark_main_hiddens.IsEmpty())) {
+    return;
+  }
+  const size_t num_layers = activations.attention.config.num_layers;
+  if (layer_idx < num_layers - 3 || layer_idx >= num_layers) {
+    return;
+  }
+  const size_t model_dim = activations.x.Cols();
+  const size_t hc_mult = activations.attention.config.hc_mult;
+  const size_t col_offset = (layer_idx - (num_layers - 3)) * model_dim;
+  const float inv_mult = 1.0f / static_cast<float>(hc_mult);
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t N = hn::Lanes(df);
+  const VF vinv_mult = hn::Set(df, inv_mult);
+  HWY_DASSERT(model_dim % N == 0);
+  for (size_t r = 0; r < activations.x.Rows(); ++r) {
+    const float* HWY_RESTRICT s = activations.hc_streams.Row(r);
+    float* HWY_RESTRICT dst =
+        activations.dspark_main_hiddens.Row(r) + col_offset;
+    for (size_t c = 0; c < model_dim; c += N) {
+      VF vsum = hn::Zero(df);
+      for (size_t i = 0; i < hc_mult; ++i) {
+        vsum = hn::Add(vsum, hn::LoadU(df, s + i * model_dim + c));
+      }
+      hn::StoreU(hn::Mul(vsum, vinv_mult), df, dst + c);
+    }
+  }
+}
+
+void DeepSeekCommitDSparkKV(size_t num_tokens, size_t pos_base,
+                            const WeightsPtrs& weights,
+                            Activations& activations, QBatch& qbatch,
+                            MatMulEnv& env) {
+  if (weights.mtp_layers.empty() || activations.dspark_main_hiddens.IsEmpty() ||
+      num_tokens == 0) {
+    return;
+  }
+  const ModelConfig& config = activations.attention.config;
+  const size_t model_dim = config.model_dim;
+  const LayerConfig mtp_lc = config.MTPLayerConfig();
+  const size_t kv_a_dim = mtp_lc.KVLatentDim();
+  const size_t rope_dim = mtp_lc.rope_head_dim;
+  const float* HWY_RESTRICT inv_ts =
+      activations.mla_inv_timescale.PackedScale1();
+  CompressPerThread tls;
+
+  for (size_t r = 0; r < num_tokens; ++r) {
+    const size_t pos = pos_base + r;
+    HWY_ALIGN float ffw_row[kDSMaxHeadDim * 8];
+    MatPtrT<float> ffw_view("ffw_row", Extents2D(1, model_dim));
+    ffw_view.SetPtr(ffw_row, model_dim);
+
+    MatPtrT<float> r_view("r_view", Extents2D(1, 3 * model_dim));
+    r_view.SetPtr(activations.dspark_main_hiddens.Row(r), 3 * model_dim);
+    CallMatMul(r_view, weights.mtp_main_proj, /*add=*/nullptr, env, ffw_view);
+
+    HWY_ALIGN BF16 main_x[kDSMaxHeadDim * 8];
+    MatPtrT<BF16> main_x_view("main_x", Extents2D(1, model_dim));
+    main_x_view.SetPtr(main_x, model_dim);
+    RMSNormBatched</*kPlainWeight=*/true>(ffw_view, weights.mtp_main_norm,
+                                          main_x_view, env.ctx);
+
+    for (size_t l = 0; l < weights.mtp_layers.size(); ++l) {
+      const size_t mtp_layer_idx = config.num_layers + l;
+      const LayerWeightsPtrs& layer = weights.mtp_layers[l];
+      HWY_ALIGN float main_kv[kDSMaxLatentDim];
+      MatPtrT<float> main_kv_view("main_kv", Extents2D(1, kv_a_dim));
+      main_kv_view.SetPtr(main_kv, kv_a_dim);
+      CallMatMul(main_x_view, layer.mla_kv_a, /*add=*/nullptr, env, main_kv_view);
+      ScaledRMSNorm(layer.mla_kv_a_norm, main_kv, kv_a_dim, env.ctx, 0);
+      Rope(main_kv + kv_a_dim - rope_dim, rope_dim, inv_ts,
+           static_cast<int>(pos), env.ctx, 0);
+      KV_t* HWY_RESTRICT dst =
+          qbatch.KV(0).kv_cache.Row(pos) +
+          LatentLayerOffset(qbatch.KV(0), mtp_layer_idx, mtp_lc);
+      Compress(main_kv, kv_a_dim, tls, MakeSpan(dst, kv_a_dim), 0);
+    }
+  }
+}
+
 // Final norm before the output head with plain weights: DeepSeek checkpoints
 // store the true scale, so gemma's (1 + w) RMSNormBatched must not be used.
 void DeepSeekFinalNorm(const WeightsPtrs& weights, Activations& activations,
@@ -1505,8 +1640,8 @@ void DeepSeekMTPStep(size_t num_tokens, const int* next_tokens,
   // Stash h = streams in hc_tmp, embed the next tokens into x.
   activations.token_ids.resize(num_tokens);
   for (size_t r = 0; r < num_tokens; ++r) {
-    memcpy(activations.hc_tmp.Row(r), activations.hc_streams.Row(r),
-           hc_mult * model_dim * sizeof(float));
+    hwy::CopyBytes(activations.hc_streams.Row(r), activations.hc_tmp.Row(r),
+                   hc_mult * model_dim * sizeof(float));
     activations.token_ids[r] = next_tokens[r];
     // Raw embedding row (DeepSeek does not scale embeddings), then enorm.
     float* HWY_RESTRICT e = activations.x.Row(r);
@@ -1552,6 +1687,214 @@ void DeepSeekMTPStep(size_t num_tokens, const int* next_tokens,
                            ? weights.lm_head
                            : weights.embedder_input_embedding;
   CallMatMul(activations.x_bf, head, /*add=*/nullptr, env, activations.logits);
+}
+
+static void ApplyMarkovHeadBias(const float* HWY_RESTRICT markov_embed,
+                                const MatPtr& markov_w2,
+                                float* HWY_RESTRICT logits,
+                                size_t vocab_size, MatMulEnv& env) {
+  if (!markov_w2.HasPtr() || markov_w2.IsEmpty() || vocab_size == 0) {
+    return;
+  }
+  const size_t cols = markov_w2.Cols();
+  if (cols != 256) return;
+
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t N = hn::Lanes(df);
+
+  // Find max base logit to prune candidate vocabulary items.
+  const float max_val = hn::MaxValue(df, logits, vocab_size);
+  const float threshold = max_val - 15.0f;
+
+  for (size_t v = 0; v < vocab_size; ++v) {
+    if (logits[v] >= threshold) {
+      HWY_ALIGN float w2_row[256];
+      ReadRowF32(markov_w2, v, w2_row, 256);
+      VF vsum = hn::Zero(df);
+      for (size_t c = 0; c < 256; c += N) {
+        vsum = hn::Add(vsum, hn::Mul(hn::Load(df, markov_embed + c),
+                                    hn::Load(df, w2_row + c)));
+      }
+      logits[v] += hn::ReduceSum(df, vsum);
+    }
+  }
+}
+
+static float ComputeDSparkConfidence(const float* HWY_RESTRICT x_row,
+                                     const float* HWY_RESTRICT markov_embed,
+                                     bool has_markov, const MatPtr& conf_proj,
+                                     size_t model_dim) {
+  if (!conf_proj.HasPtr() || conf_proj.Rows() == 0 || conf_proj.Cols() == 0) {
+    return 1.0f;
+  }
+  const size_t conf_cols = conf_proj.Cols();
+  HWY_ALIGN float conf_weights[kDSMaxHeadDim * 8 + 256];
+  if (conf_cols > sizeof(conf_weights) / sizeof(conf_weights[0])) return 1.0f;
+  ReadRowF32(conf_proj, 0, conf_weights, conf_cols);
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  const size_t N = hn::Lanes(df);
+
+  const size_t x_dim = HWY_MIN(model_dim, conf_cols);
+  VF vscore = hn::Zero(df);
+  size_t c = 0;
+  for (; c + N <= x_dim; c += N) {
+    vscore = hn::MulAdd(hn::LoadU(df, x_row + c),
+                        hn::Load(df, conf_weights + c), vscore);
+  }
+  float score = hn::ReduceSum(df, vscore);
+  for (; c < x_dim; ++c) {
+    score += x_row[c] * conf_weights[c];
+  }
+  if (has_markov && conf_cols > model_dim) {
+    const size_t m_dim = HWY_MIN(size_t{256}, conf_cols - model_dim);
+    VF vmarkov = hn::Zero(df);
+    size_t mc = 0;
+    for (; mc + N <= m_dim; mc += N) {
+      vmarkov = hn::MulAdd(hn::LoadU(df, markov_embed + mc),
+                           hn::LoadU(df, conf_weights + model_dim + mc),
+                           vmarkov);
+    }
+    score += hn::ReduceSum(df, vmarkov);
+    for (; mc < m_dim; ++mc) {
+      score += markov_embed[mc] * conf_weights[model_dim + mc];
+    }
+  }
+  return 1.0f / (1.0f + expf(-score));
+}
+
+// ------------------------------ DSpark MTP ------------------------------
+// Runs the parallel DSpark multi-layer speculative block.
+// In prefill mode (out_drafts == nullptr): runs forward pass for `num_draft_tokens`
+// prompt tokens in `next_tokens`.
+// In draft mode (out_drafts != nullptr): consumes `pending_token` (next_tokens[0]),
+// projects target layer features (dspark_main_hiddens.Row(0)) to main_x, embeds
+// [pending, noise, noise, ..., noise] of size block_size = 1 + num_draft_tokens,
+// runs all MTP layers in parallel, collapses mHC, applies the Markov head
+// transition bias autoregressively, and evaluates confidence scores.
+size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,
+                          int* out_drafts, float* out_confidences,
+                          float confidence_threshold,
+                          const WeightsPtrs& weights, Activations& activations,
+                          QBatch& qbatch, MatMulEnv& env) {
+  const ModelConfig& config = activations.attention.config;
+  const size_t model_dim = config.model_dim;
+  const size_t hc_mult = config.hc_mult;
+  const size_t vocab_size = config.vocab_size;
+
+  if (out_drafts == nullptr) {
+    // Prefill mode: next_tokens contains num_draft_tokens tokens.
+    const size_t num_tokens = num_draft_tokens;
+    activations.SetBatchSize(num_tokens);
+    activations.token_ids.resize(num_tokens);
+    for (size_t r = 0; r < num_tokens; ++r) {
+      activations.token_ids[r] = next_tokens[r];
+    }
+    CallMatMul(activations.dspark_main_hiddens, weights.mtp_main_proj,
+               /*add=*/nullptr, env, activations.ffw_out);
+    RMSNormBatched</*kPlainWeight=*/true>(activations.ffw_out,
+                                          weights.mtp_main_norm,
+                                          activations.x_bf, env.ctx);
+    for (size_t r = 0; r < num_tokens; ++r) {
+      float* HWY_RESTRICT e = activations.x.Row(r);
+      const size_t tok = static_cast<size_t>(next_tokens[r]) % vocab_size;
+      ReadRowF32(weights.embedder_input_embedding, tok, e, model_dim);
+      float* HWY_RESTRICT h = activations.hc_streams.Row(r);
+      for (size_t stream = 0; stream < hc_mult; ++stream) {
+        hwy::CopyBytes(e, h + stream * model_dim, model_dim * sizeof(float));
+      }
+    }
+    for (size_t l = 0; l < weights.mtp_layers.size(); ++l) {
+      const size_t mtp_layer_idx = config.num_layers + l;
+      DeepSeekTransformerLayer(num_tokens, mtp_layer_idx, weights.mtp_layers[l],
+                               activations, qbatch, env);
+    }
+    return num_tokens;
+  }
+
+  // Speculative Draft Mode:
+  const size_t num_tokens = num_draft_tokens;
+  activations.SetBatchSize(num_tokens);
+  activations.token_ids.resize(num_tokens);
+  activations.token_ids[0] = next_tokens[0];  // committed token (pending)
+  for (size_t r = 1; r < num_tokens; ++r) {
+    activations.token_ids[r] = kDSNoiseTokenId;
+  }
+
+  // Target features from committed token (row 0).
+  activations.dspark_main_hiddens.OverrideRows(1);
+  CallMatMul(activations.dspark_main_hiddens, weights.mtp_main_proj,
+             /*add=*/nullptr, env, activations.ffw_out);
+  RMSNormBatched</*kPlainWeight=*/true>(activations.ffw_out,
+                                        weights.mtp_main_norm,
+                                        activations.x_bf, env.ctx);
+
+  // Embed draft input tokens and expand to residual streams.
+  for (size_t r = 0; r < num_tokens; ++r) {
+    float* HWY_RESTRICT e = activations.x.Row(r);
+    const size_t tok =
+        static_cast<size_t>(activations.token_ids[r]) % config.vocab_size;
+    ReadRowF32(weights.embedder_input_embedding, tok, e, model_dim);
+    float* HWY_RESTRICT h = activations.hc_streams.Row(r);
+    for (size_t stream = 0; stream < hc_mult; ++stream) {
+      hwy::CopyBytes(e, h + stream * model_dim, model_dim * sizeof(float));
+    }
+  }
+
+  // Run all MTP layers in parallel across the num_tokens rows.
+  for (size_t l = 0; l < weights.mtp_layers.size(); ++l) {
+    const size_t mtp_layer_idx = config.num_layers + l;
+    DeepSeekTransformerLayer(num_tokens, mtp_layer_idx, weights.mtp_layers[l],
+                             activations, qbatch, env);
+  }
+
+  // Collapse mHC residual streams, apply MTP final norm, and LM head projection.
+  HCHeadCollapse(weights.mtp_hc_fn, weights.mtp_hc_base, weights.mtp_hc_scale,
+                 activations, env);
+  RMSNormBatched</*kPlainWeight=*/true>(activations.x, weights.mtp_norm,
+                                        activations.x_bf, env.ctx);
+  const MatPtr& head = weights.lm_head.HasPtr()
+                           ? weights.lm_head
+                           : weights.embedder_input_embedding;
+  CallMatMul(activations.x_bf, head, /*add=*/nullptr, env, activations.logits);
+
+  // Autoregressive Markov Head refinement and confidence scoring.
+  int curr_tok = next_tokens[0];
+  size_t actual_drafts = 0;
+  const bool has_markov =
+      weights.mtp_markov_w1.HasPtr() && weights.mtp_markov_w2.HasPtr();
+
+  for (size_t i = 0; i < num_draft_tokens; ++i) {
+    HWY_ALIGN float markov_embed[256];
+    if (has_markov) {
+      ReadRowF32(weights.mtp_markov_w1,
+                 static_cast<size_t>(curr_tok) % config.vocab_size,
+                 markov_embed, 256);
+      ApplyMarkovHeadBias(markov_embed, weights.mtp_markov_w2,
+                          activations.logits.Row(i), config.vocab_size, env);
+    }
+    const int draft_tok = Top1OfSoftmax(activations.logits.RowSpan(i)).token;
+    out_drafts[i] = draft_tok;
+    curr_tok = draft_tok;
+    actual_drafts = i + 1;
+
+    if (weights.mtp_conf_proj.HasPtr()) {
+      const float conf = ComputeDSparkConfidence(
+          activations.x.Row(i), markov_embed, has_markov, weights.mtp_conf_proj,
+          model_dim);
+      if (out_confidences != nullptr) {
+        out_confidences[i] = conf;
+      }
+      if (confidence_threshold > 0.0f && conf < confidence_threshold) {
+        break;
+      }
+    }
+  }
+
+  return actual_drafts;
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

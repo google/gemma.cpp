@@ -333,6 +333,13 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
                (std::string(ModelPrefix(*deduced_model)) + suffix).c_str(),
                (std::string(ModelPrefix(config.model)) + suffix).c_str());
     }
+    for (const std::string& key : reader.Keys()) {
+      if (key.find("mtp_main_proj") != std::string::npos ||
+          key.find("mtp.0.main_proj") != std::string::npos) {
+        config.num_mtp_layers = 3;
+        break;
+      }
+    }
     return config;
   }
 

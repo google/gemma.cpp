@@ -49,17 +49,47 @@ namespace gcpp {
                        bool compute_logits, const WeightsPtrs& weights,        \
                        Activations& activations, QBatch& qbatch,               \
                        MatMulEnv& env);                                        \
+  /* DSpark multi-layer speculative block: consumes dspark_main_hiddens plus   \
+     next_tokens, runs all num_mtp_layers speculative layers, and optionally    \
+     computes draft logits via final norm and output head. */                   \
+  size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,    \
+                            int* out_drafts, float* out_confidences,           \
+                            float confidence_threshold,                        \
+                            const WeightsPtrs& weights,                        \
+                            Activations& activations, QBatch& qbatch,          \
+                            MatMulEnv& env);                                   \
   /* Final norm (x -> x_bf) with plain weights; DeepSeek checkpoints store     \
      the true scale, unlike gemma's (1 + w) convention. */                     \
   void DeepSeekFinalNorm(const WeightsPtrs& weights, Activations& activations, \
                          MatMulEnv& env);                                      \
-  /* Greedy MTP self-speculative decoding driver (deepseek_spec.cc);           \
-     called by GenerateT when RuntimeConfig::use_mtp is set. */                \
+  void ReadRowF32(const MatPtr& w, size_t row, float* HWY_RESTRICT out,        \
+                  size_t n);                                                   \
+  void ReadRowBF16(const MatPtr& w, size_t row, BF16* HWY_RESTRICT out,        \
+                   size_t n);                                                  \
   void GenerateSpecV4(const ModelConfig& config,                               \
                       const RuntimeConfig& runtime_config,                     \
                       const WeightsPtrs& weights, Activations& activations,    \
                       QBatch& qbatch, MatMulEnv& env,                          \
                       TimingInfo& timing_info);                                \
+  /* DSpark EAGLE3 feature fusion hook: saves mean residual stream at target  \
+     layers 40, 41, 42 into activations.dspark_main_hiddens. No-op unless     \
+     config.num_mtp_layers > 1 and layer_idx is a target layer. */            \
+  void DeepSeekMaybeSaveDSparkTarget(size_t layer_idx,                        \
+                                     Activations& activations);               \
+  /* Commits target features for num_tokens starting at pos_base into the      \
+     draft layers' SWA KV cache. */                                            \
+  void DeepSeekCommitDSparkKV(size_t num_tokens, size_t pos_base,              \
+                              const WeightsPtrs& weights,                      \
+                              Activations& activations, QBatch& qbatch,        \
+                              MatMulEnv& env);                                 \
+  /* DSpark EAGLE3 multi-layer speculative decoding driver                    \
+     (deepseek_spec.cc); called by GenerateSpecV4 when                        \
+     config.num_mtp_layers > 1. */                                            \
+  void GenerateDSparkV4(const ModelConfig& config,                            \
+                        const RuntimeConfig& runtime_config,                  \
+                        const WeightsPtrs& weights, Activations& activations, \
+                        QBatch& qbatch, MatMulEnv& env,                       \
+                        TimingInfo& timing_info);                              \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 

@@ -305,6 +305,7 @@ struct ConvertArgs {
   bool verify_only = false;
   // With verify_only: check only the MTP tensors (fast pre-flight).
   bool mtp_only = false;
+  bool dspark = false;
 };
 
 class Converter {
@@ -463,7 +464,7 @@ class Converter {
     expert = -1;
     std::string base = name;
     // Up to two numeric suffixes.
-    for (int pass = 0; pass < 2; ++pass) {
+    for (size_t pass = 0; pass < 2; ++pass) {
       const size_t us = base.rfind('_');
       if (us == std::string::npos || us + 1 >= base.size()) break;
       bool numeric = true;
@@ -487,8 +488,14 @@ class Converter {
   }
 
   void Run() {
-    const ModelConfig config(Model::DEEPSEEK4_FLASH, Type::kSFP,
-                             PromptWrapping::GEMMA_IT);
+    const bool is_dspark =
+        args_.dspark ||
+        (checkpoint_.Find("mtp.0.main_proj.weight") != nullptr);
+    ModelConfig config(Model::DEEPSEEK4_FLASH, Type::kSFP,
+                       PromptWrapping::GEMMA_IT);
+    if (is_dspark) {
+      config.num_mtp_layers = 3;
+    }
     WeightsPtrs weights(config);
     const bool has_mtp = config.num_mtp_layers > 0;
     const LayerConfig mtp_lc =
@@ -508,22 +515,27 @@ class Converter {
       }
       const size_t rows = mat.Rows(), cols = mat.Cols();
       const size_t num = mat.Extents().Area();
-      // The MTP block is registered as layer index `num_layers`; its source
-      // tensors live under "mtp.0." instead of "layers.N.".
-      const bool is_mtp = layer >= static_cast<int>(config.num_layers);
+      // The MTP block is registered as layer indices
+      // `num_layers`..`num_layers + num_mtp_layers - 1`; its source tensors
+      // live under "mtp.0.".."mtp.k.".
+      const bool is_mtp =
+          layer >= 0 && static_cast<size_t>(layer) >= config.num_layers;
       if (args_.mtp_only && !is_mtp && base.rfind("mtp_", 0) != 0) return;
       const LayerConfig* lc =
           layer < 0 ? nullptr
                     : (is_mtp ? &mtp_lc : &config.layer_configs[layer]);
+      const size_t mtp_idx =
+          is_mtp ? (static_cast<size_t>(layer) - config.num_layers) : 0;
       const std::string P =
           layer < 0
               ? ""
-              : (is_mtp ? "mtp.0." : "layers." + std::to_string(layer) + ".");
+              : (is_mtp ? "mtp." + std::to_string(mtp_idx) + "."
+                        : "layers." + std::to_string(layer) + ".");
 
       std::string src;
       // Transform: 0 = none, 1 = tail rows per segment, 2 = tail cols per
       // segment, 3 = flat tail elems per segment.
-      int transform = 0;
+      size_t transform = 0;
       size_t seg = 0, tail = 0;
 
       if (base == "c_embedding") {
@@ -653,20 +665,76 @@ class Converter {
       } else if (base == "mtp_hnorm") {
         src = "mtp.0.hnorm.weight";
       } else if (base == "mtp_norm") {
-        src = "mtp.0.norm.weight";
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = last_mtp + "norm.weight";
       } else if (base == "mtp_hc_fn") {
-        src = "mtp.0.hc_head_fn";
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = last_mtp + "hc_head_fn";
       } else if (base == "mtp_hc_base") {
-        src = "mtp.0.hc_head_base";
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = last_mtp + "hc_head_base";
       } else if (base == "mtp_hc_scale") {
-        src = "mtp.0.hc_head_scale";
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = last_mtp + "hc_head_scale";
+      } else if (base == "mtp_main_proj") {
+        src = "mtp.0.main_proj.weight";
+      } else if (base == "mtp_main_norm") {
+        src = "mtp.0.main_norm.weight";
+      } else if (base == "mtp_markov_w1") {
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = checkpoint_.Find(last_mtp + "markov_head.markov_w1.weight") !=
+                      nullptr
+                  ? last_mtp + "markov_head.markov_w1.weight"
+                  : "mtp.0.markov_head.markov_w1.weight";
+      } else if (base == "mtp_markov_w2") {
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = checkpoint_.Find(last_mtp + "markov_head.markov_w2.weight") !=
+                      nullptr
+                  ? last_mtp + "markov_head.markov_w2.weight"
+                  : "mtp.0.markov_head.markov_w2.weight";
+      } else if (base == "mtp_conf_proj") {
+        const std::string last_mtp =
+            "mtp." + std::to_string(config.num_mtp_layers > 0
+                                        ? config.num_mtp_layers - 1
+                                        : 0) +
+            ".";
+        src = checkpoint_.Find(last_mtp + "confidence_head.proj.weight") !=
+                      nullptr
+                  ? last_mtp + "confidence_head.proj.weight"
+                  : "mtp.0.confidence_head.proj.weight";
       } else {
         HWY_ABORT("No mapping for tensor %s (base %s)", name.c_str(),
                   base.c_str());
       }
 
-      if (args_.verify_only && checkpoint_.Find(src) == nullptr) {
-        ++num_skipped_;  // shard not downloaded yet
+      if (checkpoint_.Find(src) == nullptr) {
+        if (args_.verify_only) {
+          ++num_skipped_;  // shard not downloaded yet
+        }
         return;
       }
       std::vector<float> data = LoadF32(src, num);
@@ -739,6 +807,8 @@ int Main(int argc, char** argv) {
       args.verify_only = true;
     } else if (a == "--mtp_only") {
       args.mtp_only = true;
+    } else if (a == "--dspark") {
+      args.dspark = true;
     } else {
       fprintf(stderr, "Unknown arg %s\n", a.c_str());
       return 1;

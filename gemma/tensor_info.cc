@@ -1014,10 +1014,13 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
     }
   }
   if (config.num_mtp_layers > 0) {
-    // The MTP block is a full extra layer registered at index `num_layers`
-    // (suffix `_43` for DeepSeek-V4-Flash), outside the main stack.
-    AddLayerTensors(config, config.MTPLayerConfig(),
-                    config.layer_configs.size());
+    // The MTP block is one or more extra layers registered starting at index
+    // `num_layers` (e.g. suffix `_43`, `_44`, `_45` for DSpark), outside the
+    // main stack.
+    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+      AddLayerTensors(config, config.MTPLayerConfig(),
+                      config.layer_configs.size() + i);
+    }
   }
   for (size_t i = 0; i < config.vit_config.layer_configs.size(); ++i) {
     AddImageLayerTensors(config, config.vit_config.layer_configs[i], i);

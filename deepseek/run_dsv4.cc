@@ -82,6 +82,9 @@ int Main(int argc, char** argv) {
   std::string prompt_text;
   std::string tokenizer_json;
   bool use_mtp = false;
+  size_t mtp_draft_horizon = 7;
+  float mtp_confidence_threshold = 0.0f;
+  size_t max_generated_tokens = 0;
   bool thinking = false;
   bool raw = false;
   bool tokenize_only = false;
@@ -97,6 +100,13 @@ int Main(int argc, char** argv) {
       tokenizer_json = argv[++i];
     } else if (arg == "--mtp") {
       use_mtp = true;
+    } else if (arg == "--mtp_draft_horizon" && i + 1 < argc) {
+      mtp_draft_horizon = static_cast<size_t>(std::stoull(argv[++i]));
+    } else if (arg == "--mtp_confidence_threshold" && i + 1 < argc) {
+      mtp_confidence_threshold = std::stof(argv[++i]);
+    } else if ((arg == "--max_generated_tokens" || arg == "--max_tokens") &&
+               i + 1 < argc) {
+      max_generated_tokens = static_cast<size_t>(std::stoull(argv[++i]));
     } else if (arg == "--thinking") {
       thinking = true;
     } else if (arg == "--raw") {
@@ -186,8 +196,13 @@ int Main(int argc, char** argv) {
       .use_spinning = args.threading.spin,
   };
   args.inference.CopyTo(runtime_config);
+  if (max_generated_tokens > 0) {
+    runtime_config.max_generated_tokens = max_generated_tokens;
+  }
   runtime_config.use_mtp = use_mtp;
-  if (use_mtp) fprintf(stderr, "MTP speculative decoding enabled.\n");
+  runtime_config.mtp_draft_horizon = mtp_draft_horizon;
+  runtime_config.mtp_confidence_threshold = mtp_confidence_threshold;
+  if (use_mtp) fprintf(stderr, "DSpark MTP speculative decoding enabled.\n");
 
   TimingInfo timing_info = {.verbosity = args.inference.verbosity};
   const PromptTokens prompt(prompt_vec);

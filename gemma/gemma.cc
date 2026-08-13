@@ -114,6 +114,7 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   if (layer_config.type == LayerAttentionType::kDeepSeekMLA) {
     DeepSeekTransformerLayer(num_tokens, layer_idx, layer, activations, qbatch,
                              env);
+    DeepSeekMaybeSaveDSparkTarget(layer_idx, activations);
     return;
   }
   if (layer_config.IsMoE() &&
@@ -1233,8 +1234,16 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
         for (size_t ti = 0; ti < tbatch_size; ++ti) {
           next[ti] = qbatch_1.Prompt(0)[tbatch_start + ti + 1];
         }
-        DeepSeekMTPStep(tbatch_size, next.data(), /*compute_logits=*/false,
-                        weights, activations, qbatch_1, env);
+        if (weights.mtp_main_proj.HasPtr() ||
+            config.model == Model::DEEPSEEK4_FLASH) {
+          DeepSeekDSparkStep(tbatch_size, next.data(), /*out_drafts=*/nullptr,
+                             /*out_confidences=*/nullptr,
+                             /*confidence_threshold=*/0.0f, weights,
+                             activations, qbatch_1, env);
+        } else {
+          DeepSeekMTPStep(tbatch_size, next.data(), /*compute_logits=*/false,
+                          weights, activations, qbatch_1, env);
+        }
       }
 
       qbatch_1.MutablePos(0) += tbatch_size;
@@ -1605,14 +1614,13 @@ static void GenerateT(const ModelConfig& config,
 
   if (HWY_UNLIKELY(runtime_config.use_mtp)) {
     if (!weights.mtp_layers.empty() && qbatch.Size() == 1 &&
-        runtime_config.top_k == 1 && !runtime_config.sample_func &&
         !runtime_config.accept_token) {
       GenerateSpecV4(config, runtime_config, weights, activations, qbatch, env,
                      timing_info);
       return;
     }
     HWY_WARN(
-        "use_mtp requires MTP weights, a single query and top_k == 1 (greedy);"
+        "use_mtp requires MTP weights and a single query;"
         " falling back to normal decoding.");
   }
 

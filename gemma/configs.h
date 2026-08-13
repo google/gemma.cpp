@@ -774,8 +774,10 @@ struct ModelConfig : public IFields {
     for (const auto& lc : layer_configs) {
       cols += lc.CacheLayerSize();
     }
-    // The MTP block caches its latents in an extra trailing segment.
-    if (num_mtp_layers > 0) cols += MTPLayerConfig().CacheLayerSize();
+    // The MTP block caches its latents in an extra trailing segment per layer.
+    if (num_mtp_layers > 0) {
+      cols += num_mtp_layers * MTPLayerConfig().CacheLayerSize();
+    }
     return cols;
   }
 

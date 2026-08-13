@@ -185,6 +185,8 @@ struct RuntimeConfig {
   // prediction block. Requires num_mtp_layers > 0 weights, a single query and
   // top_k == 1; otherwise falls back to normal decoding with a warning.
   bool use_mtp = false;
+  size_t mtp_draft_horizon = 7;
+  float mtp_confidence_threshold = 0.0f;
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
@@ -217,6 +219,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   std::string eot_line;
   std::string attention_impl;
   std::string kv_cache_type;
+  bool use_mtp;
+  size_t mtp_draft_horizon;
+  float mtp_confidence_threshold;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -280,6 +285,13 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "KV cache data type (f32, bf16, int8). If empty, deduced from "
             "attention_impl.",
             2);
+    visitor(use_mtp, "use_mtp", false,
+            "Enable DeepSeek MTP self-speculative decoding (default: false)", 2);
+    visitor(mtp_draft_horizon, "mtp_draft_horizon", size_t{7},
+            "Number of MTP draft tokens to speculate per step (default: 7)", 2);
+    visitor(mtp_confidence_threshold, "mtp_confidence_threshold", 0.0f,
+            "Minimum top-1 probability threshold to accept MTP drafts (default: 0.0)",
+            2);
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
@@ -313,6 +325,9 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
         HWY_ABORT("Unknown kv_cache_type: %s\n", kv_cache_type.c_str());
       }
     }
+    runtime_config.use_mtp = use_mtp;
+    runtime_config.mtp_draft_horizon = mtp_draft_horizon;
+    runtime_config.mtp_confidence_threshold = mtp_confidence_threshold;
   }
 };
 
