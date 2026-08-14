@@ -33,6 +33,19 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Enable with: cmake -DGEMMA_ONEDNN_BRGEMM=ON ...
 option(GEMMA_ONEDNN_BRGEMM "Enable OneDNN BRGeMM micro-kernel for MatMul (x86-64)" OFF)
 
+# Optional: OneDNN matmul primitive via the threadpool runtime (x86-64 only).
+# Enable with: cmake -DGEMMA_ONEDNN_MATMUL=ON ...
+option(GEMMA_ONEDNN_MATMUL "Enable OneDNN matmul primitive (threadpool runtime) for MatMul (x86-64)" OFF)
+
+# oneDNN's CPU runtime (SEQ vs THREADPOOL) is a whole-library compile-time
+# choice, so the two oneDNN backends cannot share one oneDNN build.
+if(GEMMA_ONEDNN_BRGEMM AND GEMMA_ONEDNN_MATMUL)
+  message(FATAL_ERROR
+    "GEMMA_ONEDNN_BRGEMM and GEMMA_ONEDNN_MATMUL are mutually exclusive: "
+    "oneDNN's CPU runtime (SEQ for BRGeMM vs THREADPOOL for the matmul "
+    "primitive) is a whole-library compile-time choice. Enable only one.")
+endif()
+
 if(EMSCRIPTEN)
   add_compile_options("-sMEMORY64")
   add_compile_options("-msimd128")
@@ -119,6 +132,24 @@ if(GEMMA_ONEDNN_BRGEMM)
   message(STATUS "OneDNN BRGeMM micro-kernel support enabled")
 endif()
 
+# OneDNN matmul primitive support via the threadpool runtime (optional, x86-64).
+# Same oneDNN source as the BRGeMM backend, but built with the THREADPOOL CPU
+# runtime instead of SEQ so oneDNN can call back into gemma.cpp's thread pool.
+if(GEMMA_ONEDNN_MATMUL)
+  set(DNNL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(DNNL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(DNNL_CPU_RUNTIME "THREADPOOL" CACHE STRING "" FORCE)
+  set(DNNL_GPU_RUNTIME "NONE" CACHE STRING "" FORCE)
+  set(DNNL_LIBRARY_TYPE "STATIC" CACHE STRING "" FORCE)
+  FetchContent_Declare(onednn
+    GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
+    GIT_TAG v3.11
+    EXCLUDE_FROM_ALL
+  )
+  FetchContent_MakeAvailable(onednn)
+  message(STATUS "OneDNN matmul primitive (threadpool runtime) support enabled")
+endif()
+
 # Base source files
 set(SOURCES
   compression/compress-inl.h
@@ -193,6 +224,8 @@ set(SOURCES
   ops/matmul.h
   ops/brgemm.h
   ops/brgemm-inl.h
+  ops/onednn_matmul.h
+  ops/onednn_matmul-inl.h
   ops/ops-inl.h
   ops/ops.h
   ops/sum-inl.h
@@ -255,6 +288,10 @@ if(GEMMA_ONEDNN_BRGEMM)
   target_compile_definitions(libgemma PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
   target_link_libraries(libgemma dnnl)
 endif()
+if(GEMMA_ONEDNN_MATMUL)
+  target_compile_definitions(libgemma PUBLIC GEMMA_ONEDNN_MATMUL=1)
+  target_link_libraries(libgemma dnnl)
+endif()
 install(TARGETS libgemma DESTINATION lib)
 
 # Shared library target for C# interop
@@ -281,6 +318,10 @@ target_compile_definitions(gemma_shared
 target_compile_options(gemma_shared PRIVATE $<$<AND:$<PLATFORM_ID:Windows>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-Wno-deprecated-declarations>)
 if(GEMMA_ONEDNN_BRGEMM)
   target_compile_definitions(gemma_shared PUBLIC GEMMA_ONEDNN_BRGEMM=1 DNNL_EXPERIMENTAL_UKERNEL)
+  target_link_libraries(gemma_shared PRIVATE dnnl)
+endif()
+if(GEMMA_ONEDNN_MATMUL)
+  target_compile_definitions(gemma_shared PUBLIC GEMMA_ONEDNN_MATMUL=1)
   target_link_libraries(gemma_shared PRIVATE dnnl)
 endif()
 install(TARGETS gemma_shared DESTINATION lib)

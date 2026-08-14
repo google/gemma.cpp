@@ -121,6 +121,9 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
   double keep = 0.0;
   MMPerKey* per_key;
+#if GEMMA_ONEDNN_MATMUL
+  bool first_onednn_call = true;
+#endif
   // Until enough samples collected *after* autotuning finished:
   while (times.size() < num_samples) {
     const double t0 = hwy::platform::Now();
@@ -133,6 +136,14 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     bool done = per_key->autotune.Best();
 #if GEMMA_ONEDNN_BRGEMM
     done = done || per_key->brgemm_autotune.Best();
+#endif
+#if GEMMA_ONEDNN_MATMUL
+    // oneDNN has no autotune sweep; exclude only the first (JIT + weight
+    // reorder) call, whose cost is amortized by the primitive/weights caches.
+    if (per_key->onednn_built) {
+      done = done || !first_onednn_call;
+      first_onednn_call = false;
+    }
 #endif
     if (done) times.push_back(elapsed);
   }

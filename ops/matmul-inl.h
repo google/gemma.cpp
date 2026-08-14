@@ -44,6 +44,9 @@
 #if GEMMA_ONEDNN_BRGEMM
 #include "ops/brgemm-inl.h"
 #endif  // GEMMA_ONEDNN_BRGEMM
+#if GEMMA_ONEDNN_MATMUL
+#include "ops/onednn_matmul-inl.h"
+#endif  // GEMMA_ONEDNN_MATMUL
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -1186,6 +1189,22 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     }
   }  // if constexpr BF16/float
 #endif  // GEMMA_ONEDNN_BRGEMM
+
+#if GEMMA_ONEDNN_MATMUL
+  // OneDNN matmul-primitive path for BF16xBF16 via the threadpool runtime.
+  // M == 1 was showing worse performance with OneDNN.
+  if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
+    if (M > 1) {
+      const float scale = A.Scale() * B.Scale();
+      if (DoMatMul_OneDnn(A, B, C_rows, M, K, N, scale, add, env,
+                          cluster_idx)) {
+        per_key.onednn_built = true;
+        return &per_key;
+      }
+      // oneDNN path failed/declined; fall through to standard matmul.
+    }
+  }
+#endif  // GEMMA_ONEDNN_MATMUL
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
   const StridedViewBF A_view =

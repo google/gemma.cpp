@@ -189,6 +189,8 @@ const char* CallerName(Callers caller) {
       return "MoE.ComputeAllExpertOutputs";
     case Callers::kMoEWeightedSumOfExperts:
       return "MoE.WeightedSumOfExperts";
+    case Callers::kOneDnnMatMul:
+      return "OneDnnMatMul";
     case Callers::kOpsAddFromBatched:
       return "Ops.AddFromBatched";
     case Callers::kOpsGroupedRMSNormBatched:

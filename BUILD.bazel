@@ -34,6 +34,17 @@ config_setting(
     define_values = {"gemma_onednn_brgemm": "1"},
 )
 
+# To enable the OneDNN matmul-primitive backend (threadpool runtime), build with:
+#   bazel build --define gemma_onednn_matmul=1 ...
+# This is mutually exclusive with gemma_onednn_brgemm: passing both --defines
+# makes the select()s below match two conditions at once, which Bazel rejects
+# with an "ambiguous select" error -- the intended failure mode, mirroring the
+# CMake FATAL_ERROR and the #error guard in ops/onednn_matmul.h.
+config_setting(
+    name = "gemma_onednn_matmul",
+    define_values = {"gemma_onednn_matmul": "1"},
+)
+
 cc_library(
     name = "basics",
     srcs = ["util/basics.cc"],
@@ -378,11 +389,15 @@ cc_library(
     hdrs = [
         "ops/brgemm.h",
         "ops/matmul.h",
+        "ops/onednn_matmul.h",
     ],
     defines = select({
         ":gemma_onednn_brgemm": [
             "GEMMA_ONEDNN_BRGEMM=1",
             "DNNL_EXPERIMENTAL_UKERNEL",
+        ],
+        ":gemma_onednn_matmul": [
+            "GEMMA_ONEDNN_MATMUL=1",
         ],
         "//conditions:default": [],
     }),
@@ -399,6 +414,7 @@ cc_library(
         "@highway//:profiler",
     ] + select({
         ":gemma_onednn_brgemm": ["@onednn"],
+        ":gemma_onednn_matmul": ["@onednn_tp//:onednn"],
         "//conditions:default": [],
     }),
 )
@@ -410,6 +426,7 @@ cc_library(
     textual_hdrs = [
         "ops/brgemm-inl.h",
         "ops/matmul-inl.h",
+        "ops/onednn_matmul-inl.h",
     ],
     deps = [
         ":allocator",
@@ -427,6 +444,7 @@ cc_library(
         "@highway//:profiler",
     ] + select({
         ":gemma_onednn_brgemm": ["@onednn"],
+        ":gemma_onednn_matmul": ["@onednn_tp//:onednn"],
         "//conditions:default": [],
     }),
 )
@@ -449,6 +467,7 @@ cc_library(
         "ops/brgemm-inl.h",
         "ops/matmul_static-inl.h",
         "ops/matmul-inl.h",
+        "ops/onednn_matmul-inl.h",
     ],
     deps = [
         ":allocator",
@@ -465,6 +484,7 @@ cc_library(
         "@highway//:timer",
     ] + select({
         ":gemma_onednn_brgemm": ["@onednn"],
+        ":gemma_onednn_matmul": ["@onednn_tp//:onednn"],
         "//conditions:default": [],
     }),
 )

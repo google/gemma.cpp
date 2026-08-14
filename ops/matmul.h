@@ -25,6 +25,7 @@
 
 // IWYU pragma: begin_exports
 #include "ops/brgemm.h"  // BRGeMMConfig, GEMMA_ONEDNN_BRGEMM
+#include "ops/onednn_matmul.h"  // GEMMA_ONEDNN_MATMUL
 #include "ops/gilbert.h"
 #include "util/basics.h"
 #include "util/mat.h"
@@ -732,6 +733,11 @@ struct MMPerKey {
 #if GEMMA_ONEDNN_BRGEMM
   MMAutoTune<BRGeMMConfig> brgemm_autotune;
 #endif  // GEMMA_ONEDNN_BRGEMM
+#if GEMMA_ONEDNN_MATMUL
+  // Set true once the oneDNN matmul-primitive path handled this shape, so the
+  // benchmark can exclude the first (JIT + weight-reorder) call from timings.
+  bool onednn_built = false;
+#endif  // GEMMA_ONEDNN_MATMUL
 };
 
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive
@@ -755,9 +761,25 @@ struct MatMulEnv {
   struct PerCluster {
     MMKeys keys;
     std::vector<MMPerKey> per_key;
+#if GEMMA_ONEDNN_MATMUL
+    // Reused buffer for oneDNN's user-managed scratchpad.
+    // Per cluster because `MatMul` can be called concurrently,
+    // once per cluster, for the same `MatMulEnv`, and oneDNN
+    // requires that concurrent executions not share a scratchpad.
+    hwy::AlignedVector<uint8_t> onednn_scratch;
+    // B reordered into the layout oneDNN's matmul kernel wants.
+    // Stored per cluster in case of concurrent execution.
+    OneDnnWeightsCache onednn_weights;
+    static constexpr size_t kOneDnnBytes =
+        sizeof(onednn_scratch) + sizeof(onednn_weights);
+#else
+    static constexpr size_t kOneDnnBytes = 0;
+#endif  // GEMMA_ONEDNN_MATMUL
     // Prevents false sharing.
+    static constexpr size_t kUsedBytes =
+        sizeof(MMKeys) + sizeof(per_key) + kOneDnnBytes;
     HWY_MEMBER_VAR_MAYBE_UNUSED uint8_t
-        padding[HWY_ALIGNMENT - sizeof(MMKeys) - sizeof(per_key)];
+        padding[hwy::RoundUpTo(kUsedBytes, HWY_ALIGNMENT) - kUsedBytes];
   };
   std::vector<PerCluster> per_cluster;
 
