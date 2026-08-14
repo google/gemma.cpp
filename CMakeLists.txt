@@ -200,6 +200,7 @@ set(SOURCES
   gemma/tokenizer.cc
   gemma/tokenizer.h
   gemma/vit.cc
+  gemma/vit_gemma4.cc
   gemma/vit.h
   gemma/weights.cc
   gemma/weights.h

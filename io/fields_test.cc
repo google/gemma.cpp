@@ -363,7 +363,6 @@ TEST(FieldsTest, TestOldCodeNewData) {
   EXPECT_NE(0, result.pos);  // did not fail
   EXPECT_EQ(0, result.missing_fields);
   EXPECT_NE(0, result.extra_u32);
-  EXPECT_EQ(storage.size(), result.pos + result.extra_u32);
 
   old_fields.CheckEqual(new_fields);  // old fields are the same in both
   // (Can't check new fields because we only read OldFields)

@@ -41,6 +41,8 @@ class Image {
   // Resizes to width x height (nearest-neighbor for now, bilinear or antialias
   // would be better).
   void Resize(int width, int height);
+  // Resizes to width x height using bilinear interpolation.
+  void ResizeBilinear(int width, int height);
   // Writes the file as plain floats in binary. Useful to e.g. load in a colab.
   bool WriteBinary(const std::string& filename) const;
   // Stores the patch for the given patch number in `patch`.

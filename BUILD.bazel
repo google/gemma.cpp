@@ -867,6 +867,7 @@ cc_library(
         "gemma/gemma4_moe.cc",
         "gemma/tiled_attention.cc",
         "gemma/vit.cc",
+        "gemma/vit_gemma4.cc",
     ],
     hdrs = [
         "deepseek/deepseek.h",

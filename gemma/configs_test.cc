@@ -76,4 +76,42 @@ TEST(ConfigsTest, T5GemmaBF16Specifier) {
   EXPECT_TRUE(config.is_encoder_decoder);
 }
 
+TEST(ConfigsTest, DisplayNamesSetByConfig) {
+  // Directly test that config construction sets display_name,
+  // without relying on OverwriteWithCanonical.
+  const ModelConfig lm(Model::GEMMA4_2B_LM, Type::kSFP,
+                       PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(lm.display_name, "Gemma4_2B_LM");
+  EXPECT_FALSE(lm.HasGemma4Vit());
+
+  const ModelConfig vlm(Model::GEMMA4_2B, Type::kSFP,
+                        PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(vlm.display_name, "Gemma4_2B");
+  EXPECT_TRUE(vlm.HasGemma4Vit());
+}
+
+TEST(ConfigsTest, WrappingPreservedForVLM) {
+  EXPECT_TRUE(IsVlmWrapping(PromptWrapping::GEMMA_VLM));
+  EXPECT_TRUE(IsVlmWrapping(PromptWrapping::PALIGEMMA));
+  EXPECT_FALSE(IsVlmWrapping(PromptWrapping::GEMMA_IT));
+  EXPECT_FALSE(IsVlmWrapping(PromptWrapping::GEMMA_PT));
+
+  // VLM models must keep their config-defined wrapping even when the
+  // constructor receives a different wrapping argument.
+  // Model::GEMMA3_1B has wrapping = PromptWrapping::GEMMA_VLM.
+  const ModelConfig vlm(Model::GEMMA3_1B, Type::kSFP,
+                        PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(vlm.wrapping, PromptWrapping::GEMMA_VLM);
+
+  // PALIGEMMA2_3B_224 has wrapping = PromptWrapping::PALIGEMMA.
+  const ModelConfig pali(Model::PALIGEMMA2_3B_224, Type::kSFP,
+                         PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(pali.wrapping, PromptWrapping::PALIGEMMA);
+
+  // Non-VLM models should accept the wrapping argument.
+  const ModelConfig lm(Model::GEMMA4_2B_LM, Type::kSFP,
+                       PromptWrapping::GEMMA_PT);
+  EXPECT_EQ(lm.wrapping, PromptWrapping::GEMMA_PT);
+}
+
 }  // namespace gcpp

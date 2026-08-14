@@ -181,8 +181,7 @@ int GemmaContext::GenerateInternal(const char* prompt_string,
           : Extents2D(0, 0),
       ctx.allocator, MatPadding::kOdd);
   if (image_data != nullptr) {
-    HWY_ASSERT(model_config.wrapping == PromptWrapping::PALIGEMMA ||
-               model_config.wrapping == PromptWrapping::GEMMA_VLM);
+    HWY_ASSERT(IsVlmWrapping(model_config.wrapping));
 
     Image image;
     image.Set(image_width, image_height, static_cast<const float*>(image_data));

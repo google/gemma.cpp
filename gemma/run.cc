@@ -112,11 +112,15 @@ void ReplGemma(const GemmaArgs& args, const Gemma& gemma, KVCache& kv_cache,
       env.ctx.allocator, MatPadding::kOdd);
   image_tokens.AllocateAndAttachRowPtrs(env.row_ptrs);
   if (have_image) {
-    HWY_ASSERT(config.wrapping == PromptWrapping::PALIGEMMA ||
-               config.wrapping == PromptWrapping::GEMMA_VLM);
+    HWY_ASSERT(IsVlmWrapping(config.wrapping) ||
+               !config.vit_config.layer_configs.empty());
     HWY_ASSERT(image.ReadPPM(inference.image_file.path));
-    const size_t image_size = config.vit_config.image_size;
-    image.Resize(image_size, image_size);
+    // Gemma 4 ViT does its own aspect-ratio-preserving resize, so skip
+    // the forced square resize for Gemma 4 VLM.
+    if (!config.HasGemma4Vit()) {
+      const size_t image_size = config.vit_config.image_size;
+      image.Resize(image_size, image_size);
+    }
     RuntimeConfig runtime_config = {.verbosity = verbosity,
                                     .use_spinning = args.threading.spin};
     gemma.GenerateImageTokens(runtime_config, kv_cache.SeqLen(), image,

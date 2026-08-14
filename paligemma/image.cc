@@ -210,6 +210,51 @@ void Image::Resize(int new_width, int new_height) {
   width_ = new_width;
 }
 
+void Image::ResizeBilinear(int new_width, int new_height) {
+  HWY_ASSERT(new_width > 0 && new_height > 0);
+  HWY_ASSERT(new_width <= INT32_MAX / 3 &&
+             new_width * 3 <= INT32_MAX / new_height);
+  if (width_ == new_width && height_ == new_height) return;
+
+  std::vector<float> new_data(static_cast<size_t>(new_width) * new_height * 3);
+  const float scale_x = static_cast<float>(width_) / new_width;
+  const float scale_y = static_cast<float>(height_) / new_height;
+
+  for (int y = 0; y < new_height; ++y) {
+    const float src_y = (y + 0.5f) * scale_y - 0.5f;
+    const float src_y_clamped = std::clamp(src_y, 0.0f, static_cast<float>(height_ - 1));
+    const int y_l = static_cast<int>(std::floor(src_y_clamped));
+    const int y_h = std::min(height_ - 1, y_l + 1);
+    const float d_y = src_y_clamped - y_l;
+
+    for (int x = 0; x < new_width; ++x) {
+      const float src_x = (x + 0.5f) * scale_x - 0.5f;
+      const float src_x_clamped = std::clamp(src_x, 0.0f, static_cast<float>(width_ - 1));
+      const int x_l = static_cast<int>(std::floor(src_x_clamped));
+      const int x_h = std::min(width_ - 1, x_l + 1);
+      const float d_x = src_x_clamped - x_l;
+
+      const float w00 = (1.0f - d_x) * (1.0f - d_y);
+      const float w10 = d_x * (1.0f - d_y);
+      const float w01 = (1.0f - d_x) * d_y;
+      const float w11 = d_x * d_y;
+
+      for (int k = 0; k < 3; ++k) {
+        const float v00 = data_[(static_cast<size_t>(y_l) * width_ + x_l) * 3 + k];
+        const float v10 = data_[(static_cast<size_t>(y_l) * width_ + x_h) * 3 + k];
+        const float v01 = data_[(static_cast<size_t>(y_h) * width_ + x_l) * 3 + k];
+        const float v11 = data_[(static_cast<size_t>(y_h) * width_ + x_h) * 3 + k];
+
+        new_data[(static_cast<size_t>(y) * new_width + x) * 3 + k] =
+            w00 * v00 + w10 * v10 + w01 * v01 + w11 * v11;
+      }
+    }
+  }
+  data_ = std::move(new_data);
+  height_ = new_height;
+  width_ = new_width;
+}
+
 bool Image::WriteBinary(const std::string& filename) const {
   // Writes the floating point values as float32 in binary format.
   std::ofstream file(filename);

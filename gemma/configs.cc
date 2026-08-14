@@ -438,6 +438,7 @@ static ModelConfig ConfigGemma3_270M() {
 
 static ModelConfig ConfigBaseGemmaV4() {
   ModelConfig config = ConfigNoSSM();
+  config.model_family_version = 4;
   config.att_cap = 0.0f;
   config.final_cap = 0.0f;
   config.eos_id = 1;
@@ -519,10 +520,10 @@ static LayerConfig LayerConfigGemma4_2B_Global(size_t model_dim) {
 }
 
 // Until we have the audio checkpoints included, we use the LM config directly.
-static ModelConfig ConfigGemma4_2B() {
+static ModelConfig ConfigGemma4_2B_LM() {
   ModelConfig config = ConfigBaseGemmaV4();
-  config.display_name = "Gemma4_2B";
-  config.model = Model::GEMMA4_2B;
+  config.display_name = "Gemma4_2B_LM";
+  config.model = Model::GEMMA4_2B_LM;
   config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 1536;
   config.vocab_size = kGemmaV3VocabSize;  // 262144
@@ -548,6 +549,33 @@ static ModelConfig ConfigGemma4_2B() {
   }
   config.attention_window_sizes = RepeatedAttentionWindowSizes<35, 5>(
       {512, 512, 512, 512, config.max_seq_len});
+  return config;
+}
+
+static ModelConfig ConfigGemma4_2B() {
+  ModelConfig config = ConfigGemma4_2B_LM();
+  config.display_name = "Gemma4_2B";
+  config.model = Model::GEMMA4_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.use_global_timescale = true;
+
+  config.vit_config.model_dim = 768;
+  config.vit_config.patch_width = 16;
+  config.vit_config.seq_len = 2520;
+  config.vit_config.pool_dim = 3;
+  config.vit_config.image_size = 896;
+
+  LayerConfig vit_layer;
+  vit_layer.model_dim = 768;
+  vit_layer.ff_hidden_dim = 3072;
+  vit_layer.heads = 12;
+  vit_layer.kv_heads = 12;
+  vit_layer.qkv_dim = 64;
+  vit_layer.type = LayerAttentionType::kVitGemma4;
+  vit_layer.use_qk_norm = true;
+  vit_layer.post_norm = PostNormType::Scale;
+
+  config.vit_config.layer_configs = {16, vit_layer};
   return config;
 }
 
@@ -841,6 +869,8 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigQwen3_2B();
     case Model::QWEN3_4B:
       return ConfigQwen3_4B();
+    case Model::GEMMA4_2B_LM:
+      return ConfigGemma4_2B_LM();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -894,6 +924,8 @@ const char* ModelPrefix(Model model) {
       return "qwen3-2b";
     case Model::QWEN3_4B:
       return "qwen3-4b";
+    case Model::GEMMA4_2B_LM:
+      return "gemma4-2b-lm";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -903,8 +935,7 @@ PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
   const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
 
   // For models with a fixed wrapping mode, ignore user override.
-  if (config_wrapping == PromptWrapping::PALIGEMMA ||
-      config_wrapping == PromptWrapping::GEMMA_VLM) {
+  if (IsVlmWrapping(config_wrapping)) {
     if (wrapping != Tristate::kDefault) {
       HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
                ModelPrefix(model));
@@ -925,7 +956,9 @@ ModelConfig::ModelConfig(const Model model, Type weight,
   if (model != Model::UNKNOWN) *this = ConfigFromModel(model);
   HWY_ASSERT(this->model == model);
   this->weight = weight;
-  this->wrapping = wrapping;
+  if (!IsVlmWrapping(this->wrapping)) {
+    this->wrapping = wrapping;
+  }
 }
 
 static Model FindModel(const std::string& specifier) {
@@ -991,8 +1024,7 @@ std::string ModelConfig::Specifier() const {
   base_name += '-';
   base_name += TypeName(weight);
 
-  if (wrapping != PromptWrapping::GEMMA_VLM &&
-      wrapping != PromptWrapping::PALIGEMMA) {
+  if (!IsVlmWrapping(wrapping)) {
     base_name += WrappingSuffix(wrapping);
   }
 
@@ -1109,7 +1141,8 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
       return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
                                          : Model::GEMMA3_4B_LM;
     case 35:
-      return Model::GEMMA4_2B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA4_2B
+                                         : Model::GEMMA4_2B_LM;
     case 36:
       return Model::QWEN3_4B;
     case 42:

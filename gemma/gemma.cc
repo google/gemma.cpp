@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #ifndef HWY_DISABLED_TARGETS
@@ -84,6 +85,9 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
+using gcpp::BF16;
+using gcpp::MatPtr;
+
 void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
@@ -132,7 +136,6 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
 
   PostNorm(layer_config.post_norm, layer.post_attention_norm_scale,
            activations.attention.att_sums, env.ctx);
-
   ResidualConnection(activations.attention.att_sums, activations.x, layer,
                      /*is_attention=*/true, env.ctx);
 
@@ -200,7 +203,8 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
                 });
   }
 
-  if (layer.skip_scale.HasPtr()) {
+  const Model m = activations.attention.config.model;
+  if (layer.skip_scale.HasPtr() && m != Model::GEMMA4_26B_MOE) {
     float skip_scale_val = 1.0f;
     if (layer.skip_scale.GetType() == Type::kF32) {
       skip_scale_val = static_cast<const float*>(layer.skip_scale.Packed())[0];
@@ -1023,12 +1027,18 @@ HWY_NOINLINE size_t EmbedMMToken(int token, size_t x_row, size_t pos,
   GCPP_ZONE(ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbed);
 
   // Image tokens just need to be copied.
-  if (model_config.wrapping == PromptWrapping::GEMMA_VLM &&
-      image_tokens != nullptr && token == -2 &&
-      image_token_position < image_tokens->Rows()) {
-    hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(x_row),
-                   x.Cols() * x.ElementBytes());
-    return image_token_position + 1;
+  if ((model_config.wrapping == PromptWrapping::GEMMA_VLM ||
+       !model_config.vit_config.layer_configs.empty()) &&
+      image_tokens != nullptr && token == -2) {
+    if (image_token_position < image_tokens->Rows()) {
+      hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(x_row),
+                     x.Cols() * x.ElementBytes());
+      return image_token_position + 1;
+    } else {
+      HWY_WARN(
+          "EmbedMMToken: token == -2 but image_token_position %zu >= Rows %zu",
+          image_token_position, image_tokens->Rows());
+    }
   }
 
   if (model_config.wrapping == PromptWrapping::PALIGEMMA &&
@@ -1058,7 +1068,7 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
   // 1. Convert activations.x (float) to activations.x_bf (BF16)
   for (size_t r = 0; r < tbatch_size; ++r) {
     for (size_t c = 0; c < config.model_dim; ++c) {
-      activations.x_bf.Row(r)[c] = BF16(activations.x.Row(r)[c]);
+      activations.x_bf.Row(r)[c] = gcpp::BF16(activations.x.Row(r)[c]);
     }
   }
 
@@ -1093,8 +1103,12 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
   float* token_emb = activations.ple_token_emb.data();
   for (size_t r = 0; r < tbatch_size; ++r) {
     int token = tokens[r];
+    float* out_row = activations.ple_embeds.Row(r);
+    // Use pad_token_id (0) for multimodal placeholder tokens (which are
+    // negative) as done in JAX/PyTorch implementation.
+    const int ple_token = token < 0 ? 0 : token;
     CallUpcasted(&weights.ple_embeddings, [&](const auto* weights_t) HWY_ATTR {
-      const size_t embedding_ofs = token * weights_t->Stride();
+      const size_t embedding_ofs = ple_token * weights_t->Stride();
       const auto embedding_span =
           MakeSpan(weights_t->Row(0), embedding_ofs + ple_total_dim);
       const hn::ScalableTag<float> df;
@@ -1104,7 +1118,6 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
       const float token_scale =
           sqrtf(static_cast<float>(config.ple_dim)) * weights_t->Scale();
       const float scaled_token_scale = token_scale * scale_input;
-      float* out_row = activations.ple_embeds.Row(r);
 
       // Vectorized embedding loop (aligned with precomputed scale intent)
       using DF = hn::ScalableTag<float>;
@@ -1488,7 +1501,7 @@ ChooseSampleFunc(const RuntimeConfig& runtime_config,
 
   // Fast path for top-1 with no accept_token.
   if (runtime_config.top_k == 1 && !runtime_config.accept_token) {
-    return [&](size_t /*qi*/, size_t /*pos*/, Logits logits, size_t worker)
+    return [&](size_t qi, size_t pos, Logits logits, size_t worker)
                HWY_ATTR -> TokenAndProb {
                  GCPP_ZONE(ctx, worker, Zones::kGenSampleTop1);
                  return Top1OfSoftmax(logits);
@@ -1807,8 +1820,14 @@ void GenerateImageTokensT(const ModelConfig& config,
     Activations prefill_activations(runtime_config, vit_config, num_tokens,
                                     num_tokens, env.ctx, env.row_ptrs);
     // Weights are for the full PaliGemma model, not just the ViT part.
-    PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
-               prefill_activations, env);
+    if (config.HasGemma4Vit()) {
+      PrefillVitGemma4(config, weights, prefill_runtime_config, image,
+                       image_tokens, prefill_activations, env);
+    } else {
+      PrefillVit(config, weights, prefill_runtime_config, image, image_tokens,
+                 prefill_activations, env);
+    }
+
   }  // end GCPP_ZONE before we print results.
 
   // No-op if the profiler is disabled. Printing now ensures that the
@@ -1842,9 +1861,11 @@ Gemma::Gemma(const GemmaArgs& args, ThreadingContext& ctx)
         model_.Config().max_seq_len, args.inference.seq_len);
     model_.MutableConfig().SetMaxSeqLen(args.inference.seq_len);
   }
+
   // Negligible CPU time in the ctor body (except ReadFromBlobs).
   weight_read_mode_ = weights_.ReadFromBlobs(model_, reader_, args.loader,
                                              args.inference, mat_owners_, ctx);
+
   // Read everything into memory, or `weights_.mapped_` keeps the mapping alive.
   reader_.CloseFile();
 }

@@ -46,6 +46,7 @@ PYBIND11_MODULE(configs, py_module) {
   enum_<gcpp::LayerAttentionType>(py_module, "LayerAttentionType")
       .value("kGemma", gcpp::LayerAttentionType::kGemma)
       .value("kVit", gcpp::LayerAttentionType::kVit)
+      .value("kVitGemma4", gcpp::LayerAttentionType::kVitGemma4)
       .value("kDeepSeekMLA", gcpp::LayerAttentionType::kDeepSeekMLA);
 
   enum_<gcpp::AttentionVariant>(py_module, "AttentionVariant")

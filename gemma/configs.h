@@ -86,6 +86,11 @@ static inline bool EnumValid(PromptWrapping wrapping) {
          static_cast<size_t>(PromptWrapping::kSentinel);
 }
 
+static inline bool IsVlmWrapping(PromptWrapping wrapping) {
+  return wrapping == PromptWrapping::PALIGEMMA ||
+         wrapping == PromptWrapping::GEMMA_VLM;
+}
+
 enum class LayerAttentionType {
   kGemma,
   kVit,
@@ -93,11 +98,13 @@ enum class LayerAttentionType {
   // compressed KV latent plus a decoupled RoPE key, optionally with
   // sequence-axis compression (CSA/HCA) selected via `AttentionVariant`.
   kDeepSeekMLA,
+  kVitGemma4,
 };
 
 static inline bool EnumValid(LayerAttentionType type) {
   return type == LayerAttentionType::kGemma ||
          type == LayerAttentionType::kVit ||
+         type == LayerAttentionType::kVitGemma4 ||
          type == LayerAttentionType::kDeepSeekMLA;
 }
 
@@ -290,6 +297,7 @@ enum class Model {
   QWEN3_600M,
   QWEN3_2B,  // 1.7B rounded up for readability.
   QWEN3_4B,
+  GEMMA4_2B_LM,
   kSentinel,
 };
 
@@ -674,6 +682,11 @@ struct ModelConfig : public IFields {
       if (lc.IsMLA()) return true;
     }
     return false;
+  }
+
+  bool HasGemma4Vit() const {
+    return !vit_config.layer_configs.empty() &&
+           vit_config.layer_configs[0].type == LayerAttentionType::kVitGemma4;
   }
 
   bool IsQwen3() const {

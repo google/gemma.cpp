@@ -44,6 +44,21 @@ void TensorInfoRegistry::Add(const std::string& suffix,
 // Non-layer tensors.
 void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
   const std::string no_suffix;
+  size_t pos_emb_rows = config.vit_config.seq_len;
+  std::vector<size_t> img_emb_axes = {3, 0, 1, 2};
+  std::vector<size_t> img_emb_shape = {config.vit_config.model_dim,
+                                       config.vit_config.patch_width,
+                                       config.vit_config.patch_width, 3};
+  bool cols_take_extra_dims = true;
+
+  if (!config.vit_config.layer_configs.empty() &&
+      config.vit_config.layer_configs[0].type == LayerAttentionType::kVitGemma4) {
+    pos_emb_rows = 20480;
+    img_emb_axes = {1, 0};
+    img_emb_shape = {config.vit_config.model_dim,
+                     3 * config.vit_config.patch_width * config.vit_config.patch_width};
+    cols_take_extra_dims = false;
+  }
   Add(no_suffix, {
                      .base_name = "c_embedding",
                      .source_names = {"embedder/input_embedding"},
@@ -93,12 +108,12 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
   Add(no_suffix,
       {
           .base_name = "img_emb_kernel",
-          .source_names = {"img/embedding/kernel"},
-          .axes = {3, 0, 1, 2},
-          .shape = {config.vit_config.model_dim, config.vit_config.patch_width,
-                    config.vit_config.patch_width, 3},
+          .source_names = {"img/embedding/kernel",
+                           "vit/entry/input_projection/w"},
+          .axes = img_emb_axes,
+          .shape = img_emb_shape,
           .min_size = Type::kBF16,
-          .cols_take_extra_dims = true,
+          .cols_take_extra_dims = cols_take_extra_dims,
       });
   Add(no_suffix,
       {
@@ -118,9 +133,10 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
       });
   Add(no_suffix, {
                      .base_name = "img_pos_emb",
-                     .source_names = {"img/pos_embedding"},
+                     .source_names = {"img/pos_embedding",
+                                      "vit/entry/pos_emb"},
                      .axes = {0, 1},
-                     .shape = {/*1,*/ config.vit_config.seq_len,
+                     .shape = {/*1,*/ pos_emb_rows,
                                config.vit_config.model_dim},
                      .min_size = Type::kF32,
                  });
@@ -203,6 +219,110 @@ void TensorInfoRegistry::AddImageLayerTensors(const ModelConfig& config,
                                               const LayerConfig& layer_config,
                                               const size_t img_layer_idx) {
   const std::string suffix = LayerSuffix(img_layer_idx);
+
+  if (layer_config.type == LayerAttentionType::kVitGemma4) {
+    Add(suffix, {
+        .base_name = "vit_qkv1_w",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/q_einsum/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.heads * layer_config.qkv_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_qkv2_w",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/kv_einsum/w"},
+        .axes = {1, 0, 3, 2},
+        .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gating1_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum1/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gating2_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum2/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_att_ein",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/attn_vec_einsum/w"},
+        .axes = {2, 0, 1},
+        .shape = {config.vit_config.model_dim, layer_config.heads,
+                  layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+        .cols_take_extra_dims = true,
+    });
+    Add(suffix, {
+        .base_name = "vit_att_w",
+        .axes = {2, 0, 1},
+        .shape = {config.vit_config.model_dim, layer_config.heads,
+                  layer_config.qkv_dim},
+        .cols_take_extra_dims = true,
+    });
+    Add(suffix, {
+        .base_name = "vit_pr_att",
+        .source_names = {"vit/transformer/stacked_layers/block/pre_attention_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_po_att",
+        .source_names = {"vit/transformer/stacked_layers/block/post_attention_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_pr_ff",
+        .source_names = {"vit/transformer/stacked_layers/block/pre_ffw_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_po_ff",
+        .source_names = {"vit/transformer/stacked_layers/block/post_ffw_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gate_ein",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum/w"},
+        .axes = {0, 1, 2},
+        .shape = {2, layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_linear_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/linear/w"},
+        .axes = {1, 0},
+        .shape = {config.vit_config.model_dim, layer_config.ff_hidden_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_q_norm",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/query_norm/scale"},
+        .axes = {0},
+        .shape = {layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_key_norm",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/key_norm/scale"},
+        .axes = {0},
+        .shape = {layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+    });
+    return;
+  }
 
   // Vit layers.
   Add(suffix, {
@@ -1029,16 +1149,24 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
 
 TensorInfo TensorInfoRegistry::TensorInfoFromSourcePath(const std::string& path,
                                                         int layer_idx) const {
+  const TensorInfo* best_tensor = nullptr;
+  size_t longest_match_len = 0;
   for (const TensorInfo& tensor : tensors_) {
     for (const std::string& source_name : tensor.source_names) {
       // path ends with source_name?
       const size_t pos = path.rfind(source_name);
       if (pos != std::string::npos && path.size() == pos + source_name.size()) {
-        std::string name = tensor.base_name;
-        if (layer_idx >= 0) name += LayerSuffix(static_cast<size_t>(layer_idx));
-        return TensorInfoFromName(name);
+        if (source_name.size() > longest_match_len) {
+          best_tensor = &tensor;
+          longest_match_len = source_name.size();
+        }
       }
     }
+  }
+  if (best_tensor != nullptr) {
+    std::string name = best_tensor->base_name;
+    if (layer_idx >= 0) name += LayerSuffix(static_cast<size_t>(layer_idx));
+    return TensorInfoFromName(name);
   }
   return TensorInfo();
 }
