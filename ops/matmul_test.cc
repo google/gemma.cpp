@@ -261,6 +261,22 @@ void TestAllMatMul() {
   TestMatMul<F32, SFP>(256, 256, 256, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(256, 256, 256, /*add=*/true, env, __LINE__);
 
+#if GEMMA_ENABLE_NUQ
+  using NUQ = NuqStream;
+  TestMatMul<F32, NUQ>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, NUQ>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, NUQ>(31, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, NUQ>(29, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, NUQ>(4, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, NUQ>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, NUQ>(3, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, NUQ>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, NUQ>(2, 128, 64, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, NUQ>(2, 128, 64, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, NUQ>(1, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, NUQ>(1, 128, 32, /*add=*/true, env, __LINE__);
+#endif
+
   // Non-vector-multiple K.
   TestMatMul<F32, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);

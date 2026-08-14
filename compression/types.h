@@ -59,9 +59,8 @@ namespace gcpp {
 
 #endif  // GEMMA_DISABLED_TARGETS
 
-// Only used in experiments, hence disable in default builds.
 #ifndef GEMMA_ENABLE_NUQ
-#define GEMMA_ENABLE_NUQ 0
+#define GEMMA_ENABLE_NUQ 1
 #endif
 
 // Switching Floating Point: a hybrid 8-bit float representation of bf16/f32

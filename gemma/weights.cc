@@ -137,6 +137,12 @@ void LayerWeightsPtrs::SplitW1() {
     uint8_t* base_ptr = gating_einsum_w.RowBytes(0);
     gating_einsum_w1.SetPtr(base_ptr, stride);
     gating_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(ff_hidden_dim * stride), stride);
+  } else if (gating_einsum_w.GetType() == Type::kNUQ) {
+    const size_t stride = gating_einsum_w.Stride();
+    uint8_t* base_ptr = gating_einsum_w.RowBytes(0);
+    gating_einsum_w1.SetPtr(base_ptr, stride);
+    gating_einsum_w2.SetPtr(
+        base_ptr + NuqStream::PackedEnd(ff_hidden_dim * stride), stride);
   } else {
     const size_t stride = gating_einsum_w.Stride();
     gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
@@ -191,6 +197,12 @@ void LayerWeightsPtrs::SplitAttW1() {
     uint8_t* base_ptr = qkv_einsum_w.RowBytes(0);
     qkv_einsum_w1.SetPtr(base_ptr, stride);
     qkv_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(w1_rows * stride), stride);
+  } else if (qkv_einsum_w.GetType() == Type::kNUQ) {
+    const size_t stride = qkv_einsum_w.Stride();
+    uint8_t* base_ptr = qkv_einsum_w.RowBytes(0);
+    qkv_einsum_w1.SetPtr(base_ptr, stride);
+    qkv_einsum_w2.SetPtr(base_ptr + NuqStream::PackedEnd(w1_rows * stride),
+                         stride);
   } else {
     const size_t stride = qkv_einsum_w.Stride();
     qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
@@ -595,52 +607,6 @@ void T5GemmaDecoderLayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                    gating_einsum_w2);
   SplitQKVGeneric(layer_config, self_qkv_einsum_w, self_qkv_einsum_w1,
                   self_qkv_einsum_w2);
-}
-
-static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
-    const LayerConfig& layer_config, MatPtrT<NuqStream>& attn_vec_einsum_w,
-    MatPtrT<NuqStream>& att_weights, std::vector<MatOwner>& mat_owners,
-    ThreadingContext& ctx) {
-  if (!attn_vec_einsum_w.HasPtr()) return;
-  HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
-
-  HWY_ASSERT(att_weights.HasPtr());
-  att_weights.SetType(Type::kNUQ);
-
-  const size_t model_dim = layer_config.model_dim;
-  const size_t heads = layer_config.heads;
-  const size_t qkv_dim = layer_config.qkv_dim;
-
-  // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
-  hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
-      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
-  hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
-      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
-
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
-  HWY_NAMESPACE::DecompressAndZeroPad(df, attn_vec_einsum_w.Span(), 0,
-                                      attn_vec_einsum_w_tmp.get(),
-                                      model_dim * heads * qkv_dim);
-
-  for (size_t m = 0; m < model_dim; ++m) {
-    float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
-    for (size_t h = 0; h < heads; ++h) {
-      hwy::CopyBytes(
-          attn_vec_einsum_w_tmp.get() + h * model_dim * qkv_dim + m * qkv_dim,
-          out_row + h * qkv_dim, qkv_dim * sizeof(float));
-    }
-  }
-
-  CompressWorkingSet work;
-  HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
-                          work, att_weights.Span(),
-                          /*packed_ofs=*/0, ctx);
-
-  att_weights.SetScale(attn_vec_einsum_w.Scale());
-}
-
-static void HWY_MAYBE_UNUSED SplitW1NUQ(const LayerConfig& layer_config) {
-  // TODO(janwas): implement.
 }
 
 // Zero-initializes only the allocated tensors in `*this`.

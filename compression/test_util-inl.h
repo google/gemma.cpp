@@ -105,8 +105,6 @@ void ForeachActivationType3(D d) {
 template <typename MatT>
 MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
                               ThreadingContext& ctx) {
-  gcpp::CompressWorkingSet ws;
-  ws.tls.resize(ctx.pools.MaxWorkers());
   MatStorageT<float> raw("raw", extents, ctx.allocator, MatPadding::kPacked);
   MatStorageT<MatT> compressed("mat", extents, ctx.allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
@@ -119,10 +117,23 @@ MatStorageT<MatT> GenerateMat(const Extents2D& extents, MatPadding padding,
                     f = -f;  // Also generate some negative values.
                   row[c] = f;
                 }
-                Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
-                         MakeSpan(compressed.Row(r), extents.cols),
-                         /*packed_ofs=*/0);
               });
+
+  if constexpr (IsCompressed<MatT>()) {
+    gcpp::CompressWorkingSet ws;
+    ws.tls.resize(ctx.pools.MaxWorkers());
+    Compress(raw.Row(0), extents.Area(), ws, compressed.Span(),
+             /*packed_ofs=*/0, ctx);
+  } else {
+    gcpp::CompressWorkingSet ws;
+    ws.tls.resize(ctx.pools.MaxWorkers());
+    ParallelFor(Parallelism::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
+                Callers::kTest, [&](size_t r, size_t thread) {
+                  Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
+                           MakeSpan(compressed.Row(r), extents.cols),
+                           /*packed_ofs=*/0);
+                });
+  }
 
   compressed.SetScale(0.6f);  // Arbitrary value, different from 1.
   return compressed;
@@ -134,8 +145,6 @@ template <typename MatT>
 MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
                                         MatPadding padding,
                                         ThreadingContext& ctx) {
-  gcpp::CompressWorkingSet ws;
-  ws.tls.resize(ctx.pools.MaxWorkers());
   MatStorageT<float> raw("raw", extents, ctx.allocator, MatPadding::kPacked);
   MatStorageT<MatT> compressed("trans", extents, ctx.allocator, padding);
   const float scale = SfpStream::kMax / extents.Area();
@@ -148,10 +157,23 @@ MatStorageT<MatT> GenerateTransposedMat(const Extents2D extents,
                     f = -f;  // Also generate some negative values.
                   row[c] = f;
                 }
-                Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
-                         MakeSpan(compressed.Row(r), extents.cols),
-                         /*packed_ofs=*/0);
               });
+
+  if constexpr (IsCompressed<MatT>()) {
+    gcpp::CompressWorkingSet ws;
+    ws.tls.resize(ctx.pools.MaxWorkers());
+    Compress(raw.Row(0), extents.Area(), ws, compressed.Span(),
+             /*packed_ofs=*/0, ctx);
+  } else {
+    gcpp::CompressWorkingSet ws;
+    ws.tls.resize(ctx.pools.MaxWorkers());
+    ParallelFor(Parallelism::kFlat, extents.rows, ctx, /*cluster_idx=*/0,
+                Callers::kTest, [&](size_t r, size_t thread) {
+                  Compress(raw.Row(r), raw.Cols(), ws.tls[thread],
+                           MakeSpan(compressed.Row(r), extents.cols),
+                           /*packed_ofs=*/0);
+                });
+  }
 
   // Arbitrary value, different from 1, must match `GenerateMat`.
   compressed.SetScale(0.6f);
@@ -205,15 +227,16 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   MatStorageT<float> c_slow_batch("c_slow_batch", Extents2D(A.Rows(), B_rows),
                                   allocator, MatPadding::kOdd);
   for (size_t m = 0; m < A.Rows(); ++m) {
-    DecompressAndZeroPad(df, MakeSpan(A.Row(m), cols), 0, a_batch.Row(m), cols);
-    DecompressAndZeroPad(df, MakeSpan(C.Row(m), B_rows), 0, c_batch.Row(m),
+    DecompressAndZeroPad(df, A.PaddedSpan(), m * A.Stride(), a_batch.Row(m),
+                         cols);
+    DecompressAndZeroPad(df, C.PaddedSpan(), m * C.Stride(), c_batch.Row(m),
                          B_rows);
-    DecompressAndZeroPad(df, MakeSpan(C_slow.Row(m), B_rows), 0,
+    DecompressAndZeroPad(df, C_slow.PaddedSpan(), m * C_slow.Stride(),
                          c_slow_batch.Row(m), B_rows);
   }
   for (size_t n = 0; n < B_rows; ++n) {
-    DecompressAndZeroPad(df, MakeSpan(B.Row(n), cols), 0, b_trans_batch.Row(n),
-                         cols);
+    DecompressAndZeroPad(df, B.PaddedSpan(), n * B.Stride(),
+                         b_trans_batch.Row(n), cols);
   }
 
   // MatMul rounds inputs to BF16, so error is proportional to the max input
