@@ -309,31 +309,34 @@ class TestSoftmax {
     T* x = px.get() + misalign_a;
     T* e = pe.get() + misalign_a;
 
-    for (size_t i = 0; i < count; ++i) {
-      x[i] = Random<T>(rng);
-      e[i] = x[i];
-    }
+    for (const float temperature : {1.0f, 2.0f}) {
+      for (size_t i = 0; i < count; ++i) {
+        x[i] = Random<T>(rng);
+        e[i] = x[i];
+      }
 
-    SimpleSoftmax(e, count);
-    Softmax(Logits(x, count), Ctx(), /*worker=*/0);
+      SimpleSoftmax(e, count, temperature);
+      Softmax(Logits(x, count), Ctx(), /*worker=*/0, temperature);
 
-    T sum = 0.0f;
-    for (size_t i = 0; i < count; ++i) {
-      sum += x[i];
-      double rel = std::abs(x[i] - e[i]) / e[i];
-      ASSERT_LT(rel, 2e-5) << "Mismatch on coordinate " << i << " out of "
-                           << count;
+      T sum = 0.0f;
+      for (size_t i = 0; i < count; ++i) {
+        sum += x[i];
+        double rel = std::abs(x[i] - e[i]) / e[i];
+        ASSERT_LT(rel, 2e-5) << "Mismatch on coordinate " << i << " out of "
+                             << count << " at temperature " << temperature;
+      }
+      ASSERT_NEAR(sum, 1.0, 2e-5);
     }
-    ASSERT_NEAR(sum, 1.0, 2e-5);
   }
 
  private:
-  static HWY_NOINLINE void SimpleSoftmax(float* HWY_RESTRICT x, size_t size) {
+  static HWY_NOINLINE void SimpleSoftmax(float* HWY_RESTRICT x, size_t size,
+                                         float temperature) {
     HWY_DASSERT(size != 0);
     float sum = 0.0;
     const float maxval = *std::max_element(x, x + size);
     for (size_t i = 0; i < size; ++i) {
-      x[i] = std::exp(x[i] - maxval);
+      x[i] = std::exp((x[i] - maxval) / temperature);
       sum += x[i];
     }
     const float scale = 1.0f / sum;
@@ -345,6 +348,45 @@ class TestSoftmax {
 
 void TestAllSoftmax() {
   hn::ForPartialVectors<ForeachCountAndMisalign<TestSoftmax>>()(float());
+}
+
+void TestSoftmaxTemperature() {
+  constexpr size_t kNum = 4;
+  const float kLogits[kNum] = {2.0f, 1.0f, 0.0f, -1.0f};
+
+  for (const float temperature : {0.5f, 1.0f, 2.0f}) {
+    float x[kNum];
+    double expected[kNum];
+    double sum = 0.0;
+    for (size_t i = 0; i < kNum; ++i) {
+      x[i] = kLogits[i];
+      expected[i] = std::exp((kLogits[i] - kLogits[0]) / temperature);
+      sum += expected[i];
+    }
+    Softmax(Logits(x, kNum), Ctx(), /*worker=*/0, temperature);
+    for (size_t i = 0; i < kNum; ++i) {
+      EXPECT_NEAR(x[i], expected[i] / sum, 1e-5)
+          << "Mismatch on coordinate " << i << " at temperature "
+          << temperature;
+    }
+  }
+
+  // Zero temperature puts all the mass on the max.
+  float zero[kNum];
+  std::copy(kLogits, kLogits + kNum, zero);
+  Softmax(Logits(zero, kNum), Ctx(), /*worker=*/0, /*temperature=*/0.0f);
+  EXPECT_FLOAT_EQ(zero[0], 1.0f);
+  for (size_t i = 1; i < kNum; ++i) {
+    EXPECT_FLOAT_EQ(zero[i], 0.0f) << "Mismatch on coordinate " << i;
+  }
+
+  // Ties at zero temperature share the mass evenly.
+  float ties[kNum] = {2.0f, 2.0f, 0.0f, -1.0f};
+  Softmax(Logits(ties, kNum), Ctx(), /*worker=*/0, /*temperature=*/0.0f);
+  EXPECT_FLOAT_EQ(ties[0], 0.5f);
+  EXPECT_FLOAT_EQ(ties[1], 0.5f);
+  EXPECT_FLOAT_EQ(ties[2], 0.0f);
+  EXPECT_FLOAT_EQ(ties[3], 0.0f);
 }
 
 class TestSoftmaxState {
@@ -866,6 +908,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConst);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstTo);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllMulByConstAndAdd);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmax);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestSoftmaxTemperature);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSoftmaxState);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllCreateDistribution);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllSigmoid);

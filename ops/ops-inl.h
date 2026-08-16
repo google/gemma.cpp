@@ -1334,10 +1334,8 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
 // Computes softmax probabilities for the given logits, normalizing in-place.
 // The calculation is numerically stable, using the max-subtraction trick to
 // compute exp(logits[i] - max(logits)) before normalizing by the sum.
-// If temperature is provided and not 1.0, each intermediate exp() result is
-// divided by temperature before normalization; however, this division by
-// temperature cancels out during the final normalization step, meaning
-// temperature currently has no effect on the output probabilities.
+// Temperature divides the logits before exponentiating; lower values
+// concentrate the mass on the max, and zero puts all of it there (ties share).
 // @param logits In-out: on input, contains logits; on output, overwritten with
 // probabilities.
 // @param ctx Input: threading context for parallelism and profiling.
@@ -1352,6 +1350,7 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
                                  const SMOptions& sm_options = {}) {
   GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
+  HWY_ASSERT(temperature >= 0.0f);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
@@ -1366,24 +1365,29 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
                   HWY_ATTR { *pmax = hn::Max(*pmax, value); });
   vmax = hn::MaxOfLanes(d, vmax);
 
-  // Subtract max (avoid precision loss for large exponents) and exponentiate.
-  hn::Transform(d, logits.data(), logits.size(),
-                [pmax](const auto d, const V value) HWY_ATTR {
-                  if constexpr (HWY_TARGET & HWY_ALL_SVE) {
-                    // Workaround for buggy SVE codegen: avoid inlined
-                    // FastExpMinusOrZero().
-                    return hn::CallFastExpMinusOrZero(d, hn::Sub(value, *pmax));
-                  } else {
-                    return hn::FastExpMinusOrZero(d, hn::Sub(value, *pmax));
-                  }
-                });
-
-  if (temperature != 1.0f) {
-    const float temperature_inv = 1.0f / temperature;
+  if (temperature == 0.0f) {
     hn::Transform(d, logits.data(), logits.size(),
-                  [temperature_inv](const auto d, const V value) HWY_ATTR {
-                    return hn::Mul(value, hn::Set(d, temperature_inv));
+                  [pmax](const auto d, const V value) HWY_ATTR {
+                    return hn::IfThenElseZero(hn::Eq(value, *pmax),
+                                              hn::Set(d, 1.0f));
                   });
+  } else {
+    // Subtract max to avoid precision loss for large exponents, divide by the
+    // temperature, and exponentiate.
+    const float temperature_inv = 1.0f / temperature;
+    hn::Transform(
+        d, logits.data(), logits.size(),
+        [pmax, temperature_inv](const auto d, const V value) HWY_ATTR {
+          const V scaled =
+              hn::Mul(hn::Sub(value, *pmax), hn::Set(d, temperature_inv));
+          if constexpr (HWY_TARGET & HWY_ALL_SVE) {
+            // Workaround for buggy SVE codegen: avoid inlined
+            // FastExpMinusOrZero().
+            return hn::CallFastExpMinusOrZero(d, scaled);
+          } else {
+            return hn::FastExpMinusOrZero(d, scaled);
+          }
+        });
   }
 
   // Normalize to probability distribution. The exact sum seems like it should
