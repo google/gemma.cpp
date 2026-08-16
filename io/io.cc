@@ -14,6 +14,8 @@
 // limitations under the License.
 
 // Safe to be first, does not include POSIX headers.
+#include <new>
+
 #include "hwy/detect_compiler_arch.h"
 // Request POSIX 2008, including `pread()` and `posix_fadvise()`. This also
 // implies `_POSIX_C_SOURCE`.
@@ -28,6 +30,7 @@
 
 #include <stddef.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -261,7 +264,43 @@ uint64_t IOBatch::Read(const File& file) const {
   }
 #endif  // GEMMA_IO_PREADV
 
-  // preadv disabled or no handle: use normal reads (higher kernel overhead).
+  // 1. Fast Path: Check if destination memory across all spans is contiguous.
+  bool is_contiguous = true;
+  const uint8_t* next_expected =
+      reinterpret_cast<const uint8_t*>(spans_[0].mem);
+  for (const IOSpan& span : spans_) {
+    if (reinterpret_cast<const uint8_t*>(span.mem) != next_expected) {
+      is_contiguous = false;
+      break;
+    }
+    next_expected += span.bytes;
+  }
+
+  // Zero-copy direct read: 1 single bulk RPC directly into destination memory.
+  if (is_contiguous) {
+    if (file.Read(offset_, total_bytes_, spans_[0].mem)) {
+      return total_bytes_;
+    }
+  } else {
+    // 2. Slow Path (Strided Padding): Single bulk read + scatter memcpy.
+    std::unique_ptr<uint8_t[]> temp_buf(new (std::nothrow)
+                                            uint8_t[total_bytes_]);
+    if (temp_buf && file.Read(offset_, total_bytes_, temp_buf.get())) {
+      const uint8_t* src = temp_buf.get();
+      for (const IOSpan& span : spans_) {
+        std::memcpy(span.mem, src, span.bytes);
+        src += span.bytes;
+      }
+      return total_bytes_;
+    } else {
+      HWY_WARN(
+          "Failed to read %zu bytes from offset %zu in file with %zu spans",
+          total_bytes_, offset_, spans_.size());
+    }
+  }
+
+  // 3. Fallback if bulk read or temp allocation fails: per-span sequential
+  // reads.
   uint64_t total = 0;
   uint64_t offset = offset_;
   for (const IOSpan& span : spans_) {
