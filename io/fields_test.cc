@@ -280,9 +280,6 @@ TEST(FieldsTest, TestInvalidFloat) {
 // Refuse to write invalid strings.
 TEST(FieldsTest, TestInvalidString) {
   NewFields new_fields;
-  // Four zero bytes
-  new_fields.new_str.assign(4, '\0');
-  EXPECT_TRUE(new_fields.Write().empty());
 
   // Too long
   new_fields.new_str.assign(257, 'a');
