@@ -1350,7 +1350,7 @@ static HWY_NOINLINE void Softmax(Logits logits, ThreadingContext& ctx,
                                  const SMOptions& sm_options = {}) {
   GCPP_ZONE(ctx, worker, Zones::kOpsSoftmax);
   HWY_DASSERT(logits.size() != 0);
-  HWY_ASSERT(temperature >= 0.0f);
+  HWY_DASSERT(temperature >= 0.0f);
 
   namespace hn = hwy::HWY_NAMESPACE;
   using D = hn::ScalableTag<float>;
