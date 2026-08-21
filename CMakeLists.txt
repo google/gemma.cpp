@@ -60,8 +60,15 @@ if(EMSCRIPTEN)
   add_link_options("-sEXIT_RUNTIME=1")
 endif()
 
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(highway)
+# Dependency fetching. gemma_fetch() reports download progress so the configure
+# step does not sit silent for minutes; see cmake/GemmaFetch.cmake.
+set(GEMMA_DEP_TOTAL 5)
+if(GEMMA_ONEDNN_BRGEMM OR GEMMA_ONEDNN_MATMUL)
+  math(EXPR GEMMA_DEP_TOTAL "${GEMMA_DEP_TOTAL} + 1")
+endif()
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/GemmaFetch.cmake)
+
+gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa EXCLUDE_FROM_ALL)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
@@ -78,11 +85,9 @@ endif()
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
 ## cmake is invoked with -DSPM_ENABLE_SHARED=OFF and -DSPM_ABSL_PROVIDER=module
-FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 9045b2f60fa2b323dfac0eaef8fc17565036f9f9 EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(sentencepiece)
+gemma_fetch(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 9045b2f60fa2b323dfac0eaef8fc17565036f9f9 EXCLUDE_FROM_ALL)
 
-FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(json)
+gemma_fetch(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 
 # Find OpenSSL for HTTPS support
 find_package(OpenSSL)
@@ -95,8 +100,7 @@ else()
 endif()
 
 # HTTP library for API server
-FetchContent_Declare(httplib GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git GIT_TAG v0.18.1 EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(httplib)
+gemma_fetch(httplib GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git GIT_TAG v0.18.1 EXCLUDE_FROM_ALL)
 
 # Create interface target for httplib (header-only library)
 add_library(httplib_interface INTERFACE)
@@ -109,8 +113,7 @@ endif()
 set(BENCHMARK_ENABLE_TESTING OFF)
 set(BENCHMARK_ENABLE_GTEST_TESTS OFF)
 
-FetchContent_Declare(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.2 EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(benchmark)
+gemma_fetch(benchmark GIT_REPOSITORY https://github.com/google/benchmark.git GIT_TAG v1.8.2 EXCLUDE_FROM_ALL)
 if(EMSCRIPTEN)
   target_compile_options(benchmark PRIVATE -Wno-c2y-extensions)
 endif()
@@ -123,12 +126,11 @@ if(GEMMA_ONEDNN_BRGEMM)
   set(DNNL_GPU_RUNTIME "NONE" CACHE STRING "" FORCE)
   set(DNNL_LIBRARY_TYPE "STATIC" CACHE STRING "" FORCE)
   set(DNNL_EXPERIMENTAL_UKERNEL ON CACHE BOOL "" FORCE)
-  FetchContent_Declare(onednn
+  gemma_fetch(onednn
     GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
     GIT_TAG v3.11
     EXCLUDE_FROM_ALL
   )
-  FetchContent_MakeAvailable(onednn)
   message(STATUS "OneDNN BRGeMM micro-kernel support enabled")
 endif()
 
@@ -141,12 +143,11 @@ if(GEMMA_ONEDNN_MATMUL)
   set(DNNL_CPU_RUNTIME "THREADPOOL" CACHE STRING "" FORCE)
   set(DNNL_GPU_RUNTIME "NONE" CACHE STRING "" FORCE)
   set(DNNL_LIBRARY_TYPE "STATIC" CACHE STRING "" FORCE)
-  FetchContent_Declare(onednn
+  gemma_fetch(onednn
     GIT_REPOSITORY https://github.com/uxlfoundation/oneDNN.git
     GIT_TAG v3.11
     EXCLUDE_FROM_ALL
   )
-  FetchContent_MakeAvailable(onednn)
   message(STATUS "OneDNN matmul primitive (threadpool runtime) support enabled")
 endif()
 
