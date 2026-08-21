@@ -69,9 +69,10 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
-  const MatPadding padding = (att_weights.GetType() == Type::kQ4_0)
-                                 ? MatPadding::kPacked
-                                 : MatPadding::kOdd;
+  const MatPadding padding =
+      (att_weights.GetType() == Type::kQ4_0)
+          ? MatPadding::kPacked
+          : MatPadding::kOdd;
   {
     std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
@@ -83,8 +84,6 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
     const size_t src_row_bytes = Q4_0Stream::PackedEnd(qkv_dim);
     const size_t dst_row_bytes = Q4_0Stream::PackedEnd(cols);
     HWY_ASSERT(dst_row_bytes == heads * src_row_bytes);
-
-
 
     uint8_t* dst_ptr = att_weights.RowBytes(0);
     const uint8_t* src_ptr = attn_vec_einsum_w.RowBytes(0);
@@ -110,6 +109,24 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
 
+static void SplitPackedMatrix(MatPtr& parent, size_t split_row, MatPtr& w1,
+                              MatPtr& w2) {
+  const size_t stride = parent.Stride();
+  uint8_t* base_ptr = parent.RowBytes(0);
+  w1.SetPtr(base_ptr, stride);
+
+  size_t split_bytes = 0;
+  if (parent.GetType() == Type::kQ4_0) {
+    split_bytes = Q4_0Stream::PackedEnd(split_row * stride);
+  } else if (parent.GetType() == Type::kNUQ) {
+    split_bytes = NuqStream::PackedEnd(split_row * stride);
+  } else {
+    w2.SetPtr(parent.RowBytes(split_row), stride);
+    return;
+  }
+  w2.SetPtr(base_ptr + split_bytes, stride);
+}
+
 // For FFN. Fast, only updates pointers.
 void LayerWeightsPtrs::SplitW1() {
   // Used for Gemma layers; FFWVit uses different tensors.
@@ -132,22 +149,8 @@ void LayerWeightsPtrs::SplitW1() {
   HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
   HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
 
-  if (gating_einsum_w.GetType() == Type::kQ4_0) {
-    const size_t stride = gating_einsum_w.Stride();
-    uint8_t* base_ptr = gating_einsum_w.RowBytes(0);
-    gating_einsum_w1.SetPtr(base_ptr, stride);
-    gating_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(ff_hidden_dim * stride), stride);
-  } else if (gating_einsum_w.GetType() == Type::kNUQ) {
-    const size_t stride = gating_einsum_w.Stride();
-    uint8_t* base_ptr = gating_einsum_w.RowBytes(0);
-    gating_einsum_w1.SetPtr(base_ptr, stride);
-    gating_einsum_w2.SetPtr(
-        base_ptr + NuqStream::PackedEnd(ff_hidden_dim * stride), stride);
-  } else {
-    const size_t stride = gating_einsum_w.Stride();
-    gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
-    gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
-  }
+  SplitPackedMatrix(gating_einsum_w, ff_hidden_dim, gating_einsum_w1,
+                    gating_einsum_w2);
   gating_einsum_w1.SetType(gating_einsum_w.GetType());
   gating_einsum_w2.SetType(gating_einsum_w.GetType());
   gating_einsum_w1.SetScale(gating_einsum_w.Scale());
@@ -192,22 +195,7 @@ void LayerWeightsPtrs::SplitAttW1() {
   HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
   HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
 
-  if (qkv_einsum_w.GetType() == Type::kQ4_0) {
-    const size_t stride = qkv_einsum_w.Stride();
-    uint8_t* base_ptr = qkv_einsum_w.RowBytes(0);
-    qkv_einsum_w1.SetPtr(base_ptr, stride);
-    qkv_einsum_w2.SetPtr(base_ptr + Q4_0Stream::PackedEnd(w1_rows * stride), stride);
-  } else if (qkv_einsum_w.GetType() == Type::kNUQ) {
-    const size_t stride = qkv_einsum_w.Stride();
-    uint8_t* base_ptr = qkv_einsum_w.RowBytes(0);
-    qkv_einsum_w1.SetPtr(base_ptr, stride);
-    qkv_einsum_w2.SetPtr(base_ptr + NuqStream::PackedEnd(w1_rows * stride),
-                         stride);
-  } else {
-    const size_t stride = qkv_einsum_w.Stride();
-    qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
-    qkv_einsum_w2.SetPtr(qkv_einsum_w.RowBytes(w1_rows), stride);
-  }
+  SplitPackedMatrix(qkv_einsum_w, w1_rows, qkv_einsum_w1, qkv_einsum_w2);
   qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
   qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
   qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
