@@ -1,5 +1,5 @@
 # [internal2] load py_binary
-# [internal] load py_binary
+load("@rules_python//python:py_binary.bzl", "py_binary")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 
 package(
@@ -34,6 +34,7 @@ pybind_extension(
 py_binary(
     name = "run_example",
     srcs = ["run_example.py"],
+    strict_deps = False,
     deps = [
         ":gemma",
         "@python_deps//absl_py",

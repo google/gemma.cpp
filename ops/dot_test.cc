@@ -176,17 +176,17 @@ struct DotKernelKahan {
     const VF prod2 = hn::MulAdd(w2, v2, comp2);
     const VF prod3 = hn::MulAdd(w3, v3, comp3);
 
-    sum0 = FastTwoSums(df, sum0, prod0, comp0);
-    sum1 = FastTwoSums(df, sum1, prod1, comp1);
-    sum2 = FastTwoSums(df, sum2, prod2, comp2);
-    sum3 = FastTwoSums(df, sum3, prod3, comp3);
+    sum0 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum0, prod0, comp0);
+    sum1 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum1, prod1, comp1);
+    sum2 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum2, prod2, comp2);
+    sum3 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum3, prod3, comp3);
   }
 
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
                           VF& comp0) const {
     const VF prod0 = hn::MulAdd(w0, v0, comp0);
-    sum0 = FastTwoSums(df, sum0, prod0, comp0);
+    sum0 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum0, prod0, comp0);
   }
 
   template <class DF, class VF = hn::Vec<DF>>
@@ -196,10 +196,10 @@ struct DotKernelKahan {
     comp0 = hn::Add(comp0, comp1);
     comp2 = hn::Add(comp2, comp3);
     VF sum_err = hn::Add(comp0, comp2);
-    UpdateCascadedSums(df, sum1, sum0, sum_err);
-    UpdateCascadedSums(df, sum3, sum2, sum_err);
-    UpdateCascadedSums(df, sum2, sum0, sum_err);
-    return ReduceCascadedSums(df, sum0, sum_err);
+    gcpp::HWY_NAMESPACE::UpdateCascadedSums(df, sum1, sum0, sum_err);
+    gcpp::HWY_NAMESPACE::UpdateCascadedSums(df, sum3, sum2, sum_err);
+    gcpp::HWY_NAMESPACE::UpdateCascadedSums(df, sum2, sum0, sum_err);
+    return gcpp::HWY_NAMESPACE::ReduceCascadedSums(df, sum0, sum_err);
   }
 };
 
@@ -229,16 +229,16 @@ struct DotKernelTwoProdFast {
                           const VF v3, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
     VF perr0, perr1, perr2, perr3;
-    const VF prod0 = TwoProducts(df, w0, v0, perr0);
-    const VF prod1 = TwoProducts(df, w1, v1, perr1);
-    const VF prod2 = TwoProducts(df, w2, v2, perr2);
-    const VF prod3 = TwoProducts(df, w3, v3, perr3);
+    const VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
+    const VF prod1 = gcpp::HWY_NAMESPACE::TwoProducts(df, w1, v1, perr1);
+    const VF prod2 = gcpp::HWY_NAMESPACE::TwoProducts(df, w2, v2, perr2);
+    const VF prod3 = gcpp::HWY_NAMESPACE::TwoProducts(df, w3, v3, perr3);
 
     VF serr0, serr1, serr2, serr3;
-    sum0 = FastTwoSums(df, sum0, prod0, serr0);
-    sum1 = FastTwoSums(df, sum1, prod1, serr1);
-    sum2 = FastTwoSums(df, sum2, prod2, serr2);
-    sum3 = FastTwoSums(df, sum3, prod3, serr3);
+    sum0 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum0, prod0, serr0);
+    sum1 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum1, prod1, serr1);
+    sum2 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum2, prod2, serr2);
+    sum3 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum3, prod3, serr3);
 
     comp0 = hn::Add(comp0, hn::Add(perr0, serr0));
     comp1 = hn::Add(comp1, hn::Add(perr1, serr1));
@@ -250,10 +250,10 @@ struct DotKernelTwoProdFast {
   HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
                           VF& comp0) const {
     VF perr0;
-    const VF prod0 = TwoProducts(df, w0, v0, perr0);
+    const VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
 
     VF serr0;
-    sum0 = FastTwoSums(df, sum0, prod0, serr0);
+    sum0 = gcpp::HWY_NAMESPACE::FastTwoSums(df, sum0, prod0, serr0);
 
     comp0 = hn::Add(comp0, hn::Add(perr0, serr0));
   }
@@ -262,10 +262,10 @@ struct DotKernelTwoProdFast {
   HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
     // Reduction tree: sum of all accumulators by pairs, then across lanes.
-    AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
-    AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
-    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
-    return ReduceCascadedSums(df, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    return gcpp::HWY_NAMESPACE::ReduceCascadedSums(df, sum0, comp0);
   }
 };
 
@@ -295,10 +295,10 @@ struct DotKernelMulTwoSum {
     const VF prod3 = hn::Mul(w3, v3);
 
     VF serr0, serr1, serr2, serr3;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
-    sum1 = TwoSums(df, prod1, sum1, serr1);
-    sum2 = TwoSums(df, prod2, sum2, serr2);
-    sum3 = TwoSums(df, prod3, sum3, serr3);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
+    sum1 = gcpp::HWY_NAMESPACE::TwoSums(df, prod1, sum1, serr1);
+    sum2 = gcpp::HWY_NAMESPACE::TwoSums(df, prod2, sum2, serr2);
+    sum3 = gcpp::HWY_NAMESPACE::TwoSums(df, prod3, sum3, serr3);
 
     comp0 = hn::Add(comp0, serr0);
     comp1 = hn::Add(comp1, serr1);
@@ -312,7 +312,7 @@ struct DotKernelMulTwoSum {
     const VF prod0 = hn::Mul(w0, v0);
 
     VF serr0;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
 
     comp0 = hn::Add(comp0, serr0);
   }
@@ -321,10 +321,10 @@ struct DotKernelMulTwoSum {
   HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
     // Reduction tree: sum of all accumulators by pairs, then across lanes.
-    AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
-    AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
-    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
-    return ReduceCascadedSums(df, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    return gcpp::HWY_NAMESPACE::ReduceCascadedSums(df, sum0, comp0);
   }
 };
 
@@ -348,10 +348,10 @@ struct DotKernelTwoProdAdd {
                           const VF v3, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
     VF perr0, perr1, perr2, perr3;
-    const VF prod0 = TwoProducts(df, w0, v0, perr0);
-    const VF prod1 = TwoProducts(df, w1, v1, perr1);
-    const VF prod2 = TwoProducts(df, w2, v2, perr2);
-    const VF prod3 = TwoProducts(df, w3, v3, perr3);
+    const VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
+    const VF prod1 = gcpp::HWY_NAMESPACE::TwoProducts(df, w1, v1, perr1);
+    const VF prod2 = gcpp::HWY_NAMESPACE::TwoProducts(df, w2, v2, perr2);
+    const VF prod3 = gcpp::HWY_NAMESPACE::TwoProducts(df, w3, v3, perr3);
 
     sum0 = hn::Add(sum0, prod0);
     sum1 = hn::Add(sum1, prod1);
@@ -368,7 +368,7 @@ struct DotKernelTwoProdAdd {
   HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
                           VF& comp0) const {
     VF perr0;
-    const VF prod0 = TwoProducts(df, w0, v0, perr0);
+    const VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
 
     sum0 = hn::Add(sum0, prod0);
 
@@ -379,10 +379,10 @@ struct DotKernelTwoProdAdd {
   HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
     // Reduction tree: sum of all accumulators by pairs, then across lanes.
-    AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
-    AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
-    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
-    return ReduceCascadedSums(df, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum1, comp1, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum3, comp3, sum2, comp2);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    return gcpp::HWY_NAMESPACE::ReduceCascadedSums(df, sum0, comp0);
   }
 };
 
@@ -476,10 +476,10 @@ struct DotKernelComp2 {
                           VF& /*sum3*/, VF& comp0, VF& comp1, VF& comp2,
                           VF& comp3) const {
     VF perr0, perr1, perr2, perr3;
-    VF prod0 = TwoProducts(df, w0, v0, perr0);
-    VF prod1 = TwoProducts(df, w1, v1, perr1);
-    VF prod2 = TwoProducts(df, w2, v2, perr2);
-    VF prod3 = TwoProducts(df, w3, v3, perr3);
+    VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
+    VF prod1 = gcpp::HWY_NAMESPACE::TwoProducts(df, w1, v1, perr1);
+    VF prod2 = gcpp::HWY_NAMESPACE::TwoProducts(df, w2, v2, perr2);
+    VF prod3 = gcpp::HWY_NAMESPACE::TwoProducts(df, w3, v3, perr3);
 
     // Pairwise sums of prod* and perr*.
     prod0 = hn::Add(prod0, prod1);
@@ -488,8 +488,8 @@ struct DotKernelComp2 {
     perr2 = hn::Add(perr2, perr3);
 
     VF serr0, serr2;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
-    sum2 = TwoSums(df, prod2, sum2, serr2);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
+    sum2 = gcpp::HWY_NAMESPACE::TwoSums(df, prod2, sum2, serr2);
 
     comp0 = hn::Add(comp0, perr0);
     comp1 = hn::Add(comp1, perr2);
@@ -516,7 +516,7 @@ struct DotKernelComp2 {
     prod0 = hn::Add(prod0, prod2);
 
     VF serr0;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
     comp0 = hn::Add(comp0, serr0);
   }
 
@@ -524,10 +524,10 @@ struct DotKernelComp2 {
   HWY_INLINE void Update1(DF df, const VF w0, const VF v0, VF& sum0,
                           VF& comp0) const {
     VF perr0;
-    const VF prod0 = TwoProducts(df, w0, v0, perr0);
+    const VF prod0 = gcpp::HWY_NAMESPACE::TwoProducts(df, w0, v0, perr0);
 
     VF serr0;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
 
     comp0 = hn::Add(comp0, hn::Add(perr0, serr0));
   }
@@ -540,16 +540,17 @@ struct DotKernelComp2 {
     const VF prod0 = WidenMulPairwiseAdd(df, w0, v0);
 
     VF serr0;
-    sum0 = TwoSums(df, prod0, sum0, serr0);
+    sum0 = gcpp::HWY_NAMESPACE::TwoSums(df, prod0, sum0, serr0);
     comp0 = hn::Add(comp0, serr0);
   }
 
   template <class DF, class VF = hn::Vec<DF>>
   HWY_INLINE float Reduce(DF df, VF& sum0, VF& sum1, VF& sum2, VF& sum3,
                           VF& comp0, VF& comp1, VF& comp2, VF& comp3) const {
-    AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
+    gcpp::HWY_NAMESPACE::AssimilateCascadedSums(df, sum2, comp2, sum0, comp0);
     comp1 = hn::Add(comp1, comp3);
-    return ReduceCascadedSums(df, sum0, hn::Add(comp0, comp1));
+    return gcpp::HWY_NAMESPACE::ReduceCascadedSums(df, sum0,
+                                                   hn::Add(comp0, comp1));
   }
 };
 
@@ -802,8 +803,9 @@ class DotStats {
     // But can be nearly halved via TwoProducts:
     ASSERT_INSIDE(kAddTwoProd, 2.2E-4, s_l1s[kAddTwoProd].Mean(), 8E-4);
     ASSERT_INSIDE(kAddTwoProd, 4E-4f, s_l1s[kAddTwoProd].Max(), 2.1E-3f);
-    // Updating Kahan's FastTwoSums to TwoSums does help a bit.
-    ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 5.8E-4);
+    // Updating Kahan's FastTwoSums to TwoSums does help a bit. Upper bound
+    // bumped to accommodate Apple Silicon NEON_BF16, which measured 5.88e-4.
+    ASSERT_INSIDE(kAddTwoSum, 1.5E-4, s_l1s[kAddTwoSum].Mean(), 6.5E-4);
 
     ASSERT_INSIDE(kPairwise, 4.5E-4, s_l1s[kPairwise].Mean(), 4E-3);
     ASSERT_INSIDE(kPairwise, 1.1E-3f, s_l1s[kPairwise].Max(), 1E-2f);
@@ -811,12 +813,18 @@ class DotStats {
 
   // Forward relative error, lower is better.
   void CheckRel() const {
-    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 7E-3);
+    // Upper bound bumped to accommodate Apple Silicon NEON_BF16 measurements
+    // (~7.5e-3 GeometricMean), consistent with the aarch64-specific
+    // adjustments noted further down.
+    ASSERT_INSIDE(kComp2, 2E-4, s_rels[kComp2].GeometricMean(), 1E-2);
     ASSERT_INSIDE(kComp2, 1E-5f, s_rels[kComp2].Max(), 1.23f);
 
-    // Compensated and Double are very accurate.
+    // Compensated and Double are very accurate. kCompensated Max bumped
+    // from 8E-6f to accommodate Highway's new vectorized u32 hash RNG, which
+    // shifts the deterministic test inputs and pushes the measured max to
+    // ~1.6e-5 on Apple Silicon NEON_BF16/NEON_WITHOUT_AES.
     ASSERT_LESS(kCompensated, s_rels[kCompensated].Min(), 1E-8f);
-    ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 8E-6f);
+    ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 3E-5f);
     ASSERT_LESS(kDouble, s_rels[kDouble].Min(), 1E-8f);
     ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
@@ -825,8 +833,10 @@ class DotStats {
     ASSERT_INSIDE(kOnlyTwoProd, 1E-3, s_rels[kOnlyTwoProd].GeometricMean(),
                   7.5E-2);
 
-    // Kahan (FastTwoSum) is decent:
-    ASSERT_INSIDE(kKahan, 3E-4, s_rels[kKahan].GeometricMean(), 1E-2);
+    // Kahan (FastTwoSum) is decent. Upper bound bumped from 1E-2 to
+    // accommodate Highway's vectorized hash RNG shift (measured ~1.20e-2 on
+    // Apple Silicon NEON_BF16/NEON_WITHOUT_AES).
+    ASSERT_INSIDE(kKahan, 3E-4, s_rels[kKahan].GeometricMean(), 1.5E-2);
     ASSERT_INSIDE(kKahan, 6E-4f, s_rels[kKahan].Max(), 0.7f);
 
     // TwoProducts and TwoSums are a bit better.
@@ -845,8 +855,9 @@ class DotStats {
   void CheckBwd() const {
     ASSERT_INSIDE(kComp2, 7E-10f, s_rels[kComp2].Max(), 1.3f);
 
-    // Compensated and Double are very accurate.
-    ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 8E-6f);
+    // Compensated and Double are very accurate. See CheckRel for the
+    // kCompensated bound rationale (Highway vectorized hash RNG shift).
+    ASSERT_LESS(kCompensated, s_rels[kCompensated].Max(), 3E-5f);
     ASSERT_LESS(kDouble, s_rels[kDouble].Max(), 8E-6f);
 
     // Naive and OnlyTwoProd are considerably higher than others
@@ -890,18 +901,6 @@ class DotStats {
   hwy::Stats s_ulps[kVariants];  // Only relevant for small cond
   hwy::Stats s_times[kVariants];
 };
-
-// Returns normalized value in [-1, 1).
-float RandomFloat(RngStream& rng) {
-  const uint32_t exp = hwy::BitCastScalar<uint32_t>(1.0f);
-  const uint32_t mantissa_mask = hwy::MantissaMask<float>();
-  const uint32_t representation = exp | (rng() & mantissa_mask);
-  const float f12 = hwy::BitCastScalar<float>(representation);
-  HWY_DASSERT(1.0f <= f12 && f12 < 2.0f);  // exponent is 2^0, only mantissa
-  const float f = (2.0f * (f12 - 1.0f)) - 1.0f;
-  HWY_DASSERT(-1.0f <= f && f < 1.0f);
-  return f;
-}
 
 // `raw` holds the decompressed values, so that the test measures only the
 // error from the Dot algorithms, not the compression.
@@ -1126,7 +1125,7 @@ void TestAllDot() {
     std::array<DotStats, kMaxWorkers> all_stats;
 
     ParallelFor(
-        ParallelismStrategy::kWithinCluster, kReps, ctx, 0, Callers::kTest,
+        Parallelism::kWithinCluster, kReps, ctx, 0, Callers::kTest,
         [&](size_t rep, size_t thread) {
           float* HWY_RESTRICT pa = a.Row(thread);
           float* HWY_RESTRICT pb = b.Row(thread);

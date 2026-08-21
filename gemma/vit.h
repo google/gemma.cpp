@@ -35,6 +35,11 @@ namespace gcpp {
                   const RuntimeConfig& runtime_config, const Image& image,     \
                   ImageTokens& image_tokens, Activations& activations,         \
                   MatMulEnv& env);                                             \
+                                                                               \
+  void PrefillVitGemma4(const ModelConfig& model_config, const WeightsPtrs& weights, \
+                        const RuntimeConfig& runtime_config, const Image& image,     \
+                        ImageTokens& image_tokens, Activations& activations,         \
+                        MatMulEnv& env);                                             \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE
 

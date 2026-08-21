@@ -1,0 +1,3984 @@
+Text from https://en.wikipedia.org/wiki/Special_relativity is licensed under Creative Commons Attribution-ShareAlike 4.0 License; (https://en.wikipedia.org/wiki/Wikipedia:Text_of_the_Creative_Commons_Attribution-ShareAlike_4.0_International_License)
+
+Special relativity
+
+Article
+Talk
+Read
+Edit
+View history
+
+Tools
+Appearance hide
+Text
+
+Small
+
+Standard
+
+Large
+Width
+
+Standard
+
+Wide
+Color (beta)
+
+Automatic
+
+Light
+
+Dark
+From Wikipedia, the free encyclopedia
+
+Albert Einstein around 1905, the year his paper on special relativity was published
+Special relativity
+The world line: a diagrammatic representation of spacetime
+Principle of relativityTheory of relativityFormulations
+Foundations
+Consequences
+Spacetime
+Dynamics
+HistoryPrecursors
+People
+icon Physics portal Category
+vte
+In physics, the special theory of relativity, or special relativity for short, is a scientific theory of the relationship between space and time. In Albert Einstein's 1905 paper, "On the Electrodynamics of Moving Bodies", the theory is presented as being based on just two postulates:[p 1][1][2]
+
+The laws of physics are invariant (identical) in all inertial frames of reference (that is, frames of reference with no acceleration). This is known as the principle of relativity.
+The speed of light in vacuum is the same for all observers, regardless of the motion of light source or observer. This is known as the principle of light constancy, or the principle of light speed invariance.
+The first postulate was first formulated by Galileo Galilei (see Galilean invariance).
+
+Overview
+Relativity is a theory that accurately describes objects moving at speeds far beyond normal experience. Relativity replaces the idea that time flows equally everywhere in the universe with a new concept that time flows differently for every independent object. The flow of time can be expressed by counting ticks on a clock. Moving clocks run slower. At speeds encountered in normal experience, the slow down cannot be observed. Two events measured at the same time on a stationary clock occur at different times if measured on moving clocks. Near the speed of light many physical effects can only be understood by including the effects of special relativity.[3]
+
+Basis
+Unusual among modern topics in physics, the theory of special relativity needs only mathematics at high school level and yet it fundamentally alters our understanding, especially our understanding of the concept of time.[3]: ix  Built on just two postulates or assumptions, many interesting consequences follow.
+
+The two postulates both concern observers moving at a constant speed relative to each other. The first postulate, the § principle of relativity, says the laws of physics do not depend on objects being at absolute rest: for example, an observer on a train sees natural phenomena on that train that look the same whether the train is moving or not.[3]: 5  The second postulate, constant speed of light, says observers in a train station see light travel at the same speed whether they measure light from within the station or light from a moving train. A light signal from the station to the train has the same speed, no matter how fast a train goes.[3]: 25 
+
+In the theory of special relativity, the two postulates combine to change the definition of "relative speed". Rather than the simple concept of distance traveled divided by time spent, the new theory incorporates the speed of light as the maximum possible speed. In special relativity, covering ten times more distance on the ground in the same amount of time according to a moving watch does not result in a speed up as seen from the ground by a factor of ten.[3]: 28 
+
+Consequences
+Special relativity has a wide range of consequences that have been experimentally verified.[4][5] The conceptual effects include:
+
+The relativity of simultaneity – events that appear simultaneous to one observer may not be simultaneous to an observer in motion[3]: 49 
+§ Time dilation – time measured between two events by observers in motion differ
+§ Length contraction – distances between two events by observers in motion differ
+The § Lorentz transformation of velocities – velocities no longer simply add
+Combined with other laws of physics, the two postulates of special relativity predict the equivalence of mass and energy, as expressed in the mass–energy equivalence formula ⁠
+E
+=
+m
+c
+2
+{\displaystyle E=mc^{2}}⁠, where 
+c
+{\displaystyle c} is the speed of light in vacuum.[6][7] Special relativity replaced the conventional notion of an absolute, universal time with the notion of a time that is local to each observer.[8]: 33  Information about distant objects can arrive no faster than the speed of light so visual observations always report events that have happened in the past. This effect makes visual descriptions of the effects of special relativity especially prone to mistakes.[9]
+
+Special relativity also has profound technical consequences. A defining feature of special relativity is the replacement of Euclidean geometry with Lorentzian geometry.[10]: 8  Distances in Euclidean geometry are calculated with the Pythagorean theorem and only involved spatial coordinates. In Lorentzian geometry, 'distances' become 'intervals' and include a time coordinate with a minus sign. Unlike spatial distances, the interval between two events has the same value for all observers independent of their relative velocity. When comparing two sets of coordinates in relative motion the Lorentz transformation replaces the Galilean transformation of Newtonian mechanics.[10]: 98  Other effects include the relativistic corrections to the Doppler effect and the Thomas precession.[1][2] It also explains how electricity and magnetism are related.[1][2]
+
+History
+Main article: History of special relativity
+The principle of relativity, forming one of the two postulates of special relativity, was described by Galileo Galilei in 1632 using a thought experiment involving observing natural phenomena on a moving ship.[11] His conclusions were summarized as Galilean relativity and used as the basis of Newtonian mechanics.[3]: 1  This principle can be expressed as a coordinate transformation, between two coordinate systems. Isaac Newton noted that many transformations, such as those involving rotation or acceleration, will not preserve the observation of physical phenomena. Newton considered only those transformations involving motion with respect to an immovable absolute space, now called transformations between inertial frames.[12]: 17 
+
+In 1864 James Clerk Maxwell presented a theory of electromagnetism which did not obey Galilean relativity. The theory specifically predicted a constant speed of light in vacuum, no matter the motion (velocity, acceleration, etc.) of the light emitter or receiver or its frequency, wavelength, direction, polarization, or phase. This, as yet untested theory, was thought at the time to be only valid in inertial frames fixed in an aether. Numerous experiments followed, attempting to measure the speed of light as Earth moved through the proposed fixed aether, culminating in the 1887 Michelson–Morley experiment which only confirmed the constant speed of light.[12]: 18 
+
+Several fixes to the aether theory were proposed, with those of George Francis FitzGerald, Hendrik Antoon Lorentz, and Jules Henri Poincare all pointing in the direction of a result similar to the theory of special relativity. The final important step was taken by Albert Einstein in a paper published on 26 September 1905 titled "On the Electrodynamics of Moving Bodies".[p 1] Einstein applied the Lorentz transformations known to be compatible with Maxwell's equations for electrodynamics to the classical laws of mechanics. This changed Newton's mechanics situations involving all motions, especially velocities close to that of light[12]: 18  (known as relativistic velocities).
+
+Another way to describe the advance made by the special theory is to say Einstein extended the Galilean principle so that it accounted for the constant speed of light,[10] a phenomenon that had been observed in the Michelson–Morley experiment. He also postulated that it holds for all the laws of physics, including both the laws of mechanics and of electrodynamics.[13] The theory became essentially complete in 1907, with Hermann Minkowski's papers on spacetime.[14]
+
+Special relativity has proven to be the most accurate model of motion at any speed when gravitational and quantum effects are negligible.[15][14] Even so, the Newtonian model remains accurate at low velocities relative to the speed of light, for example, everyday motion on Earth.
+
+When updating his 1911 book on relativity, to include general relativity in 1920, Robert Daniel Carmichael called the earlier work the "restricted theory" as a "special case" of the new general theory; he also used the phrase "special theory of relativity".[16] In comparing to the general theory in 1923 Einstein specifically called his earlier work "the special theory of relativity", saying he meant a restriction to frames in uniform motion.[17]: 111  Just as Galilean relativity is accepted as an approximation of special relativity that is valid for low speeds, special relativity is considered an approximation of general relativity that is valid for weak gravitational fields, that is, at a sufficiently small scale (e.g., when tidal forces are negligible) and in conditions of free fall. But general relativity incorporates non-Euclidean geometry to represent gravitational effects as the geometric curvature of spacetime. Special relativity is restricted to the flat spacetime known as Minkowski space. As long as the universe can be modeled as a pseudo-Riemannian manifold, a Lorentz-invariant frame that abides by special relativity can be defined for a sufficiently small neighborhood of each point in this curved spacetime.
+
+Terminology
+Special relativity builds upon important physics ideas. Among the most basic of these are the following:
+
+speed or velocity, how fast an object moves relative to a reference point.[3]: 25 
+speed of light, the maximum speed of information, independent of the speed of the source and receiver,[10]: 39 
+clock, a device to measure differences in time; in relativity every object is imagined to have its own proper clock[10]: 3  and moving clocks run slower.[3]: 180 
+event: something that happens at a definite place and time. For example, an explosion or a flash of light from an atom;[10]: 10  a generalization of a point in geometrical space,[3]: 43 
+Two observers in relative motion receive information about two events via light signals traveling at constant speed, independent of either observer's speed. Their motion during the transit time causes them to get the information at different times on their local clock.
+
+The more technical background ideas include:
+
+spacetime: geometrical space and time considered together.[10]: 18 
+spacetime interval between two events: a measure of separation between events that incorporates both the spatial distance between them and the duration of time separating them:[10]: 9 
+(
+interval
+)
+2
+=
+[
+event separation in time
+]
+2
+−
+[
+event separation in space
+]
+2
+{\displaystyle ({\text{interval}})^{2}=\left[{\text{event separation in time}}\right]^{2}-\left[{\text{event separation in space}}\right]^{2}}
+
+coordinate system or reference frame: a way to locate events in spacetime. Events have coordinates x, y, z for space and t for time. The coordinates of the event are different in a different reference frame.[18]: 67 
+inertial reference frame: a region of a reference frame where objects at rest with respect to the frame stay as rest, or if in uniform motion, stay in motion; also called a free-float frame.[10]: 31 
+prime system, frame, or coordinate. To emphasize the relationship between two systems of coordinates, both use the same x,y,z axes but one will be marked with a prime (') symbol.
+coordinate transformation: changing how an event is described from one reference frame to another.[18]: 67 
+invariance: when physical laws or quantities do not change in different inertial frames. The speed of light is invariant in special relativity: it is always the same.[18]: 67 
+Traditional "two postulates" approach to special relativity 
+"Reflections of this type made it clear to me as long ago as shortly after 1900, i.e., shortly after Planck's trailblazing work, that neither mechanics nor electrodynamics could (except in limiting cases) claim exact validity. Gradually I despaired of the possibility of discovering the true laws by means of constructive efforts based on known facts. The longer and the more desperately I tried, the more I came to the conviction that only the discovery of a universal formal principle could lead us to assured results ... How, then, could such a universal principle be found?"
+
+Albert Einstein: Autobiographical Notes[p 2]
+Main article: Postulates of special relativity
+Einstein discerned two fundamental propositions that seemed to be the most assured, regardless of the exact validity of the (then) known laws of either mechanics or electrodynamics. These propositions were the constancy of the speed of light in vacuum and the independence of physical laws (especially the constancy of the speed of light) from the choice of inertial system. In his initial presentation of special relativity in 1905 he expressed these postulates as:[p 1][19]
+
+The principle of relativity – the laws by which the states of physical systems undergo change are not affected, whether these changes of state be referred to the one or the other of two systems in uniform translatory motion relative to each other.[p 1]
+The principle of invariant light speed – "... light is always propagated in empty space with a definite velocity [speed] c which is independent of the state of motion of the emitting body" (from the preface).[p 1] That is, light in vacuum propagates with the speed c (a fixed constant, independent of direction) in at least one system of inertial coordinates (the "stationary system"), regardless of the state of motion of the light source.
+The constancy of the speed of light was motivated by Maxwell's theory of electromagnetism[20] and the lack of evidence for the luminiferous ether.[21] There is conflicting evidence on the extent to which Einstein was influenced by the null result of the Michelson–Morley experiment.[22][23] In any case, the null result of the Michelson–Morley experiment helped the notion of the constancy of the speed of light gain widespread and rapid acceptance.
+
+The derivation of special relativity depends not only on these two explicit postulates, but also on several tacit assumptions, including the isotropy and homogeneity of space and the independence of measuring rods and clocks from their past history.[p 3]
+
+Principle of relativity
+Main article: Principle of relativity
+Reference frames and relative motion
+
+Figure 2–1. The primed system is in motion relative to the unprimed system with constant velocity v only along the x-axis, from the perspective of an observer stationary in the unprimed system. By the principle of relativity, an observer stationary in the primed system will view a likewise construction except that the velocity they record will be −v. The changing of the speed of propagation of interaction from infinite in non-relativistic mechanics to a finite value will require a modification of the transformation equations mapping events in one frame to another.
+Reference frames play a crucial role in relativity theory. The term reference frame as used here is an observational perspective in space that is not undergoing any change in motion (acceleration), from which a position can be measured along 3 spatial axes (so, at rest or constant velocity). In addition, a reference frame has the ability to determine measurements of the time of events using a "clock" (any reference device with uniform periodicity).
+
+An event is an occurrence that can be assigned a single unique moment and location in space relative to a reference frame: it is a "point" in spacetime. Since the speed of light is constant in relativity irrespective of the reference frame, pulses of light can be used to unambiguously measure distances and refer back to the times that events occurred to the clock, even though light takes time to reach the clock after the event has transpired.
+
+For example, the explosion of a firecracker may be considered to be an "event". We can completely specify an event by its four spacetime coordinates: The time of occurrence and its 3-dimensional spatial location define a reference point. Let's call this reference frame S.
+
+In relativity theory, we often want to calculate the coordinates of an event from differing reference frames. The equations that relate measurements made in different frames are called transformation equations.
+
+Standard configuration
+To gain insight into how the spacetime coordinates measured by observers in different reference frames compare with each other, it is useful to work with a simplified setup with frames in a standard configuration.[24]: 107  With care, this allows simplification of the math with no loss of generality in the conclusions that are reached. In Fig. 2-1, two Galilean reference frames (i.e., conventional 3-space frames) are displayed in relative motion. Frame S belongs to a first observer O, and frame S′ (pronounced "S prime" or "S dash") belongs to a second observer O′.
+
+The x, y, z axes of frame S are oriented parallel to the respective primed axes of frame S′.
+Frame S′ moves, for simplicity, in a single direction: the x-direction of frame S with a constant velocity v as measured in frame S.
+The origins of frames S and S′ are coincident when time t = 0 for frame S and t′ = 0 for frame S′.
+Since there is no absolute reference frame in relativity theory, a concept of "moving" does not strictly exist, as everything may be moving with respect to some other reference frame. Instead, any two frames that move at the same speed in the same direction are said to be comoving. Therefore, S and S′ are not comoving.
+
+Lack of an absolute reference frame
+The principle of relativity, which states that physical laws have the same form in each inertial reference frame, dates back to Galileo, and was incorporated into Newtonian physics. But in the late 19th century the existence of electromagnetic waves led some physicists to suggest that the universe was filled with a substance they called "aether", which, they postulated, would act as the medium through which these waves, or vibrations, propagated (in many respects similar to the way sound propagates through air). The aether was thought to be an absolute reference frame against which all speeds could be measured, and could be considered fixed and motionless relative to Earth or some other fixed reference point. The aether was supposed to be sufficiently elastic to support electromagnetic waves, while those waves could interact with matter, yet offering no resistance to bodies passing through it (its one property was that it allowed electromagnetic waves to propagate). The results of various experiments, including the Michelson–Morley experiment in 1887 (subsequently verified with more accurate and innovative experiments), led to the theory of special relativity, by showing that the aether did not exist.[25] Einstein's solution was to discard the notion of an aether and the absolute state of rest. In relativity, any reference frame moving with uniform motion will observe the same laws of physics. In particular, the speed of light in vacuum is always measured to be c, even when measured by multiple systems that are moving at different (but constant) velocities.
+
+Relativity without the second postulate
+From the principle of relativity alone without assuming the constancy of the speed of light (i.e., using the isotropy of space and the symmetry implied by the principle of special relativity) it can be shown that the spacetime transformations between inertial frames are either Euclidean, Galilean, or Lorentzian. In the Lorentzian case, one can then obtain relativistic interval conservation and a certain finite limiting speed. Experiments suggest that this speed is the speed of light in vacuum.[p 4][26]: 511 
+
+Lorentz transformation 
+Main article: Lorentz transformation
+Two- vs one- postulate approaches
+Main article: Derivations of the Lorentz transformations
+Einstein combined the two postulates – of relativity – and of the invariance of the speed of light, into a single postulate, the Lorentz transformation:
+
+The insight fundamental for the special theory of relativity is this: The assumptions relativity and light speed invariance are compatible if relations of a new type ("Lorentz transformation") are postulated for the conversion of coordinates and times of events ... The universal principle of the special theory of relativity is contained in the postulate: The laws of physics are invariant with respect to Lorentz transformations (for the transition from one inertial system to any other arbitrarily chosen inertial system). This is a restricting principle for natural laws ...[p 2]
+
+Following Einstein's original presentation of special relativity in 1905, many different sets of postulates have been proposed in various alternative derivations,[27] but Einstein stuck to his approach throughout work.[p 5]
+
+Henri Poincaré provided the mathematical framework for relativity theory by proving that Lorentz transformations are a subset of his Poincaré group of symmetry transformations. Einstein later derived these transformations from his axioms.
+
+While the traditional two-postulate approach to special relativity is presented in innumerable college textbooks and popular presentations,[28] other treatments of special relativity base it on the single postulate of universal Lorentz covariance, or, equivalently, on the single postulate of Minkowski spacetime.[p 6][p 7] Textbooks starting with the single postulate of Minkowski spacetime include those by Taylor and Wheeler[10] and by Callahan.[29]
+
+Lorentz transformation and its inverse
+Define an event to have spacetime coordinates (t, x, y, z) in system S and (t′, x′, y′, z′) in a reference frame S′ moving at a velocity v along the x-axis. Then the Lorentz transformation specifies that these coordinates are related in the following way:
+t
+′
+=
+γ
+ 
+(
+t
+−
+v
+x
+/
+c
+2
+)
+x
+′
+=
+γ
+ 
+(
+x
+−
+v
+t
+)
+y
+′
+=
+y
+z
+′
+=
+z
+,
+{\displaystyle {\begin{aligned}t'&=\gamma \ (t-vx/c^{2})\\x'&=\gamma \ (x-vt)\\y'&=y\\z'&=z,\end{aligned}}}where
+γ
+=
+1
+1
+−
+v
+2
+/
+c
+2
+{\displaystyle \gamma ={\frac {1}{\sqrt {1-v^{2}/c^{2}}}}}is the Lorentz factor and c is the speed of light in vacuum, and the velocity v of S′, relative to S, is parallel to the x-axis. For simplicity, the y and z coordinates are unaffected; only the x and t coordinates are transformed. These Lorentz transformations form a one-parameter group of linear mappings, that parameter being called rapidity.
+
+Solving the four transformation equations above for the unprimed coordinates yields the inverse Lorentz transformation:
+t
+=
+γ
+(
+t
+′
++
+v
+x
+′
+/
+c
+2
+)
+x
+=
+γ
+(
+x
+′
++
+v
+t
+′
+)
+y
+=
+y
+′
+z
+=
+z
+′
+.
+{\displaystyle {\begin{aligned}t&=\gamma (t'+vx'/c^{2})\\x&=\gamma (x'+vt')\\y&=y'\\z&=z'.\end{aligned}}}
+
+This shows that the unprimed frame is moving with the velocity −v, as measured in the primed frame.[30]
+
+There is nothing special about the x-axis. The transformation can apply to the y- or z-axis, or indeed in any direction parallel to the motion (which are warped by the γ factor) and perpendicular; see the article Lorentz transformation for details.
+
+A quantity that is invariant under Lorentz transformations is known as a Lorentz scalar.
+
+Writing the Lorentz transformation and its inverse in terms of coordinate differences, where one event has coordinates (x1, t1) and (x′1, t′1), another event has coordinates (x2, t2) and (x′2, t′2), and the differences are defined as
+
+Eq. 1:    
+Δ
+x
+′
+=
+x
+2
+′
+−
+x
+1
+′
+ 
+,
+ 
+Δ
+t
+′
+=
+t
+2
+′
+−
+t
+1
+′
+ 
+.
+{\displaystyle \Delta x'=x'_{2}-x'_{1}\ ,\ \Delta t'=t'_{2}-t'_{1}\ .}
+Eq. 2:    
+Δ
+x
+=
+x
+2
+−
+x
+1
+ 
+,
+ 
+ 
+Δ
+t
+=
+t
+2
+−
+t
+1
+ 
+.
+{\displaystyle \Delta x=x_{2}-x_{1}\ ,\ \ \Delta t=t_{2}-t_{1}\ .}
+we get
+
+Eq. 3:    
+Δ
+x
+′
+=
+γ
+ 
+(
+Δ
+x
+−
+v
+Δ
+t
+)
+ 
+,
+ 
+ 
+{\displaystyle \Delta x'=\gamma \ (\Delta x-v\,\Delta t)\ ,\ \ } 
+Δ
+t
+′
+=
+γ
+ 
+(
+Δ
+t
+−
+v
+ 
+Δ
+x
+/
+c
+2
+)
+ 
+.
+{\displaystyle \Delta t'=\gamma \ \left(\Delta t-v\ \Delta x/c^{2}\right)\ .}
+Eq. 4:    
+Δ
+x
+=
+γ
+ 
+(
+Δ
+x
+′
++
+v
+Δ
+t
+′
+)
+ 
+,
+ 
+{\displaystyle \Delta x=\gamma \ (\Delta x'+v\,\Delta t')\ ,\ } 
+Δ
+t
+=
+γ
+ 
+(
+Δ
+t
+′
++
+v
+ 
+Δ
+x
+′
+/
+c
+2
+)
+ 
+.
+{\displaystyle \Delta t=\gamma \ \left(\Delta t'+v\ \Delta x'/c^{2}\right)\ .}
+If we take differentials instead of taking differences, we get
+
+Eq. 5:    
+d
+x
+′
+=
+γ
+ 
+(
+d
+x
+−
+v
+d
+t
+)
+ 
+,
+ 
+ 
+{\displaystyle dx'=\gamma \ (dx-v\,dt)\ ,\ \ } 
+d
+t
+′
+=
+γ
+ 
+(
+d
+t
+−
+v
+ 
+d
+x
+/
+c
+2
+)
+ 
+.
+{\displaystyle dt'=\gamma \ \left(dt-v\ dx/c^{2}\right)\ .}
+Eq. 6:    
+d
+x
+=
+γ
+ 
+(
+d
+x
+′
++
+v
+d
+t
+′
+)
+ 
+,
+ 
+{\displaystyle dx=\gamma \ (dx'+v\,dt')\ ,\ } 
+d
+t
+=
+γ
+ 
+(
+d
+t
+′
++
+v
+ 
+d
+x
+′
+/
+c
+2
+)
+ 
+.
+{\displaystyle dt=\gamma \ \left(dt'+v\ dx'/c^{2}\right)\ .}
+Graphical representation of the Lorentz transformation
+
+
+
+
+Figure 3-1. Drawing a Minkowski spacetime diagram to illustrate a Lorentz transformation.
+Spacetime diagrams (also called Minkowski diagrams) are an extremely useful aid to visualizing how coordinates transform between different reference frames. Although it is not as easy to perform exact computations using them as directly invoking the Lorentz transformations, their main power is their ability to provide an intuitive grasp of the results of a relativistic scenario.[26]: 536  To draw a spacetime diagram, begin by considering two Galilean reference frames, S and S′, in standard configuration, as shown in Fig. 2-1.[31]: 155–199 
+
+Fig. 3-1a. Draw the 
+x
+{\displaystyle x} and 
+t
+{\displaystyle t} axes of frame S. The 
+x
+{\displaystyle x} axis is horizontal and the 
+c
+t
+{\displaystyle ct} (time written in units of space) axis is vertical, which is the opposite of the usual convention in kinematics. The 
+c
+t
+{\displaystyle ct} axis is scaled by a factor of 
+c
+{\displaystyle c} so that both axes have common units of length. In the diagram shown, the gridlines are spaced one unit distance apart. The 45° diagonal lines represent the worldlines of two photons passing through the origin at time 
+t
+=
+0.
+{\displaystyle t=0.} The slope of these worldlines is 1 because the photons advance one unit in space per unit of time. Two events, 
+A
+{\displaystyle {\text{A}}} and 
+B
+,
+{\displaystyle {\text{B}},} have been plotted on this graph so that their coordinates may be compared in the S and S' frames.
+
+Fig. 3-1b. Draw the 
+x
+′
+{\displaystyle x'} and 
+c
+t
+′
+{\displaystyle ct'} axes of frame S'. The 
+c
+t
+′
+{\displaystyle ct'} axis represents the worldline of the origin of the S' coordinate system as measured in frame S. In this figure, 
+v
+=
+c
+/
+2.
+{\displaystyle v=c/2.} Both the 
+c
+t
+′
+{\displaystyle ct'} and 
+x
+′
+{\displaystyle x'} axes are tilted from the unprimed axes by an angle 
+α
+=
+tan
+−
+1
+⁡
+(
+β
+)
+,
+{\displaystyle \alpha =\tan ^{-1}(\beta ),} where 
+β
+=
+v
+/
+c
+.
+{\displaystyle \beta =v/c.} The primed and unprimed axes share a common origin because frames S and S' had been set up in standard configuration, so that 
+t
+=
+0
+{\displaystyle t=0} when 
+t
+′
+=
+0.
+{\displaystyle t'=0.}
+
+Fig. 3-1c. Units in the primed axes have a different scale from units in the unprimed axes. From the Lorentz transformations, it can be observed that 
+(
+x
+′
+,
+c
+t
+′
+)
+{\displaystyle (x',ct')} coordinates of 
+(
+0
+,
+1
+)
+{\displaystyle (0,1)} in the primed coordinate system transform to 
+(
+β
+γ
+,
+γ
+)
+{\displaystyle (\beta \gamma ,\gamma )} in the unprimed coordinate system. Likewise, 
+(
+x
+′
+,
+c
+t
+′
+)
+{\displaystyle (x',ct')} coordinates of 
+(
+1
+,
+0
+)
+{\displaystyle (1,0)} in the primed coordinate system transform to 
+(
+γ
+,
+β
+γ
+)
+{\displaystyle (\gamma ,\beta \gamma )} in the unprimed system. Draw gridlines parallel with the 
+c
+t
+′
+{\displaystyle ct'} axis through points 
+(
+k
+γ
+,
+k
+β
+γ
+)
+{\displaystyle (k\gamma ,k\beta \gamma )} as measured in the unprimed frame, where 
+k
+{\displaystyle k} is an integer. Likewise, draw gridlines parallel with the 
+x
+′
+{\displaystyle x'} axis through 
+(
+k
+β
+γ
+,
+k
+γ
+)
+{\displaystyle (k\beta \gamma ,k\gamma )} as measured in the unprimed frame. Using the Pythagorean theorem, we observe that the spacing between 
+c
+t
+′
+{\displaystyle ct'} units equals 
+(
+1
++
+β
+2
+)
+/
+(
+1
+−
+β
+2
+)
+{\textstyle {\sqrt {(1+\beta ^{2})/(1-\beta ^{2})}}} times the spacing between 
+c
+t
+{\displaystyle ct} units, as measured in frame S. This ratio is always greater than 1, and approaches infinity as 
+β
+→
+1.
+{\displaystyle \beta \to 1.}
+
+Fig. 3-1d. Since the speed of light is an invariant, the worldlines of two photons passing through the origin at time 
+t
+′
+=
+0
+{\displaystyle t'=0} still plot as 45° diagonal lines. The primed coordinates of 
+A
+{\displaystyle {\text{A}}} and 
+B
+{\displaystyle {\text{B}}} are related to the unprimed coordinates through the Lorentz transformations and could be approximately measured from the graph (assuming that it has been plotted accurately enough), but the real merit of a Minkowski diagram is its granting us a geometric view of the scenario. For example, in this figure, we observe that the two timelike-separated events that had different x-coordinates in the unprimed frame are now at the same position in space.
+
+While the unprimed frame is drawn with space and time axes that meet at right angles, the primed frame is drawn with axes that meet at acute or obtuse angles. This asymmetry is due to unavoidable distortions in how spacetime coordinates map onto a Cartesian plane. The frames are equivalent.
+
+Consequences derived from the Lorentz transformation
+See also: Twin paradox and Relativistic mechanics
+The consequences of special relativity can be derived from the Lorentz transformation equations.[32] These transformations, and hence special relativity, lead to different physical predictions than those of Newtonian mechanics at all relative velocities, and most pronounced when relative velocities become comparable to the speed of light. The speed of light is so much larger than anything most humans encounter that some of the effects predicted by relativity are initially counterintuitive.
+
+Invariant interval
+In Galilean relativity, the spatial separation, (⁠
+Δ
+r
+{\displaystyle \Delta r}⁠), and the temporal separation, (⁠
+Δ
+t
+{\displaystyle \Delta t}⁠), between two events are independent invariants, the values of which do not change when observed from different frames of reference. In special relativity, however, the interweaving of spatial and temporal coordinates generates the concept of an invariant interval, denoted as ⁠
+Δ
+s
+2
+{\displaystyle \Delta s^{2}}⁠:
+Δ
+s
+2
+=
+def
+c
+2
+Δ
+t
+2
+−
+(
+Δ
+x
+2
++
+Δ
+y
+2
++
+Δ
+z
+2
+)
+{\displaystyle \Delta s^{2}\;{\overset {\text{def}}{=}}\;c^{2}\Delta t^{2}-(\Delta x^{2}+\Delta y^{2}+\Delta z^{2})}In considering the physical significance of ⁠
+Δ
+s
+2
+{\displaystyle \Delta s^{2}}⁠, there are three cases:[26]: 533 [10]: 25–39 
+
+Δs2 > 0: In this case, the two events are separated by more time than space, and they are hence said to be timelike separated. This implies that ⁠
+|
+Δ
+x
+/
+Δ
+t
+|
+<
+c
+{\displaystyle \vert \Delta x/\Delta t\vert <c}⁠, and given the Lorentz transformation ⁠
+Δ
+x
+′
+=
+γ
+ 
+(
+Δ
+x
+−
+v
+ 
+Δ
+t
+)
+{\displaystyle \Delta x'=\gamma \ (\Delta x-v\ \Delta t)}⁠, it is evident that there exists a 
+v
+{\displaystyle v} less than 
+c
+{\displaystyle c} for which 
+Δ
+x
+′
+=
+0
+{\displaystyle \Delta x'=0} (in particular, ⁠
+v
+=
+Δ
+x
+/
+Δ
+t
+{\displaystyle v=\Delta x/\Delta t}⁠). In other words, given two events that are timelike separated, it is possible to find a frame in which the two events happen at the same place. In this frame, the separation in time, ⁠
+Δ
+s
+/
+c
+{\displaystyle \Delta s/c}⁠, is called the proper time.
+Δs2 < 0: In this case, the two events are separated by more space than time, and they are hence said to be spacelike separated. This implies that ⁠
+|
+Δ
+x
+/
+Δ
+t
+|
+>
+c
+{\displaystyle \vert \Delta x/\Delta t\vert >c}⁠, and given the Lorentz transformation ⁠
+Δ
+t
+′
+=
+γ
+ 
+(
+Δ
+t
+−
+v
+Δ
+x
+/
+c
+2
+)
+{\displaystyle \Delta t'=\gamma \ (\Delta t-v\Delta x/c^{2})}⁠, there exists a 
+v
+{\displaystyle v} less than 
+c
+{\displaystyle c} for which 
+Δ
+t
+′
+=
+0
+{\displaystyle \Delta t'=0} (in particular, ⁠
+v
+=
+c
+2
+Δ
+t
+/
+Δ
+x
+{\displaystyle v=c^{2}\Delta t/\Delta x}⁠). In other words, given two events that are spacelike separated, it is possible to find a frame in which the two events happen at the same time. In this frame, the separation in space, ⁠
+−
+Δ
+s
+2
+{\displaystyle \textstyle {\sqrt {-\Delta s^{2}}}}⁠, is called the proper distance, or proper length. For values of 
+v
+{\displaystyle v} greater than and less than ⁠
+c
+2
+Δ
+t
+/
+Δ
+x
+{\displaystyle c^{2}\Delta t/\Delta x}⁠, the sign of 
+Δ
+t
+′
+{\displaystyle \Delta t'} changes, meaning that the temporal order of spacelike-separated events changes depending on the frame in which the events are viewed. But the temporal order of timelike-separated events is absolute, since the only way that 
+v
+{\displaystyle v} could be greater than 
+c
+2
+Δ
+t
+/
+Δ
+x
+{\displaystyle c^{2}\Delta t/\Delta x} would be if ⁠
+v
+>
+c
+{\displaystyle v>c}⁠.
+Δs2 = 0: In this case, the two events are said to be lightlike separated. This implies that ⁠
+|
+Δ
+x
+/
+Δ
+t
+|
+=
+c
+{\displaystyle \vert \Delta x/\Delta t\vert =c}⁠, and this relationship is frame independent due to the invariance of ⁠
+s
+2
+{\displaystyle s^{2}}⁠. From this, we observe that the speed of light is 
+c
+{\displaystyle c} in every inertial frame. In other words, starting from the assumption of universal Lorentz covariance, the constant speed of light is a derived result, rather than a postulate as in the two-postulates formulation of the special theory.
+The interweaving of space and time revokes the implicitly assumed concepts of absolute simultaneity and synchronization across non-comoving frames.
+
+The form of ⁠
+Δ
+s
+2
+{\displaystyle \Delta s^{2}}⁠, being the difference of the squared time lapse and the squared spatial distance, demonstrates a fundamental discrepancy between Euclidean and spacetime distances. The invariance of Δs2 under standard Lorentz transformation is analogous to the invariance of squared distances Δr2 under rotations in Euclidean space.[citation needed] Although space and time have an equal footing in relativity, the minus sign in front of the spatial terms marks space and time as being of essentially different character. They are not the same. Because it treats time differently than it treats the 3 spatial dimensions, Minkowski space differs from four-dimensional Euclidean space. The invariance of this interval is a property of the general Lorentz transform (also called the Poincaré transformation), making it an isometry of spacetime. The general Lorentz transform extends the standard Lorentz transform (which deals with translations without rotation, that is, Lorentz boosts, in the x-direction) with all other translations, reflections, and rotations between any Cartesian inertial frame.[33]: 33–34 
+
+In the analysis of simplified scenarios, such as spacetime diagrams, a reduced-dimensionality form of the invariant interval is often employed:
+Δ
+s
+2
+=
+c
+2
+Δ
+t
+2
+−
+Δ
+x
+2
+{\displaystyle \Delta s^{2}\,=\,c^{2}\Delta t^{2}-\Delta x^{2}}
+
+Demonstrating that the interval is invariant is straightforward for the reduced-dimensionality case and with frames in standard configuration:[26]
+c
+2
+Δ
+t
+2
+−
+Δ
+x
+2
+=
+c
+2
+γ
+2
+(
+Δ
+t
+′
++
+v
+Δ
+x
+′
+c
+2
+)
+2
+−
+γ
+2
+ 
+(
+Δ
+x
+′
++
+v
+Δ
+t
+′
+)
+2
+=
+γ
+2
+(
+c
+2
+Δ
+t
+′
+2
++
+2
+v
+Δ
+x
+′
+Δ
+t
+′
++
+v
+2
+Δ
+x
+′
+2
+c
+2
+)
+−
+γ
+2
+ 
+(
+Δ
+x
+′
+2
++
+2
+v
+Δ
+x
+′
+Δ
+t
+′
++
+v
+2
+Δ
+t
+′
+2
+)
+=
+γ
+2
+c
+2
+Δ
+t
+′
+2
+−
+γ
+2
+v
+2
+Δ
+t
+′
+2
+−
+γ
+2
+Δ
+x
+′
+2
++
+γ
+2
+v
+2
+Δ
+x
+′
+2
+c
+2
+=
+γ
+2
+c
+2
+Δ
+t
+′
+2
+(
+1
+−
+v
+2
+c
+2
+)
+−
+γ
+2
+Δ
+x
+′
+2
+(
+1
+−
+v
+2
+c
+2
+)
+=
+c
+2
+Δ
+t
+′
+2
+−
+Δ
+x
+′
+2
+{\displaystyle {\begin{aligned}c^{2}\Delta t^{2}-\Delta x^{2}&=c^{2}\gamma ^{2}\left(\Delta t'+{\dfrac {v\Delta x'}{c^{2}}}\right)^{2}-\gamma ^{2}\ (\Delta x'+v\Delta t')^{2}\\&=\gamma ^{2}\left(c^{2}\Delta t'^{\,2}+2v\Delta x'\Delta t'+{\dfrac {v^{2}\Delta x'^{\,2}}{c^{2}}}\right)-\gamma ^{2}\ (\Delta x'^{\,2}+2v\Delta x'\Delta t'+v^{2}\Delta t'^{\,2})\\&=\gamma ^{2}c^{2}\Delta t'^{\,2}-\gamma ^{2}v^{2}\Delta t'^{\,2}-\gamma ^{2}\Delta x'^{\,2}+\gamma ^{2}{\dfrac {v^{2}\Delta x'^{\,2}}{c^{2}}}\\&=\gamma ^{2}c^{2}\Delta t'^{\,2}\left(1-{\dfrac {v^{2}}{c^{2}}}\right)-\gamma ^{2}\Delta x'^{\,2}\left(1-{\dfrac {v^{2}}{c^{2}}}\right)\\&=c^{2}\Delta t'^{\,2}-\Delta x'^{\,2}\end{aligned}}}
+
+The value of 
+Δ
+s
+2
+{\displaystyle \Delta s^{2}} is hence independent of the frame in which it is measured.
+
+Relativity of simultaneity
+See also: Relativity of simultaneity and Ladder paradox
+
+Figure 4–1. The three events (A, B, C) are simultaneous in the reference frame of some observer O. In a reference frame moving at v = 0.3c, as measured by O, the events occur in the order C, B, A. In a reference frame moving at v = −0.5c with respect to O, the events occur in the order A, B, C. The white lines, the lines of simultaneity, move from the past to the future in the respective frames (green coordinate axes), highlighting events residing on them. They are the locus of all events occurring at the same time in the respective frame. The gray area is the light cone with respect to the origin of all considered frames.
+Consider two events happening in two different locations that occur simultaneously in the reference frame of one inertial observer. They may occur non-simultaneously in the reference frame of another inertial observer (lack of absolute simultaneity).
+
+From Equation 3 (the forward Lorentz transformation in terms of coordinate differences)
+Δ
+t
+′
+=
+γ
+(
+Δ
+t
+−
+v
+Δ
+x
+c
+2
+)
+{\displaystyle \Delta t'=\gamma \left(\Delta t-{\frac {v\,\Delta x}{c^{2}}}\right)}
+
+It is clear that the two events that are simultaneous in frame S (satisfying Δt = 0), are not necessarily simultaneous in another inertial frame S′ (satisfying Δt′ = 0). Only if these events are additionally co-local in frame S (satisfying Δx = 0), will they be simultaneous in another frame S′.
+
+The Sagnac effect can be considered a manifestation of the relativity of simultaneity for local inertial frames comoving with a rotating Earth.[34] Instruments based on the Sagnac effect for their operation, such as ring laser gyroscopes and fiber optic gyroscopes, are capable of extreme levels of sensitivity.[p 8]
+
+Time dilation
+See also: Time dilation
+The time lapse between two events is not invariant from one observer to another, but is dependent on the relative speeds of the observers' reference frames.
+
+Suppose a clock is at rest in the unprimed system S. The location of the clock on two different ticks is then characterized by Δx = 0. To find the relation between the times between these ticks as measured in both systems, Equation 3 can be used to find:
+
+Δ
+t
+′
+=
+γ
+Δ
+t
+{\displaystyle \Delta t'=\gamma \,\Delta t} for events satisfying 
+Δ
+x
+=
+0
+ 
+.
+{\displaystyle \Delta x=0\ .}
+This shows that the time (Δt′) between the two ticks as seen in the frame in which the clock is moving (S′), is longer than the time (Δt) between these ticks as measured in the rest frame of the clock (S). Time dilation explains a number of physical phenomena; for example, the lifetime of high speed muons created by the collision of cosmic rays with particles in the Earth's outer atmosphere and moving towards the surface is greater than the lifetime of slowly moving muons, created and decaying in a laboratory.[35]
+
+
+Figure 4–2. Hypothetical infinite array of synchronized clocks associated with an observer's reference frame
+Whenever one hears a statement to the effect that "moving clocks run slow", one should envision an inertial reference frame thickly populated with identical, synchronized clocks. As a moving clock travels through this array, its reading at any particular point is compared with a stationary clock at the same point.[36]: 149–152 
+
+The measurements obtained from direct observation of a moving clock would be delayed by the finite speed of light, i.e. the times seen would be distorted by the Doppler effect. Measurements of relativistic effects must always be understood as having been made after finite speed-of-light effects have been factored out.[36]: 149–152 
+
+Langevin's light-clock
+
+
+Figure 4–3. Thought experiment using a light-clock to explain time dilation
+Paul Langevin, an early proponent of the theory of relativity, did much to popularize the theory in the face of resistance by many physicists to Einstein's revolutionary concepts. Among his numerous contributions to the foundations of special relativity were independent work on the mass–energy relationship, a thorough examination of the twin paradox, and investigations into rotating coordinate systems. His name is frequently attached to a hypothetical construct called a "light-clock" (originally developed by Lewis and Tolman in 1909[37]), which he used to perform a novel derivation of the Lorentz transformation.[38]
+
+A light-clock is imagined to be a box of perfectly reflecting walls wherein a light signal reflects back and forth from opposite faces. The concept of time dilation is frequently taught using a light-clock that is traveling in uniform inertial motion perpendicular to a line connecting the two mirrors.[39][40][41][42] (Langevin himself made use of a light-clock oriented parallel to its line of motion.[38])
+
+Consider the scenario illustrated in Fig. 4-3A. Observer A holds a light-clock of length 
+L
+{\displaystyle L} as well as an electronic timer with which she measures how long it takes a pulse to make a round trip up and down along the light-clock. Although observer A is traveling rapidly along a train, from her point of view the emission and receipt of the pulse occur at the same place, and she measures the interval using a single clock located at the precise position of these two events. For the interval between these two events, observer A finds ⁠
+t
+A
+=
+2
+L
+/
+c
+{\displaystyle t_{\text{A}}=2L/c}⁠. A time interval measured using a single clock that is motionless in a particular reference frame is called a proper time interval.[43]
+
+Fig. 4-3B illustrates these same two events from the standpoint of observer B, who is parked by the tracks as the train goes by at a speed of ⁠
+v
+{\displaystyle v}⁠. Instead of making straight up-and-down motions, observer B sees the pulses moving along a zig-zag line. However, because of the postulate of the constancy of the speed of light, the speed of the pulses along these diagonal lines is the same 
+c
+{\displaystyle c} that observer A saw for her up-and-down pulses. B measures the speed of the vertical component of these pulses as 
+±
+c
+2
+−
+v
+2
+,
+{\textstyle \pm {\sqrt {c^{2}-v^{2}}},} so that the total round-trip time of the pulses is 
+t
+B
+=
+2
+L
+/
+c
+2
+−
+v
+2
+=
+{\textstyle t_{\text{B}}=2L{\big /}{\sqrt {c^{2}-v^{2}}}={}}⁠
+t
+A
+/
+1
+−
+v
+2
+/
+c
+2
+{\displaystyle \textstyle t_{\text{A}}{\big /}{\sqrt {1-v^{2}/c^{2}}}}⁠. Note that for observer B, the emission and receipt of the light pulse occurred at different places, and he measured the interval using two stationary and synchronized clocks located at two different positions in his reference frame. The interval that B measured was therefore not a proper time interval because he did not measure it with a single resting clock.[43]
+
+Reciprocal time dilation
+In the above description of the Langevin light-clock, the labeling of one observer as stationary and the other as in motion was completely arbitrary. One could just as well have observer B carrying the light-clock and moving at a speed of 
+v
+{\displaystyle v} to the left, in which case observer A would perceive B's clock as running slower than her local clock.
+
+There is no paradox here, because there is no independent observer C who will agree with both A and B. Observer C necessarily makes his measurements from his own reference frame. If that reference frame coincides with A's reference frame, then C will agree with A's measurement of time. If C's reference frame coincides with B's reference frame, then C will agree with B's measurement of time. If C's reference frame coincides with neither A's frame nor B's frame, then C's measurement of time will disagree with both A's and B's measurement of time.[44]
+
+Twin paradox
+See also: Twin paradox
+The reciprocity of time dilation between two observers in separate inertial frames leads to the so-called twin paradox, articulated in its present form by Langevin in 1911.[45] Langevin imagined an adventurer wishing to explore the future of the Earth. This traveler boards a projectile capable of traveling at 99.995% of the speed of light. After making a round-trip journey to and from a nearby star lasting only two years of his own life, he returns to an Earth that is two hundred years older.
+
+This result appears puzzling because both the traveler and an Earthbound observer would see the other as moving, and so, because of the reciprocity of time dilation, one might initially expect that each should have found the other to have aged less. In reality, there is no paradox at all, because in order for the two observers to perform side-by-side comparisons of their elapsed proper times, the symmetry of the situation must be broken: At least one of the two observers must change their state of motion to match that of the other.[46]
+
+
+Figure 4-4. Doppler analysis of twin paradox
+Knowing the general resolution of the paradox, however, does not immediately yield the ability to calculate correct quantitative results. Many solutions to this puzzle have been provided in the literature and have been reviewed in the Twin paradox article. We will examine in the following one such solution to the paradox.
+
+Our basic aim will be to demonstrate that, after the trip, both twins are in perfect agreement about who aged by how much, regardless of their different experiences. Fig 4-4 illustrates a scenario where the traveling twin flies at 0.6 c to and from a star 3 ly distant. During the trip, each twin sends yearly time signals (measured in their own proper times) to the other. After the trip, the cumulative counts are compared. On the outward phase of the trip, each twin receives the other's signals at the lowered rate of ⁠
+f
+′
+=
+f
+(
+1
+−
+β
+)
+/
+(
+1
++
+β
+)
+{\displaystyle \textstyle f'=f{\sqrt {(1-\beta )/(1+\beta )}}}⁠. Initially, the situation is perfectly symmetric: note that each twin receives the other's one-year signal at two years measured on their own clock. The symmetry is broken when the traveling twin turns around at the four-year mark as measured by her clock. During the remaining four years of her trip, she receives signals at the enhanced rate of ⁠
+f
+″
+=
+f
+(
+1
++
+β
+)
+/
+(
+1
+−
+β
+)
+{\displaystyle \textstyle f''=f{\sqrt {(1+\beta )/(1-\beta )}}}⁠. The situation is quite different with the stationary twin. Because of light-speed delay, he does not see his sister turn around until eight years have passed on his own clock. Thus, he receives enhanced-rate signals from his sister for only a relatively brief period. Although the twins disagree in their respective measures of total time, we see in the following table, as well as by simple observation of the Minkowski diagram, that each twin is in total agreement with the other as to the total number of signals sent from one to the other. There is hence no paradox.[36]: 152–159 
+
+Item	Measured by the
+stay-at-home	Fig 4-4	Measured by
+the traveler	Fig 4-4
+Total time of trip	
+T
+=
+2
+L
+v
+{\displaystyle T={\frac {2L}{v}}}	10 yr	
+T
+′
+=
+2
+L
+γ
+v
+{\displaystyle T'={\frac {2L}{\gamma v}}}	8 yr
+Total number of pulses sent	
+f
+T
+=
+2
+f
+L
+v
+{\displaystyle fT={\frac {2fL}{v}}}	10	
+f
+T
+′
+=
+2
+f
+L
+γ
+v
+{\displaystyle fT'={\frac {2fL}{\gamma v}}}	8
+Time when traveler's turnaround is detected	
+t
+1
+=
+L
+v
++
+L
+c
+{\displaystyle t_{1}={\frac {L}{v}}+{\frac {L}{c}}}	8 yr	
+t
+1
+′
+=
+L
+γ
+v
+{\displaystyle t_{1}'={\frac {L}{\gamma v}}}	4 yr
+Number of pulses received at initial 
+f
+′
+{\displaystyle f'} rate	
+f
+′
+t
+1
+{\displaystyle f't_{1}} 
+=
+f
+L
+v
+(
+1
++
+β
+)
+(
+1
+−
+β
+1
++
+β
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1+\beta )\left({\frac {1-\beta }{1+\beta }}\right)^{1/2}}
+=
+f
+L
+v
+(
+1
+−
+β
+2
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1-\beta ^{2})^{1/2}}	4	
+f
+′
+t
+1
+′
+{\displaystyle f't_{1}'} 
+=
+f
+L
+v
+(
+1
+−
+β
+2
+)
+1
+/
+2
+(
+1
+−
+β
+1
++
+β
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1-\beta ^{2})^{1/2}\left({\frac {1-\beta }{1+\beta }}\right)^{1/2}}
+=
+f
+L
+v
+(
+1
+−
+β
+)
+{\displaystyle ={\frac {fL}{v}}(1-\beta )}	2
+Time for remainder of trip	
+t
+2
+=
+L
+v
+−
+L
+c
+{\displaystyle t_{2}={\frac {L}{v}}-{\frac {L}{c}}}	2 yr	
+t
+2
+′
+=
+L
+γ
+v
+{\displaystyle t_{2}'={\frac {L}{\gamma v}}}	4 yr
+Number of signals received at final 
+f
+″
+{\displaystyle f''} rate	
+f
+″
+t
+2
+{\displaystyle f''t_{2}} 
+=
+f
+L
+v
+(
+1
+−
+β
+)
+(
+1
++
+β
+1
+−
+β
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1-\beta )\left({\frac {1+\beta }{1-\beta }}\right)^{1/2}} 
+=
+f
+L
+v
+(
+1
+−
+β
+2
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1-\beta ^{2})^{1/2}}	4	
+f
+″
+t
+2
+′
+{\displaystyle f''t_{2}'} 
+=
+f
+L
+v
+(
+1
+−
+β
+2
+)
+1
+/
+2
+(
+1
++
+β
+1
+−
+β
+)
+1
+/
+2
+{\displaystyle ={\frac {fL}{v}}(1-\beta ^{2})^{1/2}\left({\frac {1+\beta }{1-\beta }}\right)^{1/2}} 
+=
+f
+L
+v
+(
+1
++
+β
+)
+{\displaystyle ={\frac {fL}{v}}(1+\beta )}	8
+Total number of received pulses	
+2
+f
+L
+v
+(
+1
+−
+β
+2
+)
+1
+/
+2
+{\displaystyle {\frac {2fL}{v}}(1-\beta ^{2})^{1/2}} 
+=
+2
+f
+L
+γ
+v
+{\displaystyle ={\frac {2fL}{\gamma v}}}	8	
+2
+f
+L
+v
+{\displaystyle {\frac {2fL}{v}}}	10
+Twin's calculation as to how much the other twin should have aged	
+T
+′
+=
+2
+L
+γ
+v
+{\displaystyle T'={\frac {2L}{\gamma v}}}	8 yr	
+T
+=
+2
+L
+v
+{\displaystyle T={\frac {2L}{v}}}	10 yr
+Length contraction
+See also: Lorentz contraction
+The dimensions (e.g., length) of an object as measured by one observer may be smaller than the results of measurements of the same object made by another observer (e.g., the ladder paradox involves a long ladder traveling near the speed of light and being contained within a smaller garage).
+
+Similarly, suppose a measuring rod is at rest and aligned along the x-axis in the unprimed system S. In this system, the length of this rod is written as Δx. To measure the length of this rod in the system S′, in which the rod is moving, the distances x′ to the end points of the rod must be measured simultaneously in that system S′. In other words, the measurement is characterized by Δt′ = 0, which can be combined with Equation 4 to find the relation between the lengths Δx and Δx′:
+
+Δ
+x
+′
+=
+Δ
+x
+γ
+{\displaystyle \Delta x'={\frac {\Delta x}{\gamma }}}  for events satisfying 
+Δ
+t
+′
+=
+0
+ 
+.
+{\displaystyle \Delta t'=0\ .}
+This shows that the length (Δx′) of the rod as measured in the frame in which it is moving (S′), is shorter than its length (Δx) in its own rest frame (S).
+
+Time dilation and length contraction are not merely appearances. Time dilation is explicitly related to our way of measuring time intervals between events that occur at the same place in a given coordinate system (called "co-local" events). These time intervals are different in another coordinate system moving with respect to the first, unless the events, in addition to being co-local, are also simultaneous. Similarly, length contraction relates to our measured distances between separated but simultaneous events in a given coordinate system of choice. If these events are not co-local, but are separated by distance (space), they will not occur at the same spatial distance from each other when seen from another moving coordinate system.
+
+Lorentz transformation of velocities
+See also: Velocity-addition formula
+Consider two frames S and S′ in standard configuration. A particle in S moves in the x direction with velocity vector ⁠
+u
+{\displaystyle \mathbf {u} }⁠. What is its velocity 
+u
+′
+{\displaystyle \mathbf {u'} } in frame S′?
+
+We can write
+
+|
+u
+|
+=
+u
+=
+d
+x
+/
+d
+t
+.
+{\displaystyle \mathbf {|u|} =u=dx/dt\,.}		7
+|
+u
+′
+|
+=
+u
+′
+=
+d
+x
+′
+/
+d
+t
+′
+.
+{\displaystyle \mathbf {|u'|} =u'=dx'/dt'\,.}		8
+Substituting expressions for 
+d
+x
+′
+{\displaystyle dx'} and 
+d
+t
+′
+{\displaystyle dt'} from Equation 5 into Equation 8, followed by straightforward mathematical manipulations and back-substitution from Equation 7 yields the Lorentz transformation of the speed 
+u
+{\displaystyle u} to ⁠
+u
+′
+{\displaystyle u'}⁠:
+
+u
+′
+=
+d
+x
+′
+d
+t
+′
+=
+γ
+(
+d
+x
+−
+v
+d
+t
+)
+γ
+(
+d
+t
+−
+v
+d
+x
+c
+2
+)
+=
+d
+x
+d
+t
+−
+v
+1
+−
+v
+c
+2
+d
+x
+d
+t
+=
+u
+−
+v
+1
+−
+u
+v
+c
+2
+.
+{\displaystyle u'={\frac {dx'}{dt'}}={\frac {\gamma (dx-v\,dt)}{\gamma \left(dt-{\dfrac {v\,dx}{c^{2}}}\right)}}={\frac {{\dfrac {dx}{dt}}-v}{1-{\dfrac {v}{c^{2}}}\,{\dfrac {dx}{dt}}}}={\frac {u-v}{1-{\dfrac {uv}{c^{2}}}}}.}		9
+The inverse relation is obtained by interchanging the primed and unprimed symbols and replacing 
+v
+{\displaystyle v} with ⁠
+−
+v
+{\displaystyle -v}⁠.
+
+u
+=
+u
+′
++
+v
+1
++
+u
+′
+v
+/
+c
+2
+.
+{\displaystyle u={\frac {u'+v}{1+u'v/c^{2}}}.}		10
+For 
+u
+{\displaystyle \mathbf {u} } not aligned along the x-axis, we write:[13]: 47–49 
+
+u
+=
+(
+u
+1
+,
+ 
+u
+2
+,
+ 
+u
+3
+)
+=
+(
+d
+x
+/
+d
+t
+,
+ 
+d
+y
+/
+d
+t
+,
+ 
+d
+z
+/
+d
+t
+)
+ 
+.
+{\displaystyle \mathbf {u} =(u_{1},\ u_{2},\ u_{3})=(dx/dt,\ dy/dt,\ dz/dt)\ .}		11
+u
+′
+=
+(
+u
+1
+′
+,
+ 
+u
+2
+′
+,
+ 
+u
+3
+′
+)
+=
+(
+d
+x
+′
+/
+d
+t
+′
+,
+ 
+d
+y
+′
+/
+d
+t
+′
+,
+ 
+d
+z
+′
+/
+d
+t
+′
+)
+ 
+.
+{\displaystyle \mathbf {u'} =(u_{1}',\ u_{2}',\ u_{3}')=(dx'/dt',\ dy'/dt',\ dz'/dt')\ .}		12
+The forward and inverse transformations for this case are:
+
+u
+1
+′
+=
+u
+1
+−
+v
+1
+−
+u
+1
+v
+/
+c
+2
+ 
+,
+u
+2
+′
+=
+u
+2
+γ
+(
+1
+−
+u
+1
+v
+/
+c
+2
+)
+ 
+,
+u
+3
+′
+=
+u
+3
+γ
+(
+1
+−
+u
+1
+v
+/
+c
+2
+)
+ 
+.
+{\displaystyle u_{1}'={\frac {u_{1}-v}{1-u_{1}v/c^{2}}}\ ,\qquad u_{2}'={\frac {u_{2}}{\gamma \left(1-u_{1}v/c^{2}\right)}}\ ,\qquad u_{3}'={\frac {u_{3}}{\gamma \left(1-u_{1}v/c^{2}\right)}}\ .}		13
+u
+1
+=
+u
+1
+′
++
+v
+1
++
+u
+1
+′
+v
+/
+c
+2
+ 
+,
+u
+2
+=
+u
+2
+′
+γ
+(
+1
++
+u
+1
+′
+v
+/
+c
+2
+)
+ 
+,
+u
+3
+=
+u
+3
+′
+γ
+(
+1
++
+u
+1
+′
+v
+/
+c
+2
+)
+ 
+.
+{\displaystyle u_{1}={\frac {u_{1}'+v}{1+u_{1}'v/c^{2}}}\ ,\qquad u_{2}={\frac {u_{2}'}{\gamma \left(1+u_{1}'v/c^{2}\right)}}\ ,\qquad u_{3}={\frac {u_{3}'}{\gamma \left(1+u_{1}'v/c^{2}\right)}}\ .}		14
+Equation 10 and Equation 14 can be interpreted as giving the resultant 
+u
+{\displaystyle \mathbf {u} } of the two velocities 
+v
+{\displaystyle \mathbf {v} } and ⁠
+u
+′
+{\displaystyle \mathbf {u'} }⁠, and they replace the formula ⁠
+u
+=
+u
+′
++
+v
+{\displaystyle \mathbf {u=u'+v} }⁠. which is valid in Galilean relativity. Interpreted in such a fashion, they are commonly referred to as the relativistic velocity addition (or composition) formulas, valid for the three axes of S and S′ being aligned with each other (although not necessarily in standard configuration).[13]: 47–49 
+
+We note the following points:
+
+If an object (e.g., a photon) were moving at the speed of light in one frame (i.e., u = ±c or u′ = ±c), then it would also be moving at the speed of light in any other frame, moving at |v| < c.
+The resultant speed of two velocities with magnitude less than c is always a velocity with magnitude less than c.
+If both |u| and |v| (and then also |u′| and |v′|) are small with respect to the speed of light (that is, e.g., |⁠
+u
+/
+c
+⁠| ≪ 1), then the intuitive Galilean transformations are recovered from the transformation equations for special relativity
+Attaching a frame to a photon (riding a light beam like Einstein considers) requires special treatment of the transformations.
+There is nothing special about the x direction in the standard configuration. The above formalism applies to any direction; and three orthogonal directions allow dealing with all directions in space by decomposing the velocity vectors to their components in these directions. See Velocity-addition formula for details.
+
+Thomas rotation
+See also: Thomas rotation
+
+
+Figure 4-5. Thomas–Wigner rotation
+The composition of two non-collinear Lorentz boosts (i.e., two non-collinear Lorentz transformations, neither of which involve rotation) results in a Lorentz transformation that is not a pure boost but is the composition of a boost and a rotation.
+
+Thomas rotation results from the relativity of simultaneity. In Fig. 4-5a, a rod of length 
+L
+{\displaystyle L} in its rest frame (i.e., having a proper length of ⁠
+L
+{\displaystyle L}⁠) rises vertically along the y-axis in the ground frame.
+
+In Fig. 4-5b, the same rod is observed from the frame of a rocket moving at speed 
+v
+{\displaystyle v} to the right. If we imagine two clocks situated at the left and right ends of the rod that are synchronized in the frame of the rod, relativity of simultaneity causes the observer in the rocket frame to observe (not see) the clock at the right end of the rod as being advanced in time by ⁠
+L
+v
+/
+c
+2
+{\displaystyle Lv/c^{2}}⁠, and the rod is correspondingly observed as tilted.[10]: 98–99 
+
+Unlike second-order relativistic effects such as length contraction or time dilation, this effect becomes quite significant even at fairly low velocities. For example, this can be seen in the spin of moving particles, where Thomas precession is a relativistic correction that applies to the spin of an elementary particle or the rotation of a macroscopic gyroscope, relating the angular velocity of the spin of a particle following a curvilinear orbit to the angular velocity of the orbital motion.[10]: 169–174 
+
+Thomas rotation provides the resolution to the well-known "meter stick and hole paradox".[p 9][10]: 98–99 
+
+Causality and prohibition of motion faster than light
+See also: Causality (physics) and Tachyonic antitelephone
+
+Figure 4–6. Light cone
+In Fig. 4-6, the time interval between the events A (the "cause") and B (the "effect") is 'timelike'; that is, there is a frame of reference in which events A and B occur at the same location in space, separated only by occurring at different times. If A precedes B in that frame, then A precedes B in all frames accessible by a Lorentz transformation. It is possible for matter (or information) to travel (below light speed) from the location of A, starting at the time of A, to the location of B, arriving at the time of B, so there can be a causal relationship (with A the cause and B the effect).
+
+The interval AC in the diagram is 'spacelike'; that is, there is a frame of reference in which events A and C occur simultaneously, separated only in space. There are also frames in which A precedes C (as shown) and frames in which C precedes A. But no frames are accessible by a Lorentz transformation, in which events A and C occur at the same location. If it were possible for a cause-and-effect relationship to exist between events A and C, paradoxes of causality would result.
+
+For example, if signals could be sent faster than light, then signals could be sent into the sender's past (observer B in the diagrams).[47][p 10] A variety of causal paradoxes could then be constructed.
+
+Causality violation: Beginning of scenario resulting from use of a fictitious instantaneous communicator
+Causality violation: B receives the message before having sent it.
+Figure 4-7. Causality violation by the use of fictitious
+"instantaneous communicators"
+Consider the spacetime diagrams in Fig. 4-7. A and B stand alongside a railroad track, when a high-speed train passes by, with C riding in the last car of the train and D riding in the leading car. The world lines of A and B are vertical (ct), distinguishing the stationary position of these observers on the ground, while the world lines of C and D are tilted forwards (ct′), reflecting the rapid motion of the observers C and D stationary in their train, as observed from the ground.
+
+Fig. 4-7a. The event of "B passing a message to D", as the leading car passes by, is at the origin of D's frame. D sends the message along the train to C in the rear car, using a fictitious "instantaneous communicator". The worldline of this message is the fat red arrow along the 
+−
+x
+′
+{\displaystyle -x'} axis, which is a line of simultaneity in the primed frames of C and D. In the (unprimed) ground frame the signal arrives earlier than it was sent.
+Fig. 4-7b. The event of "C passing the message to A", who is standing by the railroad tracks, is at the origin of their frames. Now A sends the message along the tracks to B via an "instantaneous communicator". The worldline of this message is the blue fat arrow, along the 
++
+x
+{\displaystyle +x} axis, which is a line of simultaneity for the frames of A and B. As seen from the spacetime diagram, in the primed frames of C and D, B will receive the message before it was sent out, a violation of causality.[48]
+It is not necessary for signals to be instantaneous to violate causality. Even if the signal from D to C were slightly shallower than the 
+x
+′
+{\displaystyle x'} axis (and the signal from A to B slightly steeper than the 
+x
+{\displaystyle x} axis), it would still be possible for B to receive his message before he had sent it. By increasing the speed of the train to near light speeds, the 
+c
+t
+′
+{\displaystyle ct'} and 
+x
+′
+{\displaystyle x'} axes can be squeezed very close to the dashed line representing the speed of light. With this modified setup, it can be demonstrated that even signals only slightly faster than the speed of light will result in causality violation.[49]
+
+Therefore, if causality is to be preserved, one of the consequences of special relativity is that no information signal or material object can travel faster than light in vacuum.
+
+Only matter and energy are limited by the speed of light. Various trivial situations can be described where some imaginary points move faster than light.[50] For example, the location where the beam of a search light hits the bottom of a cloud can move faster than light when the search light is turned rapidly. The light beam is not solid and it does not instantly follow the motion of the search light and thus does not violate causality or any other relativistic phenomenon.[51][52]
+
+Optical effects
+Dragging effects
+Main article: Fizeau experiment
+
+Figure 5–1. Highly simplified diagram of Fizeau's 1851 experiment.
+In 1850, Hippolyte Fizeau and Léon Foucault independently established that light travels more slowly in water than in air, thus validating a prediction of Fresnel's wave theory of light and invalidating the corresponding prediction of Newton's corpuscular theory.[53] The speed of light was measured in still water. What would be the speed of light in flowing water?
+
+In 1851, Fizeau conducted an experiment to answer this question, a simplified representation of which is illustrated in Fig. 5-1. A beam of light is divided by a beam splitter, and the split beams are passed in opposite directions through a tube of flowing water. They are recombined to form interference fringes, indicating a difference in optical path length, that an observer can view. The experiment demonstrated that dragging of the light by the flowing water caused a displacement of the fringes, showing that the motion of the water had affected the speed of the light.
+
+According to the theories prevailing at the time, light traveling through a moving medium would be a simple sum of its speed through the medium plus the speed of the medium. Contrary to expectation, Fizeau found that although light appeared to be dragged by the water, the magnitude of the dragging was much lower than expected. If 
+u
+′
+=
+c
+/
+n
+{\displaystyle u'=c/n} is the speed of light in still water, and 
+v
+{\displaystyle v} is the speed of the water, and 
+u
+±
+{\displaystyle u_{\pm }} is the water-borne speed of light in the lab frame with the flow of water adding to or subtracting from the speed of light, then
+u
+±
+=
+c
+n
+±
+v
+(
+1
+−
+1
+n
+2
+)
+ 
+.
+{\displaystyle u_{\pm }={\frac {c}{n}}\pm v\left(1-{\frac {1}{n^{2}}}\right)\ .}
+
+Fizeau's results, although consistent with Fresnel's earlier hypothesis of partial aether dragging, were extremely disconcerting to physicists of the time. Among other things, the presence of an index of refraction term meant that, since 
+n
+{\displaystyle n} depends on wavelength, the aether must be capable of sustaining different motions at the same time.[note 1] A variety of theoretical explanations were proposed to explain Fresnel's dragging coefficient, that were completely at odds with each other. Even before the Michelson–Morley experiment, Fizeau's experimental results were among a number of observations that created a critical situation in explaining the optics of moving bodies.[54]
+
+From the point of view of special relativity, Fizeau's result is nothing but an approximation to Equation 10, the relativistic formula for composition of velocities.[33]
+
+u
+±
+=
+u
+′
+±
+v
+1
+±
+u
+′
+v
+/
+c
+2
+=
+{\displaystyle u_{\pm }={\frac {u'\pm v}{1\pm u'v/c^{2}}}=} 
+c
+/
+n
+±
+v
+1
+±
+v
+/
+c
+n
+≈
+{\displaystyle {\frac {c/n\pm v}{1\pm v/cn}}\approx } 
+c
+(
+1
+n
+±
+v
+c
+)
+(
+1
+∓
+v
+c
+n
+)
+≈
+{\displaystyle c\left({\frac {1}{n}}\pm {\frac {v}{c}}\right)\left(1\mp {\frac {v}{cn}}\right)\approx } 
+c
+n
+±
+v
+(
+1
+−
+1
+n
+2
+)
+{\displaystyle {\frac {c}{n}}\pm v\left(1-{\frac {1}{n^{2}}}\right)}
+Relativistic aberration of light
+Main articles: Aberration of light and Light-time correction
+
+Figure 5–2. Illustration of stellar aberration
+Because of the finite speed of light, if the relative motions of a source and receiver include a transverse component, then the direction from which light arrives at the receiver will be displaced from the geometric position in space of the source relative to the receiver. The classical calculation of the displacement takes two forms and makes different predictions depending on whether the receiver, the source, or both are in motion with respect to the medium. (1) If the receiver is in motion, the displacement would be the consequence of the aberration of light. The incident angle of the beam relative to the receiver would be calculable from the vector sum of the receiver's motions and the velocity of the incident light.[55] (2) If the source is in motion, the displacement would be the consequence of light-time correction. The displacement of the apparent position of the source from its geometric position would be the result of the source's motion during the time that its light takes to reach the receiver.[56]
+
+The classical explanation failed experimental test. Since the aberration angle depends on the relationship between the velocity of the receiver and the speed of the incident light, passage of the incident light through a refractive medium should change the aberration angle. In 1810, Arago used this expected phenomenon in a failed attempt to measure the speed of light,[57] and in 1870, George Airy tested the hypothesis using a water-filled telescope, finding that, against expectation, the measured aberration was identical to the aberration measured with an air-filled telescope.[58] A "cumbrous" attempt to explain these results used the hypothesis of partial aether-drag,[59] but was incompatible with the results of the Michelson–Morley experiment, which apparently demanded complete aether-drag.[60]
+
+Assuming inertial frames, the relativistic expression for the aberration of light is applicable to both the receiver moving and source moving cases. A variety of trigonometrically equivalent formulas have been published. Expressed in terms of the variables in Fig. 5-2, these include[33]: 57–60 
+
+cos
+⁡
+θ
+′
+=
+cos
+⁡
+θ
++
+v
+/
+c
+1
++
+(
+v
+/
+c
+)
+cos
+⁡
+θ
+{\displaystyle \cos \theta '={\frac {\cos \theta +v/c}{1+(v/c)\cos \theta }}}   OR   
+sin
+⁡
+θ
+′
+=
+sin
+⁡
+θ
+γ
+[
+1
++
+(
+v
+/
+c
+)
+cos
+⁡
+θ
+]
+{\displaystyle \sin \theta '={\frac {\sin \theta }{\gamma [1+(v/c)\cos \theta ]}}}   OR   
+tan
+⁡
+θ
+′
+2
+=
+(
+c
+−
+v
+c
++
+v
+)
+1
+/
+2
+tan
+⁡
+θ
+2
+{\displaystyle \tan {\frac {\theta '}{2}}=\left({\frac {c-v}{c+v}}\right)^{1/2}\tan {\frac {\theta }{2}}}
+Relativistic Doppler effect
+Main article: Relativistic Doppler effect
+Relativistic longitudinal Doppler effect
+The classical Doppler effect depends on whether the source, receiver, or both are in motion with respect to the medium. The relativistic Doppler effect is independent of any medium. Nevertheless, relativistic Doppler shift for the longitudinal case, with source and receiver moving directly towards or away from each other, can be derived as if it were the classical phenomenon, but modified by the addition of a time dilation term, and that is the treatment described here.[61][62]
+
+Assume the receiver and the source are moving away from each other with a relative speed 
+v
+{\displaystyle v} as measured by an observer on the receiver or the source (The sign convention adopted here is that 
+v
+{\displaystyle v} is negative if the receiver and the source are moving towards each other). Assume that the source is stationary in the medium. Then
+f
+r
+=
+(
+1
+−
+v
+c
+s
+)
+f
+s
+{\displaystyle f_{r}=\left(1-{\frac {v}{c_{s}}}\right)f_{s}}where 
+c
+s
+{\displaystyle c_{s}} is the speed of sound.
+
+For light, and with the receiver moving at relativistic speeds, clocks on the receiver are time dilated relative to clocks at the source. The receiver will measure the received frequency to be
+f
+r
+=
+γ
+(
+1
+−
+β
+)
+f
+s
+=
+1
+−
+β
+1
++
+β
+f
+s
+.
+{\displaystyle f_{r}=\gamma \left(1-\beta \right)f_{s}={\sqrt {\frac {1-\beta }{1+\beta }}}\,f_{s}.}where
+
+β
+=
+v
+/
+c
+{\displaystyle \beta =v/c}  and
+γ
+=
+1
+1
+−
+β
+2
+{\displaystyle \gamma ={\frac {1}{\sqrt {1-\beta ^{2}}}}} is the Lorentz factor.
+An identical expression for relativistic Doppler shift is obtained when performing the analysis in the reference frame of the receiver with a moving source.[63][26]: 540 
+
+Transverse Doppler effect
+
+Figure 5–3. Transverse Doppler effect for two scenarios: (a) receiver moving in a circle around the source; (b) source moving in a circle around the receiver.
+The transverse Doppler effect is one of the main novel predictions of the special theory of relativity.
+
+Classically, one might expect that if source and receiver are moving transversely with respect to each other with no longitudinal component to their relative motions, that there should be no Doppler shift in the light arriving at the receiver.
+
+Special relativity predicts otherwise. Fig. 5-3 illustrates two common variants of this scenario. Both variants can be analyzed using simple time dilation arguments.[26]: 541  In Fig. 5-3a, the receiver observes light from the source as being blueshifted by a factor of ⁠
+γ
+{\displaystyle \gamma }⁠. In Fig. 5-3b, the light is redshifted by the same factor.
+
+Measurement versus visual appearance
+Main article: Terrell rotation
+
+Figure 5–4. Comparison of the measured length contraction of a cube versus its visual appearance.
+Time dilation and length contraction are not optical illusions, but genuine effects. Measurements of these effects are not an artifact of Doppler shift, nor are they the result of neglecting to take into account the time it takes light to travel from an event to an observer.
+
+Scientists make a fundamental distinction between measurement or observation on the one hand, versus visual appearance, or what one sees. The measured shape of an object is a hypothetical snapshot of all of the object's points as they exist at a single moment in time. But the visual appearance of an object is affected by the varying lengths of time that light takes to travel from different points on the object to one's eye.
+
+
+Figure 5–5. Comparison of the measured length contraction of a globe versus its visual appearance, as viewed from a distance of three diameters of the globe from the eye to the red cross.
+For many years, the distinction between the two had not been generally appreciated, and it had generally been thought that a length contracted object passing by an observer would be observed as length contracted. In 1959, James Terrell and Roger Penrose independently pointed out that differential time lag effects in signals reaching the observer from the different parts of a moving object result in a fast moving object's visual appearance being quite different from its measured shape. For example, a receding object would appear contracted, an approaching object would appear elongated, and a passing object would have a skew appearance that has been likened to a rotation.[p 13][p 14][64][65] A sphere in motion retains the circular outline for all speeds, for any distance, and for all view angles, although the surface of the sphere and the images on it will appear distorted.[66][67]
+
+
+Figure 5–6. Galaxy M87 sends out a black-hole-powered jet of electrons and other sub-atomic particles traveling at nearly the speed of light.
+Both Fig. 5-4 and Fig. 5-5 illustrate objects moving transversely to the line of sight. In Fig. 5-4, a cube is viewed from a distance of four times the length of its sides. At high speeds, the sides of the cube that are perpendicular to the direction of motion appear hyperbolic in shape. The cube is not rotated. Rather, light from the rear of the cube takes longer to reach one's eyes compared with light from the front, during which time the cube has moved to the right. At high speeds, the sphere in Fig. 5-5 takes on the appearance of a flattened disk tilted up to 45° from the line of sight. If the objects' motions are not strictly transverse but instead include a longitudinal component, exaggerated distortions in perspective may be seen.[68] This illusion has come to be known as Terrell rotation or the Terrell–Penrose effect.
+
+Another example where visual appearance is at odds with measurement comes from the observation of apparent superluminal motion in various radio galaxies, BL Lac objects, quasars, and other astronomical objects that eject relativistic-speed jets of matter at narrow angles with respect to the viewer. An apparent optical illusion results giving the appearance of faster than light travel.[69][70][71] In Fig. 5-6, galaxy M87 streams out a high-speed jet of subatomic particles almost directly towards us, but Penrose–Terrell rotation causes the jet to appear to be moving laterally in the same manner that the appearance of the cube in Fig. 5-4 has been stretched out.[72]
+
+Dynamics
+Section § Consequences derived from the Lorentz transformation dealt strictly with kinematics, the study of the motion of points, bodies, and systems of bodies without considering the forces that caused the motion. This section discusses masses, forces, energy and so forth, and as such requires consideration of physical effects beyond those encompassed by the Lorentz transformation itself.
+
+Equivalence of mass and energy
+Main article: Mass–energy equivalence
+Mass–energy equivalence is a consequence of special relativity. The energy and momentum, which are separate in Newtonian mechanics, form a four-vector in relativity, and this relates the time component (the energy) to the space components (the momentum) in a non-trivial way. For an object at rest, the energy–momentum four-vector is (E/c, 0, 0, 0): it has a time component, which is the energy, and three space components, which are zero. By changing frames with a Lorentz transformation in the x direction with a small value of the velocity v, the energy momentum four-vector becomes (E/c, Ev/c2, 0, 0). The momentum is equal to the energy multiplied by the velocity divided by c2. As such, the Newtonian mass of an object, which is the ratio of the momentum to the velocity for slow velocities, is equal to E/c2.
+
+The energy and momentum are properties of matter and radiation, and it is impossible to deduce that they form a four-vector just from the two basic postulates of special relativity by themselves, because these do not talk about matter or radiation, they only talk about space and time. The derivation therefore requires some additional physical reasoning. In his 1905 paper, Einstein used the additional principles that Newtonian mechanics should hold for slow velocities, so that there is one energy scalar and one three-vector momentum at slow velocities, and that the conservation law for energy and momentum is exactly true in relativity. Furthermore, he assumed that the energy of light is transformed by the same Doppler-shift factor as its frequency, which he had previously shown to be true based on Maxwell's equations.[p 1] The first of Einstein's papers on this subject was "Does the Inertia of a Body Depend upon its Energy Content?" in 1905.[p 15] Although Einstein's argument in this paper is nearly universally accepted by physicists as correct, even self-evident, many authors over the years have suggested that it is wrong.[73] Other authors suggest that the argument was merely inconclusive because it relied on some implicit assumptions.[74]
+
+Einstein acknowledged the controversy over his derivation in his 1907 survey paper on special relativity. There he notes that it is problematic to rely on Maxwell's equations for the heuristic mass–energy argument. The argument in his 1905 paper can be carried out with the emission of any massless particles, but the Maxwell equations are implicitly used to make it obvious that the emission of light in particular can be achieved only by doing work. To emit electromagnetic waves, all you have to do is shake a charged particle, and this is clearly doing work, so that the emission is of energy.[p 16]
+
+Einstein's 1905 demonstration of E = mc2
+In his fourth of his 1905 Annus mirabilis papers,[p 15] Einstein presented a heuristic argument for the equivalence of mass and energy. Although, as discussed above, subsequent scholarship has established that his arguments fell short of a broadly definitive proof, the conclusions that he reached in this paper have stood the test of time.
+
+Einstein took as starting assumptions his recently discovered formula for relativistic Doppler shift, the laws of conservation of energy and conservation of momentum, and the relationship between the frequency of light and its energy as implied by Maxwell's equations.
+
+
+
+Figure 6-1. Einstein's 1905 derivation of E = mc2
+Fig. 6-1 (top). Consider a system of plane waves of light having frequency 
+f
+{\displaystyle f} traveling in direction 
+ϕ
+{\displaystyle \phi } relative to the x-axis of reference frame S. The frequency (and hence energy) of the waves as measured in frame S′ that is moving along the x-axis at velocity 
+v
+{\displaystyle v} is given by the relativistic Doppler shift formula that Einstein had developed in his 1905 paper on special relativity:[p 1]
+
+f
+′
+f
+=
+1
+−
+(
+v
+/
+c
+)
+cos
+⁡
+ϕ
+1
+−
+v
+2
+/
+c
+2
+{\displaystyle {\frac {f'}{f}}={\frac {1-(v/c)\cos {\phi }}{\sqrt {1-v^{2}/c^{2}}}}}
+Fig. 6-1 (bottom). Consider an arbitrary body that is stationary in reference frame S. Let this body emit a pair of equal-energy light-pulses in opposite directions at angle 
+ϕ
+{\displaystyle \phi } with respect to the x-axis. Each pulse has energy ⁠
+L
+/
+2
+{\displaystyle L/2}⁠. Because of conservation of momentum, the body remains stationary in S after emission of the two pulses. Let 
+E
+0
+{\displaystyle E_{0}} be the energy of the body before emission of the two pulses and 
+E
+1
+{\displaystyle E_{1}} after their emission.
+
+Next, consider the same system observed from frame S′ that is moving along the x-axis at speed 
+v
+{\displaystyle v} relative to frame S. In this frame, light from the forwards and reverse pulses will be relativistically Doppler-shifted. Let 
+H
+0
+{\displaystyle H_{0}} be the energy of the body measured in reference frame S′ before emission of the two pulses and 
+H
+1
+{\displaystyle H_{1}} after their emission. We obtain the following relationships:[p 15]
+
+E
+0
+=
+E
+1
++
+1
+2
+L
++
+1
+2
+L
+=
+E
+1
++
+L
+H
+0
+=
+H
+1
++
+1
+2
+L
+1
+−
+(
+v
+/
+c
+)
+cos
+⁡
+ϕ
+1
+−
+v
+2
+/
+c
+2
++
+1
+2
+L
+1
++
+(
+v
+/
+c
+)
+cos
+⁡
+ϕ
+1
+−
+v
+2
+/
+c
+2
+=
+H
+1
++
+L
+1
+−
+v
+2
+/
+c
+2
+{\displaystyle {\begin{aligned}E_{0}&=E_{1}+{\tfrac {1}{2}}L+{\tfrac {1}{2}}L=E_{1}+L\\[5mu]H_{0}&=H_{1}+{\tfrac {1}{2}}L{\frac {1-(v/c)\cos {\phi }}{\sqrt {1-v^{2}/c^{2}}}}+{\tfrac {1}{2}}L{\frac {1+(v/c)\cos {\phi }}{\sqrt {1-v^{2}/c^{2}}}}=H_{1}+{\frac {L}{\sqrt {1-v^{2}/c^{2}}}}\end{aligned}}}
+From the above equations, we obtain the following:
+
+(
+H
+0
+−
+E
+0
+)
+−
+(
+H
+1
+−
+E
+1
+)
+=
+L
+(
+1
+1
+−
+v
+2
+/
+c
+2
+−
+1
+)
+{\displaystyle \quad \quad (H_{0}-E_{0})-(H_{1}-E_{1})=L\left({\frac {1}{\sqrt {1-v^{2}/c^{2}}}}-1\right)}		6-1
+The two differences of form 
+H
+−
+E
+{\displaystyle H-E} seen in the above equation have a straightforward physical interpretation. Since 
+H
+{\displaystyle H} and 
+E
+{\displaystyle E} are the energies of the arbitrary body in the moving and stationary frames, 
+H
+0
+−
+E
+0
+{\displaystyle H_{0}-E_{0}} and 
+H
+1
+−
+E
+1
+{\displaystyle H_{1}-E_{1}} represents the kinetic energies of the bodies before and after the emission of light (except for an additive constant that fixes the zero point of energy and is conventionally set to zero). Hence,
+
+K
+0
+−
+K
+1
+=
+L
+(
+1
+1
+−
+v
+2
+/
+c
+2
+−
+1
+)
+{\displaystyle \quad \quad K_{0}-K_{1}=L\left({\frac {1}{\sqrt {1-v^{2}/c^{2}}}}-1\right)}		6-2
+Taking a Taylor series expansion and neglecting higher order terms, he obtained
+
+K
+0
+−
+K
+1
+=
+1
+2
+L
+c
+2
+v
+2
+{\displaystyle \quad \quad K_{0}-K_{1}={\frac {1}{2}}{\frac {L}{c^{2}}}v^{2}}		6-3
+Comparing the above expression with the classical expression for kinetic energy, K.E. = ⁠
+1
+/
+2
+⁠mv2, Einstein then noted: "If a body gives off the energy L in the form of radiation, its mass diminishes by L/c2."
+
+Rindler has observed that Einstein's heuristic argument suggested merely that energy contributes to mass. In 1905, Einstein's cautious expression of the mass–energy relationship allowed for the possibility that "dormant" mass might exist that would remain behind after all the energy of a body was removed. By 1907, however, Einstein was ready to assert that all inertial mass represented a reserve of energy. "To equate all mass with energy required an act of aesthetic faith, very characteristic of Einstein."[13]: 81–84  Einstein's bold hypothesis has been amply confirmed in the years subsequent to his original proposal.
+
+For a variety of reasons, Einstein's original derivation is currently seldom taught. Besides the vigorous debate that continues until this day as to the formal correctness of his original derivation, the recognition of special relativity as being what Einstein called a "principle theory" has led to a shift away from reliance on electromagnetic phenomena to purely dynamic methods of proof.[75]
+
+How far can you travel from the Earth?
+See also: Space travel under constant acceleration
+Since nothing can travel faster than light, one might conclude that a human can never travel farther from Earth than ~ 100 light years. You would easily think that a traveler would never be able to reach more than the few solar systems that exist within the limit of 100 light years from Earth. However, because of time dilation, a hypothetical spaceship can travel thousands of light years during a passenger's lifetime. If a spaceship could be built that accelerates at a constant 1g, it will, after one year, be travelling at almost the speed of light as seen from Earth. This is described by:
+v
+(
+t
+)
+=
+a
+t
+1
++
+a
+2
+t
+2
+/
+c
+2
+,
+{\displaystyle v(t)={\frac {at}{\sqrt {1+a^{2}t^{2}/c^{2}}}},}where v(t) is the velocity at a time t, a is the acceleration of the spaceship and t is the coordinate time as measured by people on Earth.[p 17] Therefore, after one year of accelerating at 9.81 m/s2, the spaceship will be travelling at v = 0.712 c and 0.946 c after three years, relative to Earth. After three years of this acceleration, with the spaceship achieving a velocity of 94.6% of the speed of light relative to Earth, time dilation will result in each second experienced on the spaceship corresponding to 3.1 seconds back on Earth. During their journey, people on Earth will experience more time than they do – since their clocks (all physical phenomena) would really be ticking 3.1 times faster than those of the spaceship. A 5-year round trip for the traveller will take 6.5 Earth years and cover a distance of over 6 light-years. A 20-year round trip for them (5 years accelerating, 5 decelerating, twice each) will land them back on Earth having travelled for 335 Earth years and a distance of 331 light years.[76] A full 40-year trip at 1g will appear on Earth to last 58,000 years and cover a distance of 55,000 light years. A 40-year trip at 1.1 g will take 148000 years and cover about 140000 light years. A one-way 28 year (14 years accelerating, 14 decelerating as measured with the astronaut's clock) trip at 1g acceleration could reach 2,000,000 light-years to the Andromeda Galaxy.[76] This same time dilation is why a muon travelling close to c is observed to travel much farther than c times its half-life (when at rest).[77]
+
+Elastic collisions
+Examination of the collision products generated by particle accelerators around the world provides scientists evidence of the structure of the subatomic world and the natural laws governing it. Analysis of the collision products, the sum of whose masses may vastly exceed the masses of the incident particles, requires special relativity.[78]
+
+In Newtonian mechanics, analysis of collisions involves use of the conservation laws for mass, momentum and energy. In relativistic mechanics, mass is not independently conserved, because it has been subsumed into the total relativistic energy. We illustrate the differences that arise between the Newtonian and relativistic treatments of particle collisions by examining the simple case of two perfectly elastic colliding particles of equal mass. (Inelastic collisions are discussed in Spacetime#Conservation laws. Radioactive decay may be considered a sort of time-reversed inelastic collision.[78])
+
+Elastic scattering of charged elementary particles deviates from ideality due to the production of Bremsstrahlung radiation.[79][80]
+
+Newtonian analysis
+
+Figure 6–2. Newtonian analysis of the elastic collision of a moving particle with an equal mass stationary particle
+Fig. 6-2 provides a demonstration of the result, familiar to billiard players, that if a stationary ball is struck elastically by another one of the same mass (assuming no sidespin, or "English"), then after collision, the diverging paths of the two balls will subtend a right angle. (a) In the stationary frame, an incident sphere traveling at 2v strikes a stationary sphere. (b) In the center of momentum frame, the two spheres approach each other symmetrically at ±v. After elastic collision, the two spheres rebound from each other with equal and opposite velocities ±u. Energy conservation requires that |u| = |v|. (c) Reverting to the stationary frame, the rebound velocities are v ± u. The dot product (v + u) ⋅ (v − u) = v2 − u2 = 0, indicating that the vectors are orthogonal.[13]: 26–27 
+
+Relativistic analysis
+
+Figure 6–3. Relativistic elastic collision between a moving particle incident upon an equal mass stationary particle
+Consider the elastic collision scenario in Fig. 6-3 between a moving particle colliding with an equal mass stationary particle. Unlike the Newtonian case, the angle between the two particles after collision is less than 90°, is dependent on the angle of scattering, and becomes smaller and smaller as the velocity of the incident particle approaches the speed of light:
+
+The relativistic momentum and total relativistic energy of a particle are given by
+
+p
+→
+=
+γ
+m
+v
+→
+and
+E
+=
+γ
+m
+c
+2
+{\displaystyle \quad \quad {\vec {p}}=\gamma m{\vec {v}}\quad {\text{and}}\quad E=\gamma mc^{2}}		6-4
+Conservation of momentum dictates that the sum of the momenta of the incoming particle and the stationary particle (which initially has momentum = 0) equals the sum of the momenta of the emergent particles:
+
+γ
+1
+m
+v
+1
+→
++
+0
+=
+γ
+2
+m
+v
+2
+→
++
+γ
+3
+m
+v
+3
+→
+{\displaystyle \quad \quad \gamma _{1}m{\vec {v_{1}}}+0=\gamma _{2}m{\vec {v_{2}}}+\gamma _{3}m{\vec {v_{3}}}}		6-5
+Likewise, the sum of the total relativistic energies of the incoming particle and the stationary particle (which initially has total energy mc2) equals the sum of the total energies of the emergent particles:
+
+γ
+1
+m
+c
+2
++
+m
+c
+2
+=
+γ
+2
+m
+c
+2
++
+γ
+3
+m
+c
+2
+{\displaystyle \quad \quad \gamma _{1}mc^{2}+mc^{2}=\gamma _{2}mc^{2}+\gamma _{3}mc^{2}}		6-6
+Breaking down (6-5) into its components, replacing 
+v
+{\displaystyle v} with the dimensionless ⁠
+β
+{\displaystyle \beta }⁠, and factoring out common terms from (6-5) and (6-6) yields the following:[p 18]
+
+β
+1
+γ
+1
+=
+β
+2
+γ
+2
+cos
+⁡
+θ
++
+β
+3
+γ
+3
+cos
+⁡
+ϕ
+{\displaystyle \quad \quad \beta _{1}\gamma _{1}=\beta _{2}\gamma _{2}\cos {\theta }+\beta _{3}\gamma _{3}\cos {\phi }}		6-7
+β
+2
+γ
+2
+sin
+⁡
+θ
+=
+β
+3
+γ
+3
+sin
+⁡
+ϕ
+{\displaystyle \quad \quad \beta _{2}\gamma _{2}\sin {\theta }=\beta _{3}\gamma _{3}\sin {\phi }}		6-8
+γ
+1
++
+1
+=
+γ
+2
++
+γ
+3
+{\displaystyle \quad \quad \gamma _{1}+1=\gamma _{2}+\gamma _{3}}		6-9
+From these we obtain the following relationships:[p 18]
+
+β
+2
+=
+β
+1
+sin
+⁡
+ϕ
+{
+β
+1
+2
+sin
+2
+⁡
+ϕ
++
+sin
+2
+⁡
+(
+ϕ
++
+θ
+)
+/
+γ
+1
+2
+}
+1
+/
+2
+{\displaystyle \quad \quad \beta _{2}={\frac {\beta _{1}\sin {\phi }}{\{\beta _{1}^{2}\sin ^{2}{\phi }+\sin ^{2}(\phi +\theta )/\gamma _{1}^{2}\}^{1/2}}}}		6-10
+β
+3
+=
+β
+1
+sin
+⁡
+θ
+{
+β
+1
+2
+sin
+2
+⁡
+θ
++
+sin
+2
+⁡
+(
+ϕ
++
+θ
+)
+/
+γ
+1
+2
+}
+1
+/
+2
+{\displaystyle \quad \quad \beta _{3}={\frac {\beta _{1}\sin {\theta }}{\{\beta _{1}^{2}\sin ^{2}{\theta }+\sin ^{2}(\phi +\theta )/\gamma _{1}^{2}\}^{1/2}}}}		6-11
+cos
+⁡
+(
+ϕ
++
+θ
+)
+=
+(
+γ
+1
+−
+1
+)
+sin
+⁡
+θ
+cos
+⁡
+θ
+{
+(
+γ
+1
++
+1
+)
+2
+sin
+2
+⁡
+θ
++
+4
+cos
+2
+⁡
+θ
+}
+1
+/
+2
+{\displaystyle \quad \quad \cos {(\phi +\theta )}={\frac {(\gamma _{1}-1)\sin {\theta }\cos {\theta }}{\{(\gamma _{1}+1)^{2}\sin ^{2}\theta +4\cos ^{2}\theta \}^{1/2}}}}		6-12
+For the symmetrical case in which 
+ϕ
+=
+θ
+{\displaystyle \phi =\theta } and ⁠
+β
+2
+=
+β
+3
+{\displaystyle \beta _{2}=\beta _{3}}⁠, (6-12) takes on the simpler form:[p 18]
+
+cos
+⁡
+θ
+=
+β
+1
+{
+2
+/
+γ
+1
++
+3
+β
+1
+2
+−
+2
+}
+1
+/
+2
+{\displaystyle \quad \quad \cos {\theta }={\frac {\beta _{1}}{\{2/\gamma _{1}+3\beta _{1}^{2}-2\}^{1/2}}}}		6-13
+Rapidity
+Main article: Rapidity
+
+Figure 7-1a. A ray through the unit circle x2 + y2 = 1 in the point (cos a, sin a), where a is twice the area between the ray, the circle, and the x-axis.
+
+Figure 7-1b. A ray through the unit hyperbola x2 − y2 = 1 in the point (cosh a, sinh a), where a is twice the area between the ray, the hyperbola, and the x-axis.
+
+Figure 7–2. Plot of the three basic Hyperbolic functions: hyperbolic sine (sinh), hyperbolic cosine (cosh) and hyperbolic tangent (tanh). Sinh is red, cosh is blue and tanh is green.
+Lorentz transformations relate coordinates of events in one reference frame to those of another frame. Relativistic composition of velocities is used to add two velocities together. The formulas to perform the latter computations are nonlinear, making them more complex than the corresponding Galilean formulas.
+
+This nonlinearity is an artifact of our choice of parameters.[10]: 47–59  We have previously noted that in an x–ct spacetime diagram, the points at some constant spacetime interval from the origin form an invariant hyperbola. We have also noted that the coordinate systems of two spacetime reference frames in standard configuration are hyperbolically rotated with respect to each other.
+
+The natural functions for expressing these relationships are the hyperbolic analogs of the trigonometric functions. Fig. 7-1a shows a unit circle with sin(a) and cos(a), the only difference between this diagram and the familiar unit circle of elementary trigonometry being that a is interpreted, not as the angle between the ray and the x-axis, but as twice the area of the sector swept out by the ray from the x-axis. Numerically, the angle and 2 × area measures for the unit circle are identical. Fig. 7-1b shows a unit hyperbola with sinh(a) and cosh(a), where a is likewise interpreted as twice the tinted area.[81] Fig. 7-2 presents plots of the sinh, cosh, and tanh functions.
+
+For the unit circle, the slope of the ray is given by
+
+slope
+=
+tan
+⁡
+a
+=
+sin
+⁡
+a
+cos
+⁡
+a
+.
+{\displaystyle {\text{slope}}=\tan a={\frac {\sin a}{\cos a}}.}
+In the Cartesian plane, rotation of point (x, y) into point (x', y') by angle θ is given by
+
+(
+x
+′
+y
+′
+)
+=
+(
+cos
+⁡
+θ
+−
+sin
+⁡
+θ
+sin
+⁡
+θ
+cos
+⁡
+θ
+)
+(
+x
+y
+)
+.
+{\displaystyle {\begin{pmatrix}x'\\y'\\\end{pmatrix}}={\begin{pmatrix}\cos \theta &-\sin \theta \\\sin \theta &\cos \theta \\\end{pmatrix}}{\begin{pmatrix}x\\y\\\end{pmatrix}}.}
+In a spacetime diagram, the velocity parameter 
+β
+≡
+v
+c
+{\displaystyle \beta \equiv {\frac {v}{c}}} is the analog of slope. The rapidity, φ, is defined by[26]: 543 
+
+β
+≡
+tanh
+⁡
+ϕ
+,
+{\displaystyle \beta \equiv \tanh \phi ,}
+where
+
+tanh
+⁡
+ϕ
+=
+sinh
+⁡
+ϕ
+cosh
+⁡
+ϕ
+=
+e
+ϕ
+−
+e
+−
+ϕ
+e
+ϕ
++
+e
+−
+ϕ
+.
+{\displaystyle \tanh \phi ={\frac {\sinh \phi }{\cosh \phi }}={\frac {e^{\phi }-e^{-\phi }}{e^{\phi }+e^{-\phi }}}.}
+The rapidity defined above is very useful in special relativity because many expressions take on a considerably simpler form when expressed in terms of it. For example, rapidity is simply additive in the collinear velocity-addition formula;[26]: 544 
+
+β
+=
+β
+1
++
+β
+2
+1
++
+β
+1
+β
+2
+=
+{\displaystyle \beta ={\frac {\beta _{1}+\beta _{2}}{1+\beta _{1}\beta _{2}}}=} 
+tanh
+⁡
+ϕ
+1
++
+tanh
+⁡
+ϕ
+2
+1
++
+tanh
+⁡
+ϕ
+1
+tanh
+⁡
+ϕ
+2
+=
+{\displaystyle {\frac {\tanh \phi _{1}+\tanh \phi _{2}}{1+\tanh \phi _{1}\tanh \phi _{2}}}=} 
+tanh
+⁡
+(
+ϕ
+1
++
+ϕ
+2
+)
+,
+{\displaystyle \tanh(\phi _{1}+\phi _{2}),}
+or in other words, ⁠
+ϕ
+=
+ϕ
+1
++
+ϕ
+2
+{\displaystyle \phi =\phi _{1}+\phi _{2}}⁠.
+
+The Lorentz transformations take a simple form when expressed in terms of rapidity. The γ factor can be written as
+
+γ
+=
+1
+1
+−
+β
+2
+=
+1
+1
+−
+tanh
+2
+⁡
+ϕ
+{\displaystyle \gamma ={\frac {1}{\sqrt {1-\beta ^{2}}}}={\frac {1}{\sqrt {1-\tanh ^{2}\phi }}}} 
+=
+cosh
+⁡
+ϕ
+,
+{\displaystyle =\cosh \phi ,}
+γ
+β
+=
+β
+1
+−
+β
+2
+=
+tanh
+⁡
+ϕ
+1
+−
+tanh
+2
+⁡
+ϕ
+{\displaystyle \gamma \beta ={\frac {\beta }{\sqrt {1-\beta ^{2}}}}={\frac {\tanh \phi }{\sqrt {1-\tanh ^{2}\phi }}}} 
+=
+sinh
+⁡
+ϕ
+.
+{\displaystyle =\sinh \phi .}
+Transformations describing relative motion with uniform velocity and without rotation of the space coordinate axes are called boosts.
+
+Substituting γ and γβ into the transformations as previously presented and rewriting in matrix form, the Lorentz boost in the x-direction may be written as
+
+(
+c
+t
+′
+x
+′
+)
+=
+(
+cosh
+⁡
+ϕ
+−
+sinh
+⁡
+ϕ
+−
+sinh
+⁡
+ϕ
+cosh
+⁡
+ϕ
+)
+(
+c
+t
+x
+)
+,
+{\displaystyle {\begin{pmatrix}ct'\\x'\end{pmatrix}}={\begin{pmatrix}\cosh \phi &-\sinh \phi \\-\sinh \phi &\cosh \phi \end{pmatrix}}{\begin{pmatrix}ct\\x\end{pmatrix}},}
+and the inverse Lorentz boost in the x-direction may be written as
+
+(
+c
+t
+x
+)
+=
+(
+cosh
+⁡
+ϕ
+sinh
+⁡
+ϕ
+sinh
+⁡
+ϕ
+cosh
+⁡
+ϕ
+)
+(
+c
+t
+′
+x
+′
+)
+.
+{\displaystyle {\begin{pmatrix}ct\\x\end{pmatrix}}={\begin{pmatrix}\cosh \phi &\sinh \phi \\\sinh \phi &\cosh \phi \end{pmatrix}}{\begin{pmatrix}ct'\\x'\end{pmatrix}}.}
+In other words, Lorentz boosts represent hyperbolic rotations in Minkowski spacetime.[citation needed]
+
+The advantages of using hyperbolic functions are such that some textbooks such as the classic ones by Taylor and Wheeler introduce their use at a very early stage.[10]
+
+Minkowski spacetime
+Main article: Minkowski space
+
+Figure 10–1. Orthogonality and rotation of coordinate systems compared between left: Euclidean space through circular angle φ, right: in Minkowski spacetime through hyperbolic angle φ (red lines labelled c denote the worldlines of a light signal, a vector is orthogonal to itself if it lies on this line).[82]
+The physical theory of special relativity was recast by Hermann Minkowski in a 4-dimensional geometry now called Minkowski space. Minkowski spacetime appears to be very similar to the standard 3-dimensional Euclidean space, but there is a crucial difference with respect to time. In 3D space, the differential of distance (line element) ds is defined by
+d
+s
+2
+=
+d
+x
+⋅
+d
+x
+=
+d
+x
+1
+2
++
+d
+x
+2
+2
++
+d
+x
+3
+2
+,
+{\displaystyle ds^{2}=d\mathbf {x} \cdot d\mathbf {x} =dx_{1}^{2}+dx_{2}^{2}+dx_{3}^{2},}where dx = (dx1, dx2, dx3) are the differentials of the three spatial dimensions. In Minkowski geometry, there is an extra dimension with coordinate X0 derived from time, such that the distance differential fulfills
+d
+s
+2
+=
+−
+d
+X
+0
+2
++
+d
+X
+1
+2
++
+d
+X
+2
+2
++
+d
+X
+3
+2
+,
+{\displaystyle ds^{2}=-dX_{0}^{2}+dX_{1}^{2}+dX_{2}^{2}+dX_{3}^{2},}where dX = (dX0, dX1, dX2, dX3) are the differentials of the four spacetime dimensions. This suggests a deep theoretical insight: special relativity is simply a rotational symmetry of our spacetime, analogous to the rotational symmetry of Euclidean space (see Fig. 10-1).[83] Just as Euclidean space uses a Euclidean metric, so spacetime uses a Minkowski metric. Basically, special relativity can be stated as the invariance of any spacetime interval (that is the 4D distance between any two events) when viewed from any inertial reference frame. All equations and effects of special relativity can be derived from this rotational symmetry (the Poincaré group) of Minkowski spacetime.
+
+The form of ds above depends on the metric and on the choices for the X0 coordinate. To make the time coordinate look like the space coordinates, it can be treated as imaginary: X0 = ict (this is called a Wick rotation). According to Misner, Thorne and Wheeler (1971, §2.3), ultimately the deeper understanding of both special and general relativity will come from the study of the Minkowski metric (described below) and to take X0 = ct, rather than a "disguised" Euclidean metric using ict as the time coordinate.
+
+Some authors use X0 = t, with factors of c elsewhere to compensate; for instance, spatial coordinates are divided by c or factors of c±2 are included in the metric tensor.[84] These numerous conventions can be superseded by using natural units where c = 1. Then space and time have equivalent units, and no factors of c appear anywhere.
+
+A four dimensional space has four-dimensional vectors, or "four-vectors". The simplest example of a four-vector is the position of an event in spacetime, which constitutes a timelike component ct and spacelike component x = (x, y, z), in a contravariant position four-vector with components:
+X
+ν
+=
+(
+X
+0
+,
+X
+1
+,
+X
+2
+,
+X
+3
+)
+=
+(
+c
+t
+,
+x
+,
+y
+,
+z
+)
+=
+(
+c
+t
+,
+x
+)
+.
+{\displaystyle X^{\nu }=(X^{0},X^{1},X^{2},X^{3})=(ct,x,y,z)=(ct,\mathbf {x} ).}where we define X0 = ct so that the time coordinate has the same dimension of distance as the other spatial dimensions; so that space and time are treated equally.[85][86][87]
+
+4‑vectors
+Main article: Four-vector
+4‑vectors, and more generally tensors, simplify the mathematics and conceptual understanding of special relativity. Working exclusively with such objects leads to formulas that are manifestly relativistically invariant, which is a considerable advantage in non-trivial contexts. For instance, demonstrating relativistic invariance of Maxwell's equations in their usual form is not trivial, while it is merely a routine calculation, really no more than an observation, using the field strength tensor formulation.[88]
+
+Definition of 4-vectors
+A 4-tuple, ⁠
+A
+=
+(
+A
+0
+,
+A
+1
+,
+A
+2
+,
+A
+3
+)
+{\displaystyle A=\left(A_{0},A_{1},A_{2},A_{3}\right)}⁠ is a "4-vector" if its component Ai transform between frames according to the Lorentz transformation.
+
+If using ⁠
+(
+c
+t
+,
+x
+,
+y
+,
+z
+)
+{\displaystyle (ct,x,y,z)}⁠ coordinates, A is a 4–vector if it transforms (in the x-direction) according to
+
+A
+0
+′
+=
+γ
+(
+A
+0
+−
+(
+v
+/
+c
+)
+A
+1
+)
+A
+1
+′
+=
+γ
+(
+A
+1
+−
+(
+v
+/
+c
+)
+A
+0
+)
+A
+2
+′
+=
+A
+2
+A
+3
+′
+=
+A
+3
+,
+{\displaystyle {\begin{aligned}A_{0}'&=\gamma \left(A_{0}-(v/c)A_{1}\right)\\A_{1}'&=\gamma \left(A_{1}-(v/c)A_{0}\right)\\A_{2}'&=A_{2}\\A_{3}'&=A_{3}\end{aligned}},}
+which comes from simply replacing ct with A0 and x with A1 in the earlier presentation of the Lorentz transformation.
+
+As usual, when we write x, t, etc. we generally mean Δx, Δt etc.
+
+The last three components of a 4–vector must be a standard vector in three-dimensional space. Therefore, a 4–vector must transform like ⁠
+(
+c
+Δ
+t
+,
+Δ
+x
+,
+Δ
+y
+,
+Δ
+z
+)
+{\displaystyle (c\Delta t,\Delta x,\Delta y,\Delta z)}⁠ under Lorentz transformations as well as rotations.[89]: 36–59 
+
+Properties of 4-vectors
+Closure under linear combination: If A and B are 4-vectors, then ⁠
+C
+=
+a
+A
++
+a
+B
+{\displaystyle C=aA+aB}⁠ is also a 4-vector.
+Inner-product invariance: If A and B are 4-vectors, then their inner product (scalar product) is invariant, i.e. their inner product is independent of the frame in which it is calculated. Note how the calculation of inner product differs from the calculation of the inner product of a 3-vector. In the following, 
+A
+→
+{\displaystyle {\vec {A}}} and 
+B
+→
+{\displaystyle {\vec {B}}} are 3-vectors:
+A
+⋅
+B
+≡
+{\displaystyle A\cdot B\equiv } 
+A
+0
+B
+0
+−
+A
+1
+B
+1
+−
+A
+2
+B
+2
+−
+A
+3
+B
+3
+≡
+{\displaystyle A_{0}B_{0}-A_{1}B_{1}-A_{2}B_{2}-A_{3}B_{3}\equiv } 
+A
+0
+B
+0
+−
+A
+→
+⋅
+B
+→
+{\displaystyle A_{0}B_{0}-{\vec {A}}\cdot {\vec {B}}}
+In addition to being invariant under Lorentz transformation, the above inner product is also invariant under rotation in 3-space.
+Two vectors are said to be orthogonal if ⁠
+A
+⋅
+B
+=
+0
+{\displaystyle A\cdot B=0}⁠. Unlike the case with 3-vectors, orthogonal 4-vectors are not necessarily at right angles to each other. The rule is that two 4-vectors are orthogonal if they are offset by equal and opposite angles from the 45° line, which is the world line of a light ray. This implies that a lightlike 4-vector is orthogonal to itself.
+Invariance of the magnitude of a vector: The magnitude of a vector is the inner product of a 4-vector with itself, and is a frame-independent property. As with intervals, the magnitude may be positive, negative or zero, so that the vectors are referred to as timelike, spacelike or null (lightlike). Note that a null vector is not the same as a zero vector. A null vector is one for which ⁠
+A
+⋅
+A
+=
+0
+{\displaystyle A\cdot A=0}⁠, while a zero vector is one whose components are all zero. Special cases illustrating the invariance of the norm include the invariant interval 
+c
+2
+t
+2
+−
+x
+2
+{\displaystyle c^{2}t^{2}-x^{2}} and the invariant length of the relativistic momentum vector ⁠
+E
+2
+−
+p
+2
+c
+2
+{\displaystyle E^{2}-p^{2}c^{2}}⁠.[26]: 639 [89]: 36–59 
+Examples of 4-vectors
+Displacement 4-vector: Otherwise known as the spacetime separation, this is (Δt, Δx, Δy, Δz), or for infinitesimal separations, (dt, dx, dy, dz).
+d
+S
+≡
+(
+d
+t
+,
+d
+x
+,
+d
+y
+,
+d
+z
+)
+{\displaystyle dS\equiv (dt,dx,dy,dz)}
+Velocity 4-vector: This results when the displacement 4-vector is divided by 
+d
+τ
+{\displaystyle d\tau }, where 
+d
+τ
+{\displaystyle d\tau } is the proper time between the two events that yield dt, dx, dy, and dz.
+V
+≡
+d
+S
+d
+τ
+=
+(
+d
+t
+,
+d
+x
+,
+d
+y
+,
+d
+z
+)
+d
+t
+/
+γ
+=
+{\displaystyle V\equiv {\frac {dS}{d\tau }}={\frac {(dt,dx,dy,dz)}{dt/\gamma }}=} 
+γ
+(
+1
+,
+d
+x
+d
+t
+,
+d
+y
+d
+t
+,
+d
+z
+d
+t
+)
+=
+{\displaystyle \gamma \left(1,{\frac {dx}{dt}},{\frac {dy}{dt}},{\frac {dz}{dt}}\right)=} 
+(
+γ
+,
+γ
+v
+→
+)
+{\displaystyle (\gamma ,\gamma {\vec {v}})}
+
+Figure 7-3a. The momentarily comoving reference frames of an accelerating particle as observed from a stationary frame.
+
+Figure 7-3b. The momentarily comoving reference frames along the trajectory of an accelerating observer (center).
+The 4-velocity is tangent to the world line of a particle, and has a length equal to one unit of time in the frame of the particle.
+An accelerated particle does not have an inertial frame in which it is always at rest. However, an inertial frame can always be found that is momentarily comoving with the particle. This frame, the momentarily comoving reference frame (MCRF), enables application of special relativity to the analysis of accelerated particles.
+Since photons move on null lines, 
+d
+τ
+=
+0
+{\displaystyle d\tau =0} for a photon, and a 4-velocity cannot be defined. There is no frame in which a photon is at rest, and no MCRF can be established along a photon's path.
+Energy–momentum 4-vector:
+P
+≡
+(
+E
+/
+c
+,
+p
+→
+)
+=
+(
+E
+/
+c
+,
+p
+x
+,
+p
+y
+,
+p
+z
+)
+{\displaystyle P\equiv (E/c,{\vec {p}})=(E/c,p_{x},p_{y},p_{z})}
+As indicated before, there are varying treatments for the energy–momentum 4-vector so that one may also see it expressed as 
+(
+E
+,
+p
+→
+)
+{\displaystyle (E,{\vec {p}})} or ⁠
+(
+E
+,
+p
+→
+c
+)
+{\displaystyle (E,{\vec {p}}c)}⁠. The first component is the total energy (including mass) of the particle (or system of particles) in a given frame, while the remaining components are its spatial momentum. The energy–momentum 4-vector is a conserved quantity.
+Acceleration 4-vector: This results from taking the derivative of the velocity 4-vector with respect to ⁠
+τ
+{\displaystyle \tau }⁠.
+A
+≡
+d
+V
+d
+τ
+=
+{\displaystyle A\equiv {\frac {dV}{d\tau }}=} 
+d
+d
+τ
+(
+γ
+,
+γ
+v
+→
+)
+=
+{\displaystyle {\frac {d}{d\tau }}(\gamma ,\gamma {\vec {v}})=} 
+γ
+(
+d
+γ
+d
+t
+,
+d
+(
+γ
+v
+→
+)
+d
+t
+)
+{\displaystyle \gamma \left({\frac {d\gamma }{dt}},{\frac {d(\gamma {\vec {v}})}{dt}}\right)}
+Force 4-vector: This is the derivative of the momentum 4-vector with respect to 
+τ
+.
+{\displaystyle \tau .}
+F
+≡
+d
+P
+d
+τ
+=
+{\displaystyle F\equiv {\frac {dP}{d\tau }}=} 
+γ
+(
+d
+E
+d
+t
+,
+d
+p
+→
+d
+t
+)
+=
+{\displaystyle \gamma \left({\frac {dE}{dt}},{\frac {d{\vec {p}}}{dt}}\right)=} 
+γ
+(
+d
+E
+d
+t
+,
+f
+→
+)
+{\displaystyle \gamma \left({\frac {dE}{dt}},{\vec {f}}\right)}
+As expected, the final components of the above 4-vectors are all standard 3-vectors corresponding to spatial 3-momentum, 3-force etc.[89]: 36–59 
+
+4-vectors and physical law
+The first postulate of special relativity declares the equivalency of all inertial frames. A physical law holding in one frame must apply in all frames, since otherwise it would be possible to differentiate between frames. Newtonian momenta fail to behave properly under Lorentzian transformation, and Einstein preferred to change the definition of momentum to one involving 4-vectors rather than give up on conservation of momentum.
+
+Physical laws must be based on constructs that are frame independent. This means that physical laws may take the form of equations connecting scalars, which are always frame independent. However, equations involving 4-vectors require the use of tensors with appropriate rank, which themselves can be thought of as being built up from 4-vectors.[26]: 644  General relativity from the outset relies heavily on 4‑vectors, and more generally tensors, representing physically relevant entities.
+
+Acceleration
+Further information: Acceleration (special relativity)
+Special relativity does accommodate accelerations as well as accelerating frames of reference.[90] It is a common misconception that special relativity is applicable only to inertial frames, and that it is unable to handle accelerating objects or accelerating reference frames.[91] It is only when gravitation is significant that general relativity is required.[92]
+
+Properly handling accelerating frames does require some care, however. The difference between special and general relativity is that (1) In special relativity, all velocities are relative, but acceleration is absolute. (2) In general relativity, all motion is relative, whether inertial, accelerating, or rotating. To accommodate this difference, general relativity uses curved spacetime.[92]
+
+In this section, we analyze several scenarios involving accelerated reference frames.
+
+
+Dewan–Beran–Bell spaceship paradox
+Main article: Bell's spaceship paradox
+The Dewan–Beran–Bell spaceship paradox (Bell's spaceship paradox) is a good example of a problem where intuitive reasoning unassisted by the geometric insight of the spacetime approach can lead to issues.[citation needed]
+
+
+Figure 7–4. Dewan–Beran–Bell spaceship paradox
+In Fig. 7-4, two identical spaceships float in space and are at rest relative to each other. They are connected by a string that is capable of only a limited amount of stretching before breaking. At a given instant in our frame, the observer frame, both spaceships accelerate in the same direction along the line between them with the same constant proper acceleration. In relativity theory, proper acceleration is the physical acceleration (i.e., measurable acceleration as by an accelerometer) experienced by an object. It is thus acceleration relative to a free-fall, or inertial, observer who is momentarily at rest relative to the object being measured. Will the string break?
+
+When the paradox was new and relatively unknown, even professional physicists had difficulty working out the solution. Two lines of reasoning lead to opposite conclusions. Both arguments, which are presented below, are flawed even though one of them yields the correct answer.
+
+To observers in the rest frame, the spaceships start a distance L apart and remain the same distance apart during acceleration. During acceleration, L is a length contracted distance of the distance L' = γL in the frame of the accelerating spaceships. After a sufficiently long time, γ will increase to a sufficiently large factor that the string must break.
+Let A and B be the rear and front spaceships. In the frame of the spaceships, each spaceship sees the other spaceship doing the same thing that it is doing. A says that B has the same acceleration that he has, and B sees that A matches her every move. So the spaceships stay the same distance apart, and the string does not break.
+The problem with the first argument is that there is no "frame of the spaceships". There cannot be, because the two spaceships measure a growing distance between the two. Because there is no common frame of the spaceships, the length of the string is ill-defined. Nevertheless, the conclusion is correct, and the argument is mostly right. The second argument, however, completely ignores the relativity of simultaneity.
+
+
+Figure 7–5. The curved lines represent the world lines of two observers A and B who accelerate in the same direction with the same constant magnitude acceleration. At A' and B', the observers stop accelerating. The dashed lines are lines of simultaneity for either observer before acceleration begins and after acceleration stops.
+A spacetime diagram (Fig. 7-5) makes the correct solution to this paradox almost immediately evident. Two observers in Minkowski spacetime accelerate with constant magnitude 
+k
+{\displaystyle k} acceleration for proper time 
+σ
+{\displaystyle \sigma } (acceleration and elapsed time measured by the observers themselves, not some inertial observer). They are comoving and inertial before and after this phase. In Minkowski geometry, the length along the line of simultaneity 
+A
+′
+B
+″
+{\displaystyle A'B''} turns out to be greater than the length along the line of simultaneity ⁠
+A
+B
+{\displaystyle AB}⁠.
+
+The length increase can be calculated with the help of the Lorentz transformation. If, as illustrated in Fig. 7-5, the acceleration is finished, the ships will remain at a constant offset in some frame ⁠
+S
+′
+{\displaystyle S'}⁠. If 
+x
+A
+{\displaystyle x_{A}} and 
+x
+B
+=
+x
+A
++
+L
+{\displaystyle x_{B}=x_{A}+L} are the ships' positions in ⁠
+S
+{\displaystyle S}⁠, the positions in frame 
+S
+′
+{\displaystyle S'} are:[93]
+
+x
+A
+′
+=
+γ
+(
+x
+A
+−
+v
+t
+)
+x
+B
+′
+=
+γ
+(
+x
+A
++
+L
+−
+v
+t
+)
+L
+′
+=
+x
+B
+′
+−
+x
+A
+′
+=
+γ
+L
+{\displaystyle {\begin{aligned}x'_{A}&=\gamma \left(x_{A}-vt\right)\\x'_{B}&=\gamma \left(x_{A}+L-vt\right)\\L'&=x'_{B}-x'_{A}=\gamma L\end{aligned}}}
+The "paradox", as it were, comes from the way that Bell constructed his example. In the usual discussion of Lorentz contraction, the rest length is fixed and the moving length shortens as measured in frame ⁠
+S
+{\displaystyle S}⁠. As shown in Fig. 7-5, Bell's example asserts the moving lengths 
+A
+B
+{\displaystyle AB} and 
+A
+′
+B
+′
+{\displaystyle A'B'} measured in frame 
+S
+{\displaystyle S} to be fixed, thereby forcing the rest frame length 
+A
+′
+B
+″
+{\displaystyle A'B''} in frame 
+S
+′
+{\displaystyle S'} to increase.
+
+
+Accelerated observer with horizon
+Main articles: Event horizon § Apparent horizon of an accelerated particle, and Rindler coordinates
+Certain special relativity problem setups can lead to insight about phenomena normally associated with general relativity, such as event horizons. In the text accompanying Section "Invariant hyperbola" of the article Spacetime, the magenta hyperbolae represented paths that are tracked by a constantly accelerating traveler in spacetime. During periods of positive acceleration, the traveler's velocity just approaches the speed of light, while, measured in our frame, the traveler's acceleration constantly decreases.
+
+
+Figure 7–6. Accelerated relativistic observer with horizon. Another well-drawn illustration of the same topic may be viewed here.
+Fig. 7-6 details various features of the traveler's motions with more specificity. At any given moment, her space axis is formed by a line passing through the origin and her current position on the hyperbola, while her time axis is the tangent to the hyperbola at her position. The velocity parameter 
+β
+{\displaystyle \beta } approaches a limit of one as 
+c
+t
+{\displaystyle ct} increases. Likewise, 
+γ
+{\displaystyle \gamma } approaches infinity.
+
+The shape of the invariant hyperbola corresponds to a path of constant proper acceleration. This is demonstrable as follows:
+
+We remember that ⁠
+β
+=
+c
+t
+/
+x
+{\displaystyle \beta =ct/x}⁠.
+Since ⁠
+c
+2
+t
+2
+−
+x
+2
+=
+s
+2
+{\displaystyle c^{2}t^{2}-x^{2}=s^{2}}⁠, we conclude that ⁠
+β
+(
+c
+t
+)
+=
+c
+t
+/
+c
+2
+t
+2
+−
+s
+2
+{\displaystyle \beta (ct)=ct/{\sqrt {c^{2}t^{2}-s^{2}}}}⁠.
+γ
+=
+1
+/
+1
+−
+β
+2
+=
+{\displaystyle \gamma =1/{\sqrt {1-\beta ^{2}}}=} 
+c
+2
+t
+2
+−
+s
+2
+/
+s
+{\displaystyle {\sqrt {c^{2}t^{2}-s^{2}}}/s}
+From the relativistic force law, 
+F
+=
+d
+p
+/
+d
+t
+=
+{\displaystyle F=dp/dt=}⁠
+d
+p
+c
+/
+d
+(
+c
+t
+)
+=
+d
+(
+β
+γ
+m
+c
+2
+)
+/
+d
+(
+c
+t
+)
+{\displaystyle dpc/d(ct)=d(\beta \gamma mc^{2})/d(ct)}⁠.
+Substituting 
+β
+(
+c
+t
+)
+{\displaystyle \beta (ct)} from step 2 and the expression for 
+γ
+{\displaystyle \gamma } from step 3 yields ⁠
+F
+=
+m
+c
+2
+/
+s
+{\displaystyle F=mc^{2}/s}⁠, which is a constant expression.[94]: 110–113 
+Fig. 7-6 illustrates a specific calculated scenario. Terence (A) and Stella (B) initially stand together 100 light hours from the origin. Stella lifts off at time 0, her spacecraft accelerating at 0.01 c per hour. Every twenty hours, Terence radios updates to Stella about the situation at home (solid green lines). Stella receives these regular transmissions, but the increasing distance (offset in part by time dilation) causes her to receive Terence's communications later and later as measured on her clock, and she never receives any communications from Terence after 100 hours on his clock (dashed green lines).[94]: 110–113 
+
+After 100 hours according to Terence's clock, Stella enters a dark region. She has traveled outside Terence's timelike future. On the other hand, Terence can continue to receive Stella's messages to him indefinitely. He just has to wait long enough. Spacetime has been divided into distinct regions separated by an apparent event horizon. So long as Stella continues to accelerate, she can never know what takes place behind this horizon.[94]: 110–113 
+
+Relativity and unifying electromagnetism
+Main articles: Classical electromagnetism and special relativity and Covariant formulation of classical electromagnetism
+Theoretical investigation in classical electromagnetism led to the discovery of wave propagation. Equations generalizing the electromagnetic effects found that finite propagation speed of the E and B fields required certain behaviors on charged particles. The general study of moving charges forms the Liénard–Wiechert potential, which is a step towards special relativity.
+
+The Lorentz transformation of the electric field of a moving charge into a non-moving observer's reference frame results in the appearance of a mathematical term commonly called the magnetic field. Conversely, the magnetic field generated by a moving charge disappears and becomes a purely electrostatic field in a comoving frame of reference. Maxwell's equations are thus simply an empirical fit to special relativistic effects in a classical model of the Universe. As electric and magnetic fields are reference frame dependent and thus intertwined, one speaks of electromagnetic fields. Special relativity provides the transformation rules for how an electromagnetic field in one inertial frame appears in another inertial frame.
+
+Maxwell's equations in the 3D form are already consistent with the physical content of special relativity, although they are easier to manipulate in a manifestly covariant form, that is, in the language of tensor calculus.[88]
+
+Theories of relativity and quantum mechanics
+Special relativity can be combined with quantum mechanics to form relativistic quantum mechanics and quantum electrodynamics. How general relativity and quantum mechanics can be unified is one of the unsolved problems in physics; quantum gravity and a "theory of everything", which require a unification including general relativity too, are active and ongoing areas in theoretical research.
+
+The early Bohr–Sommerfeld atomic model explained the fine structure of alkali metal atoms using both special relativity and the preliminary knowledge on quantum mechanics of the time.[95]
+
+In 1928, Paul Dirac constructed an influential relativistic wave equation, now known as the Dirac equation in his honour,[p 19] that is fully compatible both with special relativity and with the final version of quantum theory existing after 1926. This equation not only described the intrinsic angular momentum of the electrons called spin, it also led to the prediction of the antiparticle of the electron (the positron),[p 19][p 20] and fine structure could only be fully explained with special relativity. It was the first foundation of relativistic quantum mechanics.
+
+On the other hand, the existence of antiparticles leads to the conclusion that relativistic quantum mechanics is not enough for a more accurate and complete theory of particle interactions.[citation needed] Instead, a theory of particles interpreted as quantized fields, called quantum field theory, becomes necessary; in which particles can be created and destroyed throughout space and time.
+
+Status
+Main articles: Tests of special relativity and Criticism of the theory of relativity
+Special relativity in its Minkowski spacetime is accurate only when the absolute value of the gravitational potential is much less than c2 in the region of interest.[96] In a strong gravitational field, one must use general relativity. General relativity becomes special relativity at the limit of a weak field. At very small scales, such as at the Planck length and below, quantum effects must be taken into consideration resulting in quantum gravity. But at macroscopic scales and in the absence of strong gravitational fields, special relativity is experimentally tested to extremely high degree of accuracy (10−20)[97] and thus accepted by the physics community. Experimental results that appear to contradict it are not reproducible and are thus widely believed to be due to experimental errors.[98]
+
+Special relativity is mathematically self-consistent, and it is an organic part of all modern physical theories, most notably quantum field theory, string theory, and general relativity (in the limiting case of negligible gravitational fields).
+
+Newtonian mechanics mathematically follows from special relativity at small velocities (compared to the speed of light) – thus Newtonian mechanics can be considered as a special relativity of slow moving bodies. See Classical mechanics for a more detailed discussion.
+
+Several experiments predating Einstein's 1905 paper are now interpreted as evidence for relativity. Of these it is known Einstein was aware of the Fizeau experiment before 1905,[99] and historians have concluded that Einstein was at least aware of the Michelson–Morley experiment as early as 1899 despite claims he made in his later years that it played no role in his development of the theory.[23]
+
+The Fizeau experiment (1851, repeated by Michelson and Morley in 1886) measured the speed of light in moving media, with results that are consistent with relativistic addition of colinear velocities.
+The famous Michelson–Morley experiment (1881, 1887) gave further support to the postulate that detecting an absolute reference velocity was not achievable. It should be stated here that, contrary to many alternative claims, it said little about the invariance of the speed of light with respect to the source and observer's velocity, as both source and observer were travelling together at the same velocity at all times.
+The Trouton–Noble experiment (1903) showed that the torque on a capacitor is independent of position and inertial reference frame.
+The Experiments of Rayleigh and Brace (1902, 1904) showed that length contraction does not lead to birefringence for a co-moving observer, in accordance with the relativity principle.
+Particle accelerators accelerate and measure the properties of particles moving at near the speed of light, where their behavior is consistent with relativity theory and inconsistent with the earlier Newtonian mechanics. These machines would simply not work if they were not engineered according to relativistic principles. In addition, a considerable number of modern experiments have been conducted to test special relativity. Some examples:
+
+Tests of relativistic energy and momentum – testing the limiting speed of particles
+Ives–Stilwell experiment – testing relativistic Doppler effect and time dilation
+Experimental testing of time dilation – relativistic effects on a fast-moving particle's half-life
+Kennedy–Thorndike experiment – time dilation in accordance with Lorentz transformations
+Hughes–Drever experiment – testing isotropy of space and mass
+Modern searches for Lorentz violation – various modern tests
+Experiments to test emission theory demonstrated that the speed of light is independent of the speed of the emitter.
+Experiments to test the aether drag hypothesis – no "aether flow obstruction".
+See also
+People
+Arnold Sommerfeld
+Hermann Minkowski
+Max Born
+Max Planck
+Max von Laue
+Mileva Marić
+Relativity
+Bondi k-calculus
+Doubly special relativity
+Einstein synchronisation
+History of special relativity
+Relativity priority dispute
+Rietdijk–Putnam argument
+Special relativity (alternative formulations)
+Physics
+Born coordinates
+Born rigidity
+Einstein's thought experiments
+Lorentz ether theory
+Moving magnet and conductor problem
+physical cosmology
+Relativistic disk
+Relativistic Euler equations
+Relativistic heat conduction
+Shape waves
+Mathematics
+Lorentz group
+Relativity in the APS formalism
+Philosophy
+actualism
+conventionalism
+Paradoxes
+Bell's spaceship paradox
+Ehrenfest paradox
+Lighthouse paradox
+Velocity composition paradox
+Notes
+ The refractive index dependence of the presumed partial aether-drag was eventually confirmed by Pieter Zeeman in 1914–1915, long after special relativity had been accepted by the mainstream. Using a scaled-up version of Michelson's apparatus connected directly to Amsterdam's main water conduit, Zeeman was able to perform extended measurements using monochromatic light ranging from violet (4358 Å) through red (6870 Å).[p 11][p 12]
+

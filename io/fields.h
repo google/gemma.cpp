@@ -105,7 +105,7 @@ class IFieldsVisitor {
 
     uint32_t num = static_cast<uint32_t>(value.size());
     operator()(num);
-    if (HWY_UNLIKELY(num > 64 * 1024)) {
+    if (HWY_UNLIKELY(num > 8 * 1024 * 1024)) {
       return NotifyInvalid("Vector too long %u\n", num);
     }
 

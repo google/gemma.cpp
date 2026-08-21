@@ -46,7 +46,7 @@ PYBIND11_MODULE(compression, m) {
   class_<SbsWriter>(m, "SbsWriter")
       .def(init<std::string>())
       .def("insert", CallWithF32Span<&SbsWriter::Insert>)
-      .def("write", &SbsWriter::Write, arg("config"), arg("tokenizer_path"));
+      .def("write", &SbsWriter::Write, arg("config"), arg("tokenizer_blob"));
 
   class_<MatPtr>(m, "MatPtr")
       // No init, only created within C++.

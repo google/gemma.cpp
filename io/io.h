@@ -150,7 +150,7 @@ std::string ReadFileToString(const Path& path);
 
 // No-op in open-source. Must be called at the beginning of a binary, before
 // any I/O or flag usage.
-void InternalInit();
+int InternalInit();
 
 }  // namespace gcpp
 

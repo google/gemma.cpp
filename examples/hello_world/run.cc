@@ -24,20 +24,20 @@
 #include <vector>
 
 #include "gemma/gemma.h"
-#include "gemma/gemma_args.h"  // LoaderArgs
+#include "gemma/gemma_args.h"  // GemmaArgs
 #include "gemma/tokenizer.h"
 #include "util/args.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
 
 int main(int argc, char** argv) {
-  gcpp::LoaderArgs loader(argc, argv);
-  gcpp::ThreadingArgs threading(argc, argv);
-  gcpp::InferenceArgs inference(argc, argv);
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
   if (gcpp::HasHelp(argc, argv)) {
-    loader.Help();
+    args.Help();
     return 0;
   }
+  consumed.AbortIfUnconsumed();
 
   // Demonstrate constrained decoding by never outputting certain tokens.
   std::set<int> reject_tokens;
@@ -49,10 +49,10 @@ int main(int argc, char** argv) {
   }
 
   // Instantiate model and KV Cache
-  gcpp::ThreadingContext ctx(threading);
+  gcpp::ThreadingContext ctx(args.threading);
   gcpp::MatMulEnv env(ctx);
-  gcpp::Gemma gemma(loader, inference, ctx);
-  gcpp::KVCache kv_cache(gemma.Config(), inference, ctx.allocator);
+  gcpp::Gemma gemma(args, ctx);
+  gcpp::KVCache kv_cache(gemma.Config(), args.inference, ctx.allocator);
   size_t generated = 0;
 
   // Tokenize instructions.

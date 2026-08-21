@@ -67,6 +67,15 @@ using RowPtrsBF = RowPtrs<BF16>;
 // Copyable, (de)serializable via `fields.h` for `model_store.h`.
 class MatPtr : public IFields {
  public:
+  enum class Layout {
+    kFlat,
+    kBF16MatrixAccumulation,
+    kInt8MatrixAccumulation,
+  };
+
+  Layout GetLayout() const { return layout_; }
+  void SetLayout(Layout layout) { layout_ = layout; }
+
   MatPtr() = default;
   // `name`: see `SetName`. Note that `stride` is initially `cols` and only
   // differs after deserializing, or calling `SetPtr`.
@@ -86,7 +95,9 @@ class MatPtr : public IFields {
 
   // Only for use by ctor, `AllocateFor` and 'loading' memory-mapped tensors.
   void SetPtr(void* ptr, size_t stride) {
-    HWY_ASSERT(stride >= Cols());
+    if (stride < Cols()) {
+      HWY_ABORT("%s: stride %zu < cols %zu\n", Name(), stride, Cols());
+    }
     ptr_ = ptr;
     stride_ = static_cast<uint32_t>(stride);
 
@@ -130,7 +141,7 @@ class MatPtr : public IFields {
   uint8_t** GetRowPtrs() const { return row_ptrs_; }
 
   // A single row counts as packed because there is no padding between rows.
-  bool IsPacked() const { return (stride_ == cols_) || (Rows() == 1); }
+  bool IsPacked() const { return (stride_ == Cols()) || (Rows() == 1); }
 
   const void* Packed() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
@@ -146,7 +157,7 @@ class MatPtr : public IFields {
   size_t PackedBytes() const {
     HWY_DASSERT_M(IsPacked(), name_.c_str());
     // num_elements_ already includes the NUQ tables.
-    return num_elements_ * element_bytes_;
+    return static_cast<size_t>(num_elements_) * element_bytes_;
   }
 
   // Works for any kind of padding and element type.
@@ -177,11 +188,21 @@ class MatPtr : public IFields {
   size_t Rows() const {
     return override_rows_ == 0 ? private_rows_ : override_rows_;
   }
-  size_t Cols() const { return cols_; }
-  Extents2D Extents() const { return Extents2D(Rows(), cols_); }
+  size_t Cols() const {
+    return override_cols_ == 0 ? cols_ : override_cols_;
+  }
+  Extents2D Extents() const { return Extents2D(Rows(), Cols()); }
   bool IsEmpty() const { return Rows() == 0 || cols_ == 0; }
   bool SameShape(const MatPtr& other) const {
-    return Rows() == other.Rows() && cols_ == other.cols_;
+    return Rows() == other.Rows() && Cols() == other.Cols();
+  }
+  void DebugCheckSameShape(const MatPtr& other) const {
+    if constexpr (HWY_IS_DEBUG_BUILD) {
+      if (!SameShape(other)) {
+        HWY_ABORT("%s: shape mismatch %zu x %zu vs %zu x %zu\n", name_.c_str(),
+                  Rows(), Cols(), other.Rows(), Cols());
+      }
+    }
   }
   // Future calls to `Rows()` during this class' lifetime (not serialized)
   // will return this value. Used to set the actual number of rows for
@@ -192,6 +213,26 @@ class MatPtr : public IFields {
                 private_rows_);
     }
     override_rows_ = static_cast<uint32_t>(rows);
+    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
+  }
+
+  void OverrideCols(size_t cols) {
+    if (HWY_UNLIKELY(cols > stride_)) {
+      HWY_ABORT("%s: cols %zu > stride_ %u\n", name_.c_str(), cols,
+                stride_);
+    }
+    override_cols_ = static_cast<uint32_t>(cols);
+    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
+  }
+
+  // Changes the number of rows and columns without reallocating the memory.
+  // Increases cols by factor and reduces rows by factor.
+  // The rows must be divisible by factor and the matrix must be packed.
+  void ReshapePackedRowsToCols(size_t factor) {
+    HWY_ASSERT(IsPacked());
+    private_rows_ = hwy::DivCeil(private_rows_, factor);
+    cols_ *= factor;
+    stride_ *= factor;  // safe because we verified IsPacked
   }
 
   // Offset by which to advance pointers to the next row.
@@ -242,6 +283,8 @@ class MatPtr : public IFields {
       num_elements = NuqStream::PackedEnd(num_elements);
     } else if (type == Type::kI8) {
       num_elements = I8Stream::PackedEnd(num_elements);
+    } else if (type == Type::kQ4_0) {
+      num_elements = Q4_0Stream::PackedEnd(num_elements);
     }
     return num_elements;
   }
@@ -261,6 +304,7 @@ class MatPtr : public IFields {
   uint32_t cols_ = 0;
 
   uint32_t override_rows_ = 0;  // not serialized
+  uint32_t override_cols_ = 0;  // not serialized
 
   // Non-owning pointer, must not be freed. The underlying memory must outlive
   // this object.
@@ -275,6 +319,9 @@ class MatPtr : public IFields {
   uint32_t stride_;
 
   float scale_ = 1.0f;  // multiplier for each value, for MatMul.
+
+ private:
+  Layout layout_ = Layout::kFlat;
 };
 
 // Non-type erased version of `MatPtr`: provides type-safe `Row()` and ensures
@@ -283,6 +330,11 @@ template <typename MatT>
 class MatPtrT : public MatPtr {
  public:
   using T = MatT;
+  static_assert(TypeEnum<MatT>() != Type::kUnknown,
+                "Must only use with supported MatT.");
+
+  // Default constructor for use with uninitialized views.
+  MatPtrT() = default;
 
   // Called by `MatStorageT`.
   MatPtrT(const char* name, Extents2D extents)
@@ -296,7 +348,10 @@ class MatPtrT : public MatPtr {
     if (GetType() == Type::kUnknown) {
       SetType(TypeEnum<MatT>());
     } else {
-      HWY_ASSERT(other.GetType() == TypeEnum<MatT>());
+      if (HWY_UNLIKELY(other.GetType() != TypeEnum<MatT>())) {
+        HWY_ABORT("Type mismatch: MatT %s, constructing from %s",
+                  TypeName<MatT>(), TypeName(other.GetType()));
+      }
     }
   }
   MatPtrT& operator=(const MatPtr& other) {
@@ -385,8 +440,12 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
   } else if (base->GetType() == Type::kI8) {
     const MatPtrT<I8Stream> mat(*base);
     return func(&mat, std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kQ4_0) {
+    const MatPtrT<Q4_0Stream> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else {
-    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+    HWY_ABORT("Unhandled type %s for tensor %s.", TypeName(base->GetType()),
+              base->Name());
   }
 }
 
@@ -420,8 +479,13 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
     const MatPtrT<I8Stream> mat1(*base1);
     const MatPtrT<I8Stream> mat2(*base2);
     return func(&mat1, &mat2, std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kQ4_0) {
+    const MatPtrT<Q4_0Stream> mat1(*base1);
+    const MatPtrT<Q4_0Stream> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else {
-    HWY_ABORT("Unhandled type %s.", TypeName(base1->GetType()));
+    HWY_ABORT("Unhandled type %s for tensors %s and %s.",
+              TypeName(base1->GetType()), base1->Name(), base2->Name());
   }
 }
 
@@ -437,6 +501,60 @@ decltype(auto) CallUpcastedActivation(const MatPtr* base, const Func& func,
     return func(&mat, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+  }
+}
+
+// Like CallUpcasted, but only for kv_cache types: kBF16 and kF32.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedKV(const MatPtr* base, const Func& func,
+                                      Args&&... args) {
+  if (base->GetType() == Type::kF32) {
+    const MatPtrT<float> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kBF16) {
+    const MatPtrT<BF16> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(base->GetType()));
+  }
+}
+
+template <typename T>
+std::vector<MatPtrT<T>> MakeMatPtrVec(hwy::Span<const MatPtr> base) {
+  std::vector<MatPtrT<T>> matptrs;
+  matptrs.reserve(base.size());
+  for (auto&& mat : base) {
+    matptrs.emplace_back(mat);
+  }
+  return matptrs;
+}
+
+// Calls 'func' with a span of MatPtrT<T> for all elements in `base`.
+// T is dynamic type, read from base. It is assumed that all elements in `base`
+// have the same type.
+template <class Func, typename... Args>
+decltype(auto) CallUpcastedKVs(hwy::Span<const MatPtr> base, const Func& func,
+                               Args&&... args) {
+  Type type = base[0].GetType();
+  for ([[maybe_unused]] auto&& mat : base) {
+    HWY_DASSERT(mat.GetType() == type);
+  }
+  if (type == Type::kF32) {
+    auto matptrs = MakeMatPtrVec<float>(base);
+    hwy::Span<const MatPtrT<float>> matptrs_span(matptrs.data(),
+                                                 matptrs.size());
+    return func(matptrs_span, std::forward<Args>(args)...);
+  } else if (type == Type::kBF16) {
+    auto matptrs = MakeMatPtrVec<BF16>(base);
+    hwy::Span<const MatPtrT<BF16>> matptrs_span(matptrs.data(), matptrs.size());
+    return func(matptrs_span, std::forward<Args>(args)...);
+  } else if (type == Type::kInt8) {
+    auto matptrs = MakeMatPtrVec<int8_t>(base);
+    hwy::Span<const MatPtrT<int8_t>> matptrs_span(matptrs.data(),
+                                                  matptrs.size());
+    return func(matptrs_span, std::forward<Args>(args)...);
+  } else {
+    HWY_ABORT("Unhandled type %s.", TypeName(type));
   }
 }
 

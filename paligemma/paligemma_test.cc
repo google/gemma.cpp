@@ -21,10 +21,9 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
-#include "io/io.h"
+#include "paligemma/paligemma_helper.h"
 #include "util/allocator.h"
 #include "hwy/tests/hwy_gtest.h"
-#include "paligemma/paligemma_helper.h"
 
 // This test can be run manually with the downloaded PaliGemma weights.
 // It should pass for `paligemma-3b-mix-224` and `paligemma2-3b-pt-448`.
@@ -72,9 +71,12 @@ TEST_F(PaliGemmaTest, QueryObjects) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  gcpp::InternalInit();
 
-  gcpp::GemmaEnv env(argc, argv);
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
+  consumed.AbortIfUnconsumed();
+
+  gcpp::GemmaEnv env(args);
   gcpp::s_env = &env;
 
   return RUN_ALL_TESTS();

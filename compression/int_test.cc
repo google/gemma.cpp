@@ -243,7 +243,8 @@ struct TestUnalignedOffset {
       auto dec1 = hwy::AllocateAligned<T>(total);
       auto i8_stream =
           hwy::AllocateAligned<I8Stream>(I8Stream::PackedEnd(total));
-      auto dec2 = hwy::AllocateAligned<T>(num_decompressed);
+      auto dec2 = hwy::AllocateAligned<T>(
+          hwy::RoundUpTo(num_decompressed, hn::Lanes(d)));
       HWY_ASSERT(in && dec1 && dec2 && i8_stream);
       const auto int_span = MakeSpan(i8_stream.get(), total);
 
@@ -408,7 +409,7 @@ struct TestSmallDequantize {
         IntCodec::DecompressAndZeroPad(d, MakeConst(int_span), offset,
                                        actual_dec.get(), num);
 
-        MaybeCheckInitialized(actual_dec.get(), num);
+        MaybeCheckInitialized(actual_dec.get(), num * sizeof(T));
 
         // Check that all sentinels were overwritten.
         for (size_t i = 0; i < num; ++i) {

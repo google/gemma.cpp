@@ -29,6 +29,7 @@ cc_test(
     deps = [
         ":image",
         "@googletest//:gtest_main",  # buildcleaner: keep
+        "@highway//:hwy",
     ],
 )
 
@@ -64,7 +65,6 @@ cc_test(
         "//:benchmark_helper",
         "//:configs",
         "//:gemma_lib",
-        "//io",
         "@highway//:hwy_test_util",
     ],
 )

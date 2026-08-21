@@ -113,6 +113,10 @@ NestedPools::NestedPools(const BoundedTopology& topology,
                          const Allocator& allocator, size_t max_threads,
                          Tristate pin)
     : pinning_(pin) {
+#ifdef __EMSCRIPTEN__
+  // Node runs out of memory with a large number of workers. Cap it for now.
+  if (max_threads == 0 || max_threads > 32) max_threads = 32;
+#endif
   const size_t num_clusters = topology.NumClusters();
   const size_t cluster_workers_cap = DivideMaxAcross(max_threads, num_clusters);
 

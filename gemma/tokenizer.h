@@ -26,7 +26,10 @@
 
 namespace gcpp {
 
+class Tokenizer;
+
 constexpr int BOS_ID = 2;  // beginning of sequence
+constexpr int T5GEMMA_PAD_ID = 0;
 
 // To avoid the complexity of storing the tokenizer into testdata/ or
 // downloading from gs://, while still always writing a blob for the tokenizer,
@@ -36,23 +39,23 @@ constexpr const char* kMockTokenizer = "unavailable";
 class GemmaTokenizer {
   // These must be defined after the definition of `Impl`.
  public:
-  // If unavailable, pass `kMockTokenizer`.
+  // SentencePiece backend. If unavailable, pass `kMockTokenizer`.
   explicit GemmaTokenizer(const std::string& tokenizer_proto);
   ~GemmaTokenizer();
   GemmaTokenizer(GemmaTokenizer&& other);
   GemmaTokenizer& operator=(GemmaTokenizer&& other);
 
+  explicit GemmaTokenizer(std::unique_ptr<Tokenizer> impl);
+
   // Returns `kMockTokenizer` if unavailable.
   std::string Serialize() const;
 
   // Returns false on failure or if unavailable.
-  bool Encode(const std::string& input, std::vector<std::string>* pieces) const;
   bool Encode(const std::string& input, std::vector<int>* ids) const;
   bool Decode(const std::vector<int>& ids, std::string* detokenized) const;
 
  private:
-  class Impl;
-  std::unique_ptr<Impl> impl_;
+  std::unique_ptr<Tokenizer> impl_;
 };
 
 class GemmaChatTemplate {
@@ -75,6 +78,7 @@ class GemmaChatTemplate {
   std::vector<int> pali_sep_;
   std::vector<int> vlm_soi_;
   std::vector<int> vlm_eoi_;
+  bool prepend_bos_ = true;
 };
 
 std::vector<int> WrapAndTokenize(const GemmaTokenizer& tokenizer,

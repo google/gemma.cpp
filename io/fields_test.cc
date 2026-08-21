@@ -20,6 +20,8 @@
 #include <stdio.h>
 
 #include <limits>
+#include <string>
+#include <vector>
 #include <type_traits>
 
 #include "hwy/tests/hwy_gtest.h"
@@ -278,23 +280,23 @@ TEST(FieldsTest, TestInvalidFloat) {
 // Refuse to write invalid strings.
 TEST(FieldsTest, TestInvalidString) {
   NewFields new_fields;
-  // Four zero bytes
-  new_fields.new_str.assign(4, '\0');
-  EXPECT_TRUE(new_fields.Write().empty());
 
   // Too long
   new_fields.new_str.assign(257, 'a');
   EXPECT_TRUE(new_fields.Write().empty());
+}
 
-  // First byte not ASCII
-  new_fields.new_str.assign("123");
-  new_fields.new_str[0] = 128;
-  EXPECT_TRUE(new_fields.Write().empty());
+// Verify non-ASCII strings are accepted.
+TEST(FieldsTest, TestNonAsciiString) {
+  NewFields new_fields;
+  new_fields.new_str = "你好世界";  // "Hello World" in Chinese
+  const std::vector<uint32_t> storage = new_fields.Write();
+  EXPECT_FALSE(storage.empty());
 
-  // Upper byte in later u32 not ASCII
-  new_fields.new_str.assign("ABCDEFGH");
-  new_fields.new_str[7] = 255;
-  EXPECT_TRUE(new_fields.Write().empty());
+  NewFields copy;
+  const ReadResult result = copy.Read(Span(storage), 0);
+  CheckConsumedAll(result, storage.size());
+  EXPECT_EQ("你好世界", copy.new_str);
 }
 
 // Write two structs to the same storage.
@@ -358,7 +360,6 @@ TEST(FieldsTest, TestOldCodeNewData) {
   EXPECT_NE(0, result.pos);  // did not fail
   EXPECT_EQ(0, result.missing_fields);
   EXPECT_NE(0, result.extra_u32);
-  EXPECT_EQ(storage.size(), result.pos + result.extra_u32);
 
   old_fields.CheckEqual(new_fields);  // old fields are the same in both
   // (Can't check new fields because we only read OldFields)

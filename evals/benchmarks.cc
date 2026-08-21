@@ -98,7 +98,11 @@ BENCHMARK(BM_coding_prompt)
     ->UseRealTime();
 
 int main(int argc, char** argv) {
-  gcpp::GemmaEnv env(argc, argv);
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
+  consumed.AbortIfUnconsumed();
+
+  gcpp::GemmaEnv env(args);
   env.SetMaxGeneratedTokens(256);
   gcpp::s_env = &env;
 

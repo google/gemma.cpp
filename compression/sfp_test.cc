@@ -37,37 +37,23 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
-#include "compression/sfp-inl.h"
+#include "compression/compress-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-// Decode
-float F32FromSFP8(uint32_t sfp) {
-  HWY_ASSERT(sfp < 256);
-  HWY_ASSERT(sfp != 0x80);  // -0 is reserved
+HWY_INLINE_VAR constexpr bool kPrint = false;
 
-  const uint32_t sign32 = (sfp & 0x80) << 24;
-  sfp &= 0x7F;
-  const bool large_e = sfp >= 64;
-  const size_t m_bits = large_e ? 3 : 2;
-  uint32_t m = sfp & ((1u << m_bits) - 1u);
-  size_t e = sfp >> m_bits;
-  if (sfp == 0) return 0.0f;
-  const uint32_t e_bias = large_e ? 15 : 23;
-  const uint32_t exp32 = static_cast<uint32_t>(127 + e - e_bias) << 23;
-  const uint32_t mnt32 = m << (23 - m_bits);
-  const uint32_t binary32 = sign32 | exp32 | mnt32;
-  float result;
-  hwy::CopySameSize(&binary32, &result);
-  return result;
+static float F32FromSFP8(uint32_t sfp) {
+  return CompressTraits<SfpStream>::ToFloatSlow(
+      SfpStream{static_cast<uint8_t>(sfp)});
 }
 
 // Used for HWY_AVX3_DL and newer.
 void PrintTables() {
-  if (HWY_ONCE && false) {
+  if (HWY_ONCE && kPrint) {
     uint8_t hi[128];
     fprintf(stderr, "lo\n");
     for (uint32_t sfp = 0; sfp < 128; ++sfp) {
@@ -92,7 +78,7 @@ void TestAllUnique() {
     unique.insert(F32FromSFP8(sfp));
   }
   HWY_ASSERT_EQ(size_t{255}, unique.size());
-  if (false) {
+  if (kPrint) {
     for (float f : unique) {
       fprintf(stderr, "%e\n", f);
     }
@@ -163,7 +149,7 @@ HWY_INLINE uint32_t SFP8FromF32(float f) {
     if (m == 0) m = 1;
   }
 
-  if (false) {
+  if (kPrint) {
     fprintf(stderr, "in %x round %x rounded %x e %d m %x large_e %d\n",
             org_binary32, round, rounded, e, m, large_e);
   }

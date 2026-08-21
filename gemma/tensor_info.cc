@@ -1,9 +1,25 @@
+// Copyright 2025 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #include "gemma/tensor_info.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include <string>
+#include <vector>
 
 #include "compression/types.h"
 #include "gemma/configs.h"
@@ -28,6 +44,21 @@ void TensorInfoRegistry::Add(const std::string& suffix,
 // Non-layer tensors.
 void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
   const std::string no_suffix;
+  size_t pos_emb_rows = config.vit_config.seq_len;
+  std::vector<size_t> img_emb_axes = {3, 0, 1, 2};
+  std::vector<size_t> img_emb_shape = {config.vit_config.model_dim,
+                                       config.vit_config.patch_width,
+                                       config.vit_config.patch_width, 3};
+  bool cols_take_extra_dims = true;
+
+  if (!config.vit_config.layer_configs.empty() &&
+      config.vit_config.layer_configs[0].type == LayerAttentionType::kVitGemma4) {
+    pos_emb_rows = 20480;
+    img_emb_axes = {1, 0};
+    img_emb_shape = {config.vit_config.model_dim,
+                     3 * config.vit_config.patch_width * config.vit_config.patch_width};
+    cols_take_extra_dims = false;
+  }
   Add(no_suffix, {
                      .base_name = "c_embedding",
                      .source_names = {"embedder/input_embedding"},
@@ -42,6 +73,17 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .shape = {config.model_dim},
                      .min_size = Type::kBF16,
                  });
+  AddDeepSeekModelTensors(config);
+  if (config.HasLmHead()) {
+    Add(no_suffix,
+        {
+            .base_name = "lm_head",
+            .source_names = {"lm_head/weight", "lm_head.weight", "lm_head"},
+            .axes = {0, 1},
+            .shape = {config.vocab_size, config.model_dim},
+            .min_size = Type::kBF16,
+        });
+  }
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},
@@ -66,12 +108,12 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
   Add(no_suffix,
       {
           .base_name = "img_emb_kernel",
-          .source_names = {"img/embedding/kernel"},
-          .axes = {3, 0, 1, 2},
-          .shape = {config.vit_config.model_dim, config.vit_config.patch_width,
-                    config.vit_config.patch_width, 3},
+          .source_names = {"img/embedding/kernel",
+                           "vit/entry/input_projection/w"},
+          .axes = img_emb_axes,
+          .shape = img_emb_shape,
           .min_size = Type::kBF16,
-          .cols_take_extra_dims = true,
+          .cols_take_extra_dims = cols_take_extra_dims,
       });
   Add(no_suffix,
       {
@@ -91,9 +133,10 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
       });
   Add(no_suffix, {
                      .base_name = "img_pos_emb",
-                     .source_names = {"img/pos_embedding"},
+                     .source_names = {"img/pos_embedding",
+                                      "vit/entry/pos_emb"},
                      .axes = {0, 1},
-                     .shape = {/*1,*/ config.vit_config.seq_len,
+                     .shape = {/*1,*/ pos_emb_rows,
                                config.vit_config.model_dim},
                      .min_size = Type::kF32,
                  });
@@ -105,6 +148,70 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                      .shape = {config.vit_config.model_dim},
                      .min_size = Type::kBF16,
                  });
+  // Per-Layer Embedding (PLE) model-level tensors.
+  if (config.ple_dim > 0) {
+    Add(no_suffix,
+        {
+            .base_name = "ple_embeddings",
+            .source_names = {"embedder/per_layer_embeddings"},
+            .preshape = {config.vocab_size,
+                         config.num_layers * config.ple_dim},
+            .axes = {0, 1},
+            .shape = {config.vocab_size,
+                      config.num_layers * config.ple_dim},
+        });
+    Add(no_suffix,
+        {
+            .base_name = "ple_model_proj",
+            .source_names = {"embedder/per_layer_model_projection/w"},
+            .preshape = {config.model_dim,
+                         config.num_layers * config.ple_dim},
+            .axes = {1, 0},
+            .shape = {config.num_layers * config.ple_dim,
+                      config.model_dim},
+            .min_size = Type::kBF16,
+        });
+    Add(no_suffix, {
+                       .base_name = "ple_proj_norm",
+                       .source_names =
+                           {"embedder/per_layer_projection_norm/scale"},
+                       .axes = {0},
+                       .shape = {config.ple_dim},
+                       .min_size = Type::kBF16,
+                   });
+  }
+}
+
+void TensorInfoRegistry::AddT5GemmaModelTensors(const ModelConfig& config) {
+  const std::string no_suffix;
+  Add(no_suffix, {
+                     .base_name = "enc_embedding",
+                     .source_names = {"model.encoder.embed_tokens.weight"},
+                     .axes = {0, 1},
+                     .shape = {config.vocab_size, config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "dec_embedding",
+                     .source_names = {"model.decoder.embed_tokens.weight"},
+                     .axes = {0, 1},
+                     .shape = {config.vocab_size, config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "enc_final_norm",
+                     .source_names = {"model.encoder.norm.weight"},
+                     .axes = {0},
+                     .shape = {config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
+  Add(no_suffix, {
+                     .base_name = "dec_final_norm",
+                     .source_names = {"model.decoder.norm.weight"},
+                     .axes = {0},
+                     .shape = {config.model_dim},
+                     .min_size = Type::kBF16,
+                 });
 }
 
 // Returns the tensors for the given image layer config.
@@ -112,6 +219,110 @@ void TensorInfoRegistry::AddImageLayerTensors(const ModelConfig& config,
                                               const LayerConfig& layer_config,
                                               const size_t img_layer_idx) {
   const std::string suffix = LayerSuffix(img_layer_idx);
+
+  if (layer_config.type == LayerAttentionType::kVitGemma4) {
+    Add(suffix, {
+        .base_name = "vit_qkv1_w",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/q_einsum/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.heads * layer_config.qkv_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_qkv2_w",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/kv_einsum/w"},
+        .axes = {1, 0, 3, 2},
+        .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gating1_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum1/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gating2_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum2/w"},
+        .axes = {0, 2, 1},
+        .shape = {layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_att_ein",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/attn_vec_einsum/w"},
+        .axes = {2, 0, 1},
+        .shape = {config.vit_config.model_dim, layer_config.heads,
+                  layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+        .cols_take_extra_dims = true,
+    });
+    Add(suffix, {
+        .base_name = "vit_att_w",
+        .axes = {2, 0, 1},
+        .shape = {config.vit_config.model_dim, layer_config.heads,
+                  layer_config.qkv_dim},
+        .cols_take_extra_dims = true,
+    });
+    Add(suffix, {
+        .base_name = "vit_pr_att",
+        .source_names = {"vit/transformer/stacked_layers/block/pre_attention_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_po_att",
+        .source_names = {"vit/transformer/stacked_layers/block/post_attention_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_pr_ff",
+        .source_names = {"vit/transformer/stacked_layers/block/pre_ffw_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_po_ff",
+        .source_names = {"vit/transformer/stacked_layers/block/post_ffw_norm/scale"},
+        .axes = {0},
+        .shape = {config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_gate_ein",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/gating_einsum/w"},
+        .axes = {0, 1, 2},
+        .shape = {2, layer_config.ff_hidden_dim, config.vit_config.model_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_linear_w",
+        .source_names = {"vit/transformer/stacked_layers/block/mlp/linear/w"},
+        .axes = {1, 0},
+        .shape = {config.vit_config.model_dim, layer_config.ff_hidden_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_q_norm",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/query_norm/scale"},
+        .axes = {0},
+        .shape = {layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+    });
+    Add(suffix, {
+        .base_name = "vit_key_norm",
+        .source_names = {"vit/transformer/stacked_layers/block/attn/key_norm/scale"},
+        .axes = {0},
+        .shape = {layer_config.qkv_dim},
+        .min_size = Type::kBF16,
+    });
+    return;
+  }
 
   // Vit layers.
   Add(suffix, {
@@ -277,24 +488,257 @@ void TensorInfoRegistry::AddImageLayerTensors(const ModelConfig& config,
       });
 }
 
+void TensorInfoRegistry::AddT5GemmaEncoderLayerTensors(
+    const ModelConfig& config, const LayerConfig& layer_config,
+    const size_t layer_idx) {
+  const std::string suffix = LayerSuffix(layer_idx);
+  Add(suffix, {
+                  .base_name = "e_qkv",
+                  .source_names = {"model.encoder.layers.self_attn.qkv"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.heads + 2 * layer_config.kv_heads,
+                            layer_config.qkv_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_qkv1",
+                  .shape = {layer_config.heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_qkv2",
+                  .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "e_att",
+          .source_names = {"model.encoder.layers.self_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "e_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate",
+                  .source_names = {"model.encoder.layers.mlp.gating_einsum"},
+                  .axes = {0, 1, 2},
+                  .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate1",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_gate2",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_lin",
+                  .source_names = {"model.encoder.layers.mlp.down_proj.weight"},
+                  .axes = {0, 1},
+                  .shape = {config.model_dim, layer_config.ff_hidden_dim},
+              });
+  Add(suffix, {
+                  .base_name = "e_pre_att",
+                  .source_names =
+                      {"model.encoder.layers.pre_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "e_post_att",
+                  .source_names =
+                      {"model.encoder.layers.post_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "e_pre_ff",
+                  .source_names =
+                      {"model.encoder.layers.pre_feedforward_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix,
+      {
+          .base_name = "e_post_ff",
+          .source_names =
+              {"model.encoder.layers.post_feedforward_layernorm.weight"},
+          .axes = {0},
+          .shape = {config.model_dim},
+          .min_size = Type::kBF16,
+      });
+}
+
+void TensorInfoRegistry::AddT5GemmaDecoderLayerTensors(
+    const ModelConfig& config, const LayerConfig& layer_config,
+    const size_t layer_idx) {
+  const std::string suffix = LayerSuffix(layer_idx);
+  Add(suffix, {
+                  .base_name = "d_qkv",
+                  .source_names = {"model.decoder.layers.self_attn.qkv"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.heads + 2 * layer_config.kv_heads,
+                            layer_config.qkv_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_qkv1",
+                  .shape = {layer_config.heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_qkv2",
+                  .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "d_att",
+          .source_names = {"model.decoder.layers.self_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "d_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "dc_q",
+          .source_names = {"model.decoder.layers.cross_attn.q_proj"},
+          .axes = {0, 1, 2},
+          .shape = {layer_config.heads, layer_config.qkv_dim, config.model_dim},
+      });
+  Add(suffix, {
+                  .base_name = "dc_k",
+                  .source_names = {"model.decoder.layers.cross_attn.k_proj"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.kv_heads, layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "dc_v",
+                  .source_names = {"model.decoder.layers.cross_attn.v_proj"},
+                  .axes = {0, 1, 2},
+                  .shape = {layer_config.kv_heads, layer_config.qkv_dim,
+                            config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "dc_att",
+          .source_names = {"model.decoder.layers.cross_attn.o_proj"},
+          .preshape = {layer_config.heads, layer_config.qkv_dim,
+                       config.model_dim},
+          .axes = {0, 2, 1},
+          .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
+      });
+  Add(suffix, {
+                  .base_name = "dc_att_w",
+                  .shape = {config.model_dim,
+                            layer_config.heads * layer_config.qkv_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate",
+                  .source_names = {"model.decoder.layers.mlp.gating_einsum"},
+                  .axes = {0, 1, 2},
+                  .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate1",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_gate2",
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_lin",
+                  .source_names = {"model.decoder.layers.mlp.down_proj.weight"},
+                  .axes = {0, 1},
+                  .shape = {config.model_dim, layer_config.ff_hidden_dim},
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_sa",
+                  .source_names =
+                      {"model.decoder.layers.pre_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_post_sa",
+                  .source_names =
+                      {"model.decoder.layers.post_self_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_ca",
+                  .source_names =
+                      {"model.decoder.layers.pre_cross_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_post_ca",
+                  .source_names =
+                      {"model.decoder.layers.post_cross_attn_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "d_pre_ff",
+                  .source_names =
+                      {"model.decoder.layers.pre_feedforward_layernorm.weight"},
+                  .axes = {0},
+                  .shape = {config.model_dim},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix,
+      {
+          .base_name = "d_post_ff",
+          .source_names =
+              {"model.decoder.layers.post_feedforward_layernorm.weight"},
+          .axes = {0},
+          .shape = {config.model_dim},
+          .min_size = Type::kBF16,
+      });
+}
+
 void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                                          const LayerConfig& layer_config,
                                          const size_t layer_idx) {
   const std::string suffix = LayerSuffix(layer_idx);
-  Add(suffix, {
-                  .base_name = "key_norm",
-                  .source_names = {"attn/_key_norm/scale"},
-                  .axes = {0},
-                  .shape = {layer_config.qkv_dim},
-                  .min_size = Type::kBF16,
-              });
-  Add(suffix, {
-                  .base_name = "query_norm",
-                  .source_names = {"attn/_query_norm/scale"},
-                  .axes = {0},
-                  .shape = {layer_config.qkv_dim},
-                  .min_size = Type::kBF16,
-              });
+  Add(suffix,
+      {
+          .base_name = "key_norm",
+          .source_names = {"attn/_key_norm/scale", "attn/key_norm/scale"},
+          .axes = {0},
+          .shape = {layer_config.qkv_dim},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "query_norm",
+          .source_names = {"attn/_query_norm/scale", "attn/query_norm/scale"},
+          .axes = {0},
+          .shape = {layer_config.qkv_dim},
+          .min_size = Type::kBF16,
+      });
   Add(suffix, {
                   .base_name = "qkv1_w",
                   .source_names = {"attn/q_einsum/w"},
@@ -303,14 +747,18 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                             config.model_dim},
                   .concat_names = {"qkv_ein", "qkv2_w"},
               });
-  Add(suffix, {
-                  .base_name = "qkv2_w",
-                  .source_names = {"attn/kv_einsum/w"},
-                  .axes = {1, 0, 3, 2},
-                  .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
-                            config.model_dim},
-                  .concat_names = {""},
-              });
+  Add(suffix,
+      {
+          .base_name = "qkv2_w",
+          .source_names = {layer_config.kv_heads == 1
+                               ? "attn/k_einsum/w"
+                               : "attn/kv_einsum/w"},
+          .axes = layer_config.kv_heads == 1 ? std::vector<size_t>{0, 2, 1}
+                                             : std::vector<size_t>{1, 0, 3, 2},
+          .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
+                    config.model_dim},
+          .concat_names = {""},
+      });
   Add(suffix, {
                   .base_name = "q_ein",
                   .source_names = {"attention_block/proj_q/kernel"},
@@ -349,35 +797,6 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
               });
 
   Add(suffix, {
-                  .base_name = "gating_ein",
-                  .source_names = {"mlp/gating_einsum/w", "mlp/gating_einsum",
-                                   "mlp_block/ffw_up/w"},
-                  .axes = {0, layer_config.optimized_gating ? 1u : 2u,
-                           layer_config.optimized_gating ? 2u : 1u},
-                  .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
-              });
-  Add(suffix, {
-                  .base_name = "gating1_w",
-                  .source_names = {"none"},
-                  .axes = {0, layer_config.optimized_gating ? 1u : 2u,
-                           layer_config.optimized_gating ? 2u : 1u},
-                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
-              });
-  Add(suffix, {
-                  .base_name = "gating2_w",
-                  .source_names = {"none"},
-                  .axes = {0, layer_config.optimized_gating ? 1u : 2u,
-                           layer_config.optimized_gating ? 2u : 1u},
-                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
-              });
-  Add(suffix, {
-                  .base_name = "linear_w",
-                  .source_names = {"mlp/linear/w", "mlp/linear",
-                                   "mlp_block/ffw_down/kernel"},
-                  .axes = {1, 0},
-                  .shape = {config.model_dim, layer_config.ff_hidden_dim},
-              });
-  Add(suffix, {
                   .base_name = "pre_att_ns",
                   .source_names = {"pre_attention_norm/scale",
                                    "temporal_pre_norm/scale"},
@@ -408,6 +827,37 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                   .min_size = Type::kBF16,
               });
   Add(suffix, {
+                  .base_name = "skip_scale",
+                  .source_names = {"skip_scale"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  // Per-Layer Embedding (PLE) per-layer tensors.
+  if (layer_config.ple_dim > 0) {
+    Add(suffix,
+        {
+            .base_name = "ple_gate",
+            .source_names = {"per_layer_input_gate/w"},
+            .axes = {1, 0},
+            .shape = {layer_config.ple_dim, config.model_dim},
+        });
+    Add(suffix,
+        {
+            .base_name = "ple_proj",
+            .source_names = {"per_layer_projection/w"},
+            .axes = {1, 0},
+            .shape = {config.model_dim, layer_config.ple_dim},
+        });
+    Add(suffix, {
+                    .base_name = "post_ple_ns",
+                    .source_names = {"post_per_layer_input_norm/scale"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+  }
+  Add(suffix, {
                   .base_name = "ffw_gat_b",
                   .source_names = {"mlp_block/ffw_up/b"},
                   .axes = {0},
@@ -421,6 +871,188 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
                   .shape = {config.model_dim},
                   .min_size = Type::kF32,
               });
+  // MoE layer
+  if (layer_config.IsMoE()) {
+    size_t expert_ff_hidden_dim = layer_config.ff_hidden_dim;
+    if (config.model == Model::GEMMA4_26B_MOE) {
+      expert_ff_hidden_dim = 704;
+    }
+    Add(suffix,
+        {
+            .base_name = "moe_gate_ein",
+            .source_names = {"mlp/gating_einsum/w", "mlp/gating_einsum"},
+            .axes = {0, 1, 2, 3},
+            .shape = {layer_config.NumExperts(), 2, expert_ff_hidden_dim,
+                      config.model_dim},
+            .min_size = Type::kBF16,
+        });
+    Add(suffix, {
+                    .base_name = "moe_linear_w",
+                    .source_names = {"mlp/linear/w", "mlp/linear"},
+                    .axes = {0, 2, 1},
+                    .shape = {layer_config.NumExperts(), config.model_dim,
+                              expert_ff_hidden_dim},
+                    .min_size = Type::kBF16,
+                });
+    Add(suffix, {
+                    .base_name = "post_ffw1_ns",
+                    .source_names = {"post_ffw1_norm/scale", "post_ffw1_norm"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+    Add(suffix, {
+                    .base_name = "post_ffw2_ns",
+                    .source_names = {"post_ffw2_norm/scale", "post_ffw2_norm"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+    Add(suffix, {
+                    .base_name = "pre_ffw2_ns",
+                    .source_names = {"pre_ffw2_norm/scale", "pre_ffw2_norm"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+    for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
+      const std::string moe_suffix = MoESuffix(layer_idx, i);
+      Add(moe_suffix,
+          {
+              .base_name = "gating1_w",
+              .source_names = {"mlp/gating_einsum1/w", "mlp/gating_einsum1"},
+              .axes = {0, 1, 2},
+              .shape = {expert_ff_hidden_dim, config.model_dim},
+          });
+      Add(moe_suffix,
+          {
+              .base_name = "gating2_w",
+              .source_names = {"mlp/gating_einsum2/w", "mlp/gating_einsum2"},
+              .axes = {0, 1, 2},
+              .shape = {expert_ff_hidden_dim, config.model_dim},
+          });
+      Add(moe_suffix, {
+                          .base_name = "linear_w",
+                          .source_names = {"mlp/linear/w", "mlp/linear"},
+                          .axes = {0, 2, 1},
+                          .shape = {config.model_dim, expert_ff_hidden_dim},
+                      });
+    }
+    Add(suffix,
+        {
+            .base_name = "moe_router",
+            .source_names = {"mlp/router_logits/w", "mlp/router_logits"},
+            .axes = {1, 0},
+            .shape = {layer_config.NumExperts(), config.model_dim},
+        });
+    Add(suffix, {
+                    .base_name = "p_expert_sc",
+                    .source_names = {"mlp/per_expert_scale"},
+                    .axes = {0},
+                    .shape = {layer_config.NumExperts()},
+                    .min_size = Type::kBF16,
+                });
+    Add(suffix, {
+                    .base_name = "router_scale",
+                    .source_names = {"mlp/router_scale"},
+                    .axes = {0},
+                    .shape = {config.model_dim},
+                    .min_size = Type::kBF16,
+                });
+  }
+  Add(suffix,
+      {
+          .base_name = "gating_ein",
+          .source_names = {"mlp/gating_einsum/w", "mlp/gating_einsum",
+                           "mlp_block/ffw_up/w", "mlp2/gating_einsum/w"},
+          .axes = {0, layer_config.optimized_gating ? 1u : 2u,
+                   layer_config.optimized_gating ? 2u : 1u},
+          .shape = {2, layer_config.ff_hidden_dim, config.model_dim},
+      });
+  Add(suffix, {
+                  .base_name = "gating1_w",
+                  .source_names = {"none"},
+                  .axes = {0, layer_config.optimized_gating ? 1u : 2u,
+                           layer_config.optimized_gating ? 2u : 1u},
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix, {
+                  .base_name = "gating2_w",
+                  .source_names = {"none"},
+                  .axes = {0, layer_config.optimized_gating ? 1u : 2u,
+                           layer_config.optimized_gating ? 2u : 1u},
+                  .shape = {layer_config.ff_hidden_dim, config.model_dim},
+              });
+  Add(suffix,
+      {
+          .base_name = "gtc_in_min",
+          .source_names = {"mlp/gating_einsum/ClippedEinsum_0/clip_input_min"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "gtc_in_max",
+          .source_names = {"mlp/gating_einsum/ClippedEinsum_0/clip_input_max"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "gtc_out_min",
+          .source_names = {"mlp/gating_einsum/ClippedEinsum_0/clip_output_min"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "gtc_out_max",
+          .source_names = {"mlp/gating_einsum/ClippedEinsum_0/clip_output_max"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "linear_w",
+          .source_names = {"mlp/linear/w", "mlp/linear",
+                           "mlp_block/ffw_down/kernel", "mlp2/linear/w"},
+          .axes = {1, 0},
+          .shape = {config.model_dim, layer_config.ff_hidden_dim},
+      });
+  Add(suffix, {
+                  .base_name = "linc_in_min",
+                  .source_names = {"mlp/linear/ClippedEinsum_0/clip_input_min"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "linc_in_max",
+                  .source_names = {"mlp/linear/ClippedEinsum_0/clip_input_max"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix,
+      {
+          .base_name = "linc_out_min",
+          .source_names = {"mlp/linear/ClippedEinsum_0/clip_output_min"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
+  Add(suffix,
+      {
+          .base_name = "linc_out_max",
+          .source_names = {"mlp/linear/ClippedEinsum_0/clip_output_max"},
+          .axes = {0},
+          .shape = {1},
+          .min_size = Type::kBF16,
+      });
   Add(suffix,
       {
           .base_name = "att_ein",
@@ -431,12 +1063,51 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
           .axes = {0, 2, 1},
           .shape = {layer_config.heads, config.model_dim, layer_config.qkv_dim},
       });
-  Add(suffix,
-      {
-          .base_name = "att_w",
-          .shape = {config.model_dim, layer_config.heads, layer_config.qkv_dim},
-          .cols_take_extra_dims = true,
-      });
+  Add(suffix, {
+                  .base_name = "aoc_in_min",
+                  .source_names =
+                      {"attn/attn_vec_einsum/ClippedEinsum_0/clip_input_min"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "aoc_in_max",
+                  .source_names =
+                      {"attn/attn_vec_einsum/ClippedEinsum_0/clip_input_max"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "aoc_out_min",
+                  .source_names =
+                      {"attn/attn_vec_einsum/ClippedEinsum_0/clip_output_min"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  Add(suffix, {
+                  .base_name = "aoc_out_max",
+                  .source_names =
+                      {"attn/attn_vec_einsum/ClippedEinsum_0/clip_output_max"},
+                  .axes = {0},
+                  .shape = {1},
+                  .min_size = Type::kBF16,
+              });
+  // The direct per-head output projection is not used by V4 MLA (which has
+  // the grouped low-rank wo_a/wo_b pair instead).
+  if (!layer_config.IsV4MLA()) {
+    Add(suffix, {
+                    .base_name = "att_w",
+                    .shape = {config.model_dim, layer_config.heads,
+                              layer_config.IsMLA() ? layer_config.v_head_dim
+                                                   : layer_config.qkv_dim},
+                    .cols_take_extra_dims = true,
+                });
+  }
+
+  AddDeepSeekLayerTensors(config, layer_config, suffix);
 }
 
 TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
@@ -444,10 +1115,32 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
   // in case those are changed without updating this. Better to allocate a bit
   // more than to 1.5-2x the size if too little.
   tensors_.reserve(10 + 32 * config.layer_configs.size() +
-                   24 * config.vit_config.layer_configs.size());
+                   24 * config.vit_config.layer_configs.size() +
+                   8 * config.encoder_layer_configs.size() +
+                   14 * config.decoder_layer_configs.size());
   AddModelTensors(config);
-  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
-    AddLayerTensors(config, config.layer_configs[i], i);
+  if (config.is_encoder_decoder) {
+    AddT5GemmaModelTensors(config);
+    for (size_t i = 0; i < config.encoder_layer_configs.size(); ++i) {
+      AddT5GemmaEncoderLayerTensors(config, config.encoder_layer_configs[i], i);
+    }
+    for (size_t i = 0; i < config.decoder_layer_configs.size(); ++i) {
+      AddT5GemmaDecoderLayerTensors(config, config.decoder_layer_configs[i], i);
+    }
+  }
+  if (!config.is_encoder_decoder) {
+    for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+      AddLayerTensors(config, config.layer_configs[i], i);
+    }
+  }
+  if (config.num_mtp_layers > 0) {
+    // The MTP block is one or more extra layers registered starting at index
+    // `num_layers` (e.g. suffix `_43`, `_44`, `_45` for DSpark), outside the
+    // main stack.
+    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+      AddLayerTensors(config, config.MTPLayerConfig(),
+                      config.layer_configs.size() + i);
+    }
   }
   for (size_t i = 0; i < config.vit_config.layer_configs.size(); ++i) {
     AddImageLayerTensors(config, config.vit_config.layer_configs[i], i);
@@ -456,16 +1149,24 @@ TensorInfoRegistry::TensorInfoRegistry(const ModelConfig& config) {
 
 TensorInfo TensorInfoRegistry::TensorInfoFromSourcePath(const std::string& path,
                                                         int layer_idx) const {
+  const TensorInfo* best_tensor = nullptr;
+  size_t longest_match_len = 0;
   for (const TensorInfo& tensor : tensors_) {
     for (const std::string& source_name : tensor.source_names) {
       // path ends with source_name?
       const size_t pos = path.rfind(source_name);
       if (pos != std::string::npos && path.size() == pos + source_name.size()) {
-        std::string name = tensor.base_name;
-        if (layer_idx >= 0) name += LayerSuffix(static_cast<size_t>(layer_idx));
-        return TensorInfoFromName(name);
+        if (source_name.size() > longest_match_len) {
+          best_tensor = &tensor;
+          longest_match_len = source_name.size();
+        }
       }
     }
+  }
+  if (best_tensor != nullptr) {
+    std::string name = best_tensor->base_name;
+    if (layer_idx >= 0) name += LayerSuffix(static_cast<size_t>(layer_idx));
+    return TensorInfoFromName(name);
   }
   return TensorInfo();
 }

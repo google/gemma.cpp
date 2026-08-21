@@ -42,21 +42,25 @@ namespace gcpp {
 #define HWY_DISABLED_TARGETS (HWY_SCALAR | HWY_ALL_NEON)
 #elif HWY_ARCH_ARM_A64
 // We do not yet use AES (e.g. for random generation), hence NEON is the same
-// as NEON_WITHOUT_AES. Also skip SVE because SVE2_128 and SVE_256 cover most.
-#define GEMMA_DISABLED_TARGETS (HWY_SCALAR | HWY_NEON | HWY_SVE)
+// as NEON_WITHOUT_AES. Also skip SVE except SVE2_128 due to compiler bugs.
+#define GEMMA_DISABLED_TARGETS \
+  (HWY_SCALAR | HWY_NEON | HWY_SVE | HWY_SVE2 | HWY_SVE_256)
 #elif HWY_ARCH_X86
 // Skip anything older than Haswell (2013); use Zen4/SPR for recent CPUs.
 // Although we do not use SPR's F16, Zen4 is only enabled for AMD. We do not
 // yet use any AVX 10.2 features.
 #define GEMMA_DISABLED_TARGETS \
   (HWY_SCALAR | HWY_SSE2 | HWY_SSSE3 | HWY_SSE4 | HWY_AVX10_2)
+#elif HWY_ARCH_WASM
+#define GEMMA_DISABLED_TARGETS HWY_SCALAR
+#elif HWY_ARCH_RISCV
+#define GEMMA_DISABLED_TARGETS HWY_SCALAR
 #endif  // HWY_ARCH_*
 
 #endif  // GEMMA_DISABLED_TARGETS
 
-// Only used in experiments, hence disable in default builds.
 #ifndef GEMMA_ENABLE_NUQ
-#define GEMMA_ENABLE_NUQ 0
+#define GEMMA_ENABLE_NUQ 1
 #endif
 
 // Switching Floating Point: a hybrid 8-bit float representation of bf16/f32
@@ -106,6 +110,20 @@ struct I8Stream {
   }
 
   int8_t i;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 1)
+struct Q4_0Stream {
+  static constexpr size_t kBlockSize = 32;
+  using ScaleT = hwy::bfloat16_t;
+
+  static constexpr size_t PackedEnd(size_t capacity) {
+    const size_t num_blocks = hwy::DivCeil(capacity, kBlockSize);
+    return num_blocks * (sizeof(ScaleT) + kBlockSize / 2);
+  }
+
+  uint8_t byte;
 };
 #pragma pack(pop)
 
@@ -193,6 +211,16 @@ constexpr bool IsF32() {
 }
 
 template <typename Packed>
+constexpr bool IsInt8() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, int8_t>();
+}
+
+template <typename Packed>
+constexpr bool IsInt16() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, int16_t>();
+}
+
+template <typename Packed>
 constexpr bool IsBF16() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, BF16>();
 }
@@ -213,17 +241,38 @@ constexpr bool IsI8Stream() {
 }
 
 template <typename Packed>
+constexpr bool IsQ4_0Stream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>();
+}
+
+template <typename Packed>
 constexpr bool SupportsPointerArithmetic() {
-  return !IsNuqStream<Packed>() && !IsI8Stream<Packed>();
+  return !IsNuqStream<Packed>() && !IsI8Stream<Packed>() && !IsQ4_0Stream<Packed>();
 }
 
 // Tensor types for loading weights. Not all of these are supported weight
-// types, some are only used for `Activations`.
-enum class Type { kUnknown, kF32, kBF16, kSFP, kNUQ, kF64, kU32, kU64, kI8 };
+// types, some are only used for `Activations`. Append-only.
+enum class Type {
+  kUnknown,
+  kF32,
+  kBF16,
+  kSFP,
+  kNUQ,
+  kF64,
+  kU32,
+  kU64,
+  kI8,
+  kU16,
+  kU8,
+  kInt8,
+  kQ4_0,
+};
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
 static constexpr const char* kTypeStrings[] = {
-    "unknown", "f32", "bf16", "sfp", "nuq", "f64", "u32", "u64", "i8"};
+    "unknown", "f32", "bf16", "sfp", "nuq", "f64",
+    "u32",     "u64", "i8",   "u16", "u8",  "int8",
+    "q4_0"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -236,6 +285,10 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(uint32_t),
     8 * sizeof(uint64_t),
     8 * sizeof(I8Stream),
+    8 * sizeof(uint16_t),
+    8 * sizeof(uint8_t),
+    8 * sizeof(int8_t),
+    4 /* Q4_0Stream, actually 4.5 */,
 };
 
 static inline bool EnumValid(Type type) {
@@ -244,7 +297,7 @@ static inline bool EnumValid(Type type) {
 
 // Returns a Type enum for the type of the template parameter.
 template <typename PackedT>
-Type TypeEnum() {
+constexpr Type TypeEnum() {
   using Packed = hwy::RemoveCvRef<PackedT>;
   if constexpr (hwy::IsSame<Packed, float>()) {
     return Type::kF32;
@@ -262,8 +315,15 @@ Type TypeEnum() {
     return Type::kU64;
   } else if constexpr (hwy::IsSame<Packed, I8Stream>()) {
     return Type::kI8;
+  } else if constexpr (hwy::IsSame<Packed, uint16_t>()) {
+    return Type::kU16;
+  } else if constexpr (hwy::IsSame<Packed, uint8_t>()) {
+    return Type::kU8;
+  } else if constexpr (hwy::IsSame<Packed, int8_t>()) {
+    return Type::kInt8;
+  } else if constexpr (hwy::IsSame<Packed, Q4_0Stream>()) {
+    return Type::kQ4_0;
   } else {
-    HWY_DASSERT(false);
     return Type::kUnknown;
   }
 }
@@ -284,7 +344,8 @@ template <typename Packed>
 constexpr bool IsCompressed() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, SfpStream>() ||
          hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>() ||
-         hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>();
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>();
 }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
@@ -297,6 +358,8 @@ constexpr size_t CompressedArrayElements(size_t capacity) {
     return NuqStream::PackedEnd(capacity);
   } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>()) {
     return I8Stream::PackedEnd(capacity);
+  } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>()) {
+    return Q4_0Stream::PackedEnd(capacity);
   } else {
     return capacity;
   }
@@ -310,6 +373,9 @@ constexpr size_t CompressedArrayElements(size_t capacity) {
 // reusing `hwy::Span`.
 template <typename Packed>
 struct PackedSpan {
+  PackedSpan() = default;
+  PackedSpan(Packed* HWY_RESTRICT ptr, size_t num) : ptr(ptr), num(num) {}
+
   // Ensures callers can read or write `num_accessible` elements starting at
   // `packed_ofs`.
   void BoundsCheck(size_t packed_ofs, size_t num_accessible) const {

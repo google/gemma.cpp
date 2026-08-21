@@ -43,12 +43,9 @@ static void TunePool(hwy::PoolWaitMode wait_mode, hwy::ThreadPool& pool) {
   const size_t num_tasks[4] = {HWY_MAX(1, num_workers / 2), num_workers * 1,
                                num_workers * 5, num_workers * 20};
 
-  // Count tasks executed to ensure workers aren't optimized out. One per
-  // cache line to avoid false sharing.
-  const size_t kSizePerLine = HWY_ALIGNMENT / sizeof(size_t);
-
-  std::vector<size_t> counters(num_workers * kSizePerLine);
-  size_t prev_total = 0;  // avoids having to reset counters.
+  // Count tasks executed to ensure workers aren't optimized out.
+  std::vector<uint64_t> counters(num_workers * kU64PerLine);
+  uint64_t prev_total = 0;  // avoids having to reset counters.
 
   hwy::RandomState rng;
   for (size_t rep = 0; rep < 500; ++rep) {
@@ -63,13 +60,13 @@ static void TunePool(hwy::PoolWaitMode wait_mode, hwy::ThreadPool& pool) {
     pool.Run(begin, end, [&](uint64_t task, size_t thread) {
       HWY_ASSERT(begin <= task && task < end);
       HWY_ASSERT(thread < num_workers);
-      counters[thread * kSizePerLine]++;
+      counters[thread * kU64PerLine]++;
     });
 
     // Reduce count and ensure it matches the expected number of tasks.
-    size_t total = 0;
+    uint64_t total = 0;
     for (size_t i = 0; i < num_workers; ++i) {
-      total += counters[i * kSizePerLine];
+      total += counters[i * kU64PerLine];
     }
     const size_t expected = end - begin;
     HWY_ASSERT(total == prev_total + expected);
@@ -100,7 +97,8 @@ ThreadingContext::ThreadingContext(const ThreadingArgs& args)
                BoundedSlice(args.skip_lps, args.max_lps)),
       cache_info(topology),
       allocator(topology, cache_info, args.bind != Tristate::kFalse),
-      pools(topology, allocator, args.max_threads, args.pin) {
+      pools(topology, allocator, args.max_threads, args.pin),
+      tensor_output(args.tensor_output) {
   PROFILER_ZONE("Startup.ThreadingContext autotune");
   TunePools(hwy::PoolWaitMode::kSpin, *this);
   // kBlock is the default, hence set/tune it last.

@@ -51,6 +51,7 @@
   GEMMA_MATMUL_FOR_B(NuqStream)                               \
   GEMMA_MATMUL_FOR_B(SfpStream)                               \
   GEMMA_MATMUL_FOR_B(I8Stream)                                \
+  GEMMA_MATMUL_FOR_B(Q4_0Stream)                              \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */ \
   }  // namespace NAMESPACE
 

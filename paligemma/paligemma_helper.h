@@ -3,7 +3,9 @@
 
 #include <memory>
 #include <string>
+
 #include "evals/benchmark_helper.h"
+#include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
 
 namespace gcpp {
@@ -18,6 +20,7 @@ class PaliGemmaHelper {
  private:
   std::unique_ptr<ImageTokens> image_tokens_;
   GemmaEnv* env_;
+  TimingInfo timing_info_;
 };
 
 }  // namespace gcpp

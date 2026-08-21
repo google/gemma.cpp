@@ -93,7 +93,7 @@ class BoundedTopology {
 
   class Cluster {
    public:
-    Cluster(const LPS& lps);
+    explicit Cluster(const LPS& lps);
     Cluster(const LPS& enabled_lps,
             const std::vector<hwy::Topology::LP>& all_lps,
             const hwy::Topology::Cluster& tcluster);

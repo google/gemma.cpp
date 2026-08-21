@@ -42,6 +42,8 @@
 
 namespace gcpp {
 
+static std::mutex g_mat_owners_mutex;
+
 // Copies att_weights from `attn_vec_einsum_w`.
 void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
                                       const Allocator& allocator) {
@@ -67,28 +69,69 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
+  const MatPadding padding =
+      (att_weights.GetType() == Type::kQ4_0)
+          ? MatPadding::kPacked
+          : MatPadding::kOdd;
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
-    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
+    mat_owners.back().AllocateFor(att_weights, allocator, padding);
   }
 
-  const size_t T_bytes = att_weights.ElementBytes();
-  for (size_t m = 0; m < model_dim; ++m) {
-    uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
-    for (size_t h = 0; h < heads; ++h) {
-      hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
-                     out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+  if (att_weights.GetType() == Type::kQ4_0) {
+    const size_t cols = heads * qkv_dim;
+    const size_t src_row_bytes = Q4_0Stream::PackedEnd(qkv_dim);
+    const size_t dst_row_bytes = Q4_0Stream::PackedEnd(cols);
+    HWY_ASSERT(dst_row_bytes == heads * src_row_bytes);
+
+    uint8_t* dst_ptr = att_weights.RowBytes(0);
+    const uint8_t* src_ptr = attn_vec_einsum_w.RowBytes(0);
+
+    for (size_t m = 0; m < model_dim; ++m) {
+      uint8_t* dst_row = dst_ptr + m * dst_row_bytes;
+      for (size_t h = 0; h < heads; ++h) {
+        size_t src_row_idx = h * model_dim + m;
+        const uint8_t* src_row = src_ptr + src_row_idx * src_row_bytes;
+        hwy::CopyBytes(src_row, dst_row + h * src_row_bytes, src_row_bytes);
+      }
+    }
+  } else {
+    const size_t T_bytes = att_weights.ElementBytes();
+    for (size_t m = 0; m < model_dim; ++m) {
+      uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
+      for (size_t h = 0; h < heads; ++h) {
+        hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
+                       out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+      }
     }
   }
   att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+static void SplitPackedMatrix(MatPtr& parent, size_t split_row, MatPtr& w1,
+                              MatPtr& w2) {
+  const size_t stride = parent.Stride();
+  uint8_t* base_ptr = parent.RowBytes(0);
+  w1.SetPtr(base_ptr, stride);
+
+  size_t split_bytes = 0;
+  if (parent.GetType() == Type::kQ4_0) {
+    split_bytes = Q4_0Stream::PackedEnd(split_row * stride);
+  } else if (parent.GetType() == Type::kNUQ) {
+    split_bytes = NuqStream::PackedEnd(split_row * stride);
+  } else {
+    w2.SetPtr(parent.RowBytes(split_row), stride);
+    return;
+  }
+  w2.SetPtr(base_ptr + split_bytes, stride);
 }
 
 // For FFN. Fast, only updates pointers.
 void LayerWeightsPtrs::SplitW1() {
   // Used for Gemma layers; FFWVit uses different tensors.
   if (layer_config.type == LayerAttentionType::kVit) return;
+  if (layer_config.IsMoE()) return;
 
   // Files have both or neither of w1 and w2.
   HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
@@ -106,9 +149,8 @@ void LayerWeightsPtrs::SplitW1() {
   HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
   HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
 
-  const size_t stride = gating_einsum_w.Stride();
-  gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
-  gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
+  SplitPackedMatrix(gating_einsum_w, ff_hidden_dim, gating_einsum_w1,
+                    gating_einsum_w2);
   gating_einsum_w1.SetType(gating_einsum_w.GetType());
   gating_einsum_w2.SetType(gating_einsum_w.GetType());
   gating_einsum_w1.SetScale(gating_einsum_w.Scale());
@@ -127,12 +169,111 @@ void LayerWeightsPtrs::SplitAttW1() {
   // MHA, and otherwise might not be the same type.
   if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
 
+  // If w2 was loaded from a separate tensor (e.g. attn/k_einsum/w for
+  // single-kv-head models), only w1 needs to be split from the combined
+  // qkv_einsum_w. w2 already has its data.
+  if (qkv_einsum_w2.HasPtr()) {
+    const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
+    HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + qkv_einsum_w2.Rows());
+    HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+    HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
+
+    const size_t stride = qkv_einsum_w.Stride();
+    qkv_einsum_w1.SetPtr(qkv_einsum_w.RowBytes(0), stride);
+    qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
+    qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
+    qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
+    return;
+  }
+
   const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
   const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
   HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
   HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
   HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
   // Cols are the model_dim but we don't have ModelConfig here.
+  HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
+  HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
+
+  SplitPackedMatrix(qkv_einsum_w, w1_rows, qkv_einsum_w1, qkv_einsum_w2);
+  qkv_einsum_w1.SetType(qkv_einsum_w.GetType());
+  qkv_einsum_w2.SetType(qkv_einsum_w.GetType());
+  qkv_einsum_w1.SetScale(qkv_einsum_w.Scale());
+  qkv_einsum_w2.SetScale(qkv_einsum_w.Scale());
+  qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
+}
+
+static void InitAttWeightsGeneric(const LayerConfig& layer_config,
+                                  MatPtr& attn_vec_einsum_w,
+                                  MatPtr& att_weights,
+                                  std::vector<MatOwner>& mat_owners,
+                                  const Allocator& allocator) {
+  HWY_ASSERT(attn_vec_einsum_w.HasPtr() ^ att_weights.HasPtr());
+  if (att_weights.HasPtr() && !attn_vec_einsum_w.HasPtr()) return;
+  HWY_ASSERT(attn_vec_einsum_w.GetType() != Type::kNUQ);
+
+  const size_t model_dim = layer_config.model_dim;
+  const size_t heads = layer_config.heads;
+  const size_t qkv_dim = layer_config.qkv_dim;
+
+  att_weights.SetType(attn_vec_einsum_w.GetType());
+  HWY_ASSERT(att_weights.Rows() == model_dim);
+  HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
+
+  {
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
+    mat_owners.push_back(MatOwner());
+    mat_owners.back().AllocateFor(att_weights, allocator, MatPadding::kOdd);
+  }
+
+  const size_t T_bytes = att_weights.ElementBytes();
+  for (size_t m = 0; m < model_dim; ++m) {
+    uint8_t* HWY_RESTRICT out_row = att_weights.RowBytes(m);
+    for (size_t h = 0; h < heads; ++h) {
+      hwy::CopyBytes(attn_vec_einsum_w.RowBytes(h * model_dim + m),
+                     out_row + h * qkv_dim * T_bytes, qkv_dim * T_bytes);
+    }
+  }
+  att_weights.SetScale(attn_vec_einsum_w.Scale());
+}
+
+static void SplitGateGeneric(const LayerConfig& layer_config,
+                             MatPtr& gating_einsum_w, MatPtr& gating_einsum_w1,
+                             MatPtr& gating_einsum_w2) {
+  HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
+  HWY_ASSERT(gating_einsum_w.HasPtr() ^ gating_einsum_w1.HasPtr());
+  if (gating_einsum_w1.HasPtr() && !gating_einsum_w.HasPtr()) return;
+
+  const size_t ff_hidden_dim = layer_config.ff_hidden_dim;
+  HWY_ASSERT(gating_einsum_w.Rows() == 2 * ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w1.Rows() == ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w2.Rows() == ff_hidden_dim);
+  HWY_ASSERT(gating_einsum_w1.Cols() == gating_einsum_w.Cols());
+  HWY_ASSERT(gating_einsum_w2.Cols() == gating_einsum_w.Cols());
+
+  const size_t stride = gating_einsum_w.Stride();
+  gating_einsum_w1.SetPtr(gating_einsum_w.RowBytes(0), stride);
+  gating_einsum_w2.SetPtr(gating_einsum_w.RowBytes(ff_hidden_dim), stride);
+  gating_einsum_w1.SetType(gating_einsum_w.GetType());
+  gating_einsum_w2.SetType(gating_einsum_w.GetType());
+  gating_einsum_w1.SetScale(gating_einsum_w.Scale());
+  gating_einsum_w2.SetScale(gating_einsum_w.Scale());
+  gating_einsum_w.SetPtr(nullptr, gating_einsum_w.Cols());
+}
+
+static void SplitQKVGeneric(const LayerConfig& layer_config,
+                            MatPtr& qkv_einsum_w, MatPtr& qkv_einsum_w1,
+                            MatPtr& qkv_einsum_w2) {
+  HWY_ASSERT(qkv_einsum_w.HasPtr() ^ qkv_einsum_w1.HasPtr());
+  if (qkv_einsum_w1.HasPtr() && !qkv_einsum_w.HasPtr()) return;
+
+  const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
+  const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
+  HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + w2_rows);
+  HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+  HWY_ASSERT(qkv_einsum_w2.Rows() == w2_rows);
   HWY_ASSERT(qkv_einsum_w1.Cols() == qkv_einsum_w.Cols());
   HWY_ASSERT(qkv_einsum_w2.Cols() == qkv_einsum_w.Cols());
 
@@ -156,8 +297,7 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
   att_weights.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(att_weights, ctx.allocator,
                                   MatPadding::kPacked);
@@ -224,8 +364,7 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
   gating_einsum_w2.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(gating_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
@@ -273,6 +412,41 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
 
   HWY_ASSERT(qkv_einsum_w.GetType() == Type::kI8);
 
+  // If w2 was loaded from a separate tensor (e.g. attn/k_einsum/w for
+  // single-kv-head models), only w1 needs to be split from the combined
+  // qkv_einsum_w. w2 already has its data.
+  if (qkv_einsum_w2.HasPtr()) {
+    const size_t model_dim = qkv_einsum_w.Cols();
+    const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
+    HWY_ASSERT(qkv_einsum_w.Rows() == w1_rows + qkv_einsum_w2.Rows());
+    HWY_ASSERT(qkv_einsum_w1.Rows() == w1_rows);
+    HWY_ASSERT(qkv_einsum_w1.Cols() == model_dim);
+
+    qkv_einsum_w1.SetType(Type::kI8);
+    {
+      std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
+      mat_owners.emplace_back();
+      mat_owners.back().AllocateFor(qkv_einsum_w1, ctx.allocator,
+                                    MatPadding::kPacked);
+    }
+
+    const size_t w1_size = w1_rows * model_dim;
+    hwy::AlignedFreeUniquePtr<float[]> w_tmp =
+        hwy::AllocateAligned<float>(w1_size);
+
+    const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+    HWY_NAMESPACE::DecompressAndZeroPad(df, qkv_einsum_w.Span(), 0, w_tmp.get(),
+                                        w1_size);
+
+    CompressWorkingSet work;
+    HWY_NAMESPACE::Compress(w_tmp.get(), w1_size, work, qkv_einsum_w1.Span(), 0,
+                            ctx);
+
+    qkv_einsum_w1.SetScale(1.0f);
+    qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
+    return;
+  }
+
   const size_t model_dim = qkv_einsum_w.Cols();
   const size_t w1_rows = layer_config.heads * layer_config.qkv_dim;
   const size_t w2_rows = layer_config.kv_heads * 2 * layer_config.qkv_dim;
@@ -286,8 +460,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
   qkv_einsum_w2.SetType(Type::kI8);
 
   {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.emplace_back();
     mat_owners.back().AllocateFor(qkv_einsum_w1, ctx.allocator,
                                   MatPadding::kPacked);
@@ -322,7 +495,8 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
 // Must be called after reading weights via `ForEachTensor`.
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
-void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+void LayerWeightsPtrs::Fixup(Model model,
+                             std::vector<MatOwner>& mat_owners,
                              ThreadingContext& ctx) {
   if (attn_vec_einsum_w.GetType() == Type::kI8) {
     MatPtrT<I8Stream> attn_vec_einsum_w_i8(attn_vec_einsum_w);
@@ -359,59 +533,74 @@ void LayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
     qkv_einsum_w2 = qkv_einsum_w2_i8;
   } else {
     SplitAttW1();
-  }
-}
+    // Interleave K/V heads in qkv_einsum_w2: the exporter writes
+    // [K0..Kn, V0..Vn] but the runtime expects [K0, V0, K1, V1, ...].
+    // TODO(philculliton): either (1) fix the exporter to emit interleaved
+    // layout directly, or (2) replace this model check with a general
+    // structural condition (e.g. !IsMHA() && kv_heads > 1) once we
+    // verify it doesn't regress other multi-kv-head models.
+    // This applies to Gemma 4 global layers; the model check will be expanded.
+    if (model == Model::GEMMA4_26B_MOE &&
+        layer_config.kv_heads == 2 && layer_config.qkv_dim == 512) {
+      const size_t old_stride = qkv_einsum_w2.Stride();
+      const size_t elem_bytes = qkv_einsum_w2.ElementBytes();
+      const size_t old_row_bytes = old_stride * elem_bytes;
+      const size_t kv_heads = layer_config.kv_heads;
+      const size_t total_bytes = qkv_einsum_w2.Rows() * old_row_bytes;
+      hwy::AlignedFreeUniquePtr<uint8_t[]> tmp =
+          hwy::AllocateAligned<uint8_t>(total_bytes);
+      hwy::CopyBytes(qkv_einsum_w2.RowBytes(0), tmp.get(), total_bytes);
 
-static void HWY_MAYBE_UNUSED InitAttWeightsNUQ(
-    const LayerConfig& layer_config, MatPtrT<NuqStream>& attn_vec_einsum_w,
-    MatPtrT<NuqStream>& att_weights, std::vector<MatOwner>& mat_owners,
-    ThreadingContext& ctx) {
-  if (!attn_vec_einsum_w.HasPtr()) return;
-  HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kNUQ);
+      {
+        std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
+        mat_owners.emplace_back();
+        mat_owners.back().AllocateFor(qkv_einsum_w2, ctx.allocator,
+                                      MatPadding::kPacked);
+      }
 
-  HWY_ASSERT(att_weights.HasPtr());
-  att_weights.SetType(Type::kNUQ);
-
-  const size_t model_dim = layer_config.model_dim;
-  const size_t heads = layer_config.heads;
-  const size_t qkv_dim = layer_config.qkv_dim;
-
-  // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
-  hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
-      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
-  hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
-      hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
-
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
-  HWY_NAMESPACE::DecompressAndZeroPad(df, attn_vec_einsum_w.Span(), 0,
-                                      attn_vec_einsum_w_tmp.get(),
-                                      model_dim * heads * qkv_dim);
-
-  for (size_t m = 0; m < model_dim; ++m) {
-    float* HWY_RESTRICT out_row = att_weights_tmp.get() + m * heads * qkv_dim;
-    for (size_t h = 0; h < heads; ++h) {
-      hwy::CopyBytes(
-          attn_vec_einsum_w_tmp.get() + h * model_dim * qkv_dim + m * qkv_dim,
-          out_row + h * qkv_dim, qkv_dim * sizeof(float));
+      const size_t new_row_bytes = qkv_einsum_w2.Cols() * elem_bytes;
+      const size_t qkv_dim = layer_config.qkv_dim;
+      const uint8_t* src_ptr = tmp.get();
+      for (size_t i = 0; i < kv_heads; ++i) {
+        for (size_t row = 0; row < qkv_dim; ++row) {
+          hwy::CopyBytes(src_ptr + (i * qkv_dim + row) * old_row_bytes,
+                         qkv_einsum_w2.RowBytes((2 * i) * qkv_dim + row),
+                         new_row_bytes);
+          hwy::CopyBytes(
+              src_ptr + ((kv_heads + i) * qkv_dim + row) * old_row_bytes,
+              qkv_einsum_w2.RowBytes((2 * i + 1) * qkv_dim + row),
+              new_row_bytes);
+        }
+      }
     }
   }
-
-  CompressWorkingSet work;
-  HWY_NAMESPACE::Compress(att_weights_tmp.get(), model_dim * heads * qkv_dim,
-                          work, att_weights.Span(),
-                          /*packed_ofs=*/0, ctx);
-
-  att_weights.SetScale(attn_vec_einsum_w.Scale());
 }
 
-static void HWY_MAYBE_UNUSED SplitW1NUQ(const LayerConfig& layer_config) {
-  // TODO(janwas): implement.
+void T5GemmaEncoderLayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+                                           ThreadingContext& ctx) {
+  InitAttWeightsGeneric(layer_config, attn_vec_einsum_w, att_weights,
+                        mat_owners, ctx.allocator);
+  SplitGateGeneric(layer_config, gating_einsum_w, gating_einsum_w1,
+                   gating_einsum_w2);
+  SplitQKVGeneric(layer_config, qkv_einsum_w, qkv_einsum_w1, qkv_einsum_w2);
+}
+
+void T5GemmaDecoderLayerWeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
+                                           ThreadingContext& ctx) {
+  InitAttWeightsGeneric(layer_config, self_attn_vec_einsum_w, self_att_weights,
+                        mat_owners, ctx.allocator);
+  InitAttWeightsGeneric(layer_config, cross_attn_vec_einsum_w,
+                        cross_att_weights, mat_owners, ctx.allocator);
+  SplitGateGeneric(layer_config, gating_einsum_w, gating_einsum_w1,
+                   gating_einsum_w2);
+  SplitQKVGeneric(layer_config, self_qkv_einsum_w, self_qkv_einsum_w1,
+                  self_qkv_einsum_w2);
 }
 
 // Zero-initializes only the allocated tensors in `*this`.
 void WeightsPtrs::ZeroInit() {
   ForEachTensor(nullptr, nullptr, [](const TensorArgs& t) {
-    if (!t.mat.HasPtr()) return;
+    if (!t.mat.HasPtr() || t.mat.GetType() == Type::kUnknown) return;
     gcpp::ZeroInit(t.mat);
   });
 }
@@ -431,15 +620,34 @@ void WeightsPtrs::CopyFrom(const WeightsPtrs& other) {
 void WeightsPtrs::Fixup(std::vector<MatOwner>& mat_owners,
                         ThreadingContext& ctx) {
   const size_t cluster_idx = 0;
-  ParallelFor(ParallelismStrategy::kFlat, c_layers.size(), ctx, cluster_idx,
+  if (config_.is_encoder_decoder) {
+    ParallelFor(Parallelism::kFlat, t5gemma_encoder_layers.size(), ctx,
+                cluster_idx, Callers::kFixupWeights,
+                [&](uint64_t layer, size_t /*worker*/) {
+                  t5gemma_encoder_layers[layer].Fixup(mat_owners, ctx);
+                });
+
+    ParallelFor(Parallelism::kFlat, t5gemma_decoder_layers.size(), ctx,
+                cluster_idx, Callers::kFixupWeights,
+                [&](uint64_t layer, size_t /*worker*/) {
+                  t5gemma_decoder_layers[layer].Fixup(mat_owners, ctx);
+                });
+    return;
+  }
+
+  ParallelFor(Parallelism::kFlat, c_layers.size(), ctx, cluster_idx,
               Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
-                GetLayer(layer)->Fixup(mat_owners, ctx);
+                GetLayer(layer)->Fixup(config_.model, mat_owners, ctx);
               });
 
-  ParallelFor(ParallelismStrategy::kFlat, vit_layers.size(), ctx, cluster_idx,
+  ParallelFor(Parallelism::kFlat, vit_layers.size(), ctx, cluster_idx,
               Callers::kFixupWeights, [&](uint64_t layer, size_t /*worker*/) {
-                VitLayer(layer)->Fixup(mat_owners, ctx);
+                VitLayer(layer)->Fixup(config_.model, mat_owners, ctx);
               });
+
+  for (LayerWeightsPtrs& mtp : mtp_layers) {
+    mtp.Fixup(config_.model, mat_owners, ctx);
+  }
 }
 
 std::vector<uint32_t> WeightsPtrs::AddTensorDataToWriter(
@@ -515,6 +723,7 @@ struct TensorToRead {
   // only for kReadBF16
   bool keep_type = false;
   Type prev_type;
+  size_t prev_packed_bytes = 0;
 };
 
 // Allocates multiple in parallel and binds to NUMA nodes.
@@ -527,12 +736,13 @@ static void AllocateAndBindAll(std::vector<TensorToRead>& tensors,
 
   // Allocate in parallel because faulting in large tensors is slow.
   ParallelFor(
-      ParallelismStrategy::kFlat, tensors.size(), ctx, /*cluster_idx=*/0,
+      Parallelism::kFlat, tensors.size(), ctx, /*cluster_idx=*/0,
       Callers::kAllocateAndBindAll, [&](uint64_t task, size_t /*thread*/) {
         TensorToRead& tensor = tensors[task];
         MatPtr& mat = *tensor.mat;
 
         tensor.prev_type = mat.GetType();
+        tensor.prev_packed_bytes = mat.PackedBytes();
         // We only care about MatMul inputs; skip F32 or small tensors.
         if (tensor.prev_type == Type::kF32 || mat.Rows() < 1024) {
           tensor.keep_type = true;
@@ -586,14 +796,18 @@ static void DecompressToBF16(MatPtr& mat,
 static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                           const BlobReader& reader, ThreadingContext& ctx) {
   // Especially TSAN is slow enough to warrant hierarchical parallelism.
-  const ParallelismStrategy strategy = HWY_IS_DEBUG_BUILD
-                                           ? ParallelismStrategy::kHierarchical
-                                           : ParallelismStrategy::kFlat;
-  ParallelFor(strategy, tensors.size(), ctx, /*cluster_idx=*/0,
+  const Parallelism parallelism =
+      HWY_IS_DEBUG_BUILD ? Parallelism::kHierarchical : Parallelism::kFlat;
+  ParallelFor(parallelism, tensors.size(), ctx, /*cluster_idx=*/0,
               Callers::kReadAllToBF16, [&](uint64_t task, size_t thread) {
                 GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToBF16);
                 const TensorToRead& tensor = tensors[task];
                 MatPtr& mat = *tensor.mat;
+                // Validate blob size matches allocated buffer before any read.
+                // MapAll (line ~557) and MakeBatches (line ~645) both assert this;
+                // this path was the only one missing the check.
+                HWY_ASSERT_M(tensor.range.bytes == tensor.prev_packed_bytes,
+                             mat.Name());
 
                 if (tensor.keep_type) {
                   HWY_ASSERT(reader.file().Read(
@@ -619,6 +833,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                     return DecompressToBF16<BF16>(*tensor.mat, buf);
                   case Type::kSFP:
                     return DecompressToBF16<SfpStream>(*tensor.mat, buf);
+                  case Type::kQ4_0:
+                    return DecompressToBF16<Q4_0Stream>(*tensor.mat, buf);
                   default:
                     HWY_ABORT("Unsupported type %s",
                               TypeName(tensor.prev_type));
@@ -664,7 +880,15 @@ static std::vector<IOBatch> MakeBatches(
         row_bytes += mem_stride_bytes;
       }
     }
-    HWY_ASSERT(offset == range.End());
+    if (offset != range.End()) {
+      HWY_ABORT(
+          "MISMATCH tensor %zu '%s': offset=%zu range.End()=%zu "
+          "range.bytes=%zu rows=%zu cols=%zu elem=%zu packed=%d",
+          i, tensors[i].mat->Name(), static_cast<size_t>(offset),
+          static_cast<size_t>(range.End()),
+          static_cast<size_t>(range.bytes), mat.Rows(), mat.Cols(),
+          mat.ElementBytes(), mat.IsPacked());
+    }
   }
 
   HWY_ASSERT(batches.size() >= tensors.size());
@@ -677,7 +901,7 @@ static void ReadBatches(const BlobReader& reader,
                         const std::vector<IOBatch>& batches,
                         ThreadingContext& ctx) {
   // >5x speedup from parallel reads when cached.
-  ParallelFor(ParallelismStrategy::kHierarchical, batches.size(), ctx,
+  ParallelFor(Parallelism::kHierarchical, batches.size(), ctx,
               /*cluster_idx=*/0, Callers::kReadBatches,
               [&](uint64_t task, size_t thread) {
                 GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadBatches);
@@ -740,12 +964,16 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
   std::vector<TensorToRead> tensors;
 
   // Enumerate all weights (negligible cost).
-  ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) {
-    const MatPadding padding = (t.flags & TensorArgs::kPacked)
-                                   ? MatPadding::kPacked
-                                   : MatPadding::kOdd;
+  ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     size_t key_idx;
     if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
+      const bool is_compressed = t.mat.GetType() == Type::kNUQ ||
+                                 t.mat.GetType() == Type::kI8 ||
+                                 t.mat.GetType() == Type::kQ4_0;
+      const MatPadding padding =
+          (is_compressed || (t.flags & TensorArgs::kPacked))
+              ? MatPadding::kPacked
+              : MatPadding::kOdd;
       tensors.push_back(
           {.mat = &t.mat, .range = reader.Range(key_idx), .padding = padding});
       return;

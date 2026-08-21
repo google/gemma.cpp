@@ -20,6 +20,7 @@
 
 #include "gemma/activations.h"
 #include "gemma/configs.h"
+#include "gemma/tensor_stats.h"
 #include "gemma/weights.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
@@ -44,6 +45,12 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
+// Silu(x) = x * sigmoid(x), used by DeepSeek models.
+template <class D, HWY_IF_F32_D(D)>
+HWY_INLINE hn::Vec<D> Silu(D d, hn::Vec<D> v) {
+  return hn::Mul(v, Sigmoid(d, v));
+}
+
 // For use by Vit even if !GEMMA_FUSED_FFN.
 template <typename T1, typename T2>
 void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
@@ -53,16 +60,29 @@ void Activation(ActivationType activation, T1* HWY_RESTRICT c1,
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  // ActivationType::Gelu
-  if (c2 == nullptr) {  // No multiplier, just Gelu.
-    Gelu(c1, count);
+
+  if (c2 == nullptr) {  // No multiplier, just the activation.
+    if (activation == ActivationType::Silu) {
+      DecompressAndCompressInplace(DF(), c1, count,
+                                   [](DF df, VF v)
+                                       HWY_ATTR -> VF { return Silu(df, v); });
+    } else {  // ActivationType::Gelu
+      Gelu(c1, count);
+    }
     return;
   };
-  // Has multiplier, Gelu(c1) * c2.
-  Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
-                                [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
-                                  return hn::Mul(v2, Gelu(df, v1));
-                                });
+  // Has multiplier, act(c1) * c2.
+  if (activation == ActivationType::Silu) {
+    Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
+                                  [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+                                    return hn::Mul(v2, Silu(df, v1));
+                                  });
+  } else {  // ActivationType::Gelu
+    Decompress1AndCompressInplace(DF(), c1, count, c2, /*p1_ofs=*/0,
+                                  [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+                                    return hn::Mul(v2, Gelu(df, v1));
+                                  });
+  }
 }
 
 // No C2 multiplier - used by Vit.
@@ -70,7 +90,7 @@ template <class Mat>
 void ActivationBatched(
     ActivationType activation, Mat& c1, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
+    Parallelism parallelism = Parallelism::kFlat) {
   using T = typename Mat::T;
   ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
               Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
@@ -96,14 +116,27 @@ static inline void Activation(ActivationType activation, const RowPtrsBF C1,
   namespace hn = hwy::HWY_NAMESPACE;
   using DF = hn::ScalableTag<float>;
   using VF = hn::Vec<DF>;
-  // ActivationType::Gelu
-  // Gated: Gelu(c1) * c2.
-  for (size_t ir = 0; ir < range_r.Num(); ++ir) {
-    Decompress1AndCompressInplace(
-        DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols, C2.Row(ir),
-        /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
-          return hn::Mul(v2, Gelu(df, v1));
-        });
+
+  // Gated: activation(c1) * c2.
+  // A lambda crashes clang in SVE builds, hence duplicate the loop.
+  if (activation == ActivationType::Silu) {
+    for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+      Decompress1AndCompressInplace(
+          DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols,
+          C2.Row(ir),
+          /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+            return hn::Mul(v2, Silu(df, v1));
+          });
+    }
+  } else {  // ActivationType::Gelu
+    for (size_t ir = 0; ir < range_r.Num(); ++ir) {
+      Decompress1AndCompressInplace(
+          DF(), C1.Row(range_r.begin() + ir) + range_c.begin(), cols,
+          C2.Row(ir),
+          /*p1_ofs*/ 0, [](DF df, VF v1, VF v2) HWY_ATTR -> VF {
+            return hn::Mul(v2, Gelu(df, v1));
+          });
+    }
   }
 }
 
@@ -115,7 +148,7 @@ template <class Mat1, class Mat2>
 HWY_NOINLINE void ActivationBatched(
     ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
     size_t cluster_idx = 0,
-    ParallelismStrategy parallelism = ParallelismStrategy::kFlat) {
+    Parallelism parallelism = Parallelism::kFlat) {
   HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
@@ -151,12 +184,38 @@ void PostNorm(PostNormType post_norm, const MatPtr& weights,
   }
 }
 
+template <typename T>
+static inline void ClampInplace(const ClampRange& range, MatPtrT<T>& inout) {
+  if (!range.IsActive()) return;
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+
+  const VF vlo = hn::Set(DF(), range.min);
+  const VF vhi = hn::Set(DF(), range.max);
+  const VF* HWY_RESTRICT plo = &vlo;
+  const VF* HWY_RESTRICT phi = &vhi;
+
+  for (size_t r = 0; r < inout.Rows(); ++r) {
+    DecompressAndCompressInplace(
+        DF(), inout.Row(r), inout.Cols(),
+        [plo, phi](DF /*df*/, VF v) HWY_ATTR -> VF {
+          return hn::Clamp(v, *plo, *phi);
+        });
+  }
+}
+
 static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                             Activations& activations, MatMulEnv& env) {
   GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& layer_config = layer.layer_config;
+  activations.C1.OverrideCols(layer_config.ff_hidden_dim);
+  activations.C2.OverrideCols(layer_config.ff_hidden_dim);
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
+
+  activations.s_ffw_in.Notify(layer.layer_idx, activations.pre_ffw_rms_out,
+                              env.ctx);
 
 #if GEMMA_FUSED_FFN
   const auto fused = [&](RowPtrsBF C1, IndexRange range_r, IndexRange range_c,
@@ -179,8 +238,33 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
                     env.ctx);
 #endif
 
+  activations.s_ffw_hidden.Notify(layer.layer_idx, activations.C1, env.ctx);
+
   // Hidden layer -> output layer.
   CallMatMul(activations.C1, layer.linear_w, nullptr, env, activations.ffw_out);
+
+  activations.s_ffw_out.Notify(layer.layer_idx, activations.ffw_out, env.ctx);
+}
+
+// Sums encoded (`att_out`) over num_heads (`layer_config.heads`) and
+// head_dim (`qkv_dim`) into output (`layer_out`).
+static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
+                                AttentionActivationsPtrs& activations,
+                                MatMulEnv& env) {
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenAttentionSumHeads);
+  const LayerConfig& layer_config = layer.layer_config;
+  (void)layer_config;  // For HWY_DASSERT
+    // att_weights and att_out are concatenated heads, each of length
+  // layer_config.qkv_dim. Thus the [num_interleaved,
+  // layer_config.model_dim] matmul output is the sum over heads. Compare
+  // gemma/modules.py: attn_output = self.attn_vec_einsum('BTNH,NHD->BTD',
+  // encoded)
+  HWY_DASSERT(layer_config.model_dim != 0 && layer_config.heads != 0 &&
+              layer_config.qkv_dim != 0);
+
+  CallMatMul(activations.att_out, layer.att_weights, /*add=*/nullptr, env,
+             activations.att_sums);
+
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)

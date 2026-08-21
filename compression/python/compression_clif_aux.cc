@@ -45,6 +45,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#include "tokenizer/bpe_tokenizer.h"
 
 // SIMD code, compiled once per target.
 HWY_BEFORE_NAMESPACE();
@@ -111,6 +112,9 @@ class SbsWriterImpl : public ISbsWriter {
       case Type::kI8:
         InsertT<I8Stream>(name, weights, tensor_info);
         break;
+      case Type::kQ4_0:
+        InsertT<Q4_0Stream>(name, weights, tensor_info);
+        break;
       default:
         HWY_ABORT("Unsupported destination (compressed) type %s",
                   TypeName(type));
@@ -118,11 +122,18 @@ class SbsWriterImpl : public ISbsWriter {
   }
 
   void Write(const ModelConfig& config,
-             const std::string& tokenizer_path) override {
-    const GemmaTokenizer tokenizer(
-        tokenizer_path.empty() ? kMockTokenizer
-                               : ReadFileToString(Path(tokenizer_path)));
-    WriteSingleFile(config, tokenizer, serialized_mat_ptrs_, writer_);
+             const std::string& tokenizer_blob) override {
+    WriteSingleFile(config, BuildTokenizer(config, tokenizer_blob),
+                    serialized_mat_ptrs_, writer_);
+  }
+
+  static GemmaTokenizer BuildTokenizer(const ModelConfig& config,
+                                       const std::string& tokenizer_blob) {
+    if (tokenizer_blob.empty()) return GemmaTokenizer(kMockTokenizer);
+    if (config.tokenizer_kind == TokenizerKind::kHfBpe) {
+      return GemmaTokenizer(CreateBpeTokenizer(tokenizer_blob));
+    }
+    return GemmaTokenizer(tokenizer_blob);
   }
 
   ThreadingContext ctx_;

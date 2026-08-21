@@ -131,7 +131,7 @@ class BlobWriter {
   std::vector<size_t> blob_sizes_;
   ThreadingContext& ctx_;
   // Current offset in the file used for writing.
-  int64_t curr_offset_ = 0;
+  uint64_t curr_offset_ = 0;
 };
 
 }  // namespace gcpp

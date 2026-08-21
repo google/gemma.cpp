@@ -23,6 +23,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <cstring>  // strcmp
+#include <optional>
 #include <string>
 #include <system_error>  // std::errc  // NOLINT
 
@@ -33,6 +34,7 @@
 #include "io/blob_store.h"
 #include "io/fields.h"
 #include "io/io.h"  // Path
+#include "tokenizer/bpe_tokenizer.h"
 #include "util/basics.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
@@ -57,12 +59,8 @@ static void WarnIfExtra(const IFields::ReadResult& result, const char* name) {
   }
 }
 
-// Returns the serialized tokenizer (std::string is required for proto).
-// Reads it from a blob or from a separate file if pre-2025.
-static std::string ReadTokenizer(BlobReader& reader,
-                                 const Path& tokenizer_path) {
-  PROFILER_ZONE("Startup.ReadTokenizer");
-
+// Reads the raw `tokenizer` blob bytes, or empty if absent.
+static std::string ReadTokenizerBlob(BlobReader& reader) {
   std::string tokenizer;
   // Check prevents `CallWithSpan` from printing a warning.
   if (reader.Find(kTokenizerName)) {
@@ -75,27 +73,51 @@ static std::string ReadTokenizer(BlobReader& reader,
           "instead specify a tokenizer file via --tokenizer.");
     }
   }
+  return tokenizer;
+}
 
-  // Read actual tokenizer from blob.
-  if (!tokenizer.empty() && tokenizer != kMockTokenizer) {
+// Constructs the tokenizer.
+static GemmaTokenizer ReadTokenizer(BlobReader& reader,
+                                    const Path& tokenizer_path,
+                                    const ModelConfig& config) {
+  PROFILER_ZONE("Startup.ReadTokenizer");
+
+  if (config.tokenizer_kind == TokenizerKind::kHfBpe) {
+    const std::string blob = ReadTokenizerBlob(reader);
+    if (!blob.empty() && blob != kMockTokenizer) {
+      return GemmaTokenizer(CreateBpeTokenizer(blob));
+    }
+    if (!tokenizer_path.Empty()) {
+      HWY_WARN("No separate tokenizer file is supported for HF BPE models. "
+               "Tests may continue but inference will fail. %s.",
+               tokenizer_path.path.c_str());
+      return GemmaTokenizer(kMockTokenizer);
+    }
+    HWY_WARN("BlobStore has no HuggingFace BPE tokenizer specified. Tests may "
+             "continue but inference will fail.");
+    return GemmaTokenizer(kMockTokenizer);
+  }
+
+  // SentencePiece: the blob is a SentencePiece proto.
+  const std::string blob = ReadTokenizerBlob(reader);
+  if (!blob.empty() && blob != kMockTokenizer) {
     if (!tokenizer_path.Empty()) {
       HWY_WARN("--weights has tokenizer but overriding with %s.",
                tokenizer_path.path.c_str());
-      return ReadFileToString(tokenizer_path);
+      return GemmaTokenizer(ReadFileToString(tokenizer_path));
     }
-
-    return tokenizer;
+    return GemmaTokenizer(blob);
   }
 
   // No blob but user specified path to file: read it or abort.
   if (!tokenizer_path.Empty()) {
-    return ReadFileToString(tokenizer_path);
+    return GemmaTokenizer(ReadFileToString(tokenizer_path));
   }
 
   HWY_WARN(
       "BlobStore does not contain a tokenizer and no --tokenizer was "
       "specified. Tests may continue but inference will fail.");
-  return kMockTokenizer;
+  return GemmaTokenizer(kMockTokenizer);
 }
 
 using KeyVec = std::vector<std::string>;
@@ -114,6 +136,8 @@ class TypePrefix {
         return Type::kNUQ;
       case 'I':
         return Type::kI8;
+      case '4':
+        return Type::kQ4_0;
       default:
         // The other types were not written to pre-2025 files, hence no need to
         // encode and check for them here.
@@ -221,9 +245,14 @@ static size_t DeduceNumLayers(const KeyVec& keys) {
 // This works with or without type prefixes because it searches for substrings.
 static int DeduceLayerTypes(const BlobReader& reader) {
   int layer_types = 0;
+  bool has_key_norm = false;
+  bool has_query_norm = false;
+  bool has_t5gemma_encoder = false;
+  bool has_t5gemma_decoder = false;
   for (size_t key_idx = 0; key_idx < reader.Keys().size(); ++key_idx) {
     const std::string& key = reader.Keys()[key_idx];
-    if (key.find("qkv_ein_w") != std::string::npos) {  // NOLINT
+    if (key.find("qkv_ein_w") != std::string::npos ||  // NOLINT
+        key.find("vit_qkv") != std::string::npos) {    // NOLINT
       layer_types |= kDeducedViT;
     }
     if (key.find("img_pos_emb") != std::string::npos) {  // NOLINT
@@ -232,6 +261,29 @@ static int DeduceLayerTypes(const BlobReader& reader) {
         layer_types |= kDeduced448;
       }
     }
+    if (key.find("key_norm") != std::string::npos) {  // NOLINT
+      has_key_norm = true;
+    }
+    if (key.find("query_norm") != std::string::npos) {  // NOLINT
+      has_query_norm = true;
+    }
+    if (key.find("moe_router") != std::string::npos) {  // NOLINT
+      layer_types |= kDeducedMoE;
+    }
+    if (key.find("enc_embedding") != std::string::npos ||  // NOLINT
+        key.find("e_qkv_") != std::string::npos) {         // NOLINT
+      has_t5gemma_encoder = true;
+    }
+    if (key.find("dec_embedding") != std::string::npos ||  // NOLINT
+        key.find("d_qkv_") != std::string::npos) {         // NOLINT
+      has_t5gemma_decoder = true;
+    }
+  }
+  if (has_key_norm && has_query_norm) {
+    layer_types |= kDeducedKqNorm;
+  }
+  if (has_t5gemma_encoder && has_t5gemma_decoder) {
+    layer_types |= kDeducedT5Gemma;
   }
   return layer_types;
 }
@@ -247,23 +299,36 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
     type_prefix.PrintTypeBytes();
   }
 
-  // Always deduce so we can verify it against the config we read.
-  const size_t layers = DeduceNumLayers(reader.Keys());
-  const int layer_types = DeduceLayerTypes(reader);
-  const Model deduced_model =
-      DeduceModel(reader.blob_path(), layers, layer_types);
-
   ModelConfig config;
   // Check first to prevent `CallWithSpan` from printing a warning.
-  if (reader.Find(kConfigName)) {
+  const bool has_config = reader.Find(kConfigName);
+  if (has_config) {
     HWY_ASSERT(reader.CallWithSpan<uint32_t>(
         kConfigName, [&config](const SerializedSpan serialized) {
           const IFields::ReadResult result = config.Read(serialized, 0);
           WarnIfExtra(result, kConfigName);
           HWY_ASSERT_M(result.pos != 0, "Error deserializing config");
         }));
-
-    HWY_ASSERT(config.model != Model::UNKNOWN);
+    const PromptWrapping expected_wrapping = ChooseWrapping(config.model);
+    if (IsVlmWrapping(expected_wrapping)) {
+      if (config.wrapping != expected_wrapping) {
+        HWY_WARN("Overriding config.wrapping=%d with expected %d for model %s",
+                 static_cast<int>(config.wrapping),
+                 static_cast<int>(expected_wrapping),
+                 ModelPrefix(config.model));
+        config.wrapping = expected_wrapping;
+      }
+    }
+    // KV sharing is supported, do not force -1.
+  }
+  // Optionally deduce so we can verify it against the config we read.
+  std::optional<Model> deduced_model;
+  if (!has_config || config.model != Model::CUSTOM) {
+    const size_t layers = DeduceNumLayers(reader.Keys());
+    const int layer_types = DeduceLayerTypes(reader);
+    deduced_model = DeduceModel(reader.blob_path(), layers, layer_types);
+  }
+  if (has_config) {
     HWY_ASSERT(config.wrapping != PromptWrapping::kSentinel);
     HWY_ASSERT(config.weight != Type::kUnknown);
     for (const LayerConfig& layer_config : config.layer_configs) {
@@ -274,18 +339,26 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
 
     // We trust the deserialized config, but checking helps to validate the
     // deduction, which we rely on below for pre-2025 files.
-    if (config.model != deduced_model) {
+    if (deduced_model.has_value() && config.model != *deduced_model) {
       const std::string suffix = WrappingSuffix(config.wrapping);
       HWY_WARN("Detected model %s does not match config %s.",
-               (std::string(ModelPrefix(deduced_model)) + suffix).c_str(),
+               (std::string(ModelPrefix(*deduced_model)) + suffix).c_str(),
                (std::string(ModelPrefix(config.model)) + suffix).c_str());
+    }
+    for (const std::string& key : reader.Keys()) {
+      if (key.find("mtp_main_proj") != std::string::npos ||
+          key.find("mtp.0.main_proj") != std::string::npos) {
+        config.num_mtp_layers = 3;
+        break;
+      }
     }
     return config;
   }
 
   // Pre-2025 format: no config, rely on deduction plus `wrapping_override`.
-  return ModelConfig(deduced_model, deduced_weight,
-                     ChooseWrapping(deduced_model, wrapping_override));
+  HWY_ASSERT(deduced_model.has_value());
+  return ModelConfig(*deduced_model, deduced_weight,
+                     ChooseWrapping(*deduced_model, wrapping_override));
 }
 
 static std::vector<float> ReadScales(BlobReader& reader,
@@ -376,9 +449,9 @@ void ModelStore::CreateMatPtrs(BlobReader& reader) {
 }
 
 ModelStore::ModelStore(BlobReader& reader, const Path& tokenizer_path,
-                         Tristate wrapping)
+                       Tristate wrapping)
     : config_(ReadOrDeduceConfig(reader, wrapping)),
-      tokenizer_(ReadTokenizer(reader, tokenizer_path)) {
+      tokenizer_(ReadTokenizer(reader, tokenizer_path, config_)) {
   if (!ReadMatPtrs(reader)) {  // Pre-2025 format.
     CreateMatPtrs(reader);
     scales_ = ReadScales(reader, config_);

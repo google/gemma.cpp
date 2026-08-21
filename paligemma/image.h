@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "hwy/aligned_allocator.h"  // Span
+#include "hwy/base.h"               // Divisor
 
 namespace gcpp {
 
@@ -40,15 +41,18 @@ class Image {
   // Resizes to width x height (nearest-neighbor for now, bilinear or antialias
   // would be better).
   void Resize(int width, int height);
+  // Resizes to width x height using bilinear interpolation.
+  void ResizeBilinear(int width, int height);
   // Writes the file as plain floats in binary. Useful to e.g. load in a colab.
   bool WriteBinary(const std::string& filename) const;
   // Stores the patch for the given patch number in `patch`.
   // Patches are numbered in usual raster-order. E.g. for an image of size
-  // 224 x 224, there are 16 x 16 = 256 patches.
-  // `patch` should have space for at least 14 * 14 * 3 = 588 floats.
+  // 224 x 224 and patch_dim = 14, there are 16 x 16 = 256 patches.
+  // `patch` should have space for at least patch_dim * patch_dim * 3.
   // Requires that Normalize() has been called and that the image width and
-  // height are multiples of 14.
-  void GetPatch(size_t patch_num, float* patch) const;
+  // height are multiples of patch_dim.
+  void GetPatch(size_t patch_num, const hwy::Divisor& div_patch_dim,
+                float* patch) const;
 
   float *data() { return data_.data(); }
   const float *data() const { return data_.data(); }
