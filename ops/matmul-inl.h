@@ -395,6 +395,9 @@ class MMDecompress {
 // Stateless, wraps member functions. Contains the innermost 2-4 loops.
 class MMKernel {
  public:
+  // Type of the `A` operand, see `MMLoops::Dispatch`.
+  using AView = StridedViewBF;
+
   // Loop over NC/MC/KC, called from the outer loops. The MOMMS B3A2C0 reads
   // `mc x kc` of A, `nc x kc` of B, and updates the `mc x nc` `C_MC_NC`.
   // `CView` is either `RowPtrs<TC>` or `StridedView<TC>`.
@@ -1217,9 +1220,12 @@ class MMLoops {
  public:
   // Called from `MatMul` from two places: either with the next autotune config,
   // or with the best config. `B2` is null unless called from `TwoMatMul`.
-  template <typename TB, typename TC>
-  static HWY_NOINLINE void Dispatch(const StridedViewBF A, const MatPtrT<TB>& B,
-                                    const MatPtrT<TB>* B2, RowPtrs<TC> C,
+  // `Kernel` is `MMKernel` (BF16) or `MMI8Kernel` (int8); it defines the type
+  // of `A` and, with `BT`, how a tile is computed. The loops themselves only
+  // partition the work, hence they are shared between kernels.
+  template <class Kernel, typename BT, typename TC>
+  static HWY_NOINLINE void Dispatch(const typename Kernel::AView A, const BT& B,
+                                    const BT* B2, RowPtrs<TC> C,
                                     const MMArgs& args) {
     GCPP_ZONE(args.env.ctx, args.env.ctx.Worker(args.options.cluster_idx),
               Zones::kMMDispatch);
@@ -1227,7 +1233,7 @@ class MMLoops {
     DispatchParallelism(
         args.options.parallelism, [&](const auto& parallel) HWY_ATTR {
           DispatchOrder(args.order, [&](const auto& order) HWY_ATTR {
-            Loop(order, parallel, A, B, B2, C, args);
+            Loop<Kernel>(order, parallel, A, B, B2, C, args);
           });
         });
   }
@@ -1240,10 +1246,10 @@ class MMLoops {
   }
 
   // Single M and K ranges, parallel N.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
@@ -1258,14 +1264,14 @@ class MMLoops {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
 
-          MMKernel::B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(),
+          Kernel::B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(),
                            C.View(0, range_nc.begin(), range_nc.Num()));
 
           const StridedViewBF C2 = args.env.C_tiles.C(
               Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
           if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+            Kernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
                              MMSetC(), C2);
           }
 
@@ -1276,10 +1282,10 @@ class MMLoops {
   }
 
   // Single M range, parallel N, sequential K. Sets C, then accumulates.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_K, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_K);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
@@ -1291,7 +1297,7 @@ class MMLoops {
                   [&](const IndexRange& range_nc, size_t worker) HWY_ATTR {
                     MMZone mm_zone;
                     mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-                    MMKernel::ForeachKC(
+                    Kernel::ForeachKC(
                         A, B, range_mc, args.ranges_kc, range_nc, args,
                         C.View(0, range_nc.begin(), range_nc.Num()));
 
@@ -1299,7 +1305,7 @@ class MMLoops {
                         Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
                     if (B2 != nullptr) {
-                      MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
+                      Kernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
                                           range_nc, args, C2);
                     }
 
@@ -1312,10 +1318,10 @@ class MMLoops {
 
   // Parallel loops over mc/nc blocks of M/range_n, single K.
   // Fills `mc x nc` sections of C.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_MT, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
@@ -1327,7 +1333,7 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::B3A2C0(
+          Kernel::B3A2C0(
               A, B, range_mc, range_kc, range_nc, args, MMSetC(),
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
@@ -1335,7 +1341,7 @@ class MMLoops {
               Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
           if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+            Kernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
                              MMSetC(), C2);
           }
           if constexpr (IsBF16<TC>()) {
@@ -1346,10 +1352,10 @@ class MMLoops {
 
   // Parallel loops over mc/nc blocks of M/range_n, sequential K.
   // Accumulates into `mc x nc` sections of `C`.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderNT_MT_K, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT_K);
 
@@ -1359,7 +1365,7 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::ForeachKC(
+          Kernel::ForeachKC(
               A, B, range_mc, args.ranges_kc, range_nc, args,
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
@@ -1367,7 +1373,7 @@ class MMLoops {
               Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
           if (B2 != nullptr) {
-            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+            Kernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
                                 args, C2);
           }
 
@@ -1378,10 +1384,10 @@ class MMLoops {
   }
 
   // Parallel loops over mc/nc blocks of M/range_n via SFC, single K.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderSFC, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
@@ -1393,7 +1399,7 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::B3A2C0(
+          Kernel::B3A2C0(
               A, B, range_mc, range_kc, range_nc, args, MMSetC(),
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
@@ -1401,7 +1407,7 @@ class MMLoops {
               Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
           if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+            Kernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
                              MMSetC(), C2);
           }
           if constexpr (IsBF16<TC>()) {
@@ -1411,10 +1417,10 @@ class MMLoops {
   }
 
   // Parallel loops over mc/nc blocks of M/range_n via SFC, sequential K.
-  template <typename TB, typename TC, class Parallel>
+  template <class Kernel, typename BT, typename TC, class Parallel>
   static HWY_INLINE void Loop(MMOrderSFC_K, Parallel parallel,
-                              const StridedViewBF A, const MatPtrT<TB>& B,
-                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const typename Kernel::AView A, const BT& B,
+                              const BT* B2, RowPtrs<TC> C,
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC_K);
 
@@ -1424,7 +1430,7 @@ class MMLoops {
             size_t worker) HWY_ATTR {
           MMZone mm_zone;
           mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
-          MMKernel::ForeachKC(
+          Kernel::ForeachKC(
               A, B, range_mc, args.ranges_kc, range_nc, args,
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
@@ -1432,7 +1438,7 @@ class MMLoops {
               Extents2D(range_mc.Num(), range_nc.Num()), worker);
 
           if (B2 != nullptr) {
-            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+            Kernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
                                 args, C2);
           }
 
@@ -1550,7 +1556,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   if (HWY_LIKELY(tuner.Best())) {
     const MMArgs args(env, M, K, N, A.Scale(), add, options, tuner,
                       *tuner.Best());
-    MMLoops::Dispatch(A_view, B, B2, C_rows, args);
+    MMLoops::Dispatch<MMKernel>(A_view, B, B2, C_rows, args);
     return &per_key;
   }
 
@@ -1570,7 +1576,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const MMArgs args(env, M, K, N, A.Scale(), add, options, tuner, cfg);
 
   const uint64_t t0 = hwy::timer::Start();
-  MMLoops::Dispatch(A_view, B, B2, C_rows, args);
+  MMLoops::Dispatch<MMKernel>(A_view, B, B2, C_rows, args);
   MMImpl::NotifyAutotuneResult(env, M, K, N, num_B, t0, tuner, cfg);
 
   return &per_key;
@@ -1610,7 +1616,7 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
     // Only A scale - B1/B2 may differ, and are passed separately.
     const MMArgs args(env, M, K, N, A.Scale(),
                       /*add=*/nullptr, options, tuner, *tuner.Best());
-    MMLoops::Dispatch(A_view, B1, &B2, C_rows, args);
+    MMLoops::Dispatch<MMKernel>(A_view, B1, &B2, C_rows, args);
     return &per_key;
   }
 
@@ -1634,7 +1640,7 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
                     cfg);
 
   const uint64_t t0 = hwy::timer::Start();
-  MMLoops::Dispatch(A_view, B1, &B2, C_rows, args);
+  MMLoops::Dispatch<MMKernel>(A_view, B1, &B2, C_rows, args);
   MMImpl::NotifyAutotuneResult(env, M, K, N, num_B, t0, tuner, cfg);
 
   return &per_key;

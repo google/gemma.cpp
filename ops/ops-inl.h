@@ -53,6 +53,7 @@
 
 #include "compression/compress-inl.h"
 #include "ops/dot-inl.h"
+#include "ops/matmul_i8_model-inl.h"
 #include "ops/matmul_static.h"  // includes highway.h
 #include "ops/sum-inl.h"
 #include "hwy/contrib/algo/transform-inl.h"
@@ -72,6 +73,11 @@ MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
                      const float* HWY_RESTRICT add, MatMulEnv& env,
                      MatPtrT<TC>& C, const MMOptions& options = MMOptions()) {
   return CallUpcasted(&B, [&](const auto* B_t) {
+    // Experiment: route through the W8A8 kernel if enabled for this tensor.
+    // Returns nullptr when disabled or ineligible, see `matmul_i8_model-inl.h`.
+    if (MMPerKey* per_key = MaybeMatMulI8(A, *B_t, add, env, C, options)) {
+      return per_key;
+    }
     return MatMulStatic(A, *B_t, add, env, C, options);
   });
 }
@@ -79,6 +85,8 @@ MMPerKey* CallMatMul(const MatPtrT<TA>& A, const MatPtr& B,
 static inline void CallTwoMatMul(const MatPtrT<BF16>& A, const MatPtr& B1,
                                  const MatPtr& B2, MatMulEnv& env,
                                  MatPtrT<BF16>& C, const MMOptions& options) {
+  // Experiment, see `matmul_i8_model-inl.h`; nullptr means not enabled here.
+  if (MaybeTwoMatMulI8(A, B1, B2, env, C, options) != nullptr) return;
   return CallUpcastedSame(&B1, &B2, [&](const auto* B1_t, const auto* B2_t) {
     return TwoMatMulStatic(A, *B1_t, *B2_t, env, C, options);
   });

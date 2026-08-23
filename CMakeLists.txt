@@ -445,6 +445,27 @@ endif()  # GEMMA_ENABLE_TESTS
 
 ## Tools
 
+# Standalone W8A8 vs BF16 MatMul benchmark (no gtest). The _biased variant
+# forces the encoding x86 uses, to show what the bias correction costs.
+add_executable(bench_matmul_i8 ops/bench_matmul_i8.cc)
+target_link_libraries(bench_matmul_i8 libgemma hwy hwy_contrib)
+
+add_executable(bench_matmul_i8_biased ops/bench_matmul_i8.cc)
+target_compile_definitions(bench_matmul_i8_biased PRIVATE
+                           GEMMA_MM_I8_FORCE_BIASED_B=1)
+target_link_libraries(bench_matmul_i8_biased libgemma hwy hwy_contrib)
+
+# W8A8 correctness, built once per A encoding so that the x86 biased-u8 path
+# is covered on non-x86 hosts as well.
+add_executable(matmul_i8_test ops/matmul_i8_test.cc)
+target_compile_definitions(matmul_i8_test PRIVATE GEMMA_MM_I8_FORCE_BIASED_B=0)
+target_link_libraries(matmul_i8_test libgemma hwy hwy_contrib)
+
+add_executable(matmul_i8_biased_test ops/matmul_i8_test.cc)
+target_compile_definitions(matmul_i8_biased_test PRIVATE
+                           GEMMA_MM_I8_FORCE_BIASED_B=1)
+target_link_libraries(matmul_i8_biased_test libgemma hwy hwy_contrib)
+
 add_executable(migrate_weights io/migrate_weights.cc)
 target_link_libraries(migrate_weights libgemma hwy hwy_contrib)
 
