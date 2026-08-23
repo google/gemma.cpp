@@ -206,6 +206,7 @@ set(SOURCES
   gemma/vit.h
   gemma/weights.cc
   gemma/weights.h
+  gemma/weights_internal.h
   io/blob_store.cc
   io/blob_store.h
   io/fields.cc
@@ -383,6 +384,7 @@ set(GEMMA_TEST_FILES
   deepseek/deepseek_test.cc
   gemma/gemma_args_test.cc
   gemma/tensor_info_test.cc
+  gemma/weights_test.cc
   io/blob_store_test.cc
   io/fields_test.cc
   ops/bench_matmul.cc
