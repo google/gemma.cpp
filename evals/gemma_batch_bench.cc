@@ -36,15 +36,11 @@ GemmaEnv* s_env = nullptr;
 
 class GemmaBatchBench : public ::testing::Test {
  protected:
-  std::vector<std::string> BatchGemmaReply(
+  QueryResultAndMetrics BatchGemmaReplyWithMetrics(
       const std::vector<std::string>& inputs) {
     s_env->MutableConfig().temperature = 0.0f;  // deterministic
     s_env->MutableConfig().verbosity = 2;
-    std::vector<std::string> replies;
-    for (const QueryResult& result : s_env->BatchQueryModel(inputs)) {
-      replies.push_back(result.response);
-    }
-    return replies;
+    return s_env->BatchQueryModelWithMetrics(inputs);
   }
 };
 
@@ -128,16 +124,102 @@ std::vector<std::string> GenerateInputs() {
 TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
   s_env->SetMaxGeneratedTokens(12);
   const std::vector<std::string> inputs = GenerateInputs();
-  // Run multiple times so that auto-tuning is closer to complete.
-  for (size_t rep = 0; rep < 4; ++rep) {
-    std::vector<std::string> responses = BatchGemmaReply(inputs);
+  constexpr size_t kNumReps = 7;
+
+  std::vector<double> prefill_speeds;
+  prefill_speeds.reserve(kNumReps);
+  std::vector<double> generate_speeds;
+  generate_speeds.reserve(kNumReps);
+
+  size_t total_prefill_tokens = 0;
+  double total_prefill_duration = 0.0;
+  size_t total_generate_tokens = 0;
+  double total_generate_duration = 0.0;
+
+  size_t warm_prefill_tokens = 0;
+  double warm_prefill_duration = 0.0;
+  size_t warm_generate_tokens = 0;
+  double warm_generate_duration = 0.0;
+
+  for (size_t rep = 0; rep < kNumReps; ++rep) {
+    QueryResultAndMetrics result = BatchGemmaReplyWithMetrics(inputs);
+    const std::vector<QueryResult>& responses = result.query_results;
+    const TimingInfo& timing = result.timing_info;
+
+    const double prefill_tok_sec =
+        timing.prefill_duration > 0.0
+            ? static_cast<double>(timing.prefill_tokens) /
+                  timing.prefill_duration
+            : 0.0;
+    const double gen_tok_sec =
+        timing.generate_duration > 0.0
+            ? static_cast<double>(timing.tokens_generated) /
+                  timing.generate_duration
+            : 0.0;
+
+    prefill_speeds.push_back(prefill_tok_sec);
+    generate_speeds.push_back(gen_tok_sec);
+
+    total_prefill_tokens += timing.prefill_tokens;
+    total_prefill_duration += timing.prefill_duration;
+    total_generate_tokens += timing.tokens_generated;
+    total_generate_duration += timing.generate_duration;
+
+    if (rep > 0) {
+      warm_prefill_tokens += timing.prefill_tokens;
+      warm_prefill_duration += timing.prefill_duration;
+      warm_generate_tokens += timing.tokens_generated;
+      warm_generate_duration += timing.generate_duration;
+    }
+
     for (size_t i = 0; i < HWY_MIN(hwy::Unpredictable1() * 3, responses.size());
          ++i) {
       fprintf(stderr, "Rep %zu batch answer %zu '%s'\n\n", rep, i,
-              responses[i].c_str());
+              responses[i].response.c_str());
     }
     PROFILER_PRINT_RESULTS();
   }
+
+  const double avg_prefill =
+      total_prefill_duration > 0.0
+          ? static_cast<double>(total_prefill_tokens) / total_prefill_duration
+          : 0.0;
+  const double avg_generate =
+      total_generate_duration > 0.0
+          ? static_cast<double>(total_generate_tokens) / total_generate_duration
+          : 0.0;
+
+  const double warm_avg_prefill =
+      warm_prefill_duration > 0.0
+          ? static_cast<double>(warm_prefill_tokens) / warm_prefill_duration
+          : 0.0;
+  const double warm_avg_generate =
+      warm_generate_duration > 0.0
+          ? static_cast<double>(warm_generate_tokens) / warm_generate_duration
+          : 0.0;
+
+  fprintf(stderr,
+          "\n============================================================\n");
+  fprintf(stderr,
+          "[ Gemma Batch Benchmark Summary (%zu Repetitions) ]\n", kNumReps);
+  for (size_t rep = 0; rep < kNumReps; ++rep) {
+    fprintf(stderr,
+            "  Rep %zu: Prefill = %7.2f tok/s | Generate = %7.2f tok/s%s\n",
+            rep, prefill_speeds[rep], generate_speeds[rep],
+            rep == 0 ? " (warmup / autotune)" : "");
+  }
+  fprintf(stderr,
+          "------------------------------------------------------------\n");
+  fprintf(stderr,
+          "Overall Average: Prefill = %7.2f tok/s | Generate = %7.2f tok/s\n",
+          avg_prefill, avg_generate);
+  if (kNumReps > 1) {
+    fprintf(stderr,
+            "Warm Average   : Prefill = %7.2f tok/s | Generate = %7.2f tok/s\n",
+            warm_avg_prefill, warm_avg_generate);
+  }
+  fprintf(stderr,
+          "============================================================\n\n");
 }
 
 }  // namespace

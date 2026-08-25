@@ -44,12 +44,12 @@ namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
 class Q4_0Codec {
-  using ScaleT = hwy::bfloat16_t;
-  static constexpr size_t kBlockSize = 32;
+  using ScaleT = Q4_0Stream::ScaleT;
+  static constexpr size_t kBlockSize = Q4_0Stream::kBlockSize;
+  static constexpr size_t kBlockBytes = Q4_0Stream::kBlockBytes;
 
   static constexpr size_t BlockByteOffset(size_t packed_ofs) {
-    const size_t kBytesPerBlock = sizeof(ScaleT) + kBlockSize / 2;
-    return (packed_ofs / kBlockSize) * kBytesPerBlock;
+    return (packed_ofs / kBlockSize) * kBlockBytes;
   }
 
   template <class DF, class VF = hn::Vec<DF>>
@@ -97,25 +97,33 @@ class Q4_0Codec {
   template <class D, typename Raw = hn::TFromD<D>>
   static HWY_INLINE void DequantizeBlock(D d, const uint8_t* HWY_RESTRICT block_ptr,
                                          Raw* HWY_RESTRICT raw) {
-    const hn::Repartition<float, D> df;
+    const hn::CappedTag<float, 16> df;
+    const hn::Rebind<uint8_t, decltype(df)> du8;
     const hn::Rebind<int32_t, decltype(df)> di32;
-    const hn::Rebind<int16_t, decltype(di32)> di16;
-    const hn::Rebind<int8_t, decltype(di16)> di8;
-    const hn::Rebind<uint8_t, decltype(di8)> du8;
+    const size_t N = hn::Lanes(df);
 
     using T = ScaleT;
     T scale;
     hwy::CopyBytes(block_ptr, &scale, sizeof(T));
     const float scale_f = hwy::F32FromBF16(scale);
-    const auto vd = hn::Set(df, scale_f);
+    const auto v_scale = hn::Set(df, scale_f);
+    const auto v_offset = hn::Set(df, scale_f * 8.0f);
 
-    const uint8_t* qs_ptr = block_ptr + sizeof(T);
-    const size_t N = hn::Lanes(df);
-    const size_t num_vectors = 32 / N;
+    const hn::Full128<uint8_t> du8_16;
+    const auto raw_16 = hn::LoadU(du8_16, block_ptr + sizeof(T));
+    const auto mask_0f = hn::Set(du8_16, 0x0F);
 
-    for (size_t v_idx = 0; v_idx < num_vectors; ++v_idx) {
-      const auto out = DequantizeLanes(df, du8, di8, qs_ptr, 0, v_idx * N, N, vd);
-      StoreRaw(df, out, raw + v_idx * N);
+    HWY_ALIGN uint8_t u8_buf[2][16];
+    hn::Store(hn::And(raw_16, mask_0f), du8_16, u8_buf[0]);
+    hn::Store(hn::ShiftRight<4>(raw_16), du8_16, u8_buf[1]);
+
+    for (size_t half = 0; half < 2; ++half) {
+      for (size_t i = 0; i < 16; i += N) {
+        const auto u8 = hn::Load(du8, u8_buf[half] + i);
+        const auto u32 = hn::PromoteTo(di32, u8);
+        const auto val_f = hn::MulSub(hn::ConvertTo(df, u32), v_scale, v_offset);
+        StoreRaw(df, val_f, raw + half * 16 + i);
+      }
     }
   }
 
@@ -259,18 +267,24 @@ class Q4_0Codec {
     HWY_DASSERT(current_packed_ofs % kBlockSize == 0);
 
     const size_t num_full_blocks = num_to_decompress / kBlockSize;
-    for (size_t b = 0; b < num_full_blocks; ++b) {
-      const uint8_t* block_ptr =
-          &packed.ptr->byte + BlockByteOffset(current_packed_ofs);
+    const uint8_t* block_ptr =
+        &packed.ptr->byte + BlockByteOffset(current_packed_ofs);
+    size_t b = 0;
+    for (; b + 1 < num_full_blocks; b += 2) {
       DequantizeBlock(d, block_ptr, current_raw);
-      current_packed_ofs += kBlockSize;
+      DequantizeBlock(d, block_ptr + kBlockBytes, current_raw + kBlockSize);
+      block_ptr += 2 * kBlockBytes;
+      current_raw += 2 * kBlockSize;
+    }
+    if (b < num_full_blocks) {
+      DequantizeBlock(d, block_ptr, current_raw);
+      block_ptr += kBlockBytes;
       current_raw += kBlockSize;
     }
+    current_packed_ofs += num_full_blocks * kBlockSize;
 
     const size_t remaining = num_to_decompress % kBlockSize;
     if (remaining != 0) {
-      const uint8_t* block_ptr =
-          &packed.ptr->byte + BlockByteOffset(current_packed_ofs);
       HWY_ALIGN Raw temp[kBlockSize];
       DequantizeBlock(d, block_ptr, temp);
       memcpy(current_raw, temp, remaining * sizeof(Raw));

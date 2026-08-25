@@ -96,7 +96,7 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
   MatStorageT<TA> a = GenerateMat<TA>(A_extents, MatPadding::kOdd, env.ctx);
   MatStorageT<TB> b_trans =
-      GenerateTransposedMat<TB>(B_extents, MatPadding::kOdd, env.ctx);
+      GenerateTransposedMat<TB>(B_extents, MatPadding::kPacked, env.ctx);
 
   const float* add_row = add ? add_storage.PackedScale1() : nullptr;
 
@@ -184,15 +184,19 @@ void BenchAllMatMul() {
     // QKV projection
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 1536, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 1536, kAdd, env);
+    BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 1536, kAdd, env);
     // FFN gate+up
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 13824, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 13824, kAdd, env);
+    BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 13824, kAdd, env);
     // FFN down
     BenchMatMul<BF16, BF16, BF16>(batch_size, 6912, 1152, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 6912, 1152, kAdd, env);
+    BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 6912, 1152, kAdd, env);
     // Logits / embedding
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 262144, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 262144, kAdd, env);
+    BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 262144, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();
