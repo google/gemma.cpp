@@ -23,64 +23,113 @@
 #include <atomic>
 #include <vector>
 
-#include "gemma/configs.h"  // ModelConfig
-#include "ops/ops.h"        // CreateInvTimescale
-#include "util/basics.h"    // BF16
-#include "util/mat.h"       // MatStorageT
+#include "deepseek/deepseek_dims.h"  // MLADims, CreateYarnInvTimescale
+#include "gemma/configs.h"     // ModelConfig
+#include "gemma/flash_structs.h"
+#include "gemma/gemma_args.h"  // AttentionImpl
+#include "gemma/kv_cache.h"
+#include "gemma/tensor_stats.h"
+#include "ops/ops.h"      // CreateInvTimescale
+#include "util/basics.h"  // BF16
+#include "util/mat.h"     // MatStorageT
 #include "util/threading_context.h"
 
 namespace gcpp {
 
-struct AttentionActivations {
-  // Returns the scale value to use for the query in the attention computation.
-  // Also called by ops_test.
-  static inline float ChooseQueryScale(const ModelConfig& config) {
-    const LayerConfig& layer_config = config.layer_configs[0];
-    if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
-      return 1.0f /
-             sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
-    // QueryScaleType::SqrtKeySize
-    return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
-  }
+typedef std::vector<float, hwy::AlignedAllocator<float>> AlignedFloatVector;
+typedef std::vector<BF16, hwy::AlignedAllocator<BF16>> AlignedBF16Vector;
 
+// Returns the scale value to use for the query in the attention computation.
+// Also called by ops_test.
+static inline size_t MaxQkvDim(const ModelConfig& config) {
+  size_t max_dim = 0;
+  for (const auto& lc : config.layer_configs) {
+    max_dim = HWY_MAX(max_dim, lc.qkv_dim);
+  }
+  return max_dim;
+}
+static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
+  size_t max_dim = config.model_dim;
+  if (config.num_mtp_layers > 1) {
+    max_dim = HWY_MAX(max_dim, size_t{256});
+  }
+  for (const auto& lc : config.layer_configs) {
+    max_dim = HWY_MAX(max_dim, static_cast<size_t>(lc.ff_hidden_dim));
+  }
+  return max_dim;
+}
+
+
+static inline float ChooseQueryScale(const ModelConfig& config) {
+  const LayerConfig& layer_config = config.layer_configs[0];
+  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
+    return 1.0f /
+           sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
+  if (config.query_scale == QueryScaleType::One)
+    return 1.0f;
+  // QueryScaleType::SqrtKeySize
+  return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
+}
+
+struct AttentionActivations {
   AttentionActivations(
       const ModelConfig& config, const LayerConfig& layer_config,
-      size_t batch_size, size_t seq_len, const Allocator& allocator,
+      size_t batch_size, size_t seq_len, const RuntimeConfig& runtime_config,
+      size_t max_workers, const Allocator& allocator,
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : config(config),
-
-        // `vocab_size == 0` means it is for Vit part, VitAttention is still MHA
-        // and does not use an external KV cache.
+      : heads(layer_config.heads),
+        qkv_dim(layer_config.qkv_dim),
+        max_qkv_dim(MaxQkvDim(config)),
+        rep_factor(max_workers *
+                   AttentionActivations::kThreadReplicationFactor /
+                   layer_config.heads),
+        // `vocab_size == 0` means it is for Vit part, VitAttention
+        // is still MHA and does not use an external KV cache.
         q(MatFactory("q", batch_size,
                      config.vocab_size == 0
-                         ? layer_config.heads * 3 * layer_config.qkv_dim
-                         : layer_config.heads * layer_config.qkv_dim,
+                         ? layer_config.heads * 3 * max_qkv_dim
+                         : layer_config.heads * max_qkv_dim,
                      allocator)),
-        q_T(MatFactory("q_T", layer_config.qkv_dim,
-                       config.vocab_size == 0
-                           ? batch_size * layer_config.heads * 3
-                           : batch_size * layer_config.heads,
-                       allocator)),
+        q_bf(MatFactory("q_bf", batch_size,
+                        config.vocab_size == 0
+                            ? layer_config.heads * 3 * max_qkv_dim
+                            : layer_config.heads * max_qkv_dim,
+                        allocator)),
+
+        vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
+        vit_K_T(MatFactory(
+            "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
+            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            allocator, MatPadding::kPacked)),
+        vit_V_T(MatFactory(
+            "V2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
+            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            allocator, MatPadding::kPacked)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
                                    config.model_dim, allocator)),
-        att(MatFactory("att", batch_size, layer_config.heads * seq_len,
-                       allocator)),
         att_out(MatFactory("att_out", batch_size,
-                           layer_config.heads * layer_config.qkv_dim,
-                           allocator)),
+                           layer_config.heads * max_qkv_dim, allocator)),
+        att_out_reps(MatFactory("att_out", batch_size * rep_factor,
+                                layer_config.heads * max_qkv_dim, allocator)),
+        softmax_max(MatFactory("softmax_max", batch_size, layer_config.heads,
+                               allocator)),
+        softmax_d(
+            MatFactory("softmax_d", batch_size, layer_config.heads, allocator)),
         att_sums(
             MatFactory("att_sums", batch_size, config.model_dim, allocator)),
+
+        k_tile_vec(MatFactory("k_tile_vec", batch_size * layer_config.kv_heads,
+                              KVCache::kTileSize * max_qkv_dim, allocator)),
+        v_tile_vec(MatFactory("v_tile_vec", batch_size * layer_config.kv_heads,
+                              KVCache::kTileSize * max_qkv_dim, allocator)),
 
         inv_timescale(
             CreateInvTimescale(allocator, layer_config.qkv_dim,
                                layer_config.post_qk == PostQKType::HalfRope)),
-        inv_timescale_global(CreateInvTimescale(
-            allocator, layer_config.qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope, 1000000.0)),
-
-        div_seq_len(static_cast<uint32_t>(seq_len)),
-        div_heads(static_cast<uint32_t>(layer_config.heads)),
-        query_scale(ChooseQueryScale(config)) {
+        inv_timescale_global(
+            CreateInvTimescale(allocator, max_qkv_dim,
+                               layer_config.post_qk == PostQKType::HalfRope,
+                               1000000.0, config.partial_rotary_factor)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -89,51 +138,253 @@ struct AttentionActivations {
       }
       return;
     }
+    // This is a guess at the maximum number of params we might need to avoid
+    // reallocations. The actual number of params is determined by the number of
+    // query tiles, which is not known here.
+    flash_params.reserve(batch_size * layer_config.heads);
+    split_flash_params.reserve(batch_size * layer_config.heads);
 
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
     q.AllocateAndAttachRowPtrs(row_ptrs);
-    q_T.AllocateAndAttachRowPtrs(row_ptrs);
+    q_bf.AllocateAndAttachRowPtrs(row_ptrs);
     att_sums.AllocateAndAttachRowPtrs(row_ptrs);
   }
 
   void SetBatchSize(size_t batch_size) {
     q.OverrideRows(batch_size);
-    // q_T rows are always qkv_dim!
+    q_bf.OverrideRows(batch_size);
+
+    vit_Q.OverrideRows(batch_size);
+    // vit_K_T and vit_V_T stay seq_len!
 
     pre_att_rms_out.OverrideRows(batch_size);
-    att.OverrideRows(batch_size);
     att_out.OverrideRows(batch_size);
+    att_out_reps.OverrideRows(batch_size * rep_factor);
+    // There is no override for [split_]flash_params, because we reserved an
+    // upper bound, and flash attention controls the actual size when it
+    // calculates the size and number of tiles.
+    softmax_max.OverrideRows(batch_size);
+    softmax_d.OverrideRows(batch_size);
     att_sums.OverrideRows(batch_size);
+
+    // `inv_timescale*` are not batched.
   }
 
-  const ModelConfig& config;
+  size_t heads;
+  size_t qkv_dim;
+  size_t max_qkv_dim;
+  AlignedBF16Vector bf16_queries;
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries;
+  hwy::AlignedVector<int8_t> int8_queries;
+  AlignedFloatVector float_queries;
+  AlignedFloatVector q_scales;
 
+  // Maximum factor by which we might scale-up work to maximize parallelism.
+  size_t rep_factor = 1;
+  // Parameters for flash attention. The size of the vector is somewhere between
+  // the number of query rows and 1/8th of that.
+  std::vector<Tile148Params> flash_params;
+  // Parameters for flash attention, split by k-position. May be significantly
+  // larger than flash_params in decode mode, when the number of query rows is
+  // small.
+  std::vector<Tile148Params> split_flash_params;
   MatStorageT<float> q;  // query
-  MatStorageT<float> q_T;  // Transposed to maximize attention speed.
+  MatStorageT<BF16> q_bf;
+
+  MatStorageT<float> vit_Q;
+  MatStorageT<KV_t> vit_K_T;
+  MatStorageT<KV_t> vit_V_T;
 
   MatStorageT<float> pre_att_rms_out;
-  MatStorageT<float> att;      // attention vector
-  MatStorageT<float> att_out;  // attention output
+  MatStorageT<float> att_out;      // attention output
+  MatStorageT<float> att_out_reps;  // attention output for each thread.
+  MatStorageT<float> softmax_max;  // see OnlineSoftmaxState
+  MatStorageT<float> softmax_d;    // see OnlineSoftmaxState
   // Accumulation of attention outputs over heads
   MatStorageT<BF16> att_sums;
+
+  MatStorageT<float> k_tile_vec;
+  MatStorageT<float> v_tile_vec;
+  std::vector<MatStorageT<float>> sub_task_att_out;
+  std::vector<AlignedFloatVector>
+      sub_task_exp_denominator_sums;
+  std::vector<AlignedFloatVector>
+      sub_task_max_logits;
 
   // Rope
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
+  // Replication factor to help evenly share work over threads.
+  static constexpr size_t kThreadReplicationFactor = 4;
+};
 
+// A non-owning view of AttentionActivations.
+struct AttentionActivationsPtrs {
+  AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len,
+                           std::vector<Tile148Params>& flash_params,
+                           std::vector<Tile148Params>& split_flash_params)
+      : config(config),
+        flash_params(flash_params),
+        split_flash_params(split_flash_params),
+        sub_task_att_out(nullptr),
+        sub_task_exp_denominator_sums(nullptr),
+        sub_task_max_logits(nullptr),
+        bf16_queries(nullptr),
+        int16_queries(nullptr),
+        int8_queries(nullptr),
+        float_queries(nullptr),
+        q_scales(nullptr),
+        div_seq_len(static_cast<uint32_t>(seq_len)),
+        div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
+        query_scale(ChooseQueryScale(config)) {}
+
+  AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len,
+                           AttentionActivations& activations)
+      : AttentionActivationsPtrs(config, seq_len, activations.flash_params,
+                                 activations.split_flash_params) {
+    q = activations.q;
+    q_bf = activations.q_bf;
+    vit_Q = activations.vit_Q;
+    vit_K_T = activations.vit_K_T;
+    vit_V_T = activations.vit_V_T;
+    pre_att_rms_out = activations.pre_att_rms_out;
+    att_out = activations.att_out;
+    att_out_reps = activations.att_out_reps;
+    softmax_max = activations.softmax_max;
+    softmax_d = activations.softmax_d;
+    att_sums = activations.att_sums;
+    inv_timescale = activations.inv_timescale;
+    inv_timescale_global = activations.inv_timescale_global;
+    k_tile_vec = activations.k_tile_vec;
+    v_tile_vec = activations.v_tile_vec;
+    sub_task_att_out = &activations.sub_task_att_out;
+    sub_task_exp_denominator_sums = &activations.sub_task_exp_denominator_sums;
+    sub_task_max_logits = &activations.sub_task_max_logits;
+    bf16_queries = &activations.bf16_queries;
+    int16_queries = &activations.int16_queries;
+    int8_queries = &activations.int8_queries;
+    float_queries = &activations.float_queries;
+    q_scales = &activations.q_scales;
+  }
+
+  void SetBatchSize(size_t batch_size) {
+    q.OverrideRows(batch_size);
+    q_bf.OverrideRows(batch_size);
+
+    vit_Q.OverrideRows(batch_size);
+    // vit_K_T and vit_V_T stay seq_len!
+
+    pre_att_rms_out.OverrideRows(batch_size);
+    att_out.OverrideRows(batch_size);
+    softmax_max.OverrideRows(batch_size);
+    softmax_d.OverrideRows(batch_size);
+    att_sums.OverrideRows(batch_size);
+    // `inv_timescale*` are not batched.
+  }
+
+  size_t SeqLen() const {
+    return static_cast<size_t>(div_seq_len.GetDivisor());
+  }
+
+  const ModelConfig& config;
+  // Parameters for flash attention.
+  std::vector<Tile148Params>& flash_params;
+  std::vector<Tile148Params>& split_flash_params;
+
+  // For the matrices below, the batch_size dimension is really qbatch.Size() *
+  // token_batch_size, but in all known uses, one of those is 1.  Specifically,
+  // during PrefillTBatch, it is prompt length (up to some max batch size)
+  // and otherwise it's qbatch.Size().
+
+  // Query matrix of size batch_size x (q_heads * qkv_dim).
+  MatPtrT<float> q;
+  // Query matrix of size batch_size x (q_heads * qkv_dim).
+  MatPtrT<BF16> q_bf;
+
+  MatPtrT<float> vit_Q;
+  MatPtrT<KV_t> vit_K_T;
+  MatPtrT<KV_t> vit_V_T;
+
+  // Output of RMSNorm before attention, size batch_size x model_dim.
+  MatPtrT<float> pre_att_rms_out;
+  // Attention output computed from att * V, size batch_size x (q_heads *
+  // qkv_dim).
+  MatPtrT<float> att_out;
+  MatPtrT<float> att_out_reps;
+  // The maximum logit value encountered when computing att_out, shape
+  // batch_size x q_heads . See OnlineSoftmaxState for details.
+  MatPtrT<float> softmax_max;
+  // The sum of scaled exponentials when computing att_out, shape
+  // batch_size x q_heads . See OnlineSoftmaxState for details.
+  MatPtrT<float> softmax_d;
+  // Accumulation of attention outputs over heads, size batch_size x
+  // model_dim.
+  MatPtrT<BF16> att_sums;
+  // Stores intermediate results of computing QKV,
+  // [qbatch * kv_heads , k_tile_size * qkv_dim]
+  MatPtrT<float> k_tile_vec;
+  MatPtrT<float> v_tile_vec;
+  // Used by TiledFlashAttention to store intermediate results.
+  std::vector<MatStorageT<float>>* sub_task_att_out;
+  std::vector<AlignedFloatVector>*
+      sub_task_exp_denominator_sums;
+  std::vector<AlignedFloatVector>*
+      sub_task_max_logits;
+  AlignedBF16Vector* bf16_queries;
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>>* int16_queries;
+  hwy::AlignedVector<int8_t>* int8_queries;
+  AlignedFloatVector* float_queries;
+  AlignedFloatVector* q_scales;
+  // Inverse timescales for RoPE computation.
+  MatPtrT<float> inv_timescale;
+  // Inverse timescales for global RoPE computation.
+  MatPtrT<float> inv_timescale_global;
+  // Divisor for faster division by sequence length.
   hwy::Divisor div_seq_len;
-  // Unfortunately, some models have had non-power-of-two heads.
+  // Divisor for faster division by number of heads.
   hwy::Divisor div_heads;
+  // Query scaling factor for attention computation.
   float query_scale;
 };
 
+static inline size_t MoEBatchSize(const LayerConfig& layer_config,
+                                  size_t batch_size) {
+  return layer_config.IsMoE() ? batch_size : 0;
+}
+
+// Returns the layer config with the most experts. Models whose first layers
+// are dense (e.g. DeepSeek) still need MoE buffers sized for later layers.
+static inline const LayerConfig& MoELayerConfig(const ModelConfig& config) {
+  const LayerConfig* best = &config.layer_configs[0];
+  for (const LayerConfig& lc : config.layer_configs) {
+    if (lc.NumExperts() > best->NumExperts()) best = &lc;
+  }
+  return *best;
+}
+
+struct PerToken {
+  float weight;
+  uint16_t expert_idx;
+  uint16_t row_idx;
+};
+static_assert(sizeof(PerToken) == 8);
+// Multiple to round up experts_per_token to avoid false sharing.
+HWY_INLINE_VAR constexpr size_t kPerTokenPerLine =
+    HWY_ALIGNMENT / sizeof(PerToken);
+
 struct Activations {
-  Activations(const ModelConfig& config, size_t batch_size, size_t seq_len,
-              ThreadingContext& ctx,
+  Activations(const RuntimeConfig& runtime_config, const ModelConfig& config,
+              size_t batch_size, size_t seq_len, ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : layer_config(config.layer_configs[0]),
+      : layer_config(config.is_encoder_decoder ? config.decoder_layer_configs[0]
+                                               : config.layer_configs[0]),
+        moe_layer_config(MoELayerConfig(config)),
+        mla_dims(config),
+        num_layers(config.is_encoder_decoder ? config.decoder_num_layers
+                                             : config.num_layers),
+        encoder_seq_len(config.is_encoder_decoder ? seq_len : 0),
 
         x(MatFactory("x", batch_size, config.model_dim, ctx.allocator)),
         x_bf(MatFactory("x_bf", batch_size, config.model_dim, ctx.allocator)),
@@ -143,15 +394,146 @@ struct Activations {
 
         pre_ffw_rms_out(MatFactory("pre_ffw_rms_out", batch_size,
                                    config.model_dim, ctx.allocator)),
-        C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
-                      ctx.allocator)),
-        C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim,
-                      ctx.allocator)),
+        C1(MatFactory("C1", batch_size, MaxFFHiddenDim(config), ctx.allocator)),
+        C2(MatFactory("C2", batch_size, MaxFFHiddenDim(config), ctx.allocator)),
         ffw_out(
             MatFactory("ffw_out", batch_size, config.model_dim, ctx.allocator)),
+        ple_embeds(MatFactory("ple_embeds", batch_size,
+                              config.num_layers * config.ple_dim,
+                              ctx.allocator)),
+        gate_out(
+            MatFactory("gate_out", batch_size, config.ple_dim, ctx.allocator)),
+        ple_token_emb(config.num_layers * config.ple_dim),
+        t5_encoder_pre_att_rms_out(MatFactory(
+            "t5_e_pre_att", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_q(
+            MatFactory("t5_e_q", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_kv(
+            MatFactory("t5_e_kv", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? 2 * config.encoder_layer_configs[0].kv_heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_att_out(
+            MatFactory("t5_e_att_out", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].heads *
+                                 config.encoder_layer_configs[0].qkv_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_att_sums(MatFactory(
+            "t5_e_att_sums", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_pre_ffw_rms_out(MatFactory(
+            "t5_e_pre_ffw", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_c1(
+            MatFactory("t5_e_c1", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].ff_hidden_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_c2(
+            MatFactory("t5_e_c2", encoder_seq_len,
+                       config.is_encoder_decoder
+                           ? config.encoder_layer_configs[0].ff_hidden_dim
+                           : 0,
+                       ctx.allocator)),
+        t5_encoder_ffw_out(MatFactory(
+            "t5_e_ffw_out", encoder_seq_len,
+            config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
+        t5_encoder_inv_timescale(
+            config.is_encoder_decoder
+                ? CreateInvTimescale(ctx.allocator,
+                                     config.encoder_layer_configs[0].qkv_dim,
+                                     config.encoder_layer_configs[0].post_qk ==
+                                         PostQKType::HalfRope)
+                : MatStorageT<float>()),
 
-        attention(config, layer_config, batch_size, seq_len, ctx.allocator,
-                  row_ptrs) {
+        max_workers(ctx.pools.MaxWorkers()),
+        s_ffw_in(num_layers, max_workers),
+        s_ffw_hidden(num_layers, max_workers),
+        s_ffw_out(num_layers, max_workers),
+        router_in(MatFactory("router_in",
+                             MoEBatchSize(moe_layer_config, batch_size),
+                             config.model_dim, ctx.allocator)),
+        router_logits(MatFactory("router_logits",
+                                 MoEBatchSize(moe_layer_config, batch_size),
+                                 moe_layer_config.NumExperts(), ctx.allocator)),
+        mla_q_a(MatFactory("mla_q_a", mla_dims.Any() ? batch_size : 0,
+                           mla_dims.q_lora_rank, ctx.allocator)),
+        mla_kv_a(MatFactory("mla_kv_a", mla_dims.Any() ? batch_size : 0,
+                            mla_dims.kv_a_dim, ctx.allocator)),
+        idx_q(MatFactory("idx_q", mla_dims.indexer_dim > 0 ? batch_size : 0,
+                         mla_dims.indexer_dim, ctx.allocator)),
+        idx_weights(MatFactory("idx_weights",
+                               mla_dims.indexer_dim > 0 ? batch_size : 0,
+                               MaxIndexerHeads(config), ctx.allocator)),
+        comp_kv(MatFactory("comp_kv", mla_dims.comp_dim > 0 ? batch_size : 0,
+                           mla_dims.comp_dim, ctx.allocator)),
+        comp_gate(MatFactory("comp_gate",
+                             mla_dims.comp_dim > 0 ? batch_size : 0,
+                             mla_dims.comp_dim, ctx.allocator)),
+        idxc_kv(MatFactory("idxc_kv", mla_dims.idxc_dim > 0 ? batch_size : 0,
+                           mla_dims.idxc_dim, ctx.allocator)),
+        idxc_gate(MatFactory("idxc_gate",
+                             mla_dims.idxc_dim > 0 ? batch_size : 0,
+                             mla_dims.idxc_dim, ctx.allocator)),
+        mla_o_in(MatFactory("mla_o_in", mla_dims.o_in_dim > 0 ? batch_size : 0,
+                            mla_dims.o_in_dim, ctx.allocator)),
+        mla_o_group(MatFactory(
+            "mla_o_group", mla_dims.o_mid_dim > 0 ? batch_size : 0,
+            mla_dims.o_mid_dim > 0 ? MaxOLoraRank(config) : 0, ctx.allocator)),
+        mla_o_mid(MatFactory("mla_o_mid",
+                             mla_dims.o_mid_dim > 0 ? batch_size : 0,
+                             mla_dims.o_mid_dim, ctx.allocator)),
+        hc_streams(MatFactory("hc_streams", config.hc_mult > 1 ? batch_size : 0,
+                              config.hc_mult * config.model_dim,
+                              ctx.allocator)),
+        dspark_main_hiddens(MatFactory(
+            "dspark_hiddens", config.num_mtp_layers > 0 ? batch_size : 0,
+            3 * config.model_dim, ctx.allocator)),
+        hc_tmp(MatFactory("hc_tmp", config.hc_mult > 1 ? batch_size : 0,
+                          config.hc_mult * config.model_dim, ctx.allocator)),
+        hc_mixes(MatFactory("hc_mixes", config.hc_mult > 1 ? batch_size : 0,
+                            (2 + config.hc_mult) * config.hc_mult,
+                            ctx.allocator)),
+        hc_post_w(MatFactory("hc_post_w", config.hc_mult > 1 ? batch_size : 0,
+                             config.hc_mult, ctx.allocator)),
+        hc_comb(MatFactory("hc_comb", config.hc_mult > 1 ? batch_size : 0,
+                           config.hc_mult * config.hc_mult, ctx.allocator)),
+        mla_inv_timescale(CreateInvTimescale(
+            ctx.allocator, HWY_MAX(mla_dims.rope_head_dim, size_t{2}),
+            /*half_rope=*/false, config.rope_theta)),
+        mla_inv_timescale_c(CreateYarnInvTimescale(
+            ctx.allocator, HWY_MAX(mla_dims.rope_head_dim, size_t{2}),
+            config.compress_rope_theta > 0.0f ? config.compress_rope_theta
+                                              : config.rope_theta,
+            config.yarn_factor, config.yarn_orig_seq_len, config.yarn_beta_fast,
+            config.yarn_beta_slow)),
+        s_router_in(num_layers, max_workers),
+        s_router_logits(num_layers, max_workers),
+        s_expert_in(num_layers, max_workers),
+        s_expert_hidden(num_layers, max_workers),
+        s_expert_out(num_layers, max_workers),
+        s_w_expert_in1(num_layers, max_workers),
+        s_w_expert_in2(num_layers, max_workers),
+        s_w_expert_hidden(num_layers, max_workers),
+        s_w_gating_einsum_w1(num_layers, max_workers),
+        s_w_gating_einsum_w2(num_layers, max_workers),
+        s_w_linear_w(num_layers, max_workers),
+        attention_impl(runtime_config.attention_impl),
+        attention_storage(config, layer_config, batch_size, seq_len,
+                          runtime_config, ctx.pools.MaxWorkers(), ctx.allocator,
+                          row_ptrs),
+        attention(config, seq_len, attention_storage) {
     HWY_ASSERT(batch_size != 0);
 
     // For MatMul outputs, precompute their row pointers.
@@ -160,11 +542,90 @@ struct Activations {
     x.AllocateAndAttachRowPtrs(row_ptrs);
     x_bf.AllocateAndAttachRowPtrs(row_ptrs);
     logits.AllocateAndAttachRowPtrs(row_ptrs);
+    if (config.ple_dim > 0) {
+      ple_embeds.AllocateAndAttachRowPtrs(row_ptrs);
+      gate_out.AllocateAndAttachRowPtrs(row_ptrs);
+    }
     C1.AllocateAndAttachRowPtrs(row_ptrs);
     C2.AllocateAndAttachRowPtrs(row_ptrs);
     ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
 
+    if (mla_dims.Any()) {
+      mla_q_a.AllocateAndAttachRowPtrs(row_ptrs);
+      mla_kv_a.AllocateAndAttachRowPtrs(row_ptrs);
+      if (mla_dims.indexer_dim > 0) {
+        idx_q.AllocateAndAttachRowPtrs(row_ptrs);
+        idx_weights.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.comp_dim > 0) {
+        comp_kv.AllocateAndAttachRowPtrs(row_ptrs);
+        comp_gate.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.idxc_dim > 0) {
+        idxc_kv.AllocateAndAttachRowPtrs(row_ptrs);
+        idxc_gate.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+      if (mla_dims.o_mid_dim > 0) {
+        mla_o_group.AllocateAndAttachRowPtrs(row_ptrs);
+      }
+    }
+    if (config.hc_mult > 1) {
+      hc_mixes.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+
+    if (config.is_encoder_decoder) {
+      t5_encoder_q.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_kv.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_att_out.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_att_sums.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_c1.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_c2.AllocateAndAttachRowPtrs(row_ptrs);
+      t5_encoder_ffw_out.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+
+    if (moe_layer_config.IsMoE()) {
+      router_logits.AllocateAndAttachRowPtrs(row_ptrs);
+
+      const size_t experts_per_token =
+          moe_layer_config.NumExpertsPerDatapoint();
+      per_token_stride = hwy::RoundUpTo(
+          moe_layer_config.NumExpertsPerDatapoint(), kPerTokenPerLine);
+      per_token = ctx.allocator.Alloc<PerToken>(batch_size * per_token_stride);
+      expert_tokens =
+          ctx.allocator.Alloc<uint16_t>(batch_size * experts_per_token);
+
+      const size_t num_clusters = ctx.pools.NumClusters();
+      per_cluster.reserve(num_clusters);
+      for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+        per_cluster.emplace_back(config, moe_layer_config, batch_size,
+                                 ctx.allocator, row_ptrs);
+      }
+
+      const size_t num_experts = moe_layer_config.NumExperts();
+      ffw_expert_out.reserve(num_experts);
+      for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
+        ffw_expert_out.emplace_back(MatFactory(
+            "ffw_partial_out", MoEBatchSize(moe_layer_config, batch_size),
+            config.model_dim, ctx.allocator));
+        ffw_expert_out.back().AllocateAndAttachRowPtrs(row_ptrs);
+      }
+    }
+
     // Note that BindC on any MatMul output considerably slows down Prefill.
+  }
+
+  ~Activations() {
+    s_ffw_in.ReduceAndPrint("ffw_in");
+    s_ffw_hidden.ReduceAndPrint("ffw_hidden");
+    s_ffw_out.ReduceAndPrint("ffw_out");
+    s_router_in.ReduceAndPrint("router_in");
+    s_router_logits.ReduceAndPrint("router_logits");
+    s_expert_in.ReduceAndPrint("expert_in");
+    s_expert_hidden.ReduceAndPrint("expert_hidden");
+    s_expert_out.ReduceAndPrint("expert_out");
+    s_w_expert_in1.ReduceAndPrint("w_expert_in1");
+    s_w_expert_in2.ReduceAndPrint("w_expert_in2");
+    s_w_expert_hidden.ReduceAndPrint("w_expert_hidden");
   }
 
   // Negligible CPU time.
@@ -178,13 +639,56 @@ struct Activations {
     C1.OverrideRows(batch_size);
     C2.OverrideRows(batch_size);
     ffw_out.OverrideRows(batch_size);
+    if (layer_config.ple_dim > 0) {
+      ple_embeds.OverrideRows(batch_size);
+      gate_out.OverrideRows(batch_size);
+    }
 
+    if (mla_dims.Any()) {
+      mla_q_a.OverrideRows(batch_size);
+      mla_kv_a.OverrideRows(batch_size);
+      if (mla_dims.indexer_dim > 0) {
+        idx_q.OverrideRows(batch_size);
+        idx_weights.OverrideRows(batch_size);
+      }
+      if (mla_dims.comp_dim > 0) {
+        comp_kv.OverrideRows(batch_size);
+        comp_gate.OverrideRows(batch_size);
+      }
+      if (mla_dims.idxc_dim > 0) {
+        idxc_kv.OverrideRows(batch_size);
+        idxc_gate.OverrideRows(batch_size);
+      }
+      if (mla_dims.o_mid_dim > 0) {
+        mla_o_in.OverrideRows(batch_size);
+        mla_o_group.OverrideRows(batch_size);
+        mla_o_mid.OverrideRows(batch_size);
+      }
+    }
+    if (hc_streams.Cols() > 0 && hc_streams.Rows() > 0) {
+      hc_streams.OverrideRows(batch_size);
+      hc_tmp.OverrideRows(batch_size);
+      hc_mixes.OverrideRows(batch_size);
+      hc_post_w.OverrideRows(batch_size);
+      hc_comb.OverrideRows(batch_size);
+    }
+    if (dspark_main_hiddens.Cols() > 0 && dspark_main_hiddens.Rows() > 0) {
+      dspark_main_hiddens.OverrideRows(batch_size);
+    }
+
+    attention_storage.SetBatchSize(batch_size);
+    // `AttentionActivationsPtrs` holds `MatPtrT` which also require updating;
+    // their row override is not updated when the underlying storage changes.
     attention.SetBatchSize(batch_size);
   }
 
   const LayerConfig& layer_config;
+  const LayerConfig& moe_layer_config;  // layer with the most experts
+  MLADims mla_dims;
+  const size_t num_layers;
+  const size_t encoder_seq_len;
 
-  MatStorageT<float> x;  // input
+  MatStorageT<float> x;    // input
   MatStorageT<BF16> x_bf;  // output of final RMSNorm, input to EmbeddingMatmul
   MatStorageT<float> logits;      // TODO: BF16 after Softmax supports that.
   MatStorageT<uint32_t> sampled;  // batch_size x 3 (padded)
@@ -194,8 +698,130 @@ struct Activations {
   MatStorageT<BF16> C1;
   MatStorageT<BF16> C2;
   MatStorageT<float> ffw_out;
+  MatStorageT<float> ple_embeds;
+  MatStorageT<BF16> gate_out;
+  std::vector<float> ple_token_emb;
 
-  AttentionActivations attention;
+  void SetT5EncoderSourceLen(size_t source_len) {
+    t5_encoder_pre_att_rms_out.OverrideRows(source_len);
+    t5_encoder_q.OverrideRows(source_len);
+    t5_encoder_kv.OverrideRows(source_len);
+    t5_encoder_att_out.OverrideRows(source_len);
+    t5_encoder_att_sums.OverrideRows(source_len);
+    t5_encoder_pre_ffw_rms_out.OverrideRows(source_len);
+    t5_encoder_c1.OverrideRows(source_len);
+    t5_encoder_c2.OverrideRows(source_len);
+    t5_encoder_ffw_out.OverrideRows(source_len);
+  }
+
+  // T5Gemma encoder scratch storage.
+  MatStorageT<BF16> t5_encoder_pre_att_rms_out;
+  MatStorageT<float> t5_encoder_q;
+  MatStorageT<float> t5_encoder_kv;
+  MatStorageT<float> t5_encoder_att_out;
+  MatStorageT<float> t5_encoder_att_sums;
+  MatStorageT<BF16> t5_encoder_pre_ffw_rms_out;
+  MatStorageT<BF16> t5_encoder_c1;
+  MatStorageT<BF16> t5_encoder_c2;
+  MatStorageT<float> t5_encoder_ffw_out;
+  MatStorageT<float> t5_encoder_inv_timescale;
+
+  const size_t max_workers;
+  TensorStats s_ffw_in;
+  TensorStats s_ffw_hidden;  // after Activation+gating
+  TensorStats s_ffw_out;
+
+  // For MoE layers. These are used outside the expert-parallel loop:
+  MatStorageT<float> router_in;
+  MatStorageT<float> router_logits;  // batch_size x num_experts
+
+  // DeepSeek MLA (zero-sized unless a layer uses MLA).
+  MatStorageT<float> mla_q_a;   // batch_size x q_lora_rank
+  MatStorageT<float> mla_kv_a;  // batch_size x (kv_lora_rank + rope_head_dim)
+  MatStorageT<float> idx_q;     // batch_size x (idx_heads * idx_head_dim)
+  // V4: per-head indexer score weights (weights_proj output).
+  MatStorageT<float> idx_weights;  // batch_size x indexer_heads
+  // V4 compressor projections of the layer input.
+  MatStorageT<float> comp_kv;    // batch_size x (coff * latent)
+  MatStorageT<float> comp_gate;  // batch_size x (coff * latent)
+  MatStorageT<float> idxc_kv;    // batch_size x (coff * indexer_head_dim)
+  MatStorageT<float> idxc_gate;  // batch_size x (coff * indexer_head_dim)
+  // V4 grouped low-rank output projection scratch.
+  MatStorageT<float> mla_o_in;     // batch_size x (heads/groups * qkv_dim)
+  MatStorageT<float> mla_o_group;  // batch_size x o_lora_rank
+  MatStorageT<float> mla_o_mid;    // batch_size x (o_groups * o_lora_rank)
+  // Manifold-constrained hyper-connections: parallel residual streams,
+  // [batch_size, hc_mult * model_dim] (zero-sized unless hc_mult > 1).
+  MatStorageT<float> hc_streams;
+  MatStorageT<float> dspark_main_hiddens;
+  MatStorageT<float> hc_tmp;
+  // Per-token dynamic mHC weights: raw mixes and the split post/comb parts
+  // persisted between the block's read and write phases.
+  MatStorageT<float> hc_mixes;   // batch_size x (2 + hc_mult) * hc_mult
+  MatStorageT<float> hc_post_w;  // batch_size x hc_mult
+  MatStorageT<float> hc_comb;    // batch_size x hc_mult^2
+  // RoPE timescales for the decoupled MLA rope dims: raw/sliding-window path
+  // and the compressed path (separate theta + YaRN interpolation).
+  MatStorageT<float> mla_inv_timescale;
+  MatStorageT<float> mla_inv_timescale_c;
+
+  size_t per_token_stride;           // padded experts_per_token
+  AlignedPtr<PerToken[]> per_token;  // batch_size x per_token_stride
+
+  PerToken* GetPerToken(size_t token_idx) {
+    return &per_token[token_idx * per_token_stride];
+  }
+
+  AlignedPtr<uint16_t[]> expert_tokens;  // ragged array
+
+  // Token ids of the current batch rows, for DeepSeek V4 hash routing.
+  // Filled by the embedding step; empty if unused.
+  std::vector<int32_t> token_ids;
+
+  // Speculative decoding (DeepSeek V4 MTP): if >= 0, the compressor pass
+  // copies each layer's KVCache::ds_state slice to ds_state_snapshot after
+  // processing this batch row. Set to the index of the last committed token
+  // of a verify step (0 for [committed, draft]); -1 disables.
+  int ds_snapshot_after = -1;
+
+  struct PerCluster {
+    PerCluster(const ModelConfig& config, const LayerConfig& layer_config,
+               size_t batch_size, Allocator& allocator,
+               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
+        : moe_C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
+                            allocator)),
+          moe_C2(MatFactory("C2", batch_size, layer_config.ff_hidden_dim,
+                            allocator)),
+          ffw_expert_in(MatFactory("ffw_partial_in",
+                                   MoEBatchSize(layer_config, batch_size),
+                                   config.model_dim, allocator)) {
+      moe_C1.AllocateAndAttachRowPtrs(row_ptrs);
+      moe_C2.AllocateAndAttachRowPtrs(row_ptrs);
+      ffw_expert_in.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+    MatStorageT<BF16> moe_C1;
+    MatStorageT<BF16> moe_C2;
+    MatStorageT<BF16> ffw_expert_in;
+  };
+  std::vector<PerCluster> per_cluster;
+  std::vector<MatStorageT<BF16>> ffw_expert_out;
+
+  TensorStats s_router_in;
+  TensorStats s_router_logits;
+  TensorStats s_expert_in;
+  TensorStats s_expert_hidden;  // after Activation+gating
+  TensorStats s_expert_out;
+  TensorStats s_w_expert_in1;
+  TensorStats s_w_expert_in2;
+  TensorStats s_w_expert_hidden;  // after Activation+gating
+  TensorStats s_w_gating_einsum_w1;
+  TensorStats s_w_gating_einsum_w2;
+  TensorStats s_w_linear_w;
+
+  AttentionImpl attention_impl;
+
+  AttentionActivations attention_storage;
+  AttentionActivationsPtrs attention;
 };
 
 }  // namespace gcpp

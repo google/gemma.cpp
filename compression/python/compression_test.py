@@ -102,8 +102,8 @@ class CompressionTest(absltest.TestCase):
         configs.Type.kSFP,
         configs.PromptWrapping.GEMMA_IT,
     )
-    tokenizer_path = ""  # no tokenizer required for testing
-    writer.write(config, tokenizer_path)
+    tokenizer_blob = ""  # no tokenizer required for testing
+    writer.write(config, tokenizer_blob)
 
     print("Ignore next two warnings; test does not enable model deduction.")
     reader = compression.SbsReader(temp_file.full_path)

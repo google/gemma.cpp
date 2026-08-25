@@ -23,7 +23,7 @@
 
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
-#include "gemma/gemma_args.h"
+#include "gemma/gemma_args.h"  // IWYU pragma: export
 #include "gemma/tokenizer.h"  // WrapAndTokenize
 #include "ops/matmul.h"
 #include "util/threading_context.h"
@@ -50,10 +50,8 @@ struct QueryResultAndMetrics {
 // Convenience class to load a model and run inference.
 class GemmaEnv {
  public:
-  // Calls the other constructor with *Args arguments initialized from argv.
-  GemmaEnv(int argc, char** argv);
-  GemmaEnv(const LoaderArgs& loader, const ThreadingArgs& threading,
-           const InferenceArgs& inference);
+  explicit GemmaEnv(const GemmaArgs& args);
+
   MatMulEnv& Env() { return env_; }
 
   size_t MaxGeneratedTokens() const {
@@ -63,6 +61,8 @@ class GemmaEnv {
     runtime_config_.max_generated_tokens =
         static_cast<size_t>(max_generated_tokens);
   }
+
+  void PrintProfileResults() { ctx_.profiler.PrintResults(); }
 
   std::vector<int> Tokenize(const std::string& input) const {
     std::vector<int> tokens;
@@ -125,6 +125,8 @@ class GemmaEnv {
   MatMulEnv& MutableEnv() { return env_; }
 
  private:
+  // This is used to ensure that InternalInit is called before anything else.
+  int initializer_value_ = 0;
   ThreadingContext ctx_;
   MatMulEnv env_;
   Gemma gemma_;
@@ -135,12 +137,9 @@ class GemmaEnv {
 // Logs the inference speed in tokens/sec.
 void LogSpeedStats(double time_start, size_t total_tokens);
 
-void ShowConfig(const LoaderArgs& loader, const ThreadingArgs& threading,
-                const InferenceArgs& inference, const ModelConfig& config,
+void ShowConfig(const GemmaArgs& args, const ModelConfig& config,
                 WeightsPtrs::Mode weight_read_mode,
                 const ThreadingContext& ctx);
-void ShowHelp(const LoaderArgs& loader, const ThreadingArgs& threading,
-              const InferenceArgs& inference);
 
 }  // namespace gcpp
 

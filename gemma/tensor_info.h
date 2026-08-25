@@ -1,3 +1,18 @@
+// Copyright 2025 Google LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 #ifndef THIRD_PARTY_GEMMA_CPP_GEMMA_TENSOR_INFO_H_
 #define THIRD_PARTY_GEMMA_CPP_GEMMA_TENSOR_INFO_H_
 
@@ -46,7 +61,7 @@ struct TensorInfo {
   // The highest permissible compression for this tensor. The default is
   // kNUQ, which provides maximum compression. Other values such as kBF16
   // or kF32 can be used to limit the compression to a specific type.
-  Type min_size = Type::kI8;
+  Type min_size = Type::kNUQ;
   // Whether to apply scaled softplus to the data.
   bool scaled_softplus = false;
   // Whether the columns or the rows take any extra dimensions.
@@ -80,6 +95,10 @@ static inline Extents2D ExtentsFromInfo(const TensorInfo* tensor) {
 
 static inline std::string LayerSuffix(size_t layer_idx) {
   return std::string("_") + std::to_string(layer_idx);
+}
+
+static inline std::string MoESuffix(size_t layer_idx, size_t moe_idx) {
+  return LayerSuffix(layer_idx) + "_" + std::to_string(moe_idx);
 }
 
 // Returns tensor base name without any layer suffix.
@@ -124,10 +143,23 @@ class TensorInfoRegistry {
   void AddModelTensors(const ModelConfig& config);
   void AddLayerTensors(const ModelConfig& config,
                        const LayerConfig& layer_config, size_t layer_idx);
+  void AddT5GemmaModelTensors(const ModelConfig& config);
+  void AddT5GemmaEncoderLayerTensors(const ModelConfig& config,
+                                     const LayerConfig& layer_config,
+                                     size_t layer_idx);
+  void AddT5GemmaDecoderLayerTensors(const ModelConfig& config,
+                                     const LayerConfig& layer_config,
+                                     size_t layer_idx);
 
   void AddImageLayerTensors(const ModelConfig& config,
                             const LayerConfig& layer_config,
                             size_t img_layer_idx);
+
+  // DeepSeek registrations; defined in deepseek/deepseek_tensors.cc.
+  void AddDeepSeekModelTensors(const ModelConfig& config);
+  void AddDeepSeekLayerTensors(const ModelConfig& config,
+                               const LayerConfig& layer_config,
+                               const std::string& suffix);
 
   std::vector<TensorInfo> tensors_;
   // Includes entries for base name *and* the suffixed name for each layer.

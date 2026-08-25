@@ -23,7 +23,9 @@ using json = nlohmann::json;
 
 class BenchmarkArgs : public ArgsBase<BenchmarkArgs> {
  public:
-  BenchmarkArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  BenchmarkArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
 
   Path summarize_text;
   Path cross_entropy;
@@ -74,11 +76,12 @@ int BenchmarkCrossEntropy(GemmaEnv& env, const Path& text,
     size_t num_tokens = std::min<size_t>(prompt.size() - pos, batch_tokens);
     std::vector<int> prompt_slice(prompt.begin() + pos,
                                   prompt.begin() + pos + num_tokens);
-    KVCache kv_cache(gemma.Config(), gemma.Inference(),
+    KVCache kv_cache(gemma.Config(), gemma.Inference(), env.MutableConfig(),
                      env.MutableEnv().ctx.allocator);
     float entropy =
         ComputeCrossEntropy(*env.GetGemma(), num_tokens, prompt_slice, kv_cache,
-                            env.MutableEnv(), env.Verbosity());
+                            env.MutableEnv(), env.Verbosity(),
+                            env.MutableConfig().attention_impl);
     total_entropy += entropy;
     LogSpeedStats(time_start, pos + num_tokens);
     std::string text_slice = env.StringFromTokens(prompt_slice);
@@ -127,9 +130,16 @@ int BenchmarkTriviaQA(GemmaEnv& env, const Path& json_file,
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  gcpp::GemmaEnv env(argc, argv);
-  gcpp::BenchmarkArgs benchmark_args(argc, argv);
+  gcpp::ConsumedArgs consumed(argc, argv);
+  gcpp::GemmaArgs args(argc, argv, consumed);
+  gcpp::BenchmarkArgs benchmark_args(argc, argv, consumed);
+  if (gcpp::HasHelp(argc, argv)) {
+    args.Help();
+    return 0;
+  }
+  consumed.AbortIfUnconsumed();
 
+  gcpp::GemmaEnv env(args);
   if (!benchmark_args.summarize_text.Empty()) {
     return BenchmarkSummary(env, benchmark_args.summarize_text);
   } else if (!benchmark_args.cross_entropy.Empty()) {

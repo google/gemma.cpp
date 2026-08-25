@@ -130,7 +130,7 @@ TEST(BlobStoreTest, TestNumBlobs) {
     HWY_ASSERT_EQ(reader.Keys().size(), num_blobs);
 
     ParallelFor(
-        ParallelismStrategy::kFlat, num_blobs, ctx, /*cluster_idx=*/0,
+        Parallelism::kFlat, num_blobs, ctx, /*cluster_idx=*/0,
         Callers::kTest, [&](uint64_t i, size_t /*thread*/) {
           HWY_ASSERT_STRING_EQ(reader.Keys()[i].c_str(),
                                std::to_string(i).c_str());

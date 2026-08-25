@@ -31,7 +31,9 @@
 namespace gcpp {
 
 struct JsonArgs : public ArgsBase<JsonArgs> {
-  JsonArgs(int argc, char* argv[]) { InitAndParse(argc, argv); }
+  JsonArgs(int argc, char* argv[], ConsumedArgs& consumed) {
+    InitAndParse(argc, argv, consumed);
+  }
 
   Path input;
 
@@ -127,6 +129,7 @@ void Run(GemmaEnv& env, JsonArgs& json) {
         .max_generated_tokens = 30,
         .temperature = 0.0f,
         .verbosity = env.Verbosity(),
+        .attention_impl = env.MutableConfig().attention_impl,
         .stream_token = stream_token,
     };
     env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
@@ -151,10 +154,14 @@ void Run(GemmaEnv& env, JsonArgs& json) {
 int main(int argc, char** argv) {
   {
     PROFILER_ZONE("Startup.all");
-    gcpp::GemmaEnv env(argc, argv);
-    gcpp::JsonArgs json(argc, argv);
-    gcpp::AbortIfInvalidArgs(json);
-    gcpp::Run(env, json);
+    gcpp::ConsumedArgs consumed(argc, argv);
+    gcpp::GemmaArgs args(argc, argv, consumed);
+    gcpp::JsonArgs json_args(argc, argv, consumed);
+    gcpp::AbortIfInvalidArgs(json_args);
+    consumed.AbortIfUnconsumed();
+
+    gcpp::GemmaEnv env(args);
+    gcpp::Run(env, json_args);
   }
   PROFILER_PRINT_RESULTS();  // Must call outside the zone above.
   return 0;

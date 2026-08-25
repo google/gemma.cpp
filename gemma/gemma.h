@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 
+#include <optional>
 #include <vector>
 
 // IWYU pragma: begin_exports
@@ -26,6 +27,7 @@
 #include "gemma/gemma_args.h"
 #include "gemma/kv_cache.h"
 #include "gemma/model_store.h"
+#include "gemma/query.h"
 #include "gemma/weights.h"
 #include "io/blob_store.h"
 #include "io/io.h"       // Path
@@ -38,135 +40,46 @@
 
 namespace gcpp {
 
-struct PerQuery {
-  PromptTokens prompt;
-
-  // Position in the KV cache: initially zero for the first turn, or when
-  // multi-turn is NOT desired. Incremented by prefill and `StreamAndUpdateEOS`.
-  size_t mutable_pos;
-  // Allows computing the last prefill token as `mutable_pos - initial_pos`,
-  // which might differ from `prompt.size() - 1` for prefix-LM.
-  size_t initial_pos;
-  // Zero for causal attention, or the end of the prefix for prefix-LM style
-  // attention in Paligemma.
-  size_t prefix_end;
-
-  KVCache& kv_cache;
-
-  // Previous token generated for this query, or the last prompt token. Will be
-  // fed into the next Transformer() call.
-  int prev_token = 0;
-};
-
-// Array of `PerQuery`. Referenced by `QBatch` and passed to `GenerateBatch`.
-struct AllQueries {
-  AllQueries() = default;
-
-  // For `GenerateSingleT`: same prompt/pos, replicated for each KV cache.
-  AllQueries(const PromptTokens& prompt, size_t pos, size_t prefix_end,
-             const hwy::Span<KVCache>& kv_caches) {
-    per_query_.reserve(kv_caches.size());
-    for (size_t i = 0; i < kv_caches.size(); ++i) {
-      HWY_ASSERT(kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
-      per_query_.push_back(PerQuery{
-          .prompt = prompt,
-          .mutable_pos = pos,
-          .initial_pos = pos,
-          .prefix_end = prefix_end,
-          .kv_cache = kv_caches[i],
-      });
-    }
-  }
-
-  // Batch of queries with initial position set to zero. Causal attention
-  // is requested via empty or all-zero `prefix_end`.
-  AllQueries(
-      const hwy::Span<const PromptTokens>& prompts,
-      const hwy::Span<KVCache>& kv_caches,
-      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>()) {
-    HWY_ASSERT(prompts.size() == kv_caches.size());
-    HWY_ASSERT(prompts.size() == prefix_end.size() || prefix_end.size() == 0);
-    per_query_.reserve(kv_caches.size());
-    for (size_t i = 0; i < kv_caches.size(); ++i) {
-      HWY_ASSERT(kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
-      per_query_.push_back(PerQuery{
-          .prompt = prompts[i],
-          .mutable_pos = 0,
-          .initial_pos = 0,
-          .prefix_end = prefix_end.size() == 0 ? 0 : prefix_end[i],
-          .kv_cache = kv_caches[i],
-      });
-    }
-  }
-
-  void Reserve(size_t size) { per_query_.reserve(size); }
-  void Append(const PerQuery& query) { per_query_.push_back(query); }
-
-  size_t NumQueries() const { return per_query_.size(); }
-
-  PerQuery& operator[](size_t query_idx) {
-    HWY_DASSERT(query_idx < NumQueries());
-    return per_query_[query_idx];
-  }
-  const PerQuery& operator[](size_t query_idx) const {
-    HWY_DASSERT(query_idx < NumQueries());
-    return per_query_[query_idx];
-  }
-
- private:
-  std::vector<PerQuery> per_query_;
-};
-
-// View into AllQueries: either a batch of queries, or a single query for use
-// in PrefillTBatch or GenerateSingleT. Cheap to create because it holds a
-// reference to AllQueries.
-class QBatch {
+// Used for continuous batching.
+class ContinuousQBatch : public QBatch {
  public:
-  QBatch(size_t start, size_t max_size, AllQueries& queries)
-      : start_(start),
-        max_size_(max_size),
-        queries_(queries),
-        size_(HWY_MIN(max_size_, queries_.NumQueries() - start_)) {
-    HWY_ASSERT(max_size_ <= kMaxBatchSize);
-    HWY_DASSERT(size_ != 0);
-    HWY_DASSERT(start_ + size_ <= queries_.NumQueries());
-  }
+  ContinuousQBatch(size_t max_size, AllQueries& queries);
 
-  // Returns a single-query view starting at `qi` relative to this batch.
-  QBatch Single(size_t qi) const { return QBatch(start_ + qi, 1, queries_); }
+  // Whether we should prefill the next batch, i.e. next_to_insert_ ==
+  // next_to_prefill_.
+  bool ShouldPrefill() const;
 
-  // How many queries in this batch, <= `queries_.NumQueries()` and `max_size_`.
-  size_t Size() const { return size_; }
+  // Setup the query_idx_ to point to the next group of queries to prefill.
+  void SetupNextBatchForPrefill();
 
-  // Returns index for use with `AllQueries` and `BatchStreamToken`.
-  size_t QueryIdx(size_t qi) const {
-    HWY_DASSERT(qi < size_);
-    return start_ + qi;
-  }
+  // Get the next query to insert to the generate batch.
+  std::optional<size_t> GetNextToInsert();
 
-  // Accessor functions to bridge the previous SoA and current AoS layout.
-  const PromptTokens& Prompt(size_t qi) const {
-    return queries_[QueryIdx(qi)].prompt;
-  }
-  size_t Pos(size_t qi) const { return queries_[QueryIdx(qi)].mutable_pos; }
-  size_t& MutablePos(size_t qi) { return queries_[QueryIdx(qi)].mutable_pos; }
-  size_t InitialPos(size_t qi) const {
-    return queries_[QueryIdx(qi)].initial_pos;
-  }
-  size_t PrefixEnd(size_t qi) const {
-    return queries_[QueryIdx(qi)].prefix_end;
-  }
-  KVCache& KV(size_t qi) const { return queries_[QueryIdx(qi)].kv_cache; }
-  int& PrevToken(size_t qi) { return queries_[QueryIdx(qi)].prev_token; }
+  // Collect the kv_cache from QBatch to available_kv_caches_.
+  void MaybeReleaseKV(const QBatch& from);
 
- private:
-  size_t start_;
-  size_t max_size_;
-  AllQueries& queries_;
-  size_t size_;
+ public:
+  int next_to_prefill_ = 0;
+  int next_to_insert_ = 0;
+  std::vector<KVCachePtr> available_kv_caches_;
 };
 
 struct TimingInfo {
+  void NotifyImageTokenStart() { image_tokens_start = hwy::platform::Now(); }
+
+  void NotifyImageTokenDone(size_t tokens) {
+    image_tokens_duration = hwy::platform::Now() - image_tokens_start;
+    image_tokens = tokens;
+
+    if (verbosity >= 1) {
+      fprintf(stderr,
+              "\n\n[ Timing info ] Image token generation took: %d ms (%.1f "
+              "tok/sec)\n",
+              static_cast<int>(image_tokens_duration * 1E3),
+              image_tokens / image_tokens_duration);
+    }
+  }
+
   // be sure to populate prefill_start before calling NotifyPrefill.
   void NotifyPrefill(size_t tokens) {
     prefill_duration = hwy::platform::Now() - prefill_start;
@@ -189,8 +102,8 @@ struct TimingInfo {
         fprintf(stderr,
                 "\n\n[ Timing info ] Prefill: %d ms for %zu prompt tokens "
                 "(%.2f tokens / sec); Time to first token: %d ms\n",
-                static_cast<int>(prefill_duration * 1000), prefill_tokens,
-                prefill_tok_sec, static_cast<int>(time_to_first_token * 1000));
+                static_cast<int>(prefill_duration * 1E3), prefill_tokens,
+                prefill_tok_sec, static_cast<int>(time_to_first_token * 1E3));
       }
     }
     if (HWY_UNLIKELY(verbosity >= 2 && tokens_generated % 1024 == 0)) {
@@ -212,31 +125,43 @@ struct TimingInfo {
       fprintf(stderr,
               "\n[ Timing info ] Generate: %d ms for %zu tokens (%.2f tokens / "
               "sec)\n",
-              static_cast<int>(generate_duration * 1000), tokens_generated,
+              static_cast<int>(generate_duration * 1E3), tokens_generated,
               gen_tok_sec);
     }
   }
 
-  int verbosity = 0;
-  double prefill_start = 0;
-  double generate_start = 0;
-  double prefill_duration = 0;
+  double image_tokens_start = 0.0;
+  double image_tokens_duration = 0.0;
+  size_t image_tokens = 0;
+
+  double prefill_start = 0.0;
+  double prefill_duration = 0.0;
   size_t prefill_tokens = 0;
-  double time_to_first_token = 0;
-  double generate_duration = 0;
+
+  double generate_start = 0.0;
+  double generate_duration = 0.0;
   size_t tokens_generated = 0;
+
+  double time_to_first_token = 0.0;
   size_t generation_steps = 0;
+
+  int verbosity = 0;
 };
 
 // After construction, all methods are const and thread-compatible if using
 // separate `ThreadingContext` and `MatMulEnv` for each concurrent `Generate`.
 class Gemma {
  public:
-  // Reads weights/config/tokenizer from the `BlobStore` at `loader.weights`.
+  // Reads weights/config/tokenizer from `BlobStore` at `args.loader.weights`.
   // `ctx` is only used to read tensors and not stored. Calls to `Generate*`
   // may reference the same, or other `ThreadingContext` via `MatMulEnv`.
+  Gemma(const GemmaArgs& args, ThreadingContext& ctx);
+
+  // Deprecated prior interface for backwards compatibility.
   Gemma(const LoaderArgs& loader, const InferenceArgs& inference,
-        ThreadingContext& ctx);
+        ThreadingContext& ctx)
+      : Gemma(GemmaArgs(loader, ThreadingArgs(), inference), ctx) {}
+
   ~Gemma();
 
   const ModelConfig& Config() const { return model_.Config(); }
@@ -270,7 +195,7 @@ class Gemma {
   // Generates the image tokens by running the image encoder ViT.
   void GenerateImageTokens(const RuntimeConfig& runtime_config, size_t seq_len,
                            const Image& image, ImageTokens& image_tokens,
-                           MatMulEnv& env) const;
+                           MatMulEnv& env, TimingInfo& timing_info) const;
 
  private:
   BlobReader reader_;

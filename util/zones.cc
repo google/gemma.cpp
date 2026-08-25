@@ -15,16 +15,18 @@ const char* ZoneName(Zones zone) {
       return "FlashAttention.FlashAttention";
     case Zones::kFlashAttentionInclusive:
       return "FlashAttention.Inclusive";
+    case Zones::kVitFlashAttentionInclusive:
+      return "Vit.FlashAttention.Inclusive";
     case Zones::kFlashAttentionRmsNormAndPositionalEncoding:
       return "FlashAttention.RMSNormAndPositionalEncoding";
-    case Zones::kFlashAttentionSingleFlashAttention:
-      return "FlashAttention.SingleFlashAttention";
-    case Zones::kFlashAttentionTileFlashAttention:
-      return "FlashAttention.TileFlashAttention";
+    case Zones::kFlashAttentionTileFlashAttention1:
+      return "FlashAttention.TileFlashAttention1";
     case Zones::kFlashAttentionTileFlashAttention4:
       return "FlashAttention.TileFlashAttention4";
-    case Zones::kFlashAttentionTransposeQ:
-      return "FlashAttention.TransposeQ";
+    case Zones::kFlashAttentionTileFlashAttention8:
+      return "FlashAttention.TileFlashAttention8";
+    case Zones::kFlashAttentionCombineSplit:
+      return "FlashAttention.CombineSplit";
     case Zones::kGenActivation:
       return "Gen.Activation";
     case Zones::kGenActivationFused:
@@ -47,10 +49,26 @@ const char* ZoneName(Zones zone) {
       return "Gen.EmbeddingMatmul";
     case Zones::kGenFFW:
       return "Gen.FFW";
+    case Zones::kGenImageTokens:
+      return "Gen.ImageTokens";
+    case Zones::kGenMoEFFW:
+      return "Gen.MoEFFW";
+    case Zones::kGenMoEFFWExperts:
+      return "Gen.MoEFFW.Experts";
+    case Zones::kGenMoEFFWExpertsChoose:
+      return "Gen.MoEFFW.Experts.Choose";
+    case Zones::kGenMoEFFWExpertsGather:
+      return "Gen.MoEFFW.Experts.Gather";
+    case Zones::kGenMoEFFWWeightedSum:
+      return "Gen.MoEFFW.WeightedSum";
     case Zones::kGenSampleTop1:
       return "Gen.SampleTop1";
     case Zones::kGenSampleTopK:
       return "Gen.SampleTopK";
+    case Zones::kGenStats:
+      return "Gen.Stats";
+    case Zones::kGenTotalTransformerLayer:
+      return "Gen.TotalTransformerLayer";
     case Zones::kMMDecompressA:
       return "MM.DecompressA";
     case Zones::kMMDispatch:
@@ -65,6 +83,10 @@ const char* ZoneName(Zones zone) {
       return "MM.NT_MT";
     case Zones::kMMNT:
       return "MM.NT";
+    case Zones::kMMSFC:
+      return "MM.SFC";
+    case Zones::kMMSFC_K:
+      return "MM.SFC_K";
     case Zones::kMMTwoMatMul:
       return "MM.TwoMatMul";
     case Zones::kOpsAddFrom:
@@ -84,6 +106,8 @@ const char* ZoneName(Zones zone) {
       return "Ops.RMSNormInplace";
     case Zones::kOpsRmsNormMul:
       return "Ops.RMSNormMul";
+    case Zones::kOpsRmsNormNoScaleInplace:
+      return "Ops.RMSNormNoScaleInplace";
     case Zones::kOpsRope:
       return "Ops.Rope";
     case Zones::kOpsRopeAndMulBy:
@@ -102,6 +126,7 @@ const char* ZoneName(Zones zone) {
 hwy::ProfilerFlags ZoneFlags(Zones zone) {
   switch (zone) {
     case Zones::kFlashAttentionInclusive:
+    case Zones::kVitFlashAttentionInclusive:
     case Zones::kGenAttention:
     case Zones::kGenAttentionComputeQKV:
     case Zones::kGenAttentionDotSoftmaxWeightedSumInclusive:
@@ -109,6 +134,9 @@ hwy::ProfilerFlags ZoneFlags(Zones zone) {
     case Zones::kGenEmbed:
     case Zones::kGenEmbeddingMatmul:
     case Zones::kGenFFW:
+    case Zones::kGenImageTokens:
+    case Zones::kGenMoEFFW:
+    case Zones::kGenTotalTransformerLayer:
       return hwy::ProfilerFlags::kInclusive;
     default:
       return hwy::ProfilerFlags::kDefault;
@@ -127,6 +155,8 @@ const char* CallerName(Callers caller) {
       return "Att.DotSoftmaxWeightedSum";
     case Callers::kBlobWriter:
       return "BlobWriter";
+    case Callers::kBRGeMM:
+      return "BRGeMM";
     case Callers::kCompress:
       return "Compress";
     case Callers::kFixupWeights:
@@ -143,26 +173,46 @@ const char* CallerName(Callers caller) {
       return "MM.ClusterForMCNC";
     case Callers::kMMClusterForN:
       return "MM.ClusterForN";
+    case Callers::kMMClusterForSFC:
+      return "MM.ClusterForSFC";
     case Callers::kMMHierForMC:
       return "MM.HierForMC";
     case Callers::kMMHierForMCNC:
       return "MM.HierForMCNC";
     case Callers::kMMHierForN:
       return "MM.HierForN";
+    case Callers::kMMHierForSFC:
+      return "MM.HierForSFC";
+    case Callers::kMoEChooseExperts:
+      return "MoE.ChooseExperts";
+    case Callers::kMoEComputeAllExpertOutputs:
+      return "MoE.ComputeAllExpertOutputs";
+    case Callers::kMoEWeightedSumOfExperts:
+      return "MoE.WeightedSumOfExperts";
+    case Callers::kOneDnnMatMul:
+      return "OneDnnMatMul";
     case Callers::kOpsAddFromBatched:
       return "Ops.AddFromBatched";
+    case Callers::kOpsGroupedRMSNormBatched:
+      return "Ops.GroupedRMSNormBatched";
+    case Callers::kOpsGroupedRMSNormInplaceBatched:
+      return "Ops.GroupedRMSNormInplaceBatched";
     case Callers::kOpsMaybeLogitsSoftCapBatched:
       return "Ops.MaybeLogitsSoftCapBatched";
     case Callers::kOpsRMSNormBatched:
       return "Ops.RMSNormBatched";
     case Callers::kOpsRMSNormInplaceBatched:
       return "Ops.RMSNormInplaceBatched";
+    case Callers::kOpsRMSNormNoScaleInplaceBatched:
+      return "Ops.RMSNormNoScaleInplaceBatched";
     case Callers::kReadAllToBF16:
       return "ReadAllToBF16";
     case Callers::kReadBatches:
       return "ReadBatches";
     case Callers::kSampleAndStream:
       return "SampleAndStream";
+    case Callers::kTensorStats:
+      return "TensorStats";
     case Callers::kTest:  // only for unit tests.
       return "Test-only!";
     case Callers::kTunePool:

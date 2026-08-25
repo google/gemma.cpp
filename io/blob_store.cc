@@ -115,8 +115,9 @@ struct BlobIO {
 class BlobStore {
   static constexpr uint32_t kMagic = 0x0A534253;  // SBS\n
 
-  // Upper limit to avoid allocating a huge vector.
-  static constexpr size_t kMaxBlobs = 16 * 1024;
+  // Upper limit to avoid allocating a huge vector. Large MoE models
+  // (DeepSeek-V4: 256 experts x 3 mats x 41 layers) exceed the old 16K cap.
+  static constexpr size_t kMaxBlobs = 1024 * 1024;
 
   // Returns the size of padded header and directory, which is also the start of
   // the first payload for V1. `num_blobs` is `NumBlobs()` if the header is
@@ -182,8 +183,13 @@ class BlobStore {
   bool ParseHeaderAndDirectoryV2(const File& file) {
     is_file_v2_ = true;
     // Read header from the end of the file.
-    size_t offset = file.FileSize() - sizeof(header_);
-    if (!file.Read(offset, sizeof(header_), &header_)) {
+    const uint64_t file_bytes = file.FileSize();
+    if (file_bytes < sizeof(header_)) {
+      HWY_WARN("File is too small to contain a BlobStore header.");
+      return false;
+    }
+    size_t pos = file_bytes - sizeof(header_);
+    if (!file.Read(pos, sizeof(header_), &header_)) {
       HWY_WARN("Failed to read BlobStore header.");
       return false;
     }
@@ -199,14 +205,20 @@ class BlobStore {
       return false;
     }
     directory_.resize(header_.num_blobs * 2);
-    const auto directory_bytes = 2 * kU128Bytes * header_.num_blobs;
-    offset -= directory_bytes;
-    // Read directory immediately before the header.
-    if (!file.Read(offset, directory_bytes, directory_.data())) {
+
+    // Read directory, which ends at the start of the header.
+    const size_t directory_bytes = 2 * kU128Bytes * header_.num_blobs;
+    if (directory_bytes > pos) {
+      HWY_WARN("Directory is larger than the file size.");
+      return false;
+    }
+    pos -= directory_bytes;
+    if (!file.Read(pos, directory_bytes, directory_.data())) {
       HWY_WARN("Failed to read BlobStore directory.");
       return false;
     }
-    HWY_ASSERT(IsValid(file.FileSize()));
+
+    HWY_ASSERT(IsValid(file_bytes));
     return true;
   }
 
@@ -488,11 +500,10 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
   EnqueueChunks(keys_.size() - 1, curr_offset_, bytes,
                 static_cast<const uint8_t*>(data), writes);
 
-  const ParallelismStrategy strategy = file_->IsAppendOnly()
-                                           ? ParallelismStrategy::kNone
-                                           : ParallelismStrategy::kFlat;
+  const Parallelism parallelism =
+      file_->IsAppendOnly() ? Parallelism::kNone : Parallelism::kFlat;
   ParallelFor(
-      strategy, writes.size(), ctx_,
+      parallelism, writes.size(), ctx_,
       /*cluster_idx=*/0, Callers::kBlobWriter,
       [this, &writes](uint64_t i, size_t /*thread*/) {
         const BlobRange& range = writes[i].range;
@@ -509,7 +520,8 @@ void BlobWriter::Add(const std::string& key, const void* data, size_t bytes) {
 void BlobWriter::Finalize() {
   if (!file_->IsAppendOnly() && curr_offset_ != file_->FileSize()) {
     HWY_WARN("Computed offset %zu does not match file size %zu.",
-             curr_offset_, file_->FileSize());
+             static_cast<size_t>(curr_offset_),
+             static_cast<size_t>(file_->FileSize()));
   }
   const BlobStore bs = BlobStore(keys_, blob_sizes_);
 

@@ -41,6 +41,12 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/compress-inl.h"
+#if GEMMA_ONEDNN_BRGEMM
+#include "ops/brgemm-inl.h"
+#endif  // GEMMA_ONEDNN_BRGEMM
+#if GEMMA_ONEDNN_MATMUL
+#include "ops/onednn_matmul-inl.h"
+#endif  // GEMMA_ONEDNN_MATMUL
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -837,10 +843,11 @@ class MMImpl {
                                hwy::platform::InvariantTicksPerSecond();
     const double flops = 2 * M * K * N * num_B / min_elapsed;  // * 2 for FMA
     if (HWY_UNLIKELY(env.print_measurement && tuner.ShouldPrint())) {
-      fprintf(stderr, "%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu\n",
-              M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, cfg.MR(),
-              cfg.MC(), cfg.KC(), cfg.NC(), StringFromOrder(cfg.Order()),
-              cfg.InnerTasks());
+      fprintf(
+          stderr,
+          "%4zu,%4zu,%4zu,B%zu,%7.1f,%.2f ms, MR%zu,%4zu,%4zu,%5zu,%-7s,%zu\n",
+          M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, cfg.MR(), cfg.MC(),
+          cfg.KC(), cfg.NC(), StringFromOrder(cfg.Order()), cfg.InnerTasks());
     }
     if (HWY_UNLIKELY(env.print_best && tuner.Best())) {
       const auto ratio = [&tuner](uint64_t ticks) -> double {
@@ -850,7 +857,8 @@ class MMImpl {
       const MMConfig& best = *tuner.Best();
       fprintf(
           stderr,
-          "\n%zu,%zu,%zu,%zu,%7.1f,%.2f,%zu,%4zu,%4zu,%5zu,%s,%zu,%.2f,%.2f\n",
+          "\n%4zu,%4zu,%4zu,B%zu,%7.1f,%.2f ms, MR%zu,%4zu,%4zu,%5zu,%-7s,%zu, "
+          "%.2fx,%.2fx\n",
           M, K, N, num_B, flops * 1E-9, min_elapsed * 1E3, best.MR(), best.MC(),
           best.KC(), best.NC(), StringFromOrder(best.Order()),
           best.InnerTasks(), ratio(tuner.WorstMinTicks()),
@@ -906,8 +914,8 @@ class MMLoops {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_mc = args.ranges_mc.Range(0);
-    const IndexRange& range_kc = args.ranges_kc.Range(0);
+    const IndexRange& range_mc = args.ranges_mc.Range(0);  // whole M
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
 
     parallel.ForN(
         args.env.ctx, args.range_n, MultipleN(sizeof(TC), args.line_bytes),
@@ -941,7 +949,7 @@ class MMLoops {
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_K);
     HWY_DASSERT(args.ranges_mc.NumTasks() == 1);
-    const IndexRange& range_mc = args.ranges_mc.Range(0);
+    const IndexRange& range_mc = args.ranges_mc.Range(0);  // whole M
 
     parallel.ForN(args.env.ctx, args.range_n,
                   MultipleN(sizeof(TC), args.line_bytes), args.inner_tasks,
@@ -977,7 +985,7 @@ class MMLoops {
                               const MMArgs& args) {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT);
     HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
-    const IndexRange& range_kc = args.ranges_kc.Range(0);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
 
     parallel.ForRangesMC_NC(
         args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
@@ -1012,6 +1020,71 @@ class MMLoops {
     const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMNT_MT_K);
 
     parallel.ForRangesMC_NC(
+        args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone mm_zone;
+          mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
+          MMKernel::ForeachKC(
+              A, B, range_mc, args.ranges_kc, range_nc, args,
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
+
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                args, C2);
+          }
+
+          if constexpr (IsBF16<TC>()) {
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          }
+        });
+  }
+
+  // Parallel loops over mc/nc blocks of M/range_n via SFC, single K.
+  template <typename TB, typename TC, class Parallel>
+  static HWY_INLINE void Loop(MMOrderSFC, Parallel parallel,
+                              const StridedViewBF A, const MatPtrT<TB>& B,
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC);
+    HWY_DASSERT(args.ranges_kc.NumTasks() == 1);
+    const IndexRange& range_kc = args.ranges_kc.Range(0);  // whole K
+
+    parallel.ForRangesSFC(
+        args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
+        [&](const IndexRange& range_mc, const IndexRange& range_nc,
+            size_t worker) HWY_ATTR {
+          MMZone mm_zone;
+          mm_zone.MaybeEnter(worker, zone, args.env, &args.autotune);
+          MMKernel::B3A2C0(
+              A, B, range_mc, range_kc, range_nc, args, MMSetC(),
+              C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
+
+          const StridedViewBF C2 = args.env.C_tiles.C(
+              Extents2D(range_mc.Num(), range_nc.Num()), worker);
+
+          if (B2 != nullptr) {
+            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                             MMSetC(), C2);
+          }
+          if constexpr (IsBF16<TC>()) {
+            args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          }
+        });
+  }
+
+  // Parallel loops over mc/nc blocks of M/range_n via SFC, sequential K.
+  template <typename TB, typename TC, class Parallel>
+  static HWY_INLINE void Loop(MMOrderSFC_K, Parallel parallel,
+                              const StridedViewBF A, const MatPtrT<TB>& B,
+                              const MatPtrT<TB>* B2, RowPtrs<TC> C,
+                              const MMArgs& args) {
+    const auto zone = args.env.ctx.profiler_zones.Get(Zones::kMMSFC_K);
+
+    parallel.ForRangesSFC(
         args.env.ctx, args.ranges_mc, args.ranges_nc, args.options.cluster_idx,
         [&](const IndexRange& range_mc, const IndexRange& range_nc,
             size_t worker) HWY_ATTR {
@@ -1074,6 +1147,64 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   const CacheInfo& cache = env.ctx.cache_info;
   MMPerKey& per_key = MMImpl::FindOrAddPerKey(
       M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
+
+#if GEMMA_ONEDNN_BRGEMM
+  // BRGeMM path for BF16×BF16 on Intel AMX/AVX-512.
+  // Requires M,N,K >= 32 and K % 32 == 0 (AMX tile constraint).
+  if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
+    if (M >= 32 && N >= 32 && K >= 32 && (K % 32) == 0) {
+      const float scale = A.Scale() * B.Scale();
+      MMAutoTune<BRGeMMConfig>& brg_tuner = per_key.brgemm_autotune;
+
+      if (HWY_LIKELY(brg_tuner.Best())) {
+        if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add,
+                            *brg_tuner.Best(), env.ctx, cluster_idx)) {
+          return &per_key;
+        }
+        // BRGeMM failed; fall through to standard matmul.
+      }
+
+      if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
+        brg_tuner.SetCandidates(BRGeMMCandidates(M, K, N));
+      }
+
+      const BRGeMMConfig& cfg = brg_tuner.NextConfig();
+      const uint64_t t0 = hwy::timer::Start();
+      if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
+                          cluster_idx)) {
+        const uint64_t t1 =
+            env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+        brg_tuner.NotifyTicks(t1 - t0);
+
+        if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
+          const BRGeMMConfig& best = *brg_tuner.Best();
+          fprintf(stderr,
+                  "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
+                  "batch=%zu\n",
+                  M, K, N, best.M_blk, best.N_blk, best.K_blk, best.batch_size);
+        }
+        return &per_key;
+      }
+      // BRGeMM failed; fall through to standard matmul.
+    }
+  }  // if constexpr BF16/float
+#endif  // GEMMA_ONEDNN_BRGEMM
+
+#if GEMMA_ONEDNN_MATMUL
+  // OneDNN matmul-primitive path for BF16xBF16 via the threadpool runtime.
+  // M == 1 was showing worse performance with OneDNN.
+  if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
+    if (M > 1) {
+      const float scale = A.Scale() * B.Scale();
+      if (DoMatMul_OneDnn(A, B, C_rows, M, K, N, scale, add, env,
+                          cluster_idx)) {
+        per_key.onednn_built = true;
+        return &per_key;
+      }
+      // oneDNN path failed/declined; fall through to standard matmul.
+    }
+  }
+#endif  // GEMMA_ONEDNN_MATMUL
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
   const StridedViewBF A_view =
@@ -1158,8 +1289,9 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
     HWY_ASSERT(K <= MMEntireA::kMaxK);
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
-    tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(BF16), env.print_config));
+    const size_t max_M = MMKeys::BucketM(M);
+    tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16),
+                                     env.print_config));
   }
 
   const MMConfig& cfg = tuner.NextConfig();

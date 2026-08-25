@@ -293,11 +293,11 @@ class IntCodec {
     for (; i + 2 * N <= g_num; i += 2 * N) {
       const VI8 val0 = hn::DemoteTo(
           di8,
-          hn::DemoteTo(di16, NearestInt(hn::MulAdd(
+          hn::DemoteTo(di16, hn::NearestInt(hn::MulAdd(
                                  mul, hn::LoadU(df, raw + i + 0 * N), add))));
       const VI8 val1 = hn::DemoteTo(
           di8,
-          hn::DemoteTo(di16, NearestInt(hn::MulAdd(
+          hn::DemoteTo(di16, hn::NearestInt(hn::MulAdd(
                                  mul, hn::LoadU(df, raw + i + 1 * N), add))));
 
       hn::StoreU(val0, di8, &packed.ptr->i + current_offset + i + 0 * N);
@@ -311,7 +311,7 @@ class IntCodec {
 
     if (remaining > N) {
       const VI8 val0 = hn::DemoteTo(
-          di8, hn::DemoteTo(di16, NearestInt(hn::MulAdd(
+          di8, hn::DemoteTo(di16, hn::NearestInt(hn::MulAdd(
                                       mul, hn::LoadU(df, raw + i), add))));
       hn::StoreU(val0, di8, &packed.ptr->i + current_offset + i);
 
@@ -319,14 +319,14 @@ class IntCodec {
       const VI8 val1 = hn::DemoteTo(
           di8,
           hn::DemoteTo(di16,
-                       NearestInt(hn::MulAdd(
+                       hn::NearestInt(hn::MulAdd(
                            mul, hn::LoadN(df, raw + i + N, remaining1), add))));
       hn::StoreN(val1, di8, &packed.ptr->i + current_offset + i + N,
                  remaining1);
     } else {  // remaining <= N
       const VI8 val0 = hn::DemoteTo(
           di8, hn::DemoteTo(di16,
-                            NearestInt(hn::MulAdd(
+                            hn::NearestInt(hn::MulAdd(
                                 mul, hn::LoadN(df, raw + i, remaining), add))));
       hn::StoreN(val0, di8, &packed.ptr->i + current_offset + i, remaining);
     }

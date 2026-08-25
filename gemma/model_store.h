@@ -39,6 +39,8 @@
 
 namespace gcpp {
 
+class Gemma;
+
 // Reads and holds the model config, tokenizer and all `MatPtr`: everything
 // except the tensor data, which are read/written by `weights.cc`.
 //
@@ -56,6 +58,11 @@ class ModelStore {
   ~ModelStore();
 
   const ModelConfig& Config() const {
+    HWY_ASSERT(config_.model != Model::UNKNOWN);
+    return config_;
+  }
+
+  ModelConfig& MutableConfig() {
     HWY_ASSERT(config_.model != Model::UNKNOWN);
     return config_;
   }

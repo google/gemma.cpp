@@ -96,8 +96,8 @@ https://github.com/keras-team/keras-nlp/blob/master/tools/gemma/export_gemma_to_
 From Pytorch, use the following script to generate uncompressed weights:
 https://github.com/google/gemma.cpp/blob/dev/compression/convert_weights.py
 
-For PaliGemma, use `python/convert_from_safetensors` to create an SBS file
-directly.
+For PaliGemma and T5Gemma S/S, use `python/convert_from_safetensors` to create
+an SBS file directly.
 
 For other models, `gemma_export_main.py` is not yet open sourced.
 
@@ -174,6 +174,36 @@ provide `bazel/sentencepiece.bazel`. Second, it ships with a vendored subset of
 the Abseil library. `bazel/sentencepiece.patch` changes the code to support
 Abseil as a standalone dependency without third_party/ prefixes, similar to the
 transforms we apply to Gemma via Copybara.
+
+## Profiling
+
+Gemma.cpp is instrumented with Highway's profiler (`hwy/profiler.h`). Zones
+cover prefill, attention, MatMul and weight loading (see `util/zones.h`).
+Profiling is disabled by default and can be enabled at build time:
+
+*   CMake: `cmake -B build -DGEMMA_ENABLE_PROFILER=ON ...`
+*   Bazel: add `--config=profiler` to the build command.
+
+Benchmarks such as `gemma_batch_bench` and `bench_matmul` print per-zone call
+counts and self-times via `PROFILER_PRINT_RESULTS()`. For performance
+measurements we recommend `gemma_batch_bench`.
+
+## Attention implementations
+
+The attention kernel can be configured at runtime via `--attention_impl`.
+
+*   `flash` (default)
+*   `flash_transposed_qs`
+*   `flash_transposed_qs_bf16`
+*   `flash_transposed_qs_int16`
+*   `flash_transposed_qs_int8`
+*   `flash_matrix_accumulation`
+*   `int8_matrix_accumulation`
+
+The KV cache type is determined from the chosen implementation unless
+overridden with `--kv_cache_type`. Some implementations require a specific type
+and warn if asked for another. See the `KVCache` constructor in
+`gemma/kv_cache.cc` for more details.
 
 ## Debugging
 

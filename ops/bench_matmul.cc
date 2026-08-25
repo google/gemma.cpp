@@ -53,7 +53,7 @@ extern int64_t first_target;
 namespace HWY_NAMESPACE {
 
 void PrintSpeed(const Extents2D& A_extents, const Extents2D& B_extents,
-                std::vector<double>& times, MMPerKey* per_key) {
+                std::vector<double>& times) {
   std::sort(times.begin(), times.end());
   // bench_dnn reports the best and average, but the median seems more
   // consistent and resistant to outliers.
@@ -121,6 +121,9 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
 
   double keep = 0.0;
   MMPerKey* per_key;
+#if GEMMA_ONEDNN_MATMUL
+  bool first_onednn_call = true;
+#endif
   // Until enough samples collected *after* autotuning finished:
   while (times.size() < num_samples) {
     const double t0 = hwy::platform::Now();
@@ -130,11 +133,23 @@ void BenchMatMul(size_t M, size_t K, size_t N, bool add, MatMulEnv& env) {
     keep += hwy::ConvertScalarTo<double>(C.Row(0)[hwy::Unpredictable1()]);
 
     // Only record times after autotuning finished.
-    if (per_key->autotune.Best()) times.push_back(elapsed);
+    bool done = per_key->autotune.Best();
+#if GEMMA_ONEDNN_BRGEMM
+    done = done || per_key->brgemm_autotune.Best();
+#endif
+#if GEMMA_ONEDNN_MATMUL
+    // oneDNN has no autotune sweep; exclude only the first (JIT + weight
+    // reorder) call, whose cost is amortized by the primitive/weights caches.
+    if (per_key->onednn_built) {
+      done = done || !first_onednn_call;
+      first_onednn_call = false;
+    }
+#endif
+    if (done) times.push_back(elapsed);
   }
   hwy::PreventElision(keep);
   env.ctx.pools.MaybeStopSpinning(use_spinning);
-  PrintSpeed(A_extents, B_extents, times, per_key);
+  PrintSpeed(A_extents, B_extents, times);
 }
 
 using F32 = float;
@@ -161,6 +176,23 @@ void BenchAllMatMul() {
     constexpr bool kAdd = false;
     BenchMatMul<BF16, BF16, BF16>(batch_size, 24576, 3072, kAdd, env);
     BenchMatMul<BF16, BF16, BF16>(batch_size, 3072, 24576, kAdd, env);
+  }
+
+  // Gemma3-1B decode shapes, covering both small batch and compressed weights.
+  for (size_t batch_size : {1, 2, 4, 8}) {
+    constexpr bool kAdd = false;
+    // QKV projection
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 1536, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 1536, kAdd, env);
+    // FFN gate+up
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 13824, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 13824, kAdd, env);
+    // FFN down
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 6912, 1152, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 6912, 1152, kAdd, env);
+    // Logits / embedding
+    BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 262144, kAdd, env);
+    BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 262144, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();

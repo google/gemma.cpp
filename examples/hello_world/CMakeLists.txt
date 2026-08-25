@@ -18,10 +18,29 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
-FetchContent_Declare(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 2a16a50ff61071bb25ddef0ce35d92b0e2b9c579)
-FetchContent_MakeAvailable(highway)
-FetchContent_Declare(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 9045b2f60fa2b323dfac0eaef8fc17565036f9f9)
-FetchContent_MakeAvailable(sentencepiece)
+
+# Download progress reporting, shared with the top-level build. This example is
+# a standalone project, so fall back to plain FetchContent if it was copied out
+# of the gemma.cpp tree and the module is not next to it.
+set(GEMMA_DEP_TOTAL 3)
+set(_gemma_fetch_module "${CMAKE_CURRENT_LIST_DIR}/../../cmake/GemmaFetch.cmake")
+if(EXISTS "${_gemma_fetch_module}")
+  include("${_gemma_fetch_module}")
+else()
+  function(gemma_fetch name)
+    FetchContent_Declare(${name} ${ARGN})
+    FetchContent_MakeAvailable(${name})
+    string(TOLOWER "${name}" _lc)
+    set(${_lc}_SOURCE_DIR "${${_lc}_SOURCE_DIR}" PARENT_SCOPE)
+  endfunction()
+endif()
+
+gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+   CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
+  target_compile_definitions(hwy PUBLIC HWY_DISABLED_TARGETS=HWY_AVX10_2)
+endif()
+gemma_fetch(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG 9045b2f60fa2b323dfac0eaef8fc17565036f9f9)
 
 
 
@@ -32,11 +51,10 @@ if (NOT BUILD_MODE)
 endif()
 if (BUILD_MODE STREQUAL "local")
   # Relative path to gemma.cpp from examples/hello_world/build/
-  FetchContent_Declare(gemma SOURCE_DIR ../../..)
+  gemma_fetch(gemma SOURCE_DIR ../../..)
 else()
-  FetchContent_Declare(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 4a924f179448dc83e46a2af9520c61b4ef56174c)
+  gemma_fetch(gemma GIT_REPOSITORY https://github.com/google/gemma.cpp.git GIT_TAG 4a924f179448dc83e46a2af9520c61b4ef56174c)
 endif()
-FetchContent_MakeAvailable(gemma)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")

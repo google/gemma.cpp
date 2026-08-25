@@ -19,11 +19,12 @@
 #include <stdio.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "compression/types.h"  // Type
-#include "io/fields.h"           // IFields
-#include "io/io.h"               // Path
+#include "io/fields.h"          // IFields
+#include "io/io.h"              // Path
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -238,6 +239,7 @@ static ModelConfig ConfigGemma3_1B() {
   config.display_name = "Gemma3_1B";
   config.model = Model::GEMMA3_1B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   config.model_dim = 1152;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -264,12 +266,13 @@ static LayerConfig LayerConfigGemma3_4B_LM(size_t model_dim) {
   return config;
 }
 
-// Until we have the SigLIP checkpoints included, we use the LM config directly.
+// Shared LM-only config for Gemma3 4B: used directly for text-only checkpoints
+// (e.g. TranslateGemma) and as the base for the VLM build.
 static ModelConfig ConfigGemma3_4B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_4B";
-  config.model = Model::GEMMA3_4B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_4B_LM";
+  config.model = Model::GEMMA3_4B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 2560;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -288,6 +291,7 @@ static ModelConfig ConfigGemma3_4B() {
   config.display_name = "Gemma3_4B";
   config.model = Model::GEMMA3_4B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -316,9 +320,9 @@ static LayerConfig LayerConfigGemma3_12B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_12B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_12B";
-  config.model = Model::GEMMA3_12B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_12B_LM";
+  config.model = Model::GEMMA3_12B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 3840;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -337,6 +341,7 @@ static ModelConfig ConfigGemma3_12B() {
   config.display_name = "Gemma3_12B";
   config.model = Model::GEMMA3_12B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -365,9 +370,9 @@ static LayerConfig LayerConfigGemma3_27B_LM(size_t model_dim) {
 
 static ModelConfig ConfigGemma3_27B_LM() {
   ModelConfig config = ConfigBaseGemmaV3();
-  config.display_name = "Gemma3_27B";
-  config.model = Model::GEMMA3_27B;
-  config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.display_name = "Gemma3_27B_LM";
+  config.model = Model::GEMMA3_27B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 5376;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -386,6 +391,7 @@ static ModelConfig ConfigGemma3_27B() {
   config.display_name = "Gemma3_27B";
   config.model = Model::GEMMA3_27B;
   config.wrapping = PromptWrapping::GEMMA_VLM;
+  config.use_global_timescale = true;
   AddVitConfig(config, /*image_size=*/896);
   config.vocab_size = kGemmaV3VocabSize;
   config.vit_config.pool_dim = 4;
@@ -430,6 +436,393 @@ static ModelConfig ConfigGemma3_270M() {
   return config;
 }
 
+static ModelConfig ConfigBaseGemmaV4() {
+  ModelConfig config = ConfigNoSSM();
+  config.model_family_version = 4;
+  config.att_cap = 0.0f;
+  config.final_cap = 0.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 106;
+  config.vocab_size = 262208;
+  return config;
+}
+
+
+static LayerConfig LayerConfigGemma4_26B_MoE_LM(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 2112;
+  config.heads = 16;
+  config.kv_heads = 8;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.activation = ActivationType::Gelu;
+  config.post_qk = PostQKType::NormLocalRope;
+  config.use_qk_norm = true;
+  config.norm_v = true;
+
+  config.num_experts = 128;
+  config.num_experts_per_datapoint = 8;
+
+  return config;
+}
+
+static ModelConfig ConfigGemma4_26B_MoE() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_26B_MoE";
+  config.final_cap = 0.0f;
+  config.att_cap = 0.0f;
+  config.model = Model::GEMMA4_26B_MOE;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.use_global_timescale = true;
+  config.partial_rotary_factor = 0.25f;
+  config.model_dim = 2816;
+  config.vocab_size = kGemmaV3VocabSize;
+  config.max_seq_len = 32 * 1024;
+  config.num_layers = 30;
+  LayerConfig layer_config = LayerConfigGemma4_26B_MoE_LM(config.model_dim);
+  config.layer_configs = {config.num_layers, layer_config};
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    if (i % 6 == 5) {
+      config.layer_configs[i].qkv_dim = 512;
+      config.layer_configs[i].kv_heads = 2;
+    }
+  }
+  config.secondary_eos_id = 106;  // <turn|> is the EOT for Gemma4 MoE
+  config.query_scale = QueryScaleType::One;
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<30, 6>(
+      {1024, 1024, 1024, 1024, 1024, config.max_seq_len});
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_2B_Local(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 6144;
+  config.heads = 8;
+  config.kv_heads = 1;
+  config.qkv_dim = 256;
+  config.optimized_gating = true;
+  config.post_norm = PostNormType::Scale;
+  config.activation = ActivationType::Gelu;
+  config.post_qk = PostQKType::NormLocalRope;
+  config.use_qk_norm = true;
+  config.norm_v = true;
+  config.ple_dim = 256;
+  return config;
+}
+
+static LayerConfig LayerConfigGemma4_2B_Global(size_t model_dim) {
+  LayerConfig config = LayerConfigGemma4_2B_Local(model_dim);
+  config.qkv_dim = 512;
+  return config;
+}
+
+// Until we have the audio checkpoints included, we use the LM config directly.
+static ModelConfig ConfigGemma4_2B_LM() {
+  ModelConfig config = ConfigBaseGemmaV4();
+  config.display_name = "Gemma4_2B_LM";
+  config.model = Model::GEMMA4_2B_LM;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 1536;
+  config.vocab_size = kGemmaV3VocabSize;  // 262144
+  config.max_seq_len = 128 * 1024;
+  config.final_cap = 0.0f;
+  config.ple_dim = 256;
+  config.num_layers = 35;
+  config.use_global_timescale = true;
+  config.partial_rotary_factor = 0.25f;
+  config.query_scale = QueryScaleType::One;
+  LayerConfig local_config = LayerConfigGemma4_2B_Local(config.model_dim);
+  config.layer_configs = {config.num_layers, local_config};
+  // Global attention layers: [4, 9, 14, 19, 24, 29, 34] (stride 5)
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    if (i % 5 == 4) {
+      config.layer_configs[i] = LayerConfigGemma4_2B_Global(config.model_dim);
+    }
+  }
+  // Double-wide MLP for last 20 layers (KV-shared layers 15-34)
+  for (size_t i = 15; i < config.num_layers; ++i) {
+    config.layer_configs[i].ff_hidden_dim = 12288;
+    config.layer_configs[i].kv_share_layer_idx = (i % 5 == 4) ? 14 : 13;
+  }
+  config.attention_window_sizes = RepeatedAttentionWindowSizes<35, 5>(
+      {512, 512, 512, 512, config.max_seq_len});
+  return config;
+}
+
+static ModelConfig ConfigGemma4_2B() {
+  ModelConfig config = ConfigGemma4_2B_LM();
+  config.display_name = "Gemma4_2B";
+  config.model = Model::GEMMA4_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.use_global_timescale = true;
+
+  config.vit_config.model_dim = 768;
+  config.vit_config.patch_width = 16;
+  config.vit_config.seq_len = 2520;
+  config.vit_config.pool_dim = 3;
+  config.vit_config.image_size = 896;
+
+  LayerConfig vit_layer;
+  vit_layer.model_dim = 768;
+  vit_layer.ff_hidden_dim = 3072;
+  vit_layer.heads = 12;
+  vit_layer.kv_heads = 12;
+  vit_layer.qkv_dim = 64;
+  vit_layer.type = LayerAttentionType::kVitGemma4;
+  vit_layer.use_qk_norm = true;
+  vit_layer.post_norm = PostNormType::Scale;
+
+  config.vit_config.layer_configs = {16, vit_layer};
+  return config;
+}
+
+static LayerConfig LayerConfigDeepSeek4_Flash(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 2048;  // moe_inter_dim: shared + routed expert width
+  config.heads = 64;
+  config.kv_heads = 1;  // unused by MLA; kept consistent for legacy fields
+  // Per-head query dim = head_dim = nope (448) + decoupled rope (64).
+  config.qkv_dim = 512;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::None;
+  config.type = LayerAttentionType::kDeepSeekMLA;
+  config.activation = ActivationType::Silu;
+  config.use_qk_norm = false;
+
+  config.kv_lora_rank = 448;  // head_dim (512) - rope_head_dim (64)
+  config.q_lora_rank = 1024;
+  config.rope_head_dim = 64;
+  config.v_head_dim = 512;  // V4: value = the full 512-wide latent
+  config.o_lora_rank = 1024;
+  config.o_groups = 8;
+  config.attention_variant = AttentionVariant::kCSA;  // per-layer, see below
+  config.kv_compression_rate = 4;
+  config.indexer_heads = 64;
+  config.indexer_head_dim = 128;
+  config.indexer_top_k = 512;
+
+  config.num_experts = 256;
+  config.num_experts_per_datapoint = 6;
+  config.num_shared_experts = 1;
+  config.sigmoid_gating = false;
+  config.router_score = RouterScoreFunc::kSqrtSoftplus;
+  config.route_scale = 1.5f;
+  config.swiglu_limit = 10.0f;
+  config.use_routing_bias = true;
+  return config;
+}
+
+static ModelConfig ConfigDeepSeek4_Flash() {
+  ModelConfig config;
+  config.model_family_version = 4;
+  config.display_name = "DeepSeek4_Flash";
+  config.model = Model::DEEPSEEK4_FLASH;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 4096;
+  config.vocab_size = 129280;
+  // The released model supports 1,048,576 tokens (max_position_embeddings, via
+  // YaRN). Capped here pending sliding-window / paged KV caches.
+  config.max_seq_len = 131072;
+  config.num_layers = 43;
+  config.hc_mult = 4;
+  config.eos_id = 1;
+  config.secondary_eos_id = 1;
+  LayerConfig layer_config = LayerConfigDeepSeek4_Flash(config.model_dim);
+  config.layer_configs = {config.num_layers, layer_config};
+
+  // Per-layer attention from the released `compress_ratios`
+  // [0, 0, 4, 128, 4, 128, ..., 4, 0] (index 43 is the unmodeled MTP layer):
+  //   0   -> pure sliding-window attention (no compressed entries),
+  //   4   -> CSA with the lightning indexer,
+  //   128 -> HCA (heavy pooling, no indexer).
+  // Layers 0-1 use ratio 0; from layer 2 on, even layers are CSA and odd
+  // layers HCA. All layers are MoE; the first 3 use hash routing (per-token-id
+  // expert table, no routing bias).
+  for (size_t i = 0; i < config.num_layers; ++i) {
+    LayerConfig& lc = config.layer_configs[i];
+    if (i < 2) {
+      lc.SetDenseAttention();
+    } else if ((i % 2) == 0) {
+      lc.attention_variant = AttentionVariant::kCSA;
+      lc.kv_compression_rate = 4;
+      lc.indexer_heads = 64;
+      lc.indexer_head_dim = 128;
+      lc.indexer_top_k = 512;
+    } else {
+      lc.attention_variant = AttentionVariant::kHCA;
+      lc.kv_compression_rate = 128;
+      lc.indexer_heads = 0;
+      lc.indexer_head_dim = 0;
+      lc.indexer_top_k = 0;
+    }
+    if (i < 3) {
+      lc.hash_routing = true;
+      lc.use_routing_bias = false;
+    }
+  }
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  // Sliding window of raw latents; compressed entries cover the rest of the
+  // history on CSA/HCA layers.
+  config.attention_window_sizes = FixedAttentionWindowSizes<43>(128);
+
+  config.rope_theta = 10000.0f;
+  config.compress_rope_theta = 160000.0f;
+  config.yarn_orig_seq_len = 65536;
+  config.yarn_factor = 16.0f;
+  config.yarn_beta_fast = 32.0f;
+  config.yarn_beta_slow = 1.0f;
+  config.hc_sinkhorn_iters = 20;
+  config.hc_eps = 1e-6f;
+  // The `mtp.0.*` multi-token-prediction block: one extra transformer layer
+  // (dense MLA + MoE) used only for speculative decoding.
+  config.num_mtp_layers = 1;
+  return config;
+}
+
+// The MTP block has the attention shape of the dense layers (no compressor,
+// no indexer) and the learned-gate MoE of layers >= 3 (no hash routing).
+LayerConfig ModelConfig::MTPLayerConfig() const {
+  HWY_ASSERT(num_mtp_layers > 0 && !layer_configs.empty());
+  LayerConfig lc = layer_configs[0];
+  lc.SetDenseAttention();
+  lc.hash_routing = false;
+  lc.use_routing_bias = true;
+  return lc;
+}
+
+static ModelConfig ConfigBaseT5Gemma() {
+  ModelConfig config = ConfigNoSSM();
+  config.att_cap = 50.0f;
+  config.final_cap = 30.0f;
+  config.eos_id = 1;
+  config.secondary_eos_id = 107;
+  return config;
+}
+
+static LayerConfig LayerConfigT5GemmaS(size_t model_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = 1024;
+  config.heads = 8;
+  config.kv_heads = 8;
+  config.qkv_dim = 64;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::Scale;
+  return config;
+}
+
+static ModelConfig ConfigT5Gemma_S_S() {
+  ModelConfig config = ConfigBaseT5Gemma();
+  config.display_name = "T5Gemma_S_S";
+  config.model = Model::T5GEMMA_S_S;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.model_dim = 512;
+  config.vocab_size = kVocabSize;
+  config.max_seq_len = 8192;
+  LayerConfig layer_config = LayerConfigT5GemmaS(config.model_dim);
+  config.is_encoder_decoder = true;
+  config.encoder_num_layers = 8;
+  config.encoder_layer_configs = {config.encoder_num_layers, layer_config};
+  config.encoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  config.decoder_num_layers = 8;
+  config.decoder_layer_configs = {config.decoder_num_layers, layer_config};
+  config.decoder_attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+
+  // TODO: Update users of `layer_configs` to route encoder-decoder models
+  // through the explicit encoder/decoder stacks above.
+  config.num_layers = 8;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.attention_window_sizes =
+      RepeatedAttentionWindowSizes<8, 2>({4096, config.max_seq_len});
+  return config;
+}
+
+static ModelConfig ConfigBaseQwen3() {
+  ModelConfig config = ConfigNoSSM();
+  config.vocab_size = 151936;
+  config.max_seq_len = 32768;
+  config.eos_id = 151645;
+  config.secondary_eos_id = 151643;
+  return config;
+}
+
+static LayerConfig LayerConfigQwen3(size_t model_dim, size_t ff_hidden_dim,
+                                    size_t heads, size_t kv_heads,
+                                    size_t qkv_dim) {
+  LayerConfig config;
+  config.model_dim = model_dim;
+  config.ff_hidden_dim = ff_hidden_dim;
+  config.heads = heads;
+  config.kv_heads = kv_heads;
+  config.qkv_dim = qkv_dim;
+  config.optimized_gating = false;
+  config.post_norm = PostNormType::None;
+  config.activation = ActivationType::Silu;
+  config.use_qk_norm = true;
+  return config;
+}
+
+static ModelConfig ConfigQwen3_600M() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_0.6B";
+  config.model = Model::QWEN3_600M;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 1024;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 3072, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_2B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_1.7B";
+  config.model = Model::QWEN3_2B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2048;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 6144, 16, 8, 128);
+  config.num_layers = 28;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<28>(config.max_seq_len);
+  return config;
+}
+
+static ModelConfig ConfigQwen3_4B() {
+  ModelConfig config = ConfigBaseQwen3();
+  config.display_name = "Qwen3_4B";
+  config.model = Model::QWEN3_4B;
+  config.wrapping = PromptWrapping::GEMMA_IT;
+  config.model_dim = 2560;
+
+  LayerConfig layer_config =
+      LayerConfigQwen3(config.model_dim, 9728, 32, 8, 128);
+  config.num_layers = 36;
+  config.layer_configs = {config.num_layers, layer_config};
+  config.query_scale = QueryScaleType::SqrtKeySize;
+  config.use_global_timescale = true;
+  config.attention_window_sizes =
+      FixedAttentionWindowSizes<36>(config.max_seq_len);
+  return config;
+}
+
 static ModelConfig ConfigFromModel(Model model) {
   switch (model) {
     case Model::GEMMA2_2B:
@@ -456,6 +849,28 @@ static ModelConfig ConfigFromModel(Model model) {
       return ConfigGemma3_27B();
     case Model::GEMMA3_270M:
       return ConfigGemma3_270M();
+    case Model::GEMMA3_4B_LM:
+      return ConfigGemma3_4B_LM();
+    case Model::GEMMA3_12B_LM:
+      return ConfigGemma3_12B_LM();
+    case Model::GEMMA3_27B_LM:
+      return ConfigGemma3_27B_LM();
+    case Model::GEMMA4_26B_MOE:
+      return ConfigGemma4_26B_MoE();
+    case Model::GEMMA4_2B:
+      return ConfigGemma4_2B();
+    case Model::DEEPSEEK4_FLASH:
+      return ConfigDeepSeek4_Flash();
+    case Model::T5GEMMA_S_S:
+      return ConfigT5Gemma_S_S();
+    case Model::QWEN3_600M:
+      return ConfigQwen3_600M();
+    case Model::QWEN3_2B:
+      return ConfigQwen3_2B();
+    case Model::QWEN3_4B:
+      return ConfigQwen3_4B();
+    case Model::GEMMA4_2B_LM:
+      return ConfigGemma4_2B_LM();
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
@@ -489,25 +904,46 @@ const char* ModelPrefix(Model model) {
       return "gemma3-27b";
     case Model::GEMMA3_270M:
       return "gemma3-270m";
+    case Model::GEMMA3_4B_LM:
+      return "gemma3-4b-lm";
+    case Model::GEMMA3_12B_LM:
+      return "gemma3-12b-lm";
+    case Model::GEMMA3_27B_LM:
+      return "gemma3-27b-lm";
+    case Model::GEMMA4_26B_MOE:
+      return "gemma4-26b-moe";
+    case Model::GEMMA4_2B:
+      return "gemma4-2b";
+    case Model::DEEPSEEK4_FLASH:
+      return "deepseek4-flash";
+    case Model::T5GEMMA_S_S:
+      return "t5gemma-s-s";
+    case Model::QWEN3_600M:
+      return "qwen3-0_6b";
+    case Model::QWEN3_2B:
+      return "qwen3-2b";
+    case Model::QWEN3_4B:
+      return "qwen3-4b";
+    case Model::GEMMA4_2B_LM:
+      return "gemma4-2b-lm";
     default:
       HWY_ABORT("Model type %d unknown.", static_cast<int>(model));
   }
 }
 
 PromptWrapping ChooseWrapping(const Model model, Tristate wrapping) {
-  if (IsPaliGemma(model)) {
+  const PromptWrapping config_wrapping = ConfigFromModel(model).wrapping;
+
+  // For models with a fixed wrapping mode, ignore user override.
+  if (IsVlmWrapping(config_wrapping)) {
     if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for PaliGemma models.");
+      HWY_WARN("Ignoring unnecessary --wrapping for model %s.",
+               ModelPrefix(model));
     }
-    return PromptWrapping::PALIGEMMA;
+    return config_wrapping;
   }
-  if (IsVLM(model)) {
-    if (wrapping != Tristate::kDefault) {
-      HWY_WARN("Ignoring unnecessary --wrapping for VLM models.");
-    }
-    return PromptWrapping::GEMMA_VLM;
-  }
-  // Default to IT unless --wrapping=0.
+
+  // For other models, default to IT unless --wrapping=0 is passed.
   return wrapping == Tristate::kFalse ? PromptWrapping::GEMMA_PT
                                       : PromptWrapping::GEMMA_IT;
 }
@@ -520,18 +956,22 @@ ModelConfig::ModelConfig(const Model model, Type weight,
   if (model != Model::UNKNOWN) *this = ConfigFromModel(model);
   HWY_ASSERT(this->model == model);
   this->weight = weight;
-  this->wrapping = wrapping;
+  if (!IsVlmWrapping(this->wrapping)) {
+    this->wrapping = wrapping;
+  }
 }
 
 static Model FindModel(const std::string& specifier) {
+  // Some model prefixes are prefixes of other prefixes (e.g. `gemma3-4b-` is a
+  // prefix of `gemma3-4b-lm-`). Pick the longest matching prefix so the more
+  // specific model wins.
   Model found_model = Model::UNKNOWN;
+  size_t longest_match = 0;
   ForEachModel([&](Model model) {
-    // Some model names are prefixes of other model names
     const std::string prefix = std::string(ModelPrefix(model)) + "-";
-    if (specifier.rfind(prefix, 0) == 0) {  // Starts with prefix.
-      // We only expect one match.
-      HWY_ASSERT_M(found_model == Model::UNKNOWN, specifier.c_str());
+    if (specifier.rfind(prefix, 0) == 0 && prefix.size() > longest_match) {
       found_model = model;
+      longest_match = prefix.size();
     }
   });
   HWY_ASSERT_M(found_model != Model::UNKNOWN, specifier.c_str());
@@ -584,8 +1024,7 @@ std::string ModelConfig::Specifier() const {
   base_name += '-';
   base_name += TypeName(weight);
 
-  if (wrapping != PromptWrapping::GEMMA_VLM &&
-      wrapping != PromptWrapping::PALIGEMMA) {
+  if (!IsVlmWrapping(wrapping)) {
     base_name += WrappingSuffix(wrapping);
   }
 
@@ -670,17 +1109,42 @@ bool ModelConfig::OverwriteWithCanonical() {
 
 Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
   switch (layers) {
+    case 8:
+      if (layer_types & kDeducedT5Gemma) {
+        return Model::T5GEMMA_S_S;
+      }
+      // Unknown 8-layer model.
+      break;
+
     case 18:
       return Model::GEMMA3_270M;
 
     case 26:
-      if (layer_types & kDeducedViT) return Model::GEMMA3_1B;
+      if (layer_types & (kDeducedViT | kDeducedKqNorm)) {
+        return Model::GEMMA3_1B;
+      }
       return Model::GEMMA2_2B;
     case 27:
       return (layer_types & kDeduced448) ? Model::PALIGEMMA2_3B_448
                                          : Model::PALIGEMMA2_3B_224;
+    case 28:
+      if (blob_path.path.find("qwen3-2b") != std::string::npos ||
+          blob_path.path.find("qwen3-1_7b") != std::string::npos) {
+        return Model::QWEN3_2B;
+      }
+      return Model::QWEN3_600M;
+
+    case 30:
+      return Model::GEMMA4_26B_MOE;
+
     case 34:
-      return Model::GEMMA3_4B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_4B
+                                         : Model::GEMMA3_4B_LM;
+    case 35:
+      return (layer_types & kDeducedViT) ? Model::GEMMA4_2B
+                                         : Model::GEMMA4_2B_LM;
+    case 36:
+      return Model::QWEN3_4B;
     case 42:
       if (layer_types & kDeducedViT) {
         return (layer_types & kDeduced448) ? Model::PALIGEMMA2_10B_448
@@ -690,19 +1154,80 @@ Model DeduceModel(const Path& blob_path, size_t layers, int layer_types) {
     case 46:
       return Model::GEMMA2_27B;
     case 48:
-      return Model::GEMMA3_12B;
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_12B
+                                         : Model::GEMMA3_12B_LM;
     case 62:
-      return Model::GEMMA3_27B;
-
+      return (layer_types & kDeducedViT) ? Model::GEMMA3_27B
+                                         : Model::GEMMA3_27B_LM;
     // TODO: detect these.
     /*
     return Model::GEMMA2_772M;
     return Model::PALIGEMMA2_772M_224;
     */
     default:
-      HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
-               blob_path.path.c_str(), layers, layer_types);
-      return Model::UNKNOWN;
+      break;
+  }
+  HWY_WARN("Failed to deduce model type from %s, layer count %zu types %x.",
+           blob_path.path.c_str(), layers, layer_types);
+  return Model::UNKNOWN;
+}
+
+// NOTE: keep the `--attention_impl` help text in `gemma_args.h` synced
+constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
+    {"flash", AttentionImpl::kFlash},
+    {"flash_transposed_qs", AttentionImpl::kFlashTransposedQs},
+    {"flash_transposed_qs_bf16", AttentionImpl::kFlashTransposedQsBF16},
+    {"flash_transposed_qs_int16", AttentionImpl::kFlashTransposedQsInt16},
+    {"flash_transposed_qs_int8", AttentionImpl::kFlashTransposedQsInt8},
+    {"flash_matrix_accumulation", AttentionImpl::kFlashMatrixAccumulation},
+    {"int8_matrix_accumulation", AttentionImpl::kInt8MatrixAccumulation},
+};
+
+std::string GetAttentionImplName(AttentionImpl impl) {
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (attention_impl == impl) return std::string(name);
+  }
+  return "unknown";
+}
+
+AttentionImpl GetAttentionImpl(const std::string& impl_name) {
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (name == impl_name) return attention_impl;
+  }
+  std::string valid;
+  for (const auto& [name, attention_impl] : kAttentionImplNameToEnum) {
+    if (!valid.empty()) {
+      valid += ", ";
+    }
+    valid += name;
+  }
+  HWY_WARN("Unknown attention implementation: %s. Valid: %s. Using kFlash.\n",
+           impl_name.c_str(), valid.c_str());
+  return AttentionImpl::kFlash;
+}
+
+std::string KVEncodingToString(KVEncoding encoding) {
+  switch (encoding) {
+    case KVEncoding::kF32:
+      return "F32";
+    case KVEncoding::kBF16:
+      return "BF16";
+    case KVEncoding::kF32TwoTranspositions:
+      return "F32TwoTranspositions";
+    case KVEncoding::kBF16TwoTranspositions:
+      return "BF16TwoTranspositions";
+    case KVEncoding::kInt8:
+      return "Int8";
+    case KVEncoding::kInt8TwoTranspositions:
+      return "Int8TwoTranspositions";
+    case KVEncoding::kInt8VNNITwoTranspositions:
+      return "Int8VNNITwoTranspositions";
+    case KVEncoding::kBF16MatrixAccumulation:
+      return "BF16MatrixAccumulation";
+    case KVEncoding::kInt8MatrixAccumulation:
+      return "Int8MatrixAccumulation";
+    default:
+      return "Unknown";
   }
 }
 

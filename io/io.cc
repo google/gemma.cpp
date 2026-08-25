@@ -14,6 +14,8 @@
 // limitations under the License.
 
 // Safe to be first, does not include POSIX headers.
+#include <new>
+
 #include "hwy/detect_compiler_arch.h"
 // Request POSIX 2008, including `pread()` and `posix_fadvise()`. This also
 // implies `_POSIX_C_SOURCE`.
@@ -28,6 +30,7 @@
 
 #include <stddef.h>
 
+#include <cstring>
 #include <memory>
 #include <string>
 
@@ -110,7 +113,8 @@ class FilePosix : public File {
         HWY_WARN(
             "Read failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
-            pos, size, offset, errno);
+            static_cast<size_t>(pos), static_cast<size_t>(size),
+            static_cast<size_t>(offset), errno);
         break;
       }
       pos += bytes_read;
@@ -130,7 +134,8 @@ class FilePosix : public File {
         HWY_WARN(
             "Write failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
-            pos, size, offset, errno);
+            static_cast<size_t>(pos), static_cast<size_t>(size),
+            static_cast<size_t>(offset), errno);
         break;
       }
       pos += bytes_written;
@@ -194,9 +199,9 @@ std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode) {
 namespace gcpp {
 
 std::unique_ptr<File> OpenFileOrAbort(const Path& filename, const char* mode) {
-  std::unique_ptr<File> file = OpenFileOrNull(filename, "r");
+  std::unique_ptr<File> file = OpenFileOrNull(filename, mode);
   if (!file) {
-    HWY_ABORT("Failed to open %s", filename.path.c_str());
+    HWY_ABORT("Failed to open %s, errno %d", filename.path.c_str(), errno);
   }
   return file;
 }
@@ -234,7 +239,9 @@ bool IOBatch::Add(void* mem, size_t bytes) {
   return true;
 }
 
-void InternalInit() {
+int InternalInit() {
+  // currently unused, except for init list ordering in GemmaEnv.
+  return 0;
 }
 
 uint64_t IOBatch::Read(const File& file) const {
@@ -257,7 +264,43 @@ uint64_t IOBatch::Read(const File& file) const {
   }
 #endif  // GEMMA_IO_PREADV
 
-  // preadv disabled or no handle: use normal reads (higher kernel overhead).
+  // 1. Fast Path: Check if destination memory across all spans is contiguous.
+  bool is_contiguous = true;
+  const uint8_t* next_expected =
+      reinterpret_cast<const uint8_t*>(spans_[0].mem);
+  for (const IOSpan& span : spans_) {
+    if (reinterpret_cast<const uint8_t*>(span.mem) != next_expected) {
+      is_contiguous = false;
+      break;
+    }
+    next_expected += span.bytes;
+  }
+
+  // Zero-copy direct read: 1 single bulk RPC directly into destination memory.
+  if (is_contiguous) {
+    if (file.Read(offset_, total_bytes_, spans_[0].mem)) {
+      return total_bytes_;
+    }
+  } else {
+    // 2. Slow Path (Strided Padding): Single bulk read + scatter memcpy.
+    std::unique_ptr<uint8_t[]> temp_buf(new (std::nothrow)
+                                            uint8_t[total_bytes_]);
+    if (temp_buf && file.Read(offset_, total_bytes_, temp_buf.get())) {
+      const uint8_t* src = temp_buf.get();
+      for (const IOSpan& span : spans_) {
+        std::memcpy(span.mem, src, span.bytes);
+        src += span.bytes;
+      }
+      return total_bytes_;
+    } else {
+      HWY_WARN(
+          "Failed to read %zu bytes from offset %zu in file with %zu spans",
+          total_bytes_, offset_, spans_.size());
+    }
+  }
+
+  // 3. Fallback if bulk read or temp allocation fails: per-span sequential
+  // reads.
   uint64_t total = 0;
   uint64_t offset = offset_;
   for (const IOSpan& span : spans_) {

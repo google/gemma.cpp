@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "hwy/base.h"
 
 namespace gcpp {
 namespace {
@@ -61,11 +62,12 @@ TEST(ImageTest, LoadResize224GetPatch) {
   EXPECT_EQ(image.data()[image.size() - 1], Normalize(122));
   // Extract two patches.
   float patch[588];
-  image.GetPatch(0, patch);
+  const hwy::Divisor div_patch_dim(14);
+  image.GetPatch(0, div_patch_dim, patch);
   EXPECT_EQ(patch[0], Normalize(160));
   EXPECT_EQ(patch[1], Normalize(184));
   EXPECT_EQ(patch[2], Normalize(188));
-  image.GetPatch(18, patch);
+  image.GetPatch(18, div_patch_dim, patch);
   // Check the first row of the patch.
   for (size_t i = 0; i < 14 * 3; ++i) {
     EXPECT_EQ(patch[i], image.data()[(14 * 224 + 2 * 14) * 3 + i]);
@@ -108,14 +110,15 @@ TEST(ImageTest, Non224) {
   // Extract two patches.
   const size_t kPatchValues = 14 * 14 * 3;  // = 588
   float patch[kPatchValues];
+  const hwy::Divisor div_patch_dim(14);
   // Patch 0 is just the "start" of the image.
-  image.GetPatch(0, patch);
+  image.GetPatch(0, div_patch_dim, patch);
   EXPECT_NEAR(patch[0], Normalize(0.0f, max_value), 1e-6);
   EXPECT_NEAR(patch[1], Normalize(1.0f, max_value), 1e-6);
   EXPECT_NEAR(patch[2], Normalize(2.0f, max_value), 1e-6);
   // The "image" has 4x3 patches, so patch 6 has coordinates (1, 2) and its
   // pixel coordinates are offset by (14, 28).
-  image.GetPatch(6, patch);
+  image.GetPatch(6, div_patch_dim, patch);
   for (size_t n = 0; n < kPatchValues; ++n) {
     size_t k = n % 3;
     size_t j = ((n - k) / 3) % 14;

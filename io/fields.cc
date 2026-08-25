@@ -57,19 +57,9 @@ class VisitorBase : public IFieldsVisitor {
   // Return bool to avoid having to check AnyInvalid() after calling.
   bool CheckStringLength(uint32_t num_u32) {
     // Disallow long strings for safety, and to prevent them being used for
-    // arbitrary data (we also require them to be ASCII).
+    // arbitrary data.
     if (HWY_UNLIKELY(num_u32 > 64)) {
       NotifyInvalid("String num_u32=%u too large\n", num_u32);
-      return false;
-    }
-    return true;
-  }
-
-  bool CheckStringU32(uint32_t u32, uint32_t i, uint32_t num_u32) {
-    // Although strings are zero-padded to u32, an entire u32 should not be
-    // zero, and upper bits should not be set (ASCII-only).
-    if (HWY_UNLIKELY(u32 == 0 || (u32 & 0x80808080))) {
-      NotifyInvalid("Invalid characters %x at %u of %u\n", u32, i, num_u32);
       return false;
     }
     return true;
@@ -170,7 +160,6 @@ class ReadVisitor : public VisitorBase {
     for (uint32_t i = 0; i < num_u32; ++i) {
       uint32_t u32;
       operator()(u32);
-      (void)CheckStringU32(u32, i, num_u32);
       hwy::CopyBytes(&u32, value.data() + i * k4, k4);
     }
 
@@ -278,7 +267,6 @@ class WriteVisitor : public VisitorBase {
     for (uint32_t i = 0; i < num_whole_u32; ++i) {
       uint32_t u32 = 0;
       hwy::CopyBytes(value.data() + i * k4, &u32, k4);
-      if (HWY_UNLIKELY(!CheckStringU32(u32, i, num_u32))) return;
       storage_.push_back(u32);
     }
 
@@ -292,7 +280,6 @@ class WriteVisitor : public VisitorBase {
         const uint32_t next = static_cast<uint32_t>(static_cast<uint8_t>(c));
         u32 += next << (i * 8);
       }
-      if (HWY_UNLIKELY(!CheckStringU32(u32, num_whole_u32, num_u32))) return;
       storage_.push_back(u32);
     }
   }
