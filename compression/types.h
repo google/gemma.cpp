@@ -117,10 +117,11 @@ struct I8Stream {
 struct Q4_0Stream {
   static constexpr size_t kBlockSize = 32;
   using ScaleT = hwy::bfloat16_t;
+  static constexpr size_t kBlockBytes = sizeof(ScaleT) + kBlockSize / 2;
 
   static constexpr size_t PackedEnd(size_t capacity) {
     const size_t num_blocks = hwy::DivCeil(capacity, kBlockSize);
-    return num_blocks * (sizeof(ScaleT) + kBlockSize / 2);
+    return num_blocks * kBlockBytes;
   }
 
   uint8_t byte;

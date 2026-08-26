@@ -254,6 +254,9 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   if (IsF32<TA>() || IsF32<TB>()) {
     tolerance += 2 * max_abs * eps_bf16;
   }
+  if constexpr (IsQ4_0Stream<TB>()) {
+    tolerance += 0.02 * norm;
+  }
 
   if (tolerance > 500.0) {
     HWY_WARN("high tolerance %f norm %f maxabs %f\n", tolerance, norm, max_abs);

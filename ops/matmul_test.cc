@@ -260,6 +260,8 @@ void TestAllMatMul() {
 
   TestMatMul<F32, SFP>(256, 256, 256, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(256, 256, 256, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(256, 256, 256, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(256, 256, 256, /*add=*/true, env, __LINE__);
 
 #if GEMMA_ENABLE_NUQ
   using NUQ = NuqStream;
@@ -288,30 +290,40 @@ void TestAllMatMul() {
   TestMatMul<BF16, F32>(33, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, SFP>(31, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(29, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(31, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(29, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32>(4, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<BF16>(4, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<F32, BF16>(4, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, F32>(4, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<F32, SFP>(4, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, SFP>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(4, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(4, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<F32>(3, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, BF16>(3, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, F32>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, SFP>(3, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(3, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32>(2, 128, 64, /*add=*/true, env, __LINE__);
   TestMatMul<BF16>(2, 128, 64, /*add=*/false, env, __LINE__);
   TestMatMul<F32, BF16>(2, 128, 64, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, F32>(2, 128, 64, /*add=*/false, env, __LINE__);
   TestMatMul<F32, SFP>(2, 128, 64, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, SFP>(2, 128, 64, /*add=*/false, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(2, 128, 64, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(2, 128, 64, /*add=*/false, env, __LINE__);
   TestMatMul<F32>(1, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16>(1, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, BF16>(1, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, F32>(1, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, SFP>(1, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, SFP>(1, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<F32, Q4_0Stream>(1, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, Q4_0Stream>(1, 128, 32, /*add=*/true, env, __LINE__);
 
   pools.MaybeStopSpinning(threading_args.spin);
 }

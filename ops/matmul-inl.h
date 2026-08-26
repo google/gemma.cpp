@@ -403,6 +403,20 @@ class MMKernel {
                      const IndexRange& range_mc, const IndexRange& range_kc,
                      const IndexRange& range_nc, const MMArgs& args,
                      Tag out_tag, CView C_MC_NC) {
+    if constexpr (IsQ4_0Stream<TB>()) {
+      // Fast path: direct INT8 x INT4 quantized dot-product kernel for small M
+      // (e.g. token generation) with block-aligned K and row strides.
+      // If unaligned or M > 4 (e.g. prefill), falls through to the generic
+      // fallback path below (on-the-fly decompress of B to BF16 + BF16 matmul).
+      if (HWY_LIKELY(range_mc.Num() <= 4 &&
+                     range_kc.begin() % Q4_0Stream::kBlockSize == 0 &&
+                     B.Stride() % Q4_0Stream::kBlockSize == 0)) {
+        B3A2C0_Q4_0(A, B, range_mc, range_kc, range_nc, args, out_tag,
+                    C_MC_NC);
+        return;
+      }
+    }
+
     const size_t kc = range_kc.Num();
     const StridedViewBF A_view = A.View(range_mc.begin(), range_kc.begin(), kc);
 
@@ -781,6 +795,326 @@ class MMKernel {
       imc += 1;
     }
     HWY_DASSERT(imc == mc);
+  }
+
+  static HWY_INLINE HWY_ATTR void UnpackBlockQ4_0(
+      const uint8_t* HWY_RESTRICT blk, const hn::Full128<uint8_t> du8,
+      const hn::Full128<int8_t> di8,
+      const hn::Vec<hn::Full128<uint8_t>> mask_0f,
+      const hn::Vec<hn::Full128<int8_t>> offset_8,
+      hn::Vec<hn::Full128<int8_t>>& low,
+      hn::Vec<hn::Full128<int8_t>>& high) {
+    const auto raw = hn::LoadU(du8, blk + sizeof(Q4_0Stream::ScaleT));
+    low = hn::Sub(hn::BitCast(di8, hn::And(raw, mask_0f)), offset_8);
+    high = hn::Sub(hn::BitCast(di8, hn::ShiftRight<4>(raw)), offset_8);
+  }
+
+  static HWY_INLINE HWY_ATTR float QuantizeActivationRow(
+      const BF16* HWY_RESTRICT ar, size_t kc, size_t num_blocks,
+      int8_t* HWY_RESTRICT q_a_row) {
+    const hn::CappedTag<hwy::bfloat16_t, 16> dbf;
+    const hn::Repartition<float, decltype(dbf)> df;
+    const hn::Repartition<int32_t, decltype(dbf)> di32;
+    const hn::Repartition<int16_t, decltype(dbf)> di16;
+    const hn::Repartition<int8_t, decltype(dbf)> di8;
+    const size_t N_bf = hn::Lanes(dbf);
+
+    auto v_max = hn::Zero(df);
+    size_t k = 0;
+    for (; k + N_bf <= kc; k += N_bf) {
+      const auto bf = hn::LoadU(dbf, ar + k);
+      const auto f0 = hn::PromoteLowerTo(df, bf);
+      const auto f1 = hn::PromoteUpperTo(df, bf);
+      v_max = hn::Max(v_max, hn::Max(hn::Abs(f0), hn::Abs(f1)));
+    }
+    if (HWY_UNLIKELY(k < kc)) {
+      const auto bf = hn::LoadN(dbf, ar + k, kc - k);
+      const auto f0 = hn::PromoteLowerTo(df, bf);
+      const auto f1 = hn::PromoteUpperTo(df, bf);
+      v_max = hn::Max(v_max, hn::Max(hn::Abs(f0), hn::Abs(f1)));
+    }
+    const float max_abs = hn::ReduceMax(df, v_max);
+
+    static constexpr size_t kBlockSize = Q4_0Stream::kBlockSize;
+    if (HWY_UNLIKELY(max_abs == 0.0f)) {
+      hwy::ZeroBytes(q_a_row, num_blocks * kBlockSize);
+      return 0.0f;
+    }
+
+    const float sa = max_abs / 127.0f;
+    const auto vinv_scale = hn::Set(df, 127.0f / max_abs);
+
+    for (size_t b = 0; b < num_blocks; ++b) {
+      const size_t block_len = HWY_MIN(kc - b * kBlockSize, kBlockSize);
+      const BF16* HWY_RESTRICT ab = ar + b * kBlockSize;
+      int8_t* HWY_RESTRICT qb = q_a_row + b * kBlockSize;
+      if (HWY_LIKELY(block_len == kBlockSize)) {
+        for (size_t i = 0; i < kBlockSize; i += hn::Lanes(di8)) {
+          const auto bf0 = hn::LoadU(dbf, ab + i);
+          const auto bf1 = hn::LoadU(dbf, ab + i + N_bf);
+
+          const auto f0 = hn::PromoteLowerTo(df, bf0);
+          const auto f1 = hn::PromoteUpperTo(df, bf0);
+          const auto f2 = hn::PromoteLowerTo(df, bf1);
+          const auto f3 = hn::PromoteUpperTo(df, bf1);
+
+          const auto i0 = hn::NearestInt(hn::Mul(f0, vinv_scale));
+          const auto i1 = hn::NearestInt(hn::Mul(f1, vinv_scale));
+          const auto i2 = hn::NearestInt(hn::Mul(f2, vinv_scale));
+          const auto i3 = hn::NearestInt(hn::Mul(f3, vinv_scale));
+
+          const auto p16_0 = hn::OrderedDemote2To(di16, i0, i1);
+          const auto p16_1 = hn::OrderedDemote2To(di16, i2, i3);
+
+          hn::StoreU(hn::OrderedDemote2To(di8, p16_0, p16_1), di8, qb + i);
+        }
+      } else {
+        const float inv_scale = 127.0f / max_abs;
+        HWY_ALIGN int8_t temp[kBlockSize] = {};
+        for (size_t i = 0; i < block_len; ++i) {
+          const float v0 = hwy::F32FromBF16(ab[i]) * inv_scale;
+          temp[i] = static_cast<int8_t>(std::min(
+              127, std::max(-128, static_cast<int32_t>(std::round(v0)))));
+        }
+        memcpy(qb, temp, kBlockSize);
+      }
+    }
+    return sa;
+  }
+
+  static HWY_INLINE HWY_ATTR hn::Vec<hn::Full128<float>> TransposeReduce4(
+      const hn::Full128<int32_t> di32, const hn::Full128<float> df,
+      const hn::Vec<hn::Full128<int32_t>> acc0,
+      const hn::Vec<hn::Full128<int32_t>> acc1,
+      const hn::Vec<hn::Full128<int32_t>> acc2,
+      const hn::Vec<hn::Full128<int32_t>> acc3) {
+    using VI32 = hn::Vec<decltype(di32)>;
+    const VI32 ab_sum = hn::Add(hn::InterleaveLower(di32, acc0, acc1),
+                                hn::InterleaveUpper(di32, acc0, acc1));
+    const VI32 cd_sum = hn::Add(hn::InterleaveLower(di32, acc2, acc3),
+                                hn::InterleaveUpper(di32, acc2, acc3));
+    const VI32 acbd_sum = hn::Add(hn::InterleaveLower(di32, ab_sum, cd_sum),
+                                  hn::InterleaveUpper(di32, ab_sum, cd_sum));
+    return hn::ConvertTo(df, acbd_sum);
+  }
+
+  template <size_t kRowsAC, class Tag, class CView>
+  static HWY_INLINE HWY_ATTR void LoopKC_Q4_0(
+      const StridedViewBF A_view, const MatPtrT<Q4_0Stream>& B,
+      const PackedSpan<const Q4_0Stream>& B_span, size_t imc, size_t kc,
+      size_t num_blocks, size_t col0, const IndexRange& range_nc,
+      const float scale, const float* HWY_RESTRICT add, Tag tag,
+      CView C_MC_NC) {
+    static constexpr size_t kBlockSize = Q4_0Stream::kBlockSize;
+    static constexpr size_t kBlockBytes = Q4_0Stream::kBlockBytes;
+    using ScaleT = Q4_0Stream::ScaleT;
+
+    HWY_DASSERT(num_blocks <= kMaxKC / kBlockSize);
+
+    const hn::Full128<uint8_t> du8;
+    const hn::Full128<int8_t> di8;
+    const hn::Full128<hwy::bfloat16_t> dbf;
+    const hn::Full128<int32_t> di32;
+    const hn::Full128<float> df;
+
+    using VU8 = hn::Vec<decltype(du8)>;
+    using VI8 = hn::Vec<decltype(di8)>;
+    using VBF = hn::Vec<decltype(dbf)>;
+    using VI32 = hn::Vec<decltype(di32)>;
+    using VF = hn::Vec<decltype(df)>;
+
+    float scale_a[kRowsAC];
+    HWY_ALIGN int8_t q_a[kRowsAC][kMaxKC];
+    for (size_t r = 0; r < kRowsAC; ++r) {
+      scale_a[r] = QuantizeActivationRow(A_view.Row(imc + r), kc, num_blocks,
+                                         q_a[r]);
+    }
+
+    const VU8 mask_0f = hn::Set(du8, 0x0F);
+    const VI8 offset_8 = hn::Set(di8, 8);
+
+    const uint8_t* HWY_RESTRICT B_base = &B_span.ptr->byte;
+    const size_t b_stride = B.Stride();
+
+    for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
+      const size_t row_b = range_nc.begin() + inc;
+      const CView C_MC_NR = C_MC_NC.View(0, inc, kNR);
+      const float* HWY_RESTRICT add_row = add ? add + row_b : nullptr;
+
+      const uint8_t* ptr_b0 =
+          B_base + ((row_b + 0) * b_stride + col0) / kBlockSize * kBlockBytes;
+      const uint8_t* ptr_b1 =
+          B_base + ((row_b + 1) * b_stride + col0) / kBlockSize * kBlockBytes;
+      const uint8_t* ptr_b2 =
+          B_base + ((row_b + 2) * b_stride + col0) / kBlockSize * kBlockBytes;
+      const uint8_t* ptr_b3 =
+          B_base + ((row_b + 3) * b_stride + col0) / kBlockSize * kBlockBytes;
+
+      VF sum0 = hn::Zero(df);
+      VF sum1 = hn::Zero(df);
+      VF sum2 = hn::Zero(df);
+      VF sum3 = hn::Zero(df);
+
+      for (size_t b = 0; b < num_blocks; ++b) {
+        hwy::Prefetch(ptr_b0 + (b + 4) * kBlockBytes);
+        hwy::Prefetch(ptr_b1 + (b + 4) * kBlockBytes);
+        hwy::Prefetch(ptr_b2 + (b + 4) * kBlockBytes);
+        hwy::Prefetch(ptr_b3 + (b + 4) * kBlockBytes);
+
+        const uint8_t* blk0 = ptr_b0 + b * kBlockBytes;
+        const uint8_t* blk1 = ptr_b1 + b * kBlockBytes;
+        const uint8_t* blk2 = ptr_b2 + b * kBlockBytes;
+        const uint8_t* blk3 = ptr_b3 + b * kBlockBytes;
+
+        hwy::bfloat16_t sb0_bf, sb1_bf, sb2_bf, sb3_bf;
+        hwy::CopyBytes(blk0, &sb0_bf, sizeof(ScaleT));
+        hwy::CopyBytes(blk1, &sb1_bf, sizeof(ScaleT));
+        hwy::CopyBytes(blk2, &sb2_bf, sizeof(ScaleT));
+        hwy::CopyBytes(blk3, &sb3_bf, sizeof(ScaleT));
+
+        const VBF v_bf16 = hn::Dup128VecFromValues(
+            dbf, sb0_bf, sb2_bf, sb1_bf, sb3_bf, hwy::bfloat16_t(),
+            hwy::bfloat16_t(), hwy::bfloat16_t(), hwy::bfloat16_t());
+        const VF v_sb = hn::PromoteLowerTo(df, v_bf16);
+
+        VI8 b0_low, b0_high;
+        VI8 b1_low, b1_high;
+        VI8 b2_low, b2_high;
+        VI8 b3_low, b3_high;
+        UnpackBlockQ4_0(blk0, du8, di8, mask_0f, offset_8, b0_low, b0_high);
+        UnpackBlockQ4_0(blk1, du8, di8, mask_0f, offset_8, b1_low, b1_high);
+        UnpackBlockQ4_0(blk2, du8, di8, mask_0f, offset_8, b2_low, b2_high);
+        UnpackBlockQ4_0(blk3, du8, di8, mask_0f, offset_8, b3_low, b3_high);
+
+        auto accumulate_row = [&](size_t r, VF& sum_r) HWY_ATTR {
+          if (scale_a[r] == 0.0f) return;
+
+          const VI8 a_low = hn::Load(di8, q_a[r] + b * kBlockSize);
+          const VI8 a_high =
+              hn::Load(di8, q_a[r] + b * kBlockSize + kBlockSize / 2);
+
+          const VI32 zero = hn::Zero(di32);
+          const VI32 low0 =
+              hn::SumOfMulQuadAccumulate(di32, b0_low, a_low, zero);
+          const VI32 low1 =
+              hn::SumOfMulQuadAccumulate(di32, b1_low, a_low, zero);
+          const VI32 low2 =
+              hn::SumOfMulQuadAccumulate(di32, b2_low, a_low, zero);
+          const VI32 low3 =
+              hn::SumOfMulQuadAccumulate(di32, b3_low, a_low, zero);
+
+          const VI32 acc0 =
+              hn::SumOfMulQuadAccumulate(di32, b0_high, a_high, low0);
+          const VI32 acc1 =
+              hn::SumOfMulQuadAccumulate(di32, b1_high, a_high, low1);
+          const VI32 acc2 =
+              hn::SumOfMulQuadAccumulate(di32, b2_high, a_high, low2);
+          const VI32 acc3 =
+              hn::SumOfMulQuadAccumulate(di32, b3_high, a_high, low3);
+
+          const VF dot_f =
+              TransposeReduce4(di32, df, acc0, acc1, acc2, acc3);
+          sum_r = hn::MulAdd(dot_f, v_sb, sum_r);
+        };
+
+        accumulate_row(0, sum0);
+        if constexpr (kRowsAC > 1) accumulate_row(1, sum1);
+        if constexpr (kRowsAC > 2) accumulate_row(2, sum2);
+        if constexpr (kRowsAC > 3) accumulate_row(3, sum3);
+      }
+
+      auto finish_row = [&](size_t r, VF s) HWY_ATTR {
+        const VF s_scaled = hn::Mul(s, hn::Set(df, scale_a[r]));
+        const float s0 = hn::GetLane(s_scaled);
+        const float s2 = hn::ExtractLane(s_scaled, 1);
+        const float s1 = hn::ExtractLane(s_scaled, 2);
+        const float s3 = hn::ExtractLane(s_scaled, 3);
+        return hn::Dup128VecFromValues(df, s0, s1, s2, s3);
+      };
+
+      sum0 = finish_row(0, sum0);
+      if constexpr (kRowsAC > 1) sum1 = finish_row(1, sum1);
+      if constexpr (kRowsAC > 2) sum2 = finish_row(2, sum2);
+      if constexpr (kRowsAC > 3) sum3 = finish_row(3, sum3);
+
+      MMStoreHorizontalSumsIntoC<kRowsAC> horz;
+      horz.Store(df, sum0, sum1, sum2, sum3, scale, add_row, imc, tag,
+                 C_MC_NR);
+    }
+  }
+
+  template <class Tag, class CView>
+  static HWY_INLINE HWY_ATTR void A2C0_Q4_0(
+      const StridedViewBF A_view, const MatPtrT<Q4_0Stream>& B,
+      const PackedSpan<const Q4_0Stream>& B_span, size_t mr,
+      const IndexRange& range_mc, size_t kc, size_t num_blocks, size_t col0,
+      const IndexRange& range_nc, const float scale,
+      const float* HWY_RESTRICT add, Tag tag, CView C_MC_NC) {
+    const size_t mc = range_mc.Num();
+    size_t imc = 0;
+
+    if (HWY_UNLIKELY(mr == 1)) {
+      for (; imc < mc; ++imc) {
+        LoopKC_Q4_0<1>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                       scale, add, tag, C_MC_NC);
+      }
+      return;
+    }
+
+    if (HWY_UNLIKELY(mr == 2)) {
+      if (HWY_LIKELY(mc >= 2)) {
+        for (; imc <= mc - 2; imc += 2) {
+          LoopKC_Q4_0<2>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                         scale, add, tag, C_MC_NC);
+        }
+      }
+      if (HWY_UNLIKELY(imc != mc)) {
+        LoopKC_Q4_0<1>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                       scale, add, tag, C_MC_NC);
+      }
+      return;
+    }
+
+    HWY_DASSERT(mr == 4);
+    if (HWY_LIKELY(mc >= 4)) {
+      for (; imc <= mc - 4; imc += 4) {
+        LoopKC_Q4_0<4>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                       scale, add, tag, C_MC_NC);
+      }
+    }
+    const size_t remainder_mc = mc - imc;
+    HWY_DASSERT(remainder_mc < 4);
+    if (HWY_UNLIKELY(remainder_mc & 2)) {
+      LoopKC_Q4_0<2>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                     scale, add, tag, C_MC_NC);
+      imc += 2;
+    }
+    if (HWY_UNLIKELY(remainder_mc & 1)) {
+      LoopKC_Q4_0<1>(A_view, B, B_span, imc, kc, num_blocks, col0, range_nc,
+                     scale, add, tag, C_MC_NC);
+      imc += 1;
+    }
+    HWY_DASSERT(imc == mc);
+  }
+
+  template <typename Tag, class CView>
+  static HWY_ATTR void B3A2C0_Q4_0(const StridedViewBF A,
+                          const MatPtrT<Q4_0Stream>& B,
+                          const IndexRange& range_mc,
+                          const IndexRange& range_kc,
+                          const IndexRange& range_nc,
+                          const MMArgs& args,
+                          Tag out_tag,
+                          CView C_MC_NC) {
+    const size_t kc = range_kc.Num();
+    const size_t num_blocks = hwy::DivCeil(kc, 32);
+    const StridedViewBF A_view = A.View(range_mc.begin(), range_kc.begin(), kc);
+    const PackedSpan<const Q4_0Stream> B_span = B.PaddedSpan();
+    const size_t col0 = range_kc.begin();
+    const float scale = args.scale_A * B.Scale();
+
+    A2C0_Q4_0(A_view, B, B_span, args.mr, range_mc, kc, num_blocks, col0,
+              range_nc, scale, args.add, out_tag, C_MC_NC);
   }
 };
 
