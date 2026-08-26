@@ -37,10 +37,7 @@
 namespace gcpp {
 
 GemmaEnv::GemmaEnv(const GemmaArgs& args)
-    : initializer_value_(gcpp::InternalInit()),
-      ctx_(args.threading),
-      env_(ctx_),
-      gemma_(args, ctx_) {
+    : ctx_(args.threading), env_(ctx_), gemma_(args, ctx_) {
   const ModelConfig& config = gemma_.Config();
 
   if (args.inference.verbosity >= 2) {

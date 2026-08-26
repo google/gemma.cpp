@@ -23,7 +23,7 @@
 #include "gemma/gemma.h"
 #include "paligemma/paligemma_helper.h"
 #include "util/allocator.h"
-#include "hwy/tests/hwy_gtest.h"
+#include "util/test_util.h"
 
 // This test can be run manually with the downloaded PaliGemma weights.
 // It should pass for `paligemma-3b-mix-224` and `paligemma2-3b-pt-448`.
@@ -70,7 +70,7 @@ TEST_F(PaliGemmaTest, QueryObjects) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInitTest();
 
   gcpp::ConsumedArgs consumed(argc, argv);
   gcpp::GemmaArgs args(argc, argv, consumed);

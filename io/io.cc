@@ -240,8 +240,7 @@ bool IOBatch::Add(void* mem, size_t bytes) {
 }
 
 int InternalInit() {
-  // currently unused, except for init list ordering in GemmaEnv.
-  return 0;
+  return 0;  // currently unused
 }
 
 uint64_t IOBatch::Read(const File& file) const {

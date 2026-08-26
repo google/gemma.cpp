@@ -152,6 +152,8 @@ void Run(GemmaEnv& env, JsonArgs& json) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  gcpp::InternalInit();
+
   {
     PROFILER_ZONE("Startup.all");
     gcpp::ConsumedArgs consumed(argc, argv);

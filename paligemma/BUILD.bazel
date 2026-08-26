@@ -60,11 +60,12 @@ cc_test(
     ],
     deps = [
         ":paligemma_helper",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//testing/base/public:gunit_for_library_testonly",  # buildcleaner: keep
         "//:allocator",
         "//:benchmark_helper",
         "//:configs",
         "//:gemma_lib",
+        "//:test_util",
         "@highway//:hwy_test_util",
     ],
 )

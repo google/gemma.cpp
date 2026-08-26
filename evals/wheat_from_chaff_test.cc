@@ -23,8 +23,8 @@
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
 #include "io/io.h"
+#include "util/test_util.h"
 #include "hwy/base.h"
-#include "hwy/tests/hwy_gtest.h"
 
 // This test can be run manually with the downloaded gemma weights.
 // To run the test, pass the following flags:
@@ -187,7 +187,7 @@ TEST_F(GemmaTest, WheatFromChaff) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInitTest();
   gcpp::GemmaTest::InitEnv(argc, argv);
   int ret = RUN_ALL_TESTS();
   gcpp::GemmaTest::DeleteEnv();

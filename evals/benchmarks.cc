@@ -21,6 +21,7 @@
 #include "benchmark/benchmark.h"
 #include "evals/benchmark_helper.h"
 #include "evals/prompts.h"
+#include "io/io.h"
 
 namespace gcpp {
 
@@ -98,6 +99,8 @@ BENCHMARK(BM_coding_prompt)
     ->UseRealTime();
 
 int main(int argc, char** argv) {
+  gcpp::InternalInit();
+
   gcpp::ConsumedArgs consumed(argc, argv);
   gcpp::GemmaArgs args(argc, argv, consumed);
   consumed.AbortIfUnconsumed();

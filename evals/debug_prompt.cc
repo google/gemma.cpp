@@ -53,6 +53,8 @@ class PromptArgs : public ArgsBase<PromptArgs> {
 };
 
 int Run(int argc, char** argv) {
+  InternalInit();
+
   ConsumedArgs consumed(argc, argv);
   const GemmaArgs args(argc, argv, consumed);
   const PromptArgs prompt_args(argc, argv, consumed);

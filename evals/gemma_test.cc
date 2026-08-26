@@ -22,16 +22,16 @@
 
 #include "evals/benchmark_helper.h"
 #include "gemma/configs.h"
+#include "util/test_util.h"
 #include "hwy/base.h"
-#include "hwy/tests/hwy_gtest.h"
 
 // This test can be run manually with the downloaded gemma weights.
 // To run the test, pass the following flags:
 // --model <model> --tokenizer <tokenizer_path> --weights <weights_path>
 // or just use the single-file weights file with --weights <weights_path>.
 // It should pass for the following models:
-// Gemma1: 2b-it (v1 and v1.1), 7b-it (v1 and v1.1), gr2b-it,
-// Gemma2: gemma2-2b-it, 9b-it, 27b-it,
+// Gemma2: gemma2-2b-it, 9b-it, 27b-it
+// Gemma3: gemma3-270m-it
 
 namespace gcpp {
 namespace {
@@ -183,7 +183,7 @@ TEST_F(GemmaTest, CrossEntropySmall) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInitTest();
   gcpp::GemmaTest::InitEnv(argc, argv);
   int ret = RUN_ALL_TESTS();
   gcpp::GemmaTest::DeleteEnv();

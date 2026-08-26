@@ -40,6 +40,8 @@ struct WriterArgs : public ArgsBase<WriterArgs> {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  gcpp::InternalInit();
+
   gcpp::ConsumedArgs consumed(argc, argv);
   gcpp::GemmaArgs args(argc, argv, consumed);
   gcpp::WriterArgs writer_args(argc, argv, consumed);

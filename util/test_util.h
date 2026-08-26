@@ -23,6 +23,7 @@
 #include <cmath>
 #include <iostream>
 
+#include "gtest/gtest.h"
 #include "util/basics.h"  // RngStream
 #include "util/mat.h"
 #include "hwy/base.h"
@@ -34,6 +35,10 @@
 // IWYU pragma: end_exports
 
 namespace gcpp {
+
+inline int InternalInitTest() {
+  return 0;  // currently unused
+}
 
 // Excludes outliers; we might not have enough samples for a reliable mode.
 HWY_INLINE double TrimmedMean(double* seconds, size_t num) {

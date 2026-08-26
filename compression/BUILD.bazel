@@ -171,6 +171,7 @@ cc_test(
 
 cc_library(
     name = "test_util",
+    testonly = True,
     textual_hdrs = [
         "test_util-inl.h",
     ],

@@ -125,8 +125,6 @@ class GemmaEnv {
   MatMulEnv& MutableEnv() { return env_; }
 
  private:
-  // This is used to ensure that InternalInit is called before anything else.
-  int initializer_value_ = 0;
   ThreadingContext ctx_;
   MatMulEnv env_;
   Gemma gemma_;

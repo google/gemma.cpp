@@ -130,6 +130,8 @@ int BenchmarkTriviaQA(GemmaEnv& env, const Path& json_file,
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
+  gcpp::InternalInit();
+
   gcpp::ConsumedArgs consumed(argc, argv);
   gcpp::GemmaArgs args(argc, argv, consumed);
   gcpp::BenchmarkArgs benchmark_args(argc, argv, consumed);
