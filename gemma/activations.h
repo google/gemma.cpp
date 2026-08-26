@@ -197,7 +197,9 @@ struct AttentionActivations {
   MatStorageT<KV_t> vit_K_T;
   MatStorageT<KV_t> vit_V_T;
 
-  MatStorageT<float> pre_att_rms_out;
+  // BF16 because this is only ever the A operand of the QKV MatMuls, which
+  // would otherwise decompress it to BF16 on every call; see `pre_ffw_rms_out`.
+  MatStorageT<BF16> pre_att_rms_out;
   MatStorageT<float> att_out;      // attention output
   MatStorageT<float> att_out_reps;  // attention output for each thread.
   MatStorageT<float> softmax_max;  // see OnlineSoftmaxState
@@ -308,7 +310,7 @@ struct AttentionActivationsPtrs {
   MatPtrT<KV_t> vit_V_T;
 
   // Output of RMSNorm before attention, size batch_size x model_dim.
-  MatPtrT<float> pre_att_rms_out;
+  MatPtrT<BF16> pre_att_rms_out;
   // Attention output computed from att * V, size batch_size x (q_heads *
   // qkv_dim).
   MatPtrT<float> att_out;

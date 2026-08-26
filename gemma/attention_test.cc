@@ -43,12 +43,13 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-void FillRandom(MatPtrT<float>& mat, uint64_t seed) {
+template <typename T>
+void FillRandom(MatPtrT<T>& mat, uint64_t seed) {
   hwy::RandomState rng(seed);
   for (size_t r = 0; r < mat.Rows(); ++r) {
-    float* row = mat.Row(r);
+    T* row = mat.Row(r);
     for (size_t c = 0; c < mat.Cols(); ++c) {
-      row[c] = static_cast<float>(RandomGaussian(rng));
+      row[c] = hwy::ConvertScalarTo<T>(RandomGaussian(rng));
     }
   }
 }
