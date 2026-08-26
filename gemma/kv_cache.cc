@@ -292,7 +292,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
             "You are have set kv_cache_type to %s, but you are using "
             "an attention implementation which only "
             "supports Int8. kv_cache_type will be set to Int8.",
-            runtime_config.kv_cache_type.value());
+            TypeName(runtime_config.kv_cache_type.value()));
       }
       kv_cache_type = Type::kInt8;
     } else {
