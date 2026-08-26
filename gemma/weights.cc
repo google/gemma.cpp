@@ -69,20 +69,17 @@ void LayerWeightsPtrs::InitAttWeights(std::vector<MatOwner>& mat_owners,
   HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
   HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
-  const MatPadding padding =
-      (att_weights.GetType() == Type::kQ4_0)
-          ? MatPadding::kPacked
-          : MatPadding::kOdd;
+  const MatPadding padding = DefaultPadding(att_weights.GetType());
   {
     std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
     mat_owners.push_back(MatOwner());
     mat_owners.back().AllocateFor(att_weights, allocator, padding);
   }
 
-  if (att_weights.GetType() == Type::kQ4_0) {
+  if (IsPacked(att_weights.GetType())) {
     const size_t cols = heads * qkv_dim;
-    const size_t src_row_bytes = Q4_0Stream::PackedEnd(qkv_dim);
-    const size_t dst_row_bytes = Q4_0Stream::PackedEnd(cols);
+    const size_t src_row_bytes = PackedEnd(att_weights.GetType(), qkv_dim);
+    const size_t dst_row_bytes = PackedEnd(att_weights.GetType(), cols);
     HWY_ASSERT(dst_row_bytes == heads * src_row_bytes);
 
     uint8_t* dst_ptr = att_weights.RowBytes(0);
@@ -115,16 +112,12 @@ static void SplitPackedMatrix(MatPtr& parent, size_t split_row, MatPtr& w1,
   uint8_t* base_ptr = parent.RowBytes(0);
   w1.SetPtr(base_ptr, stride);
 
-  size_t split_bytes = 0;
-  if (parent.GetType() == Type::kQ4_0) {
-    split_bytes = Q4_0Stream::PackedEnd(split_row * stride);
-  } else if (parent.GetType() == Type::kNUQ) {
-    split_bytes = NuqStream::PackedEnd(split_row * stride);
-  } else {
-    w2.SetPtr(parent.RowBytes(split_row), stride);
+  if (IsPacked(parent.GetType())) {
+    const size_t split_bytes = PackedEnd(parent.GetType(), split_row * stride);
+    w2.SetPtr(base_ptr + split_bytes, stride);
     return;
   }
-  w2.SetPtr(base_ptr + split_bytes, stride);
+  w2.SetPtr(parent.RowBytes(split_row), stride);
 }
 
 // For FFN. Fast, only updates pointers.
@@ -495,8 +488,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
 // Must be called after reading weights via `ForEachTensor`.
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
-void LayerWeightsPtrs::Fixup(Model model,
-                             std::vector<MatOwner>& mat_owners,
+void LayerWeightsPtrs::Fixup(Model model, std::vector<MatOwner>& mat_owners,
                              ThreadingContext& ctx) {
   if (attn_vec_einsum_w.GetType() == Type::kI8) {
     MatPtrT<I8Stream> attn_vec_einsum_w_i8(attn_vec_einsum_w);
@@ -540,8 +532,8 @@ void LayerWeightsPtrs::Fixup(Model model,
     // structural condition (e.g. !IsMHA() && kv_heads > 1) once we
     // verify it doesn't regress other multi-kv-head models.
     // This applies to Gemma 4 global layers; the model check will be expanded.
-    if (model == Model::GEMMA4_26B_MOE &&
-        layer_config.kv_heads == 2 && layer_config.qkv_dim == 512) {
+    if (model == Model::GEMMA4_26B_MOE && layer_config.kv_heads == 2 &&
+        layer_config.qkv_dim == 512) {
       const size_t old_stride = qkv_einsum_w2.Stride();
       const size_t elem_bytes = qkv_einsum_w2.ElementBytes();
       const size_t old_row_bytes = old_stride * elem_bytes;
@@ -804,8 +796,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                 const TensorToRead& tensor = tensors[task];
                 MatPtr& mat = *tensor.mat;
                 // Validate blob size matches allocated buffer before any read.
-                // MapAll (line ~557) and MakeBatches (line ~645) both assert this;
-                // this path was the only one missing the check.
+                // MapAll (line ~557) and MakeBatches (line ~645) both assert
+                // this; this path was the only one missing the check.
                 HWY_ASSERT_M(tensor.range.bytes == tensor.prev_packed_bytes,
                              mat.Name());
 
@@ -835,6 +827,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                     return DecompressToBF16<SfpStream>(*tensor.mat, buf);
                   case Type::kQ4_0:
                     return DecompressToBF16<Q4_0Stream>(*tensor.mat, buf);
+                  case Type::kMXFP4:
+                    return DecompressToBF16<MxFp4Stream>(*tensor.mat, buf);
                   default:
                     HWY_ABORT("Unsupported type %s",
                               TypeName(tensor.prev_type));
@@ -885,9 +879,8 @@ static std::vector<IOBatch> MakeBatches(
           "MISMATCH tensor %zu '%s': offset=%zu range.End()=%zu "
           "range.bytes=%zu rows=%zu cols=%zu elem=%zu packed=%d",
           i, tensors[i].mat->Name(), static_cast<size_t>(offset),
-          static_cast<size_t>(range.End()),
-          static_cast<size_t>(range.bytes), mat.Rows(), mat.Cols(),
-          mat.ElementBytes(), mat.IsPacked());
+          static_cast<size_t>(range.End()), static_cast<size_t>(range.bytes),
+          mat.Rows(), mat.Cols(), mat.ElementBytes(), mat.IsPacked());
     }
   }
 
@@ -967,9 +960,7 @@ WeightsPtrs::Mode WeightsPtrs::ReadFromBlobs(const ModelStore& model,
   ForEachTensor(nullptr, nullptr, [&](const TensorArgs& t) HWY_ATTR {
     size_t key_idx;
     if (model.FindAndUpdateMatPtr(t.mat, key_idx)) {
-      const bool is_compressed = t.mat.GetType() == Type::kNUQ ||
-                                 t.mat.GetType() == Type::kI8 ||
-                                 t.mat.GetType() == Type::kQ4_0;
+      const bool is_compressed = IsCompressed(t.mat.GetType());
       const MatPadding padding =
           (is_compressed || (t.flags & TensorArgs::kPacked))
               ? MatPadding::kPacked

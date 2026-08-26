@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -52,6 +52,7 @@
   GEMMA_MATMUL_FOR_B(SfpStream)                               \
   GEMMA_MATMUL_FOR_B(I8Stream)                                \
   GEMMA_MATMUL_FOR_B(Q4_0Stream)                              \
+  GEMMA_MATMUL_FOR_B(MxFp4Stream)                             \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */ \
   }  // namespace NAMESPACE
 

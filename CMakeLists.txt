@@ -156,6 +156,7 @@ set(SOURCES
   compression/compress-inl.h
   compression/compress.cc
   compression/compress.h
+  compression/mxfp4-inl.h
   compression/nuq-inl.h
   compression/q4_0-inl.h
   compression/sfp-inl.h
@@ -217,6 +218,7 @@ set(SOURCES
   ops/gilbert.h
   ops/matmul_static_bf16.cc
   ops/matmul_static_f32.cc
+  ops/matmul_static_mxfp4.cc
   ops/matmul_static_nuq.cc
   ops/matmul_static_sfp.cc
   ops/matmul_static_i8.cc
@@ -374,6 +376,7 @@ target_compile_definitions(libgemma PRIVATE HWY_IS_TEST=1)
 set(GEMMA_TEST_FILES
   compression/compress_test.cc
   compression/distortion_test.cc
+  compression/mxfp4_test.cc
   compression/nuq_test.cc
   compression/q4_0_test.cc
   compression/sfp_test.cc

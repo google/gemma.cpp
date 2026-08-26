@@ -48,9 +48,10 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/int-inl.h"
+#include "compression/mxfp4-inl.h"
 #include "compression/nuq-inl.h"
-#include "compression/sfp-inl.h"
 #include "compression/q4_0-inl.h"
+#include "compression/sfp-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
@@ -189,7 +190,8 @@ struct CompressTraits<float> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < NF);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VF vf = LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
+      const VF vf =
+          LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(vf, df, raw + i);  // adds zero padding
     }
   }
@@ -212,7 +214,8 @@ struct CompressTraits<float> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < ND);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VF vf = LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
+      const VF vf =
+          LoadNNonElementAligned(df, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(hn::PromoteTo(dd, vf), dd, raw + i);  // adds zero padding
     }
   }
@@ -318,7 +321,8 @@ struct CompressTraits<BF16> {
     size_t i = 0;
     if (num >= N16) {
       for (; i <= num - N16; i += N16) {
-        const VBF packed0 = LoadNonElementAligned(dbf, packed.ptr, packed_ofs + i);
+        const VBF packed0 =
+            LoadNonElementAligned(dbf, packed.ptr, packed_ofs + i);
         hn::StoreU(packed0, dbf, raw + i);
       }
     }
@@ -326,7 +330,8 @@ struct CompressTraits<BF16> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < N16);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VBF packed0 = LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
+      const VBF packed0 =
+          LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
       hn::StoreU(packed0, dbf, raw + i);
     }
   }
@@ -389,7 +394,8 @@ struct CompressTraits<BF16> {
     const size_t remaining = num - i;
     HWY_DASSERT(remaining < 2 * NF);
     if (HWY_UNLIKELY(remaining != 0)) {
-      const VBF packed0 = LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
+      const VBF packed0 =
+          LoadNNonElementAligned(dbf, packed.ptr, packed_ofs + i, remaining);
       const VF raw0 = hn::PromoteLowerTo(df, packed0);
       const VF raw1 = hn::PromoteUpperTo(df, packed0);
       // If at most one vector, the first store adds zero padding. Check before
@@ -670,6 +676,39 @@ struct CompressTraits<Q4_0Stream> {
       D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
       Raw* raw, const size_t num) {
     Q4_0Codec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
+  }
+};
+
+// FP4 MX e2m1 block quantization.
+template <>
+struct CompressTraits<MxFp4Stream> {
+  using Packed = MxFp4Stream;
+
+  template <class DF, HWY_IF_F32_D(DF)>
+  static HWY_INLINE void Compress(DF df, const float* HWY_RESTRICT raw,
+                                  size_t num, CompressPerThread& tls,
+                                  const PackedSpan<Packed>& packed,
+                                  const size_t packed_ofs) {
+    MxFp4Codec::Enc(df, raw, num, packed, packed_ofs);
+  }
+
+  template <class D>
+  static HWY_INLINE void Load2(D d, const PackedSpan<const Packed>& packed,
+                               const size_t packed_ofs, hn::Vec<D>& raw0,
+                               hn::Vec<D>& raw1) {
+    MxFp4Codec::Dec2(d, packed, packed_ofs, raw0, raw1);
+  }
+
+  static float ToFloatSlow(const Packed x) {
+    HWY_DASSERT(!"Not supported");
+    return 0.0f;
+  }
+
+  template <class D, typename Raw>
+  static HWY_INLINE void DecompressAndZeroPad(
+      D d, const PackedSpan<const Packed>& packed, const size_t packed_ofs,
+      Raw* raw, const size_t num) {
+    MxFp4Codec::DecompressAndZeroPad(d, packed, packed_ofs, raw, num);
   }
 };
 

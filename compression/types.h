@@ -128,6 +128,21 @@ struct Q4_0Stream {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct MxFp4Stream {
+  static constexpr size_t kBlockSize = 32;
+  using ScaleT = uint8_t;
+
+  static constexpr size_t PackedEnd(size_t capacity) {
+    const size_t num_blocks = hwy::DivCeil(capacity, kBlockSize);
+    return num_blocks * (sizeof(ScaleT) + kBlockSize / 2);
+  }
+
+  uint8_t scale_e8m0;
+  uint8_t bytes[kBlockSize / 2];
+};
+#pragma pack(pop)
+
 // Non-uniform quantization: a compressed representation of f32 inputs that
 // supports seeking at a granularity of 1 (for `DecompressAndZeroPad`) or
 // two vectors (for `Decompress2`), and decoding to bf16/f32.
@@ -247,8 +262,19 @@ constexpr bool IsQ4_0Stream() {
 }
 
 template <typename Packed>
+constexpr bool IsMxFp4Stream() {
+  return hwy::IsSame<hwy::RemoveCvRef<Packed>, MxFp4Stream>();
+}
+
+template <typename Packed>
+constexpr bool IsPacked() {
+  return IsNuqStream<Packed>() || IsI8Stream<Packed>() ||
+         IsQ4_0Stream<Packed>() || IsMxFp4Stream<Packed>();
+}
+
+template <typename Packed>
 constexpr bool SupportsPointerArithmetic() {
-  return !IsNuqStream<Packed>() && !IsI8Stream<Packed>() && !IsQ4_0Stream<Packed>();
+  return !IsPacked<Packed>();
 }
 
 // Tensor types for loading weights. Not all of these are supported weight
@@ -267,13 +293,13 @@ enum class Type {
   kU8,
   kInt8,
   kQ4_0,
+  kMXFP4,
 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
 static constexpr const char* kTypeStrings[] = {
-    "unknown", "f32", "bf16", "sfp", "nuq", "f64",
-    "u32",     "u64", "i8",   "u16", "u8",  "int8",
-    "q4_0"};
+    "unknown", "f32", "bf16", "sfp", "nuq",  "f64",  "u32",
+    "u64",     "i8",  "u16",  "u8",  "int8", "q4_0", "mxfp4"};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -290,6 +316,7 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(uint8_t),
     8 * sizeof(int8_t),
     4 /* Q4_0Stream, actually 4.5 */,
+    4 /* MxFp4Stream, actually 4.25 */,
 };
 
 static inline bool EnumValid(Type type) {
@@ -324,6 +351,8 @@ constexpr Type TypeEnum() {
     return Type::kInt8;
   } else if constexpr (hwy::IsSame<Packed, Q4_0Stream>()) {
     return Type::kQ4_0;
+  } else if constexpr (hwy::IsSame<Packed, MxFp4Stream>()) {
+    return Type::kMXFP4;
   } else {
     return Type::kUnknown;
   }
@@ -346,7 +375,39 @@ constexpr bool IsCompressed() {
   return hwy::IsSame<hwy::RemoveCvRef<Packed>, SfpStream>() ||
          hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>() ||
          hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>() ||
-         hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>();
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>() ||
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, MxFp4Stream>();
+}
+
+static inline bool IsCompressed(Type type) {
+  return type == Type::kSFP || type == Type::kNUQ || type == Type::kI8 ||
+         type == Type::kQ4_0 || type == Type::kMXFP4;
+}
+
+static inline bool IsPacked(Type type) {
+  return type == Type::kNUQ || type == Type::kI8 || type == Type::kQ4_0 ||
+         type == Type::kMXFP4;
+}
+
+static inline bool SupportsPointerArithmetic(Type type) {
+  return !IsPacked(type);
+}
+
+// Returns the number of packed elements/bytes for a compressed stream with
+// `capacity` elements.
+static HWY_INLINE constexpr size_t PackedEnd(Type type, size_t capacity) {
+  switch (type) {
+    case Type::kNUQ:
+      return NuqStream::PackedEnd(capacity);
+    case Type::kI8:
+      return I8Stream::PackedEnd(capacity);
+    case Type::kQ4_0:
+      return Q4_0Stream::PackedEnd(capacity);
+    case Type::kMXFP4:
+      return MxFp4Stream::PackedEnd(capacity);
+    default:
+      return capacity;
+  }
 }
 
 // Returns the number of `MatT` elements required to store `capacity` values,
@@ -355,15 +416,7 @@ constexpr bool IsCompressed() {
 // Deprecated, replaced by fixup within `MatPtr`. Only used by tests.
 template <typename Packed>
 constexpr size_t CompressedArrayElements(size_t capacity) {
-  if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>()) {
-    return NuqStream::PackedEnd(capacity);
-  } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>()) {
-    return I8Stream::PackedEnd(capacity);
-  } else if constexpr (hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>()) {
-    return Q4_0Stream::PackedEnd(capacity);
-  } else {
-    return capacity;
-  }
+  return PackedEnd(TypeEnum<Packed>(), capacity);
 }
 
 // Non-owning view of packed elements. Shortens argument lists.

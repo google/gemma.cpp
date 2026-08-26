@@ -276,17 +276,7 @@ class MatPtr : public IFields {
   // padding, which is anyway not supported for NUQ because `compress-inl.h`
   // assumes a contiguous stream for its group indexing.
   static size_t ComputeNumElements(Type type, Extents2D extents) {
-    size_t num_elements = extents.Area();
-    if (type == Type::kNUQ) {
-      // `CompressedArrayElements` is a wrapper function that has the same
-      // effect, but that requires a template argument, not `type`.
-      num_elements = NuqStream::PackedEnd(num_elements);
-    } else if (type == Type::kI8) {
-      num_elements = I8Stream::PackedEnd(num_elements);
-    } else if (type == Type::kQ4_0) {
-      num_elements = Q4_0Stream::PackedEnd(num_elements);
-    }
-    return num_elements;
+    return PackedEnd(type, extents.Area());
   }
 
   std::string name_;  // See `SetName`.
@@ -443,6 +433,9 @@ decltype(auto) CallUpcasted(const MatPtr* base, const Func& func,
   } else if (base->GetType() == Type::kQ4_0) {
     const MatPtrT<Q4_0Stream> mat(*base);
     return func(&mat, std::forward<Args>(args)...);
+  } else if (base->GetType() == Type::kMXFP4) {
+    const MatPtrT<MxFp4Stream> mat(*base);
+    return func(&mat, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s for tensor %s.", TypeName(base->GetType()),
               base->Name());
@@ -482,6 +475,10 @@ decltype(auto) CallUpcastedSame(const MatPtr* base1, const MatPtr* base2,
   } else if (base1->GetType() == Type::kQ4_0) {
     const MatPtrT<Q4_0Stream> mat1(*base1);
     const MatPtrT<Q4_0Stream> mat2(*base2);
+    return func(&mat1, &mat2, std::forward<Args>(args)...);
+  } else if (base1->GetType() == Type::kMXFP4) {
+    const MatPtrT<MxFp4Stream> mat1(*base1);
+    const MatPtrT<MxFp4Stream> mat2(*base2);
     return func(&mat1, &mat2, std::forward<Args>(args)...);
   } else {
     HWY_ABORT("Unhandled type %s for tensors %s and %s.",
@@ -575,6 +572,12 @@ enum class MatPadding {
   // cache conflict misses or 4K aliasing.
   kOdd,
 };
+
+// Returns the default padding for matrices of the given type. Compressed/packed
+// formats must use `kPacked`.
+static inline MatPadding DefaultPadding(Type type) {
+  return IsPacked(type) ? MatPadding::kPacked : MatPadding::kOdd;
+}
 
 // The stride (offset in elements between rows) that `MatOwner/MatStorageT`
 // will use.

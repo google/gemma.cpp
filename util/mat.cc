@@ -80,9 +80,7 @@ size_t Stride(MatPadding padding, size_t cols, size_t element_bytes,
 
 void MatOwner::AllocateFor(MatPtr& mat, const Allocator& allocator,
                            MatPadding padding) {
-  const bool is_compressed_and_packed =
-      mat.GetType() == Type::kNUQ || mat.GetType() == Type::kI8 ||
-      mat.GetType() == Type::kQ4_0;
+  const bool is_compressed_and_packed = IsPacked(mat.GetType());
   if (is_compressed_and_packed) padding = MatPadding::kPacked;
   const size_t stride =
       Stride(padding, mat.Cols(), mat.ElementBytes(), allocator.LineBytes());

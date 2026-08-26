@@ -100,6 +100,36 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "mxfp4",
+    textual_hdrs = ["mxfp4-inl.h"],
+    deps = [
+        ":types",
+        "@highway//:hwy",
+        "@highway//:math",
+    ],
+)
+
+cc_test(
+    name = "mxfp4_test",
+    size = "small",
+    timeout = "long",
+    srcs = ["mxfp4_test.cc"],
+    linkstatic = True,
+    local_defines = ["HWY_IS_TEST"],
+    tags = ["hwy_ops_test"],
+    deps = [
+        ":mxfp4",
+        ":types",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//:basics",
+        "//:test_util",
+        "@highway//:hwy",
+        "@highway//:hwy_test_util",
+        "@highway//:timer",
+    ],
+)
+
 cc_test(
     name = "int_test",
     size = "small",
@@ -204,6 +234,7 @@ cc_library(
     deps = [
         ":distortion",
         ":int",
+        ":mxfp4",
         ":nuq",
         ":q4_0",
         ":sfp",
