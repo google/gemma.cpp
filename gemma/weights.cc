@@ -853,12 +853,19 @@ static std::vector<IOBatch> MakeBatches(
     batches.emplace_back(offset, range.key_idx);
     if (mat.IsPacked()) {
       HWY_ASSERT(range.bytes == mat.PackedBytes());
-      if (!batches.back().Add(mat.Packed(), range.bytes)) {
-        // This should not happen if tensors are < 2GB.
-        // If it does, we need to chunk. For now, let's assume it doesn't.
-        HWY_ABORT("Packed tensor too large for a single IO batch.");
+      constexpr size_t kMaxChunk = 0x40000000;  // 1 GB
+      uint8_t* ptr = static_cast<uint8_t*>(mat.Packed());
+      size_t remaining = range.bytes;
+      while (remaining > 0) {
+        const size_t chunk = HWY_MIN(remaining, kMaxChunk);
+        if (!batches.back().Add(ptr, chunk)) {
+          batches.emplace_back(offset, range.key_idx);
+          HWY_ASSERT(batches.back().Add(ptr, chunk));
+        }
+        offset += chunk;
+        ptr += chunk;
+        remaining -= chunk;
       }
-      offset += range.bytes;
     } else {
       const size_t file_bytes_per_row = mat.Cols() * mat.ElementBytes();
       const size_t mem_stride_bytes = mat.Stride() * mat.ElementBytes();
