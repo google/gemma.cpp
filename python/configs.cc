@@ -229,6 +229,7 @@ PYBIND11_MODULE(configs, py_module) {
                      &gcpp::ModelConfig::partial_rotary_factor)
       .def_readwrite("hc_mult", &gcpp::ModelConfig::hc_mult)
       .def_readwrite("rope_theta", &gcpp::ModelConfig::rope_theta)
+      .def_readwrite("global_rope_theta", &gcpp::ModelConfig::global_rope_theta)
       .def_readwrite("compress_rope_theta",
                      &gcpp::ModelConfig::compress_rope_theta)
       .def_readwrite("yarn_orig_seq_len", &gcpp::ModelConfig::yarn_orig_seq_len)

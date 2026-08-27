@@ -988,9 +988,9 @@ static void T5GemmaGenerateT(const ModelConfig& config,
       "t5_d_kv", qbatch.Size(),
       2 * layer_config.kv_heads * layer_config.qkv_dim, env.ctx.allocator));
   decoder_kv.AllocateAndAttachRowPtrs(env.row_ptrs);
-  MatStorageT<float> inv_timescale =
-      CreateInvTimescale(env.ctx.allocator, layer_config.qkv_dim,
-                         layer_config.post_qk == PostQKType::HalfRope);
+  MatStorageT<float> inv_timescale = CreateInvTimescale(
+      env.ctx.allocator, layer_config.qkv_dim,
+      layer_config.post_qk == PostQKType::HalfRope, config.rope_theta);
   auto logits_chunk_row_ptrs = hwy::AllocateAligned<uint8_t*>(qbatch.Size());
   std::vector<int> greedy_tokens(qbatch.Size());
   std::vector<float> greedy_logits(qbatch.Size());

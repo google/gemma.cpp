@@ -603,7 +603,8 @@ void TestRopeAndMulBy() {
   MatStorageT<float> kactual2("kactual2", dim_qkv, ctx.allocator);
   MatStorageT<float> inv_timescale = CreateInvTimescale(
       ctx.allocator, config.layer_configs[0].qkv_dim,
-      config.layer_configs[0].post_qk == PostQKType::HalfRope);
+      config.layer_configs[0].post_qk == PostQKType::HalfRope,
+      config.rope_theta);
   // Assert VectorizedRope computation is same as regular rope at different pos.
   for (size_t pos = 1; pos < 500; pos++) {
     // Rope'd Q embeddings with query scale

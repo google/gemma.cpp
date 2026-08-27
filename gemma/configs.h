@@ -673,6 +673,8 @@ struct ModelConfig : public IFields {
       visitor(decoder_attention_window_sizes);
     }
 
+    visitor(global_rope_theta);
+
     // Append new fields here, then update `python/configs.cc`.
   }
 
@@ -850,6 +852,9 @@ struct ModelConfig : public IFields {
 
   // RoPE base frequency for the raw/sliding-window attention path.
   float rope_theta = 10000.0f;
+  // RoPE base frequency for global attention layers. Appended to VisitFields
+  // for serialization compatibility.
+  float global_rope_theta = 1000000.0f;
   // DeepSeek V4: separate base frequency for compressed-attention layers
   // (query, window keys and compressed keys all use this on those layers).
   // 0 = same as rope_theta.
