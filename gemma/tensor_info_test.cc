@@ -99,5 +99,75 @@ TEST(TensorInfoRegistryTest, VitGemma4Shapes) {
   EXPECT_EQ(qkv2->shape[1], 768u);  // model_dim
 }
 
+// Verify computed tensor shapes for Gemma4 E4B model match expected formulas.
+TEST(TensorInfoRegistryTest, Gemma4E4BShapes) {
+  constexpr size_t kModelDim = 2560;
+  constexpr size_t kHeads = 8;
+  constexpr size_t kKvHeads = 2;
+  constexpr size_t kLocalQkvDim = 256;
+  constexpr size_t kGlobalQkvDim = 512;
+  constexpr size_t kFfHiddenDim = 10240;
+
+  const ModelConfig config(Model::GEMMA4_E4B, Type::kSFP,
+                           PromptWrapping::GEMMA_VLM);
+  const TensorInfoRegistry tensors(config);
+
+  // Local layer (Layer 0): Q projection shape = {heads * qkv_dim, model_dim}
+  const TensorInfo* qkv1_local = tensors.Find("qkv1_w_0");
+  ASSERT_NE(qkv1_local, nullptr);
+  ASSERT_EQ(qkv1_local->shape.size(), 2u);
+  EXPECT_EQ(qkv1_local->shape[0], kHeads * kLocalQkvDim);  // 2048
+  EXPECT_EQ(qkv1_local->shape[1], kModelDim);              // 2560
+
+  // Local layer (Layer 0): KV projection shape = {2 * kv_heads * qkv_dim,
+  // model_dim}
+  const TensorInfo* qkv2_local = tensors.Find("qkv2_w_0");
+  ASSERT_NE(qkv2_local, nullptr);
+  ASSERT_EQ(qkv2_local->shape.size(), 2u);
+  EXPECT_EQ(qkv2_local->shape[0], 2u * kKvHeads * kLocalQkvDim);  // 1024
+  EXPECT_EQ(qkv2_local->shape[1], kModelDim);                     // 2560
+
+  // Local layer (Layer 0): Gate/Up projection shape = {2, ff_hidden_dim,
+  // model_dim}
+  const TensorInfo* gating_local = tensors.Find("gating_ein_0");
+  ASSERT_NE(gating_local, nullptr);
+  ASSERT_EQ(gating_local->shape.size(), 3u);
+  EXPECT_EQ(gating_local->shape[0], 2u);
+  EXPECT_EQ(gating_local->shape[1], kFfHiddenDim);  // 10240
+  EXPECT_EQ(gating_local->shape[2], kModelDim);     // 2560
+
+  // Global layer (Layer 5): Q projection shape = {heads * global_qkv_dim,
+  // model_dim}
+  const TensorInfo* qkv1_global = tensors.Find("qkv1_w_5");
+  ASSERT_NE(qkv1_global, nullptr);
+  ASSERT_EQ(qkv1_global->shape.size(), 2u);
+  EXPECT_EQ(qkv1_global->shape[0], kHeads * kGlobalQkvDim);  // 4096
+  EXPECT_EQ(qkv1_global->shape[1], kModelDim);               // 2560
+
+  // Global layer (Layer 5): KV projection shape = {2 * kv_heads *
+  // global_qkv_dim, model_dim}
+  const TensorInfo* qkv2_global = tensors.Find("qkv2_w_5");
+  ASSERT_NE(qkv2_global, nullptr);
+  ASSERT_EQ(qkv2_global->shape.size(), 2u);
+  EXPECT_EQ(qkv2_global->shape[0], 2u * kKvHeads * kGlobalQkvDim);  // 2048
+  EXPECT_EQ(qkv2_global->shape[1], kModelDim);                      // 2560
+
+  // KV-shared layer (Layer 24): Gate/Up shape = {2, ff_hidden_dim, model_dim}
+  const TensorInfo* gating_shared = tensors.Find("gating_ein_24");
+  ASSERT_NE(gating_shared, nullptr);
+  ASSERT_EQ(gating_shared->shape.size(), 3u);
+  EXPECT_EQ(gating_shared->shape[0], 2u);
+  EXPECT_EQ(gating_shared->shape[1], kFfHiddenDim);  // 10240
+  EXPECT_EQ(gating_shared->shape[2], kModelDim);     // 2560
+
+  // KV-shared layer (Layer 24): Down projection shape = {model_dim,
+  // ff_hidden_dim}
+  const TensorInfo* linear_shared = tensors.Find("linear_w_24");
+  ASSERT_NE(linear_shared, nullptr);
+  ASSERT_EQ(linear_shared->shape.size(), 2u);
+  EXPECT_EQ(linear_shared->shape[0], kModelDim);     // 2560
+  EXPECT_EQ(linear_shared->shape[1], kFfHiddenDim);  // 10240
+}
+
 }  // namespace
 }  // namespace gcpp

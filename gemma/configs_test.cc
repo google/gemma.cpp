@@ -8,6 +8,7 @@
 #include "gtest/gtest.h"
 #include "compression/types.h"  // Type
 #include "io/fields.h"           // Type
+#include "io/io.h"               // Path
 
 namespace gcpp {
 
@@ -88,6 +89,18 @@ TEST(ConfigsTest, DisplayNamesSetByConfig) {
                         PromptWrapping::GEMMA_IT);
   EXPECT_EQ(vlm.display_name, "Gemma4_2B");
   EXPECT_TRUE(vlm.HasGemma4Vit());
+
+  const ModelConfig lm_e4b(Model::GEMMA4_E4B_LM, Type::kSFP,
+                           PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(lm_e4b.display_name, "Gemma4_E4B_LM");
+  EXPECT_FALSE(lm_e4b.HasGemma4Vit());
+  EXPECT_EQ(lm_e4b.num_layers, 42u);
+
+  const ModelConfig vlm_e4b(Model::GEMMA4_E4B, Type::kSFP,
+                            PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(vlm_e4b.display_name, "Gemma4_E4B");
+  EXPECT_TRUE(vlm_e4b.HasGemma4Vit());
+  EXPECT_EQ(vlm_e4b.num_layers, 42u);
 }
 
 TEST(ConfigsTest, WrappingPreservedForVLM) {
@@ -112,6 +125,93 @@ TEST(ConfigsTest, WrappingPreservedForVLM) {
   const ModelConfig lm(Model::GEMMA4_2B_LM, Type::kSFP,
                        PromptWrapping::GEMMA_PT);
   EXPECT_EQ(lm.wrapping, PromptWrapping::GEMMA_PT);
+}
+
+TEST(ConfigsTest, Gemma4E4BArchitectureInvariants) {
+  constexpr size_t kNumLayers = 42;
+  constexpr size_t kModelDim = 2560;
+  constexpr size_t kHeads = 8;
+  constexpr size_t kKvHeads = 2;
+  constexpr size_t kLocalQkvDim = 256;
+  constexpr size_t kGlobalQkvDim = 512;
+  constexpr size_t kFfHiddenDim = 10240;
+  constexpr size_t kLocalWindowSize = 512;
+  constexpr size_t kKvSharingStartLayer = 24;
+  constexpr size_t kGlobalStride = 6;
+
+  const ModelConfig config(Model::GEMMA4_E4B_LM, Type::kSFP,
+                           PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(config.num_layers, kNumLayers);
+  EXPECT_EQ(config.model_dim, kModelDim);
+  EXPECT_EQ(config.layer_configs.size(), kNumLayers);
+  EXPECT_EQ(config.attention_window_sizes.size(), kNumLayers);
+
+  for (size_t i = 0; i < kNumLayers; ++i) {
+    const LayerConfig& layer = config.layer_configs[i];
+    EXPECT_EQ(layer.model_dim, kModelDim);
+    EXPECT_EQ(layer.heads, kHeads);
+    EXPECT_EQ(layer.kv_heads, kKvHeads);
+    EXPECT_TRUE(layer.use_qk_norm);
+    EXPECT_TRUE(layer.norm_v);
+    EXPECT_EQ(layer.ff_hidden_dim, kFfHiddenDim);
+
+    const bool is_global = (i % kGlobalStride == (kGlobalStride - 1));
+    if (is_global) {
+      EXPECT_EQ(layer.qkv_dim, kGlobalQkvDim);
+      EXPECT_EQ(config.attention_window_sizes[i], config.max_seq_len);
+    } else {
+      EXPECT_EQ(layer.qkv_dim, kLocalQkvDim);
+      EXPECT_EQ(config.attention_window_sizes[i], kLocalWindowSize);
+    }
+
+    if (i < kKvSharingStartLayer) {
+      EXPECT_EQ(layer.kv_share_layer_idx, -1);
+    } else {
+      const int expected_shared_idx = is_global ? 23 : 22;
+      EXPECT_EQ(layer.kv_share_layer_idx, expected_shared_idx);
+    }
+  }
+}
+
+TEST(ConfigsTest, Gemma4E4BQuantizerSpecifiers) {
+  // SFP quantizer
+  const ModelConfig e4b_sfp("gemma4-e4b-sfp-it");
+  EXPECT_EQ(e4b_sfp.model, Model::GEMMA4_E4B);
+  EXPECT_EQ(e4b_sfp.weight, Type::kSFP);
+  EXPECT_EQ(e4b_sfp.wrapping, PromptWrapping::GEMMA_IT);
+
+  const ModelConfig e4b_lm_sfp("gemma4-e4b-lm-sfp-it");
+  EXPECT_EQ(e4b_lm_sfp.model, Model::GEMMA4_E4B_LM);
+  EXPECT_EQ(e4b_lm_sfp.weight, Type::kSFP);
+  EXPECT_EQ(e4b_lm_sfp.wrapping, PromptWrapping::GEMMA_IT);
+
+  // BF16 format
+  const ModelConfig e4b_bf16("gemma4-e4b-bf16-it");
+  EXPECT_EQ(e4b_bf16.model, Model::GEMMA4_E4B);
+  EXPECT_EQ(e4b_bf16.weight, Type::kBF16);
+  EXPECT_EQ(e4b_bf16.wrapping, PromptWrapping::GEMMA_IT);
+
+  const ModelConfig e4b_lm_bf16("gemma4-e4b-lm-bf16-it");
+  EXPECT_EQ(e4b_lm_bf16.model, Model::GEMMA4_E4B_LM);
+  EXPECT_EQ(e4b_lm_bf16.weight, Type::kBF16);
+  EXPECT_EQ(e4b_lm_bf16.wrapping, PromptWrapping::GEMMA_IT);
+
+  // NUQ quantizer
+  const ModelConfig e4b_nuq("gemma4-e4b-nuq-it");
+  EXPECT_EQ(e4b_nuq.model, Model::GEMMA4_E4B);
+  EXPECT_EQ(e4b_nuq.weight, Type::kNUQ);
+  EXPECT_EQ(e4b_nuq.wrapping, PromptWrapping::GEMMA_IT);
+
+  const ModelConfig e4b_lm_nuq("gemma4-e4b-lm-nuq-it");
+  EXPECT_EQ(e4b_lm_nuq.model, Model::GEMMA4_E4B_LM);
+  EXPECT_EQ(e4b_lm_nuq.weight, Type::kNUQ);
+  EXPECT_EQ(e4b_lm_nuq.wrapping, PromptWrapping::GEMMA_IT);
+
+  // Pre-trained (PT) prompt wrapping
+  const ModelConfig e4b_lm_pt("gemma4-e4b-lm-sfp-pt");
+  EXPECT_EQ(e4b_lm_pt.model, Model::GEMMA4_E4B_LM);
+  EXPECT_EQ(e4b_lm_pt.weight, Type::kSFP);
+  EXPECT_EQ(e4b_lm_pt.wrapping, PromptWrapping::GEMMA_PT);
 }
 
 }  // namespace gcpp

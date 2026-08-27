@@ -72,7 +72,8 @@ GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
     sot_user_ = {105, 2364, 107};
     sot_model_ = {105, 4368, 107, 100, 45518, 107, 101};
     eot_ = {106, 107};
-  } else if (model == Model::GEMMA4_2B || model == Model::GEMMA4_2B_LM) {
+  } else if (model == Model::GEMMA4_2B || model == Model::GEMMA4_2B_LM ||
+             model == Model::GEMMA4_E4B || model == Model::GEMMA4_E4B_LM) {
     sot_user_ = {105, 2364, 107};
     sot_model_ = {105, 4368, 107};
     eot_ = {106, 107};
@@ -95,7 +96,7 @@ GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
   // Gemma 4 uses different image boundary tokens than Gemma 3.
   // Gemma 4: <|image> (255999) ... <image|> (258882)
   // Gemma 3: \n\n<start_of_image> ... <end_of_image>\n\n
-  if (model == Model::GEMMA4_2B) {
+  if (model == Model::GEMMA4_2B || model == Model::GEMMA4_E4B) {
     // HF format: \n\n<|image><|image|>...<image|>\n\n
     // Token 108 = \n in Gemma 4 tokenizer.
     vlm_soi_ = {108, 108, 255999};  // \n\n<|image>

@@ -291,6 +291,7 @@ enum class Model {
   GEMMA3_27B_LM,
   GEMMA4_26B_MOE,
   GEMMA4_2B,
+  GEMMA4_E2B = GEMMA4_2B,
   DEEPSEEK4_FLASH,
   // T5Gemma family - starting with S/S.
   T5GEMMA_S_S,
@@ -298,6 +299,9 @@ enum class Model {
   QWEN3_2B,  // 1.7B rounded up for readability.
   QWEN3_4B,
   GEMMA4_2B_LM,
+  GEMMA4_E2B_LM = GEMMA4_2B_LM,
+  GEMMA4_E4B,
+  GEMMA4_E4B_LM,
   kSentinel,
 };
 
