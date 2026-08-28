@@ -222,6 +222,9 @@ def _is_bf16_param(param_name: str) -> bool:
       "img_head_kernel",
       "query_norm",
       "key_norm",
+      "skip_scale",
+      "ple_proj_norm",
+      "ple_model_proj",
   ]:
     if param_name.startswith(prefix):
       return True
@@ -887,6 +890,273 @@ def export_gemma3_lm_sbs(
     csv.writer(csv_handle).writerows(metadata)
 
 
+def export_gemma4_lm_sbs(
+    model_specifier: str,
+    load_path: str,
+    tokenizer_file: str,
+    csv_file: str,
+    sbs_file: str,
+) -> None:
+  """Exports sbs file from a Gemma 4 LM safetensors checkpoint."""
+
+  if load_path.endswith(".json"):
+    with open(load_path, "r") as f:
+      j_obj = json.load(f)
+    files = list(set(j_obj["weight_map"].values()))
+    files = [os.path.join(os.path.dirname(load_path), f) for f in files]
+  else:
+    files = [load_path]
+
+  params: Dict[str, Any] = {}
+  for file in files:
+    with safetensors.safe_open(file, framework="pt") as f:
+      for k in f.keys():
+        if "vision_tower." in k:
+          continue
+        params[k] = f.get_tensor(k)
+
+  if "model.language_model.embed_tokens.weight" in params:
+    llm_prefix = "model.language_model."
+  elif "language_model.model.embed_tokens.weight" in params:
+    llm_prefix = "language_model.model."
+  elif "model.embed_tokens.weight" in params:
+    llm_prefix = "model."
+  elif "language_model.embed_tokens.weight" in params:
+    llm_prefix = "language_model."
+  else:
+    raise ValueError("Could not locate embed_tokens.weight in checkpoint.")
+
+  embed_tokens = params[f"{llm_prefix}embed_tokens.weight"]
+  vocab_size, model_dim = embed_tokens.shape
+  num_layers = len(
+      set([k for k in params.keys() if k.endswith("input_layernorm.weight")])
+  )
+  has_ple = f"{llm_prefix}embed_tokens_per_layer.weight" in params
+
+  print(
+      f"Gemma4 LM: vocab={vocab_size} dim={model_dim} layers={num_layers} "
+      f"has_ple={has_ple}"
+  )
+
+  model_specifier = model_specifier.replace("mxpf4", "mxfp4")
+  if "q4_0" in model_specifier or "q4" in model_specifier:
+    target_weight_type = configs.Type.kQ4_0
+  elif "mxfp4" in model_specifier:
+    target_weight_type = configs.Type.kMXFP4
+  elif "bf16" in model_specifier:
+    target_weight_type = configs.Type.kBF16
+  else:
+    target_weight_type = configs.Type.kSFP
+
+  writer = compression.SbsWriter(sbs_file)
+  metadata = []
+  scales = {}
+
+  def add_data(param_name, data, expected_shape, sbs_name, layer_index=None):
+    if not isinstance(expected_shape, tuple):
+      expected_shape = (expected_shape,)
+    print(f"Writing {param_name} with shape {data.shape} e:{expected_shape}")
+    assert (
+        data.shape == expected_shape
+    ), f"{param_name}: {data.shape} != {expected_shape}"
+
+    assert isinstance(data, torch.Tensor)
+    data = data.to(torch.float32).numpy()
+    data = np.array(data)
+    if "norm" in sbs_name or "_ns" in sbs_name:
+      data = data - 1.0
+
+    if layer_index is not None:
+      param_name = param_name % layer_index
+      sbs_name = sbs_name + f"_{layer_index}"
+
+    value = flatten_f32(data)
+    scale = compute_scale(value)
+    both_names = param_name + "::" + sbs_name
+    metadata.append((both_names, data.dtype, data.shape, scale))
+
+    if _is_float_param(sbs_name):
+      packed = configs.Type.kF32
+    elif _is_bf16_param(sbs_name):
+      packed = configs.Type.kBF16
+    else:
+      packed = target_weight_type
+      if packed == configs.Type.kSFP:
+        assert scale == 1.0, f"Scale for {both_names} is not 1.0"
+        scales[sbs_name] = scale
+    sys.stdout.flush()
+
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
+
+  def add_qkv_einsum(i, head_dim):
+    q = params.pop(f"{llm_prefix}layers.{i}.self_attn.q_proj.weight")
+    k = params.pop(f"{llm_prefix}layers.{i}.self_attn.k_proj.weight")
+    v = params.pop(f"{llm_prefix}layers.{i}.self_attn.v_proj.weight")
+    assert q.shape[0] % head_dim == 0, (
+        f"Layer {i}: q.shape[0]={q.shape[0]} not divisible by"
+        f" head_dim={head_dim}"
+    )
+    assert k.shape[0] % head_dim == 0, (
+        f"Layer {i}: k.shape[0]={k.shape[0]} not divisible by"
+        f" head_dim={head_dim}"
+    )
+    num_heads = q.shape[0] // head_dim
+    n_kv = k.shape[0] // head_dim
+
+    q = q.reshape(num_heads, head_dim, model_dim)
+    k = k.reshape(n_kv, head_dim, model_dim)
+    v = v.reshape(n_kv, head_dim, model_dim)
+    stacked = torch.stack((k, v), dim=0)  # (2, K, H, D)
+    transposed = stacked.transpose(0, 1)  # (K, 2, H, D)
+    reshaped = transposed.reshape(2 * n_kv, head_dim, model_dim)
+    qkv = torch.cat([q, reshaped], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.qkv_proj.weight",
+        qkv,
+        (num_heads + 2 * n_kv, head_dim, model_dim),
+        "qkv_ein",
+        i,
+    )
+    return num_heads
+
+  def add_att_einsum(i, num_heads, head_dim):
+    o = params.pop(f"{llm_prefix}layers.{i}.self_attn.o_proj.weight")
+    o = o.reshape(model_dim, num_heads, head_dim).permute(1, 0, 2)
+    add_data(
+        f"{llm_prefix}layers.%d.self_attn.o_proj.weight",
+        o,
+        (num_heads, model_dim, head_dim),
+        "att_ein",
+        i,
+    )
+
+  def add_gating_einsum(i):
+    gate = params.pop(f"{llm_prefix}layers.{i}.mlp.gate_proj.weight")
+    up = params.pop(f"{llm_prefix}layers.{i}.mlp.up_proj.weight")
+    hidden_dim = gate.shape[0]
+    assert gate.shape == up.shape == (hidden_dim, model_dim)
+    gating = torch.stack([gate, up], dim=0)
+    add_data(
+        f"{llm_prefix}layers.%d.mlp.gating_einsum.weight",
+        gating,
+        (2, hidden_dim, model_dim),
+        "gating_ein",
+        i,
+    )
+    return hidden_dim
+
+  # Non-layer tensors.
+  add_data(
+      f"{llm_prefix}embed_tokens.weight",
+      params.pop(f"{llm_prefix}embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "c_embedding",
+  )
+  add_data(
+      f"{llm_prefix}norm.weight",
+      params.pop(f"{llm_prefix}norm.weight"),
+      (model_dim,),
+      "c_final_norm",
+  )
+
+  if has_ple:
+    ple_weight = params[f"{llm_prefix}embed_tokens_per_layer.weight"]
+    ple_total_dim = ple_weight.shape[1]
+    ple_dim = ple_total_dim // num_layers
+    add_data(
+        f"{llm_prefix}embed_tokens_per_layer.weight",
+        params.pop(f"{llm_prefix}embed_tokens_per_layer.weight"),
+        (vocab_size, ple_total_dim),
+        "ple_embeddings",
+    )
+    add_data(
+        f"{llm_prefix}per_layer_model_projection.weight",
+        params.pop(f"{llm_prefix}per_layer_model_projection.weight"),
+        (ple_total_dim, model_dim),
+        "ple_model_proj",
+    )
+    add_data(
+        f"{llm_prefix}per_layer_projection_norm.weight",
+        params.pop(f"{llm_prefix}per_layer_projection_norm.weight"),
+        (ple_dim,),
+        "ple_proj_norm",
+    )
+
+  def add_layer_tensor(layer_idx, suffix, shape, sbs_name):
+    add_data(
+        f"{llm_prefix}layers.%d.{suffix}",
+        params.pop(f"{llm_prefix}layers.{layer_idx}.{suffix}"),
+        shape,
+        sbs_name,
+        layer_idx,
+    )
+
+  for i in range(num_layers):
+    head_dim = params[
+        f"{llm_prefix}layers.{i}.self_attn.q_norm.weight"
+    ].shape[0]
+    hidden_dim = add_gating_einsum(i)
+    num_heads = add_qkv_einsum(i, head_dim)
+    add_att_einsum(i, num_heads, head_dim)
+
+    layer_tensors = [
+        ("mlp.down_proj.weight", (model_dim, hidden_dim), "linear_w"),
+        ("input_layernorm.weight", (model_dim,), "pre_att_ns"),
+        ("post_attention_layernorm.weight", (model_dim,), "post_att_ns"),
+        ("pre_feedforward_layernorm.weight", (model_dim,), "pre_ff_ns"),
+        ("post_feedforward_layernorm.weight", (model_dim,), "post_ff_ns"),
+        ("self_attn.q_norm.weight", (head_dim,), "query_norm"),
+        ("self_attn.k_norm.weight", (head_dim,), "key_norm"),
+    ]
+    for suffix, shape, sbs_name in layer_tensors:
+      add_layer_tensor(i, suffix, shape, sbs_name)
+
+    for key_name in ("layer_scalar", "skip_scale"):
+      key = f"{llm_prefix}layers.{i}.{key_name}"
+      if key in params:
+        add_data(
+            f"{llm_prefix}layers.%d.layer_scalar",
+            params.pop(key),
+            (1,),
+            "skip_scale",
+            i,
+        )
+        break
+
+    if has_ple:
+      gate_dim = params[
+          f"{llm_prefix}layers.{i}.per_layer_input_gate.weight"
+      ].shape[0]
+      add_layer_tensor(
+          i, "per_layer_input_gate.weight", (gate_dim, model_dim), "ple_gate"
+      )
+      add_layer_tensor(
+          i, "per_layer_projection.weight", (model_dim, gate_dim), "ple_proj"
+      )
+      add_layer_tensor(
+          i, "post_per_layer_input_norm.weight", (model_dim,), "post_ple_ns"
+      )
+
+  if params:
+    print(f"WARNING: leftover params not consumed: {list(params.keys())[:10]}")
+
+  sbs_config = configs.ModelConfig(model_specifier)
+  if tokenizer_file.endswith(".json"):
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kHfBpe
+    tokenizer_blob = pack_bpe_tokenizer(tokenizer_file)
+  else:
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kSentencePiece
+    with open(tokenizer_file, "rb") as f:
+      tokenizer_blob = f.read()
+  writer.write(sbs_config, tokenizer_blob)
+
+  with open(csv_file, "w") as csv_handle:
+    csv.writer(csv_handle).writerows(metadata)
+
+
 def export_t5gemma_sbs(
     model_specifier: str,
     load_path: str,
@@ -1498,6 +1768,10 @@ def main(argv: Sequence[str]) -> None:
     export_gemma3_lm_sbs(
         model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
     )
+  elif model_specifier.startswith("gemma4-") and "-lm-" in model_specifier:
+    export_gemma4_lm_sbs(
+        model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+    )
   elif model_specifier.startswith("t5gemma"):
     export_t5gemma_sbs(
         model_specifier,
@@ -1514,7 +1788,8 @@ def main(argv: Sequence[str]) -> None:
   else:
     raise app.UsageError(
         f"Unsupported model_specifier {model_specifier!r}. Expected a "
-        "'paligemma*', 'gemma3-*-lm-*', 'qwen3-*', or 't5gemma*' specifier."
+        "'paligemma*', 'gemma3-*-lm-*', 'gemma4-*-lm-*', 'qwen3-*', or "
+        "'t5gemma*' specifier."
     )
 
 
