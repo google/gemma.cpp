@@ -22,7 +22,9 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
+
 
 #include "hwy/base.h"  // HWY_ABORT
 #include "nlohmann/json.hpp"
@@ -172,12 +174,22 @@ std::string ReadFileToStringOrAbort(const std::string& path) {
 
 Dsv4Tokenizer::Dsv4Tokenizer(const std::string& tokenizer_json_path) {
   const std::string contents = ReadFileToStringOrAbort(tokenizer_json_path);
-  json j = json::parse(contents, /*cb=*/nullptr, /*allow_exceptions=*/false);
+  Init(contents);
+}
+
+Dsv4Tokenizer::Dsv4Tokenizer(std::string_view json_content, bool /*is_content*/) {
+  Init(json_content);
+}
+
+void Dsv4Tokenizer::Init(std::string_view json_content) {
+  json j = json::parse(json_content.begin(), json_content.end(), /*cb=*/nullptr,
+                      /*allow_exceptions=*/false);
   if (j.is_discarded()) {
-    HWY_ABORT("Failed to parse tokenizer JSON %s", tokenizer_json_path.c_str());
+    HWY_ABORT("Failed to parse tokenizer JSON");
   }
 
   uint32_t byte_to_cp[256];
+
   BuildByteToCp(byte_to_cp);
   std::unordered_map<uint32_t, uint8_t> cp_to_byte;
   for (int b = 0; b < 256; ++b) {

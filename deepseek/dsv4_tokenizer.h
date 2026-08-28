@@ -25,6 +25,7 @@
 #include <stdint.h>
 
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +35,11 @@ class Dsv4Tokenizer {
  public:
   // Aborts on I/O or parse errors.
   explicit Dsv4Tokenizer(const std::string& tokenizer_json_path);
+
+  // Initializes tokenizer directly from JSON content in memory.
+  // 'is_content' is used to distinguish from path constructor.
+  Dsv4Tokenizer(std::string_view json_content, bool is_content);
+
 
   // Extracts added tokens (chat markers etc.), pre-tokenizes and BPE-encodes
   // everything in between. Equivalent to HF encode(add_special_tokens=false).
@@ -56,6 +62,9 @@ class Dsv4Tokenizer {
     std::string content;
     int id;
   };
+
+  void Init(std::string_view json_content);
+
 
   // Splits `text` (a span with no added tokens) into pre-tokenization pieces
   // and BPE-encodes each, appending ids.
