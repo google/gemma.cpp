@@ -64,22 +64,12 @@ static ThreadingContext MakeContext() {
 
 template <typename T>
 static float SourceValue(const T value) {
-  return static_cast<float>(value);
-}
-
-template <>
-float SourceValue(const BF16 value) {
-  return hwy::F32FromBF16(value);
+  return hwy::ConvertScalarTo<float>(value);
 }
 
 template <typename T>
 static T MakeSourceValue(const float value) {
-  return static_cast<T>(value);
-}
-
-template <>
-BF16 MakeSourceValue(const float value) {
-  return hwy::BF16FromF32(value);
+  return hwy::ConvertScalarTo<T>(value);
 }
 
 template <typename T>
