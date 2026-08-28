@@ -36,6 +36,9 @@
 // =============================================================================
 // Supported Benchmark Flags
 // =============================================================================
+//   --benchmark_mode: Benchmark mode: 'both' (benchmarks prefill and
+//                     decode) or 'decode' (benchmarks decode with simulated
+//                     KV cache history). Default: 'both'.
 //   --context_lengths: Comma-separated KV cache history lengths to
 //                      benchmark (default: '1024,8192,32768'; aliases:
 //                      --generation_context_lengths, --prompt_lengths)
@@ -77,6 +80,7 @@ class AttentionBenchmarkArgs : public ArgsBase<AttentionBenchmarkArgs> {
   std::string generation_context_lengths;
   std::string prompt_lengths;
   std::string prefill_lengths;
+  std::string benchmark_mode;
   size_t prefill_length;
   size_t generation_prefill_length;
   size_t benchmark_tokens;
@@ -84,6 +88,10 @@ class AttentionBenchmarkArgs : public ArgsBase<AttentionBenchmarkArgs> {
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
+    visitor(benchmark_mode, "benchmark_mode", std::string("both"),
+            "Benchmark mode: 'both' (prefill and decode) or 'decode' (decode "
+            "with simulated KV cache history)",
+            2);
     visitor(context_lengths, "context_lengths",
             std::string("1024,8192,32768"),
             "Comma-separated list of simulated KV cache history lengths to "
@@ -223,40 +231,49 @@ int main(int argc, char** argv) {
   }
   if (prefill_len == 0) prefill_len = 1;
 
-  std::cout << "--- Generation Benchmark (Simulated KV Cache History) ---"
-            << std::endl;
+  const bool is_only_decode = (bench_args.benchmark_mode == "decode");
+
+  std::cout << "--- Benchmark: " << (is_only_decode ? "decode" : "both")
+            << " ---" << std::endl;
   std::cout << "Batch Size:             " << num_queries << std::endl;
-  std::cout << "Prefill Priming Tokens: " << prefill_len << std::endl;
+  if (is_only_decode) {
+    std::cout << "Prefill Priming Tokens: " << prefill_len << std::endl;
+  }
   std::cout << "Decode Tokens:          " << decode_tokens << std::endl;
   std::cout << "---------------------------------------------------------"
             << std::endl;
 
   for (const auto& len_str : history_lengths_strs) {
     if (len_str.empty()) continue;
-    size_t history_len;
-    if (!gcpp::ParseSizeT(len_str, &history_len)) {
+    size_t target_len;
+    if (!gcpp::ParseSizeT(len_str, &target_len)) {
       std::cerr << "Invalid context length: " << len_str << std::endl;
       continue;
     }
 
-    size_t max_seq_len = gemma.Config().max_seq_len;
-    if (history_len + prefill_len + decode_tokens > max_seq_len) {
-      size_t clamped_len = (max_seq_len > prefill_len + decode_tokens)
-                               ? max_seq_len - prefill_len - decode_tokens
-                               : 0;
-      std::cerr << "Warning: history_len=" << history_len
-                << " + prefill_len=" << prefill_len
-                << " + decode_tokens=" << decode_tokens
-                << " exceeds max_seq_len (" << max_seq_len
-                << "), clamping history_len to " << clamped_len << "."
-                << std::endl;
-      history_len = clamped_len;
+    const size_t max_seq_len = gemma.Config().max_seq_len;
+    const size_t priming_tokens = is_only_decode ? prefill_len : 0;
+    if (target_len + priming_tokens + decode_tokens > max_seq_len) {
+      const size_t max_allowed =
+          (max_seq_len > priming_tokens + decode_tokens)
+              ? max_seq_len - priming_tokens - decode_tokens
+              : 0;
+      std::cerr << "Warning: target_len=" << target_len
+                << " exceeds max_seq_len (" << max_seq_len << "), clamping to "
+                << max_allowed << "\n";
+      target_len = max_allowed;
     }
 
-    std::cout << "\nSimulated History Length: " << history_len << " tokens"
-              << std::endl;
+    const size_t history_len = is_only_decode ? target_len : 0;
+    const size_t prompt_tokens = is_only_decode ? prefill_len : target_len;
 
-    size_t total_capacity = history_len + prefill_len + decode_tokens + 32;
+    std::cout << "\n"
+              << (is_only_decode ? "Simulated History Length: "
+                                 : "Context / Prefill Length: ")
+              << target_len << " tokens\n";
+
+    size_t total_capacity =
+        std::min(max_seq_len, history_len + prompt_tokens + decode_tokens + 32);
 
     size_t original_seq_len = args.inference.seq_len;
     args.inference.seq_len = total_capacity;
@@ -280,36 +297,25 @@ int main(int argc, char** argv) {
 
     args.inference.seq_len = original_seq_len;
 
-    std::vector<int> tokens = GenerateSyntheticPrompt(gemma, prefill_len);
+    std::vector<int> tokens = GenerateSyntheticPrompt(gemma, prompt_tokens);
 
     gcpp::TimingInfo timing_info;
 
     size_t generated = 0;
-    size_t total_prefill_tokens = num_queries * prefill_len;
-    double start_time = hwy::platform::Now();
+    const size_t total_prefill_tokens = num_queries * prompt_tokens;
+    const double start_time = hwy::platform::Now();
     double prefill_end_time = start_time;
 
-    auto stream_token = [&generated, total_prefill_tokens,
-                         &prefill_end_time](int, float) {
-      ++generated;
-      if (generated == total_prefill_tokens) {
+    auto on_token = [&]() {
+      if (++generated == total_prefill_tokens) {
         prefill_end_time = hwy::platform::Now();
       }
       return true;
     };
-
-    auto batch_stream_token = [&generated, total_prefill_tokens,
-                               &prefill_end_time](size_t, size_t, int,
-                                                  float) {
-      ++generated;
-      if (generated == total_prefill_tokens) {
-        prefill_end_time = hwy::platform::Now();
-      }
-      return true;
+    gen_config.stream_token = [&](int, float) { return on_token(); };
+    gen_config.batch_stream_token = [&](size_t, size_t, int, float) {
+      return on_token();
     };
-
-    gen_config.stream_token = stream_token;
-    gen_config.batch_stream_token = batch_stream_token;
 
     gcpp::AllQueries all_queries(
         tokens, /*start_pos=*/history_len, /*prefix_end=*/0,
@@ -317,19 +323,28 @@ int main(int argc, char** argv) {
 
     gemma.GenerateBatch(gen_config, all_queries, env, timing_info);
 
-    double end_time = hwy::platform::Now();
-    double decode_seconds = end_time - prefill_end_time;
-    size_t actual_decode_tokens =
-        generated > total_prefill_tokens ? generated - total_prefill_tokens
-                                         : 0;
+    const double end_time = hwy::platform::Now();
+    const double prefill_seconds = prefill_end_time - start_time;
+    const double decode_seconds = end_time - prefill_end_time;
+    const size_t actual_decode_tokens =
+        generated > total_prefill_tokens ? generated - total_prefill_tokens : 0;
 
-    std::cout << "Decode:   " << actual_decode_tokens << " tokens in "
-              << decode_seconds << "s ("
-              << (decode_seconds > 0 ? actual_decode_tokens / decode_seconds
-                                     : 0.0)
-              << " tok/s)" << std::endl;
-    std::cout << "---------------------------------------------------------"
-              << std::endl;
+    if (!is_only_decode) {
+      std::cout << "Prefill:  " << total_prefill_tokens << " tokens in "
+                << prefill_seconds << "s ("
+                << (prefill_seconds > 0 ? total_prefill_tokens / prefill_seconds
+                                        : 0.0)
+                << " tok/s); TTFT: " << static_cast<int>(prefill_seconds * 1E3)
+                << " ms\n";
+    }
+    if (decode_tokens > 0) {
+      std::cout << "Decode:   " << actual_decode_tokens << " tokens in "
+                << decode_seconds << "s ("
+                << (decode_seconds > 0 ? actual_decode_tokens / decode_seconds
+                                       : 0.0)
+                << " tok/s)\n";
+    }
+    std::cout << "---------------------------------------------------------\n";
   }
 
   return 0;
