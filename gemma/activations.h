@@ -123,13 +123,13 @@ struct AttentionActivations {
         v_tile_vec(MatFactory("v_tile_vec", batch_size * layer_config.kv_heads,
                               KVCache::kTileSize * max_qkv_dim, allocator)),
 
-        inv_timescale(
-            CreateInvTimescale(allocator, layer_config.qkv_dim,
-                               layer_config.post_qk == PostQKType::HalfRope)),
-        inv_timescale_global(
-            CreateInvTimescale(allocator, max_qkv_dim,
-                               layer_config.post_qk == PostQKType::HalfRope,
-                               1000000.0, config.partial_rotary_factor)) {
+        inv_timescale(CreateInvTimescale(
+            allocator, layer_config.qkv_dim,
+            layer_config.post_qk == PostQKType::HalfRope, config.rope_theta)),
+        inv_timescale_global(CreateInvTimescale(
+            allocator, max_qkv_dim,
+            layer_config.post_qk == PostQKType::HalfRope,
+            config.global_rope_theta, config.partial_rotary_factor)) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -456,7 +456,8 @@ struct Activations {
                 ? CreateInvTimescale(ctx.allocator,
                                      config.encoder_layer_configs[0].qkv_dim,
                                      config.encoder_layer_configs[0].post_qk ==
-                                         PostQKType::HalfRope)
+                                         PostQKType::HalfRope,
+                                     config.rope_theta)
                 : MatStorageT<float>()),
 
         max_workers(ctx.pools.MaxWorkers()),

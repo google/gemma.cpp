@@ -39,6 +39,8 @@ static ModelConfig ConfigNoSSM() {
   config.scale_base_names = {"att_ein",    "qkv_ein",      "gr_lin_x_w",
                              "gr_lin_y_w", "gr_lin_out_w", "gr_gate_w",
                              "gating_ein", "linear_w"};
+  config.rope_theta = 10000.0f;
+  config.global_rope_theta = 1000000.0f;
   return config;
 }
 
@@ -48,6 +50,8 @@ static ModelConfig ConfigBaseGemmaV2() {
   config.final_cap = 30.0f;
   config.eos_id = 1;
   config.secondary_eos_id = 107;
+  config.rope_theta = 10000.0f;
+  config.global_rope_theta = 10000.0f;
   return config;
 }
 
@@ -218,6 +222,8 @@ static ModelConfig ConfigBaseGemmaV3() {
   config.final_cap = 0.0f;
   config.eos_id = 1;
   config.secondary_eos_id = 106;
+  config.rope_theta = 10000.0f;
+  config.global_rope_theta = 1000000.0f;
   return config;
 }
 
@@ -424,6 +430,7 @@ static ModelConfig ConfigGemma3_270M() {
   config.display_name = "Gemma3_270M";
   config.model = Model::GEMMA3_270M;
   config.wrapping = PromptWrapping::GEMMA_IT;
+  config.global_rope_theta = 10000.0f;
   config.model_dim = 640;
   config.vocab_size = kGemmaV3VocabSize;  // new vocab size / tokenizer
   config.max_seq_len = 32 * 1024;
@@ -445,6 +452,8 @@ static ModelConfig ConfigBaseGemmaV4() {
   config.eos_id = 1;
   config.secondary_eos_id = 106;
   config.vocab_size = 262208;
+  config.rope_theta = 10000.0f;
+  config.global_rope_theta = 1000000.0f;
   return config;
 }
 
@@ -752,6 +761,7 @@ static ModelConfig ConfigDeepSeek4_Flash() {
   config.attention_window_sizes = FixedAttentionWindowSizes<43>(128);
 
   config.rope_theta = 10000.0f;
+  config.global_rope_theta = 10000.0f;
   config.compress_rope_theta = 160000.0f;
   config.yarn_orig_seq_len = 65536;
   config.yarn_factor = 16.0f;
@@ -782,6 +792,8 @@ static ModelConfig ConfigBaseT5Gemma() {
   config.final_cap = 30.0f;
   config.eos_id = 1;
   config.secondary_eos_id = 107;
+  config.rope_theta = 10000.0f;
+  config.global_rope_theta = 10000.0f;
   return config;
 }
 
@@ -856,6 +868,8 @@ static ModelConfig ConfigQwen3_600M() {
   config.display_name = "Qwen3_0.6B";
   config.model = Model::QWEN3_600M;
   config.wrapping = PromptWrapping::GEMMA_IT;
+  config.rope_theta = 1000000.0f;
+  config.global_rope_theta = 1000000.0f;
   config.model_dim = 1024;
 
   LayerConfig layer_config =
@@ -874,6 +888,8 @@ static ModelConfig ConfigQwen3_2B() {
   config.display_name = "Qwen3_1.7B";
   config.model = Model::QWEN3_2B;
   config.wrapping = PromptWrapping::GEMMA_IT;
+  config.rope_theta = 1000000.0f;
+  config.global_rope_theta = 1000000.0f;
   config.model_dim = 2048;
 
   LayerConfig layer_config =
@@ -892,6 +908,8 @@ static ModelConfig ConfigQwen3_4B() {
   config.display_name = "Qwen3_4B";
   config.model = Model::QWEN3_4B;
   config.wrapping = PromptWrapping::GEMMA_IT;
+  config.rope_theta = 1000000.0f;
+  config.global_rope_theta = 1000000.0f;
   config.model_dim = 2560;
 
   LayerConfig layer_config =
@@ -1174,6 +1192,8 @@ bool ModelConfig::TestEqual(const ModelConfig& other, bool print) const {
   b.eos_id = a.eos_id;
   b.secondary_eos_id = a.secondary_eos_id;
   b.scale_base_names = a.scale_base_names;
+  b.rope_theta = a.rope_theta;
+  b.global_rope_theta = a.global_rope_theta;
   for (size_t i = 0; i < b.layer_configs.size(); ++i) {
     b.layer_configs[i].optimized_gating = a.layer_configs[i].optimized_gating;
   }

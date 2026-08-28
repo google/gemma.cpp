@@ -113,10 +113,11 @@ PYBIND11_MODULE(configs, py_module) {
       .value("QWEN3_600M", gcpp::Model::QWEN3_600M)
       .value("QWEN3_2B", gcpp::Model::QWEN3_2B)
       .value("QWEN3_4B", gcpp::Model::QWEN3_4B)
+      .value("GEMMA4_2B_LM", gcpp::Model::GEMMA4_2B_LM)
       .value("GEMMA4_E4B", gcpp::Model::GEMMA4_E4B)
       .value("GEMMA4_E4B_LM", gcpp::Model::GEMMA4_E4B_LM)
       // Insert new models above this line.
-  .value("PALIGEMMA_448", gcpp::Model::PALIGEMMA_448);
+      ;  // NOLINT
 
   class_<gcpp::TensorInfo>(py_module, "TensorInfo")
       .def(init())
@@ -232,6 +233,7 @@ PYBIND11_MODULE(configs, py_module) {
                      &gcpp::ModelConfig::partial_rotary_factor)
       .def_readwrite("hc_mult", &gcpp::ModelConfig::hc_mult)
       .def_readwrite("rope_theta", &gcpp::ModelConfig::rope_theta)
+      .def_readwrite("global_rope_theta", &gcpp::ModelConfig::global_rope_theta)
       .def_readwrite("compress_rope_theta",
                      &gcpp::ModelConfig::compress_rope_theta)
       .def_readwrite("yarn_orig_seq_len", &gcpp::ModelConfig::yarn_orig_seq_len)
