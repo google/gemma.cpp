@@ -909,21 +909,44 @@ static float MaxAbs(const TensorToRead& tensor, const BlobReader& reader,
   // workers `ParallelFor` will use.
   std::vector<float> chunk_max(num_chunks, 0.0f);
 
-  ParallelFor(Parallelism::kFlat, num_chunks, ctx, /*cluster_idx=*/0,
-              Callers::kReadAllToSFP, [&](uint64_t chunk, size_t thread) {
-                GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToSFP);
-                const size_t begin = chunk * rows_per_chunk;
-                const size_t end = HWY_MIN(begin + rows_per_chunk, rows);
-                Chunk<T> buffers(cols, rows_per_chunk);
-                const float* raw =
-                    buffers.Decompress(tensor, reader, begin, end);
+  ParallelFor(
+      Parallelism::kFlat, num_chunks, ctx, /*cluster_idx=*/0,
+      Callers::kReadAllToSFP, [&](uint64_t chunk, size_t thread) {
+        GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToSFP);
+        const size_t begin = chunk * rows_per_chunk;
+        const size_t end = HWY_MIN(begin + rows_per_chunk, rows);
+        Chunk<T> buffers(cols, rows_per_chunk);
+        const float* raw = buffers.Decompress(tensor, reader, begin, end);
 
-                float maxabs = 0.0f;
-                for (size_t i = 0; i < (end - begin) * cols; ++i) {
-                  maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
-                }
-                chunk_max[chunk] = maxabs;
-              });
+        using DF = hwy::HWY_NAMESPACE::ScalableTag<float>;
+        using VF = hwy::HWY_NAMESPACE::Vec<DF>;
+        const DF df;
+        const size_t NF = hwy::HWY_NAMESPACE::Lanes(df);
+        const size_t num = (end - begin) * cols;
+        VF max0 = hwy::HWY_NAMESPACE::Zero(df);
+        VF max1 = hwy::HWY_NAMESPACE::Zero(df);
+        size_t i = 0;
+        for (; i + 2 * NF <= num; i += 2 * NF) {
+          max0 = hwy::HWY_NAMESPACE::Max(
+              max0,
+              hwy::HWY_NAMESPACE::Abs(hwy::HWY_NAMESPACE::LoadU(df, raw + i)));
+          max1 = hwy::HWY_NAMESPACE::Max(
+              max1, hwy::HWY_NAMESPACE::Abs(
+                        hwy::HWY_NAMESPACE::LoadU(df, raw + i + NF)));
+        }
+        if (i + NF <= num) {
+          max0 = hwy::HWY_NAMESPACE::Max(
+              max0,
+              hwy::HWY_NAMESPACE::Abs(hwy::HWY_NAMESPACE::LoadU(df, raw + i)));
+          i += NF;
+        }
+        float maxabs = hwy::HWY_NAMESPACE::ReduceMax(
+            df, hwy::HWY_NAMESPACE::Max(max0, max1));
+        for (; i < num; ++i) {
+          maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
+        }
+        chunk_max[chunk] = maxabs;
+      });
 
   float maxabs = 0.0f;
   for (const float m : chunk_max) maxabs = HWY_MAX(maxabs, m);
