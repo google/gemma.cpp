@@ -43,6 +43,8 @@
 
 namespace gcpp {
 
+namespace hn = hwy::HWY_NAMESPACE;
+
 using weights_internal::TensorToRead;
 
 static std::mutex g_mat_owners_mutex;
@@ -309,7 +311,7 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
   hwy::AlignedFreeUniquePtr<float[]> att_weights_tmp =
       hwy::AllocateAligned<float>(model_dim * heads * qkv_dim);
 
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  const hn::ScalableTag<float> df;
   HWY_NAMESPACE::DecompressAndZeroPad(df, attn_vec_einsum_w.Span(), 0,
                                       attn_vec_einsum_w_tmp.get(),
                                       model_dim * heads * qkv_dim);
@@ -373,7 +375,7 @@ static void HWY_MAYBE_UNUSED SplitW1I8(const LayerConfig& layer_config,
   hwy::AlignedFreeUniquePtr<float[]> w_tmp =
       hwy::AllocateAligned<float>(total_size);
 
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  const hn::ScalableTag<float> df;
   HWY_NAMESPACE::DecompressAndZeroPad(df, gating_einsum_w.Span(), 0,
                                       w_tmp.get(), total_size);
 
@@ -430,7 +432,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
     hwy::AlignedFreeUniquePtr<float[]> w_tmp =
         hwy::AllocateAligned<float>(w1_size);
 
-    const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+    const hn::ScalableTag<float> df;
     HWY_NAMESPACE::DecompressAndZeroPad(df, qkv_einsum_w.Span(), 0, w_tmp.get(),
                                         w1_size);
 
@@ -469,7 +471,7 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
   hwy::AlignedFreeUniquePtr<float[]> w_tmp =
       hwy::AllocateAligned<float>(total_size);
 
-  const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+  const hn::ScalableTag<float> df;
   HWY_NAMESPACE::DecompressAndZeroPad(df, qkv_einsum_w.Span(), 0, w_tmp.get(),
                                       total_size);
 
@@ -777,7 +779,7 @@ static void MapAll(const std::vector<TensorToRead>& tensors,
 template <typename T>
 static void DecompressToBF16(MatPtr& mat,
                              const hwy::AlignedFreeUniquePtr<uint8_t[]>& buf) {
-  hwy::HWY_NAMESPACE::ScalableTag<BF16> dbf;
+  hn::ScalableTag<BF16> dbf;
   const size_t cols = mat.Cols();
 
   const size_t num_packed = CompressedArrayElements<T>(mat.Extents().Area());
@@ -860,8 +862,8 @@ class Chunk {
  public:
   Chunk(size_t cols, size_t rows_per_chunk)
       : cols_(cols), rows_per_chunk_(rows_per_chunk) {
-    const hwy::HWY_NAMESPACE::ScalableTag<float> df;
-    const size_t NF = hwy::HWY_NAMESPACE::Lanes(df);
+    const hn::ScalableTag<float> df;
+    const size_t NF = hn::Lanes(df);
     buf_ = hwy::AllocateAligned<uint8_t>(rows_per_chunk * cols * sizeof(T));
     // `DecompressAndZeroPad` writes whole vectors, and `compress-inl.h`
     // requires up to two of them beyond the requested count.
@@ -884,7 +886,7 @@ class Chunk {
     // Rows are contiguous in both source and destination, hence decompress the
     // entire chunk at once: this is faster, and prevents the zero padding from
     // overwriting the start of the next row.
-    const hwy::HWY_NAMESPACE::ScalableTag<float> df;
+    const hn::ScalableTag<float> df;
     const PackedSpan<T> packed{HWY_RCAST_ALIGNED(T*, buf_.get()), num};
     HWY_NAMESPACE::DecompressAndZeroPad(df, packed, 0, raw_.get(), num);
     return raw_.get();
@@ -909,44 +911,37 @@ static float MaxAbs(const TensorToRead& tensor, const BlobReader& reader,
   // workers `ParallelFor` will use.
   std::vector<float> chunk_max(num_chunks, 0.0f);
 
-  ParallelFor(
-      Parallelism::kFlat, num_chunks, ctx, /*cluster_idx=*/0,
-      Callers::kReadAllToSFP, [&](uint64_t chunk, size_t thread) {
-        GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToSFP);
-        const size_t begin = chunk * rows_per_chunk;
-        const size_t end = HWY_MIN(begin + rows_per_chunk, rows);
-        Chunk<T> buffers(cols, rows_per_chunk);
-        const float* raw = buffers.Decompress(tensor, reader, begin, end);
+  ParallelFor(Parallelism::kFlat, num_chunks, ctx, /*cluster_idx=*/0,
+              Callers::kReadAllToSFP, [&](uint64_t chunk, size_t thread) {
+                GCPP_ZONE(ctx, thread, Zones::kStartupWeightsReadAllToSFP);
+                const size_t begin = chunk * rows_per_chunk;
+                const size_t end = HWY_MIN(begin + rows_per_chunk, rows);
+                Chunk<T> buffers(cols, rows_per_chunk);
+                const float* raw =
+                    buffers.Decompress(tensor, reader, begin, end);
 
-        using DF = hwy::HWY_NAMESPACE::ScalableTag<float>;
-        using VF = hwy::HWY_NAMESPACE::Vec<DF>;
-        const DF df;
-        const size_t NF = hwy::HWY_NAMESPACE::Lanes(df);
-        const size_t num = (end - begin) * cols;
-        VF max0 = hwy::HWY_NAMESPACE::Zero(df);
-        VF max1 = hwy::HWY_NAMESPACE::Zero(df);
-        size_t i = 0;
-        for (; i + 2 * NF <= num; i += 2 * NF) {
-          max0 = hwy::HWY_NAMESPACE::Max(
-              max0,
-              hwy::HWY_NAMESPACE::Abs(hwy::HWY_NAMESPACE::LoadU(df, raw + i)));
-          max1 = hwy::HWY_NAMESPACE::Max(
-              max1, hwy::HWY_NAMESPACE::Abs(
-                        hwy::HWY_NAMESPACE::LoadU(df, raw + i + NF)));
-        }
-        if (i + NF <= num) {
-          max0 = hwy::HWY_NAMESPACE::Max(
-              max0,
-              hwy::HWY_NAMESPACE::Abs(hwy::HWY_NAMESPACE::LoadU(df, raw + i)));
-          i += NF;
-        }
-        float maxabs = hwy::HWY_NAMESPACE::ReduceMax(
-            df, hwy::HWY_NAMESPACE::Max(max0, max1));
-        for (; i < num; ++i) {
-          maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
-        }
-        chunk_max[chunk] = maxabs;
-      });
+                using DF = hn::ScalableTag<float>;
+                using VF = hn::Vec<DF>;
+                const DF df;
+                const size_t NF = hn::Lanes(df);
+                const size_t num = (end - begin) * cols;
+                VF max0 = hn::Zero(df);
+                VF max1 = hn::Zero(df);
+                size_t i = 0;
+                for (; i + 2 * NF <= num; i += 2 * NF) {
+                  max0 = hn::Max(max0, hn::Abs(hn::LoadU(df, raw + i)));
+                  max1 = hn::Max(max1, hn::Abs(hn::LoadU(df, raw + i + NF)));
+                }
+                if (i + NF <= num) {
+                  max0 = hn::Max(max0, hn::Abs(hn::LoadU(df, raw + i)));
+                  i += NF;
+                }
+                float maxabs = hn::ReduceMax(df, hn::Max(max0, max1));
+                for (; i < num; ++i) {
+                  maxabs = HWY_MAX(maxabs, hwy::ScalarAbs(raw[i]));
+                }
+                chunk_max[chunk] = maxabs;
+              });
 
   float maxabs = 0.0f;
   for (const float m : chunk_max) maxabs = HWY_MAX(maxabs, m);
