@@ -41,7 +41,8 @@ PYBIND11_MODULE(configs, py_module) {
       .value("kU32", gcpp::Type::kU32)
       .value("kU64", gcpp::Type::kU64)
       .value("kI8", gcpp::Type::kI8)
-      .value("kQ4_0", gcpp::Type::kQ4_0);
+      .value("kQ4_0", gcpp::Type::kQ4_0)
+      .value("kMXFP4", gcpp::Type::kMXFP4);
 
   enum_<gcpp::LayerAttentionType>(py_module, "LayerAttentionType")
       .value("kGemma", gcpp::LayerAttentionType::kGemma)

@@ -115,6 +115,9 @@ class SbsWriterImpl : public ISbsWriter {
       case Type::kQ4_0:
         InsertT<Q4_0Stream>(name, weights, tensor_info);
         break;
+      case Type::kMXFP4:
+        InsertT<MxFp4Stream>(name, weights, tensor_info);
+        break;
       default:
         HWY_ABORT("Unsupported destination (compressed) type %s",
                   TypeName(type));
