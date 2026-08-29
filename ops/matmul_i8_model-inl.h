@@ -32,12 +32,17 @@
 //   GEMMA_MM_I8_SKIP_ROWS=<n> leave tensors with N >= n alone (e.g. the vocab-
 //                            sized logits projection, the usual first thing to
 //                            exclude from W8A8)
+//   GEMMA_MM_I8_INCLUDE=<list> only quantize tensor names containing one of the
+//                            comma-separated substrings
+//   GEMMA_MM_I8_EXCLUDE=<list> leave matching tensor names in their old format
+//   GEMMA_MM_I8_ROTATE=1       apply matching block-Hadamard rotations to A/B
 //   GEMMA_MM_I8_VERBOSE=1    log each tensor as it is quantized
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <memory>
 #include <mutex>  // NOLINT
@@ -73,6 +78,23 @@ static inline size_t MMI8EnvSize(const char* name, size_t fallback) {
   if (s == nullptr || *s == '\0') return fallback;
   const long long v = atoll(s);  // NOLINT
   return v < 0 ? fallback : static_cast<size_t>(v);
+}
+
+// True if `name` contains any non-empty comma-separated token in `list`.
+static inline bool MMI8NameMatches(const char* name, const char* list) {
+  if (list == nullptr || *list == '\0') return false;
+  for (const char* begin = list; *begin != '\0';) {
+    const char* end = strchr(begin, ',');
+    if (end == nullptr) end = begin + strlen(begin);
+    const size_t len = static_cast<size_t>(end - begin);
+    if (len != 0) {
+      for (const char* at = name; *at != '\0'; ++at) {
+        if (strncmp(at, begin, len) == 0) return true;
+      }
+    }
+    begin = *end == '\0' ? end : end + 1;
+  }
+  return false;
 }
 
 // Quantizes one row of `k` floats to symmetric int8, biased by 128 if
@@ -143,6 +165,11 @@ class MMI8WeightCache {
     const size_t N = B.Rows();
     const size_t K = B.Cols();
     if (K < min_k_ || N >= skip_rows_ || (N % kNR) != 0) return nullptr;
+    if (include_ != nullptr && *include_ != '\0' &&
+        !MMI8NameMatches(B.Name(), include_)) {
+      return nullptr;
+    }
+    if (MMI8NameMatches(B.Name(), exclude_)) return nullptr;
 
     const void* key = B.RowBytes(0);
     std::lock_guard<std::mutex> lock(mutex_);
@@ -188,7 +215,9 @@ class MMI8WeightCache {
       : enabled_(MMI8EnvSize("GEMMA_MM_I8", 0) != 0),
         verbose_(MMI8EnvSize("GEMMA_MM_I8_VERBOSE", 0) != 0),
         min_k_(MMI8EnvSize("GEMMA_MM_I8_MIN_K", 0)),
-        skip_rows_(MMI8EnvSize("GEMMA_MM_I8_SKIP_ROWS", ~size_t{0})) {}
+        skip_rows_(MMI8EnvSize("GEMMA_MM_I8_SKIP_ROWS", ~size_t{0})),
+        include_(getenv("GEMMA_MM_I8_INCLUDE")),
+        exclude_(getenv("GEMMA_MM_I8_EXCLUDE")) {}
 
   // Serial (the caller may already be inside a parallel region), but
   // vectorized, so a 2B-parameter model takes a few seconds in total.
@@ -203,6 +232,7 @@ class MMI8WeightCache {
 
     for (size_t r = 0; r < B.Rows(); ++r) {
       DecompressAndZeroPad(df, span, r * B.Stride(), row.data(), K);
+      if (MMI8CanRotate(K)) MMI8Rotate(row.data(), K);
       MMI8BT* HWY_RESTRICT out =
           HWY_RCAST_ALIGNED(MMI8BT*, entry.data.Row(r));
       entry.scale[r] =
@@ -214,6 +244,8 @@ class MMI8WeightCache {
   bool verbose_;
   size_t min_k_;
   size_t skip_rows_;
+  const char* include_;
+  const char* exclude_;
 
   std::mutex mutex_;
   std::unordered_map<const void*, std::unique_ptr<Entry>> map_;

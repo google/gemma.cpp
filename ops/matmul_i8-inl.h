@@ -39,6 +39,7 @@
 #include <stdint.h>
 
 #include <cmath>
+#include <cstdlib>
 
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/basics.h"
@@ -92,6 +93,51 @@ using MMI8BT = int8_t;
 // Largest quantized magnitude. 127 rather than 128 keeps the scheme symmetric,
 // which is what lets us skip the zero-point correction terms.
 HWY_INLINE_VAR constexpr float kMMI8Max = 127.0f;
+
+// Experimental QuaRot-style preprocessing. Applying the same orthonormal
+// transform to A and each row of transposed B leaves their dot product
+// unchanged, while spreading isolated activation outliers over a block. The
+// fixed signs avoid always applying the same Hadamard basis to every block.
+// 128 divides all Gemma 3 1B MatMul K dimensions.
+HWY_INLINE_VAR constexpr size_t kMMI8RotateBlock = 128;
+
+static inline bool MMI8RotateEnabled() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("GEMMA_MM_I8_ROTATE");
+    return value != nullptr && value[0] != '\0' &&
+           !(value[0] == '0' && value[1] == '\0');
+  }();
+  return enabled;
+}
+
+static inline bool MMI8CanRotate(size_t k) {
+  return MMI8RotateEnabled() && (k % kMMI8RotateBlock) == 0;
+}
+
+static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k) {
+  HWY_DASSERT((k % kMMI8RotateBlock) == 0);
+  constexpr float kNormalize = 0.08838834764831845f;  // 1 / sqrt(128)
+  for (size_t block = 0; block < k; block += kMMI8RotateBlock) {
+    float* HWY_RESTRICT x = row + block;
+    for (size_t i = 0; i < kMMI8RotateBlock; ++i) {
+      // Deterministic Rademacher diagonal, shared by A and B.
+      const uint32_t hash =
+          static_cast<uint32_t>(block + i) * 0x9E3779B9u + 0x7F4A7C15u;
+      if ((hash >> 31) != 0) x[i] = -x[i];
+    }
+    for (size_t width = 1; width < kMMI8RotateBlock; width *= 2) {
+      for (size_t start = 0; start < kMMI8RotateBlock; start += 2 * width) {
+        for (size_t i = 0; i < width; ++i) {
+          const float left = x[start + i];
+          const float right = x[start + width + i];
+          x[start + i] = left + right;
+          x[start + width + i] = left - right;
+        }
+      }
+    }
+    for (size_t i = 0; i < kMMI8RotateBlock; ++i) x[i] *= kNormalize;
+  }
+}
 
 //------------------------------------------------------------------------------
 // Quantized operands
@@ -644,8 +690,21 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
   ParallelFor(Parallelism::kFlat, A.Rows(), ctx, cluster_idx,
               Callers::kMMQuantizeA,
               [&](size_t r, size_t /*worker*/) HWY_ATTR {
-                scale[r] = a_scale * QuantizeRowA(A.Row(r), k, view.data.Row(r),
-                                                  storage.prefix(r), padded_k);
+                if (MMI8CanRotate(k)) {
+                  hwy::AlignedVector<float> rotated(padded_k);
+                  for (size_t c = 0; c < k; ++c) {
+                    rotated[c] = hwy::ConvertScalarTo<float>(A.Row(r)[c]);
+                  }
+                  MMI8Rotate(rotated.data(), k);
+                  scale[r] =
+                      a_scale * QuantizeRowA(rotated.data(), k,
+                                             view.data.Row(r), storage.prefix(r),
+                                             padded_k);
+                } else {
+                  scale[r] =
+                      a_scale * QuantizeRowA(A.Row(r), k, view.data.Row(r),
+                                             storage.prefix(r), padded_k);
+                }
               });
   return view;
 }
@@ -664,6 +723,13 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
   ParallelFor(Parallelism::kFlat, B_f32.Rows(), ctx, /*cluster_idx=*/0,
               Callers::kTest, [&](size_t r, size_t /*worker*/) HWY_ATTR {
                 const float* HWY_RESTRICT in = B_f32.Row(r);
+                hwy::AlignedVector<float> rotated;
+                if (MMI8CanRotate(k)) {
+                  rotated.resize(k);
+                  hwy::CopyBytes(in, rotated.data(), k * sizeof(float));
+                  MMI8Rotate(rotated.data(), k);
+                  in = rotated.data();
+                }
                 float amax = 0.0f;
                 for (size_t c = 0; c < k; ++c) {
                   amax = HWY_MAX(amax, hwy::ScalarAbs(in[c]));

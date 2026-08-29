@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <cmath>
+#include <cstdlib>
 #include <vector>
 
 #include "compression/types.h"
@@ -229,6 +231,20 @@ class MMStoreHorizontalSumsIntoC {
 // Stateless, wraps member functions.
 class MMDecompress {
  public:
+  // Quality-only experiment requested in #1. When enabled, every activation
+  // row is symmetrically quantized to int8 and immediately dequantized to
+  // BF16 before the existing MatMul. This intentionally adds overhead: its
+  // purpose is to isolate activation-quantization error from a new kernel and
+  // weight quantization.
+  static bool ActivationI8RoundtripEnabled() {
+    static const bool enabled = [] {
+      const char* value = std::getenv("GEMMA_MM_I8_ROUNDTRIP_A");
+      return value != nullptr && value[0] != '\0' &&
+             !(value[0] == '0' && value[1] == '\0');
+    }();
+    return enabled;
+  }
+
   // Decompresses `kNR x kc` from `B[row_b, range_kc.begin()]` to row 0,
   // col 0 of `B_view`. Decompressing SFP is relatively cheap on `AVX3_DL`
   // thanks to its large table lookups, and less so on other targets.
@@ -271,7 +287,9 @@ class MMDecompress {
     if constexpr (IsBF16<TA>()) {
       // We can use a view, regardless of columns/padding, because
       // `MMKernel::LoopKC` supports non-vector multiples.
-      return StridedViewBF(A, 0, 0, A.Cols());
+      const StridedViewBF A_view(A, 0, 0, A.Cols());
+      return ActivationI8RoundtripEnabled() ? RoundtripA(A, A_view, env)
+                                            : A_view;
     } else {
       // Always decompress. To reduce code size/compile time, we no longer
       // support a separate F32 kernel; most A are already BF16. We also only
@@ -279,11 +297,52 @@ class MMDecompress {
       HWY_ASSERT(options.cluster_idx == 0);
       const StridedViewBF A_view = env.A_BF.A(A.Extents());
       AutotuneDecompressA(A, A_view, autotune, env, options);
-      return A_view;
+      return ActivationI8RoundtripEnabled() ? RoundtripA(A, A_view, env)
+                                            : A_view;
     }
   }
 
+  // `TwoMatMul` only accepts BF16 A and does not call `MaybeDecompressA`.
+  static HWY_INLINE StridedViewBF MaybeRoundtripA(const MatPtrT<BF16>& A,
+                                                  const MatMulEnv& env) {
+    const StridedViewBF A_view(A, 0, 0, A.Cols());
+    return ActivationI8RoundtripEnabled() ? RoundtripA(A, A_view, env)
+                                          : A_view;
+  }
+
  private:
+  template <typename TA>
+  static HWY_NOINLINE StridedViewBF RoundtripA(const MatPtrT<TA>& A,
+                                               const StridedViewBF source,
+                                               const MatMulEnv& env) {
+    const StridedViewBF dest = env.A_BF.A(A.Extents());
+    constexpr float kI8Max = 127.0f;
+
+    for (size_t row = 0; row < A.Rows(); ++row) {
+      const BF16* HWY_RESTRICT from = source.Row(row);
+      BF16* HWY_RESTRICT to = dest.Row(row);
+
+      float max_abs = 0.0f;
+      for (size_t col = 0; col < A.Cols(); ++col) {
+        max_abs = HWY_MAX(
+            max_abs,
+            std::fabs(hwy::ConvertScalarTo<float>(from[col])));
+      }
+
+      const float scale = max_abs == 0.0f ? 1.0f : max_abs / kI8Max;
+      const float inv_scale = max_abs == 0.0f ? 0.0f : kI8Max / max_abs;
+      for (size_t col = 0; col < A.Cols(); ++col) {
+        const float value = hwy::ConvertScalarTo<float>(from[col]);
+        const int32_t quantized = HWY_MIN(
+            int32_t{127},
+            HWY_MAX(int32_t{-127}, static_cast<int32_t>(std::lroundf(
+                                            value * inv_scale))));
+        to[col] = hwy::ConvertScalarTo<BF16>(quantized * scale);
+      }
+    }
+    return dest;
+  }
+
   // Decompresses all `M x K` from `A` into padded BF16 `A_view`.
   static HWY_NOINLINE void DecompressA(const MatPtrT<float>& A,
                                        const StridedViewBF A_view,
@@ -1492,7 +1551,8 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   // BRGeMM path for BF16×BF16 on Intel AMX/AVX-512.
   // Requires M,N,K >= 32 and K % 32 == 0 (AMX tile constraint).
   if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
-    if (M >= 32 && N >= 32 && K >= 32 && (K % 32) == 0) {
+    if (!MMDecompress::ActivationI8RoundtripEnabled() && M >= 32 && N >= 32 &&
+        K >= 32 && (K % 32) == 0) {
       const float scale = A.Scale() * B.Scale();
       MMAutoTune<BRGeMMConfig>& brg_tuner = per_key.brgemm_autotune;
 
@@ -1534,7 +1594,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   // OneDNN matmul-primitive path for BF16xBF16 via the threadpool runtime.
   // M == 1 was showing worse performance with OneDNN.
   if constexpr (IsBF16<TA>() && IsBF16<TB>()) {
-    if (M > 1) {
+    if (!MMDecompress::ActivationI8RoundtripEnabled() && M > 1) {
       const float scale = A.Scale() * B.Scale();
       if (DoMatMul_OneDnn(A, B, C_rows, M, K, N, scale, add, env,
                           cluster_idx)) {
@@ -1609,7 +1669,7 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
       M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
 
   // (Also auto-tunes, hence outside the timed section to prevent interference.)
-  const StridedViewBF A_view(A, 0, 0, A.Cols());
+  const StridedViewBF A_view = MMDecompress::MaybeRoundtripA(A, env);
 
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
   if (HWY_LIKELY(tuner.Best())) {

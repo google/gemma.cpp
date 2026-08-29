@@ -16,6 +16,9 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -36,6 +39,7 @@ struct JsonArgs : public ArgsBase<JsonArgs> {
   }
 
   Path input;
+  size_t max_questions;
 
   // Returns error string or nullptr if OK.
   const char* Validate() const {
@@ -47,35 +51,40 @@ struct JsonArgs : public ArgsBase<JsonArgs> {
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
     visitor(input, "input", Path(), "Full pathname of mmlu.json.");
+    visitor(max_questions, "max_questions", size_t{0},
+            "Maximum questions to run; zero runs the full dataset.");
   };
 };
 
-// Linear search for a few tokens is faster than std::set.
-// TODO: instead of accepting for each vocab entry, filter the logits once.
-class TokenSet {
+// Maps both "A" and " A" tokenizer variants to answer labels 0..3. Linear
+// search is faster than a map for eight tokens.
+class AnswerTokens {
  public:
-  TokenSet(const GemmaTokenizer& tokenizer,
-           const std::vector<std::string>& strings) {
-    all_tokens_.reserve(strings.size());
-    for (const std::string& str : strings) {
-      std::vector<int> tokens;
-      fprintf(stderr, "%s -> ", str.c_str());
-      HWY_ASSERT(tokenizer.Encode(str, &tokens));
-      for (int token : tokens) {
-        fprintf(stderr, "%d, ", token);
-        all_tokens_.push_back(token);
+  explicit AnswerTokens(const GemmaTokenizer& tokenizer) {
+    for (int label = 0; label < 4; ++label) {
+      for (const std::string& prefix : {std::string(), std::string(" ")}) {
+        const std::string str = prefix + static_cast<char>('A' + label);
+        std::vector<int> tokens;
+        HWY_ASSERT(tokenizer.Encode(str, &tokens));
+        HWY_ASSERT(tokens.size() == 1);
+        fprintf(stderr, "%s -> %d\n", str.c_str(), tokens[0]);
+        tokens_.push_back({tokens[0], label});
       }
-      fprintf(stderr, "\n");
     }
   }
 
-  bool Contains(int token) const {
-    return std::find(all_tokens_.begin(), all_tokens_.end(), token) !=
-           all_tokens_.end();
+  int Label(int token) const {
+    const auto it = std::find_if(tokens_.begin(), tokens_.end(),
+                                 [token](const auto& item) {
+                                   return item.first == token;
+                                 });
+    return it == tokens_.end() ? -1 : it->second;
   }
 
+  const std::vector<std::pair<int, int>>& All() const { return tokens_; }
+
  private:
-  std::vector<int> all_tokens_;
+  std::vector<std::pair<int, int>> tokens_;
 };
 
 void Run(GemmaEnv& env, JsonArgs& json) {
@@ -86,19 +95,18 @@ void Run(GemmaEnv& env, JsonArgs& json) {
 
   auto json_data = nlohmann::json::parse(ReadFileToString(json.input));
 
-  const std::vector<std::string> accept_strings = {
-      "A",  "B",   "C",   "D",   //
-      " A", " B",  " C",  " D",  //
-      "**", "**:", ":**", "The", "Answer", "is", ":", "."};
-  const TokenSet accept_set(env.GetGemma()->Tokenizer(), accept_strings);
+  const AnswerTokens answer_tokens(env.GetGemma()->Tokenizer());
 
   for (auto sample : json_data["samples"]) {
+    if (json.max_questions != 0 && answers >= json.max_questions) break;
     const int id = sample["i"];
     fprintf(stderr, "Processing question %d\n", id);
-    const std::string& correct_answer = accept_strings[sample["input_label"]];
+    const int correct_label = sample["input_label"];
+    const std::string correct_answer(1,
+                                     static_cast<char>('A' + correct_label));
     std::string prompt_string = sample["prompt"];
-    // AcceptFunc restricts the output to one of these four tokens, so make an
-    // effort to steer the model towards that. See
+    // The custom sampler restricts the output to one of these four labels, so
+    // make an effort to steer the model towards that. See
     // https://huggingface.co/blog/open-llm-leaderboard-mmlu
     prompt_string +=
         "What is start of the line with the correct answer? "
@@ -107,46 +115,105 @@ void Run(GemmaEnv& env, JsonArgs& json) {
     const std::vector<int> prompt = env.WrapAndTokenize(prompt_string);
     const size_t prompt_size = prompt.size();
 
-    std::vector<int> predicted_token_ids;
-    predicted_token_ids.reserve(4096);
+    int predicted_token = -1;
+    std::array<float, 4> answer_logits;
+    std::array<float, 4> answer_probs;
+    answer_logits.fill(-std::numeric_limits<float>::infinity());
+    answer_probs.fill(0.0f);
     size_t generated = 0;
     const StreamFunc stream_token = [&generated, prompt_size,
-                                     &predicted_token_ids](int token,
-                                                           float proba) {
+                                     &predicted_token](int token,
+                                                       float /*proba*/) {
       PROFILER_ZONE("Stream");
       ++generated;
       if (generated > prompt_size) {
-        predicted_token_ids.push_back(token);
+        predicted_token = token;
+        return false;
       }
       return true;
     };
 
-    // Although " A" is a token, it is difficult to associate that with the
-    // correct answer. Only accepting certain tokens is risky: (A) is easily
-    // confused with the word "A".
     gcpp::TimingInfo timing_info;
     gcpp::RuntimeConfig runtime_config = {
-        .max_generated_tokens = 30,
+        .max_generated_tokens = 1,
         .temperature = 0.0f,
         .verbosity = env.Verbosity(),
         .attention_impl = env.MutableConfig().attention_impl,
         .stream_token = stream_token,
+        .sample_func = [&answer_tokens, &answer_logits, &answer_probs](
+                           size_t /*query_idx*/, size_t /*pos*/, Logits logits,
+                           size_t /*worker*/) -> TokenAndProb {
+          int best_token = -1;
+          int best_label = -1;
+          float best_logit = -std::numeric_limits<float>::infinity();
+          for (const auto& [token, label] : answer_tokens.All()) {
+            if (logits[token] > answer_logits[label]) {
+              answer_logits[label] = logits[token];
+            }
+            if (logits[token] > best_logit) {
+              best_logit = logits[token];
+              best_token = token;
+              best_label = label;
+            }
+          }
+
+          float sum = 0.0f;
+          for (int label = 0; label < 4; ++label) {
+            answer_probs[label] =
+                std::exp(answer_logits[label] - best_logit);
+            sum += answer_probs[label];
+          }
+          for (float& prob : answer_probs) prob /= sum;
+          return TokenAndProb{.token = best_token,
+                              .prob = answer_probs[best_label]};
+        },
     };
     env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
                              env.MutableKVCache(), env.MutableEnv(),
                              timing_info);
 
-    std::string output_string = env.StringFromTokens(predicted_token_ids);
+    const int predicted_label = answer_tokens.Label(predicted_token);
+    const std::string output_string =
+        predicted_label == -1
+            ? std::string("?")
+            : std::string(1, static_cast<char>('A' + predicted_label));
     fprintf(stderr, "Correct %s, model '%s'\n", correct_answer.c_str(),
             output_string.c_str());
 
+    const bool is_correct = predicted_label == correct_label;
+    float second_logit = -std::numeric_limits<float>::infinity();
+    for (int label = 0; label < 4; ++label) {
+      if (label != predicted_label) {
+        second_logit = std::max(second_logit, answer_logits[label]);
+      }
+    }
     answers += 1.0f;
-    if (output_string == correct_answer) {
+    if (is_correct) {
       correct_answers += 1.0f;
     }
+    const nlohmann::json result = {
+        {"id", id},
+        {"expected", correct_answer},
+        {"predicted", output_string},
+        {"correct", is_correct},
+        {"logits", answer_logits},
+        {"probabilities", answer_probs},
+        {"margin", predicted_label == -1
+                       ? 0.0f
+                       : answer_logits[predicted_label] - second_logit},
+    };
+    printf("MMLU_RESULT %s\n", result.dump().c_str());
+    fflush(stdout);
     fprintf(stderr, "%.0f/%.0f = %.2f%%\n", correct_answers, answers,
-            correct_answers / answers);
+            100.0f * correct_answers / answers);
   }
+
+  const nlohmann::json summary = {
+      {"answers", static_cast<size_t>(answers)},
+      {"correct", static_cast<size_t>(correct_answers)},
+      {"accuracy", answers == 0.0f ? 0.0f : correct_answers / answers},
+  };
+  printf("MMLU_SUMMARY %s\n", summary.dump().c_str());
 }
 
 }  // namespace gcpp

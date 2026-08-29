@@ -77,6 +77,37 @@ class Rng {
   uint64_t state_;
 };
 
+void TestRotationPreservesDotProducts() {
+  constexpr size_t kSize = 2 * kMMI8RotateBlock;
+  std::vector<float> a(kSize);
+  std::vector<float> b(kSize);
+  Rng rng(123);
+  double expected = 0.0;
+  for (size_t i = 0; i < kSize; ++i) {
+    a[i] = rng.Normal();
+    b[i] = rng.Normal();
+    expected += static_cast<double>(a[i]) * b[i];
+  }
+
+  MMI8Rotate(a.data(), a.size());
+  MMI8Rotate(b.data(), b.size());
+  double actual = 0.0;
+  for (size_t i = 0; i < kSize; ++i) {
+    actual += static_cast<double>(a[i]) * b[i];
+  }
+
+  const double relative =
+      hwy::ScalarAbs(actual - expected) /
+      HWY_MAX(1.0, hwy::ScalarAbs(expected));
+  if (relative > 1E-6) {
+    ++g_failures;
+    printf("FAIL rotation dot-product relative error %.3e\n", relative);
+  } else {
+    printf("  ok rotation preserves dot products (relative error %.3e)\n",
+           relative);
+  }
+}
+
 // Fills A and B. Row magnitudes deliberately vary by up to 7x, so that a
 // mixed-up per-row scale index would show up.
 void FillOperands(size_t M, size_t K, size_t N, MatStorageT<float>& A_f32,
@@ -238,6 +269,7 @@ void TestAll() {
   MatMulEnv env(ctx);
   printf("target=%s biasedB=%d vector bytes=%zu\n", hwy::TargetName(HWY_TARGET),
          GEMMA_MM_I8_BIASED_B, hn::Lanes(hn::ScalableTag<uint8_t>()));
+  TestRotationPreservesDotProducts();
 
   // `kMaxKC` is 6 KiB, so K = 20000 forces several kc ranges and thus the
   // MMSetC-then-MMAddC path where the bias correction must be applied once.
