@@ -53,6 +53,7 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
   Path weights;  // weights file location
   Tristate map;
   Tristate to_bf16;
+  Tristate sfp_embedding;
   Tristate wrapping;
 
   template <class Visitor>
@@ -65,6 +66,13 @@ struct LoaderArgs : public ArgsBase<LoaderArgs> {
             "Enable memory-mapping? -1 = auto, 0 = no, 1 = yes.");
     visitor(to_bf16, "to_bf16", Tristate::kDefault,
             "Convert weights to bf16? -1 = auto, 0 = no, 1 = yes.");
+    visitor(sfp_embedding, "sfp_embedding", Tristate::kDefault,
+            "Compress the embedding table to SFP while loading? This halves\n"
+            "  its footprint and, for models with tied input/output\n"
+            "  embeddings, the bandwidth of the per-token logits MatMul,\n"
+            "  in exchange for 8-bit precision on that tensor. Enabling this\n"
+            "  disables automatic mapping; explicit --map=1 still wins.\n"
+            "  -1 = auto (currently off), 0 = no, 1 = yes.");
     visitor(wrapping, "wrapping", Tristate::kDefault,
             "Enable prompt wrapping? Specify 0 for pre-2025 format PT models.");
   }

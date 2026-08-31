@@ -350,8 +350,12 @@ cc_library(
 cc_library(
     name = "weights",
     srcs = ["gemma/weights.cc"],
-    hdrs = ["gemma/weights.h"],
+    hdrs = [
+        "gemma/weights.h",
+        "gemma/weights_internal.h",
+    ],
     deps = [
+        ":allocator",
         ":configs",
         ":gemma_args",
         ":mat",
@@ -377,6 +381,24 @@ cc_test(
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
         "@highway//:hwy",  # aligned_allocator.h
+    ],
+)
+
+cc_test(
+    name = "weights_test",
+    srcs = ["gemma/weights_test.cc"],
+    deps = [
+        ":basics",
+        ":gemma_args",
+        ":mat",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:compress",
+        "//compression:types",
+        "//io",
+        "//io:blob_store",
+        "@highway//:hwy",
     ],
 )
 

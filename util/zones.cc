@@ -116,6 +116,8 @@ const char* ZoneName(Zones zone) {
       return "Ops.Softmax";
     case Zones::kStartupWeightsReadAllToBF16:
       return "Startup.Weights.ReadAllToBF16";
+    case Zones::kStartupWeightsReadAllToSFP:
+      return "Startup.Weights.ReadAllToSFP";
     case Zones::kStartupWeightsReadBatches:
       return "Startup.Weights.ReadBatches";
     default:
@@ -207,6 +209,8 @@ const char* CallerName(Callers caller) {
       return "Ops.RMSNormNoScaleInplaceBatched";
     case Callers::kReadAllToBF16:
       return "ReadAllToBF16";
+    case Callers::kReadAllToSFP:
+      return "ReadAllToSFP";
     case Callers::kReadBatches:
       return "ReadBatches";
     case Callers::kSampleAndStream:
