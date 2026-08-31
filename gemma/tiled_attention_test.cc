@@ -7,6 +7,7 @@
 #include <tuple>
 #include <vector>
 
+#include "third_party/absl/types/span.h"
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "gemma/activations.h"
 #include "gemma/configs.h"
