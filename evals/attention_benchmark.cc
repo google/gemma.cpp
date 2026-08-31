@@ -1,4 +1,4 @@
-// Copyright 2026 Google LLC
+// Copyright 2024 Google LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,46 +13,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Standalone benchmark tool for Gemma attention implementations.
-//
-// This binary benchmarks different attention implementations (e.g., standard
-// flash attention, tiled attention, scalar attention) across various sequence
-// lengths and batch sizes by simulating history in the KV cache and measuring
-// decode generation speed.
-//
-// =============================================================================
-// Usage Example
-// =============================================================================
-//
-//    bazel run -c opt //third_party/gemma_cpp:attention_benchmark -- \
-//      --weights /path/to/weights.sbs \
-//      --tokenizer /path/to/tokenizer.spm \
-//      --attention_impl tiled_flash \
-//      --context_lengths 1024,4096,8192 \
-//      --prefill_length 1 \
-//      --benchmark_tokens 32 \
-//      --benchmark_batch_size 1
-//
-// =============================================================================
-// Supported Benchmark Flags
-// =============================================================================
-//   --benchmark_mode: Benchmark mode: 'both' (benchmarks prefill and
-//                     decode) or 'decode' (benchmarks decode with simulated
-//                     KV cache history). Default: 'both'.
-//   --context_lengths: Comma-separated KV cache history lengths to
-//                      benchmark (default: '1024,8192,32768'; aliases:
-//                      --generation_context_lengths, --prompt_lengths)
-//   --prefill_length: Number of prompt tokens before decode generation
-//                     (default: 1; alias: --generation_prefill_length)
-//   --benchmark_tokens: Number of decode tokens to generate (default: 32)
-//   --benchmark_batch_size: Number of queries to benchmark in a batch
-//                           (default: 1)
+// Standalone benchmark measuring single-token autoregressive decoding
+// generation throughput across simulated KV cache history lengths.
 
-#include <stddef.h>
-
-#include <algorithm>
+#include <cstddef>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -75,6 +40,8 @@ class AttentionBenchmarkArgs : public ArgsBase<AttentionBenchmarkArgs> {
   AttentionBenchmarkArgs(int argc, char* argv[], ConsumedArgs& consumed) {
     InitAndParse(argc, argv, consumed);
   }
+
+  AttentionBenchmarkArgs() = default;
 
   std::string context_lengths;
   std::string generation_context_lengths;
@@ -205,6 +172,7 @@ int main(int argc, char** argv) {
   gcpp::RuntimeConfig runtime_config{};
   args.inference.CopyTo(runtime_config);
   runtime_config.verbosity = args.inference.verbosity;
+  runtime_config.use_spinning = args.threading.spin;
   size_t decode_tokens = bench_args.benchmark_tokens;
   size_t num_queries = bench_args.benchmark_batch_size;
   if (num_queries == 0) {
@@ -251,17 +219,12 @@ int main(int argc, char** argv) {
       continue;
     }
 
-    const size_t max_seq_len = gemma.Config().max_seq_len;
     const size_t priming_tokens = is_only_decode ? prefill_len : 0;
-    if (target_len + priming_tokens + decode_tokens > max_seq_len) {
-      const size_t max_allowed =
-          (max_seq_len > priming_tokens + decode_tokens)
-              ? max_seq_len - priming_tokens - decode_tokens
-              : 0;
-      std::cerr << "Warning: target_len=" << target_len
-                << " exceeds max_seq_len (" << max_seq_len << "), clamping to "
-                << max_allowed << "\n";
-      target_len = max_allowed;
+    const size_t total_capacity =
+        target_len + priming_tokens + decode_tokens + 32;
+    if (total_capacity > gemma.Config().max_seq_len) {
+      const_cast<gcpp::ModelConfig&>(gemma.Config())
+          .SetMaxSeqLen(total_capacity);
     }
 
     const size_t history_len = is_only_decode ? target_len : 0;
@@ -272,9 +235,6 @@ int main(int argc, char** argv) {
                                  : "Context / Prefill Length: ")
               << target_len << " tokens\n";
 
-    size_t total_capacity =
-        std::min(max_seq_len, history_len + prompt_tokens + decode_tokens + 32);
-
     size_t original_seq_len = args.inference.seq_len;
     args.inference.seq_len = total_capacity;
 
@@ -283,7 +243,8 @@ int main(int argc, char** argv) {
     gen_config.decode_qbatch_size = num_queries;
     gen_config.sample_func = [](size_t, size_t, gcpp::Logits,
                                 size_t) -> gcpp::TokenAndProb {
-      // Return an arbitrary non-EOS token ID so benchmarks never terminate early.
+      // Return an arbitrary non-EOS token ID so benchmarks never
+      // terminate early.
       return gcpp::TokenAndProb{500, 1.0f};
     };
 
@@ -299,7 +260,7 @@ int main(int argc, char** argv) {
 
     std::vector<int> tokens = GenerateSyntheticPrompt(gemma, prompt_tokens);
 
-    gcpp::TimingInfo timing_info;
+    gcpp::TimingInfo timing_info{.verbosity = args.inference.verbosity};
 
     size_t generated = 0;
     const size_t total_prefill_tokens = num_queries * prompt_tokens;
