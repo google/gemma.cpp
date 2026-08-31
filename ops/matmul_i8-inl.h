@@ -414,19 +414,23 @@ class MMI8Kernel {
 
         {
           const VA8 a0 = hn::LoadU(da8, ar0 + ikc);
-          MulAcc(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
+          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+              di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
         }
         if constexpr (kRowsAC > 1) {
           const VA8 a1 = hn::LoadU(da8, ar1 + ikc);
-          MulAcc(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
+          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+              di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
         }
         if constexpr (kRowsAC > 2) {
           const VA8 a2 = hn::LoadU(da8, ar2 + ikc);
-          MulAcc(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
+          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+              di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
         }
         if constexpr (kRowsAC > 3) {
           const VA8 a3 = hn::LoadU(da8, ar3 + ikc);
-          MulAcc(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
+          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+              di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
         }
       }
     }
@@ -444,19 +448,23 @@ class MMI8Kernel {
 
       {
         const VA8 a0 = hn::LoadN(da8, ar0 + ikc, remaining_kc);
-        MulAcc(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
+        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+            di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
       }
       if constexpr (kRowsAC > 1) {
         const VA8 a1 = hn::LoadN(da8, ar1 + ikc, remaining_kc);
-        MulAcc(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
+        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+            di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
       }
       if constexpr (kRowsAC > 2) {
         const VA8 a2 = hn::LoadN(da8, ar2 + ikc, remaining_kc);
-        MulAcc(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
+        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+            di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
       }
       if constexpr (kRowsAC > 3) {
         const VA8 a3 = hn::LoadN(da8, ar3 + ikc, remaining_kc);
-        MulAcc(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
+        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
+            di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
       }
     }
 
@@ -477,29 +485,6 @@ class MMI8Kernel {
                    C23, C30, C31, C32, C33, sum0, sum1, sum2, sum3);
     horz.Store(d4i, sum0, sum1, sum2, sum3, A_view.scale, a_rowsum, b_scale,
                add, imc, tag, C_MC_NR);
-  }
-
-  // One vector from a row of A times `kNR` vectors from rows of transposed B,
-  // accumulated into int32. Each 32-bit lane holds the sum of four products,
-  // so the lanes are a subset of the terms of the dot product for column `c`.
-  template <class DI32, class VA8, class VB8, class VI32 = hn::Vec<DI32>>
-  static HWY_INLINE void MulAcc(DI32 di32, VA8 a, VB8 b0, VB8 b1, VB8 b2,
-                                VB8 b3, VI32& C0, VI32& C1, VI32& C2,
-                                VI32& C3) {
-    static_assert(kNR == 4);
-    // Native on x86 AVX3_DL (`vpdpbusd`), NEON with `FEAT_DotProd` and SVE.
-    // The unsigned operand must come first, hence the swap when `B` is biased.
-    if constexpr (GEMMA_MM_I8_BIASED_B) {
-      C0 = hn::SumOfMulQuadAccumulate(di32, b0, a, C0);
-      C1 = hn::SumOfMulQuadAccumulate(di32, b1, a, C1);
-      C2 = hn::SumOfMulQuadAccumulate(di32, b2, a, C2);
-      C3 = hn::SumOfMulQuadAccumulate(di32, b3, a, C3);
-    } else {
-      C0 = hn::SumOfMulQuadAccumulate(di32, a, b0, C0);
-      C1 = hn::SumOfMulQuadAccumulate(di32, a, b1, C1);
-      C2 = hn::SumOfMulQuadAccumulate(di32, a, b2, C2);
-      C3 = hn::SumOfMulQuadAccumulate(di32, a, b3, C3);
-    }
   }
 
   // As `MMKernel::A2C0`.

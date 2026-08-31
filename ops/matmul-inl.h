@@ -55,6 +55,30 @@ namespace gcpp {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
 
+// Shared integer dot-product primitive for direct quantized MatMul kernels.
+// `kWeightsFirst` selects the operand order required by the encoding:
+// unsigned weights must precede signed activations, whereas signed W8A8 keeps
+// the activation first. This keeps target-specific dot-product details out of
+// the W8A8 kernel.
+template <bool kWeightsFirst, class DI32, class VA8, class VB8,
+          class VI32 = hn::Vec<DI32>>
+static HWY_INLINE void MMQuantizedDot4Accumulate(
+    DI32 di32, VA8 a, VB8 b0, VB8 b1, VB8 b2, VB8 b3, VI32& c0, VI32& c1,
+    VI32& c2, VI32& c3) {
+  static_assert(kNR == 4);
+  if constexpr (kWeightsFirst) {
+    c0 = hn::SumOfMulQuadAccumulate(di32, b0, a, c0);
+    c1 = hn::SumOfMulQuadAccumulate(di32, b1, a, c1);
+    c2 = hn::SumOfMulQuadAccumulate(di32, b2, a, c2);
+    c3 = hn::SumOfMulQuadAccumulate(di32, b3, a, c3);
+  } else {
+    c0 = hn::SumOfMulQuadAccumulate(di32, a, b0, c0);
+    c1 = hn::SumOfMulQuadAccumulate(di32, a, b1, c1);
+    c2 = hn::SumOfMulQuadAccumulate(di32, a, b2, c2);
+    c3 = hn::SumOfMulQuadAccumulate(di32, a, b3, c3);
+  }
+}
+
 // Like hn::PromoteOddTo, but uses assembly to avoid an extra vector register.
 template <class DF, class DBF = hn::Repartition<BF16, DF>>
 static hn::VFromD<DF> FastPromoteOddTo(DF df, hn::VFromD<DBF> vbf) {
