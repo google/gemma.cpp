@@ -476,13 +476,4 @@ KVCache KVCache::Copy() {
   return copy;
 }
 
-std::vector<KVCachePtr> ToKVCachePtrs(const hwy::Span<KVCache>& kv_caches) {
-  std::vector<KVCachePtr> ptrs;
-  ptrs.reserve(kv_caches.size());
-  for (size_t i = 0; i < kv_caches.size(); ++i) {
-    ptrs.push_back(kv_caches[i].ToPtr());
-  }
-  return ptrs;
-}
-
 }  // namespace gcpp

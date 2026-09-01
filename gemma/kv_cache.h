@@ -251,9 +251,6 @@ inline bool KVCachePtr::IsTiled() const {
   return cache != nullptr && cache->tiled_seq_len.has_value();
 }
 
-// Convenience function to create views into KVCaches.
-std::vector<KVCachePtr> ToKVCachePtrs(const hwy::Span<KVCache>& kv_caches);
-
 }  // namespace gcpp
 
 #endif  // THIRD_PARTY_GEMMA_CPP_GEMMA_KV_CACHE_H_

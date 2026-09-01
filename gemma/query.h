@@ -82,9 +82,19 @@ struct AllQueries {
   }
 
   AllQueries(const PromptTokens& prompt, size_t pos, size_t prefix_end,
-             const hwy::Span<KVCache>& kv_caches)
-      : AllQueries(prompt, pos, prefix_end,
-                   hwy::Span<KVCachePtr>(ToKVCachePtrs(kv_caches))) {}
+             const hwy::Span<KVCache>& kv_caches) {
+    per_query_.reserve(kv_caches.size());
+    for (size_t i = 0; i < kv_caches.size(); ++i) {
+      HWY_ASSERT(kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
+      per_query_.push_back(PerQuery{
+          .prompt = prompt,
+          .mutable_pos = pos,
+          .initial_pos = pos,
+          .prefix_end = prefix_end,
+          .kv_cache = kv_caches[i].ToPtr(),
+      });
+    }
+  }
 
   // Batch of queries with initial position set to zero. Causal attention
   // is requested via empty or all-zero `prefix_end`.
@@ -110,9 +120,21 @@ struct AllQueries {
   AllQueries(
       const hwy::Span<const PromptTokens>& prompts,
       const hwy::Span<KVCache>& kv_caches,
-      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>())
-      : AllQueries(prompts, hwy::Span<KVCachePtr>(ToKVCachePtrs(kv_caches)),
-                   prefix_end) {}
+      const hwy::Span<const size_t>& prefix_end = hwy::Span<const size_t>()) {
+    HWY_ASSERT(prompts.size() == prefix_end.size() || prefix_end.size() == 0);
+    per_query_.reserve(prompts.size());
+    for (size_t i = 0; i < prompts.size(); ++i) {
+      HWY_ASSERT(kv_caches.size() == 0 ||
+                 kv_caches[i].SeqLen() == kv_caches[0].SeqLen());
+      per_query_.push_back(PerQuery{
+          .prompt = prompts[i],
+          .mutable_pos = 0,
+          .initial_pos = 0,
+          .prefix_end = prefix_end.size() == 0 ? 0 : prefix_end[i],
+          .kv_cache = kv_caches.size() == 0 ? KVCachePtr() : kv_caches[i].ToPtr(),
+      });
+    }
+  }
 
   void Reserve(size_t size) { per_query_.reserve(size); }
   void Append(const PerQuery& query) { per_query_.push_back(query); }

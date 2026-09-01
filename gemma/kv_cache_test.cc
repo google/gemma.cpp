@@ -7,11 +7,10 @@
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
 #include "util/threading_context.h"
-#include "hwy/aligned_allocator.h"
 namespace gcpp {
 namespace {
 
-TEST(KVCacheTest, KVCacheToPtrs) {
+TEST(KVCacheTest, ToPtr) {
   ModelConfig model_config;
   model_config.max_seq_len = 1024;
   model_config.num_layers = 2;
@@ -34,14 +33,14 @@ TEST(KVCacheTest, KVCacheToPtrs) {
   caches.emplace_back(model_config, inference_args, runtime_config,
                       ctx.allocator);
 
-  std::vector<KVCachePtr> ptrs = ToKVCachePtrs({caches.data(), caches.size()});
-  ASSERT_EQ(ptrs.size(), 2);
+  KVCachePtr ptr0 = caches[0].ToPtr();
+  KVCachePtr ptr1 = caches[1].ToPtr();
   if (caches[0].IsTiled()) {
-    EXPECT_EQ(ptrs[0].cache, &caches[0]);
-    EXPECT_EQ(ptrs[1].cache, &caches[1]);
+    EXPECT_EQ(ptr0.cache, &caches[0]);
+    EXPECT_EQ(ptr1.cache, &caches[1]);
   } else {
-    EXPECT_EQ(ptrs[0].kv_cache.Row(0), caches[0].kv_cache.Row(0));
-    EXPECT_EQ(ptrs[1].kv_cache.Row(0), caches[1].kv_cache.Row(0));
+    EXPECT_EQ(ptr0.kv_cache.Row(0), caches[0].kv_cache.Row(0));
+    EXPECT_EQ(ptr1.kv_cache.Row(0), caches[1].kv_cache.Row(0));
   }
 }
 

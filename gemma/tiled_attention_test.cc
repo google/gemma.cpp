@@ -1,5 +1,6 @@
 #include <stddef.h>
 
+#include <array>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -131,9 +132,10 @@ struct AttentionTestEnv {
       }
     }
 
+    static const std::array<int, 3> kPrompt = {1, 2, 3};
     for (size_t q = 0; q < qbatch_size; ++q) {
       all_queries.Append({
-          .prompt = PromptTokens({1, 2, 3}),
+          .prompt = PromptTokens(kPrompt),
           .mutable_pos = static_cast<size_t>(last_pos),
           .initial_pos = 0,
           .prefix_end = 0,
