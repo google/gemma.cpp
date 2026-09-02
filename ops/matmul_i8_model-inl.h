@@ -35,7 +35,6 @@
 //   GEMMA_MM_I8_INCLUDE=<list> only quantize tensor names containing one of the
 //                            comma-separated substrings
 //   GEMMA_MM_I8_EXCLUDE=<list> leave matching tensor names in their old format
-//   GEMMA_MM_I8_ROTATE=1       apply matching block-Hadamard rotations to A/B
 //   GEMMA_MM_I8_VERBOSE=1    log each tensor as it is quantized
 
 #include <stddef.h>
@@ -160,11 +159,16 @@ class MMI8WeightCache {
 
   // Returns the int8 form of `B`, quantizing and caching on first use, or
   // nullptr if this tensor is not eligible (see the environment variables).
+  // Rotation is required, so dimensions that cannot be divided into complete
+  // Hadamard blocks fall back to the original MatMul path.
   template <typename TB>
   const MMI8B* Lookup(const MatPtrT<TB>& B, ThreadingContext& ctx) {
     const size_t N = B.Rows();
     const size_t K = B.Cols();
-    if (K < min_k_ || N >= skip_rows_ || (N % kNR) != 0) return nullptr;
+    if (K < min_k_ || N >= skip_rows_ || (N % kNR) != 0 ||
+        (K % kMMI8RotateBlock) != 0) {
+      return nullptr;
+    }
     if (include_ != nullptr && *include_ != '\0' &&
         !MMI8NameMatches(B.Name(), include_)) {
       return nullptr;
@@ -232,7 +236,7 @@ class MMI8WeightCache {
 
     for (size_t r = 0; r < B.Rows(); ++r) {
       DecompressAndZeroPad(df, span, r * B.Stride(), row.data(), K);
-      if (MMI8CanRotate(K)) MMI8Rotate(row.data(), K);
+      MMI8Rotate(row.data(), K);
       MMI8BT* HWY_RESTRICT out =
           HWY_RCAST_ALIGNED(MMI8BT*, entry.data.Row(r));
       entry.scale[r] =

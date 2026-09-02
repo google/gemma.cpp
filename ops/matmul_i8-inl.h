@@ -39,7 +39,6 @@
 #include <stdint.h>
 
 #include <cmath>
-#include <cstdlib>
 
 #include "ops/matmul.h"  // IWYU pragma: export
 #include "util/basics.h"
@@ -100,19 +99,6 @@ HWY_INLINE_VAR constexpr float kMMI8Max = 127.0f;
 // fixed signs avoid always applying the same Hadamard basis to every block.
 // 128 divides all Gemma 3 1B MatMul K dimensions.
 HWY_INLINE_VAR constexpr size_t kMMI8RotateBlock = 128;
-
-static inline bool MMI8RotateEnabled() {
-  static const bool enabled = [] {
-    const char* value = std::getenv("GEMMA_MM_I8_ROTATE");
-    return value != nullptr && value[0] != '\0' &&
-           !(value[0] == '0' && value[1] == '\0');
-  }();
-  return enabled;
-}
-
-static inline bool MMI8CanRotate(size_t k) {
-  return MMI8RotateEnabled() && (k % kMMI8RotateBlock) == 0;
-}
 
 static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k) {
   HWY_DASSERT((k % kMMI8RotateBlock) == 0);
@@ -671,25 +657,19 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
   const size_t padded_k = hwy::RoundUpTo(k, hn::Lanes(hn::ScalableTag<int8_t>()));
   float* HWY_RESTRICT scale = storage.scale();
   const float a_scale = A.Scale();
+  HWY_DASSERT((k % kMMI8RotateBlock) == 0);
 
   ParallelFor(Parallelism::kFlat, A.Rows(), ctx, cluster_idx,
               Callers::kMMQuantizeA,
               [&](size_t r, size_t /*worker*/) HWY_ATTR {
-                if (MMI8CanRotate(k)) {
-                  hwy::AlignedVector<float> rotated(padded_k);
-                  for (size_t c = 0; c < k; ++c) {
-                    rotated[c] = hwy::ConvertScalarTo<float>(A.Row(r)[c]);
-                  }
-                  MMI8Rotate(rotated.data(), k);
-                  scale[r] =
-                      a_scale * QuantizeRowA(rotated.data(), k,
-                                             view.data.Row(r), storage.prefix(r),
-                                             padded_k);
-                } else {
-                  scale[r] =
-                      a_scale * QuantizeRowA(A.Row(r), k, view.data.Row(r),
-                                             storage.prefix(r), padded_k);
+                hwy::AlignedVector<float> rotated(padded_k);
+                for (size_t c = 0; c < k; ++c) {
+                  rotated[c] = hwy::ConvertScalarTo<float>(A.Row(r)[c]);
                 }
+                MMI8Rotate(rotated.data(), k);
+                scale[r] =
+                    a_scale * QuantizeRowA(rotated.data(), k, view.data.Row(r),
+                                           storage.prefix(r), padded_k);
               });
   return view;
 }
@@ -703,18 +683,15 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
                                 float* HWY_RESTRICT scale,
                                 ThreadingContext& ctx) {
   const size_t k = B_f32.Cols();
+  HWY_DASSERT((k % kMMI8RotateBlock) == 0);
   const float b_scale = B_f32.Scale();
 
   ParallelFor(Parallelism::kFlat, B_f32.Rows(), ctx, /*cluster_idx=*/0,
               Callers::kTest, [&](size_t r, size_t /*worker*/) HWY_ATTR {
-                const float* HWY_RESTRICT in = B_f32.Row(r);
-                hwy::AlignedVector<float> rotated;
-                if (MMI8CanRotate(k)) {
-                  rotated.resize(k);
-                  hwy::CopyBytes(in, rotated.data(), k * sizeof(float));
-                  MMI8Rotate(rotated.data(), k);
-                  in = rotated.data();
-                }
+                hwy::AlignedVector<float> rotated(k);
+                hwy::CopyBytes(B_f32.Row(r), rotated.data(), k * sizeof(float));
+                MMI8Rotate(rotated.data(), k);
+                const float* HWY_RESTRICT in = rotated.data();
                 float amax = 0.0f;
                 for (size_t c = 0; c < k; ++c) {
                   amax = HWY_MAX(amax, hwy::ScalarAbs(in[c]));

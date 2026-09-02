@@ -271,20 +271,19 @@ void TestAll() {
          GEMMA_MM_I8_BIASED_B, hn::Lanes(hn::ScalableTag<uint8_t>()));
   TestRotationPreservesDotProducts();
 
-  // `kMaxKC` is 6 KiB, so K = 20000 forces several kc ranges and thus the
+  // `kMaxKC` is 6 KiB, so K = 20096 forces several kc ranges and thus the
   // MMSetC-then-MMAddC path where the bias correction must be applied once.
   MMI8AStorage a_i8(/*max_M=*/64, /*max_K=*/20096, ctx.allocator);
 
-  // Vector-length remainders: K deliberately not a multiple of 16/32/64.
-  for (size_t K : {size_t{4}, size_t{15}, size_t{16}, size_t{17}, size_t{63},
-                   size_t{64}, size_t{65}, size_t{127}, size_t{257}}) {
+  // Smallest supported K and multiple Hadamard block counts.
+  for (size_t K : {size_t{128}, size_t{256}, size_t{384}}) {
     TestCase<float>(4, K, 8, /*add=*/false, ctx, env, a_i8);
   }
 
   // `kRowsAC` 1/2/4 and the M remainder handling in `A2C0`.
   for (size_t M : {size_t{1}, size_t{2}, size_t{3}, size_t{4}, size_t{5},
                    size_t{7}, size_t{8}, size_t{13}, size_t{64}}) {
-    TestCase<float>(M, 1153, 12, /*add=*/true, ctx, env, a_i8);
+    TestCase<float>(M, 1152, 12, /*add=*/true, ctx, env, a_i8);
   }
 
   // N is required to be a multiple of kNR.
@@ -295,23 +294,23 @@ void TestAll() {
 
   // Multiple kc ranges: exercises MMAddC accumulation and the once-only
   // application of the u8 bias correction.
-  TestCase<float>(1, 20000, 8, false, ctx, env, a_i8);
-  TestCase<float>(4, 20000, 64, true, ctx, env, a_i8);
-  TestCase<float>(32, 12345, 64, true, ctx, env, a_i8);
+  TestCase<float>(1, 20096, 8, false, ctx, env, a_i8);
+  TestCase<float>(4, 20096, 64, true, ctx, env, a_i8);
+  TestCase<float>(32, 12416, 64, true, ctx, env, a_i8);
 
   // BF16 output. The tolerance is loose because `MMAddC` accumulates through
   // `C`, so with several kc ranges the intermediate sums are rounded to BF16;
   // the control below shows the existing kernel does the same.
-  TestCase<BF16>(4, 1153, 64, false, ctx, env, a_i8);
-  TestCase<BF16>(32, 20000, 64, false, ctx, env, a_i8);
-  TestCase<BF16>(32, 20000, 64, true, ctx, env, a_i8);
-  ControlBF16OutputError(4, 1153, 64, ctx, env);
-  ControlBF16OutputError(32, 20000, 64, ctx, env);
+  TestCase<BF16>(4, 1152, 64, false, ctx, env, a_i8);
+  TestCase<BF16>(32, 20096, 64, false, ctx, env, a_i8);
+  TestCase<BF16>(32, 20096, 64, true, ctx, env, a_i8);
+  ControlBF16OutputError(4, 1152, 64, ctx, env);
+  ControlBF16OutputError(32, 20096, 64, ctx, env);
 
   // Weights with a large nonzero channel mean, across several kc ranges. This
   // is the case that a whole-K bias correction gets badly wrong.
-  TestCase<float>(32, 20000, 64, true, ctx, env, a_i8, /*b_mean=*/3.0f);
-  TestCase<BF16>(32, 20000, 64, true, ctx, env, a_i8, /*b_mean=*/3.0f);
+  TestCase<float>(32, 20096, 64, true, ctx, env, a_i8, /*b_mean=*/3.0f);
+  TestCase<BF16>(32, 20096, 64, true, ctx, env, a_i8, /*b_mean=*/3.0f);
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
