@@ -333,9 +333,10 @@ struct Gemma4MoE {
         activations.expert_tokens[expert_pos[expert_idx] + row] =
             static_cast<uint16_t>(token_idx);
 
-        activated_expert_idx[num_activated_experts] =
-            static_cast<uint32_t>(expert_idx);
-        num_activated_experts += (row == 0);
+        if (row == 0) {
+          activated_expert_idx[num_activated_experts++] =
+              static_cast<uint32_t>(expert_idx);
+        }
       }
     }
 
