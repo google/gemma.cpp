@@ -33,11 +33,11 @@
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
+#include "hwy/aligned_allocator.h"
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
-#include "hwy/aligned_allocator.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -77,35 +77,118 @@ class Rng {
   uint64_t state_;
 };
 
-void TestRotationPreservesDotProducts() {
-  constexpr size_t kSize = 2 * kMMI8RotateBlock;
-  std::vector<float> a(kSize);
-  std::vector<float> b(kSize);
+void TestRotationPreservesDotProducts(size_t block_size, size_t hash_bits) {
+  const size_t size = 2 * block_size;
+  std::vector<float> a(size);
+  std::vector<float> b(size);
   Rng rng(123);
   double expected = 0.0;
-  for (size_t i = 0; i < kSize; ++i) {
+  for (size_t i = 0; i < size; ++i) {
     a[i] = rng.Normal();
     b[i] = rng.Normal();
     expected += static_cast<double>(a[i]) * b[i];
   }
 
-  MMI8Rotate(a.data(), a.size());
-  MMI8Rotate(b.data(), b.size());
+  MMI8Rotate(a.data(), a.size(), block_size, hash_bits);
+  MMI8Rotate(b.data(), b.size(), block_size, hash_bits);
   double actual = 0.0;
-  for (size_t i = 0; i < kSize; ++i) {
+  for (size_t i = 0; i < size; ++i) {
     actual += static_cast<double>(a[i]) * b[i];
   }
 
-  const double relative =
-      hwy::ScalarAbs(actual - expected) /
-      HWY_MAX(1.0, hwy::ScalarAbs(expected));
+  const double relative = hwy::ScalarAbs(actual - expected) /
+                          HWY_MAX(1.0, hwy::ScalarAbs(expected));
   if (relative > 1E-6) {
     ++g_failures;
-    printf("FAIL rotation dot-product relative error %.3e\n", relative);
+    printf("FAIL rotation block=%zu hash=%zu dot relative error %.3e\n",
+           block_size, hash_bits, relative);
   } else {
-    printf("  ok rotation preserves dot products (relative error %.3e)\n",
-           relative);
+    printf("  ok rotation block=%zu hash=%zu preserves dot (%.3e)\n",
+           block_size, hash_bits, relative);
   }
+}
+
+void TestHash16() {
+  std::vector<bool> seen(65536, false);
+  size_t negatives = 0;
+  bool deterministic = true;
+  for (size_t i = 0; i < 65536; ++i) {
+    const uint16_t hash = MMI8Hash16(static_cast<uint16_t>(i));
+    deterministic &= hash == MMI8Hash16(static_cast<uint16_t>(i));
+    if (seen[hash]) {
+      ++g_failures;
+      printf("FAIL 16-bit hash collision at %zu\n", i);
+      return;
+    }
+    seen[hash] = true;
+    negatives += MMI8NegativeSign(i, 16) ? 1 : 0;
+  }
+
+  bool short_period = false;
+  for (size_t period = 1; period <= 256; ++period) {
+    bool matches = true;
+    for (size_t i = 0; i < 4096; ++i) {
+      if (MMI8NegativeSign(i, 16) != MMI8NegativeSign(i + period, 16)) {
+        matches = false;
+        break;
+      }
+    }
+    short_period |= matches;
+  }
+
+  const bool ok = deterministic && negatives == 32768 && !short_period;
+  if (!ok) ++g_failures;
+  printf("%s 16-bit hash deterministic=%d negatives=%zu short_period=%d\n",
+         ok ? "  ok" : "FAIL", deterministic, negatives, short_period);
+}
+
+void TestL2Scaling() {
+  bool clamped = false;
+  const float balanced = MMI8L2Scale(4.0, 1.0, &clamped);
+  const bool balanced_ok = hwy::ScalarAbs(balanced - 0.5f) < 1E-7f && !clamped;
+  const float both_zero = MMI8L2Scale(0.0, 0.0, &clamped);
+  const bool zero_ok = both_zero == 1.0f && !clamped;
+  const float low = MMI8L2Scale(1E20, 1E-20, &clamped);
+  const bool low_ok = low == kMMI8L2ScaleMin && clamped;
+  const float high = MMI8L2Scale(1E-20, 1E20, &clamped);
+  const bool high_ok = high == kMMI8L2ScaleMax && clamped;
+
+  constexpr size_t kSize = 256;
+  std::vector<float> a(kSize), b(kSize), scale(kSize);
+  Rng rng(456);
+  double expected = 0.0;
+  for (size_t i = 0; i < kSize; ++i) {
+    a[i] = rng.Normal();
+    b[i] = rng.Normal();
+    scale[i] = MMI8L2Scale(0.25 + (i % 13), 0.5 + (i % 17));
+    expected += static_cast<double>(a[i]) * b[i];
+    a[i] *= scale[i];
+    b[i] /= scale[i];
+  }
+
+  double scaled_dot = 0.0;
+  for (size_t i = 0; i < kSize; ++i) {
+    scaled_dot += static_cast<double>(a[i]) * b[i];
+  }
+  MMI8Rotate(a.data(), a.size(), 64, 16);
+  MMI8Rotate(b.data(), b.size(), 64, 16);
+  double transformed_dot = 0.0;
+  for (size_t i = 0; i < kSize; ++i) {
+    transformed_dot += static_cast<double>(a[i]) * b[i];
+  }
+  const double scaled_relative = hwy::ScalarAbs(scaled_dot - expected) /
+                                 HWY_MAX(1.0, hwy::ScalarAbs(expected));
+  const double transformed_relative =
+      hwy::ScalarAbs(transformed_dot - expected) /
+      HWY_MAX(1.0, hwy::ScalarAbs(expected));
+  const bool invariant =
+      scaled_relative <= 1E-6 && transformed_relative <= 1E-6;
+  const bool ok = balanced_ok && zero_ok && low_ok && high_ok && invariant;
+  if (!ok) ++g_failures;
+  printf(
+      "%s L2 scaling calculation/clamping and dot invariance "
+      "(scaled %.3e, transformed %.3e)\n",
+      ok ? "  ok" : "FAIL", scaled_relative, transformed_relative);
 }
 
 // Fills A and B. Row magnitudes deliberately vary by up to 7x, so that a
@@ -136,7 +219,8 @@ void FillOperands(size_t M, size_t K, size_t N, MatStorageT<float>& A_f32,
 // One `M x K x N` case. `TC` is the output type; `add` exercises the bias.
 template <typename TC>
 void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
-              MatMulEnv& env, MMI8AStorage& a_i8, float b_mean = 0.0f) {
+              MatMulEnv& env, MMI8AStorage& a_i8, float b_mean = 0.0f,
+              const float* a_pre_scale = nullptr) {
   const Allocator& allocator = ctx.allocator;
   MatStorageT<float> A_f32("A", Extents2D(M, K), allocator, MatPadding::kOdd);
   MatStorageT<float> B_f32("B", Extents2D(N, K), allocator, MatPadding::kOdd);
@@ -148,8 +232,9 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
   MatStorageT<int8_t> B_i8("B_i8", Extents2D(N, K), allocator,
                            MatPadding::kOdd);
   hwy::AlignedVector<float> b_scale(N), add_row(N);
-  const MMI8B B_packed = PackB(B_f32, B_i8, b_scale.data(), ctx);
-  for (size_t n = 0; n < N; ++n) add_row[n] = 0.125f * static_cast<float>(n % 9);
+  const MMI8B B_packed = PackB(B_f32, B_i8, b_scale.data(), ctx, a_pre_scale);
+  for (size_t n = 0; n < N; ++n)
+    add_row[n] = 0.125f * static_cast<float>(n % 9);
 
   MatStorageT<TC> C("C", Extents2D(M, N), allocator, MatPadding::kOdd);
   C.AllocateAndAttachRowPtrs(env.row_ptrs);
@@ -158,8 +243,8 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
   // BF16 `C` the number of kc ranges changes how much precision is lost.
   MMPerKey* per_key = nullptr;
   for (size_t iter = 0; iter < 4096; ++iter) {
-    per_key = MatMulI8(A_f32, B_packed, add ? add_row.data() : nullptr, env, C,
-                       a_i8);
+    per_key =
+        MatMulI8(A_f32, B_packed, add ? add_row.data() : nullptr, env, C, a_i8);
     if (per_key->autotune.Best()) break;
   }
   HWY_ASSERT(per_key->autotune.Best());
@@ -211,8 +296,8 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
 // BF16 and `K` spans several kc ranges, so that `MMAddC` accumulates through
 // BF16. Reported as a reference point for the int8 kernel's BF16-output
 // tolerance, since both inherit this from `MMStoreHorizontalSumsIntoC`.
-void ControlBF16OutputError(size_t M, size_t K, size_t N,
-                            ThreadingContext& ctx, MatMulEnv& env) {
+void ControlBF16OutputError(size_t M, size_t K, size_t N, ThreadingContext& ctx,
+                            MatMulEnv& env) {
   const Allocator& allocator = ctx.allocator;
   MatStorageT<float> A_f32("A", Extents2D(M, K), allocator, MatPadding::kOdd);
   MatStorageT<float> B_f32("B", Extents2D(N, K), allocator, MatPadding::kOdd);
@@ -267,18 +352,30 @@ void TestAll() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   MatMulEnv env(ctx);
-  printf("target=%s biasedB=%d vector bytes=%zu\n", hwy::TargetName(HWY_TARGET),
-         GEMMA_MM_I8_BIASED_B, hn::Lanes(hn::ScalableTag<uint8_t>()));
-  TestRotationPreservesDotProducts();
+  printf("target=%s biasedB=%d block=%zu hash=%zu vector bytes=%zu\n",
+         hwy::TargetName(HWY_TARGET), GEMMA_MM_I8_BIASED_B,
+         MMI8RotateBlockSize(), MMI8HashBits(),
+         hn::Lanes(hn::ScalableTag<uint8_t>()));
+  for (size_t block : {size_t{64}, size_t{128}}) {
+    for (size_t hash : {size_t{16}, size_t{32}})
+      TestRotationPreservesDotProducts(block, hash);
+  }
+  TestHash16();
+  TestL2Scaling();
 
   // `kMaxKC` is 6 KiB, so K = 20096 forces several kc ranges and thus the
   // MMSetC-then-MMAddC path where the bias correction must be applied once.
   MMI8AStorage a_i8(/*max_M=*/64, /*max_K=*/20096, ctx.allocator);
 
   // Smallest supported K and multiple Hadamard block counts.
-  for (size_t K : {size_t{128}, size_t{256}, size_t{384}}) {
+  const size_t block = MMI8RotateBlockSize();
+  for (size_t K : {block, 2 * block, 3 * block}) {
     TestCase<float>(4, K, 8, /*add=*/false, ctx, env, a_i8);
   }
+  std::vector<float> pre_scale(1152);
+  for (size_t i = 0; i < pre_scale.size(); ++i)
+    pre_scale[i] = 0.25f + 0.01f * static_cast<float>(i % 100);
+  TestCase<float>(4, 1152, 12, false, ctx, env, a_i8, 0.0f, pre_scale.data());
 
   // `kRowsAC` 1/2/4 and the M remainder handling in `A2C0`.
   for (size_t M : {size_t{1}, size_t{2}, size_t{3}, size_t{4}, size_t{5},
@@ -287,8 +384,8 @@ void TestAll() {
   }
 
   // N is required to be a multiple of kNR.
-  for (size_t N : {size_t{4}, size_t{8}, size_t{16}, size_t{100},
-                   size_t{1536}}) {
+  for (size_t N :
+       {size_t{4}, size_t{8}, size_t{16}, size_t{100}, size_t{1536}}) {
     TestCase<float>(4, 512, N, /*add=*/false, ctx, env, a_i8);
   }
 

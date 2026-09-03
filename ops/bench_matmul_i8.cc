@@ -19,14 +19,13 @@
 // it can be run directly.
 
 #include <math.h>
-
-#include <cmath>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
@@ -34,12 +33,12 @@
 #define HWY_DISABLED_TARGETS GEMMA_DISABLED_TARGETS
 #endif  // HWY_DISABLED_TARGETS
 
+#include "hwy/aligned_allocator.h"
+#include "hwy/timer.h"
 #include "ops/matmul.h"
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/timer.h"
 
 // clang-format off
 #undef HWY_TARGET_INCLUDE
@@ -128,7 +127,8 @@ void ReferenceMatMul(const MatStorageT<float>& A, const MatStorageT<float>& B,
                   const float* HWY_RESTRICT b = B.Row(n);
                   double sum = 0.0;
                   for (size_t k = 0; k < K; ++k) {
-                    sum += static_cast<double>(a[k]) * static_cast<double>(b[k]);
+                    sum +=
+                        static_cast<double>(a[k]) * static_cast<double>(b[k]);
                   }
                   out[n] = sum;
                 }
@@ -200,8 +200,7 @@ Result TimeMatMul(size_t M, size_t K, size_t N, Fn&& fn) {
 // and thus only affordable for smaller shapes.
 void BenchShape(size_t M, size_t K, size_t N, bool check_error,
                 ThreadingContext& ctx, MatMulEnv& env_bf, MatMulEnv& env_sfp,
-                MatMulEnv& env_i8, MMI8AStorage& a_i8,
-                bool a_outliers = true) {
+                MatMulEnv& env_i8, MMI8AStorage& a_i8, bool a_outliers = true) {
   const Allocator& allocator = ctx.allocator;
   const Extents2D A_extents(M, K);
   const Extents2D B_extents(N, K);  // already transposed
@@ -224,7 +223,9 @@ void BenchShape(size_t M, size_t K, size_t N, bool check_error,
   // Operands for the int8 kernel. `A` is quantized inside `MatMulI8`.
   MatStorageT<int8_t> B_i8("B_i8", B_extents, allocator, MatPadding::kOdd);
   hwy::AlignedVector<float> b_scale(N);
+  const double pack_t0 = hwy::platform::Now();
   const MMI8B B_packed = PackB(B_f32, B_i8, b_scale.data(), ctx);
+  const double pack_ms = (hwy::platform::Now() - pack_t0) * 1E3;
 
   MatStorageT<float> C_bf("C_bf", C_extents, allocator, MatPadding::kOdd);
   MatStorageT<float> C_sfp("C_sfp", C_extents, allocator, MatPadding::kOdd);
@@ -257,10 +258,12 @@ void BenchShape(size_t M, size_t K, size_t N, bool check_error,
     e_i8 = RelError(C_i8, ref);
   }
 
-  printf("%5zu %6zu %7zu | %8.1f %8.1f %8.1f | %6.3f %6.3f %6.3f | %5.2fx %5.2fx",
-         M, K, N, r_bf.gflops, r_sfp.gflops, r_i8.gflops,
-         r_bf.median_sec * 1E3, r_sfp.median_sec * 1E3, r_i8.median_sec * 1E3,
-         r_i8.gflops / r_bf.gflops, r_i8.gflops / r_sfp.gflops);
+  printf(
+      "%5zu %6zu %7zu | %8.1f %8.1f %8.1f | %6.3f %6.3f %6.3f | %7.3f | %5.2fx "
+      "%5.2fx",
+      M, K, N, r_bf.gflops, r_sfp.gflops, r_i8.gflops, r_bf.median_sec * 1E3,
+      r_sfp.median_sec * 1E3, r_i8.median_sec * 1E3, pack_ms,
+      r_i8.gflops / r_bf.gflops, r_i8.gflops / r_sfp.gflops);
   if (check_error) {
     printf(" | %.2e %.2e %.2e", e_bf, e_sfp, e_i8);
   }
@@ -272,6 +275,48 @@ void BenchShape(size_t M, size_t K, size_t N, bool check_error,
 // independent accumulator chains, no memory traffic. The matmul speedups below
 // cannot exceed this ratio, and how close they get says how much of the win is
 // compute rather than the halved footprint of `B`.
+// Separates sign generation and the complete transform from MatMul timing.
+void BenchRotation() {
+  constexpr size_t kSize = 6912;
+  constexpr size_t kSamples = 21;
+  constexpr size_t kReps = 64;
+  std::vector<float> row(kSize);
+  Rng rng(991);
+  for (float& value : row) value = rng.Normal();
+
+  for (size_t hash_bits : {size_t{32}, size_t{16}}) {
+    size_t keep = 0;
+    const double t0 = hwy::platform::Now();
+    for (size_t rep = 0; rep < 4000; ++rep) {
+      for (size_t i = 0; i < kSize; ++i) {
+        keep += MMI8NegativeSign(i + rep * kSize, hash_bits) ? 1 : 0;
+      }
+    }
+    const double elapsed = hwy::platform::Now() - t0;
+    hwy::PreventElision(keep);
+    printf("sign hash %2zu-bit: %.3f ns/value (negative %.3f)\n", hash_bits,
+           elapsed * 1E9 / (4000.0 * kSize),
+           static_cast<double>(keep) / (4000.0 * kSize));
+  }
+
+  for (size_t block : {size_t{128}, size_t{64}}) {
+    for (size_t hash_bits : {size_t{32}, size_t{16}}) {
+      std::vector<double> samples;
+      samples.reserve(kSamples);
+      for (size_t sample = 0; sample < kSamples; ++sample) {
+        const double t0 = hwy::platform::Now();
+        for (size_t rep = 0; rep < kReps; ++rep) {
+          MMI8Rotate(row.data(), row.size(), block, hash_bits);
+        }
+        samples.push_back((hwy::platform::Now() - t0) / kReps);
+      }
+      std::sort(samples.begin(), samples.end());
+      printf("rotation block=%3zu hash=%2zu: %.3f us/row (%.3f ns/value)\n",
+             block, hash_bits, samples[kSamples / 2] * 1E6,
+             samples[kSamples / 2] * 1E9 / kSize);
+    }
+  }
+}
 void BenchDotThroughput() {
   const hn::ScalableTag<BF16> dbf;
   const hn::Repartition<float, decltype(dbf)> df;
@@ -328,9 +373,12 @@ void BenchAll() {
   ThreadingContext ctx(threading_args);
   printf("target=%s %s %s\n", hwy::TargetName(HWY_TARGET),
          ctx.topology.TopologyString(), ctx.pools.PinString());
-  printf("B biased to u8: %d, HWY_NATIVE_DOT_BF16=%d, vector bytes=%zu\n",
-         GEMMA_MM_I8_BIASED_B, HWY_NATIVE_DOT_BF16,
-         hn::Lanes(hn::ScalableTag<uint8_t>()));
+  printf(
+      "B biased to u8: %d, block=%zu, hash=%zu, "
+      "HWY_NATIVE_DOT_BF16=%d, vector bytes=%zu\n",
+      GEMMA_MM_I8_BIASED_B, MMI8RotateBlockSize(), MMI8HashBits(),
+      HWY_NATIVE_DOT_BF16, hn::Lanes(hn::ScalableTag<uint8_t>()));
+  BenchRotation();
 
   BenchDotThroughput();
 
@@ -340,7 +388,7 @@ void BenchAll() {
 
   printf(
       "\n    M      K       N |  GFLOPS: bf16   sfp     i8 |     ms: bf16    "
-      "sfp     i8 | i8 vs bf16/sfp | rel err: bf16 sfp i8\n");
+      "sfp     i8 | pack ms | i8 vs bf16/sfp | rel err: bf16 sfp i8\n");
 
   // Gemma3-1B decode shapes, as in `ops/bench_matmul.cc`.
   for (size_t M : {size_t{1}, size_t{4}}) {

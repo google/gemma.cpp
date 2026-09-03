@@ -36,6 +36,9 @@
 //                            comma-separated substrings
 //   GEMMA_MM_I8_EXCLUDE=<list> leave matching tensor names in their old format
 //   GEMMA_MM_I8_VERBOSE=1    log each tensor as it is quantized
+//   GEMMA_MM_I8_BLOCK_SIZE=64 select 64-wide instead of 128-wide rotation
+//   GEMMA_MM_I8_HASH_BITS=16  select the cheaper 16-bit sign hash
+//   GEMMA_MM_I8_L2_SCALE=1    L2-equalize compatible FFN up/down pairs
 
 #include <stddef.h>
 #include <stdint.h>
@@ -43,14 +46,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <memory>
 #include <mutex>  // NOLINT
 #include <unordered_map>
+#include <vector>
 
+#include "hwy/base.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
-#include "hwy/base.h"
 
 // Include guard for (potentially) SIMD code.
 #if defined(THIRD_PARTY_GEMMA_CPP_MATMUL_I8_MODEL_TOGGLE) == \
@@ -157,6 +162,24 @@ class MMI8WeightCache {
 
   bool Enabled() const { return enabled_; }
 
+  // Remembers the multiplicative FFN up projection. The immediately following
+  // down projection shares its output-channel dimension and can therefore be
+  // L2-equalized without crossing the nonlinear gate.
+  template <typename TB>
+  void RegisterFFNScaleSource(const MatPtrT<TB>& B, ThreadingContext& ctx) {
+    if (!l2_scaling_) return;
+    const void* key = B.RowBytes(0);
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = source_norms_.find(key);
+    if (it == source_norms_.end()) {
+      std::vector<double> norms(B.Rows());
+      ComputeRowNorms(B, ctx, norms);
+      it = source_norms_.emplace(key, std::move(norms)).first;
+    }
+    pending_source_ = key;
+    pending_norms_ = &it->second;
+  }
+
   // Returns the int8 form of `B`, quantizing and caching on first use, or
   // nullptr if this tensor is not eligible (see the environment variables).
   // Rotation is required, so dimensions that cannot be divided into complete
@@ -166,7 +189,7 @@ class MMI8WeightCache {
     const size_t N = B.Rows();
     const size_t K = B.Cols();
     if (K < min_k_ || N >= skip_rows_ || (N % kNR) != 0 ||
-        (K % kMMI8RotateBlock) != 0) {
+        (K % MMI8RotateBlockSize()) != 0) {
       return nullptr;
     }
     if (include_ != nullptr && *include_ != '\0' &&
@@ -175,12 +198,26 @@ class MMI8WeightCache {
     }
     if (MMI8NameMatches(B.Name(), exclude_)) return nullptr;
 
+    const bool is_ffn_down = l2_scaling_ && pending_norms_ != nullptr &&
+                             pending_norms_->size() == K &&
+                             strstr(B.Name(), "linear_w") != nullptr;
+
     const void* key = B.RowBytes(0);
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = map_.find(key);
-    if (it != map_.end()) return it->second ? &it->second->b : nullptr;
+    if (it != map_.end()) {
+      if (is_ffn_down && it->second &&
+          it->second->scale_source == pending_source_) {
+        ClearPendingSource();
+      }
+      return it->second ? &it->second->b : nullptr;
+    }
 
     auto entry = std::make_unique<Entry>(B, ctx.allocator);
+    if (is_ffn_down) {
+      ConfigureL2Scale(B, *pending_norms_, pending_source_, *entry, ctx);
+      ClearPendingSource();
+    }
     Quantize(B, *entry);
     if (verbose_) {
       fprintf(stderr, "MM.I8: quantized %-16s %6zu x %6zu\n", B.Name(), N, K);
@@ -208,21 +245,102 @@ class MMI8WeightCache {
         : data("B_i8", Extents2D(B.Rows(), B.Cols()), allocator,
                MatPadding::kOdd),
           scale(B.Rows()) {
-      b = MMI8B{&data, scale.data()};
+      b = MMI8B{&data, scale.data(), nullptr};
     }
     MatStorageT<int8_t> data;
     hwy::AlignedVector<float> scale;
+    hwy::AlignedVector<float> input_scale;
+    const void* scale_source = nullptr;
     MMI8B b;
   };
 
   MMI8WeightCache()
       : enabled_(MMI8EnvSize("GEMMA_MM_I8", 0) != 0),
         verbose_(MMI8EnvSize("GEMMA_MM_I8_VERBOSE", 0) != 0),
+        l2_scaling_(MMI8EnvSize("GEMMA_MM_I8_L2_SCALE", 0) != 0),
         min_k_(MMI8EnvSize("GEMMA_MM_I8_MIN_K", 0)),
         skip_rows_(MMI8EnvSize("GEMMA_MM_I8_SKIP_ROWS", ~size_t{0})),
         include_(getenv("GEMMA_MM_I8_INCLUDE")),
         exclude_(getenv("GEMMA_MM_I8_EXCLUDE")) {}
 
+  void ClearPendingSource() {
+    pending_source_ = nullptr;
+    pending_norms_ = nullptr;
+  }
+
+  template <typename TB>
+  void ComputeRowNorms(const MatPtrT<TB>& B, ThreadingContext& ctx,
+                       std::vector<double>& norms) {
+    const hn::ScalableTag<float> df;
+    const size_t K = B.Cols();
+    const size_t padded_k = hwy::RoundUpTo(K, hn::Lanes(df));
+    hwy::AlignedVector<float> row(padded_k + hn::Lanes(df));
+    const PackedSpan<const TB> span = B.PaddedSpan();
+    const double tensor_scale = hwy::ScalarAbs(B.Scale());
+    for (size_t r = 0; r < B.Rows(); ++r) {
+      DecompressAndZeroPad(df, span, r * B.Stride(), row.data(), K);
+      double sum_sq = 0.0;
+      for (size_t c = 0; c < K; ++c) {
+        sum_sq += static_cast<double>(row[c]) * row[c];
+      }
+      norms[r] = tensor_scale * std::sqrt(sum_sq);
+    }
+    (void)ctx;
+  }
+
+  template <typename TB>
+  void ConfigureL2Scale(const MatPtrT<TB>& down,
+                        const std::vector<double>& up_norms, const void* source,
+                        Entry& entry, ThreadingContext& ctx) {
+    const hn::ScalableTag<float> df;
+    const size_t K = down.Cols();
+    const size_t padded_k = hwy::RoundUpTo(K, hn::Lanes(df));
+    hwy::AlignedVector<float> row(padded_k + hn::Lanes(df));
+    const PackedSpan<const TB> span = down.PaddedSpan();
+    std::vector<double> sum_sq(K, 0.0);
+    double before_max = 0.0;
+    const double tensor_scale = hwy::ScalarAbs(down.Scale());
+    for (size_t r = 0; r < down.Rows(); ++r) {
+      DecompressAndZeroPad(df, span, r * down.Stride(), row.data(), K);
+      for (size_t c = 0; c < K; ++c) {
+        const double value = tensor_scale * row[c];
+        sum_sq[c] += value * value;
+        before_max = HWY_MAX(before_max, hwy::ScalarAbs(value));
+      }
+    }
+
+    entry.input_scale.resize(K);
+    size_t clamped = 0;
+    for (size_t c = 0; c < K; ++c) {
+      bool was_clamped = false;
+      entry.input_scale[c] =
+          MMI8L2Scale(up_norms[c], std::sqrt(sum_sq[c]), &was_clamped);
+      clamped += was_clamped ? 1 : 0;
+    }
+    entry.scale_source = source;
+    entry.b.a_pre_scale = entry.input_scale.data();
+
+    if (verbose_) {
+      std::vector<float> sorted(entry.input_scale.begin(),
+                                entry.input_scale.end());
+      std::sort(sorted.begin(), sorted.end());
+      double after_max = 0.0;
+      for (size_t r = 0; r < down.Rows(); ++r) {
+        DecompressAndZeroPad(df, span, r * down.Stride(), row.data(), K);
+        for (size_t c = 0; c < K; ++c) {
+          after_max = HWY_MAX(after_max, hwy::ScalarAbs(tensor_scale * row[c] /
+                                                        entry.input_scale[c]));
+        }
+      }
+      const size_t p95 = (95 * (K - 1)) / 100;
+      fprintf(stderr,
+              "MM.I8: L2 %-16s scale[min/med/p95/max]="
+              "%.5g/%.5g/%.5g/%.5g clamped=%zu weight|max|=%.5g->%.5g\n",
+              down.Name(), sorted.front(), sorted[K / 2], sorted[p95],
+              sorted.back(), clamped, before_max, after_max);
+    }
+    (void)ctx;
+  }
   // Serial (the caller may already be inside a parallel region), but
   // vectorized, so a 2B-parameter model takes a few seconds in total.
   template <typename TB>
@@ -236,9 +354,11 @@ class MMI8WeightCache {
 
     for (size_t r = 0; r < B.Rows(); ++r) {
       DecompressAndZeroPad(df, span, r * B.Stride(), row.data(), K);
+      if (!entry.input_scale.empty()) {
+        for (size_t c = 0; c < K; ++c) row[c] /= entry.input_scale[c];
+      }
       MMI8Rotate(row.data(), K);
-      MMI8BT* HWY_RESTRICT out =
-          HWY_RCAST_ALIGNED(MMI8BT*, entry.data.Row(r));
+      MMI8BT* HWY_RESTRICT out = HWY_RCAST_ALIGNED(MMI8BT*, entry.data.Row(r));
       entry.scale[r] =
           b_scale * PackBRow(row.data(), K, out, entry.data.Stride());
     }
@@ -246,6 +366,7 @@ class MMI8WeightCache {
 
   bool enabled_;
   bool verbose_;
+  bool l2_scaling_;
   size_t min_k_;
   size_t skip_rows_;
   const char* include_;
@@ -254,6 +375,9 @@ class MMI8WeightCache {
   std::mutex mutex_;
   std::unordered_map<const void*, std::unique_ptr<Entry>> map_;
 
+  std::unordered_map<const void*, std::vector<double>> source_norms_;
+  const void* pending_source_ = nullptr;
+  const std::vector<double>* pending_norms_ = nullptr;
   std::unique_ptr<MMI8AStorage> a_;
   size_t a_max_M_ = 0;
   size_t a_max_K_ = 0;
@@ -269,6 +393,7 @@ static inline MMPerKey* MaybeTwoMatMulI8(const MatPtrT<BF16>& A,
   if (!cache.Enabled()) return nullptr;
   return CallUpcastedSame(
       &B1, &B2, [&](const auto* B1_t, const auto* B2_t) -> MMPerKey* {
+        cache.RegisterFFNScaleSource(*B2_t, env.ctx);
         const MMI8B* i8_1 = cache.Lookup(*B1_t, env.ctx);
         if (i8_1 == nullptr) return nullptr;
         const MMI8B* i8_2 = cache.Lookup(*B2_t, env.ctx);
