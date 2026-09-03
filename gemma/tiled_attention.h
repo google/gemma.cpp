@@ -56,8 +56,14 @@ namespace gcpp {
                                                      BF16* packed_queries,     \
                                                      size_t num_queries,       \
                                                      size_t qkv_dim);          \
+  void CompressAndTransposeQueriesMatrixAccumulationFromBF16(                  \
+      const BF16* raw_queries, BF16* packed_queries, size_t num_queries,       \
+      size_t qkv_dim);                                                         \
   void CompressAndQuantizeQueriesMatrixAccumulationInt8(                       \
       const float* raw_queries, int8_t* packed_queries, float* packed_scales,  \
+      size_t num_queries, size_t qkv_dim);                                     \
+  void CompressAndQuantizeQueriesMatrixAccumulationInt8FromBF16(               \
+      const BF16* raw_queries, int8_t* packed_queries, float* packed_scales,   \
       size_t num_queries, size_t qkv_dim);                                     \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                  \
   }  // namespace NAMESPACE

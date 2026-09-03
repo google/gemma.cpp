@@ -73,24 +73,26 @@ static HWY_INLINE void MergeOnlineSoftmax(
 }
 
 template <typename T>
-T AbsMaxOfSpan(hwy::Span<const T> span) {
-  hn::ScalableTag<T> dt;
-  using VT = hn::Vec<decltype(dt)>;
-  VT max_vec = hn::Set(dt, 0.0f);
-  const size_t lanes = hn::Lanes(dt);
+float AbsMaxOfSpan(hwy::Span<const T> span) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  using VF = hn::Vec<decltype(df)>;
+  VF max_vec = hn::Zero(df);
+  HWY_LANES_CONSTEXPR size_t N = hn::Lanes(df);
+  HWY_LANES_CONSTEXPR size_t step = 2 * N;
+  const PackedSpan<const T> packed_span(span.data(), span.size());
   size_t i = 0;
-  // Process full vectors using LoadU.
-  for (; i + lanes <= span.size(); i += lanes) {
-    const VT vec = hn::Abs(hn::LoadU(dt, span.data() + i));
-    max_vec = hn::Max(max_vec, vec);
+  for (; i + step <= span.size(); i += step) {
+    VF v0, v1;
+    Decompress2(df, packed_span, i, v0, v1);
+    max_vec = hn::Max(max_vec, hn::Max(hn::Abs(v0), hn::Abs(v1)));
   }
-  // Process remaining elements using LoadN.
-  const size_t remaining = span.size() - i;
-  if (HWY_UNLIKELY(remaining != 0)) {
-    const VT vec = hn::Abs(hn::LoadN(dt, span.data() + i, remaining));
-    max_vec = hn::Max(max_vec, vec);
+  float max_scalar = 0.0f;
+  for (; i < span.size(); ++i) {
+    max_scalar = HWY_MAX(max_scalar,
+                         hwy::ScalarAbs(hwy::ConvertScalarTo<float>(span[i])));
   }
-  return hn::ReduceMax(dt, max_vec);
+  return HWY_MAX(hn::ReduceMax(df, max_vec), max_scalar);
 }
 
 // Forked from ComputeQKV. But it stores the K/V in the tiled format
@@ -561,37 +563,53 @@ template <typename QueryProvider>
 HWY_INLINE void CompressAndTransposeQueriesMatrixAccumulationImpl(
     QueryProvider query_provider, BF16* packed_queries, size_t num_queries,
     size_t qkv_dim) {
-  HWY_DASSERT(qkv_dim % 4 == 0);
-
   namespace hn = hwy::HWY_NAMESPACE;
-  const hn::Full128<float> df;
+  using InT = hwy::RemoveCvRef<hwy::RemovePtr<decltype(query_provider(0))>>;
   const hn::Full128<BF16> dbf16;
-  constexpr size_t kL = 4;
+  const hn::Half<decltype(dbf16)> dbf_half;
+  const hn::Full128<float> df;
+  const size_t kL = hn::Lanes(dbf_half);
+
+  using V_BF16 = hn::Vec<decltype(dbf16)>;
+  using V_BF16_Half = hn::Vec<decltype(dbf_half)>;
+  using V_F32 = hn::Vec<decltype(df)>;
+
+  HWY_DASSERT(qkv_dim % kL == 0);
+
+  auto pack4x2 = [&](const InT* q0,
+                     const InT* q1) HWY_ATTR -> V_BF16 {
+    if constexpr (IsBF16<InT>()) {
+      const V_BF16_Half v0 = hn::LoadU(dbf_half, q0);
+      const V_BF16_Half v1 =
+          q1 != nullptr ? hn::LoadU(dbf_half, q1) : hn::Zero(dbf_half);
+      return hn::Combine(dbf16, v1, v0);
+    } else {
+      const V_F32 v0 = hn::LoadU(df, q0);
+      const V_F32 v1 = q1 != nullptr ? hn::LoadU(df, q1) : hn::Zero(df);
+      return hn::OrderedDemote2To(dbf16, v0, v1);
+    }
+  };
+
+  auto pack_pair = [&](const InT* q0, const InT* q1, BF16* out) HWY_ATTR {
+    if (q1 != nullptr) {
+      for (size_t d = 0; d < qkv_dim; d += kL) {
+        hn::StoreU(pack4x2(q0 + d, q1 + d), dbf16, out + d * 2);
+      }
+    } else {
+      for (size_t d = 0; d < qkv_dim; d += kL) {
+        hn::StoreU(pack4x2(q0 + d, nullptr), dbf16, out + d * 2);
+      }
+    }
+  };
 
   size_t p = 0;
   for (; p < num_queries / 2; ++p) {
-    const float* q0 = query_provider(2 * p);
-    const float* q1 = query_provider(2 * p + 1);
-    BF16* out = packed_queries + 2 * p * qkv_dim;
-
-    for (size_t d = 0; d < qkv_dim; d += kL) {
-      auto v0 = hn::LoadU(df, q0 + d);
-      auto v1 = hn::LoadU(df, q1 + d);
-      auto A = hn::OrderedDemote2To(dbf16, v0, v1);
-      hn::StoreU(A, dbf16, out + d * 2);
-    }
+    pack_pair(query_provider(2 * p), query_provider(2 * p + 1),
+              packed_queries + 2 * p * qkv_dim);
   }
-
   if (num_queries % 2 != 0) {
-    const float* q0 = query_provider(2 * p);
-    BF16* out = packed_queries + 2 * p * qkv_dim;
-    auto zero = hn::Zero(df);
-
-    for (size_t d = 0; d < qkv_dim; d += kL) {
-      auto v0 = hn::LoadU(df, q0 + d);
-      auto A = hn::OrderedDemote2To(dbf16, v0, zero);
-      hn::StoreU(A, dbf16, out + d * 2);
-    }
+    pack_pair(query_provider(2 * p), nullptr,
+              packed_queries + 2 * p * qkv_dim);
   }
 }
 
@@ -604,8 +622,23 @@ void CompressAndTransposeQueriesMatrixAccumulation(const float* raw_queries,
       num_queries, qkv_dim);
 }
 
+void CompressAndTransposeQueriesMatrixAccumulationFromBF16(
+    const BF16* raw_queries, BF16* packed_queries, size_t num_queries,
+    size_t qkv_dim) {
+  CompressAndTransposeQueriesMatrixAccumulationImpl(
+      [&](size_t idx) { return raw_queries + idx * qkv_dim; }, packed_queries,
+      num_queries, qkv_dim);
+}
+
 void CompressAndTransposeQueriesMatrixAccumulationNonContiguous(
     hwy::Span<const float* const> input, BF16* packed_queries, size_t qkv_dim) {
+  CompressAndTransposeQueriesMatrixAccumulationImpl(
+      [&](size_t idx) { return input[idx]; }, packed_queries, input.size(),
+      qkv_dim);
+}
+
+void CompressAndTransposeQueriesMatrixAccumulationNonContiguousFromBF16(
+    hwy::Span<const BF16* const> input, BF16* packed_queries, size_t qkv_dim) {
   CompressAndTransposeQueriesMatrixAccumulationImpl(
       [&](size_t idx) { return input[idx]; }, packed_queries, input.size(),
       qkv_dim);
@@ -618,6 +651,7 @@ HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
   HWY_DASSERT(qkv_dim % 8 == 0);
 
   namespace hn = hwy::HWY_NAMESPACE;
+  using InT = hwy::RemoveCvRef<hwy::RemovePtr<decltype(query_provider(0))>>;
   const hn::Full128<float> df;
   const hn::Full128<int16_t> di16;
   const hn::Full128<int8_t> di8;
@@ -629,15 +663,18 @@ HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
 
   size_t p = 0;
   for (; p < num_queries / 2; ++p) {
-    const float* q0 = query_provider(2 * p);
-    const float* q1 = query_provider(2 * p + 1);
+    const InT* q0 = query_provider(2 * p);
+    const InT* q1 = query_provider(2 * p + 1);
     int8_t* out = packed_queries + 2 * p * qkv_dim;
     float* out_scale0 = packed_scales + 2 * p;
     float* out_scale1 = packed_scales + (2 * p + 1);
 
+    const PackedSpan<const InT> span_q0(q0, qkv_dim);
+    const PackedSpan<const InT> span_q1(q1, qkv_dim);
+
     // 1. Compute single scale per query over the entire qkv_dim
-    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const float>(q0, qkv_dim));
-    float max_abs_q1 = AbsMaxOfSpan(hwy::Span<const float>(q1, qkv_dim));
+    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const InT>(q0, qkv_dim));
+    float max_abs_q1 = AbsMaxOfSpan(hwy::Span<const InT>(q1, qkv_dim));
 
     float scale0_raw = max_abs_q0 == 0.0f ? 1.0f : max_abs_q0 / 127.0f;
     float scale1_raw = max_abs_q1 == 0.0f ? 1.0f : max_abs_q1 / 127.0f;
@@ -658,15 +695,15 @@ HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
 
     for (size_t d = 0; d < qkv_dim; d += 8) {
       // 2. Load and quantize Q0 (8 channels)
-      V_F32 q0_L = hn::LoadU(df, q0 + d);
-      V_F32 q0_H = hn::LoadU(df, q0 + d + 4);
+      V_F32 q0_L, q0_H;
+      Decompress2(df, span_q0, d, q0_L, q0_H);
       V_I32 q0_L_scaled = hn::NearestInt(hn::Mul(q0_L, inv_scale0));
       V_I32 q0_H_scaled = hn::NearestInt(hn::Mul(q0_H, inv_scale0));
       V_I16 q0_i16 = hn::OrderedDemote2To(di16, q0_L_scaled, q0_H_scaled);
 
       // 3. Load and quantize Q1 (8 channels)
-      V_F32 q1_L = hn::LoadU(df, q1 + d);
-      V_F32 q1_H = hn::LoadU(df, q1 + d + 4);
+      V_F32 q1_L, q1_H;
+      Decompress2(df, span_q1, d, q1_L, q1_H);
       V_I32 q1_L_scaled = hn::NearestInt(hn::Mul(q1_L, inv_scale1));
       V_I32 q1_H_scaled = hn::NearestInt(hn::Mul(q1_H, inv_scale1));
       V_I16 q1_i16 = hn::OrderedDemote2To(di16, q1_L_scaled, q1_H_scaled);
@@ -679,12 +716,14 @@ HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
   }
 
   if (num_queries % 2 != 0) {
-    const float* q0 = query_provider(2 * p);
+    const InT* q0 = query_provider(2 * p);
     int8_t* out = packed_queries + 2 * p * qkv_dim;
     float* out_scale0 = packed_scales + 2 * p;
     V_I16 zero_i16 = hn::Zero(di16);
 
-    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const float>(q0, qkv_dim));
+    const PackedSpan<const InT> span_q0(q0, qkv_dim);
+
+    float max_abs_q0 = AbsMaxOfSpan(hwy::Span<const InT>(q0, qkv_dim));
 
     float scale0_raw = max_abs_q0 == 0.0f ? 1.0f : max_abs_q0 / 127.0f;
     gcpp::KV_microscale_t scale0_bf16 =
@@ -696,8 +735,8 @@ HWY_INLINE void CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
     V_F32 inv_scale0 = hn::Set(df, 1.0f / scale0);
 
     for (size_t d = 0; d < qkv_dim; d += 8) {
-      V_F32 q0_L = hn::LoadU(df, q0 + d);
-      V_F32 q0_H = hn::LoadU(df, q0 + d + 4);
+      V_F32 q0_L, q0_H;
+      Decompress2(df, span_q0, d, q0_L, q0_H);
       V_I32 q0_L_scaled = hn::NearestInt(hn::Mul(q0_L, inv_scale0));
       V_I32 q0_H_scaled = hn::NearestInt(hn::Mul(q0_H, inv_scale0));
       V_I16 q0_i16 = hn::OrderedDemote2To(di16, q0_L_scaled, q0_H_scaled);
@@ -718,8 +757,24 @@ void CompressAndQuantizeQueriesMatrixAccumulationInt8(const float* raw_queries,
       packed_scales, num_queries, qkv_dim);
 }
 
+void CompressAndQuantizeQueriesMatrixAccumulationInt8FromBF16(
+    const BF16* raw_queries, int8_t* packed_queries, float* packed_scales,
+    size_t num_queries, size_t qkv_dim) {
+  CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
+      [&](size_t idx) { return raw_queries + idx * qkv_dim; }, packed_queries,
+      packed_scales, num_queries, qkv_dim);
+}
+
 void CompressAndQuantizeQueriesMatrixAccumulationInt8NonContiguous(
     hwy::Span<const float* const> input, int8_t* packed_queries,
+    float* packed_scales, size_t qkv_dim) {
+  CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
+      [&](size_t idx) { return input[idx]; }, packed_queries, packed_scales,
+      input.size(), qkv_dim);
+}
+
+void CompressAndQuantizeQueriesMatrixAccumulationInt8NonContiguousFromBF16(
+    hwy::Span<const BF16* const> input, int8_t* packed_queries,
     float* packed_scales, size_t qkv_dim) {
   CompressAndQuantizeQueriesMatrixAccumulationInt8Impl(
       [&](size_t idx) { return input[idx]; }, packed_queries, packed_scales,

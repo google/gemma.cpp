@@ -240,6 +240,77 @@ void TestCompressQueries() {
   }
 }
 
+void TestCompressQueriesMatrixAccumulationBF16() {
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+
+  for (size_t qkv_dim : {24, 40, 64}) {
+    for (size_t num_queries : {5, 6, 24, 25}) {
+      const size_t num_queries_rounded = hwy::RoundUpTo(num_queries, 2);
+      AlignedPtr<float[]> input_f32 =
+          ctx.allocator.Alloc<float>(qkv_dim * num_queries);
+      AlignedPtr<BF16[]> input_bf16 =
+          ctx.allocator.Alloc<BF16>(qkv_dim * num_queries);
+
+      for (size_t i = 0; i < num_queries; ++i) {
+        for (size_t j = 0; j < qkv_dim; ++j) {
+          float val = 0.01f * (i + 1) / (j + 1);
+          BF16 val_bf16 = hwy::ConvertScalarTo<BF16>(val);
+          input_bf16[i * qkv_dim + j] = val_bf16;
+          input_f32[i * qkv_dim + j] = hwy::ConvertScalarTo<float>(val_bf16);
+        }
+      }
+
+      // 1. Test BF16 matrix accumulation compression
+      AlignedPtr<BF16[]> packed_from_f32 =
+          ctx.allocator.Alloc<BF16>(qkv_dim * num_queries_rounded);
+      AlignedPtr<BF16[]> packed_from_bf16 =
+          ctx.allocator.Alloc<BF16>(qkv_dim * num_queries_rounded);
+
+      CompressAndTransposeQueriesMatrixAccumulation(
+          input_f32.get(), packed_from_f32.get(), num_queries, qkv_dim);
+      CompressAndTransposeQueriesMatrixAccumulationFromBF16(
+          input_bf16.get(), packed_from_bf16.get(), num_queries, qkv_dim);
+
+      for (size_t i = 0; i < num_queries_rounded * qkv_dim; ++i) {
+        EXPECT_EQ(hwy::ConvertScalarTo<float>(packed_from_f32[i]),
+                  hwy::ConvertScalarTo<float>(packed_from_bf16[i]))
+            << "BF16 matrix accumulation mismatch at index " << i
+            << " with num_queries=" << num_queries;
+      }
+
+      // 2. Test Int8 matrix accumulation compression
+      AlignedPtr<int8_t[]> packed_int8_from_f32 =
+          ctx.allocator.Alloc<int8_t>(qkv_dim * num_queries_rounded);
+      AlignedPtr<int8_t[]> packed_int8_from_bf16 =
+          ctx.allocator.Alloc<int8_t>(qkv_dim * num_queries_rounded);
+      AlignedPtr<float[]> scales_from_f32 =
+          ctx.allocator.Alloc<float>(num_queries_rounded);
+      AlignedPtr<float[]> scales_from_bf16 =
+          ctx.allocator.Alloc<float>(num_queries_rounded);
+
+      CompressAndQuantizeQueriesMatrixAccumulationInt8(
+          input_f32.get(), packed_int8_from_f32.get(), scales_from_f32.get(),
+          num_queries, qkv_dim);
+      CompressAndQuantizeQueriesMatrixAccumulationInt8FromBF16(
+          input_bf16.get(), packed_int8_from_bf16.get(), scales_from_bf16.get(),
+          num_queries, qkv_dim);
+
+      for (size_t i = 0; i < num_queries; ++i) {
+        EXPECT_FLOAT_EQ(scales_from_f32[i], scales_from_bf16[i])
+            << "Int8 scale mismatch for query " << i
+            << " with num_queries=" << num_queries;
+      }
+
+      for (size_t i = 0; i < num_queries_rounded * qkv_dim; ++i) {
+        EXPECT_EQ(packed_int8_from_f32[i], packed_int8_from_bf16[i])
+            << "Int8 packed query mismatch at index " << i
+            << " with num_queries=" << num_queries;
+      }
+    }
+  }
+}
+
 void TestLocalAttentionForAllHeadsTokensAndBatch() {
   size_t qkv_dim = 64;
   size_t kv_seq_len = 64;
@@ -826,6 +897,8 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(TiledAttentionTest);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestCompressQueries);
+HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
+                      TestCompressQueriesMatrixAccumulationBF16);
 // TODO() Fix the goldens for the change in KV_t to BF16
 // HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
 //                       TestLocalAttentionForAllHeadsTokensAndBatch);
