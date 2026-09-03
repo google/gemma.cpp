@@ -884,6 +884,36 @@ void TestSampleTopK() {
   }
 }
 
+// `TopK` must return the k largest logits in descending order, with and
+// without an `accept_token` filter. `kSize` exceeds the initial capacity of the
+// vector that `TopK` fills, so this also covers the reserved-capacity path.
+void TestTopK() {
+  const size_t kSize = 300;
+  std::vector<float> logits_vec(kSize);
+  std::iota(logits_vec.begin(), logits_vec.end(), 0.0f);
+  Logits logits(logits_vec.data(), kSize);
+
+  // Without a filter, the top-k are the last k indices, largest first.
+  std::function<bool(int, float)> accept_token;
+  std::vector<TokenAndProb> top = TopK(logits, /*k=*/5, accept_token);
+  ASSERT_EQ(top.size(), size_t{5});
+  for (size_t i = 0; i < top.size(); ++i) {
+    const size_t expected = kSize - 1 - i;
+    EXPECT_EQ(top[i].token, static_cast<int>(expected));
+    EXPECT_EQ(top[i].prob, logits[expected]);
+  }
+
+  // With a filter, only even tokens are eligible.
+  accept_token = [](int i, float) { return i % 2 == 0; };
+  top = TopK(logits, /*k=*/5, accept_token);
+  ASSERT_EQ(top.size(), size_t{5});
+  for (size_t i = 0; i < top.size(); ++i) {
+    const size_t expected = kSize - 2 - 2 * i;
+    EXPECT_EQ(top[i].token, static_cast<int>(expected));
+    EXPECT_EQ(top[i].prob, logits[expected]);
+  }
+}
+
 void TestPackTokenAndProb() {
   double packed1 = PackTokenAndProb(10, 0.96f);
   TokenAndProb unpacked1 = UnpackTokenAndProb(packed1);
@@ -922,6 +952,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllRMSNormInplace);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestTopK);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestPackTokenAndProb);
 HWY_AFTER_TEST();
 
