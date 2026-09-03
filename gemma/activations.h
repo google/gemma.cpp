@@ -489,11 +489,6 @@ struct Activations {
         idxc_gate(MatFactory("idxc_gate",
                              mla_dims.idxc_dim > 0 ? batch_size : 0,
                              mla_dims.idxc_dim, ctx.allocator)),
-        mla_o_in(MatFactory("mla_o_in", mla_dims.o_in_dim > 0 ? batch_size : 0,
-                            mla_dims.o_in_dim, ctx.allocator)),
-        mla_o_group(MatFactory(
-            "mla_o_group", mla_dims.o_mid_dim > 0 ? batch_size : 0,
-            mla_dims.o_mid_dim > 0 ? MaxOLoraRank(config) : 0, ctx.allocator)),
         mla_o_mid(MatFactory("mla_o_mid",
                              mla_dims.o_mid_dim > 0 ? batch_size : 0,
                              mla_dims.o_mid_dim, ctx.allocator)),
@@ -568,9 +563,6 @@ struct Activations {
         idxc_kv.AllocateAndAttachRowPtrs(row_ptrs);
         idxc_gate.AllocateAndAttachRowPtrs(row_ptrs);
       }
-      if (mla_dims.o_mid_dim > 0) {
-        mla_o_group.AllocateAndAttachRowPtrs(row_ptrs);
-      }
     }
     if (config.hc_mult > 1) {
       hc_mixes.AllocateAndAttachRowPtrs(row_ptrs);
@@ -597,13 +589,6 @@ struct Activations {
       expert_tokens =
           ctx.allocator.Alloc<uint16_t>(batch_size * experts_per_token);
 
-      const size_t num_clusters = ctx.pools.NumClusters();
-      per_cluster.reserve(num_clusters);
-      for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
-        per_cluster.emplace_back(config, moe_layer_config, batch_size,
-                                 ctx.allocator, row_ptrs);
-      }
-
       const size_t num_experts = moe_layer_config.NumExperts();
       ffw_expert_out.reserve(num_experts);
       for (size_t expert_idx = 0; expert_idx < num_experts; ++expert_idx) {
@@ -611,6 +596,15 @@ struct Activations {
             "ffw_partial_out", MoEBatchSize(moe_layer_config, batch_size),
             config.model_dim, ctx.allocator));
         ffw_expert_out.back().AllocateAndAttachRowPtrs(row_ptrs);
+      }
+    }
+
+    if (moe_layer_config.IsMoE() || mla_dims.o_mid_dim > 0) {
+      const size_t num_clusters = ctx.pools.NumClusters();
+      per_cluster.reserve(num_clusters);
+      for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
+        per_cluster.emplace_back(config, moe_layer_config, mla_dims, batch_size,
+                                 ctx.allocator, row_ptrs);
       }
     }
 
@@ -663,9 +657,10 @@ struct Activations {
         idxc_gate.OverrideRows(batch_size);
       }
       if (mla_dims.o_mid_dim > 0) {
-        mla_o_in.OverrideRows(batch_size);
-        mla_o_group.OverrideRows(batch_size);
         mla_o_mid.OverrideRows(batch_size);
+        for (auto& pc : per_cluster) {
+          pc.mla_o_in.OverrideRows(batch_size);
+        }
       }
     }
     if (hc_streams.Cols() > 0 && hc_streams.Rows() > 0) {
@@ -750,9 +745,7 @@ struct Activations {
   MatStorageT<float> idxc_kv;    // batch_size x (coff * indexer_head_dim)
   MatStorageT<float> idxc_gate;  // batch_size x (coff * indexer_head_dim)
   // V4 grouped low-rank output projection scratch.
-  MatStorageT<float> mla_o_in;     // batch_size x (heads/groups * qkv_dim)
-  MatStorageT<float> mla_o_group;  // batch_size x o_lora_rank
-  MatStorageT<float> mla_o_mid;    // batch_size x (o_groups * o_lora_rank)
+  MatStorageT<BF16> mla_o_mid;  // batch_size x (o_groups * o_lora_rank)
   // Manifold-constrained hyper-connections: parallel residual streams,
   // [batch_size, hc_mult * model_dim] (zero-sized unless hc_mult > 1).
   MatStorageT<float> hc_streams;
@@ -789,7 +782,7 @@ struct Activations {
 
   struct PerCluster {
     PerCluster(const ModelConfig& config, const LayerConfig& layer_config,
-               size_t batch_size, Allocator& allocator,
+               const MLADims& mla_dims, size_t batch_size, Allocator& allocator,
                std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
         : moe_C1(MatFactory("C1", batch_size, layer_config.ff_hidden_dim,
                             allocator)),
@@ -797,7 +790,10 @@ struct Activations {
                             allocator)),
           ffw_expert_in(MatFactory("ffw_partial_in",
                                    MoEBatchSize(layer_config, batch_size),
-                                   config.model_dim, allocator)) {
+                                   config.model_dim, allocator)),
+          mla_o_in(MatFactory("mla_o_in",
+                              mla_dims.o_in_dim > 0 ? batch_size : 0,
+                              mla_dims.o_in_dim, allocator)) {
       moe_C1.AllocateAndAttachRowPtrs(row_ptrs);
       moe_C2.AllocateAndAttachRowPtrs(row_ptrs);
       ffw_expert_in.AllocateAndAttachRowPtrs(row_ptrs);
@@ -805,6 +801,7 @@ struct Activations {
     MatStorageT<BF16> moe_C1;
     MatStorageT<BF16> moe_C2;
     MatStorageT<BF16> ffw_expert_in;
+    MatStorageT<BF16> mla_o_in;
   };
   std::vector<PerCluster> per_cluster;
   std::vector<MatStorageT<BF16>> ffw_expert_out;

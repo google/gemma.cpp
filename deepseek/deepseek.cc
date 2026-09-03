@@ -1075,34 +1075,60 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
       });
 
   // ---- Grouped low-rank output projection.
-  att.att_out.OverrideCols(heads * qkv_dim);
-  const size_t o_groups = lc.o_groups;
-  const size_t o_lora = lc.o_lora_rank;
-  const size_t group_in = heads / o_groups * qkv_dim;
-  activations.mla_o_in.OverrideCols(group_in);
-  activations.mla_o_group.OverrideCols(o_lora);
-  activations.mla_o_mid.OverrideCols(o_groups * o_lora);
-  const size_t num_rows = att.att_out.Rows();
-  for (size_t g = 0; g < o_groups; ++g) {
-    // Copy this group's slice of att_out.
-    for (size_t r = 0; r < num_rows; ++r) {
-      const float* HWY_RESTRICT src = att.att_out.Row(r) + g * group_in;
-      std::copy_n(src, group_in, activations.mla_o_in.Row(r));
+  {
+    namespace hn = hwy::HWY_NAMESPACE;
+    att.att_out.OverrideCols(heads * qkv_dim);
+    const size_t o_groups = lc.o_groups;
+    const size_t o_lora = lc.o_lora_rank;
+    const size_t group_in = heads / o_groups * qkv_dim;
+    activations.mla_o_mid.OverrideCols(o_groups * o_lora);
+    const size_t num_rows = att.att_out.Rows();
+
+    Parallelism outer = Parallelism::kAcrossClusters;
+    Parallelism inner = Parallelism::kWithinCluster;
+    if (activations.per_cluster.size() <= 1) {
+      outer = Parallelism::kNone;
+      inner = Parallelism::kHierarchical;
     }
-    // Row-slice view of wo_a for this group.
-    MatPtr o_a_g("o_a_g", layer.mla_o_a.GetType(), Extents2D(o_lora, group_in));
-    o_a_g.SetPtr(const_cast<uint8_t*>(layer.mla_o_a.RowBytes(g * o_lora)),
-                 layer.mla_o_a.Stride());
-    o_a_g.SetScale(layer.mla_o_a.Scale());
-    CallMatMul(activations.mla_o_in, o_a_g, /*add=*/nullptr, env,
-               activations.mla_o_group);
-    for (size_t r = 0; r < num_rows; ++r) {
-      std::copy_n(activations.mla_o_group.Row(r), o_lora,
-                  activations.mla_o_mid.Row(r) + g * o_lora);
-    }
+    ParallelFor(
+        outer, o_groups, env.ctx, /*cluster_idx=*/0,
+        Callers::kAttDotSoftmaxWeightedSum, [&](size_t g, size_t cluster_idx) {
+          HWY_DASSERT(cluster_idx < activations.per_cluster.size());
+          Activations::PerCluster& per_cluster =
+              activations.per_cluster[cluster_idx];
+          MatPtrT<BF16>& mla_o_in = per_cluster.mla_o_in;
+          mla_o_in.OverrideCols(group_in);
+          mla_o_in.OverrideRows(num_rows);
+
+          // Zero-copy demote float slice of att_out to BF16 in cluster buffer.
+          const hn::ScalableTag<BF16> dbf;
+          for (size_t r = 0; r < num_rows; ++r) {
+            const float* HWY_RESTRICT src = att.att_out.Row(r) + g * group_in;
+            BF16* HWY_RESTRICT dst = mla_o_in.Row(r);
+            DecompressAndZeroPad(dbf, MakeSpan(src, group_in), 0, dst,
+                                 group_in);
+          }
+
+          // Row-slice view of wo_a for this group.
+          MatPtr o_a_g("o_a_g", layer.mla_o_a.GetType(),
+                       Extents2D(o_lora, group_in));
+          o_a_g.SetPtr(const_cast<uint8_t*>(layer.mla_o_a.RowBytes(g * o_lora)),
+                       layer.mla_o_a.Stride());
+          o_a_g.SetScale(layer.mla_o_a.Scale());
+
+          // Direct strided view into this group's column slice of mla_o_mid.
+          MatPtrT<BF16> C_g("C_g", Extents2D(num_rows, o_lora));
+          C_g.SetPtr(activations.mla_o_mid.Row(0) + g * o_lora,
+                     activations.mla_o_mid.Stride());
+
+          MMOptions options{.cluster_idx = static_cast<uint32_t>(cluster_idx),
+                            .parallelism = inner};
+          CallMatMul(mla_o_in, o_a_g, /*add=*/nullptr, env, C_g, options);
+        });
+
+    CallMatMul(activations.mla_o_mid, layer.mla_o_b, /*add=*/nullptr, env,
+               att.att_sums);
   }
-  CallMatMul(activations.mla_o_mid, layer.mla_o_b, /*add=*/nullptr, env,
-             att.att_sums);
 }
 
 // ------------------------------ MoE ------------------------------
