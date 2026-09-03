@@ -18,13 +18,13 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
-
 
 #include "hwy/base.h"  // HWY_ABORT
 #include "nlohmann/json.hpp"
@@ -177,13 +177,14 @@ Dsv4Tokenizer::Dsv4Tokenizer(const std::string& tokenizer_json_path) {
   Init(contents);
 }
 
-Dsv4Tokenizer::Dsv4Tokenizer(std::string_view json_content, bool /*is_content*/) {
+Dsv4Tokenizer::Dsv4Tokenizer(std::string_view json_content,
+                             bool /*is_content*/) {
   Init(json_content);
 }
 
 void Dsv4Tokenizer::Init(std::string_view json_content) {
   json j = json::parse(json_content.begin(), json_content.end(), /*cb=*/nullptr,
-                      /*allow_exceptions=*/false);
+                       /*allow_exceptions=*/false);
   if (j.is_discarded()) {
     HWY_ABORT("Failed to parse tokenizer JSON");
   }
@@ -274,11 +275,15 @@ std::string Dsv4Tokenizer::WrapChat(const std::string& user_msg,
   static const char kAssistant[] =
       "<\xEF\xBD\x9C"
       "Assistant\xEF\xBD\x9C>";
-  std::string out(kBos);
+  const char* think_marker = thinking ? "<think>" : "</think>";
+  std::string out;
+  out.reserve((sizeof(kBos) - 1) + (sizeof(kUser) - 1) + user_msg.size() +
+              (sizeof(kAssistant) - 1) + std::strlen(think_marker));
+  out += kBos;
   out += kUser;
   out += user_msg;
   out += kAssistant;
-  out += thinking ? "<think>" : "</think>";
+  out += think_marker;
   return out;
 }
 
@@ -492,6 +497,23 @@ void Dsv4Tokenizer::AppendDecoded(int id, std::string& out) const {
   if (id < 0 || static_cast<size_t>(id) >= id_to_bytes_.size()) return;
   if (is_special_[id]) return;
   out += id_to_bytes_[id];
+}
+
+std::string Dsv4Tokenizer::Decode(const std::vector<int>& ids) const {
+  size_t total_size = 0;
+  for (int id : ids) {
+    if (id >= 0 && static_cast<size_t>(id) < id_to_bytes_.size() &&
+        !is_special_[id]) {
+      total_size += id_to_bytes_[id].size();
+    }
+  }
+
+  std::string out;
+  out.reserve(total_size);
+  for (int id : ids) {
+    AppendDecoded(id, out);
+  }
+  return out;
 }
 
 }  // namespace gcpp

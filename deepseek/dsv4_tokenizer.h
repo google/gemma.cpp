@@ -40,7 +40,6 @@ class Dsv4Tokenizer {
   // 'is_content' is used to distinguish from path constructor.
   Dsv4Tokenizer(std::string_view json_content, bool is_content);
 
-
   // Extracts added tokens (chat markers etc.), pre-tokenizes and BPE-encodes
   // everything in between. Equivalent to HF encode(add_special_tokens=false).
   std::vector<int> Encode(const std::string& text) const;
@@ -55,6 +54,9 @@ class Dsv4Tokenizer {
   // skip_special_tokens=true; other added tokens (e.g. </think>) are kept.
   void AppendDecoded(int id, std::string& out) const;
 
+  // Decodes a sequence of token IDs, skipping special tokens.
+  std::string Decode(const std::vector<int>& ids) const;
+
   size_t VocabSize() const { return id_to_bytes_.size(); }
 
  private:
@@ -64,7 +66,6 @@ class Dsv4Tokenizer {
   };
 
   void Init(std::string_view json_content);
-
 
   // Splits `text` (a span with no added tokens) into pre-tokenization pieces
   // and BPE-encodes each, appending ids.
