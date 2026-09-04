@@ -1578,12 +1578,22 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
     Logits logits, size_t k, TAcceptToken& accept_token) {
   HWY_ASSERT(k != 0);
   HWY_ASSERT(k <= logits.size());
+  const int32_t num_logits = static_cast<int32_t>(logits.size());
+  // `logits.size()` is the vocabulary size (256K for Gemma 3), so growing the
+  // vector on demand would reallocate and copy about a dozen times per call.
   std::vector<double> packed_token_probs;
-  for (int32_t i = 0; i < static_cast<int32_t>(logits.size()); ++i) {
-    if (accept_token && !accept_token(i, logits[i])) {
-      continue;
+  packed_token_probs.reserve(logits.size());
+  // Hoisting the (usually empty) `accept_token` check out of the loop keeps the
+  // common case a straight-line pack-and-append.
+  if (accept_token) {
+    for (int32_t i = 0; i < num_logits; ++i) {
+      if (!accept_token(i, logits[i])) continue;
+      packed_token_probs.push_back(PackTokenAndProb(i, logits[i]));
     }
-    packed_token_probs.push_back(PackTokenAndProb(i, logits[i]));
+  } else {
+    for (int32_t i = 0; i < num_logits; ++i) {
+      packed_token_probs.push_back(PackTokenAndProb(i, logits[i]));
+    }
   }
 
   hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), k,
