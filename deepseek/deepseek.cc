@@ -918,18 +918,24 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
   const size_t num_interleaved = num_tokens * qbatch.Size();
 
   // ---- Projections (tiled MatMul).
-  if (lc.q_lora_rank > 0) {
-    activations.mla_q_a.OverrideCols(lc.q_lora_rank);
-    CallMatMul(att.pre_att_rms_out, layer.mla_q_a, /*add=*/nullptr, env,
-               activations.mla_q_a);
-    RMSNormInplaceBatched</*kPlainWeight=*/true>(layer.mla_q_a_norm,
-                                                 activations.mla_q_a, env.ctx);
-    CallMatMul(activations.mla_q_a, layer.mla_q_b, /*add=*/nullptr, env, att.q);
-  } else {
-    CallMatMul(att.pre_att_rms_out, layer.mla_q_b, /*add=*/nullptr, env, att.q);
+  {
+    GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(),
+              Zones::kGenAttentionComputeQKV);
+    if (lc.q_lora_rank > 0) {
+      activations.mla_q_a.OverrideCols(lc.q_lora_rank);
+      CallMatMul(att.pre_att_rms_out, layer.mla_q_a, /*add=*/nullptr, env,
+                 activations.mla_q_a);
+      RMSNormInplaceBatched</*kPlainWeight=*/true>(
+          layer.mla_q_a_norm, activations.mla_q_a, env.ctx);
+      CallMatMul(activations.mla_q_a, layer.mla_q_b, /*add=*/nullptr, env,
+                 att.q);
+    } else {
+      CallMatMul(att.pre_att_rms_out, layer.mla_q_b, /*add=*/nullptr, env,
+                 att.q);
+    }
+    CallMatMul(att.pre_att_rms_out, layer.mla_kv_a, /*add=*/nullptr, env,
+               activations.mla_kv_a);
   }
-  CallMatMul(att.pre_att_rms_out, layer.mla_kv_a, /*add=*/nullptr, env,
-             activations.mla_kv_a);
 
   const bool is_mtp = (layer_idx >= config.num_layers);
   const size_t start_pos = qbatch.Pos(0);
@@ -995,6 +1001,8 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
   ParallelFor(
       Parallelism::kFlat, num_interleaved * heads, env.ctx, /*cluster_idx=*/0,
       Callers::kAttComputeQKV, [&](size_t task, size_t worker) HWY_ATTR {
+        GCPP_ZONE(env.ctx, worker,
+                  Zones::kGenAttentionDotSoftmaxWeightedSumPar);
         namespace hn = hwy::HWY_NAMESPACE;
         const hn::ScalableTag<float> df;
         const size_t head = task % heads;
@@ -1076,6 +1084,8 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
 
   // ---- Grouped low-rank output projection.
   {
+    GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(),
+              Zones::kGenAttentionSumHeads);
     namespace hn = hwy::HWY_NAMESPACE;
     att.att_out.OverrideCols(heads * qkv_dim);
     const size_t o_groups = lc.o_groups;
@@ -1455,6 +1465,7 @@ struct DeepSeekMoE {
 static HWY_NOINLINE void DeepSeekDenseFFW(const LayerWeightsPtrs& layer,
                                           Activations& activations,
                                           MatMulEnv& env) {
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenFFW);
   const LayerConfig& lc = layer.layer_config;
   if (lc.swiglu_limit == 0.0f) {
     FFWNoVit(layer, activations, env);

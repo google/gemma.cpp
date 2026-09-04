@@ -31,6 +31,7 @@
 #include "util/mat.h"
 #include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/profiler.h"
 #include "hwy/timer.h"
 
 namespace gcpp {
@@ -305,6 +306,11 @@ int main(int argc, char** argv) {
                                        : 0.0)
                 << " tok/s)\n";
     }
+#if PROFILER_ENABLED
+    std::cout << "\n=== Profiler Breakdown (Decode) ===\n";
+    env.ctx.profiler.PrintResults();
+    std::cout << "===================================\n";
+#endif
     std::cout << "---------------------------------------------------------\n";
   }
 

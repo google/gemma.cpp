@@ -1156,6 +1156,7 @@ cc_binary(
         ":tokenizer",
         "//io",
         "@highway//:abort_header_only",
+        "@highway//:profiler",
         "@highway//:timer",
     ],
 )

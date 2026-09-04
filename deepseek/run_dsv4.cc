@@ -38,6 +38,7 @@
 #include "gemma/kv_cache.h"
 #include "ops/matmul.h"
 #include "util/threading_context.h"
+#include "hwy/profiler.h"
 
 namespace gcpp {
 
@@ -211,6 +212,9 @@ int Main(int argc, char** argv) {
   if (!pending.empty()) fwrite(pending.data(), 1, pending.size(), stdout);
   if (tokenizer) printf("\n");
   fflush(stdout);
+#if PROFILER_ENABLED
+  env.ctx.profiler.PrintResults();
+#endif
   fprintf(stderr, "Done.\n");
   return 0;
 }

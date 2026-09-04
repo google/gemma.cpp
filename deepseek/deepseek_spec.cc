@@ -121,6 +121,7 @@ void GenerateDSparkV4(const ModelConfig& config,
 
   // Parallel DSpark Drafter: generates up to max_drafts speculative tokens in a single parallel pass.
   const auto generate_drafts = [&]() HWY_ATTR {
+    PROFILER_ZONE("Gen.MTP.Draft");
     for (size_t j = 0; j < 16; ++j) {
       drafts[j] = 0;
       confidences[j] = 1.0f;
@@ -159,10 +160,13 @@ void GenerateDSparkV4(const ModelConfig& config,
     }
     DeepSeekMaybeInitHCStreams(activations, env);
     activations.ds_snapshot_after = 0;
-    for (size_t layer_idx = 0; layer_idx < weights.c_layers.size();
-         ++layer_idx) {
-      TransformerLayer(block_size, layer_idx, *weights.GetLayer(layer_idx),
-                       activations, qbatch, env);
+    {
+      PROFILER_ZONE("Gen.MTP.VerifyPass");
+      for (size_t layer_idx = 0; layer_idx < weights.c_layers.size();
+           ++layer_idx) {
+        TransformerLayer(block_size, layer_idx, *weights.GetLayer(layer_idx),
+                         activations, qbatch, env);
+      }
     }
     activations.ds_snapshot_after = -1;
     DeepSeekMaybeFinalizeHCStreams(weights, activations, env);
@@ -182,9 +186,11 @@ void GenerateDSparkV4(const ModelConfig& config,
     while (more && num_acc < actual_drafts &&
            next_committed == drafts[num_acc]) {
       ++num_acc;
-      next_committed = Top1OfSoftmax(activations.logits.RowSpan(num_acc)).token;
+      next_committed =
+          Top1OfSoftmax(activations.logits.RowSpan(num_acc)).token;
       if (debug_log) {
-        fprintf(stderr, ", acc draft[%zu]=%d -> top%zu=%d", num_acc - 1, drafts[num_acc - 1], num_acc, next_committed);
+        fprintf(stderr, ", acc draft[%zu]=%d -> top%zu=%d", num_acc - 1,
+                drafts[num_acc - 1], num_acc, next_committed);
       }
       more = emit(next_committed);
     }
@@ -217,6 +223,7 @@ void GenerateDSparkV4(const ModelConfig& config,
 
     if (more) {
       if (num_acc > 0) {
+        PROFILER_ZONE("Gen.MTP.CommitDSparkKV");
         DeepSeekCommitDSparkKV(num_acc, pos, weights, activations, qbatch, env);
         hwy::CopyBytes(activations.dspark_main_hiddens.Row(num_acc),
                        activations.dspark_main_hiddens.Row(0),
