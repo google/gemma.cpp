@@ -684,10 +684,11 @@ static HWY_NOINLINE void GroupedRMSNormInplace(
 }
 
 template <typename XT, typename OT>
-void GroupedRMSNormBatched(
-    const MatPtrT<XT>& activations, const MatPtr& weights, MatPtrT<OT>& out,
-    const size_t num_groups, ThreadingContext& ctx, size_t cluster_idx = 0,
-    Parallelism parallelism = Parallelism::kFlat) {
+void GroupedRMSNormBatched(const MatPtrT<XT>& activations,
+                           const MatPtr& weights, MatPtrT<OT>& out,
+                           const size_t num_groups, ThreadingContext& ctx,
+                           size_t cluster_idx = 0,
+                           Parallelism parallelism = Parallelism::kFlat) {
   CallUpcasted(&weights, [&](const auto* weights_t) {
     ParallelFor(parallelism, activations.Rows(), ctx, cluster_idx,
                 Callers::kOpsGroupedRMSNormBatched,
@@ -1111,8 +1112,7 @@ template <int32_t N, class DF, class VF = hn::Vec<DF>>
 HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16_Int16(
     DF df, const float* HWY_RESTRICT scales_old, size_t actual_steps,
     const int16_t* HWY_RESTRICT step_cs_i16,
-    const int8_t* const* HWY_RESTRICT step_v_tiles,
-    MatPtrT<float>& out,
+    const int8_t* const* HWY_RESTRICT step_v_tiles, MatPtrT<float>& out,
     const float* const* HWY_RESTRICT step_q_scales_s) {
   static_assert(N <= 8);
   namespace hn = hwy::HWY_NAMESPACE;
@@ -1829,12 +1829,12 @@ HWY_INLINE void ApplySoftCap(DF df, float att_cap, float one_over_cap, VF& x0,
 template <int kNumQueries, class DF, class VF = hn::Vec<DF>,
           typename DU = hn::ScalableTag<uint32_t>, class VU = hn::Vec<DU>>
 HWY_INLINE void ApplyMasking(DF df, DU du, size_t position,
-                               const size_t* HWY_RESTRICT first_pos_per_query,
-                               const size_t* HWY_RESTRICT last_pos_per_query,
-                               VF& x0_p0, VF& x0_p1, VF& x1_p0, VF& x1_p1,
-                               VF& x2_p0, VF& x2_p1, VF& x3_p0, VF& x3_p1,
-                               VF& x4_p0, VF& x4_p1, VF& x5_p0, VF& x5_p1,
-                               VF& x6_p0, VF& x6_p1, VF& x7_p0, VF& x7_p1) {
+                             const size_t* HWY_RESTRICT first_pos_per_query,
+                             const size_t* HWY_RESTRICT last_pos_per_query,
+                             VF& x0_p0, VF& x0_p1, VF& x1_p0, VF& x1_p1,
+                             VF& x2_p0, VF& x2_p1, VF& x3_p0, VF& x3_p1,
+                             VF& x4_p0, VF& x4_p1, VF& x5_p0, VF& x5_p1,
+                             VF& x6_p0, VF& x6_p1, VF& x7_p0, VF& x7_p1) {
   VU lane_indices = hn::Iota(du, 0);
   HWY_LANES_CONSTEXPR size_t kTileSize = hn::Lanes(df);
   auto per_lane_pos_p0 = hn::Add(hn::Set(du, position), lane_indices);
@@ -2014,6 +2014,268 @@ HWY_INLINE V SumReduceSegments(D d, V v) {
     auto sum = hn::Add(lo, hi);
     auto reduced_half = SumReduceSegments<kTargetLanes>(d_half, sum);
     return hn::ZeroExtendVector(d, reduced_half);
+  }
+}
+
+// Highway SIMD Vector Logit Masking Kernel (Requirement R5 Part 1).
+// Applies vector logit mask to `logits`.
+// Disallowed tokens are overwritten with `mask_value` (-infinity).
+HWY_INLINE void ApplyLogitMaskKernel(
+    hwy::Span<float> logits, const uint64_t* HWY_RESTRICT mask_words,
+    size_t vocab_size,
+    float mask_value = -std::numeric_limits<float>::infinity()) {
+  if (HWY_UNLIKELY(vocab_size == 0 || logits.data() == nullptr ||
+                   mask_words == nullptr)) {
+    return;
+  }
+  if (HWY_UNLIKELY(logits.size() < vocab_size)) {
+    vocab_size = logits.size();
+  }
+
+  const size_t num_words = (vocab_size + 63) / 64;
+
+  // Empty mask guardrail: check if any allowed bit exists within vocab_size.
+  // If entire mask is 0, fail-safe by preserving finite logits to avoid NaN in
+  // softmax.
+  bool has_any_allowed = false;
+  for (size_t w = 0; w < num_words; ++w) {
+    uint64_t w_val = mask_words[w];
+    if (HWY_UNLIKELY(w == num_words - 1 && (vocab_size % 64 != 0))) {
+      const uint64_t valid_bits = (1ULL << (vocab_size % 64)) - 1;
+      w_val &= valid_bits;
+    }
+    if (w_val != 0ULL) {
+      has_any_allowed = true;
+      break;
+    }
+  }
+  if (HWY_UNLIKELY(!has_any_allowed)) {
+    return;
+  }
+
+  const hn::ScalableTag<float> df;
+  const size_t N = hn::Lanes(df);
+  const auto v_neg_inf = hn::Set(df, mask_value);
+
+  for (size_t w = 0; w < num_words; ++w) {
+    const uint64_t word = mask_words[w];
+    const size_t base_idx = w * 64;
+
+    if (HWY_LIKELY(base_idx + 64 <= vocab_size)) {
+      // Fast Path 1: All 64 tokens are allowed. Skip writes.
+      if (word == ~0ULL) {
+        continue;
+      }
+
+      // Fast Path 2: All 64 tokens are disallowed. Vector fill -inf.
+      if (word == 0ULL) {
+        for (size_t offset = 0; offset < 64; offset += N) {
+          hn::StoreU(v_neg_inf, df, &logits[base_idx + offset]);
+        }
+        continue;
+      }
+
+      // Optimization for sparse disallowed tokens:
+      // If <= 4 tokens in the word are disallowed, directly overwrite those
+      // tokens. Eliminates all memory reads, vector operations, and bulk memory
+      // writes.
+      const uint64_t disallowed = ~word;
+      const size_t num_disallowed = hwy::PopCount(disallowed);
+      if (num_disallowed <= 4) {
+        uint64_t rem = disallowed;
+        while (rem != 0) {
+          const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(rem);
+          logits[base_idx + bit] = mask_value;
+          rem &= rem - 1;
+        }
+        continue;
+      }
+
+      // Optimization for sparse allowed tokens:
+      // If <= 4 tokens in the word are allowed, save them, vector fill -inf,
+      // and restore. Eliminates all memory reads of disallowed logits and
+      // vector mask blending.
+      const size_t num_allowed = 64 - num_disallowed;
+      if (num_allowed <= 4) {
+        float saved_logits[4];
+        size_t saved_indices[4];
+        size_t count = 0;
+        uint64_t rem = word;
+        while (rem != 0) {
+          const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(rem);
+          saved_indices[count] = base_idx + bit;
+          saved_logits[count] = logits[saved_indices[count]];
+          ++count;
+          rem &= rem - 1;
+        }
+        for (size_t offset = 0; offset < 64; offset += N) {
+          hn::StoreU(v_neg_inf, df, &logits[base_idx + offset]);
+        }
+        for (size_t i = 0; i < count; ++i) {
+          logits[saved_indices[i]] = saved_logits[i];
+        }
+        continue;
+      }
+
+      // General Path: Process in vector chunks of N lanes.
+      const uint8_t* word_bytes =
+          reinterpret_cast<const uint8_t*>(&mask_words[w]);
+      for (size_t offset = 0; offset < 64; offset += N) {
+        const size_t idx = base_idx + offset;
+        const uint64_t shifted = word >> offset;
+        const uint64_t chunk_mask =
+            shifted & ((N >= 64) ? ~0ULL : ((1ULL << N) - 1));
+
+        // Sub-chunk is all allowed: skip memory writes.
+        if (chunk_mask == ((N >= 64) ? ~0ULL : ((1ULL << N) - 1))) {
+          continue;
+        }
+
+        // Sub-chunk is all disallowed: store mask_value without loading logits.
+        if (chunk_mask == 0) {
+          hn::StoreU(v_neg_inf, df, &logits[idx]);
+          continue;
+        }
+
+        // Sub-chunk has 1 or 2 disallowed tokens: write mask_value directly.
+        const uint64_t chunk_disallowed =
+            ((N >= 64) ? ~0ULL : ((1ULL << N) - 1)) & ~chunk_mask;
+        if (hwy::PopCount(chunk_disallowed) <= 2) {
+          uint64_t rem = chunk_disallowed;
+          while (rem != 0) {
+            const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(rem);
+            logits[idx + bit] = mask_value;
+            rem &= rem - 1;
+          }
+          continue;
+        }
+
+        // Mixed chunk: load mask bits, load logits, blend, and store.
+        const auto mask =
+            (N >= 8) ? hn::LoadMaskBits(df, word_bytes + (offset / 8))
+                     : hn::LoadMaskBits(
+                           df, reinterpret_cast<const uint8_t*>(&shifted));
+        const auto v_logits = hn::LoadU(df, &logits[idx]);
+        const auto v_masked = hn::IfThenElse(mask, v_logits, v_neg_inf);
+        hn::StoreU(v_masked, df, &logits[idx]);
+      }
+    } else {
+      // Boundary word when vocab_size % 64 != 0.
+      const size_t valid_tokens = vocab_size - base_idx;
+      const uint64_t valid_mask = (1ULL << valid_tokens) - 1;
+      const uint64_t valid_word = word & valid_mask;
+
+      // Fast Path 1: All remaining tokens are allowed. Skip writes.
+      if (valid_word == valid_mask) {
+        continue;
+      }
+
+      // Fast Path 2: All remaining tokens are disallowed. Vector fill -inf.
+      if (valid_word == 0ULL) {
+        for (size_t offset = 0; offset < valid_tokens; offset += N) {
+          const size_t idx = base_idx + offset;
+          const size_t rem = vocab_size - idx;
+          if (rem >= N) {
+            hn::StoreU(v_neg_inf, df, &logits[idx]);
+          } else {
+            hn::StoreN(v_neg_inf, df, &logits[idx], rem);
+          }
+        }
+        continue;
+      }
+
+      // Sparse disallowed tokens on boundary.
+      const uint64_t disallowed = valid_mask & ~valid_word;
+      const size_t num_disallowed = hwy::PopCount(disallowed);
+      if (num_disallowed <= 4) {
+        uint64_t rem = disallowed;
+        while (rem != 0) {
+          const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(rem);
+          logits[base_idx + bit] = mask_value;
+          rem &= rem - 1;
+        }
+        continue;
+      }
+
+      // Sparse allowed tokens on boundary.
+      const size_t num_allowed = valid_tokens - num_disallowed;
+      if (num_allowed <= 4) {
+        float saved_logits[4];
+        size_t saved_indices[4];
+        size_t count = 0;
+        uint64_t rem = valid_word;
+        while (rem != 0) {
+          const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(rem);
+          saved_indices[count] = base_idx + bit;
+          saved_logits[count] = logits[saved_indices[count]];
+          ++count;
+          rem &= rem - 1;
+        }
+        for (size_t offset = 0; offset < valid_tokens; offset += N) {
+          const size_t idx = base_idx + offset;
+          const size_t rem = vocab_size - idx;
+          if (rem >= N) {
+            hn::StoreU(v_neg_inf, df, &logits[idx]);
+          } else {
+            hn::StoreN(v_neg_inf, df, &logits[idx], rem);
+          }
+        }
+        for (size_t i = 0; i < count; ++i) {
+          logits[saved_indices[i]] = saved_logits[i];
+        }
+        continue;
+      }
+
+      // General Path for boundary word.
+      const uint8_t* word_bytes =
+          reinterpret_cast<const uint8_t*>(&mask_words[w]);
+      for (size_t offset = 0; offset < valid_tokens; offset += N) {
+        const size_t idx = base_idx + offset;
+        const size_t rem = vocab_size - idx;
+        const uint64_t shifted = word >> offset;
+        const uint64_t chunk_valid_mask =
+            (rem >= N) ? ((N >= 64) ? ~0ULL : ((1ULL << N) - 1))
+                       : ((1ULL << rem) - 1);
+        const uint64_t chunk_mask = shifted & chunk_valid_mask;
+
+        if (chunk_mask == chunk_valid_mask) {
+          continue;
+        }
+        if (chunk_mask == 0) {
+          if (rem >= N) {
+            hn::StoreU(v_neg_inf, df, &logits[idx]);
+          } else {
+            hn::StoreN(v_neg_inf, df, &logits[idx], rem);
+          }
+          continue;
+        }
+
+        const uint64_t chunk_disallowed = chunk_valid_mask & ~chunk_mask;
+        if (hwy::PopCount(chunk_disallowed) <= 2) {
+          uint64_t r = chunk_disallowed;
+          while (r != 0) {
+            const size_t bit = hwy::Num0BitsBelowLS1Bit_Nonzero64(r);
+            logits[idx + bit] = mask_value;
+            r &= r - 1;
+          }
+          continue;
+        }
+
+        const auto mask =
+            (N >= 8) ? hn::LoadMaskBits(df, word_bytes + (offset / 8))
+                     : hn::LoadMaskBits(
+                           df, reinterpret_cast<const uint8_t*>(&shifted));
+        if (rem >= N) {
+          const auto v_logits = hn::LoadU(df, &logits[idx]);
+          const auto v_masked = hn::IfThenElse(mask, v_logits, v_neg_inf);
+          hn::StoreU(v_masked, df, &logits[idx]);
+        } else {
+          const auto v_logits = hn::LoadN(df, &logits[idx], rem);
+          const auto v_masked = hn::IfThenElse(mask, v_logits, v_neg_inf);
+          hn::StoreN(v_masked, df, &logits[idx], rem);
+        }
+      }
+    }
   }
 }
 
