@@ -467,6 +467,9 @@ struct LayerConfig : public IFields {
   // Returns whether all fields match.
   bool TestEqual(const LayerConfig& other, bool print) const;
 
+  // False for layers that reuse an earlier layer's K/V, so we reserve no cache.
+  bool HasOwnKVCache() const { return kv_share_layer_idx < 0; }
+
   size_t CacheLayerSize() const {
     if (IsMLA()) {
       // MLA caches a single latent (c_kv + RoPE key) per token, shared across
@@ -785,12 +788,18 @@ struct ModelConfig : public IFields {
     if (is_encoder_decoder) {
       size_t cols = 0;
       for (const auto& lc : decoder_layer_configs) {
+        if (!lc.HasOwnKVCache()) {
+          continue;
+        }
         cols += lc.CacheLayerSize();
       }
       return cols;
     }
     size_t cols = 0;
     for (const auto& lc : layer_configs) {
+      if (!lc.HasOwnKVCache()) {
+        continue;
+      }
       cols += lc.CacheLayerSize();
     }
     // The MTP block caches its latents in an extra trailing segment per layer.

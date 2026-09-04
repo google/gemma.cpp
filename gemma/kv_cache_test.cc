@@ -62,5 +62,25 @@ TEST(KVCacheTest, EncoderDecoderUsesDecoderLayerConfig) {
   EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
 }
 
+// Layers that reuse an earlier layer's K/V own no region of the cache.
+TEST(KVCacheTest, SharedLayersReserveNoCache) {
+  ModelConfig model_config(Model::GEMMA4_2B, Type::kSFP,
+                           PromptWrapping::GEMMA_IT);
+  InferenceArgs inference_args;
+  inference_args.seq_len = 1024;
+  RuntimeConfig runtime_config;
+  runtime_config.attention_impl = AttentionImpl::kFlash;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+
+  KVCache cache(model_config, inference_args, runtime_config, ctx.allocator);
+
+  // Layer 15 reuses layer 13's K/V, per ConfigGemma4_2B_LM
+  EXPECT_EQ(cache.layer_flat_offsets[15], cache.layer_flat_offsets[13]);
+  EXPECT_EQ(cache.layer_k_v_offsets[15], cache.layer_k_v_offsets[13]);
+  EXPECT_EQ(cache.layer_kv_head_offsets[15], cache.layer_kv_head_offsets[13]);
+  EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
+}
+
 }  // namespace
 }  // namespace gcpp
