@@ -1770,6 +1770,32 @@ HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DI32 di32, VI8 a, VI8 b, VI32 c) {
 #endif
 }
 
+template <class DI32, class VU8, class VI8, class VI32, HWY_IF_I32_D(DI32)>
+HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DI32 di32, VU8 a, VI8 b, VI32 c) {
+#if HWY_NATIVE_PER_BLOCK_2X2_MATMUL_INT8
+  return hn::PerBlock2x2MatMul(di32, a, b, c);
+#else
+  const hn::Repartition<uint8_t, DI32> du8;
+  const hn::Repartition<int8_t, DI32> di8;
+  const auto a_32 = hn::BitCast(di32, a);
+  const auto a1 = hn::BitCast(du8, hn::Per4LaneBlockShuffle<2, 2, 0, 0>(a_32));
+  const auto a2 = hn::BitCast(du8, hn::Per4LaneBlockShuffle<3, 3, 1, 1>(a_32));
+
+  HWY_ALIGN static constexpr uint8_t kIdxB1[16] = {
+      0, 1, 2, 3, 8, 9, 10, 11, 0, 1, 2, 3, 8, 9, 10, 11};
+  HWY_ALIGN static constexpr uint8_t kIdxB2[16] = {
+      4, 5, 6, 7, 12, 13, 14, 15, 4, 5, 6, 7, 12, 13, 14, 15};
+
+  const auto idx1 = hn::BitCast(di8, hn::LoadDup128(du8, kIdxB1));
+  const auto idx2 = hn::BitCast(di8, hn::LoadDup128(du8, kIdxB2));
+  const auto b1 = hn::TableLookupBytes(b, idx1);
+  const auto b2 = hn::TableLookupBytes(b, idx2);
+
+  const auto sum0 = hn::SumOfMulQuadAccumulate(di32, a1, b1, c);
+  return hn::SumOfMulQuadAccumulate(di32, a2, b2, sum0);
+#endif
+}
+
 template <class DN, class VBF, class VF, HWY_IF_F32_D(DN)>
 HWY_API VF PerBlock2x2MatMulMaybeEmulate(DN dn, VBF a, VBF b, VF c) {
 #if HWY_NATIVE_PER_BLOCK_2X2_MATMUL_BF16

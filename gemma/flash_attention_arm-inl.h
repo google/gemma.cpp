@@ -129,7 +129,8 @@ HWY_INLINE hn::Vec<D> LoadAndDuplicateQueries(D d,
   }
 }
 
-template <int kNumQueries, class D_ACC, class V_ACC, class V_IN, class LoadA>
+template <int kNumQueries, class D_ACC, class V_ACC, class V_IN, class LoadA,
+          class V_A = decltype(std::declval<LoadA>()(0))>
 HWY_INLINE void Accumulate4x4Grid(D_ACC d_acc, LoadA load_A, V_IN B0, V_IN B1,
                                   V_IN B2, V_IN B3, V_ACC& acc00, V_ACC& acc01,
                                   V_ACC& acc02, V_ACC& acc03, V_ACC& acc10,
@@ -138,28 +139,28 @@ HWY_INLINE void Accumulate4x4Grid(D_ACC d_acc, LoadA load_A, V_IN B0, V_IN B1,
                                   V_ACC& acc23, V_ACC& acc30, V_ACC& acc31,
                                   V_ACC& acc32, V_ACC& acc33) {
   if constexpr (kNumQueries >= 1) {
-    const V_IN A = load_A(0);
+    const V_A A = load_A(0);
     acc00 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B0, acc00);
     acc01 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B1, acc01);
     acc02 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B2, acc02);
     acc03 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B3, acc03);
   }
   if constexpr (kNumQueries >= 3) {
-    const V_IN A = load_A(1);
+    const V_A A = load_A(1);
     acc10 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B0, acc10);
     acc11 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B1, acc11);
     acc12 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B2, acc12);
     acc13 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B3, acc13);
   }
   if constexpr (kNumQueries >= 5) {
-    const V_IN A = load_A(2);
+    const V_A A = load_A(2);
     acc20 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B0, acc20);
     acc21 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B1, acc21);
     acc22 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B2, acc22);
     acc23 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B3, acc23);
   }
   if constexpr (kNumQueries >= 7) {
-    const V_IN A = load_A(3);
+    const V_A A = load_A(3);
     acc30 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B0, acc30);
     acc31 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B1, acc31);
     acc32 = PerBlock2x2MatMulMaybeEmulate(d_acc, A, B2, acc32);
@@ -324,17 +325,17 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
     size_t actual_block_size, size_t qkv_dim,
     const float* HWY_RESTRICT q_scales_new,
     const float* HWY_RESTRICT softmax_buf, const GroupInfo* group_infos,
-    int8_t* HWY_RESTRICT q_weights_buf, float* HWY_RESTRICT w_scales_buf) {
+    uint8_t* HWY_RESTRICT q_weights_buf, float* HWY_RESTRICT w_scales_buf) {
   namespace hn = hwy::HWY_NAMESPACE;
   const hn::Full128<float> df_4;
   const hn::Full128<hwy::bfloat16_t> dbf8;
   const hn::Full128<int16_t> di16_8;
-  const hn::Full128<int8_t> di8_16;
+  const hn::Full128<uint8_t> du8_16;
 
   using VF4 = hn::Vec<decltype(df_4)>;
   using VBF8 = hn::Vec<decltype(dbf8)>;
   using VI16_8 = hn::Vec<decltype(di16_8)>;
-  using VI8_16 = hn::Vec<decltype(di8_16)>;
+  using VU8_16 = hn::Vec<decltype(du8_16)>;
   using VI32 = hn::Vec<hn::Repartition<int32_t, decltype(df_4)>>;
 
   const size_t num_groups = actual_block_size / 8;
@@ -399,11 +400,11 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
     float global_max0 = hn::ReduceMax(df_4, max_val0);
     float global_max1 = hn::ReduceMax(df_4, max_val1);
 
-    w_scales_buf[q0] = global_max0 / 127.0f;
-    w_scales_buf[q1] = global_max1 / 127.0f;
+    w_scales_buf[q0] = global_max0 / 255.0f;
+    w_scales_buf[q1] = global_max1 / 255.0f;
 
-    float inv_scale0 = (global_max0 > 1e-30f) ? 127.0f / global_max0 : 0.0f;
-    float inv_scale1 = (global_max1 > 1e-30f) ? 127.0f / global_max1 : 0.0f;
+    float inv_scale0 = (global_max0 > 1e-30f) ? 255.0f / global_max0 : 0.0f;
+    float inv_scale1 = (global_max1 > 1e-30f) ? 255.0f / global_max1 : 0.0f;
 
     const VF4 inv_vec0 = hn::Set(df_4, inv_scale0);
     const VF4 inv_vec1 = hn::Set(df_4, inv_scale1);
@@ -425,9 +426,9 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
       const VI16_8 w1_i16 = hn::OrderedDemote2To(di16_8, w1_lo_i32, w1_hi_i32);
 
       // Write tightly grouped chunk for the native HW path to ingest directly
-      const VI8_16 w_i8_16 = hn::OrderedDemote2To(di8_16, w0_i16, w1_i16);
-      int8_t* dst = q_weights_buf + g * (num_qp * 16) + qp * 16;
-      hn::StoreU(w_i8_16, di8_16, dst);
+      const VU8_16 w_u8_16 = hn::OrderedDemote2To(du8_16, w0_i16, w1_i16);
+      uint8_t* dst = q_weights_buf + g * (num_qp * 16) + qp * 16;
+      hn::StoreU(w_u8_16, du8_16, dst);
     }
   }
 }
@@ -436,12 +437,15 @@ template <int kNumQueries>
 HWY_INLINE void TileFlashAttentionSVBlockInt8(
     size_t q_base_idx, size_t qkv_dim, const float* HWY_RESTRICT scales_old,
     float* HWY_RESTRICT C_accumulators, const GroupInfo* group_infos,
-    size_t num_groups, const int8_t* HWY_RESTRICT q_weights_pre,
+    size_t num_groups, const uint8_t* HWY_RESTRICT q_weights_pre,
     const float* HWY_RESTRICT w_scales_pre) {
   namespace hn = hwy::HWY_NAMESPACE;
   using DI8 = hn::Full128<int8_t>;
   const DI8 di8;
   using VI8 = hn::Vec<DI8>;
+
+  using DU8 = hn::Full128<uint8_t>;
+  const DU8 du8;
 
   using DI32 = hn::Full128<int32_t>;
   const DI32 di32;
@@ -490,10 +494,10 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
       // Load Q weights and accumulate (reused across channel groups)
       // The writer (QuantizeAndPackSoftmaxProbs) always uses a stride of 64
       // bytes (4 query pairs) regardless of kNumQueries.
-      const int8_t* q_w_ptr = q_weights_pre + g * 64;
+      const uint8_t* q_w_ptr = q_weights_pre + g * 64;
 
       auto load_A = [&](size_t idx)
-                        HWY_ATTR { return hn::LoadU(di8, q_w_ptr + idx * 16); };
+                        HWY_ATTR { return hn::LoadU(du8, q_w_ptr + idx * 16); };
 
       Accumulate4x4Grid<kNumQueries>(di32, load_A, B0, B1, B2, B3, acc00, acc01,
                                      acc02, acc03, acc10, acc11, acc12, acc13,
@@ -838,7 +842,7 @@ HWY_INLINE void TileFlashAttentionSVBlock(
     const float* HWY_RESTRICT softmax_buf,
     const hwy::Span<const MatPtrT<KV_T>>& kvs,
     float* HWY_RESTRICT C_accumulators, const GroupInfo* group_infos = nullptr,
-    size_t num_groups = 0, const int8_t* HWY_RESTRICT q_weights_pre = nullptr,
+    size_t num_groups = 0, const uint8_t* HWY_RESTRICT q_weights_pre = nullptr,
     const float* HWY_RESTRICT w_scales_pre = nullptr) {
   if constexpr (IsInt8<KV_T>()) {
     TileFlashAttentionSVBlockInt8<kNumQueries>(
@@ -998,7 +1002,7 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   hwy::AlignedVector<float> C_accumulators(hwy::RoundUpTo(q_count, 8) * qkv_dim,
                                            0.0f);
   hwy::AlignedVector<float> softmax_buf(q_count * kBlockSize, kMaskedLogitVal);
-  hwy::AlignedVector<int8_t> q_weights_buf;
+  hwy::AlignedVector<uint8_t> q_weights_buf;
   hwy::AlignedVector<float> w_scales_buf;
   if constexpr (IsInt8<KV_T>()) {
     const size_t num_qp = 4;
@@ -1278,7 +1282,7 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
       auto call_sv_block = [&]<int kNumQueries>() HWY_ATTR {
         const GroupInfo* gi_ptr = nullptr;
         size_t n_groups = 0;
-        const int8_t* qw_ptr = nullptr;
+        const uint8_t* qw_ptr = nullptr;
         const float* ws_ptr = nullptr;
         if constexpr (IsInt8<KV_T>()) {
           gi_ptr = group_infos;
