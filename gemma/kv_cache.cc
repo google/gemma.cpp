@@ -154,6 +154,17 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   size_t kv_head_accum = 0;
 
   for (size_t i = 0; i < num_layers; ++i) {
+    if (!kv_layer_configs[i].HasOwnKVCache()) {
+      const size_t src =
+          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
+      HWY_DASSERT(src < i);
+      layer_flat_offsets[i] = layer_flat_offsets[src];
+      layer_k_v_offsets[i] = layer_k_v_offsets[src];
+      layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
+      rounded_qkv_dims[i] = rounded_qkv_dims[src];
+      continue;
+    }
+
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
     flat_accum += kv_layer_configs[i].CacheLayerSize();
 
@@ -220,6 +231,20 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   size_t max_kv_heads = 0;
 
   for (size_t i = 0; i < num_layers; ++i) {
+    max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
+    max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
+
+    if (!kv_layer_configs[i].HasOwnKVCache()) {
+      const size_t src =
+          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
+      HWY_DASSERT(src < i);  // sources must precede, so their offsets are set
+      layer_flat_offsets[i] = layer_flat_offsets[src];
+      layer_k_v_offsets[i] = layer_k_v_offsets[src];
+      layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
+      rounded_qkv_dims[i] = rounded_qkv_dims[src];
+      continue;
+    }
+
     layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
     flat_accum += kv_layer_configs[i].CacheLayerSize();
 
@@ -231,9 +256,6 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
     layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
     kv_head_accum += config.layer_configs[i].kv_heads;
-
-    max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
-    max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
