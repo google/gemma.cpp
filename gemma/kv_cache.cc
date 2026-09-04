@@ -54,7 +54,8 @@ static const std::vector<uint32_t>& KVAttentionWindowSizes(
 }
 
 KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
-                 size_t kv_heads, size_t qkv_dim, const Allocator& allocator)
+                 size_t kv_heads, size_t qkv_dim, size_t k_v_cols,
+                 const Allocator& allocator)
     : num_layers(num_layers),
       kv_heads(kv_heads),
       qkv_dim(qkv_dim),
@@ -69,11 +70,11 @@ KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
       // The change is shape is safe only if the padding is kPacked.
       k_cache("k",
               Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
+                        k_v_cols != 0 ? k_v_cols : KOrVDefaultCols()),
               allocator, MatPadding::kPacked),
       v_cache("v",
               Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
+                        k_v_cols != 0 ? k_v_cols : KOrVDefaultCols()),
               allocator, MatPadding::kPacked),
       allocator_(allocator) {
   layer_flat_offsets.resize(num_layers, 0);
@@ -399,8 +400,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
             MatPtr::Layout::kInt8MatrixAccumulation);
       }
       compact_global_kv_cache.AllocateFor(compact_global_kv_cache_ptr,
-                                          allocator,
-                                          MatPadding::kPacked);
+                                          allocator, MatPadding::kPacked);
     }
 
     if (compact_global_kv_cache_ptr.HasPtr()) {
@@ -467,19 +467,135 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
 }
 
-KVCache KVCache::Copy() {
-  KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
+KVCache KVCache::Copy() const {
+  KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, k_v_cols,
+               allocator_);
 
-  CopyMat(kv_cache, copy.kv_cache);
+  if (kv_cache.HasPtr() && copy.kv_cache.HasPtr()) {
+    CopyMat(kv_cache, copy.kv_cache);
+  }
+  if (k_cache.HasPtr() && copy.k_cache.HasPtr()) {
+    if (copy.k_cache.Cols() != k_cache.Cols() &&
+        copy.k_cache.Rows() != k_cache.Rows()) {
+      const size_t factor = k_cache.Cols() / copy.k_cache.Cols();
+      if (factor > 0 && copy.k_cache.Cols() * factor == k_cache.Cols()) {
+        copy.k_cache.ReshapePackedRowsToCols(factor);
+      }
+    }
+    if (copy.k_cache.SameShape(k_cache)) {
+      CopyMat(k_cache, copy.k_cache);
+    }
+  }
+  if (v_cache.HasPtr() && copy.v_cache.HasPtr()) {
+    if (copy.v_cache.Cols() != v_cache.Cols() &&
+        copy.v_cache.Rows() != v_cache.Rows()) {
+      const size_t factor = v_cache.Cols() / copy.v_cache.Cols();
+      if (factor > 0 && copy.v_cache.Cols() * factor == v_cache.Cols()) {
+        copy.v_cache.ReshapePackedRowsToCols(factor);
+      }
+    }
+    if (copy.v_cache.SameShape(v_cache)) {
+      CopyMat(v_cache, copy.v_cache);
+    }
+  }
+
   if (compact_local_kv_cache_ptr.HasPtr()) {
+    copy.compact_local_kv_cache_ptr = MatPtr(
+        compact_local_kv_cache_ptr.Name(), compact_local_kv_cache_ptr.GetType(),
+        compact_local_kv_cache_ptr.Extents());
+    copy.compact_local_kv_cache_ptr.SetLayout(
+        compact_local_kv_cache_ptr.GetLayout());
+    copy.compact_local_kv_cache.AllocateFor(copy.compact_local_kv_cache_ptr,
+                                            allocator_, MatPadding::kPacked);
     CopyMat(compact_local_kv_cache_ptr, copy.compact_local_kv_cache_ptr);
   }
+
   if (compact_global_kv_cache_ptr.HasPtr()) {
+    copy.compact_global_kv_cache_ptr =
+        MatPtr(compact_global_kv_cache_ptr.Name(),
+               compact_global_kv_cache_ptr.GetType(),
+               compact_global_kv_cache_ptr.Extents());
+    copy.compact_global_kv_cache_ptr.SetLayout(
+        compact_global_kv_cache_ptr.GetLayout());
+    copy.compact_global_kv_cache.AllocateFor(copy.compact_global_kv_cache_ptr,
+                                             allocator_, MatPadding::kPacked);
     CopyMat(compact_global_kv_cache_ptr, copy.compact_global_kv_cache_ptr);
   }
-  copy.compact_kv_cache_ptr = compact_global_kv_cache_ptr.HasPtr()
-                                  ? copy.compact_global_kv_cache_ptr
-                                  : copy.compact_local_kv_cache_ptr;
+
+  if (!compact_local_kv_cache_ptr.HasPtr() &&
+      !compact_global_kv_cache_ptr.HasPtr() && compact_kv_cache_ptr.HasPtr()) {
+    copy.compact_kv_cache_ptr =
+        MatPtr(compact_kv_cache_ptr.Name(), compact_kv_cache_ptr.GetType(),
+               compact_kv_cache_ptr.Extents());
+    copy.compact_kv_cache_ptr.SetLayout(compact_kv_cache_ptr.GetLayout());
+    copy.compact_kv_cache.AllocateFor(copy.compact_kv_cache_ptr, allocator_,
+                                      MatPadding::kPacked);
+    CopyMat(compact_kv_cache_ptr, copy.compact_kv_cache_ptr);
+  } else {
+    copy.compact_kv_cache_ptr = copy.compact_global_kv_cache_ptr.HasPtr()
+                                    ? copy.compact_global_kv_cache_ptr
+                                    : copy.compact_local_kv_cache_ptr;
+  }
+
+  // Re-base all MatPtr pointers in kv_head_ptrs
+  copy.kv_head_ptrs.clear();
+  copy.kv_head_ptrs.reserve(kv_head_ptrs.size());
+
+  const uint8_t* orig_local_base = (compact_local_kv_cache_ptr.HasPtr() &&
+                                    compact_local_kv_cache_ptr.Rows() > 0)
+                                       ? compact_local_kv_cache_ptr.RowBytes(0)
+                                       : nullptr;
+  const uint8_t* orig_global_base =
+      (compact_global_kv_cache_ptr.HasPtr() &&
+       compact_global_kv_cache_ptr.Rows() > 0)
+          ? compact_global_kv_cache_ptr.RowBytes(0)
+          : nullptr;
+  const uint8_t* orig_compact_base =
+      (compact_kv_cache_ptr.HasPtr() && compact_kv_cache_ptr.Rows() > 0)
+          ? compact_kv_cache_ptr.RowBytes(0)
+          : nullptr;
+
+  for (const MatPtr& orig_ptr : kv_head_ptrs) {
+    MatPtr new_ptr(orig_ptr.Name(), orig_ptr.GetType(), orig_ptr.Extents());
+    new_ptr.SetLayout(orig_ptr.GetLayout());
+    if (orig_ptr.HasPtr() && orig_ptr.Rows() > 0) {
+      const uint8_t* orig_addr = orig_ptr.RowBytes(0);
+      uint8_t* new_base = nullptr;
+      size_t new_stride = 0;
+      if (orig_local_base != nullptr && orig_addr >= orig_local_base &&
+          orig_addr <
+              orig_local_base + compact_local_kv_cache_ptr.Rows() *
+                                    compact_local_kv_cache_ptr.Stride() *
+                                    compact_local_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_local_base;
+        new_base = copy.compact_local_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = copy.compact_local_kv_cache_ptr.Stride();
+      } else if (orig_global_base != nullptr && orig_addr >= orig_global_base &&
+                 orig_addr <
+                     orig_global_base +
+                         compact_global_kv_cache_ptr.Rows() *
+                             compact_global_kv_cache_ptr.Stride() *
+                             compact_global_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_global_base;
+        new_base = copy.compact_global_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = copy.compact_global_kv_cache_ptr.Stride();
+      } else if (orig_compact_base != nullptr &&
+                 orig_addr >= orig_compact_base &&
+                 orig_addr < orig_compact_base +
+                                 compact_kv_cache_ptr.Rows() *
+                                     compact_kv_cache_ptr.Stride() *
+                                     compact_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_compact_base;
+        new_base = copy.compact_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = copy.compact_kv_cache_ptr.Stride();
+      } else {
+        HWY_ABORT("Unrecognized buffer in kv_head_ptrs during Copy()");
+      }
+      new_ptr.SetPtr(new_base, new_stride);
+    }
+    copy.kv_head_ptrs.push_back(std::move(new_ptr));
+  }
+
   copy.tiled_seq_len = tiled_seq_len;
   if (ds_state.Rows() > 0) {
     copy.ds_state = MatStorageT<float>("ds_state", ds_state.Extents(),
@@ -491,11 +607,260 @@ KVCache KVCache::Copy() {
     CopyMat(ds_state_snapshot, copy.ds_state_snapshot);
     copy.ds_state_offsets = ds_state_offsets;
   }
+  copy.k_v_cols = k_v_cols;
   copy.layer_flat_offsets = layer_flat_offsets;
   copy.layer_k_v_offsets = layer_k_v_offsets;
   copy.rounded_qkv_dims = rounded_qkv_dims;
   copy.layer_kv_head_offsets = layer_kv_head_offsets;
   return copy;
+}
+
+KVCache KVCache::Copy() { return static_cast<const KVCache*>(this)->Copy(); }
+
+KVCache KVCache::ClonePrefix(size_t prefix_len,
+                             const Allocator& allocator) const {
+  KVCache clone(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, k_v_cols,
+                allocator);
+
+  clone.tiled_seq_len = tiled_seq_len;
+  clone.k_v_cols = k_v_cols;
+  clone.layer_flat_offsets = layer_flat_offsets;
+  clone.layer_k_v_offsets = layer_k_v_offsets;
+  clone.rounded_qkv_dims = rounded_qkv_dims;
+  clone.layer_kv_head_offsets = layer_kv_head_offsets;
+
+  if (compact_local_kv_cache_ptr.HasPtr()) {
+    clone.compact_local_kv_cache_ptr = MatPtr(
+        compact_local_kv_cache_ptr.Name(), compact_local_kv_cache_ptr.GetType(),
+        compact_local_kv_cache_ptr.Extents());
+    clone.compact_local_kv_cache_ptr.SetLayout(
+        compact_local_kv_cache_ptr.GetLayout());
+    clone.compact_local_kv_cache.AllocateFor(clone.compact_local_kv_cache_ptr,
+                                             allocator, MatPadding::kPacked);
+    ZeroInit(clone.compact_local_kv_cache_ptr);
+  }
+
+  if (compact_global_kv_cache_ptr.HasPtr()) {
+    clone.compact_global_kv_cache_ptr =
+        MatPtr(compact_global_kv_cache_ptr.Name(),
+               compact_global_kv_cache_ptr.GetType(),
+               compact_global_kv_cache_ptr.Extents());
+    clone.compact_global_kv_cache_ptr.SetLayout(
+        compact_global_kv_cache_ptr.GetLayout());
+    clone.compact_global_kv_cache.AllocateFor(clone.compact_global_kv_cache_ptr,
+                                              allocator, MatPadding::kPacked);
+    ZeroInit(clone.compact_global_kv_cache_ptr);
+  }
+
+  if (!compact_local_kv_cache_ptr.HasPtr() &&
+      !compact_global_kv_cache_ptr.HasPtr() && compact_kv_cache_ptr.HasPtr()) {
+    clone.compact_kv_cache_ptr =
+        MatPtr(compact_kv_cache_ptr.Name(), compact_kv_cache_ptr.GetType(),
+               compact_kv_cache_ptr.Extents());
+    clone.compact_kv_cache_ptr.SetLayout(compact_kv_cache_ptr.GetLayout());
+    clone.compact_kv_cache.AllocateFor(clone.compact_kv_cache_ptr, allocator,
+                                       MatPadding::kPacked);
+    ZeroInit(clone.compact_kv_cache_ptr);
+  } else {
+    clone.compact_kv_cache_ptr = clone.compact_global_kv_cache_ptr.HasPtr()
+                                     ? clone.compact_global_kv_cache_ptr
+                                     : clone.compact_local_kv_cache_ptr;
+  }
+
+  // Re-base all MatPtr pointers in kv_head_ptrs and copy prefix tiles
+  clone.kv_head_ptrs.clear();
+  clone.kv_head_ptrs.reserve(kv_head_ptrs.size());
+
+  const uint8_t* orig_local_base = (compact_local_kv_cache_ptr.HasPtr() &&
+                                    compact_local_kv_cache_ptr.Rows() > 0)
+                                       ? compact_local_kv_cache_ptr.RowBytes(0)
+                                       : nullptr;
+  const uint8_t* orig_global_base =
+      (compact_global_kv_cache_ptr.HasPtr() &&
+       compact_global_kv_cache_ptr.Rows() > 0)
+          ? compact_global_kv_cache_ptr.RowBytes(0)
+          : nullptr;
+  const uint8_t* orig_compact_base =
+      (compact_kv_cache_ptr.HasPtr() && compact_kv_cache_ptr.Rows() > 0)
+          ? compact_kv_cache_ptr.RowBytes(0)
+          : nullptr;
+
+  const size_t prefix_tiles = hwy::DivCeil(prefix_len, kTileSize);
+
+  for (const MatPtr& orig_ptr : kv_head_ptrs) {
+    MatPtr new_ptr(orig_ptr.Name(), orig_ptr.GetType(), orig_ptr.Extents());
+    new_ptr.SetLayout(orig_ptr.GetLayout());
+    if (orig_ptr.HasPtr() && orig_ptr.Rows() > 0) {
+      const uint8_t* orig_addr = orig_ptr.RowBytes(0);
+      uint8_t* new_base = nullptr;
+      size_t new_stride = 0;
+      if (orig_local_base != nullptr && orig_addr >= orig_local_base &&
+          orig_addr <
+              orig_local_base + compact_local_kv_cache_ptr.Rows() *
+                                    compact_local_kv_cache_ptr.Stride() *
+                                    compact_local_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_local_base;
+        new_base = clone.compact_local_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = clone.compact_local_kv_cache_ptr.Stride();
+      } else if (orig_global_base != nullptr && orig_addr >= orig_global_base &&
+                 orig_addr <
+                     orig_global_base +
+                         compact_global_kv_cache_ptr.Rows() *
+                             compact_global_kv_cache_ptr.Stride() *
+                             compact_global_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_global_base;
+        new_base = clone.compact_global_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = clone.compact_global_kv_cache_ptr.Stride();
+      } else if (orig_compact_base != nullptr &&
+                 orig_addr >= orig_compact_base &&
+                 orig_addr < orig_compact_base +
+                                 compact_kv_cache_ptr.Rows() *
+                                     compact_kv_cache_ptr.Stride() *
+                                     compact_kv_cache_ptr.ElementBytes()) {
+        const uintptr_t offset = orig_addr - orig_compact_base;
+        new_base = clone.compact_kv_cache_ptr.RowBytes(0) + offset;
+        new_stride = clone.compact_kv_cache_ptr.Stride();
+      } else {
+        HWY_ABORT("Unrecognized buffer in kv_head_ptrs during ClonePrefix()");
+      }
+      new_ptr.SetPtr(new_base, new_stride);
+
+      // Copy only prefix tiles: T_prefix = min(N_tiles, ceil(prefix_len /
+      // kTileSize))
+      const size_t tiles_to_copy = std::min(orig_ptr.Rows(), prefix_tiles);
+      if (tiles_to_copy > 0) {
+        hwy::CopyBytes(
+            orig_ptr.RowBytes(0), new_ptr.RowBytes(0),
+            tiles_to_copy * orig_ptr.Stride() * orig_ptr.ElementBytes());
+      }
+    }
+    clone.kv_head_ptrs.push_back(std::move(new_ptr));
+  }
+
+  if (clone.kv_cache.HasPtr()) {
+    ZeroInit(clone.kv_cache);
+  }
+  if (clone.k_cache.HasPtr()) {
+    ZeroInit(clone.k_cache);
+  }
+  if (clone.v_cache.HasPtr()) {
+    ZeroInit(clone.v_cache);
+  }
+
+  // Non-tiled legacy buffers
+  if (kv_cache.HasPtr() && clone.kv_cache.HasPtr()) {
+    const size_t rows_to_copy = std::min(prefix_len, kv_cache.Rows());
+    if (rows_to_copy > 0) {
+      hwy::CopyBytes(
+          kv_cache.RowBytes(0), clone.kv_cache.RowBytes(0),
+          rows_to_copy * kv_cache.Stride() * kv_cache.ElementBytes());
+    }
+  }
+  if (k_cache.HasPtr() && clone.k_cache.HasPtr()) {
+    if (k_cache.Cols() != clone.k_cache.Cols() &&
+        k_cache.Rows() != clone.k_cache.Rows()) {
+      const size_t factor = k_cache.Cols() / clone.k_cache.Cols();
+      if (factor > 0 && clone.k_cache.Cols() * factor == k_cache.Cols()) {
+        clone.k_cache.ReshapePackedRowsToCols(factor);
+        const size_t prefix_rows = hwy::DivCeil(prefix_len, factor);
+        const size_t rows_to_copy = std::min(prefix_rows, k_cache.Rows());
+        if (rows_to_copy > 0) {
+          hwy::CopyBytes(
+              k_cache.RowBytes(0), clone.k_cache.RowBytes(0),
+              rows_to_copy * k_cache.Stride() * k_cache.ElementBytes());
+        }
+      }
+    } else if (clone.k_cache.SameShape(k_cache)) {
+      const size_t rows_to_copy = std::min(prefix_len, k_cache.Rows());
+      if (rows_to_copy > 0) {
+        hwy::CopyBytes(
+            k_cache.RowBytes(0), clone.k_cache.RowBytes(0),
+            rows_to_copy * k_cache.Stride() * k_cache.ElementBytes());
+      }
+    }
+  }
+  if (v_cache.HasPtr() && clone.v_cache.HasPtr()) {
+    if (v_cache.Cols() != clone.v_cache.Cols() &&
+        v_cache.Rows() != clone.v_cache.Rows()) {
+      const size_t factor = v_cache.Cols() / clone.v_cache.Cols();
+      if (factor > 0 && clone.v_cache.Cols() * factor == v_cache.Cols()) {
+        clone.v_cache.ReshapePackedRowsToCols(factor);
+        const size_t prefix_rows = hwy::DivCeil(prefix_len, factor);
+        const size_t rows_to_copy = std::min(prefix_rows, v_cache.Rows());
+        if (rows_to_copy > 0) {
+          hwy::CopyBytes(
+              v_cache.RowBytes(0), clone.v_cache.RowBytes(0),
+              rows_to_copy * v_cache.Stride() * v_cache.ElementBytes());
+        }
+      }
+    } else if (clone.v_cache.SameShape(v_cache)) {
+      const size_t rows_to_copy = std::min(prefix_len, v_cache.Rows());
+      if (rows_to_copy > 0) {
+        hwy::CopyBytes(
+            v_cache.RowBytes(0), clone.v_cache.RowBytes(0),
+            rows_to_copy * v_cache.Stride() * v_cache.ElementBytes());
+      }
+    }
+  }
+
+  // DeepSeek V4 compressor state: deep copy ds_state.Row(0) and snapshot into
+  // ds_state_snapshot.Row(0).
+  if (ds_state.Rows() > 0) {
+    clone.ds_state = MatStorageT<float>("ds_state", ds_state.Extents(),
+                                        allocator, MatPadding::kPacked);
+    CopyMat(ds_state, clone.ds_state);
+    clone.ds_state_snapshot = MatStorageT<float>(
+        "ds_snap", ds_state_snapshot.Extents(), allocator, MatPadding::kPacked);
+    ZeroInit(clone.ds_state_snapshot);
+    hwy::CopyBytes(ds_state.Row(0), clone.ds_state_snapshot.Row(0),
+                   ds_state.Cols() * sizeof(float));
+    clone.ds_state_offsets = ds_state_offsets;
+  }
+
+  return clone;
+}
+
+void KVCache::RestoreDSStateFromSnapshot(size_t snapshot_row) {
+  if (ds_state.Rows() > 0 && snapshot_row < ds_state_snapshot.Rows()) {
+    hwy::CopyBytes(ds_state_snapshot.Row(snapshot_row), ds_state.Row(0),
+                   ds_state.Cols() * sizeof(float));
+  }
+}
+
+size_t KVCache::TotalByteSize() const {
+  size_t total = 0;
+  if (kv_cache.HasPtr()) {
+    total += kv_cache.Rows() * kv_cache.Stride() * kv_cache.ElementBytes();
+  }
+  if (k_cache.HasPtr()) {
+    total += k_cache.Rows() * k_cache.Stride() * k_cache.ElementBytes();
+  }
+  if (v_cache.HasPtr()) {
+    total += v_cache.Rows() * v_cache.Stride() * v_cache.ElementBytes();
+  }
+  if (compact_local_kv_cache_ptr.HasPtr()) {
+    total += compact_local_kv_cache_ptr.Rows() *
+             compact_local_kv_cache_ptr.Stride() *
+             compact_local_kv_cache_ptr.ElementBytes();
+  }
+  if (compact_global_kv_cache_ptr.HasPtr()) {
+    total += compact_global_kv_cache_ptr.Rows() *
+             compact_global_kv_cache_ptr.Stride() *
+             compact_global_kv_cache_ptr.ElementBytes();
+  }
+  if (!compact_local_kv_cache_ptr.HasPtr() &&
+      !compact_global_kv_cache_ptr.HasPtr() && compact_kv_cache_ptr.HasPtr()) {
+    total += compact_kv_cache_ptr.Rows() * compact_kv_cache_ptr.Stride() *
+             compact_kv_cache_ptr.ElementBytes();
+  }
+  if (ds_state.HasPtr()) {
+    total += ds_state.Rows() * ds_state.Stride() * ds_state.ElementBytes();
+  }
+  if (ds_state_snapshot.HasPtr()) {
+    total += ds_state_snapshot.Rows() * ds_state_snapshot.Stride() *
+             ds_state_snapshot.ElementBytes();
+  }
+  return total;
 }
 
 }  // namespace gcpp
