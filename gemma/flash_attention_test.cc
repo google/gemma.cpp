@@ -132,7 +132,7 @@ void TestFlashAttention(size_t target_parallelism) {
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
   const size_t seq_len =
       static_cast<size_t>(attention.div_seq_len.GetDivisor());
-  auto& kvc = qbatch.KV(0).kv_cache;
+  auto& kvc = qbatch.KV(0).LayerCache(0);
   for (size_t h = 0; h < layer_config.heads; ++h) {
     // Make strided views into the kv cache for
     // this query and head.
@@ -164,6 +164,82 @@ void TestFlashAttention(size_t target_parallelism) {
   ctx.profiler.PrintResults();
 }
 
+// Compare compact rings against full-history buffers with exactly the same
+// FP32 arithmetic. Exercise local/global wraparound, runtime growth, prefix-LM,
+// and all three FlashAttention tile choices as well as the old attention path.
+void TestWindowedKVAttention() {
+  ThreadingArgs threading;
+  threading.max_threads = 2;
+  ThreadingContext ctx(threading);
+  ModelConfig config(Model::GEMMA3_1B, Type::kF32, PromptWrapping::GEMMA_PT);
+  config.max_seq_len = 256;
+  config.num_layers = 1;
+  config.layer_configs.resize(1);
+  config.layer_configs[0].heads = 8;
+  config.attention_window_sizes = {17};
+  const LayerConfig& layer_config = config.layer_configs[0];
+  TensorInfoRegistry registry(config);
+  const LayerWeightsPtrs layer(0, layer_config, registry);
+  ModelConfig full_config = config;
+  full_config.attention_window_sizes = {256};
+  InferenceArgs inference;
+  inference.seq_len = 256;
+  inference.prefill_tbatch_size = 8;
+
+  for (size_t batch : {1u, 8u, 31u}) {
+    for (size_t pos : {0u, 23u, 240u, 511u}) {
+      for (bool prefix : {false, true}) {
+        for (size_t parallelism : {0u, 1u, 16u, 8192u}) {
+          SCOPED_TRACE(::testing::Message()
+                       << "batch=" << batch << " pos=" << pos << " prefix="
+                       << prefix << " parallelism=" << parallelism);
+          KVCache compact(config, inference, ctx.allocator);
+          KVCache full(full_config, inference, ctx.allocator);
+          compact.PrepareLayer(0, batch, 0);
+          std::vector<int> tokens(batch, 1);
+          const size_t end = prefix ? pos + batch : 0;
+          AllQueries cq(PromptTokens(tokens), pos, end,
+                        hwy::Span<KVCache>(&compact, 1));
+          AllQueries fq(PromptTokens(tokens), pos, end,
+                        hwy::Span<KVCache>(&full, 1));
+          QBatch cb(0, 1, cq), fb(0, 1, fq);
+          std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> cptrs, fptrs;
+          AttentionActivations ca(config, layer_config, batch, 256,
+                                  ctx.allocator, cptrs);
+          AttentionActivations fa(config, layer_config, batch, 256,
+                                  ctx.allocator, fptrs);
+          for (size_t p = 0; p < pos + batch; ++p) {
+            for (size_t col = 0; col < full.LayerCache(0).Cols(); ++col) {
+              const float value =
+                  0.001f * static_cast<float>(
+                               static_cast<int>((p * 13 + col) % 97) - 48);
+              compact.Row(0, p)[col] = full.Row(0, p)[col] = value;
+            }
+          }
+          SetMat(3, ca.q);
+          CopyMat(ca.q, fa.q);
+          for (size_t r = 0; r < batch; ++r) {
+            // Identical masked score scratch for the old attention path.
+            std::fill(ca.att.Row(r), ca.att.Row(r) + ca.att.Cols(), -1e30f);
+            std::fill(fa.att.Row(r), fa.att.Row(r) + fa.att.Cols(), -1e30f);
+          }
+          if (parallelism == 0) {
+            DotSoftmaxWeightedSum(batch, 0, layer, ca, cb, ctx);
+            DotSoftmaxWeightedSum(batch, 0, layer, fa, fb, ctx);
+          } else {
+            FlashAttention(batch, parallelism, 0, layer, ca, cb, ctx);
+            FlashAttention(batch, parallelism, 0, layer, fa, fb, ctx);
+          }
+          for (size_t r = 0; r < batch; ++r) {
+            ASSERT_EQ(0, std::memcmp(ca.att_out.Row(r), fa.att_out.Row(r),
+                                     ca.att_out.Cols() * sizeof(float)));
+          }
+        }
+      }
+    }
+  }
+}
+
 void TestAttention() {
   TestFlashAttention(8192);
   TestFlashAttention(2048);
@@ -180,6 +256,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(FlashAttentionTest);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestAttention);
+HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestWindowedKVAttention);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

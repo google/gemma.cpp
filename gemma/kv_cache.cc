@@ -17,10 +17,12 @@
 
 #include <stddef.h>
 
+#include <utility>
+
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
-#include "util/mat.h"  // ZeroInit
-#include "hwy/base.h"    // HWY_MAX
+#include "hwy/base.h"  // HWY_MAX
+#include "util/mat.h"  // CopyMat
 
 namespace gcpp {
 
@@ -36,21 +38,63 @@ static size_t CappedSeqLen(const ModelConfig& config,
   return inference_args.seq_len;
 }
 
-KVCache::KVCache(const Extents2D& kv_extents, const Allocator& allocator)
-    : kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
-      allocator_(allocator) {}
+// ComputeQKV writes a whole batch before attention reads it. In a local
+// layer, its first query can need window - 1 preceding tokens in addition
+// to all num_tokens newly written rows. A ring of only window rows is unsafe.
+static size_t LayerRows(size_t seq_len, size_t window, size_t num_tokens) {
+  HWY_ASSERT(window != 0);
+  return HWY_MIN(seq_len, window - 1 + HWY_MAX(size_t{1}, num_tokens));
+}
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const Allocator& allocator)
-    : KVCache(
-          Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
-          allocator) {}
+    : KVCache(CappedSeqLen(config, inference_args), allocator) {
+  HWY_ASSERT(seq_len_ != 0);
+  HWY_ASSERT(config.attention_window_sizes.size() ==
+             config.layer_configs.size());
+  layers_.reserve(config.layer_configs.size());
+  for (size_t i = 0; i < config.layer_configs.size(); ++i) {
+    const size_t window = config.attention_window_sizes[i];
+    layers_.emplace_back(
+        window, LayerRows(seq_len_, window, inference_args.prefill_tbatch_size),
+        config.layer_configs[i].CacheLayerSize(), allocator_);
+  }
+}
 
-KVCache KVCache::Copy() {
-  KVCache copy(kv_cache.Extents(), allocator_);
+void KVCache::PrepareLayer(size_t layer_idx, size_t num_tokens, size_t pos) {
+  auto& layer = layers_[layer_idx];
+  const size_t rows = LayerRows(seq_len_, layer.window, num_tokens);
+  if (rows <= layer.cache.Rows()) return;
 
-  CopyMat(kv_cache, copy.kv_cache);
+  MatStorageT<KV_t> grown("kv", Extents2D(rows, layer.cache.Cols()), allocator_,
+                          MatPadding::kOdd);
+  const hwy::Divisor div_rows(static_cast<uint32_t>(rows));
+  const size_t first = pos - HWY_MIN(pos, layer.cache.Rows());
+  for (size_t p = first; p < pos; ++p) {
+    hwy::CopyBytes(layer.cache.Row(layer.div_rows.Remainder(p)),
+                   grown.Row(div_rows.Remainder(p)),
+                   layer.cache.Cols() * sizeof(KV_t));
+  }
+  layer.cache = std::move(grown);
+  layer.div_rows = div_rows;
+}
 
+size_t KVCache::AllocatedBytes() const {
+  size_t bytes = 0;
+  for (const auto& layer : layers_) {
+    bytes += layer.cache.Rows() * layer.cache.Stride() * sizeof(KV_t);
+  }
+  return bytes;
+}
+
+KVCache KVCache::Copy() const {
+  KVCache copy(seq_len_, allocator_);
+  copy.layers_.reserve(layers_.size());
+  for (const auto& layer : layers_) {
+    copy.layers_.emplace_back(layer.window, layer.cache.Rows(),
+                              layer.cache.Cols(), allocator_);
+    CopyMat(layer.cache, copy.layers_.back().cache);
+  }
   return copy;
 }
 

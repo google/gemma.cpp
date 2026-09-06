@@ -18,8 +18,11 @@
 
 #include <stddef.h>
 
-#include "gemma/configs.h"  // ModelConfig
+#include <vector>
+
+#include "gemma/configs.h"     // ModelConfig
 #include "gemma/gemma_args.h"  // InferenceArgs
+#include "hwy/base.h"          // Divisor
 #include "util/basics.h"       // BF16
 #include "util/mat.h"
 
@@ -31,19 +34,59 @@ struct KVCache {
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const Allocator& allocator);
 
-  // Returns a deep copy of the KVCache. Use explicit function instead of
-  // copy ctor to make the cost explicit.
-  KVCache Copy();
+  KVCache(KVCache&&) = default;
+  KVCache(const KVCache&) = delete;
+  KVCache& operator=(const KVCache&) = delete;
 
-  size_t SeqLen() const { return kv_cache.Rows(); }
+  // Returns an independent snapshot, including the current ring capacities.
+  KVCache Copy() const;
 
-  MatStorageT<KV_t> kv_cache;  // [seq_len, layers * kv_heads * qkv_dim * 2]
+  // Logical context limit; independent of each layer's physical ring size.
+  size_t SeqLen() const { return seq_len_; }
+
+  MatStorageT<KV_t>& LayerCache(size_t layer_idx) {
+    return layers_[layer_idx].cache;
+  }
+  const MatStorageT<KV_t>& LayerCache(size_t layer_idx) const {
+    return layers_[layer_idx].cache;
+  }
+
+  KV_t* Row(size_t layer_idx, size_t pos) {
+    auto& layer = layers_[layer_idx];
+    return layer.cache.Row(layer.div_rows.Remainder(pos));
+  }
+  const KV_t* Row(size_t layer_idx, size_t pos) const {
+    const auto& layer = layers_[layer_idx];
+    return layer.cache.Row(layer.div_rows.Remainder(pos));
+  }
+
+  // Called before writing an entire token batch. Runtime batch sizes can be
+  // larger than the size used to construct the cache. Grow without discarding
+  // the preceding history that early queries in the batch still need.
+  void PrepareLayer(size_t layer_idx, size_t num_tokens, size_t pos);
+
+  // KV buffer capacity, including row padding (not process RSS).
+  size_t AllocatedBytes() const;
 
  private:
-  const Allocator& allocator_;
+  struct LayerStorage {
+    LayerStorage(size_t window, size_t rows, size_t cols,
+                 const Allocator& allocator)
+        : window(window),
+          cache("kv", Extents2D(rows, cols), allocator, MatPadding::kOdd),
+          div_rows(static_cast<uint32_t>(rows)) {}
 
-  // For use by other ctor and Copy()
-  KVCache(const Extents2D& kv_extents, const Allocator& allocator);
+    size_t window;
+    MatStorageT<KV_t> cache;
+    hwy::Divisor div_rows;
+  };
+
+  KVCache(size_t seq_len, const Allocator& allocator)
+      : seq_len_(seq_len), allocator_(allocator) {}
+
+  size_t seq_len_;
+  const Allocator& allocator_;
+  std::vector<LayerStorage> layers_;
 };
 
 }  // namespace gcpp

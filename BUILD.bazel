@@ -130,6 +130,18 @@ cc_library(
 )
 
 cc_test(
+    name = "kv_cache_test",
+    srcs = ["gemma/kv_cache_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":kv_cache",
+        ":threading_context",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "flash_attention_test",
     srcs = ["gemma/flash_attention_test.cc"],
     deps = [

@@ -159,7 +159,8 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
                           float* HWY_RESTRICT att_out, ThreadingContext& ctx,
                           const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionSingleFlashAttention);
-  const size_t pos_mod = activations.div_seq_len.Remainder(start_pos);
+  const hwy::Divisor div_kv(static_cast<uint32_t>(k.Rows()));
+  const size_t pos_mod = div_kv.Remainder(start_pos);
   float m = Dot(q, k.Row(pos_mod), k.Cols());
   if (float cap = activations.config.att_cap; cap > 0.0f) {
     // Compute tanh(x / cap) * cap, being LogitsSoftCap on the scalar x.
@@ -169,7 +170,7 @@ void SingleFlashAttention(const size_t start_pos, const size_t last_pos,
   // This is just a copy of the first token.
   MulByConstTo(d, v.Row(pos_mod), att_out, v.Cols(), ctx, worker);
   for (size_t pos = start_pos + 1; pos <= last_pos; ++pos) {
-    const size_t pos_mod = activations.div_seq_len.Remainder(pos);
+    const size_t pos_mod = div_kv.Remainder(pos);
     float x = Dot(q, k.Row(pos_mod), k.Cols());
     SingleFlashAttentionStep(x, activations.config.att_cap, m, d,
                              v.Row(pos_mod), v.Cols(), att_out);
@@ -275,6 +276,7 @@ void TileFlashAttention(
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
     ThreadingContext& ctx, const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention);
+  const hwy::Divisor div_kv(static_cast<uint32_t>(k.Rows()));
   constexpr int kHTileSize = kNFx8HTileSize;
   using DF = hn::ScalableTag<float>;
   const DF df;
@@ -296,7 +298,7 @@ void TileFlashAttention(
   while (position + kHTileSize - 1 <= min_last_pos) {
     size_t k_pos[kHTileSize];
     for (size_t i = 0; i < kHTileSize; ++i) {
-      k_pos[i] = activations.div_seq_len.Remainder(position + i);
+      k_pos[i] = div_kv.Remainder(position + i);
     }
     VF x0, x1, x2, x3, x4, x5, x6, x7;
     QDotKTileFloat(df, qT_row, qT_stride, k, k_pos, x0, x1, x2, x3, x4, x5, x6,
@@ -343,7 +345,7 @@ void TileFlashAttention(
     position += kHTileSize;
   }
   while (position <= max_last_pos) {
-    size_t k_pos = activations.div_seq_len.Remainder(position);
+    size_t k_pos = div_kv.Remainder(position);
     VF x0 = QDotKVector(df, q_offsets, k_pos, q, k);
     if (activations.config.att_cap > 0.0f) {
       // Compute tanh(x / cap) * cap, being LogitsSoftCap on the vector.
@@ -428,6 +430,7 @@ void TileFlashAttention4(
     MatPtrT<float>& att_out, const uint32_t* HWY_RESTRICT out_offsets,
     ThreadingContext& ctx, const size_t worker) {
   GCPP_ZONE(ctx, worker, Zones::kFlashAttentionTileFlashAttention4);
+  const hwy::Divisor div_kv(static_cast<uint32_t>(k.Rows()));
   using DF = hn::ScalableTag<float>;
   const DF df;
   using VF = hn::Vec<DF>;
@@ -453,7 +456,7 @@ void TileFlashAttention4(
     int32_t k_offsets[kMaxNF];
     size_t v_pos[kMaxNF];
     for (size_t i = 0; i < kHTileSize; ++i) {
-      v_pos[i] = activations.div_seq_len.Remainder(position + i);
+      v_pos[i] = div_kv.Remainder(position + i);
       k_offsets[i] = k.Row(v_pos[i]) - k.Row(0);
     }
     VF x0, x1, x2, x3;
@@ -476,7 +479,7 @@ void TileFlashAttention4(
     position += kHTileSize;
   }
   while (position <= max_last_pos) {
-    size_t k_pos = activations.div_seq_len.Remainder(position);
+    size_t k_pos = div_kv.Remainder(position);
     if (position <= last_pos[0]) {
       // Past the last position, x0 doesn't count.
       float x0 = Dot(q.Row(0) + q_offsets[0], k.Row(k_pos), k.Cols());
@@ -602,9 +605,6 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   // A "head group" in the context of GQA refers to a collection of query
   // heads that share the same key and value heads.
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
-  const size_t cache_layer_size = layer_config.CacheLayerSize();
-  const size_t seq_len =
-      static_cast<size_t>(activations.div_seq_len.GetDivisor());
   const size_t token_batch = num_tokens * div_qbatch.GetDivisor();
   const size_t total_tasks = token_batch * layer_config.heads;
 
@@ -696,7 +696,7 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                             activations.att_out.Row(0);
       const size_t kv_index = head / kHeadGroups;
       const size_t head_offset = kv_index * qkv_dim * 2;
-      kv_offsets[offset] = layer_idx * cache_layer_size + head_offset;
+      kv_offsets[offset] = head_offset;
       // If any of the parameters in this if statement differ within this task,
       // then we can't use TileFlashAttention. TileFlashAttention requires that
       // all rows in the tile have the same K and V matrices, and Q starts at
@@ -709,10 +709,10 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
     }
     for (size_t offset = 0;
          offset < kVTileSize && first_task + offset < total_tasks; ++offset) {
-      auto& kv_cache = qbatch.KV(qi_indices[offset]).kv_cache;
-      MatPtrT<KV_t> k("k_view", Extents2D(seq_len, qkv_dim));
+      auto& kv_cache = qbatch.KV(qi_indices[offset]).LayerCache(layer_idx);
+      MatPtrT<KV_t> k("k_view", Extents2D(kv_cache.Rows(), qkv_dim));
       k.SetPtr(kv_cache.Row(0) + kv_offsets[offset], kv_cache.Stride());
-      MatPtrT<KV_t> v("v_view", Extents2D(seq_len, qkv_dim));
+      MatPtrT<KV_t> v("v_view", Extents2D(kv_cache.Rows(), qkv_dim));
       v.SetPtr(kv_cache.Row(0) + kv_offsets[offset] + qkv_dim,
                kv_cache.Stride());
       if (use_tile_attention) {

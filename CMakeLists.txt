@@ -222,6 +222,7 @@ set(GEMMA_TEST_FILES
   compression/sfp_test.cc
   evals/gemma_test.cc
   gemma/flash_attention_test.cc
+  gemma/kv_cache_test.cc
   gemma/tensor_info_test.cc
   io/blob_store_test.cc
   io/fields_test.cc
