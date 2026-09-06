@@ -70,7 +70,7 @@
 #undef GEMMA_MM_I8_BIASED_B
 #ifdef GEMMA_MM_I8_FORCE_BIASED_B
 #define GEMMA_MM_I8_BIASED_B GEMMA_MM_I8_FORCE_BIASED_B
-#elif HWY_TARGET <= HWY_AVX3_DL
+#elif HWY_TARGET <= HWY_AVX2
 #define GEMMA_MM_I8_BIASED_B 1
 #else
 #define GEMMA_MM_I8_BIASED_B 0
@@ -102,6 +102,53 @@ HWY_INLINE_VAR constexpr float kMMI8Max = 127.0f;
 // alternatives are selected per process for isolated ablations.
 HWY_INLINE_VAR constexpr size_t kMMI8DefaultRotateBlock = 128;
 HWY_INLINE_VAR constexpr size_t kMMI8DefaultHashBits = 32;
+
+static inline bool MMI8Flag(const char* name, bool fallback = false) {
+  const char* value = getenv(name);
+  return value == nullptr ? fallback : atoi(value) != 0;
+}
+
+static inline bool MMI8FastRotate() {
+  static const bool enabled = MMI8Flag("GEMMA_MM_I8_FAST_ROTATE", true);
+  return enabled;
+}
+
+static inline bool MMI8NativeVNNI() {
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+  static const bool enabled =
+      MMI8Flag("GEMMA_MM_I8_VNNI", true) && __builtin_cpu_supports("avxvnni");
+  return enabled;
+#else
+  return false;
+#endif
+}
+
+template <bool kNative, class DI32, class VA, class VB, class VI>
+static HWY_INLINE void MMI8Dot4(DI32 di32, VA a, VB b0, VB b1, VB b2, VB b3,
+                                VI& c0, VI& c1, VI& c2, VI& c3) {
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+  if constexpr (kNative) {
+    // VEX encoding: AVX-VNNI is available without AVX-512. Dispatch per tile.
+    asm("%{vex%} vpdpbusd %[a], %[b], %[c]"
+        : [c] "+x"(c0.raw)
+        : [a] "x"(a.raw), [b] "x"(b0.raw));
+    asm("%{vex%} vpdpbusd %[a], %[b], %[c]"
+        : [c] "+x"(c1.raw)
+        : [a] "x"(a.raw), [b] "x"(b1.raw));
+    asm("%{vex%} vpdpbusd %[a], %[b], %[c]"
+        : [c] "+x"(c2.raw)
+        : [a] "x"(a.raw), [b] "x"(b2.raw));
+    asm("%{vex%} vpdpbusd %[a], %[b], %[c]"
+        : [c] "+x"(c3.raw)
+        : [a] "x"(a.raw), [b] "x"(b3.raw));
+    return;
+  }
+#endif
+  MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(di32, a, b0, b1, b2, b3, c0,
+                                                  c1, c2, c3);
+}
 
 static inline size_t MMI8EnvChoice(const char* name, size_t fallback,
                                    size_t alternative) {
@@ -151,15 +198,41 @@ static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
   HWY_DASSERT(hash_bits == 16 || hash_bits == 32);
   HWY_DASSERT((k % block_size) == 0);
   const float normalize = block_size == 64 ? 0.125f : 0.08838834764831845f;
+  const hn::CappedTag<float, 8> df;
+  const hn::Rebind<uint32_t, decltype(df)> du;
+  const size_t lanes = hn::Lanes(df);
+  const bool fast = MMI8FastRotate();
+  thread_local hwy::AlignedVector<uint32_t> signs;
+  thread_local size_t cached_hash = 0;
+  if (fast && (signs.size() < k || cached_hash != hash_bits)) {
+    signs.resize(k);
+    for (size_t i = 0; i < k; ++i) {
+      signs[i] = MMI8NegativeSign(i, hash_bits) ? 0x80000000u : 0u;
+    }
+    cached_hash = hash_bits;
+  }
   for (size_t block = 0; block < k; block += block_size) {
     float* HWY_RESTRICT x = row + block;
-    for (size_t i = 0; i < block_size; ++i) {
+    for (size_t i = 0; fast && i < block_size; i += lanes) {
+      hn::StoreU(
+          hn::BitCast(df, hn::Xor(hn::BitCast(du, hn::LoadU(df, x + i)),
+                                  hn::LoadU(du, signs.data() + block + i))),
+          df, x + i);
+    }
+    for (size_t i = 0; !fast && i < block_size; ++i) {
       // Deterministic Rademacher diagonal, shared by A and B.
       if (MMI8NegativeSign(block + i, hash_bits)) x[i] = -x[i];
     }
     for (size_t width = 1; width < block_size; width *= 2) {
       for (size_t start = 0; start < block_size; start += 2 * width) {
-        for (size_t i = 0; i < width; ++i) {
+        size_t i = 0;
+        for (; fast && i + lanes <= width; i += lanes) {
+          const auto left = hn::LoadU(df, x + start + i);
+          const auto right = hn::LoadU(df, x + start + width + i);
+          hn::StoreU(hn::Add(left, right), df, x + start + i);
+          hn::StoreU(hn::Sub(left, right), df, x + start + width + i);
+        }
+        for (; i < width; ++i) {
           const float left = x[start + i];
           const float right = x[start + width + i];
           x[start + i] = left + right;
@@ -167,7 +240,12 @@ static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
         }
       }
     }
-    for (size_t i = 0; i < block_size; ++i) x[i] *= normalize;
+    size_t i = 0;
+    for (; fast && i + lanes <= block_size; i += lanes) {
+      hn::StoreU(hn::Mul(hn::LoadU(df, x + i), hn::Set(df, normalize)), df,
+                 x + i);
+    }
+    for (; i < block_size; ++i) x[i] *= normalize;
   }
 }
 
@@ -421,12 +499,13 @@ class MMI8Kernel {
   // `kRowsAC` rows of `A_view` and `kNR` rows of `B_view`. Mirrors
   // `MMKernel::LoopKC`: elementwise along `K` with 16 accumulators whose
   // horizontal sums are the `kRowsAC x kNR` results.
-  template <size_t kRowsAC, /*deduced:*/ class Tag, class CView>
-  static HWY_INLINE void LoopKC(const AView A_view,
-                                const StridedView<int8_t> B_view,
-                                const float* HWY_RESTRICT b_scale, size_t imc,
-                                size_t kc, const float* HWY_RESTRICT add,
-                                Tag tag, CView C_MC_NR) {
+  template <size_t kRowsAC, bool kNative, class Tag, class CView>
+  static HWY_INLINE void LoopKCImpl(const AView A_view,
+                                    const StridedView<int8_t> B_view,
+                                    const float* HWY_RESTRICT b_scale,
+                                    size_t imc, size_t kc,
+                                    const float* HWY_RESTRICT add, Tag tag,
+                                    CView C_MC_NR) {
     const hn::ScalableTag<MMI8AT> da8;  // A: always i8
     const hn::ScalableTag<MMI8BT> db8;  // B: u8 or i8, same lane count
     const hn::Repartition<int32_t, decltype(da8)> di32;
@@ -472,23 +551,19 @@ class MMI8Kernel {
 
         {
           const VA8 a0 = hn::LoadU(da8, ar0 + ikc);
-          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
-              di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
+          MMI8Dot4<kNative>(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
         }
         if constexpr (kRowsAC > 1) {
           const VA8 a1 = hn::LoadU(da8, ar1 + ikc);
-          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
-              di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
+          MMI8Dot4<kNative>(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
         }
         if constexpr (kRowsAC > 2) {
           const VA8 a2 = hn::LoadU(da8, ar2 + ikc);
-          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
-              di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
+          MMI8Dot4<kNative>(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
         }
         if constexpr (kRowsAC > 3) {
           const VA8 a3 = hn::LoadU(da8, ar3 + ikc);
-          MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(
-              di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
+          MMI8Dot4<kNative>(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
         }
       }
     }
@@ -506,23 +581,19 @@ class MMI8Kernel {
 
       {
         const VA8 a0 = hn::LoadN(da8, ar0 + ikc, remaining_kc);
-        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(di32, a0, b0, b1, b2,
-                                                        b3, C00, C01, C02, C03);
+        MMI8Dot4<kNative>(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
       }
       if constexpr (kRowsAC > 1) {
         const VA8 a1 = hn::LoadN(da8, ar1 + ikc, remaining_kc);
-        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(di32, a1, b0, b1, b2,
-                                                        b3, C10, C11, C12, C13);
+        MMI8Dot4<kNative>(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
       }
       if constexpr (kRowsAC > 2) {
         const VA8 a2 = hn::LoadN(da8, ar2 + ikc, remaining_kc);
-        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(di32, a2, b0, b1, b2,
-                                                        b3, C20, C21, C22, C23);
+        MMI8Dot4<kNative>(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
       }
       if constexpr (kRowsAC > 3) {
         const VA8 a3 = hn::LoadN(da8, ar3 + ikc, remaining_kc);
-        MMQuantizedDot4Accumulate<GEMMA_MM_I8_BIASED_B>(di32, a3, b0, b1, b2,
-                                                        b3, C30, C31, C32, C33);
+        MMI8Dot4<kNative>(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
       }
     }
 
@@ -543,6 +614,20 @@ class MMI8Kernel {
                    C23, C30, C31, C32, C33, sum0, sum1, sum2, sum3);
     horz.Store(d4i, sum0, sum1, sum2, sum3, A_view.scale, a_rowsum, b_scale,
                add, imc, tag, C_MC_NR);
+  }
+
+  template <size_t kRowsAC, class Tag, class CView>
+  static HWY_INLINE void LoopKC(const AView A, const StridedView<int8_t> B,
+                                const float* scale, size_t imc, size_t kc,
+                                const float* add, Tag tag, CView C) {
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+    if (MMI8NativeVNNI()) {
+      LoopKCImpl<kRowsAC, true>(A, B, scale, imc, kc, add, tag, C);
+      return;
+    }
+#endif
+    LoopKCImpl<kRowsAC, false>(A, B, scale, imc, kc, add, tag, C);
   }
 
   // As `MMKernel::A2C0`.
@@ -736,7 +821,8 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
   ParallelFor(
       Parallelism::kFlat, A.Rows(), ctx, cluster_idx, Callers::kMMQuantizeA,
       [&](size_t r, size_t /*worker*/) HWY_ATTR {
-        hwy::AlignedVector<float> rotated(padded_k);
+        thread_local hwy::AlignedVector<float> rotated;
+        if (rotated.size() < padded_k) rotated.resize(padded_k);
         for (size_t c = 0; c < k; ++c) {
           const float value = hwy::ConvertScalarTo<float>(A.Row(r)[c]);
           rotated[c] = a_pre_scale == nullptr ? value : value * a_pre_scale[c];

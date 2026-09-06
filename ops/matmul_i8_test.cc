@@ -108,6 +108,38 @@ void TestRotationPreservesDotProducts(size_t block_size, size_t hash_bits) {
   }
 }
 
+void TestRotationMatchesScalar(size_t block_size, size_t hash_bits) {
+  std::vector<float> expected(3 * block_size);
+  Rng rng(891);
+  for (float& value : expected) value = rng.Normal();
+  auto actual = expected;
+  MMI8Rotate(actual.data(), actual.size(), block_size, hash_bits);
+  for (size_t start = 0; start < expected.size(); start += block_size) {
+    for (size_t i = 0; i < block_size; ++i) {
+      if (MMI8NegativeSign(start + i, hash_bits))
+        expected[start + i] = -expected[start + i];
+    }
+    for (size_t width = 1; width < block_size; width *= 2) {
+      for (size_t group = 0; group < block_size; group += 2 * width) {
+        for (size_t i = 0; i < width; ++i) {
+          const size_t at = start + group + i;
+          const float left = expected[at], right = expected[at + width];
+          expected[at] = left + right;
+          expected[at + width] = left - right;
+        }
+      }
+    }
+    const float norm = block_size == 64 ? 0.125f : 0.08838834764831845f;
+    for (size_t i = 0; i < block_size; ++i) expected[start + i] *= norm;
+  }
+  if (memcmp(actual.data(), expected.data(), actual.size() * sizeof(float)) !=
+      0) {
+    ++g_failures;
+    printf("FAIL SIMD/scalar transform mismatch block=%zu hash=%zu\n",
+           block_size, hash_bits);
+  }
+}
+
 void TestHash16() {
   std::vector<bool> seen(65536, false);
   size_t negatives = 0;
@@ -357,8 +389,10 @@ void TestAll() {
          MMI8RotateBlockSize(), MMI8HashBits(),
          hn::Lanes(hn::ScalableTag<uint8_t>()));
   for (size_t block : {size_t{64}, size_t{128}}) {
-    for (size_t hash : {size_t{16}, size_t{32}})
+    for (size_t hash : {size_t{16}, size_t{32}}) {
+      TestRotationMatchesScalar(block, hash);
       TestRotationPreservesDotProducts(block, hash);
+    }
   }
   TestHash16();
   TestL2Scaling();
@@ -419,10 +453,11 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 size_t g_failures = 0;
 HWY_EXPORT(TestAll);
+void RunTests() { HWY_DYNAMIC_DISPATCH(TestAll)(); }
 }  // namespace gcpp
 
 int main(int /*argc*/, char** /*argv*/) {
-  HWY_DYNAMIC_DISPATCH(gcpp::TestAll)();
+  gcpp::RunTests();
   const size_t failures = gcpp::g_failures;
   printf("%s (%zu failures)\n", failures == 0 ? "PASS" : "FAIL", failures);
   return failures == 0 ? 0 : 1;
