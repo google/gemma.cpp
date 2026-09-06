@@ -196,8 +196,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   const size_t kv_layer_idx = (layer_config.kv_share_layer_idx >= 0)
                                   ? static_cast<size_t>(layer_config.kv_share_layer_idx)
                                   : layer_idx;
-  const bool skip_kv = (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
-  const size_t cache_layer_size = activations.config.layer_configs[kv_layer_idx].CacheLayerSize();
+  const bool skip_kv =
+      (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
 
   // The original qkv_einsum_w has shape [(heads + kv_heads * 2), qkv_dim,
   // model_dim], which we reshaped to (heads + kv_heads * 2) * qkv_dim rows.
@@ -205,9 +205,12 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
              /*add=*/nullptr, env, activations.q);
 
   if (skip_kv) return;
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    qbatch.KV(qi).cache->PrepareLayer(kv_layer_idx, num_tokens, qbatch.Pos(qi));
+  }
   // Set up MatMul row pointers for writing to KV, which consists of
   // `kv_heads` pairs of (k, v) vectors. This safely handles wraparound
-  // because rows are computed modulo seq_len.
+  // because each layer maps positions to its physical cache capacity.
   MatPtrT<KV_t> kv_rows("kv", Extents2D(activations.pre_att_rms_out.Rows(),
                                         layer.qkv_einsum_w2.Rows()));
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
@@ -219,26 +222,31 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
     // --seq_len must be large enough to avoid wraparound.
     HWY_DASSERT(cache_pos < activations.SeqLen());
 
-    const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
-        ? kv_layer_idx * cache_layer_size
-        : qbatch.KV(qi).cache->layer_flat_offsets[kv_layer_idx];
-
     env.row_ptrs[0][interleaved_idx] = reinterpret_cast<uint8_t*>(
-        qbatch.KV(qi).kv_cache.Row(cache_pos) + layer_offset);
+        qbatch.KV(qi).cache->Row(kv_layer_idx, cache_pos));
   }
   kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
 
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
-                      qbatch.KV(qi).k_cache);
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
-                      qbatch.KV(qi).v_cache);
+    auto& view = qbatch.KV(qi);
+    auto& cache = *view.cache;
+    const size_t cols = cache.HasLayerCaches() ? cache.LayerCols(kv_layer_idx)
+                                               : cache.KOrVDefaultCols();
+    MaybeReshapeCache(cols, cache.HasLayerCaches() ? cache.LayerK(kv_layer_idx)
+                                                   : view.k_cache);
+    MaybeReshapeCache(cols, cache.HasLayerCaches() ? cache.LayerV(kv_layer_idx)
+                                                   : view.v_cache);
   }
   const size_t kFloatsPerVector = FloatsPerVector();
-  const size_t kRoundedTokens =
-      hwy::RoundUpTo(num_tokens, 2 * kFloatsPerVector);
+  size_t kRoundedTokens = 0;
+  for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
+    kRoundedTokens = HWY_MAX(
+        kRoundedTokens,
+        hwy::RoundUpTo(qbatch.Pos(qi) + num_tokens, 2 * kFloatsPerVector) -
+            qbatch.Pos(qi));
+  }
   const size_t kRoundedNumInterleaved =
       kRoundedTokens * div_qbatch.GetDivisor();
 
@@ -254,22 +262,34 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         const size_t qi = div_qbatch.Remainder(interleaved_idx);
         const size_t token_idx = div_qbatch.Divide(interleaved_idx);
         const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-        if (token_idx >= kRoundedTokens) {
+        if (cache_pos >=
+            hwy::RoundUpTo(qbatch.Pos(qi) + num_tokens, 2 * kFloatsPerVector)) {
           return;
         }
         // The innermost dimension of v is 2NF values from qkv_dim because they
         // will be loaded into a BF16 vector to be scaled and added to the
         // cached attention output in 2 NF-sized registers.
-        auto& k_cache = qbatch.KV(qi).k_cache;
+        auto& cache = *qbatch.KV(qi).cache;
+        const bool ring = cache.HasLayerCaches();
+        auto& k_cache =
+            ring ? cache.LayerK(kv_layer_idx) : qbatch.KV(qi).k_cache;
+        auto& v_cache =
+            ring ? cache.LayerV(kv_layer_idx) : qbatch.KV(qi).v_cache;
+        const size_t physical_pos =
+            ring ? cache_pos % cache.LayerCapacity(kv_layer_idx) : cache_pos;
+        const size_t head_offset =
+            head * cache.rounded_qkv_dims[kv_layer_idx] * 2 * kFloatsPerVector;
         KV_t* HWY_RESTRICT k =
-            k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->KOffset(kv_layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
-        auto& v_cache = qbatch.KV(qi).v_cache;
+            k_cache.Row(physical_pos / (2 * kFloatsPerVector)) +
+            (ring ? head_offset + (physical_pos % (2 * kFloatsPerVector)) * 2
+                  : cache.KOffset(kv_layer_idx, head, kFloatsPerVector,
+                                  physical_pos));
         KV_t* HWY_RESTRICT v =
-            v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->VOffset(kv_layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
+            v_cache.Row(physical_pos / (2 * kFloatsPerVector)) +
+            (ring ? head_offset + (physical_pos % (2 * kFloatsPerVector)) * 2 *
+                                      kFloatsPerVector
+                  : cache.VOffset(kv_layer_idx, head, kFloatsPerVector,
+                                  physical_pos));
         if (token_idx >= num_tokens) {
           // Create a zero-filled K/V pair for padding for out-of-sequence
           // tokens.
@@ -278,13 +298,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         }
         // --seq_len must be large enough to avoid wraparound.
         HWY_DASSERT(cache_pos < activations.SeqLen());
-        auto& kv_cache = qbatch.KV(qi).kv_cache;
-        const size_t layer_offset = qbatch.KV(qi).cache->layer_flat_offsets.empty()
-            ? kv_layer_idx * cache_layer_size
-            : qbatch.KV(qi).cache->layer_flat_offsets[kv_layer_idx];
-        KV_t* HWY_RESTRICT kv = kv_cache.Row(cache_pos) +
-                                layer_offset +
-                                head * qkv_dim * 2;
+        KV_t* HWY_RESTRICT kv =
+            cache.Row(kv_layer_idx, cache_pos) + head * qkv_dim * 2;
         // Note that k_cache and v_cache are different shapes.
         // The innermost dimension of k is 2 values from qkv_dim because they
         // are going to be used in a BF16 dot product involving pairs of

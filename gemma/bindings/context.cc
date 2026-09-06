@@ -43,9 +43,12 @@ namespace gcpp {
 ConversationData::ConversationData(const ModelConfig& model_config,
                                    const InferenceArgs& inference_args,
                                    const Allocator& allocator)
-    : kv_cache(
-          std::make_unique<KVCache>(model_config, inference_args, allocator)),
-      abs_pos(0) {}
+    : abs_pos(0) {
+  RuntimeConfig runtime{};
+  inference_args.CopyTo(runtime);
+  kv_cache = std::make_unique<KVCache>(model_config, inference_args, runtime,
+                                      allocator);
+}
 
 // ConversationData copy constructor implementation
 ConversationData::ConversationData(const ConversationData& other)

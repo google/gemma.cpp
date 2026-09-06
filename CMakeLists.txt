@@ -382,6 +382,7 @@ set(GEMMA_TEST_FILES
   compression/q4_0_test.cc
   compression/sfp_test.cc
   deepseek/deepseek_test.cc
+  gemma/kv_cache_test.cc
   gemma/gemma_args_test.cc
   gemma/tensor_info_test.cc
   gemma/weights_test.cc

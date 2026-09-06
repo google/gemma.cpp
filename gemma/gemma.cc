@@ -1971,7 +1971,11 @@ void ContinuousQBatch::MaybeReleaseKV(const QBatch& from) {
     // we get a crash because Transformer will still access that KV cache.
     if (next_to_insert_ < queries_.NumQueries()) {
       available_kv_caches_.push_back(from.KV(0));
-      ZeroInit(from.KV(0).kv_cache);
+      if (from.KV(0).cache) {
+        from.KV(0).cache->Clear();
+      } else {
+        ZeroInit(from.KV(0).kv_cache);
+      }
       from.KV(0) = KVCachePtr();
     }
   }

@@ -265,6 +265,39 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   qkv_dim = kv_layer_configs[0].qkv_dim;
   rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
 
+  // Dense Gemma Flash consumes only these buffers. Avoid allocating both
+  // full-context legacy matrices and unused compact tiled matrices.
+  const bool dense_gemma =
+      !config.is_encoder_decoder && config.num_mtp_layers == 0 &&
+      std::all_of(kv_layer_configs.begin(), kv_layer_configs.end(),
+                  [](const LayerConfig& layer) {
+                    return layer.type == LayerAttentionType::kGemma;
+                  });
+  if (dense_gemma && runtime_config.attention_impl == AttentionImpl::kFlash) {
+    seq_len_ = CappedSeqLen(config, inference_args);
+    HWY_ASSERT(seq_len_ != 0);
+    layers_.resize(num_layers);
+    layer_sources_.resize(num_layers);
+    for (size_t i = 0; i < num_layers; ++i) {
+      const auto& layer = kv_layer_configs[i];
+      const size_t source =
+          layer.HasOwnKVCache() ? i : layer_sources_[layer.kv_share_layer_idx];
+      layer_sources_[i] = source;
+      layers_[source].window =
+          HWY_MAX(layers_[source].window, kv_attention_window_sizes[i]);
+      HWY_ASSERT(kv_attention_window_sizes[i] != 0);
+      if (source == i) {
+        layers_[source].cols = layer.kv_heads * rounded_qkv_dims[source];
+        layers_[source].flat_cols = layer.CacheLayerSize();
+      }
+    }
+    for (size_t i = 0; i < num_layers; ++i) {
+      if (layer_sources_[i] != i) continue;
+      PrepareLayer(i, HWY_MIN(seq_len_, runtime_config.prefill_tbatch_size), 0);
+    }
+    return;
+  }
+
   // clang-format off
   if (runtime_config.attention_impl == AttentionImpl::kFlash ||
       runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
@@ -467,7 +500,115 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
 }
 
+void KVCache::PrepareLayer(size_t layer, size_t num_tokens, size_t pos) {
+  if (!HasLayerCaches()) return;
+  layer = layer_sources_[layer];
+  auto& storage = layers_[layer];
+  HWY_ASSERT(pos <= seq_len_ && num_tokens <= seq_len_ - pos);
+  // Transpose writes zero padding through the final SIMD tile. Include that
+  // padding before rounding so it cannot overwrite the oldest live history.
+  const size_t wanted =
+      HWY_MIN(seq_len_, storage.window - 1 + HWY_MAX(size_t{1}, num_tokens) +
+                            kMaxBF16PerVector - 1);
+  const size_t rows = hwy::RoundUpTo(wanted, kMaxBF16PerVector);
+  if (rows > storage.flat.Rows()) ResizeLayer(layer, rows, pos);
+}
+
+void KVCache::ResizeLayer(size_t layer, size_t rows, size_t pos) {
+  auto& old = layers_[layer];
+  LayerStorage next;
+  next.window = old.window;
+  next.cols = old.cols;
+  next.flat_cols = old.flat_cols;
+  next.flat = MatStorageT<KV_t>("kv_layer", Extents2D(rows, old.flat_cols),
+                                allocator_, MatPadding::kOdd);
+  next.k = MatStorageT<KV_t>("k_layer", Extents2D(rows, old.cols), allocator_,
+                             MatPadding::kPacked);
+  next.v = MatStorageT<KV_t>("v_layer", Extents2D(rows, old.cols), allocator_,
+                             MatPadding::kPacked);
+  // Attention writes each live token and its trailing SIMD padding before
+  // reading. Do not fault in the unused full-context pages of global layers.
+  if (old.flat.Rows() != 0) {
+    const size_t first = pos - HWY_MIN(pos, old.window - 1);
+    for (size_t p = first; p < pos; ++p) {
+      hwy::CopyBytes(old.flat.Row(p % old.flat.Rows()), next.flat.Row(p % rows),
+                     old.flat_cols * sizeof(KV_t));
+    }
+    // Storage may already have been reshaped for the active SIMD target.
+    const size_t tile = old.k.Cols() / old.cols;
+    next.k.ReshapePackedRowsToCols(tile);
+    next.v.ReshapePackedRowsToCols(tile);
+    for (size_t p = first / tile; p < hwy::DivCeil(pos, tile); ++p) {
+      hwy::CopyBytes(old.k.Row(p % old.k.Rows()), next.k.Row(p % next.k.Rows()),
+                     old.k.Cols() * sizeof(KV_t));
+      hwy::CopyBytes(old.v.Row(p % old.v.Rows()), next.v.Row(p % next.v.Rows()),
+                     old.v.Cols() * sizeof(KV_t));
+    }
+  }
+  old = std::move(next);
+}
+
+void KVCache::Clear() {
+  if (kv_cache.HasPtr()) ZeroInit(kv_cache);
+  if (k_cache.HasPtr()) ZeroInit(k_cache);
+  if (v_cache.HasPtr()) ZeroInit(v_cache);
+  if (compact_local_kv_cache_ptr.HasPtr()) ZeroInit(compact_local_kv_cache_ptr);
+  if (compact_global_kv_cache_ptr.HasPtr())
+    ZeroInit(compact_global_kv_cache_ptr);
+  for (auto& layer : layers_) {
+    if (!layer.flat.HasPtr()) continue;
+    ZeroInit(layer.flat);
+    ZeroInit(layer.k);
+    ZeroInit(layer.v);
+  }
+}
+
+size_t KVCache::AllocatedBytes() const {
+  const auto bytes = [](const MatPtr& mat) {
+    return mat.Rows() * mat.Stride() * mat.ElementBytes();
+  };
+  size_t total = bytes(kv_cache) + bytes(k_cache) + bytes(v_cache) +
+                 bytes(compact_local_kv_cache_ptr) +
+                 bytes(compact_global_kv_cache_ptr) + bytes(ds_state) +
+                 bytes(ds_state_snapshot);
+  for (const auto& layer : layers_) {
+    total += bytes(layer.flat) + bytes(layer.k) + bytes(layer.v);
+  }
+  return total;
+}
+
 KVCache KVCache::Copy() {
+  if (HasLayerCaches()) {
+    KVCache copy(allocator_);
+    copy.seq_len_ = seq_len_;
+    copy.num_layers = num_layers;
+    copy.kv_heads = kv_heads;
+    copy.qkv_dim = qkv_dim;
+    copy.rounded_qkv_dim = rounded_qkv_dim;
+    copy.k_v_cols = k_v_cols;
+    copy.layer_sources_ = layer_sources_;
+    copy.layer_flat_offsets = layer_flat_offsets;
+    copy.layer_k_v_offsets = layer_k_v_offsets;
+    copy.layer_kv_head_offsets = layer_kv_head_offsets;
+    copy.rounded_qkv_dims = rounded_qkv_dims;
+    copy.layers_.resize(layers_.size());
+    for (size_t i = 0; i < layers_.size(); ++i) {
+      const auto& layer = layers_[i];
+      if (!layer.flat.HasPtr()) continue;
+      copy.layers_[i].window = layer.window;
+      copy.layers_[i].cols = layer.cols;
+      copy.layers_[i].flat_cols = layer.flat_cols;
+      copy.ResizeLayer(i, layer.flat.Rows(), 0);
+      auto& dest = copy.layers_[i];
+      const size_t tile = layer.k.Cols() / layer.cols;
+      dest.k.ReshapePackedRowsToCols(tile);
+      dest.v.ReshapePackedRowsToCols(tile);
+      CopyMat(layer.flat, dest.flat);
+      CopyMat(layer.k, dest.k);
+      CopyMat(layer.v, dest.v);
+    }
+    return copy;
+  }
   KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
 
   CopyMat(kv_cache, copy.kv_cache);

@@ -36,7 +36,7 @@ struct KVCache;
 
 // A non-owning view of a KVCache.
 struct KVCachePtr {
-  bool IsEmpty() const { return kv_cache.Rows() == 0; }
+  bool IsEmpty() const;
   size_t SeqLen() const;
 
   bool IsTiled() const;
@@ -56,11 +56,36 @@ struct KVCache {
   KVCache Copy();
 
   size_t SeqLen() const {
+    if (seq_len_ != 0) return seq_len_;
     if (IsTiled()) {
       return tiled_seq_len.value();
     }
     return kv_cache.Rows();
   }
+
+  // The runtime-aware default Flash cache stores BF16 K/V per owning layer.
+  // The legacy constructor and non-Gemma backends retain their existing layout.
+  bool HasLayerCaches() const { return !layers_.empty(); }
+  size_t LayerCapacity(size_t layer) const {
+    return layers_[layer_sources_[layer]].flat.Rows();
+  }
+  MatStorageT<KV_t>& LayerK(size_t layer) {
+    return layers_[layer_sources_[layer]].k;
+  }
+  MatStorageT<KV_t>& LayerV(size_t layer) {
+    return layers_[layer_sources_[layer]].v;
+  }
+  size_t LayerCols(size_t layer) const {
+    return layers_[layer_sources_[layer]].cols;
+  }
+  KV_t* Row(size_t layer, size_t pos) {
+    if (!HasLayerCaches()) return kv_cache.Row(pos) + layer_flat_offsets[layer];
+    auto& flat = layers_[layer_sources_[layer]].flat;
+    return flat.Row(pos % flat.Rows());
+  }
+  void PrepareLayer(size_t layer, size_t num_tokens, size_t pos);
+  void Clear();
+  size_t AllocatedBytes() const;
 
   bool IsTiled() const {
     return tiled_seq_len.has_value();
@@ -232,6 +257,17 @@ struct KVCache {
   }
 
  private:
+  struct LayerStorage {
+    size_t window = 0;
+    size_t cols = 0;
+    size_t flat_cols = 0;
+    MatStorageT<KV_t> flat, k, v;
+  };
+  size_t seq_len_ = 0;
+  std::vector<size_t> layer_sources_;
+  std::vector<LayerStorage> layers_;
+  void ResizeLayer(size_t layer, size_t rows, size_t pos);
+  explicit KVCache(const Allocator& allocator) : allocator_(allocator) {}
   const Allocator& allocator_;
 
   // For use by other ctor and Copy()
@@ -239,7 +275,12 @@ struct KVCache {
           size_t qkv_dim, const Allocator& allocator);
 };
 
+inline bool KVCachePtr::IsEmpty() const {
+  return cache ? cache->SeqLen() == 0 : kv_cache.Rows() == 0;
+}
+
 inline size_t KVCachePtr::SeqLen() const {
+  if (cache) return cache->SeqLen();
   if (IsTiled()) {
     return cache->tiled_seq_len.value();
   }
