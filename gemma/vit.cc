@@ -42,6 +42,7 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "gemma/gemma-inl.h"
+#include "gemma/vit_attention-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -68,7 +69,7 @@ class VitAttention {
                layer_.vit.qkv_einsum_b.PackedScale1(), env_, qkv);
   }
 
-  // TODO(philculliton): transition fully to MatMul.
+  // QK uses the general matrix kernel; PV keeps FP32 values/probabilities.
   HWY_NOINLINE void DotSoftmaxWeightedSumMatrix() {
     const size_t qkv_dim = layer_config_.qkv_dim;
     const size_t heads = layer_config_.heads;
@@ -83,11 +84,10 @@ class VitAttention {
                          env_.ctx.allocator, MatPadding::kPacked);
     MatStorageT<float> K("K2", Extents2D(seq_len, qkv_dim), env_.ctx.allocator,
                          MatPadding::kPacked);
+    MatStorageT<float> V("V2", Extents2D(seq_len, qkv_dim), env_.ctx.allocator,
+                         MatPadding::kPacked);
     MatStorageT<float> C("C2", Extents2D(num_tokens_, seq_len),
                          env_.ctx.allocator, MatPadding::kPacked);
-
-    // Initialize att_out to zero prior to head loop.
-    ZeroInit(activations_.attention.att_out);
 
     for (size_t head = 0; head < heads; ++head) {
       pool_.Run(0, num_tokens_, caller1_,
@@ -107,6 +107,8 @@ class VitAttention {
             float* HWY_RESTRICT k = activations_.attention.q.Row(seq_idx) +
                                     head * 3 * qkv_dim + qkv_dim;
             hwy::CopyBytes(k, K.Row(seq_idx), qkv_dim * sizeof(float));
+            hwy::CopyBytes(k + qkv_dim, V.Row(seq_idx),
+                           qkv_dim * sizeof(float));
           });
 
       // this produces C, a (num_tokens_, seq_len) matrix of dot products
@@ -117,15 +119,10 @@ class VitAttention {
                     HWY_ATTR { Softmax(C.RowSpan(task), env_.ctx, worker); });
 
       pool_.Run(
-          0, num_tokens_, caller4_, [&](uint64_t task, size_t worker) HWY_ATTR {
-            size_t token = task;
-            float* HWY_RESTRICT att_out =
-                activations_.attention.att_out.Row(token) + head * qkv_dim;
-            for (size_t i = 0; i < seq_len; ++i) {
-              float* HWY_RESTRICT v = activations_.attention.q.Row(i) +
-                                      head * 3 * qkv_dim + 2 * qkv_dim;
-              MulByConstAndAdd(C.Row(token)[i], v, att_out, qkv_dim);
-            }
+          0, hwy::DivCeil(num_tokens_, size_t{4}), caller4_,
+          [&](uint64_t task, size_t /*worker*/) HWY_ATTR {
+            VitAttentionValueProduct(C, V, activations_.attention.att_out,
+                                     task * 4, head * qkv_dim);
           });
     }
   }

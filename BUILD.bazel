@@ -553,6 +553,7 @@ cc_library(
     },
     textual_hdrs = [
         "gemma/gemma-inl.h",
+        "gemma/vit_attention-inl.h",
     ],
     deps = [
         ":basics",

@@ -96,6 +96,7 @@ set(SOURCES
   gemma/tokenizer.h
   gemma/vit.cc
   gemma/vit.h
+  gemma/vit_attention-inl.h
   gemma/weights.cc
   gemma/weights.h
   io/blob_store.cc
