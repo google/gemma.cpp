@@ -53,49 +53,6 @@ static const std::vector<uint32_t>& KVAttentionWindowSizes(
                                    : config.attention_window_sizes;
 }
 
-KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
-                 size_t kv_heads, size_t qkv_dim, const Allocator& allocator)
-    : num_layers(num_layers),
-      kv_heads(kv_heads),
-      qkv_dim(qkv_dim),
-      rounded_qkv_dim(hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector)),
-      kv_cache("kv", kv_extents, allocator, MatPadding::kOdd),
-      // WARNING: the rows and cols of k_cache and v_cache will be modified
-      // before use!
-      // The rows will be reduced by a factor of 2xkFloatsPerVector, and the
-      // cols will be increased by 2xkFloatsPerVector on first use. This is to
-      // avoid making KVCache another class that has to be duplicated for each
-      // machine architecture, since kFloatsPerVector is architecture dependent.
-      // The change is shape is safe only if the padding is kPacked.
-      k_cache("k",
-              Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
-              allocator, MatPadding::kPacked),
-      v_cache("v",
-              Extents2D(hwy::RoundUpTo(kv_extents.rows, kMaxBF16PerVector),
-                        KOrVDefaultCols()),
-              allocator, MatPadding::kPacked),
-      allocator_(allocator) {
-  layer_flat_offsets.resize(num_layers, 0);
-  layer_k_v_offsets.resize(num_layers, 0);
-  layer_kv_head_offsets.resize(num_layers, 0);
-  rounded_qkv_dims.resize(num_layers, static_cast<uint32_t>(rounded_qkv_dim));
-  size_t flat_accum = 0;
-  size_t k_v_accum = 0;
-  size_t kv_head_accum = 0;
-  for (size_t i = 0; i < num_layers; ++i) {
-    layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
-    flat_accum += 2 * kv_heads * qkv_dim;
-    layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
-    k_v_accum += kv_heads * rounded_qkv_dim;
-    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
-    kv_head_accum += kv_heads;
-  }
-  // NOTE: k_v_cols is intentionally left at 0 (default). It serves as a
-  // sentinel for MaybeReshapeCache: when k_v_cols == cache.Cols(), the reshape
-  // fires. The 2-arg constructor path relies on k_v_cols == 0 to skip reshape.
-}
-
 // Allocates and zero-initializes the DeepSeek V4 incremental compressor state
 // if any layer needs it, and fills the per-layer offset table.
 static void InitDSState(const ModelConfig& config, const Allocator& allocator,
@@ -127,502 +84,244 @@ static void InitDSState(const ModelConfig& config, const Allocator& allocator,
   ZeroInit(ds_state_snapshot);
 }
 
-// Support heterogeneous layer configurations (common in Gemma 4 architectures),
-// where different layers can have varying attention shapes (e.g., mixing local
-// layers with smaller qkv_dim/more heads and global layers with larger
-// qkv_dim/fewer heads).
-//
-// Rather than assuming uniform layer sizes, we dynamically compute and store
-// cumulative offsets for each layer to allow correct indexing into the
-// flattened KV cache.
-KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
-                 const Allocator& allocator)
-    : allocator_(allocator) {
-  const std::vector<LayerConfig>& kv_layer_configs = KVLayerConfigs(config);
-
-  HWY_ASSERT(!kv_layer_configs.empty());
-  num_layers = kv_layer_configs.size();
-
-  // 1. Build non-uniform offset tables dynamically
-  layer_flat_offsets.resize(num_layers, 0);
-  layer_k_v_offsets.resize(num_layers, 0);
-  layer_kv_head_offsets.resize(num_layers, 0);
-  rounded_qkv_dims.resize(num_layers, 0);
-
-  size_t flat_accum = 0;
-  size_t k_v_accum = 0;
-  size_t kv_head_accum = 0;
-
-  for (size_t i = 0; i < num_layers; ++i) {
-    if (!kv_layer_configs[i].HasOwnKVCache()) {
-      const size_t src =
-          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_DASSERT(src < i);
-      layer_flat_offsets[i] = layer_flat_offsets[src];
-      layer_k_v_offsets[i] = layer_k_v_offsets[src];
-      layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
-      rounded_qkv_dims[i] = rounded_qkv_dims[src];
-      continue;
-    }
-
-    layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
-    flat_accum += kv_layer_configs[i].CacheLayerSize();
-
-    layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
-    size_t rounded_dim =
-        hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
-    rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
-    k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
-
-    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
-    kv_head_accum += config.layer_configs[i].kv_heads;
-  }
-  k_v_cols = static_cast<uint32_t>(k_v_accum);
-
-  // Since we also store legacy homogeneous variables, we default them to Layer
-  // 0 values.
-  kv_heads = kv_layer_configs[0].kv_heads;
-  qkv_dim = kv_layer_configs[0].qkv_dim;
-  rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
-
-  const size_t rows = CappedSeqLen(config, inference_args);
-  const size_t cols = config.KVCacheCols();
-  kv_cache = MatStorageT<KV_t>("kv", Extents2D(rows, cols), allocator,
-                               MatPadding::kOdd);
-  k_cache = MatStorageT<KV_t>(
-      "k", Extents2D(hwy::RoundUpTo(rows, kMaxBF16PerVector), k_v_cols),
-      allocator, MatPadding::kPacked);
-  v_cache = MatStorageT<KV_t>(
-      "v", Extents2D(hwy::RoundUpTo(rows, kMaxBF16PerVector), k_v_cols),
-      allocator, MatPadding::kPacked);
-  const size_t num_tiles = hwy::DivCeil(rows, kTileSize);
-  tiled_seq_len = num_tiles * kTileSize;
-  // Trailing segment for the MTP block (indexed as layer `num_layers`).
-  if (config.num_mtp_layers > 0) {
-    const size_t mtp_size = config.MTPLayerConfig().CacheLayerSize();
-    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
-      layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
-      flat_accum += mtp_size;
-    }
-  }
-  InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
+static std::optional<Type> KVCacheType(const InferenceArgs& inference_args) {
+  const auto& name = inference_args.kv_cache_type;
+  if (name.empty()) return std::nullopt;
+  if (name == "int8" || name == "i8") return Type::kInt8;
+  if (name == "bf16") return Type::kBF16;
+  if (name == "f32" || name == "float") return Type::kF32;
+  HWY_ABORT("Unknown kv_cache_type: %s", name.c_str());
 }
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
-                 const RuntimeConfig& runtime_config,
                  const Allocator& allocator)
-    : allocator_(allocator) {
-  const std::vector<LayerConfig>& kv_layer_configs = KVLayerConfigs(config);
-  const std::vector<uint32_t>& kv_attention_window_sizes =
-      KVAttentionWindowSizes(config);
+    : KVCache(config, inference_args,
+              GetAttentionImpl(inference_args.attention_impl), allocator) {}
 
-  num_layers = kv_layer_configs.size();
+KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+                 AttentionImpl attention_impl, const Allocator& allocator,
+                 std::optional<Type> kv_cache_type)
+    : seq_len_(CappedSeqLen(config, inference_args)),
+      attention_impl_(attention_impl),
+      allocator_(allocator) {
+  const auto& layers = KVLayerConfigs(config);
+  const auto& windows = KVAttentionWindowSizes(config);
+  HWY_ASSERT(!layers.empty() && seq_len_ != 0);
+  HWY_ASSERT(windows.size() == layers.size());
+  num_layers = layers.size();
+  kv_heads = layers[0].kv_heads;
+  qkv_dim = layers[0].qkv_dim;
+  layer_flat_offsets.resize(num_layers);
+  layer_kv_head_offsets.resize(num_layers);
+  layer_heads_.resize(num_layers);
 
-  // 1. Build non-uniform offset tables dynamically
-  layer_flat_offsets.resize(num_layers, 0);
-  layer_k_v_offsets.resize(num_layers, 0);
-  layer_kv_head_offsets.resize(num_layers, 0);
-  rounded_qkv_dims.resize(num_layers, 0);
-
-  size_t flat_accum = 0;
-  size_t k_v_accum = 0;
-  size_t kv_head_accum = 0;
-  size_t max_qkv_dim = 0;
-  size_t max_kv_heads = 0;
-
+  size_t flat_cols = 0;
   for (size_t i = 0; i < num_layers; ++i) {
-    max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
-    max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
-
-    if (!kv_layer_configs[i].HasOwnKVCache()) {
-      const size_t src =
-          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_DASSERT(src < i);  // sources must precede, so their offsets are set
-      layer_flat_offsets[i] = layer_flat_offsets[src];
-      layer_k_v_offsets[i] = layer_k_v_offsets[src];
-      layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
-      rounded_qkv_dims[i] = rounded_qkv_dims[src];
+    const auto& layer = layers[i];
+    layer_heads_[i] = layer.kv_heads;
+    if (!layer.HasOwnKVCache()) {
+      const size_t source = static_cast<size_t>(layer.kv_share_layer_idx);
+      HWY_ASSERT(source < i);
+      HWY_ASSERT(layer.kv_heads == layers[source].kv_heads &&
+                 layer.qkv_dim == layers[source].qkv_dim);
+      layer_flat_offsets[i] = layer_flat_offsets[source];
+      layer_kv_head_offsets[i] = layer_kv_head_offsets[source];
+      for (size_t h = 0; h < layer.kv_heads; ++h) {
+        auto& window = head_windows_[layer_kv_head_offsets[i] + h];
+        window = HWY_MAX(window, windows[i]);
+      }
       continue;
     }
-
-    layer_flat_offsets[i] = static_cast<uint32_t>(flat_accum);
-    flat_accum += kv_layer_configs[i].CacheLayerSize();
-
-    layer_k_v_offsets[i] = static_cast<uint32_t>(k_v_accum);
-    size_t rounded_dim =
-        hwy::RoundUpTo(kv_layer_configs[i].qkv_dim, kMaxBF16PerVector);
-    rounded_qkv_dims[i] = static_cast<uint32_t>(rounded_dim);
-    k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
-
-    layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
-    kv_head_accum += config.layer_configs[i].kv_heads;
+    layer_flat_offsets[i] = static_cast<uint32_t>(flat_cols);
+    flat_cols += layer.CacheLayerSize();
+    layer_kv_head_offsets[i] = static_cast<uint32_t>(head_windows_.size());
+    for (size_t h = 0; h < layer.kv_heads; ++h) {
+      HWY_ASSERT(windows[i] != 0);
+      head_windows_.push_back(windows[i]);
+      head_dims_.push_back(layer.qkv_dim);
+    }
   }
-  k_v_cols = static_cast<uint32_t>(k_v_accum);
 
-  // Since we also store legacy homogeneous variables (used by tests/old code),
-  // we default them to Layer 0 values.
-  kv_heads = kv_layer_configs[0].kv_heads;
-  qkv_dim = kv_layer_configs[0].qkv_dim;
-  rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
-
-  // Dense Gemma Flash consumes only these buffers. Avoid allocating both
-  // full-context legacy matrices and unused compact tiled matrices.
-  const bool dense_gemma =
-      !config.is_encoder_decoder && config.num_mtp_layers == 0 &&
-      std::all_of(kv_layer_configs.begin(), kv_layer_configs.end(),
-                  [](const LayerConfig& layer) {
-                    return layer.type == LayerAttentionType::kGemma;
-                  });
-  if (dense_gemma && runtime_config.attention_impl == AttentionImpl::kFlash) {
-    seq_len_ = CappedSeqLen(config, inference_args);
-    HWY_ASSERT(seq_len_ != 0);
-    layers_.resize(num_layers);
-    layer_sources_.resize(num_layers);
-    for (size_t i = 0; i < num_layers; ++i) {
-      const auto& layer = kv_layer_configs[i];
-      const size_t source =
-          layer.HasOwnKVCache() ? i : layer_sources_[layer.kv_share_layer_idx];
-      layer_sources_[i] = source;
-      layers_[source].window =
-          HWY_MAX(layers_[source].window, kv_attention_window_sizes[i]);
-      HWY_ASSERT(kv_attention_window_sizes[i] != 0);
-      if (source == i) {
-        layers_[source].cols = layer.kv_heads * rounded_qkv_dims[source];
-        layers_[source].flat_cols = layer.CacheLayerSize();
-      }
-    }
-    for (size_t i = 0; i < num_layers; ++i) {
-      if (layer_sources_[i] != i) continue;
-      PrepareLayer(i, HWY_MIN(seq_len_, runtime_config.prefill_tbatch_size), 0);
-    }
+  // DeepSeek, recurrent, and encoder/decoder attention still consume flat KV.
+  const bool needs_flat =
+      config.is_encoder_decoder || config.num_mtp_layers > 0 ||
+      std::any_of(layers.begin(), layers.end(), [](const LayerConfig& layer) {
+        return layer.type != LayerAttentionType::kGemma;
+      });
+  if (needs_flat) {
+    kv_cache =
+        MatStorageT<KV_t>("kv", Extents2D(seq_len_, config.KVCacheCols()),
+                          allocator, MatPadding::kOdd);
+  }
+  for (size_t i = 0; i < config.num_mtp_layers; ++i) {
+    layer_flat_offsets.push_back(static_cast<uint32_t>(flat_cols));
+    flat_cols += config.MTPLayerConfig().CacheLayerSize();
+  }
+  InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
+  if (config.is_encoder_decoder ||
+      std::none_of(layers.begin(), layers.end(), [](const LayerConfig& layer) {
+        return layer.type == LayerAttentionType::kGemma;
+      })) {
     return;
   }
 
-  // clang-format off
-  if (runtime_config.attention_impl == AttentionImpl::kFlash ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      runtime_config.attention_impl ==  AttentionImpl::kFlashMatrixAccumulation ||
-      runtime_config.attention_impl == AttentionImpl::kInt8MatrixAccumulation
-      ) {
-    // clang-format on
-    kv_cache = MatStorageT<KV_t>(
-        "kv",
-        Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
-        allocator, MatPadding::kOdd);
-    k_cache = MatStorageT<KV_t>(
-        "k",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
-                                 kMaxBF16PerVector),
-                  k_v_cols),
-        allocator, MatPadding::kPacked);
-    v_cache = MatStorageT<KV_t>(
-        "v",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
-                                 kMaxBF16PerVector),
-                  k_v_cols),
-        allocator, MatPadding::kPacked);
-    const size_t num_tiles =
-        hwy::DivCeil(CappedSeqLen(config, inference_args), kTileSize);
-    tiled_seq_len = num_tiles * kTileSize;
-    Type kv_cache_type;
-    if (runtime_config.attention_impl ==
-        AttentionImpl::kFlashMatrixAccumulation) {
-      kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
-    } else if (runtime_config.attention_impl ==
-                   AttentionImpl::kFlashTransposedQsBF16
-    ) {
-      kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
-    } else if (runtime_config.attention_impl ==
-                   AttentionImpl::kFlashTransposedQsInt16 ||
-               runtime_config.attention_impl ==
-                   AttentionImpl::kFlashTransposedQsInt8 ||
-               runtime_config.attention_impl ==
-                   AttentionImpl::kInt8MatrixAccumulation) {
-      if (runtime_config.kv_cache_type.has_value() &&
-          runtime_config.kv_cache_type.value() != Type::kInt8) {
-        HWY_WARN(
-            "You are have set kv_cache_type to %s, but you are using "
-            "an attention implementation which only "
-            "supports Int8. kv_cache_type will be set to Int8.",
-            TypeName(runtime_config.kv_cache_type.value()));
-      }
-      kv_cache_type = Type::kInt8;
-    } else {
-      kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kF32);
-    }
-
-    // Allocate tile size using max_qkv_dim to prevent out-of-bounds corruption
-    int max_tile_length = 2 * max_qkv_dim * kTileSize;
-    if (kv_cache_type == Type::kInt8) {
-      // microscaling
-      max_tile_length += 2 * sizeof(BF16) * kTileSize;
-      if (runtime_config.attention_impl ==
-          AttentionImpl::kFlashTransposedQsInt8) {
-        // K sums
-        max_tile_length += sizeof(int32_t) * kTileSize;
-      }
-    }
-    auto num_tiles_per_head = [](size_t window_size, size_t prefill_tbatch_size,
-                                 size_t max_seq_len) {
-      return hwy::DivCeil(
-          std::min(max_seq_len, window_size + prefill_tbatch_size), kTileSize);
-    };
-
-    size_t total_local_num_tiles = 0;
-    size_t total_global_num_tiles = 0;
-    size_t local_tile_length = 0;
-    size_t global_tile_length = 0;
-
-    for (size_t i = 0; i < num_layers; ++i) {
-      size_t num_tiles = num_tiles_per_head(kv_attention_window_sizes[i],
-                                            runtime_config.prefill_tbatch_size,
-                                            config.max_seq_len) *
-                         kv_layer_configs[i].kv_heads;
-
-      size_t tile_len = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
-      if (kv_cache_type == Type::kInt8) {
-        tile_len += 2 * sizeof(BF16) * kTileSize;
-        if (runtime_config.attention_impl ==
-            AttentionImpl::kFlashTransposedQsInt8) {
-          // K sums
-          tile_len += sizeof(int32_t) * kTileSize;
-        }
-      }
-
-      if (kv_attention_window_sizes[i] == config.max_seq_len) {
-        total_global_num_tiles += num_tiles;
-        global_tile_length = tile_len;
-      } else {
-        total_local_num_tiles += num_tiles;
-        local_tile_length = tile_len;
-      }
-    }
-
-    if (total_local_num_tiles > 0) {
-      Extents2D local_extents(total_local_num_tiles, local_tile_length);
-      compact_local_kv_cache_ptr =
-          MatPtr("kv_tiled_local", kv_cache_type, local_extents);
-      if (runtime_config.attention_impl ==
-          AttentionImpl::kFlashMatrixAccumulation) {
-        compact_local_kv_cache_ptr.SetLayout(
-            MatPtr::Layout::kBF16MatrixAccumulation);
-      } else if (runtime_config.attention_impl ==
-                 AttentionImpl::kInt8MatrixAccumulation) {
-        compact_local_kv_cache_ptr.SetLayout(
-            MatPtr::Layout::kInt8MatrixAccumulation);
-      }
-      compact_local_kv_cache.AllocateFor(compact_local_kv_cache_ptr, allocator,
-                                         MatPadding::kPacked);
-    }
-
-    if (total_global_num_tiles > 0) {
-      Extents2D global_extents(total_global_num_tiles, global_tile_length);
-      compact_global_kv_cache_ptr =
-          MatPtr("kv_tiled_global", kv_cache_type, global_extents);
-      if (runtime_config.attention_impl ==
-          AttentionImpl::kFlashMatrixAccumulation) {
-        compact_global_kv_cache_ptr.SetLayout(
-            MatPtr::Layout::kBF16MatrixAccumulation);
-      } else if (runtime_config.attention_impl ==
-                 AttentionImpl::kInt8MatrixAccumulation) {
-        compact_global_kv_cache_ptr.SetLayout(
-            MatPtr::Layout::kInt8MatrixAccumulation);
-      }
-      compact_global_kv_cache.AllocateFor(compact_global_kv_cache_ptr,
-                                          allocator,
-                                          MatPadding::kPacked);
-    }
-
-    if (compact_global_kv_cache_ptr.HasPtr()) {
-      compact_kv_cache_ptr = compact_global_kv_cache_ptr;
-    } else {
-      compact_kv_cache_ptr = compact_local_kv_cache_ptr;
-    }
-
-    size_t local_tiles_processed = 0;
-    size_t global_tiles_processed = 0;
-    kv_head_ptrs.clear();
-    kv_head_ptrs.reserve(kv_head_accum);
-    for (size_t i = 0; i < num_layers; ++i) {
-      size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
-      if (kv_cache_type == Type::kInt8) {
-        layer_tile_length += 2 * sizeof(BF16) * kTileSize;
-        if (runtime_config.attention_impl ==
-            AttentionImpl::kFlashTransposedQsInt8) {
-          // K sums
-          layer_tile_length += sizeof(int32_t) * kTileSize;
-        }
-      }
-      bool is_global = kv_attention_window_sizes[i] == config.max_seq_len;
-      for (size_t kv = 0; kv < kv_layer_configs[i].kv_heads; ++kv) {
-        size_t num_tiles_per_kv_head = num_tiles_per_head(
-            kv_attention_window_sizes[i], runtime_config.prefill_tbatch_size,
-            config.max_seq_len);
-        MatPtr kv_ptr("kv_ptr", kv_cache_type,
-                      Extents2D(num_tiles_per_kv_head, layer_tile_length));
-        if (is_global) {
-          kv_ptr.SetPtr(
-              compact_global_kv_cache_ptr.RowBytes(global_tiles_processed),
-              compact_global_kv_cache_ptr.Stride());
-          global_tiles_processed += num_tiles_per_kv_head;
-        } else {
-          kv_ptr.SetPtr(
-              compact_local_kv_cache_ptr.RowBytes(local_tiles_processed),
-              compact_local_kv_cache_ptr.Stride());
-          local_tiles_processed += num_tiles_per_kv_head;
-        }
-        if (runtime_config.attention_impl ==
-            AttentionImpl::kFlashMatrixAccumulation) {
-          kv_ptr.SetLayout(MatPtr::Layout::kBF16MatrixAccumulation);
-        } else if (runtime_config.attention_impl ==
-                   AttentionImpl::kInt8MatrixAccumulation) {
-          kv_ptr.SetLayout(MatPtr::Layout::kInt8MatrixAccumulation);
-        }
-        kv_head_ptrs.emplace_back(std::move(kv_ptr));
-      }
-    }
-  } else {
-    kv_cache = MatStorageT<KV_t>(
-        "kv",
-        Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
-        allocator, MatPadding::kOdd);
+  if (!kv_cache_type.has_value()) kv_cache_type = KVCacheType(inference_args);
+  Type type = kv_cache_type.value_or(Type::kF32);
+  MatPtr::Layout layout = MatPtr::Layout::kFlat;
+  if (attention_impl == AttentionImpl::kFlash ||
+      attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+      attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+    type = kv_cache_type.value_or(Type::kBF16);
   }
-  if (config.num_mtp_layers > 0) {
-    const size_t mtp_size = config.MTPLayerConfig().CacheLayerSize();
-    for (size_t i = 0; i < config.num_mtp_layers; ++i) {
-      layer_flat_offsets.push_back(static_cast<uint32_t>(flat_accum));
-      flat_accum += mtp_size;
+  if (attention_impl == AttentionImpl::kFlash) type = Type::kBF16;
+  if (attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
+      attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
+    if (kv_cache_type.has_value() && *kv_cache_type != Type::kInt8) {
+      HWY_WARN("This attention implementation requires an Int8 KV cache.");
     }
+    type = Type::kInt8;
   }
-  InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
+  if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+    layout = MatPtr::Layout::kBF16MatrixAccumulation;
+  } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
+    layout = MatPtr::Layout::kInt8MatrixAccumulation;
+  }
+  kv_head_owners_.resize(head_windows_.size());
+  kv_head_ptrs.reserve(head_windows_.size());
+  for (size_t h = 0; h < head_windows_.size(); ++h) {
+    const bool flash = attention_impl == AttentionImpl::kFlash;
+    const size_t tile = flash ? kMaxBF16PerVector : kTileSize;
+    const size_t dim =
+        flash ? hwy::RoundUpTo(head_dims_[h], tile) : head_dims_[h];
+    size_t cols = 2 * dim * tile;
+    if (type == Type::kInt8) {
+      cols += 2 * sizeof(BF16) * tile;
+      if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
+        cols += sizeof(int32_t) * tile;
+      }
+    }
+    // Include the full batch and trailing padding before rounding, so writes
+    // cannot wrap onto the oldest token still visible to this batch.
+    const size_t wanted = HWY_MIN(
+        seq_len_, head_windows_[h] - 1 +
+                      HWY_MAX(size_t{1}, inference_args.prefill_tbatch_size) +
+                      tile - 1);
+    MatPtr ptr("kv_head", type, Extents2D(hwy::DivCeil(wanted, tile), cols));
+    ptr.SetLayout(layout);
+    kv_head_owners_[h].AllocateFor(ptr, allocator, MatPadding::kPacked);
+    kv_head_ptrs.push_back(ptr);
+  }
 }
 
-void KVCache::PrepareLayer(size_t layer, size_t num_tokens, size_t pos) {
-  if (!HasLayerCaches()) return;
-  layer = layer_sources_[layer];
-  auto& storage = layers_[layer];
+size_t KVCache::LayerCapacity(size_t layer) const {
+  const size_t tile =
+      attention_impl_ == AttentionImpl::kFlash
+          ? (flash_tile_size_ ? flash_tile_size_ : kMaxBF16PerVector)
+          : kTileSize;
+  return kv_head_ptrs[layer_kv_head_offsets[layer]].Rows() * tile;
+}
+
+void KVCache::PrepareLayer(size_t layer, size_t num_tokens, size_t pos,
+                           size_t tile_size) {
+  HWY_ASSERT(attention_impl_ == AttentionImpl::kFlash);
   HWY_ASSERT(pos <= seq_len_ && num_tokens <= seq_len_ - pos);
-  // Transpose writes zero padding through the final SIMD tile. Include that
-  // padding before rounding so it cannot overwrite the oldest live history.
-  const size_t wanted =
-      HWY_MIN(seq_len_, storage.window - 1 + HWY_MAX(size_t{1}, num_tokens) +
-                            kMaxBF16PerVector - 1);
-  const size_t rows = hwy::RoundUpTo(wanted, kMaxBF16PerVector);
-  if (rows > storage.flat.Rows()) ResizeLayer(layer, rows, pos);
+  HWY_ASSERT(tile_size != 0 && kMaxBF16PerVector % tile_size == 0);
+  if (flash_tile_size_ == 0) {
+    // Allocation is independent of the dispatched SIMD target. No values have
+    // been stored yet, so split allocation tiles into native K/V tiles once.
+    for (auto& ptr : kv_head_ptrs) {
+      const size_t factor = kMaxBF16PerVector / tile_size;
+      MatPtr reshaped("kv_head", ptr.GetType(),
+                      Extents2D(ptr.Rows() * factor, ptr.Cols() / factor));
+      reshaped.SetPtr(ptr.RowBytes(0), reshaped.Cols());
+      ptr = reshaped;
+    }
+    flash_tile_size_ = tile_size;
+  }
+  HWY_ASSERT(flash_tile_size_ == tile_size);
+  for (size_t h = 0; h < layer_heads_[layer]; ++h) {
+    const size_t head = layer_kv_head_offsets[layer] + h;
+    const size_t wanted =
+        HWY_MIN(seq_len_, head_windows_[head] - 1 +
+                              HWY_MAX(size_t{1}, num_tokens) + tile_size - 1);
+    const size_t rows = hwy::DivCeil(wanted, tile_size);
+    if (rows > kv_head_ptrs[head].Rows()) ResizeHead(head, rows, pos);
+  }
 }
 
-void KVCache::ResizeLayer(size_t layer, size_t rows, size_t pos) {
-  auto& old = layers_[layer];
-  LayerStorage next;
-  next.window = old.window;
-  next.cols = old.cols;
-  next.flat_cols = old.flat_cols;
-  next.flat = MatStorageT<KV_t>("kv_layer", Extents2D(rows, old.flat_cols),
-                                allocator_, MatPadding::kOdd);
-  next.k = MatStorageT<KV_t>("k_layer", Extents2D(rows, old.cols), allocator_,
-                             MatPadding::kPacked);
-  next.v = MatStorageT<KV_t>("v_layer", Extents2D(rows, old.cols), allocator_,
-                             MatPadding::kPacked);
-  // Attention writes each live token and its trailing SIMD padding before
-  // reading. Do not fault in the unused full-context pages of global layers.
-  if (old.flat.Rows() != 0) {
-    const size_t first = pos - HWY_MIN(pos, old.window - 1);
-    for (size_t p = first; p < pos; ++p) {
-      hwy::CopyBytes(old.flat.Row(p % old.flat.Rows()), next.flat.Row(p % rows),
-                     old.flat_cols * sizeof(KV_t));
-    }
-    // Storage may already have been reshaped for the active SIMD target.
-    const size_t tile = old.k.Cols() / old.cols;
-    next.k.ReshapePackedRowsToCols(tile);
-    next.v.ReshapePackedRowsToCols(tile);
-    for (size_t p = first / tile; p < hwy::DivCeil(pos, tile); ++p) {
-      hwy::CopyBytes(old.k.Row(p % old.k.Rows()), next.k.Row(p % next.k.Rows()),
-                     old.k.Cols() * sizeof(KV_t));
-      hwy::CopyBytes(old.v.Row(p % old.v.Rows()), next.v.Row(p % next.v.Rows()),
-                     old.v.Cols() * sizeof(KV_t));
-    }
+void KVCache::ResizeHead(size_t head, size_t rows, size_t pos) {
+  auto& old = kv_head_ptrs[head];
+  MatPtr next("kv_head", old.GetType(), Extents2D(rows, old.Cols()));
+  next.SetLayout(old.GetLayout());
+  MatOwner owner;
+  owner.AllocateFor(next, allocator_, MatPadding::kPacked);
+  const size_t first = pos - HWY_MIN(pos, head_windows_[head] - 1);
+  for (size_t t = first / flash_tile_size_;
+       t < hwy::DivCeil(pos, flash_tile_size_); ++t) {
+    hwy::CopyBytes(old.RowBytes(t % old.Rows()), next.RowBytes(t % rows),
+                   old.Cols() * old.ElementBytes());
   }
-  old = std::move(next);
+  old = next;
+  kv_head_owners_[head] = std::move(owner);
+}
+
+MatPtrT<KV_t> KVCache::FlashK(size_t layer, size_t head) const {
+  HWY_DASSERT(attention_impl_ == AttentionImpl::kFlash &&
+              flash_tile_size_ != 0);
+  MatPtrT<KV_t> view(kv_head_ptrs[layer_kv_head_offsets[layer] + head]);
+  view.OverrideCols(view.Cols() / 2);
+  return view;
+}
+
+MatPtrT<KV_t> KVCache::FlashV(size_t layer, size_t head) const {
+  auto view = FlashK(layer, head);
+  view.SetPtr(view.Row(0) + view.Cols(), view.Stride());
+  return view;
 }
 
 void KVCache::Clear() {
   if (kv_cache.HasPtr()) ZeroInit(kv_cache);
-  if (k_cache.HasPtr()) ZeroInit(k_cache);
-  if (v_cache.HasPtr()) ZeroInit(v_cache);
-  if (compact_local_kv_cache_ptr.HasPtr()) ZeroInit(compact_local_kv_cache_ptr);
-  if (compact_global_kv_cache_ptr.HasPtr())
-    ZeroInit(compact_global_kv_cache_ptr);
-  for (auto& layer : layers_) {
-    if (!layer.flat.HasPtr()) continue;
-    ZeroInit(layer.flat);
-    ZeroInit(layer.k);
-    ZeroInit(layer.v);
-  }
+  for (auto& ptr : kv_head_ptrs) ZeroInit(ptr);
+  if (ds_state.HasPtr()) ZeroInit(ds_state);
+  if (ds_state_snapshot.HasPtr()) ZeroInit(ds_state_snapshot);
 }
 
 size_t KVCache::AllocatedBytes() const {
   const auto bytes = [](const MatPtr& mat) {
     return mat.Rows() * mat.Stride() * mat.ElementBytes();
   };
-  size_t total = bytes(kv_cache) + bytes(k_cache) + bytes(v_cache) +
-                 bytes(compact_local_kv_cache_ptr) +
-                 bytes(compact_global_kv_cache_ptr) + bytes(ds_state) +
-                 bytes(ds_state_snapshot);
-  for (const auto& layer : layers_) {
-    total += bytes(layer.flat) + bytes(layer.k) + bytes(layer.v);
-  }
+  size_t total = bytes(kv_cache) + bytes(ds_state) + bytes(ds_state_snapshot);
+  for (const auto& ptr : kv_head_ptrs) total += bytes(ptr);
   return total;
 }
 
-KVCache KVCache::Copy() {
-  if (HasLayerCaches()) {
-    KVCache copy(allocator_);
-    copy.seq_len_ = seq_len_;
-    copy.num_layers = num_layers;
-    copy.kv_heads = kv_heads;
-    copy.qkv_dim = qkv_dim;
-    copy.rounded_qkv_dim = rounded_qkv_dim;
-    copy.k_v_cols = k_v_cols;
-    copy.layer_sources_ = layer_sources_;
-    copy.layer_flat_offsets = layer_flat_offsets;
-    copy.layer_k_v_offsets = layer_k_v_offsets;
-    copy.layer_kv_head_offsets = layer_kv_head_offsets;
-    copy.rounded_qkv_dims = rounded_qkv_dims;
-    copy.layers_.resize(layers_.size());
-    for (size_t i = 0; i < layers_.size(); ++i) {
-      const auto& layer = layers_[i];
-      if (!layer.flat.HasPtr()) continue;
-      copy.layers_[i].window = layer.window;
-      copy.layers_[i].cols = layer.cols;
-      copy.layers_[i].flat_cols = layer.flat_cols;
-      copy.ResizeLayer(i, layer.flat.Rows(), 0);
-      auto& dest = copy.layers_[i];
-      const size_t tile = layer.k.Cols() / layer.cols;
-      dest.k.ReshapePackedRowsToCols(tile);
-      dest.v.ReshapePackedRowsToCols(tile);
-      CopyMat(layer.flat, dest.flat);
-      CopyMat(layer.k, dest.k);
-      CopyMat(layer.v, dest.v);
-    }
-    return copy;
+KVCache KVCache::Copy() const {
+  KVCache copy(allocator_);
+  copy.seq_len_ = seq_len_;
+  copy.attention_impl_ = attention_impl_;
+  copy.flash_tile_size_ = flash_tile_size_;
+  copy.num_layers = num_layers;
+  copy.kv_heads = kv_heads;
+  copy.qkv_dim = qkv_dim;
+  copy.layer_flat_offsets = layer_flat_offsets;
+  copy.layer_kv_head_offsets = layer_kv_head_offsets;
+  copy.layer_heads_ = layer_heads_;
+  copy.head_windows_ = head_windows_;
+  copy.head_dims_ = head_dims_;
+  copy.kv_head_ptrs = kv_head_ptrs;
+  copy.kv_head_owners_.resize(kv_head_ptrs.size());
+  for (size_t h = 0; h < kv_head_ptrs.size(); ++h) {
+    copy.kv_head_owners_[h].AllocateFor(copy.kv_head_ptrs[h], allocator_,
+                                        MatPadding::kPacked);
+    CopyMat(kv_head_ptrs[h], copy.kv_head_ptrs[h]);
   }
-  KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
-
-  CopyMat(kv_cache, copy.kv_cache);
-  if (compact_local_kv_cache_ptr.HasPtr()) {
-    CopyMat(compact_local_kv_cache_ptr, copy.compact_local_kv_cache_ptr);
+  if (kv_cache.HasPtr()) {
+    copy.kv_cache = MatStorageT<KV_t>("kv", kv_cache.Extents(), allocator_,
+                                      MatPadding::kOdd);
+    CopyMat(kv_cache, copy.kv_cache);
   }
-  if (compact_global_kv_cache_ptr.HasPtr()) {
-    CopyMat(compact_global_kv_cache_ptr, copy.compact_global_kv_cache_ptr);
-  }
-  copy.compact_kv_cache_ptr = compact_global_kv_cache_ptr.HasPtr()
-                                  ? copy.compact_global_kv_cache_ptr
-                                  : copy.compact_local_kv_cache_ptr;
-  copy.tiled_seq_len = tiled_seq_len;
-  if (ds_state.Rows() > 0) {
+  if (ds_state.HasPtr()) {
     copy.ds_state = MatStorageT<float>("ds_state", ds_state.Extents(),
                                        allocator_, MatPadding::kPacked);
     CopyMat(ds_state, copy.ds_state);
@@ -630,12 +329,8 @@ KVCache KVCache::Copy() {
         MatStorageT<float>("ds_snap", ds_state_snapshot.Extents(), allocator_,
                            MatPadding::kPacked);
     CopyMat(ds_state_snapshot, copy.ds_state_snapshot);
-    copy.ds_state_offsets = ds_state_offsets;
   }
-  copy.layer_flat_offsets = layer_flat_offsets;
-  copy.layer_k_v_offsets = layer_k_v_offsets;
-  copy.rounded_qkv_dims = rounded_qkv_dims;
-  copy.layer_kv_head_offsets = layer_kv_head_offsets;
+  copy.ds_state_offsets = ds_state_offsets;
   return copy;
 }
 

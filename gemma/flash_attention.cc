@@ -2544,8 +2544,6 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                                query_norm_scale, layer_idx, activations, ctx);
   const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const size_t qkv_dim = layer_config.qkv_dim;
-  const size_t seq_len =
-      static_cast<size_t>(activations.div_seq_len.GetDivisor());
 
   // Resolve KV cache layer index
   const size_t kv_layer_idx =
@@ -2579,20 +2577,9 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     GCPP_ZONE(ctx, worker, Zones::kFlashAttentionFlashAttention);
     auto& param = params[task];
-    auto& view = qbatch.KV(param.qi_index);
-    auto& cache = *view.cache;
-    const bool ring = cache.HasLayerCaches();
-    auto& kT_cache = ring ? cache.LayerK(kv_layer_idx) : view.k_cache;
-    auto& vT_cache = ring ? cache.LayerV(kv_layer_idx) : view.v_cache;
-    const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
-    const size_t rows = ring ? kT_cache.Rows() : hwy::DivCeil(seq_len, 2 * kNF);
-    const size_t offset =
-        ring ? param.kv_head * kRoundedQkvDim * 2 * kNF
-             : cache.KOrVOffset(kv_layer_idx, param.kv_head, kNF);
-    MatPtrT<KV_t> kT("k_T_view", Extents2D(rows, kRoundedQkvDim * 2 * kNF));
-    kT.SetPtr(kT_cache.Row(0) + offset, kT_cache.Stride());
-    MatPtrT<KV_t> vT("v_T_view", Extents2D(rows, kRoundedQkvDim * 2 * kNF));
-    vT.SetPtr(vT_cache.Row(0) + offset, vT_cache.Stride());
+    const auto& cache = *qbatch.KV(param.qi_index).cache;
+    auto kT = cache.FlashK(kv_layer_idx, param.kv_head);
+    auto vT = cache.FlashV(kv_layer_idx, param.kv_head);
     MatPtrT<float>& att_out =
         param.i_of_n == 0 ? activations.att_out : activations.att_out_reps;
     DispatchTileFlashAttention148(param, activations.q_bf, kT, vT, layer_idx,

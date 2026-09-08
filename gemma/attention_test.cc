@@ -5,20 +5,22 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
 #include "gemma/activations.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
 #include "gemma/kv_cache.h"
 #include "gemma/weights.h"
+#include "gtest/gtest.h"
+#include "hwy/aligned_allocator.h"
+#include "hwy/base.h"
 #include "ops/matmul.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
-#include "hwy/aligned_allocator.h"
-#include "hwy/base.h"
 #ifndef HWY_DISABLED_TARGETS
 // These tests aren't designed to suss out instruction set specific problems.
 // Disable most targets to keep the tests fast and simple and not have to
@@ -74,8 +76,10 @@ struct TestState {
 };
 
 struct TestModelState {
-  TestModelState(TestState& state)
-      : config(Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT),
+  TestModelState(TestState& state,
+                 ModelConfig model_config = ModelConfig(
+                     Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT))
+      : config(std::move(model_config)),
         tensor_info_registry(config),
         layer_config(config.layer_configs[0]),
         layer(0, layer_config, tensor_info_registry) {
@@ -205,26 +209,24 @@ void CompareKVCacheWithGolden(
     const float (&v_golden)[kNumTokens][kQBatchSize][kDims]) {
   const size_t qbatch_size = kv_caches.size();
   ASSERT_EQ(kQBatchSize, qbatch_size);
-  const size_t start_offset = 0;
-  const size_t qkv_dim = config.layer_configs[0].qkv_dim;
-
   hwy::AlignedFreeUniquePtr<float[]> actual_k_row =
       hwy::AllocateAligned<float>(kDims);
   hwy::AlignedFreeUniquePtr<float[]> actual_v_row =
       hwy::AllocateAligned<float>(kDims);
 
-  const size_t cache_layer_size = config.layer_configs[layer].CacheLayerSize();
-  const size_t head_offset = kv_head * qkv_dim * 2;
-  const size_t kv_offset = layer * cache_layer_size + head_offset;
+  const size_t tile = 2 * hn::Lanes(hn::ScalableTag<float>());
 
   for (size_t token_idx = 0; token_idx < kNumTokens; ++token_idx) {
     for (size_t qi = 0; qi < kQBatchSize; ++qi) {
-      const BF16* cache_row =
-          kv_caches[qi].kv_cache.Row(start_offset + token_idx);
+      auto k = kv_caches[qi].FlashK(layer, kv_head);
+      auto v = kv_caches[qi].FlashV(layer, kv_head);
+      const size_t row = (token_idx / tile) % k.Rows();
+      const size_t in_tile = token_idx % tile;
       for (size_t j = 0; j < kDims; ++j) {
-        actual_k_row[j] = hwy::ConvertScalarTo<float>(cache_row[kv_offset + j]);
-        actual_v_row[j] =
-            hwy::ConvertScalarTo<float>(cache_row[kv_offset + qkv_dim + j]);
+        actual_k_row[j] = hwy::ConvertScalarTo<float>(
+            k.Row(row)[(j / 2) * 2 * tile + 2 * in_tile + j % 2]);
+        actual_v_row[j] = hwy::ConvertScalarTo<float>(
+            v.Row(row)[(j / tile) * tile * tile + in_tile * tile + j % tile]);
       }
       EXPECT_TRUE(CompareArraySimilar(
           k_golden[token_idx][qi], actual_k_row.get(), kDims,
@@ -571,6 +573,116 @@ void RunAttentionTest(AttentionImpl attention_impl) {
 
 void TestGemmaAttentionFlash() { RunAttentionTest(AttentionImpl::kFlash); }
 
+// Exercise projection, padding and attention together, comparing bounded local
+// storage with a full-context allocation while using the same attention window.
+void TestCompactAttentionBatches() {
+  TestState state;
+  ModelConfig config(Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT);
+  config.model_dim = 64;
+  config.max_seq_len = 134;
+  config.num_layers = 1;
+  config.layer_configs.resize(1);
+  auto& lc = config.layer_configs[0];
+  lc.model_dim = 64;
+  lc.heads = 2;
+  lc.kv_heads = 1;
+  lc.qkv_dim = 32;
+  lc.ff_hidden_dim = 128;
+  config.attention_window_sizes = {17};
+  TestModelState model(state, config);
+  auto full_config = config;
+  full_config.attention_window_sizes = {config.max_seq_len};
+  InferenceArgs inference;
+  inference.seq_len = config.max_seq_len;
+  inference.prefill_tbatch_size = 1;
+  constexpr size_t queries = 2;
+  constexpr size_t max_batch = 23;
+  std::vector<KVCache> compact, full;
+  for (size_t i = 0; i < queries; ++i) {
+    compact.emplace_back(config, inference, state.ctx.allocator);
+    full.emplace_back(full_config, inference, state.ctx.allocator);
+  }
+  std::vector<int> tokens(config.max_seq_len, 1);
+  std::vector<PromptTokens> prompts;
+  for (size_t i = 0; i < queries; ++i) prompts.emplace_back(tokens);
+  AllQueries compact_queries(
+      prompts, hwy::Span<KVCache>(compact.data(), compact.size()));
+  AllQueries full_queries(prompts,
+                          hwy::Span<KVCache>(full.data(), full.size()));
+  QBatch compact_batch(0, queries, compact_queries);
+  QBatch full_batch(0, queries, full_queries);
+  RuntimeConfig runtime;
+  std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>> row_ptrs;
+  AttentionActivations compact_storage(
+      config, lc, queries * max_batch, config.max_seq_len, runtime,
+      state.ctx.pools.MaxWorkers(), state.ctx.allocator, row_ptrs);
+  AttentionActivations full_storage(
+      config, lc, queries * max_batch, config.max_seq_len, runtime,
+      state.ctx.pools.MaxWorkers(), state.ctx.allocator, row_ptrs);
+  AttentionActivationsPtrs compact_att(config, config.max_seq_len,
+                                       compact_storage);
+  AttentionActivationsPtrs full_att(config, config.max_seq_len, full_storage);
+  const auto run_batch = [&](size_t count, QBatch& compact_qbatch,
+                             QBatch& full_qbatch) {
+    compact_att.SetBatchSize(compact_qbatch.Size() * count);
+    full_att.SetBatchSize(compact_qbatch.Size() * count);
+    FillRandom(compact_att.pre_att_rms_out, 46);
+    CopyMat(compact_att.pre_att_rms_out, full_att.pre_att_rms_out);
+    GemmaAttention(count, 0, model.layer, compact_att, compact_qbatch,
+                   state.env, AttentionImpl::kFlash, 0);
+    // The first call registers these matrix shapes. Pin their plans before
+    // comparing storage, so autotuning cannot change BF16 rounding between
+    // the two runs. Recompute the current compact batch with the fixed plans.
+    const auto fix_plan = [](auto& tuner) {
+      if (tuner.Best() || !tuner.HasCandidates()) return;
+      const auto candidate = tuner.NextConfig();
+      tuner = std::decay_t<decltype(tuner)>();
+      tuner.SetCandidates({candidate});
+      for (size_t round = 0; round < 4; ++round) tuner.NotifyTicks(1);
+    };
+    for (auto& cluster : state.env.per_cluster) {
+      for (size_t i = 0; i < cluster.keys.Keys().size(); ++i) {
+        fix_plan(cluster.per_key[i].autotune);
+        fix_plan(cluster.per_key[i].autotune_par_a);
+      }
+    }
+    GemmaAttention(count, 0, model.layer, compact_att, compact_qbatch,
+                   state.env, AttentionImpl::kFlash, 0);
+    GemmaAttention(count, 0, model.layer, full_att, full_qbatch, state.env,
+                   AttentionImpl::kFlash, 0);
+    for (size_t r = 0; r < compact_qbatch.Size() * count; ++r) {
+      for (size_t c = 0; c < compact_att.att_out.Cols(); ++c) {
+        ASSERT_EQ(compact_att.att_out.Row(r)[c], full_att.att_out.Row(r)[c])
+            << "pos=" << compact_qbatch.Pos(0) << " count=" << count
+            << " row=" << r << " col=" << c;
+      }
+    }
+    for (size_t i = 0; i < compact_qbatch.Size(); ++i) {
+      compact_qbatch.MutablePos(i) += count;
+      full_qbatch.MutablePos(i) += count;
+    }
+  };
+  // Start the second query earlier to cover different padding boundaries in
+  // one interleaved batch, then advance both through wraps and growth.
+  auto compact_second = compact_batch.Single(1);
+  auto full_second = full_batch.Single(1);
+  run_batch(3, compact_second, full_second);
+  ASSERT_FALSE(::testing::Test::HasFailure());
+  const auto run = [&](size_t count) {
+    run_batch(count, compact_batch, full_batch);
+  };
+  // Several wraps, then growth at an unaligned position, then the context tail.
+  for (size_t i = 0; i < 9; ++i) {
+    run(7);
+    ASSERT_FALSE(::testing::Test::HasFailure());
+  }
+  run(23);
+  run(23);
+  run(21);
+  run(1);
+  EXPECT_LT(compact[0].LayerCapacity(0), full[0].LayerCapacity(0));
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -580,6 +692,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(AttentionTest);
 HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionFlash);
+HWY_EXPORT_AND_TEST_P(AttentionTest, TestCompactAttentionBatches);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

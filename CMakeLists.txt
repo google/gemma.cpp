@@ -383,6 +383,9 @@ set(GEMMA_TEST_FILES
   compression/sfp_test.cc
   deepseek/deepseek_test.cc
   gemma/kv_cache_test.cc
+  gemma/attention_test.cc
+  gemma/flash_attention_test.cc
+  gemma/tiled_attention_test.cc
   gemma/gemma_args_test.cc
   gemma/tensor_info_test.cc
   gemma/weights_test.cc
@@ -397,18 +400,10 @@ set(GEMMA_TEST_FILES
   util/threading_test.cc
 )
 
-# Tests that build cleanly but can't be auto-discovered:
-#   - gemma_test / paligemma_test: integration tests requiring a --weights
-#     path; their main() loads the model before gtest can list the cases.
-#   - flash_attention_test: hits a NULL deref under all attainable SIMD
-#     targets on upstream/dev (pre-existing, reproducible without any of the
-#     changes in this PR — likely fallout from the "old" attention removal in
-#     commit d58a23d). Built so the target name still works; left out of
-#     gtest_discover_tests until upstream restores the buffer it relied on.
+# Integration tests require model files, so build them without auto-discovery.
 set(GEMMA_INTEGRATION_TEST_FILES
   evals/gemma_test.cc
   paligemma/paligemma_test.cc
-  gemma/flash_attention_test.cc
 )
 
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)

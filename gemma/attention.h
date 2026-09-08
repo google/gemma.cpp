@@ -42,15 +42,6 @@ inline size_t StartPos(size_t pos, const ModelConfig& config,
   return pos - HWY_MIN(att_window_size - 1, pos);
 }
 
-// The k-cache and v-cache are setup without knowing NF. So if it hasn't been
-// done already, reshape it to take NF into account. Must be called before
-// FlashAttention.
-inline void MaybeReshapeCache(const size_t default_cols, MatPtrT<KV_t>& cache) {
-  if (default_cols == cache.Cols()) {
-    cache.ReshapePackedRowsToCols(2 * FloatsPerVector());
-  }
-}
-
 // Passed to HWY_VISIT_TARGETS; declares for one target.
 #define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                               \
   namespace NAMESPACE {                                                       \

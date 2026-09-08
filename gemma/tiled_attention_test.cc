@@ -39,8 +39,6 @@ HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
 
-using ::testing::FloatNear;
-using ::testing::Pointwise;
 
 struct AttentionTestEnv {
   AttentionTestEnv(
@@ -78,13 +76,13 @@ struct AttentionTestEnv {
     kv_caches.reserve(qbatch_size);
     float unpredictable = hwy::Unpredictable1() * 0.01f;
     for (size_t q = 0; q < qbatch_size; ++q) {
-      kv_caches.emplace_back(model_config, inference_args, runtime_config,
-                             ctx.allocator);
-      if (kv_caches.back().compact_kv_cache_ptr.HasPtr()) {
+      kv_caches.emplace_back(model_config, inference_args,
+                             runtime_config.attention_impl, ctx.allocator,
+                             runtime_config.kv_cache_type);
+      for (auto& compact_kv : kv_caches.back().kv_head_ptrs) {
         const size_t tile_size = gcpp::KVCache::kTileSize;
         gcpp::DecodedTile decoded(qkv_dim, tile_size);
-        for (size_t i = 0; i < kv_caches.back().compact_kv_cache_ptr.Rows();
-             ++i) {
+        for (size_t i = 0; i < compact_kv.Rows(); ++i) {
           for (size_t token = 0; token < tile_size; ++token) {
             for (size_t dim = 0; dim < qkv_dim; ++dim) {
               size_t j_k = dim * tile_size + token;
@@ -98,7 +96,6 @@ struct AttentionTestEnv {
           bool transposed =
               attention_impl == AttentionImpl::kFlashTransposedQsBF16;
           gcpp::KVEncoding encoding;
-          const MatPtr& compact_kv = kv_caches.back().compact_kv_cache_ptr;
           const Type type = compact_kv.GetType();
           const MatPtr::Layout layout = compact_kv.GetLayout();
           if (type == Type::kInt8) {
@@ -120,15 +117,11 @@ struct AttentionTestEnv {
           HWY_ASSERT(bytes_opt.has_value());
           size_t bytes = bytes_opt.value();
           hwy::Span<char> encoded(
-              reinterpret_cast<char*>(
-                  kv_caches.back().compact_kv_cache_ptr.RowBytes(i)),
-              bytes);
+              reinterpret_cast<char*>(compact_kv.RowBytes(i)), bytes);
           bool encode_success =
               gcpp::EncodeTile(encoding, decoded, qkv_dim, encoded);
           HWY_ASSERT(encode_success);
         }
-      } else {
-        FillMatPtrT(kv_caches.back().kv_cache);
       }
     }
 
@@ -406,27 +399,21 @@ void TestLocalAttentionForAllHeadsTokensAndBatch() {
   for (size_t token_idx = 0; token_idx < num_tokens; ++token_idx) {
     for (size_t q_batch_idx = 0; q_batch_idx < qbatch_size; ++q_batch_idx) {
       size_t b = token_idx * qbatch_size + q_batch_idx;
-      EXPECT_THAT(
-          absl::MakeSpan(test_env.activations->attention.softmax_d.Row(b),
-                         num_heads),
-          Pointwise(FloatNear(1e-3f), absl::MakeSpan(exp_denominator_sums_gold)
-                                          .subspan(b * num_heads, num_heads)));
-      EXPECT_THAT(
-          absl::MakeSpan(test_env.activations->attention.softmax_max.Row(b),
-                         num_heads),
-          Pointwise(FloatNear(1e-3f), absl::MakeSpan(max_logits_gold)
-                                          .subspan(b * num_heads, num_heads)));
+      for (size_t h = 0; h < num_heads; ++h) {
+        EXPECT_NEAR(test_env.activations->attention.softmax_d.Row(b)[h],
+                    exp_denominator_sums_gold[b * num_heads + h], 1e-3f);
+        EXPECT_NEAR(test_env.activations->attention.softmax_max.Row(b)[h],
+                    max_logits_gold[b * num_heads + h], 1e-3f);
+      }
       for (size_t kv_h = 0; kv_h < num_kv_heads; ++kv_h) {
         for (size_t g = 0; g < group_size; ++g) {
           const size_t q_h = kv_h * group_size + g;
           size_t expected_q_idx = b * num_heads + q_h;
-          EXPECT_THAT(
-              absl::MakeSpan(test_env.activations->attention.att_out.Row(b) +
-                                 q_h * qkv_dim,
-                             qkv_dim),
-              Pointwise(FloatNear(1e-3f),
-                        absl::MakeSpan(att_out_gold)
-                            .subspan(expected_q_idx * qkv_dim, qkv_dim)));
+          for (size_t d = 0; d < qkv_dim; ++d) {
+            EXPECT_NEAR(test_env.activations->attention.att_out.Row(
+                            b)[q_h * qkv_dim + d],
+                        att_out_gold[expected_q_idx * qkv_dim + d], 1e-3f);
+          }
         }
       }
     }
