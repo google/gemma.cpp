@@ -18,13 +18,7 @@ include(FetchContent)
 
 project(gemma)
 
-# MSVC rejects the designated initializers used throughout this codebase in
-# C++17 mode (C7555); they are standard in C++20.
-if(MSVC)
-  set(GEMMA_CXX_STANDARD 20)
-else()
-  set(GEMMA_CXX_STANDARD 17)
-endif()
+set(GEMMA_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD ${GEMMA_CXX_STANDARD})
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -68,7 +62,7 @@ if(GEMMA_ONEDNN_BRGEMM OR GEMMA_ONEDNN_MATMUL)
 endif()
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/GemmaFetch.cmake)
 
-gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa EXCLUDE_FROM_ALL)
+gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 71d029bc9e1d27f8e231b2502e240ae89b8ee7bc EXCLUDE_FROM_ALL)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)

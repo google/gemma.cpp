@@ -35,7 +35,7 @@ else()
   endfunction()
 endif()
 
-gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 9d5b12611fcfe145f988771c45e7bae9f78cb7fa)
+gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 71d029bc9e1d27f8e231b2502e240ae89b8ee7bc)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
   target_compile_definitions(hwy PUBLIC HWY_DISABLED_TARGETS=HWY_AVX10_2)
