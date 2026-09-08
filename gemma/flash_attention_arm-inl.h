@@ -630,8 +630,6 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
                   pair_idx * 2 * kBf16Lanes;
       using D64 = hn::Repartition<uint64_t, DBF_T>;
       const D64 d64;
-      using D64_half = hn::Half<D64>;
-      const D64_half d64_half;
       using dbf_half_t = hn::Half<DBF_T>;
       const dbf_half_t dbf_half;
 
@@ -643,18 +641,15 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
 
       hn::Vec<DBF_T> A0, A1;
       if constexpr (kRegBytes > 16) {
-        auto ql0_64 = hn::BitCast(d64_half, ql0_bf);
-        auto ql1_64 = hn::BitCast(d64_half, ql1_bf);
-        // This interleaves within 128-bit block so it's fast.
-        auto lo_l = hn::InterleaveLower(d64_half, ql0_64, ql1_64);
-        auto hi_l = hn::InterleaveUpper(d64_half, ql0_64, ql1_64);
-        A0 = hn::BitCast(dbf, hn::Combine(d64, hi_l, lo_l));
+        // Interleave 64-bit blocks of Q0 and Q1 across the whole vector.
+        const auto q0_bf = hn::Combine(dbf, qh0_bf, ql0_bf);
+        const auto q1_bf = hn::Combine(dbf, qh1_bf, ql1_bf);
 
-        auto qh0_64 = hn::BitCast(d64_half, qh0_bf);
-        auto qh1_64 = hn::BitCast(d64_half, qh1_bf);
-        auto lo_h = hn::InterleaveLower(d64_half, qh0_64, qh1_64);
-        auto hi_h = hn::InterleaveUpper(d64_half, qh0_64, qh1_64);
-        A1 = hn::BitCast(dbf, hn::Combine(d64, hi_h, lo_h));
+        const auto q0_64 = hn::BitCast(d64, q0_bf);
+        const auto q1_64 = hn::BitCast(d64, q1_bf);
+
+        A0 = hn::BitCast(dbf, hn::InterleaveWholeLower(d64, q0_64, q1_64));
+        A1 = hn::BitCast(dbf, hn::InterleaveWholeUpper(d64, q0_64, q1_64));
       } else {
         A0 = hn::Combine(dbf, ql1_bf, ql0_bf);
         A1 = hn::Combine(dbf, qh1_bf, qh0_bf);
