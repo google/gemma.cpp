@@ -2146,7 +2146,9 @@ void ComputeFlashParams(size_t num_tokens, const size_t target_parallelism,
         const size_t prefix_end = qbatch.PrefixEnd(qi);
         if (prefix_end > 0 && prefix_end - 1 > last) {
           // last_pos is inclusive.
-          last = prefix_end - 1;
+          const size_t window_size =
+              activations.config.attention_window_sizes[layer_idx];
+          last = HWY_MIN(prefix_end - 1, pos + window_size - 1);
         }
         for (size_t head_group = 0; head_group < kHeadGroups; ++head_group) {
           size_t tasks_remaining = kHeadGroups - head_group +

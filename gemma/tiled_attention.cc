@@ -213,6 +213,9 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                 RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, k_f32,
                                qkv_dim, env.ctx, worker);
               });
+            } else if (layer_config.post_qk == PostQKType::NormLocalRope ||
+                       layer_config.use_qk_norm) {
+              RMSNormNoScaleInplace(k_f32, qkv_dim, env.ctx, worker);
             }
             PositionalEncodingQK(
                 k_f32, layer_idx, activations, env.ctx, worker,
@@ -930,7 +933,10 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         // that into account.
         const size_t prefix_end = qbatch.PrefixEnd(current_qbatch_idx);
         if (prefix_end > 0 && prefix_end - 1 > last_context_pos) {
-          last_context_pos = prefix_end - 1;
+          const size_t window_size =
+              activations.config.attention_window_sizes[layer_idx];
+          last_context_pos =
+              std::min(prefix_end - 1, last_context_pos + window_size - 1);
         }
         size_t total_num_context_tokens =
             last_context_pos - start_context_pos + 1;
@@ -1007,12 +1013,31 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
           size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
           int64_t global_query_pos = qbatch.Pos(current_qbatch_idx) + token_idx;
-          // Intersect context to attend to for this specific query token
-          // to the context tokens of the current subtask.
-          int64_t query_last_context_pos = std::min(
-              static_cast<int64_t>(last_context_pos), global_query_pos);
-          // This max is to not go into negative values, for the same reason we
-          // use int64_t and not size_t here.
+          // Compute the range of context tokens [query_start_context_pos,
+          // query_last_context_pos] that this query token should attend to
+          // within the current KV tile/subtask.
+
+          // For standard causal attention, a token cannot attend to future
+          // positions (query_last_pos <= global_query_pos). For bidirectional
+          // prefix attention (prefix_end > 0), tokens within the prefix can
+          // attend forward to subsequent prefix tokens, capped by the local
+          // sliding window size.
+          int64_t query_last_pos = global_query_pos;
+          if (prefix_end > 0 &&
+              prefix_end - 1 > static_cast<size_t>(query_last_pos)) {
+            const size_t window_size =
+                activations.config.attention_window_sizes[layer_idx];
+            query_last_pos = std::min(
+                static_cast<int64_t>(prefix_end - 1),
+                global_query_pos + static_cast<int64_t>(window_size) - 1);
+          }
+          int64_t query_last_context_pos =
+              std::min(static_cast<int64_t>(last_context_pos), query_last_pos);
+
+          // The query cannot attend backward beyond the sliding window
+          // (global_query_pos - window_size + 1). Clamp to start_context_pos of
+          // the current subtask. Signed int64_t is used to avoid underflow when
+          // global_query_pos < window_size.
           int64_t query_start_context_pos = std::max(
               global_query_pos -
                   static_cast<int64_t>(
@@ -1020,13 +1045,21 @@ void LocalAttentionForAllHeadsTokensAndBatch(
                   1,
               static_cast<int64_t>(start_context_pos));
 
-          // Turn token position into KV-tile relative token positions.
-          query_last_context_pos -= rounded_down_global_start_pos;
-          query_start_context_pos -= rounded_down_global_start_pos;
-          start_pos_per_query.push_back(
-              static_cast<size_t>(query_start_context_pos));
-          last_pos_per_query.push_back(
-              static_cast<size_t>(query_last_context_pos));
+          // If the query's attention window does not overlap with this KV tile,
+          // set start_pos > last_pos (SIZE_MAX and 0) so the attention kernel
+          // skips this query.
+          if (query_last_context_pos < query_start_context_pos) {
+            start_pos_per_query.push_back(std::numeric_limits<size_t>::max());
+            last_pos_per_query.push_back(0);
+          } else {
+            // Turn token position into KV-tile relative token positions.
+            query_last_context_pos -= rounded_down_global_start_pos;
+            query_start_context_pos -= rounded_down_global_start_pos;
+            start_pos_per_query.push_back(
+                static_cast<size_t>(query_start_context_pos));
+            last_pos_per_query.push_back(
+                static_cast<size_t>(query_last_context_pos));
+          }
         }
 
         if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {

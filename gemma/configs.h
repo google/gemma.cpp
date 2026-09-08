@@ -810,6 +810,7 @@ struct ModelConfig : public IFields {
   }
 
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
+  bool IsEmbedding() const { return false; }
 
   // Major version of the model family, reflecting architecture changes. This is
   // more convenient to compare than `Model` because that also includes the
