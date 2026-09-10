@@ -1649,7 +1649,8 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace = nullptr) {
   using DF = hn::ScalableTag<float>;
   const DF df;
   using DU = hn::ScalableTag<uint32_t>;
@@ -1679,10 +1680,19 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
       q_count, qkv_dim, kBlockSize, num_loops);
   const size_t padded_q_count = layout.padded_q_count;
 
-  // Use AllocateAlignedBytes to avoid the cost of zeroing out
-  // (value-initialization).
-  auto workspace = hwy::AllocateAligned<uint8_t>(layout.total_bytes);
-  uint8_t* raw_ptr = workspace.get();
+  // Use pre-allocated worker_workspace when available, resizing up if needed.
+  hwy::AlignedFreeUniquePtr<uint8_t[]> workspace_fallback;
+  uint8_t* raw_ptr = nullptr;
+  if (worker_workspace != nullptr) {
+    auto& ws = *worker_workspace;
+    if (ws.size() < layout.total_bytes) {
+      ws.resize(layout.total_bytes);
+    }
+    raw_ptr = ws.data();
+  } else {
+    workspace_fallback = hwy::AllocateAligned<uint8_t>(layout.total_bytes);
+    raw_ptr = workspace_fallback.get();
+  }
 
   float* C_accumulators_ptr =
       HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset);
@@ -1817,11 +1827,12 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogits(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace = nullptr) {
   constexpr int kDefaultChunkSize = (HWY_REGISTERS >= 32) ? 8 : 4;
   TileFlashAttentionReturnExpSumsAndMaxLogitsImpl<kDefaultChunkSize, KV_T, Q_T>(
       kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-      att_cap, att_out, exp_denominator_sums, max_logits);
+      att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
 }
 
 void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
@@ -1830,11 +1841,12 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   CallUpcastedKVs(kvs, [&](const auto& kv_t) {
     return TileFlashAttentionReturnExpSumsAndMaxLogits(
         kv_t, q_count, q_base, {}, start_pos_per_query, last_pos_per_query,
-        att_cap, att_out, exp_denominator_sums, max_logits);
+        att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   });
 }
 
@@ -1844,12 +1856,13 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   CallUpcastedKVs(kvs, [&](const auto& kv_t) {
     return TileFlashAttentionReturnExpSumsAndMaxLogits<
         typename std::decay_t<decltype(kv_t[0])>::T, BF16>(
         kv_t, q_count, q_base, {}, start_pos_per_query, last_pos_per_query,
-        att_cap, att_out, exp_denominator_sums, max_logits);
+        att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   });
 }
 
@@ -1859,7 +1872,8 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   for ([[maybe_unused]] auto&& mat : kvs) {
     HWY_DASSERT(mat.GetType() == Type::kInt8);
   }
@@ -1868,7 +1882,8 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
 
   return TileFlashAttentionReturnExpSumsAndMaxLogits(
       matptrs_span, q_count, q_base, q_scales, start_pos_per_query,
-      last_pos_per_query, att_cap, att_out, exp_denominator_sums, max_logits);
+      last_pos_per_query, att_cap, att_out, exp_denominator_sums, max_logits,
+      worker_workspace);
 }
 
 void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
@@ -1877,7 +1892,8 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   for ([[maybe_unused]] auto&& mat : kvs) {
     HWY_DASSERT(mat.GetType() == Type::kInt8);
   }
@@ -1886,7 +1902,8 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
 
   return TileFlashAttentionReturnExpSumsAndMaxLogits(
       matptrs_span, q_count, q_base, q_scales, start_pos_per_query,
-      last_pos_per_query, att_cap, att_out, exp_denominator_sums, max_logits);
+      last_pos_per_query, att_cap, att_out, exp_denominator_sums, max_logits,
+      worker_workspace);
 }
 
 template <typename MatT>
@@ -1898,13 +1915,14 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   CallUpcastedKVs(kvs, [&](const auto& kv_t) {
     using KV_T = decltype(GetKVTypeHelper(kv_t));
     if constexpr (IsBF16<KV_T>()) {
       TileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
           kv_t, q_count, q_base, {}, start_pos_per_query, last_pos_per_query,
-          att_cap, att_out, exp_denominator_sums, max_logits);
+          att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
     }
   });
 }
@@ -1915,14 +1933,15 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   CallUpcastedKVs(kvs, [&](const auto& kv_t) {
     using KV_T = decltype(GetKVTypeHelper(kv_t));
     if constexpr (IsInt8<KV_T>()) {
       TileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
           kv_t, q_count, q_base, q_scales, start_pos_per_query,
           last_pos_per_query, att_cap, att_out, exp_denominator_sums,
-          max_logits);
+          max_logits, worker_workspace);
     }
   });
 }
