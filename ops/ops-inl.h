@@ -131,15 +131,21 @@ StaticCast(From from) noexcept {
 //         = 0.5 * x * (1 + tanh(x * (0.79788 + 0.035677 * x^2)))
 //         = x * (0.5 + 0.5 * tanh(x * (0.79788 + 0.035677 * x^2))))
 template <class D, HWY_IF_F32_D(D)>
-HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
+HWY_INLINE hn::Vec<D> GeluCdf(D d, hn::Vec<D> v) {
   const hn::Vec<D> kMul = hn::Set(d, 0.03567740813636141f);
   const hn::Vec<D> kSqrt2OverPi = hn::Set(d, 0.797884560804236f);
   const hn::Vec<D> kHalf = hn::Set(d, 0.5f);
 
   const hn::Vec<D> v2 = hn::Mul(v, v);
-  const hn::Vec<D> arg = hn::Mul(v, hn::MulAdd(kMul, v2, kSqrt2OverPi));
-  const hn::Vec<D> cdf = hn::MulAdd(kHalf, hn::Tanh(d, arg), kHalf);
-  return hn::Mul(v, cdf);
+  const hn::Vec<D> v_kMul = hn::Mul(kMul, v);
+  const hn::Vec<D> v_kSqrt = hn::Mul(kSqrt2OverPi, v);
+  const hn::Vec<D> arg = hn::MulAdd(v_kMul, v2, v_kSqrt);
+  return hn::MulAdd(kHalf, hn::Tanh(d, arg), kHalf);
+}
+
+template <class D, HWY_IF_F32_D(D)>
+HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
+  return hn::Mul(v, GeluCdf(d, v));
 }
 
 // Activation already has a profiler zone.
