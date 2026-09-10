@@ -295,7 +295,7 @@ static HWY_INLINE void ComputeQKVTransposedTile(
             }
 
             const MatPtr& compact_kv_cache_ptr =
-                qbatch.KV(query_idx).cache->compact_kv_cache_ptr;
+                qbatch.KV(query_idx).cache->kv_head_ptrs.front();
             if (compact_kv_cache_ptr.GetType() == Type::kBF16 &&
                 compact_kv_cache_ptr.GetLayout() ==
                     MatPtr::Layout::kBF16MatrixAccumulation) {
@@ -1239,7 +1239,7 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
   activations.q.OverrideCols(active_qkv_dim);
   activations.att_out.OverrideCols(active_qkv_dim);
 
-  const Type kv_type = qbatch.KV(0).cache->compact_kv_cache_ptr.GetType();
+  const Type kv_type = qbatch.KV(0).cache->kv_head_ptrs.front().GetType();
   if (kv_type == Type::kBF16) {
     ComputeQKVTransposedTile<BF16>(num_tokens, layer_idx, layer, attention_impl,
                                    activations, qbatch, flags, env);
@@ -1247,7 +1247,7 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
     ComputeQKVTransposedTile<float>(num_tokens, layer_idx, layer,
                                     attention_impl, activations, qbatch, flags,
                                     env);
-  } else if (qbatch.KV(0).cache->compact_kv_cache_ptr.GetType() ==
+  } else if (qbatch.KV(0).cache->kv_head_ptrs.front().GetType() ==
              Type::kInt8) {
     ComputeQKVTransposedTile<int8_t>(num_tokens, layer_idx, layer,
                                      attention_impl, activations, qbatch, flags,
@@ -1255,7 +1255,7 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
   } else {
     HWY_ABORT(
         "Unsupported KV cache type: %d",
-        static_cast<int>(qbatch.KV(0).cache->compact_kv_cache_ptr.GetType()));
+        static_cast<int>(qbatch.KV(0).cache->kv_head_ptrs.front().GetType()));
   }
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q,
                                layer.query_norm_scale, layer_idx, activations,

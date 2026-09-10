@@ -160,7 +160,7 @@ HWY_INLINE void QDotKTile148FloatNotNative(
   for (size_t i = 0; i < kVTileSize; ++i) {
     q_base[i] = q + q_offsets[i];
   }
-  const BF16* HWY_RESTRICT k_base = k.Row(pos / (2 * kNF));
+  const BF16* HWY_RESTRICT k_base = k.Row((pos / (2 * kNF)) % k.Rows());
   for (size_t i = 0; i < half_cols; ++i, k_base += kNF * 4) {
     // TODO(rays): Replace with decompress2.
     VBF k0_vec = hn::LoadU(dbf, k_base);
@@ -271,7 +271,7 @@ HWY_INLINE void QDotKTile148FloatNative(
   for (size_t i = 0; i < kVTileSize; ++i) {
     q_base[i] = q + q_offsets[i];
   }
-  const BF16* HWY_RESTRICT k_base = k.Row(pos / (2 * kNF));
+  const BF16* HWY_RESTRICT k_base = k.Row((pos / (2 * kNF)) % k.Rows());
   for (size_t i = 0; i < half_cols; ++i, k_base += kNF * 4) {
     VBF kvec0 = hn::LoadU(dbf, k_base);
     VBF kvec1 = hn::LoadU(dbf, k_base + kNF * 2);
@@ -336,7 +336,7 @@ HWY_INLINE void QDotKTile148BF16NotNative(
   for (size_t i = 0; i < kVTileSize; ++i) {
     q_base[i] = reinterpret_cast<const float*>(q + q_offsets[i]);
   }
-  const BF16* HWY_RESTRICT k_base = k.Row(pos / (2 * kNF));
+  const BF16* HWY_RESTRICT k_base = k.Row((pos / (2 * kNF)) % k.Rows());
   for (size_t i = 0; i < half_cols; ++i, k_base += kNF * 4) {
     VBF kvec0 = hn::LoadU(dbf, k_base);
     VBF kvec1 = hn::LoadU(dbf, k_base + kNF * 2);
@@ -438,7 +438,7 @@ HWY_INLINE void QDotKTile148BF16Native(
   for (size_t i = 0; i < kVTileSize; ++i) {
     q_base[i] = reinterpret_cast<const float*>(q + q_offsets[i]);
   }
-  const BF16* HWY_RESTRICT k_base = k.Row(pos / (2 * kNF));
+  const BF16* HWY_RESTRICT k_base = k.Row((pos / (2 * kNF)) % k.Rows());
   for (size_t i = 0; i < half_cols; ++i, k_base += kNF * 4) {
     VBF k0_vec = hn::LoadU(dbf, k_base);
     VBF k1_vec = hn::LoadU(dbf, k_base + kNF * 2);
@@ -1987,7 +1987,7 @@ Tile4FlashState TileFlashAttention148(
     constexpr size_t kMaxNF = hn::MaxLanes(df);
     size_t v_pos[2 * kMaxNF];
     for (size_t i = 0; i < kHTileSize; ++i) {
-      v_pos[i] = activations.div_seq_len.Remainder(position + i);
+      v_pos[i] = (position + i) % (v.Rows() * kHTileSize);
     }
     if constexpr (IsF32<QType>()) {
       if constexpr (HWY_NATIVE_DOT_BF16) {
@@ -2546,8 +2546,6 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
                                query_norm_scale, layer_idx, activations, ctx);
   const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const size_t qkv_dim = layer_config.qkv_dim;
-  const size_t seq_len =
-      static_cast<size_t>(activations.div_seq_len.GetDivisor());
 
   // Resolve KV cache layer index
   const size_t kv_layer_idx =
@@ -2581,21 +2579,9 @@ void FlashAttention(const size_t num_tokens, const size_t target_parallelism,
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     GCPP_ZONE(ctx, worker, Zones::kFlashAttentionFlashAttention);
     auto& param = params[task];
-    auto& kT_cache = qbatch.KV(param.qi_index).k_cache;
-    const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
-    MatPtrT<KV_t> kT("k_T_view", Extents2D(hwy::DivCeil(seq_len, 2 * kNF),
-                                           kRoundedQkvDim * 2 * kNF));
-    kT.SetPtr(kT_cache.Row(0) +
-                  qbatch.KV(param.qi_index)
-                      .cache->KOrVOffset(kv_layer_idx, param.kv_head, kNF),
-              kT_cache.Stride());
-    auto& vT_cache = qbatch.KV(param.qi_index).v_cache;
-    MatPtrT<KV_t> vT("v_T_view", Extents2D(hwy::DivCeil(seq_len, 2 * kNF),
-                                           kRoundedQkvDim * 2 * kNF));
-    vT.SetPtr(vT_cache.Row(0) +
-                  qbatch.KV(param.qi_index)
-                      .cache->KOrVOffset(kv_layer_idx, param.kv_head, kNF),
-              vT_cache.Stride());
+    const auto& cache = *qbatch.KV(param.qi_index).cache;
+    auto kT = cache.FlashK(kv_layer_idx, param.kv_head);
+    auto vT = cache.FlashV(kv_layer_idx, param.kv_head);
     MatPtrT<float>& att_out =
         param.i_of_n == 0 ? activations.att_out : activations.att_out_reps;
     DispatchTileFlashAttention148(param, activations.q_bf, kT, vT, layer_idx,

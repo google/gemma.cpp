@@ -128,26 +128,7 @@ std::vector<int> GenerateSyntheticPrompt(const gcpp::Gemma& gemma,
 }
 
 // Zero out all allocated buffers in the KV cache to ensure clean state.
-void ZeroKVCache(gcpp::KVCache& kv_cache) {
-  if (kv_cache.compact_local_kv_cache_ptr.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.compact_local_kv_cache_ptr);
-  }
-  if (kv_cache.compact_global_kv_cache_ptr.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.compact_global_kv_cache_ptr);
-  }
-  if (kv_cache.compact_kv_cache_ptr.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.compact_kv_cache_ptr);
-  }
-  if (kv_cache.kv_cache.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.kv_cache);
-  }
-  if (kv_cache.k_cache.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.k_cache);
-  }
-  if (kv_cache.v_cache.HasPtr()) {
-    gcpp::ZeroInit(kv_cache.v_cache);
-  }
-}
+void ZeroKVCache(gcpp::KVCache& kv_cache) { kv_cache.Clear(); }
 
 }  // namespace
 
@@ -252,8 +233,9 @@ int main(int argc, char** argv) {
     std::vector<gcpp::KVCache> kv_caches;
     kv_caches.reserve(num_queries);
     for (size_t i = 0; i < num_queries; ++i) {
-      kv_caches.emplace_back(gemma.Config(), args.inference, gen_config,
-                             ctx.allocator);
+      kv_caches.emplace_back(gemma.Config(), args.inference,
+                             gen_config.attention_impl, ctx.allocator,
+                             gen_config.kv_cache_type);
       ZeroKVCache(kv_caches.back());
     }
 
