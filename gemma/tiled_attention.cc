@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +73,129 @@ static HWY_INLINE void MergeOnlineSoftmax(
   accumulator_softmax_d = d_new;
 }
 
+static constexpr size_t kMergeGroupSize = 32;
+
+static HWY_INLINE void MergeOnlineSoftmaxGroup32(
+    const size_t other_task_idx, const size_t accumulator_task_idx,
+    const size_t group_start, const size_t group_count, const size_t qkv_dim,
+    AttentionActivationsPtrs& activations) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  HWY_LANES_CONSTEXPR size_t lanes = hn::Lanes(df);
+  using VF = hn::Vec<decltype(df)>;
+
+  const MatStorageT<float>& other_att_out =
+      activations.sub_task_att_out->at(other_task_idx);
+  const float* HWY_RESTRICT other_max_logits =
+      activations.sub_task_max_logits->at(other_task_idx).data() + group_start;
+  const float* HWY_RESTRICT other_exp_sums =
+      activations.sub_task_exp_denominator_sums->at(other_task_idx).data() +
+      group_start;
+
+  MatStorageT<float>& acc_att_out =
+      activations.sub_task_att_out->at(accumulator_task_idx);
+  float* HWY_RESTRICT acc_max_logits =
+      activations.sub_task_max_logits->at(accumulator_task_idx).data() +
+      group_start;
+  float* HWY_RESTRICT acc_exp_sums =
+      activations.sub_task_exp_denominator_sums->at(accumulator_task_idx)
+          .data() +
+      group_start;
+
+  HWY_ALIGN float c1_arr[kMergeGroupSize];
+  HWY_ALIGN float c2_arr[kMergeGroupSize];
+  const VF neg_inf = hn::Set(df, -std::numeric_limits<float>::max() / 2.0f);
+
+  // Folds one vector of `other` lanes into the accumulator lanes, yielding the
+  // updated running statistics and the two blend coefficients later applied to
+  // the attention rows. A lane whose denominator is zero contributes nothing:
+  // it is forced to -inf so it loses the max, and its exponential is zeroed so
+  // it cannot perturb the sum. If both sides are empty the lane collapses to
+  // (max = -inf, denominator = 0, c1 = c2 = 0), matching the sentinel that
+  // `write_group_output` uses for a group with no context.
+  const auto merge_lanes = [&](VF m_acc, VF d_acc, VF m_other, VF d_other,
+                               VF& c1, VF& c2, VF& m_new, VF& d_new) HWY_ATTR {
+    const auto mask_d_acc_zero = hn::Eq(d_acc, hn::Zero(df));
+    const auto mask_d_other_zero = hn::Eq(d_other, hn::Zero(df));
+
+    const VF m_acc_eff = hn::IfThenElse(mask_d_acc_zero, neg_inf, m_acc);
+    const VF m_other_eff = hn::IfThenElse(mask_d_other_zero, neg_inf, m_other);
+    m_new = hn::Max(m_acc_eff, m_other_eff);
+
+    VF exp_l = hn::FastExpMinusOrZero(df, hn::Sub(m_acc, m_new));
+    VF exp_r = hn::FastExpMinusOrZero(df, hn::Sub(m_other, m_new));
+
+    exp_l = hn::IfThenZeroElse(mask_d_acc_zero, exp_l);
+    exp_r = hn::IfThenZeroElse(mask_d_other_zero, exp_r);
+
+    const VF num_l = hn::Mul(d_acc, exp_l);
+    const VF num_r = hn::Mul(d_other, exp_r);
+    d_new = hn::Add(num_l, num_r);
+
+    const VF inv_d_new = hn::IfThenElseZero(hn::Gt(d_new, hn::Zero(df)),
+                                            hn::Div(hn::Set(df, 1.0f), d_new));
+    c1 = hn::Mul(num_l, inv_d_new);
+    c2 = hn::Mul(num_r, inv_d_new);
+  };
+
+  size_t q = 0;
+  for (; q + lanes <= group_count; q += lanes) {
+    VF c1, c2, m_new, d_new;
+    merge_lanes(hn::LoadU(df, acc_max_logits + q),
+                hn::LoadU(df, acc_exp_sums + q),
+                hn::LoadU(df, other_max_logits + q),
+                hn::LoadU(df, other_exp_sums + q), c1, c2, m_new, d_new);
+
+    hn::StoreU(c1, df, c1_arr + q);
+    hn::StoreU(c2, df, c2_arr + q);
+    hn::StoreU(m_new, df, acc_max_logits + q);
+    hn::StoreU(d_new, df, acc_exp_sums + q);
+  }
+  // Remaining lanes, if any. `LoadN` zero-fills past `remaining`, so the unused
+  // lanes look like empty accumulators and are discarded by `StoreN`.
+  if (q < group_count) {
+    const size_t remaining = group_count - q;
+    VF c1, c2, m_new, d_new;
+    merge_lanes(hn::LoadN(df, acc_max_logits + q, remaining),
+                hn::LoadN(df, acc_exp_sums + q, remaining),
+                hn::LoadN(df, other_max_logits + q, remaining),
+                hn::LoadN(df, other_exp_sums + q, remaining), c1, c2, m_new,
+                d_new);
+
+    hn::StoreN(c1, df, c1_arr + q, remaining);
+    hn::StoreN(c2, df, c2_arr + q, remaining);
+    hn::StoreN(m_new, df, acc_max_logits + q, remaining);
+    hn::StoreN(d_new, df, acc_exp_sums + q, remaining);
+  }
+
+  for (size_t i = 0; i < group_count; ++i) {
+    const float c1 = c1_arr[i];
+    const float c2 = c2_arr[i];
+    if (c2 == 0.0f) continue;
+    float* HWY_RESTRICT acc_row = acc_att_out.Row(group_start + i);
+    const float* HWY_RESTRICT other_row = other_att_out.Row(group_start + i);
+    if (c1 == 0.0f) {
+      hwy::CopyBytes(other_row, acc_row, qkv_dim * sizeof(float));
+    } else {
+      const VF vc1 = hn::Set(df, c1);
+      const VF vc2 = hn::Set(df, c2);
+      size_t d = 0;
+      for (; d + lanes <= qkv_dim; d += lanes) {
+        VF va = hn::LoadU(df, acc_row + d);
+        VF vo = hn::LoadU(df, other_row + d);
+        hn::StoreU(hn::MulAdd(vo, vc2, hn::Mul(va, vc1)), df, acc_row + d);
+      }
+      if (d < qkv_dim) {
+        const size_t remaining_d = qkv_dim - d;
+        VF va = hn::LoadN(df, acc_row + d, remaining_d);
+        VF vo = hn::LoadN(df, other_row + d, remaining_d);
+        hn::StoreN(hn::MulAdd(vo, vc2, hn::Mul(va, vc1)), df, acc_row + d,
+                   remaining_d);
+      }
+    }
+  }
+}
+
 template <typename T>
 float AbsMaxOfSpan(hwy::Span<const T> span) {
   namespace hn = hwy::HWY_NAMESPACE;
@@ -128,9 +252,18 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   // Compute the combined KV output from pre_att_rms_out.
   // The output shape is [num_interleaved, kv_heads * 2 * qkv_dim].
   const size_t kv_out_cols = kv_heads * 2 * qkv_dim;
-  hwy::AlignedFreeUniquePtr<float[]> kv_out_mem =
-      hwy::AllocateAligned<float>(num_interleaved * kv_out_cols);
-  float* kv_out_data = kv_out_mem.get();
+  hwy::AlignedFreeUniquePtr<float[]> kv_out_mem_fallback;
+  float* kv_out_data = nullptr;
+  if (activations.kv_out_mem != nullptr) {
+    if (activations.kv_out_mem->size() < num_interleaved * kv_out_cols) {
+      activations.kv_out_mem->resize(num_interleaved * kv_out_cols);
+    }
+    kv_out_data = activations.kv_out_mem->data();
+  } else {
+    kv_out_mem_fallback =
+        hwy::AllocateAligned<float>(num_interleaved * kv_out_cols);
+    kv_out_data = kv_out_mem_fallback.get();
+  }
   MatPtrT<float> kv_out_mat("kv_out", Extents2D(num_interleaved, kv_out_cols));
   kv_out_mat.SetPtr(kv_out_data, kv_out_cols);
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
@@ -904,7 +1037,32 @@ void LocalAttentionForAllHeadsTokensAndBatch(
                                         max_queries_per_subtask * qkv_dim);
     }
   }
-  std::vector<uint8_t> skip_sub_task(num_sub_tasks, 0);
+  if (activations.worker_workspaces != nullptr &&
+      activations.worker_workspaces->size() <= ctx.pools.MaxWorkers()) {
+    activations.worker_workspaces->resize(ctx.pools.MaxWorkers() + 1);
+  }
+  const size_t num_groups_per_task =
+      hwy::DivCeil(kQueriesPerSubtask, kMergeGroupSize);
+  struct alignas(64) AtomicGroupMergeSlot {
+    std::atomic<uint64_t> state;
+    static constexpr uint64_t Pack(int32_t active_idx, int32_t remaining) {
+      return (static_cast<uint64_t>(static_cast<uint32_t>(active_idx)) << 32) |
+             static_cast<uint32_t>(remaining);
+    }
+    static constexpr int32_t ActiveIdx(uint64_t s) {
+      return static_cast<int32_t>(s >> 32);
+    }
+    static constexpr int32_t Remaining(uint64_t s) {
+      return static_cast<int32_t>(s & 0xFFFFFFFFu);
+    }
+  };
+  std::vector<AtomicGroupMergeSlot> merge_slots(num_tasks *
+                                                num_groups_per_task);
+  const uint64_t initial_slot_state =
+      AtomicGroupMergeSlot::Pack(-1, static_cast<int32_t>(task_multiplier));
+  for (size_t i = 0; i < merge_slots.size(); ++i) {
+    merge_slots[i].state.store(initial_slot_state, std::memory_order_relaxed);
+  }
 
   // This loop parallelizes over qbatch, kv_head and substrings of context
   // tokens. Each parallel invocation handles all query tokens of the given
@@ -919,6 +1077,101 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         size_t qbatch_and_kv_head_idx = main_task_idx / num_query_tasks;
         size_t current_qbatch_idx = div_kv_heads.Divide(qbatch_and_kv_head_idx);
         size_t kv_head_idx = div_kv_heads.Remainder(qbatch_and_kv_head_idx);
+
+        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
+        size_t query_end_idx =
+            std::min(num_queries, query_start_idx + kQueriesPerSubtask);
+        size_t sub_num_queries = query_end_idx - query_start_idx;
+        const size_t num_task_groups =
+            hwy::DivCeil(sub_num_queries, kMergeGroupSize);
+
+        auto write_group_output = [&](size_t g, int32_t final_idx) {
+          const size_t g_start = g * kMergeGroupSize;
+          const size_t g_end =
+              HWY_MIN(sub_num_queries, g_start + kMergeGroupSize);
+          for (size_t sub_q_idx = g_start; sub_q_idx < g_end; ++sub_q_idx) {
+            size_t q_idx = query_start_idx + sub_q_idx;
+            size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
+            size_t head_in_group_idx = div_heads_per_kv_head.Remainder(q_idx);
+
+            const size_t batch_index =
+                current_qbatch_idx * num_query_tokens + token_idx;
+            const size_t q_head_idx =
+                kv_head_idx * heads_per_kv_head + head_in_group_idx;
+            const size_t activations_att_out_start_idx = q_head_idx * qkv_dim;
+
+            if (final_idx >= 0) {
+              const MatStorageT<float>& final_att_out =
+                  activations.sub_task_att_out->at(final_idx);
+              const AlignedFloatVector& final_exp_sums =
+                  activations.sub_task_exp_denominator_sums->at(final_idx);
+              const AlignedFloatVector& final_max_logits =
+                  activations.sub_task_max_logits->at(final_idx);
+              hwy::CopyBytes(final_att_out.Row(sub_q_idx),
+                             activations.att_out.Row(batch_index) +
+                                 activations_att_out_start_idx,
+                             qkv_dim * sizeof(float));
+              activations.softmax_d.Row(batch_index)[q_head_idx] =
+                  final_exp_sums[sub_q_idx];
+              activations.softmax_max.Row(batch_index)[q_head_idx] =
+                  final_max_logits[sub_q_idx];
+            } else {
+              hwy::ZeroBytes(activations.att_out.Row(batch_index) +
+                                 activations_att_out_start_idx,
+                             qkv_dim * sizeof(float));
+              activations.softmax_d.Row(batch_index)[q_head_idx] = 0.0f;
+              activations.softmax_max.Row(batch_index)[q_head_idx] =
+                  -std::numeric_limits<float>::max() / 2.0f;
+            }
+          }
+        };
+
+        // Lock-free combining tree per 32-query group: active subtasks park
+        // their partial buffer or claim and merge a parked one; skipped
+        // subtasks (my_idx < 0) only decrement remaining.
+        auto check_in_or_merge_group = [&](size_t g, int32_t my_idx) {
+          const size_t g_start = g * kMergeGroupSize;
+          const size_t g_count =
+              HWY_MIN(kMergeGroupSize, sub_num_queries - g_start);
+          auto& slot =
+              merge_slots[main_task_idx * num_groups_per_task + g].state;
+          uint64_t cur = slot.load(std::memory_order_acquire);
+          while (true) {
+            const int32_t active_idx = AtomicGroupMergeSlot::ActiveIdx(cur);
+            const int32_t rem = AtomicGroupMergeSlot::Remaining(cur);
+            if (my_idx >= 0 && active_idx != -1) {
+              // Another partial buffer is parked: claim it and merge into
+              // my_idx.
+              if (slot.compare_exchange_weak(
+                      cur, AtomicGroupMergeSlot::Pack(-1, rem),
+                      std::memory_order_acq_rel, std::memory_order_acquire)) {
+                MergeOnlineSoftmaxGroup32(active_idx, my_idx, g_start, g_count,
+                                          qkv_dim, activations);
+              }
+            } else {
+              const int32_t buf_idx = (my_idx < 0) ? active_idx : my_idx;
+              if (rem == 1) {
+                // All other subtasks have completed: write final merged output.
+                if (slot.compare_exchange_weak(
+                        cur, AtomicGroupMergeSlot::Pack(-1, 0),
+                        std::memory_order_acq_rel, std::memory_order_acquire)) {
+                  write_group_output(g, buf_idx);
+                  break;
+                }
+              } else {
+                // Parked my_idx (if active) or checked in (if skipped);
+                // a subsequent worker will finish the merge and write the
+                // output.
+                if (slot.compare_exchange_weak(
+                        cur, AtomicGroupMergeSlot::Pack(buf_idx, rem - 1),
+                        std::memory_order_acq_rel, std::memory_order_acquire)) {
+                  break;
+                }
+              }
+            }
+          }
+        };
+
         // First and last context token we will attend to.
         size_t global_start_context_pos = StartPos(
             qbatch.Pos(current_qbatch_idx), activations.config, layer_idx);
@@ -947,17 +1200,15 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         start_context_pos =
             start_context_pos + context_tokens_per_sub_task * sub_task_idx;
         if (start_context_pos > last_context_pos) {
-          skip_sub_task[task_idx] = 1;
+          for (size_t g = 0; g < num_task_groups; ++g) {
+            check_in_or_merge_group(g, -1);
+          }
           return;
         }
         last_context_pos =
             std::min(last_context_pos,
                      start_context_pos + context_tokens_per_sub_task - 1);
         // pre-initialize memory [to avoid racy resizes laters].
-        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
-        size_t query_end_idx =
-            std::min(num_queries, query_start_idx + kQueriesPerSubtask);
-        size_t sub_num_queries = query_end_idx - query_start_idx;
         std::vector<float*> queries_ptrs;
         queries_ptrs.reserve(sub_num_queries);
         for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
@@ -1062,6 +1313,11 @@ void LocalAttentionForAllHeadsTokensAndBatch(
           }
         }
 
+        hwy::AlignedVector<uint8_t>* worker_workspace =
+            activations.worker_workspaces != nullptr
+                ? &(*activations.worker_workspaces)[worker]
+                : nullptr;
+
         if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
           BF16* bf16_queries_ptr = activations.bf16_queries->data() +
@@ -1072,7 +1328,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
 
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);
@@ -1090,7 +1346,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
           BF16* bf16_queries_ptr = activations.bf16_queries->data() +
@@ -1102,7 +1358,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
@@ -1121,7 +1377,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
@@ -1138,7 +1394,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else {
           HWY_DASSERT(activations.float_queries != nullptr);
           float* contiguous_queries_ptr =
@@ -1154,69 +1410,14 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         }
-      });
 
-  // This loop takes results from separate subtasks (subsequence of kv) and
-  // merges them into single att_out over whole kv sequence.
-  ParallelFor(
-      Parallelism::kFlat, num_tasks, ctx,
-      /*cluster_idx=*/0, Callers::kFlashAttention,
-      [&](size_t main_task_idx, size_t worker) HWY_ATTR {
-        size_t query_task_idx = main_task_idx % num_query_tasks;
-        size_t qbatch_and_kv_head_idx = main_task_idx / num_query_tasks;
-        size_t current_qbatch_idx = div_kv_heads.Divide(qbatch_and_kv_head_idx);
-        size_t kv_head_idx = div_kv_heads.Remainder(qbatch_and_kv_head_idx);
-
-        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
-        size_t query_end_idx =
-            std::min(num_queries, query_start_idx + kQueriesPerSubtask);
-
-        for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
-          size_t sub_q_idx = q_idx - query_start_idx;
-          size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
-          size_t head_in_group_idx = div_heads_per_kv_head.Remainder(q_idx);
-
-          const size_t batch_index =
-              current_qbatch_idx * num_query_tokens + token_idx;
-          const size_t q_head_idx =
-              kv_head_idx * heads_per_kv_head + head_in_group_idx;
-          const size_t activations_att_out_start_idx = q_head_idx * qkv_dim;
-          auto& att_out_0 = activations.sub_task_att_out->at(
-              main_task_idx * task_multiplier + 0);
-          auto& exp_denominator_sums_0 =
-              activations.sub_task_exp_denominator_sums->at(
-                  main_task_idx * task_multiplier + 0);
-          auto& max_logits_0 = activations.sub_task_max_logits->at(
-              main_task_idx * task_multiplier + 0);
-
-          hwy::CopyBytes(att_out_0.Row(sub_q_idx),
-                         activations.att_out.Row(batch_index) +
-                             activations_att_out_start_idx,
-                         qkv_dim * sizeof(float));
-          activations.softmax_d.Row(batch_index)[q_head_idx] =
-              exp_denominator_sums_0[sub_q_idx];
-          activations.softmax_max.Row(batch_index)[q_head_idx] =
-              max_logits_0[sub_q_idx];
-          for (size_t sub_task_idx = 1; sub_task_idx < task_multiplier;
-               ++sub_task_idx) {
-            size_t task_idx = main_task_idx * task_multiplier + sub_task_idx;
-            if (skip_sub_task[task_idx] == 1) {
-              continue;
-            }
-            auto& att_out = activations.sub_task_att_out->at(task_idx);
-            auto& exp_denominator_sums =
-                activations.sub_task_exp_denominator_sums->at(task_idx);
-            auto& max_logits = activations.sub_task_max_logits->at(task_idx);
-            MergeOnlineSoftmax(
-                att_out.Row(sub_q_idx), max_logits[sub_q_idx],
-                exp_denominator_sums[sub_q_idx], qkv_dim,
-                activations.att_out.Row(batch_index) +
-                    activations_att_out_start_idx,
-                activations.softmax_max.Row(batch_index)[q_head_idx],
-                activations.softmax_d.Row(batch_index)[q_head_idx]);
-          }
+        // Lock-free atomic compare-and-exchange merge per 32-query group:
+        // hand off group pointer immediately or claim and merge via SIMD.
+        const int32_t my_idx = static_cast<int32_t>(task_idx);
+        for (size_t g = 0; g < num_task_groups; ++g) {
+          check_in_or_merge_group(g, my_idx);
         }
       });
 }
