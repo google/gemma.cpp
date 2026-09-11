@@ -57,7 +57,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(               \
       hwy::Span<const MatPtr> kvs, size_t q_count,                            \
@@ -65,7 +66,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(              \
       hwy::Span<const MatPtr> kvs, size_t q_count,                            \
@@ -73,7 +75,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation( \
       hwy::Span<const MatPtr> kvs, size_t q_count,                            \
@@ -81,7 +84,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   void                                                                        \
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(  \
@@ -90,7 +94,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(               \
       hwy::Span<const MatPtr> kvs, size_t q_count,                            \
@@ -98,7 +103,8 @@ namespace gcpp {
       hwy::Span<const size_t> start_pos_per_query,                            \
       hwy::Span<const size_t> last_pos_per_query, const float att_cap,        \
       MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,      \
-      float* HWY_RESTRICT max_logits);                                        \
+      float* HWY_RESTRICT max_logits,                                         \
+      hwy::AlignedVector<uint8_t>* worker_workspace);                         \
                                                                               \
   /* NOLINTNEXTLINE(google-readability-namespace-comments) */                 \
   }  // namespace NAMESPACE

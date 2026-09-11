@@ -562,7 +562,8 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         kvs, num_queries, bf16_queries.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
     std::vector<int16_t, hwy::AlignedAllocator<int16_t>> int16_queries(
         num_queries * qkv_dim);
@@ -574,19 +575,21 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         kvs, num_queries, int16_queries.data(), q_scales,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
     std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries(
         num_queries * qkv_dim);
     AlignedFloatVector q_scales(num_queries);
     CompressQueriesInt8Contiguous(q_all.data(), qkv_dim, num_queries,
-                                  int8_queries.data(), q_scales.data());
+                                   int8_queries.data(), q_scales.data());
 
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
         kvs, num_queries, int8_queries.data(), q_scales,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
     size_t num_queries_rounded = hwy::RoundUpTo(num_queries, 2);
     hwy::AlignedVector<int8_t> int8_queries(num_queries_rounded * qkv_dim);
@@ -599,7 +602,8 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         kvs, num_queries, int8_queries.data(), q_scales,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
     size_t num_queries_rounded = hwy::RoundUpTo(num_queries, 2);
     hwy::AlignedVector<BF16> bf16_queries(num_queries_rounded * qkv_dim);
@@ -610,13 +614,15 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         kvs, num_queries, bf16_queries.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
         kvs, num_queries, q_all.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   }
 
   // PrintMatPtr(att_out);
@@ -856,7 +862,8 @@ void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
       kvs_ref, num_queries, bf16_queries_ref.data(),
       hwy::Span<const size_t>(start_pos_per_query),
       hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out_ref,
-      exp_denominator_sums_ref.data(), max_logits_ref.data());
+      exp_denominator_sums_ref.data(), max_logits_ref.data(),
+      /*worker_workspace=*/nullptr);
 
   // Run optimized
   hwy::Span<const MatPtr> kvs(&kv, 1);
@@ -865,13 +872,15 @@ void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
         kvs, num_queries, int8_queries.data(), q_scales,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
         kvs, num_queries, bf16_queries.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   }
 
   // Verification

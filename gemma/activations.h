@@ -214,6 +214,8 @@ struct AttentionActivations {
       sub_task_exp_denominator_sums;
   std::vector<AlignedFloatVector>
       sub_task_max_logits;
+  std::vector<hwy::AlignedVector<uint8_t>> worker_workspaces;
+  hwy::AlignedVector<float> kv_out_mem;
 
   // Rope
   MatStorageT<float> inv_timescale;
@@ -233,6 +235,8 @@ struct AttentionActivationsPtrs {
         sub_task_att_out(nullptr),
         sub_task_exp_denominator_sums(nullptr),
         sub_task_max_logits(nullptr),
+        worker_workspaces(nullptr),
+        kv_out_mem(nullptr),
         bf16_queries(nullptr),
         int16_queries(nullptr),
         int8_queries(nullptr),
@@ -264,6 +268,8 @@ struct AttentionActivationsPtrs {
     sub_task_att_out = &activations.sub_task_att_out;
     sub_task_exp_denominator_sums = &activations.sub_task_exp_denominator_sums;
     sub_task_max_logits = &activations.sub_task_max_logits;
+    worker_workspaces = &activations.worker_workspaces;
+    kv_out_mem = &activations.kv_out_mem;
     bf16_queries = &activations.bf16_queries;
     int16_queries = &activations.int16_queries;
     int8_queries = &activations.int8_queries;
@@ -334,6 +340,8 @@ struct AttentionActivationsPtrs {
       sub_task_exp_denominator_sums;
   std::vector<AlignedFloatVector>*
       sub_task_max_logits;
+  std::vector<hwy::AlignedVector<uint8_t>>* worker_workspaces;
+  hwy::AlignedVector<float>* kv_out_mem;
   AlignedBF16Vector* bf16_queries;
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>>* int16_queries;
   hwy::AlignedVector<int8_t>* int8_queries;

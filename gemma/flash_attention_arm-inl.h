@@ -955,6 +955,47 @@ HWY_INLINE void UpdateOnlineSoftmaxSingleQuery(
   exp_denominator_sums[q] = new_sum;
 }
 
+// Number of quantized packets per group of 8 tokens in the int8 path.
+constexpr size_t kNumQuantizedPackets = 4;
+// Number of weight scales the int8 path quantizes against.
+constexpr size_t kNumWeightScales = 8;
+
+// Element counts and byte offsets of the scratch buffers used by
+// `TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl`, so they can be carved
+// out of a single per-worker allocation rather than heap-allocated on every
+// call. Mirrors `TileFlashAttentionWorkspaceLayout` in flash_attention.cc.
+//
+// Each buffer size is defined exactly once, here, and is used both to place the
+// buffer and to bound the span over it, so the two cannot drift apart.
+// `q_weights` and `w_scales` are only used by the int8 path and are empty
+// otherwise.
+struct MatrixAccumulationWorkspaceLayout {
+  size_t c_accum_count, softmax_count, q_weights_count, w_scales_count;
+  size_t c_accum_offset, softmax_offset, q_weights_offset, w_scales_offset;
+  size_t total_bytes;
+
+  constexpr MatrixAccumulationWorkspaceLayout(size_t q_count, size_t qkv_dim,
+                                              size_t block_size, bool is_int8)
+      : c_accum_count(hwy::RoundUpTo(q_count, size_t{8}) * qkv_dim),
+        softmax_count(q_count * block_size),
+        q_weights_count(is_int8 ? (block_size / 8) * kNumQuantizedPackets * 16
+                                : 0),
+        w_scales_count(is_int8 ? kNumWeightScales : 0),
+        c_accum_offset(0),
+        softmax_offset(
+            c_accum_offset +
+            hwy::RoundUpTo(c_accum_count * sizeof(float), HWY_ALIGNMENT)),
+        q_weights_offset(
+            softmax_offset +
+            hwy::RoundUpTo(softmax_count * sizeof(float), HWY_ALIGNMENT)),
+        w_scales_offset(
+            q_weights_offset +
+            hwy::RoundUpTo(q_weights_count * sizeof(uint8_t), HWY_ALIGNMENT)),
+        total_bytes(
+            w_scales_offset +
+            hwy::RoundUpTo(w_scales_count * sizeof(float), HWY_ALIGNMENT)) {}
+};
+
 template <size_t kRegBytes, class KV_T, class Q_T>
 HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
     const hwy::Span<const MatPtrT<KV_T>> kvs, size_t q_count,
@@ -962,7 +1003,8 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
   using BF16 = hwy::bfloat16_t;
 
   const size_t qkv_dim = att_out.Cols();
@@ -994,15 +1036,46 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   const auto min_last_pos_per_group = preamble.min_last_pos_per_group;
   const auto max_last_pos_per_group = preamble.max_last_pos_per_group;
 
-  hwy::AlignedVector<float> C_accumulators(hwy::RoundUpTo(q_count, 8) * qkv_dim,
-                                           0.0f);
-  hwy::AlignedVector<float> softmax_buf(q_count * kBlockSize, kMaskedLogitVal);
-  hwy::AlignedVector<uint8_t> q_weights_buf;
-  hwy::AlignedVector<float> w_scales_buf;
+  const MatrixAccumulationWorkspaceLayout layout(q_count, qkv_dim, kBlockSize,
+                                                 IsInt8<KV_T>());
+
+  // Use the pre-allocated per-worker workspace when available, resizing up if
+  // needed; otherwise fall back to a local allocation.
+  hwy::AlignedFreeUniquePtr<uint8_t[]> workspace_fallback;
+  uint8_t* raw_ptr = nullptr;
+  if (worker_workspace != nullptr) {
+    auto& ws = *worker_workspace;
+    if (ws.size() < layout.total_bytes) {
+      ws.resize(layout.total_bytes);
+    }
+    raw_ptr = ws.data();
+  } else {
+    workspace_fallback = hwy::AllocateAligned<uint8_t>(layout.total_bytes);
+    raw_ptr = workspace_fallback.get();
+  }
+
+  // The workspace is reused across calls, so buffers that are read before being
+  // fully written must be re-initialized here rather than relying on
+  // allocation-time initialization. `softmax_buf` is exempt: the main loop
+  // below refills it in its entirety before every use.
+  hwy::Span<float> C_accumulators(
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset),
+      layout.c_accum_count);
+  hwy::ZeroBytes(C_accumulators.data(), C_accumulators.size() * sizeof(float));
+
+  hwy::Span<float> softmax_buf(
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.softmax_offset),
+      layout.softmax_count);
+
+  hwy::Span<uint8_t> q_weights_buf(
+      HWY_RCAST_ALIGNED(uint8_t*, raw_ptr + layout.q_weights_offset),
+      layout.q_weights_count);
+  hwy::Span<float> w_scales_buf(
+      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.w_scales_offset),
+      layout.w_scales_count);
   if constexpr (IsInt8<KV_T>()) {
-    const size_t num_qp = 4;
-    q_weights_buf.resize((kBlockSize / 8) * num_qp * 16, 0);
-    w_scales_buf.resize(8, 0.0f);
+    hwy::ZeroBytes(q_weights_buf.data(), q_weights_buf.size());
+    hwy::ZeroBytes(w_scales_buf.data(), w_scales_buf.size() * sizeof(float));
   }
 
   size_t current_kv_idx = 0;
@@ -1330,26 +1403,27 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace) {
 #if HWY_HAVE_CONSTEXPR_LANES
   constexpr size_t kRegBytes = hn::Lanes(hn::ScalableTag<uint8_t>());
   TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<kRegBytes, KV_T, Q_T>(
       kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-      att_cap, att_out, exp_denominator_sums, max_logits);
+      att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
 #else
   const size_t reg_bytes = hn::Lanes(hn::ScalableTag<uint8_t>());
   if (reg_bytes == 64) {
     TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<64, KV_T, Q_T>(
         kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-        att_cap, att_out, exp_denominator_sums, max_logits);
+        att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   } else if (reg_bytes == 32) {
     TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<32, KV_T, Q_T>(
         kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-        att_cap, att_out, exp_denominator_sums, max_logits);
+        att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   } else if (reg_bytes == 16) {
     TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<16, KV_T, Q_T>(
         kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-        att_cap, att_out, exp_denominator_sums, max_logits);
+        att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   } else {
     HWY_ABORT("Unsupported register size %zu bytes", reg_bytes);
   }

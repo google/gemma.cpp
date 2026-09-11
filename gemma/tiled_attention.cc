@@ -128,9 +128,18 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   // Compute the combined KV output from pre_att_rms_out.
   // The output shape is [num_interleaved, kv_heads * 2 * qkv_dim].
   const size_t kv_out_cols = kv_heads * 2 * qkv_dim;
-  hwy::AlignedFreeUniquePtr<float[]> kv_out_mem =
-      hwy::AllocateAligned<float>(num_interleaved * kv_out_cols);
-  float* kv_out_data = kv_out_mem.get();
+  hwy::AlignedFreeUniquePtr<float[]> kv_out_mem_fallback;
+  float* kv_out_data = nullptr;
+  if (activations.kv_out_mem != nullptr) {
+    if (activations.kv_out_mem->size() < num_interleaved * kv_out_cols) {
+      activations.kv_out_mem->resize(num_interleaved * kv_out_cols);
+    }
+    kv_out_data = activations.kv_out_mem->data();
+  } else {
+    kv_out_mem_fallback =
+        hwy::AllocateAligned<float>(num_interleaved * kv_out_cols);
+    kv_out_data = kv_out_mem_fallback.get();
+  }
   MatPtrT<float> kv_out_mat("kv_out", Extents2D(num_interleaved, kv_out_cols));
   kv_out_mat.SetPtr(kv_out_data, kv_out_cols);
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
@@ -904,6 +913,10 @@ void LocalAttentionForAllHeadsTokensAndBatch(
                                         max_queries_per_subtask * qkv_dim);
     }
   }
+  if (activations.worker_workspaces != nullptr &&
+      activations.worker_workspaces->size() <= ctx.pools.MaxWorkers()) {
+    activations.worker_workspaces->resize(ctx.pools.MaxWorkers() + 1);
+  }
   std::vector<uint8_t> skip_sub_task(num_sub_tasks, 0);
 
   // This loop parallelizes over qbatch, kv_head and substrings of context
@@ -919,6 +932,12 @@ void LocalAttentionForAllHeadsTokensAndBatch(
         size_t qbatch_and_kv_head_idx = main_task_idx / num_query_tasks;
         size_t current_qbatch_idx = div_kv_heads.Divide(qbatch_and_kv_head_idx);
         size_t kv_head_idx = div_kv_heads.Remainder(qbatch_and_kv_head_idx);
+
+        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
+        size_t query_end_idx =
+            std::min(num_queries, query_start_idx + kQueriesPerSubtask);
+        size_t sub_num_queries = query_end_idx - query_start_idx;
+
         // First and last context token we will attend to.
         size_t global_start_context_pos = StartPos(
             qbatch.Pos(current_qbatch_idx), activations.config, layer_idx);
@@ -954,10 +973,6 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             std::min(last_context_pos,
                      start_context_pos + context_tokens_per_sub_task - 1);
         // pre-initialize memory [to avoid racy resizes laters].
-        size_t query_start_idx = query_task_idx * kQueriesPerSubtask;
-        size_t query_end_idx =
-            std::min(num_queries, query_start_idx + kQueriesPerSubtask);
-        size_t sub_num_queries = query_end_idx - query_start_idx;
         std::vector<float*> queries_ptrs;
         queries_ptrs.reserve(sub_num_queries);
         for (size_t q_idx = query_start_idx; q_idx < query_end_idx; ++q_idx) {
@@ -1062,6 +1077,11 @@ void LocalAttentionForAllHeadsTokensAndBatch(
           }
         }
 
+        hwy::AlignedVector<uint8_t>* worker_workspace =
+            activations.worker_workspaces != nullptr
+                ? &(*activations.worker_workspaces)[worker]
+                : nullptr;
+
         if (attention_impl == AttentionImpl::kFlashTransposedQsBF16) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
           BF16* bf16_queries_ptr = activations.bf16_queries->data() +
@@ -1072,7 +1092,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
 
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);
@@ -1090,7 +1110,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
           HWY_DASSERT(activations.bf16_queries != nullptr);
           BF16* bf16_queries_ptr = activations.bf16_queries->data() +
@@ -1102,7 +1122,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kInt8MatrixAccumulation) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
@@ -1121,7 +1141,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
@@ -1138,7 +1158,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         } else {
           HWY_DASSERT(activations.float_queries != nullptr);
           float* contiguous_queries_ptr =
@@ -1154,7 +1174,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
         }
       });
 
