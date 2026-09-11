@@ -60,7 +60,7 @@ void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
   // This is inefficient, as the writes are scattered over cache lines, but it
   // is a tiny fraction of the overall computation, and it is linear in the
   // token length.
-  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kFloatsPerTile = 2 * hn::Lanes(hn::ScalableTag<float>());
   const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
   for (size_t i = 0; i < qkv_dim; i += 2) {
     k[i * kFloatsPerTile] = kv[i];
@@ -94,7 +94,7 @@ void TransposeKVCacheRow(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
 
 void TransposeKVCacheRow_KEqV(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
                               KV_t* HWY_RESTRICT v, size_t qkv_dim) {
-  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kFloatsPerTile = 2 * hn::Lanes(hn::ScalableTag<float>());
   const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
   for (size_t i = 0; i < qkv_dim; i += 2) {
     k[i * kFloatsPerTile] = kv[i];
@@ -130,7 +130,7 @@ void TransposeKVCacheRow_KEqV(const KV_t* HWY_RESTRICT kv, KV_t* HWY_RESTRICT k,
 // positions.
 void TransposeOOBKVCacheRow(KV_t* HWY_RESTRICT k, KV_t* HWY_RESTRICT v,
                             size_t qkv_dim) {
-  const size_t kFloatsPerTile = 2 * FloatsPerVector();
+  const size_t kFloatsPerTile = 2 * hn::Lanes(hn::ScalableTag<float>());
   const size_t kRoundedQkvDim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
   for (size_t i = 0; i < kRoundedQkvDim; i += 2) {
     k[i * kFloatsPerTile] = hwy::ConvertScalarTo<KV_t>(0.0f);
@@ -230,13 +230,13 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
 
+  const size_t kFloatsPerVector = hn::Lanes(hn::ScalableTag<float>());
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
+    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(), kFloatsPerVector,
                       qbatch.KV(qi).k_cache);
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(),
+    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(), kFloatsPerVector,
                       qbatch.KV(qi).v_cache);
   }
-  const size_t kFloatsPerVector = FloatsPerVector();
   const size_t kRoundedTokens =
       hwy::RoundUpTo(num_tokens, 2 * kFloatsPerVector);
   const size_t kRoundedNumInterleaved =
