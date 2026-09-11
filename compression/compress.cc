@@ -15,6 +15,7 @@
 
 #include "compression/compress.h"
 
+#include <cmath>
 #include <stddef.h>
 #include <stdint.h>
 

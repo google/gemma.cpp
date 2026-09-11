@@ -214,4 +214,14 @@ TEST(ConfigsTest, Gemma4E4BQuantizerSpecifiers) {
   EXPECT_EQ(e4b_lm_pt.wrapping, PromptWrapping::GEMMA_PT);
 }
 
+TEST(ConfigsTest, Gemma4MoEConfig) {
+  const ModelConfig moe(Model::GEMMA4_26B_MOE, Type::kSFP,
+                        PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(moe.display_name, "Gemma4_26B_MoE");
+  EXPECT_FLOAT_EQ(moe.final_cap, 30.0f);
+  EXPECT_FLOAT_EQ(moe.att_cap, 0.0f);
+  EXPECT_EQ(moe.model_dim, 2816u);
+  EXPECT_EQ(moe.num_layers, 30u);
+}
+
 }  // namespace gcpp

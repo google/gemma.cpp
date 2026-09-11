@@ -269,7 +269,8 @@ constexpr bool IsMxFp4Stream() {
 template <typename Packed>
 constexpr bool IsPacked() {
   return IsNuqStream<Packed>() || IsI8Stream<Packed>() ||
-         IsQ4_0Stream<Packed>() || IsMxFp4Stream<Packed>();
+         IsQ4_0Stream<Packed>() || IsMxFp4Stream<Packed>()
+         ;
 }
 
 template <typename Packed>
@@ -294,12 +295,14 @@ enum class Type {
   kInt8,
   kQ4_0,
   kMXFP4,
+  kReserved14,
 };
 // These are used in `ModelConfig.Specifier`, hence the strings will not
 // change, though new ones may be added.
 static constexpr const char* kTypeStrings[] = {
-    "unknown", "f32", "bf16", "sfp", "nuq",  "f64",  "u32",
-    "u64",     "i8",  "u16",  "u8",  "int8", "q4_0", "mxfp4"};
+    "unknown", "f32", "bf16", "sfp",   "nuq",   "f64",  "u32", "u64",
+    "i8",      "u16", "u8",   "int8",  "q4_0",  "mxfp4", "reserved14"
+};
 static constexpr size_t kNumTypes =
     sizeof(kTypeStrings) / sizeof(kTypeStrings[0]);
 static constexpr size_t kTypeBits[] = {
@@ -317,6 +320,7 @@ static constexpr size_t kTypeBits[] = {
     8 * sizeof(int8_t),
     4 /* Q4_0Stream, actually 4.5 */,
     4 /* MxFp4Stream, actually 4.25 */,
+    0 /* reserved */,
 };
 
 static inline bool EnumValid(Type type) {
@@ -376,17 +380,20 @@ constexpr bool IsCompressed() {
          hwy::IsSame<hwy::RemoveCvRef<Packed>, NuqStream>() ||
          hwy::IsSame<hwy::RemoveCvRef<Packed>, I8Stream>() ||
          hwy::IsSame<hwy::RemoveCvRef<Packed>, Q4_0Stream>() ||
-         hwy::IsSame<hwy::RemoveCvRef<Packed>, MxFp4Stream>();
+         hwy::IsSame<hwy::RemoveCvRef<Packed>, MxFp4Stream>()
+         ;
 }
 
 static inline bool IsCompressed(Type type) {
   return type == Type::kSFP || type == Type::kNUQ || type == Type::kI8 ||
-         type == Type::kQ4_0 || type == Type::kMXFP4;
+         type == Type::kQ4_0 || type == Type::kMXFP4
+         ;
 }
 
 static inline bool IsPacked(Type type) {
   return type == Type::kNUQ || type == Type::kI8 || type == Type::kQ4_0 ||
-         type == Type::kMXFP4;
+         type == Type::kMXFP4
+         ;
 }
 
 static inline bool SupportsPointerArithmetic(Type type) {

@@ -481,7 +481,7 @@ static LayerConfig LayerConfigGemma4_26B_MoE_LM(size_t model_dim) {
 static ModelConfig ConfigGemma4_26B_MoE() {
   ModelConfig config = ConfigBaseGemmaV4();
   config.display_name = "Gemma4_26B_MoE";
-  config.final_cap = 0.0f;
+  config.final_cap = 30.0f;
   config.att_cap = 0.0f;
   config.model = Model::GEMMA4_26B_MOE;
   config.wrapping = PromptWrapping::GEMMA_IT;
