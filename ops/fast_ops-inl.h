@@ -314,9 +314,192 @@ static HWY_NOINLINE HWY_MAYBE_UNUSED void FastSigmoid(T* HWY_RESTRICT x,
   });
 }
 
+// 16-point in-register Fast Walsh-Hadamard Transform on a 16-lane F32 vector.
+template <class DF, class VF = hn::Vec<DF>, HWY_IF_F32_D(DF)>
+HWY_INLINE VF FWHT16(DF df, VF v) {
+  // Stage 1: h = 1
+  const auto e1 = hn::DupEven(v);
+  const auto o1 = hn::DupOdd(v);
+  v = hn::OddEven(hn::Sub(e1, o1), hn::Add(e1, o1));
+
+  // Stage 2: h = 2
+  const hn::Repartition<uint64_t, DF> du64;
+  const auto vu64 = hn::BitCast(du64, v);
+  const auto e2 = hn::BitCast(df, hn::DupEven(vu64));
+  const auto o2 = hn::BitCast(df, hn::DupOdd(vu64));
+  v = hn::BitCast(
+      df, hn::OddEven(hn::BitCast(du64, hn::Sub(e2, o2)),
+                      hn::BitCast(du64, hn::Add(e2, o2))));
+
+  // Stage 3: h = 4
+  const hn::Half<DF> dfh;
+  const hn::Half<decltype(dfh)> dfq;
+  auto lo_h = hn::LowerHalf(dfh, v);
+  auto hi_h = hn::UpperHalf(dfh, v);
+  auto q0 = hn::LowerHalf(dfq, lo_h);
+  auto q1 = hn::UpperHalf(dfq, lo_h);
+  auto q2 = hn::LowerHalf(dfq, hi_h);
+  auto q3 = hn::UpperHalf(dfq, hi_h);
+  lo_h = hn::Combine(dfh, hn::Sub(q0, q1), hn::Add(q0, q1));
+  hi_h = hn::Combine(dfh, hn::Sub(q2, q3), hn::Add(q2, q3));
+
+  // Stage 4: h = 8
+  return hn::Combine(df, hn::Sub(lo_h, hi_h), hn::Add(lo_h, hi_h));
+}
+
+template <class D, class T = hn::TFromD<D>>
+HWY_INLINE void FastWalshHadamard128(D d, T* HWY_RESTRICT data, size_t length) {
+  HWY_DASSERT(length % 128 == 0);
+  constexpr float kNorm = 0.08838834764831845f;  // 1.0f / sqrt(128.0f)
+  const hn::ScalableTag<float> df;
+  const hn::Repartition<BF16, decltype(df)> dbf;
+  using VF = hn::Vec<decltype(df)>;
+  const auto vnorm = hn::Set(df, kNorm);
+
+  if constexpr (hn::MaxLanes(df) == 16 && !HWY_HAVE_SCALABLE) {
+    // Optimal in-register path for AVX-512 (H128 = H8 x H16):
+    for (size_t block = 0; block < length; block += 128) {
+      VF v0, v1, v2, v3, v4, v5, v6, v7;
+      if constexpr (IsBF16<T>()) {
+        const auto b0 = hn::Load(dbf, data + block + 0);
+        const auto b1 = hn::Load(dbf, data + block + 32);
+        const auto b2 = hn::Load(dbf, data + block + 64);
+        const auto b3 = hn::Load(dbf, data + block + 96);
+        v0 = hn::PromoteLowerTo(df, b0);
+        v1 = hn::PromoteUpperTo(df, b0);
+        v2 = hn::PromoteLowerTo(df, b1);
+        v3 = hn::PromoteUpperTo(df, b1);
+        v4 = hn::PromoteLowerTo(df, b2);
+        v5 = hn::PromoteUpperTo(df, b2);
+        v6 = hn::PromoteLowerTo(df, b3);
+        v7 = hn::PromoteUpperTo(df, b3);
+      } else {
+        v0 = hn::Load(df, data + block + 0);
+        v1 = hn::Load(df, data + block + 16);
+        v2 = hn::Load(df, data + block + 32);
+        v3 = hn::Load(df, data + block + 48);
+        v4 = hn::Load(df, data + block + 64);
+        v5 = hn::Load(df, data + block + 80);
+        v6 = hn::Load(df, data + block + 96);
+        v7 = hn::Load(df, data + block + 112);
+      }
+
+      // Inter-vector stages (H8):
+      // h = 64
+      auto t0 = v0; v0 = hn::Add(t0, v4); v4 = hn::Sub(t0, v4);
+      auto t1 = v1; v1 = hn::Add(t1, v5); v5 = hn::Sub(t1, v5);
+      auto t2 = v2; v2 = hn::Add(t2, v6); v6 = hn::Sub(t2, v6);
+      auto t3 = v3; v3 = hn::Add(t3, v7); v7 = hn::Sub(t3, v7);
+
+      // h = 32
+      t0 = v0; v0 = hn::Add(t0, v2); v2 = hn::Sub(t0, v2);
+      t1 = v1; v1 = hn::Add(t1, v3); v3 = hn::Sub(t1, v3);
+      auto t4 = v4; v4 = hn::Add(t4, v6); v6 = hn::Sub(t4, v6);
+      auto t5 = v5; v5 = hn::Add(t5, v7); v7 = hn::Sub(t5, v7);
+
+      // h = 16
+      t0 = v0; v0 = hn::Add(t0, v1); v1 = hn::Sub(t0, v1);
+      auto t2_ = v2; v2 = hn::Add(t2_, v3); v3 = hn::Sub(t2_, v3);
+      t4 = v4; v4 = hn::Add(t4, v5); v5 = hn::Sub(t4, v5);
+      auto t6 = v6; v6 = hn::Add(t6, v7); v7 = hn::Sub(t6, v7);
+
+      // Intra-vector stages (H16) and normalization:
+      v0 = hn::Mul(FWHT16(df, v0), vnorm);
+      v1 = hn::Mul(FWHT16(df, v1), vnorm);
+      v2 = hn::Mul(FWHT16(df, v2), vnorm);
+      v3 = hn::Mul(FWHT16(df, v3), vnorm);
+      v4 = hn::Mul(FWHT16(df, v4), vnorm);
+      v5 = hn::Mul(FWHT16(df, v5), vnorm);
+      v6 = hn::Mul(FWHT16(df, v6), vnorm);
+      v7 = hn::Mul(FWHT16(df, v7), vnorm);
+
+      if constexpr (IsBF16<T>()) {
+        hn::Store(hn::OrderedDemote2To(dbf, v0, v1), dbf, data + block + 0);
+        hn::Store(hn::OrderedDemote2To(dbf, v2, v3), dbf, data + block + 32);
+        hn::Store(hn::OrderedDemote2To(dbf, v4, v5), dbf, data + block + 64);
+        hn::Store(hn::OrderedDemote2To(dbf, v6, v7), dbf, data + block + 96);
+      } else {
+        hn::Store(v0, df, data + block + 0);
+        hn::Store(v1, df, data + block + 16);
+        hn::Store(v2, df, data + block + 32);
+        hn::Store(v3, df, data + block + 48);
+        hn::Store(v4, df, data + block + 64);
+        hn::Store(v5, df, data + block + 80);
+        hn::Store(v6, df, data + block + 96);
+        hn::Store(v7, df, data + block + 112);
+      }
+    }
+  } else {
+    // Portable SIMD fallback for architectures with < 16 F32 lanes:
+    const size_t lanes = hn::Lanes(df);
+    HWY_ALIGN float buf[128];
+    for (size_t block = 0; block < length; block += 128) {
+      if constexpr (IsBF16<T>()) {
+        for (size_t i = 0; i < 128; i += 2 * lanes) {
+          const auto b = hn::Load(dbf, data + block + i);
+          hn::Store(hn::PromoteLowerTo(df, b), df, buf + i);
+          hn::Store(hn::PromoteUpperTo(df, b), df, buf + i + lanes);
+        }
+      } else {
+        for (size_t i = 0; i < 128; i += lanes) {
+          hn::Store(hn::Load(df, data + block + i), df, buf + i);
+        }
+      }
+
+      for (size_t step = 1; step < 128; step <<= 1) {
+        const size_t jump = step << 1;
+        if (step >= lanes) {
+          for (size_t i = 0; i < 128; i += jump) {
+            for (size_t j = 0; j < step; j += lanes) {
+              const auto u = hn::Load(df, buf + i + j);
+              const auto v = hn::Load(df, buf + i + j + step);
+              hn::Store(hn::Add(u, v), df, buf + i + j);
+              hn::Store(hn::Sub(u, v), df, buf + i + j + step);
+            }
+          }
+        } else {
+          for (size_t i = 0; i < 128; i += jump) {
+            for (size_t j = 0; j < step; ++j) {
+              const float u = buf[i + j];
+              const float v = buf[i + j + step];
+              buf[i + j] = u + v;
+              buf[i + j + step] = u - v;
+            }
+          }
+        }
+      }
+
+      for (size_t i = 0; i < 128; i += lanes) {
+        hn::Store(hn::Mul(hn::Load(df, buf + i), vnorm), df, buf + i);
+      }
+
+      if constexpr (IsBF16<T>()) {
+        for (size_t i = 0; i < 128; i += 2 * lanes) {
+          const auto f0 = hn::Load(df, buf + i);
+          const auto f1 = hn::Load(df, buf + i + lanes);
+          hn::Store(hn::OrderedDemote2To(dbf, f0, f1), dbf, data + block + i);
+        }
+      } else {
+        for (size_t i = 0; i < 128; i += lanes) {
+          hn::Store(hn::Load(df, buf + i), df, data + block + i);
+        }
+      }
+    }
+  }
+}
+
+template <typename T>
+static HWY_NOINLINE HWY_MAYBE_UNUSED void FastWalshHadamard128(T* HWY_RESTRICT x,
+                                                              size_t size) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<T> d;
+  FastWalshHadamard128(d, x, size);
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
+
 
 #endif  // NOLINT

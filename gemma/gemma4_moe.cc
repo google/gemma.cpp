@@ -48,6 +48,7 @@
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/tiled_attention.h"
 #include "gemma/gemma-inl.h"
+#include "ops/fast_ops-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -471,9 +472,12 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
                      /*is_attention=*/true, env.ctx);
 
   // Dual-Path FFW
-  pre_norm(
-      layer.pre_ffw2_ns.HasPtr() ? layer.pre_ffw2_ns : layer.pre_ffw_norm_scale,
-      activations.pre_ffw_rms_out);
+  const MatPtr& shared_norm = layer.pre_ffw2_ns.HasPtr() ? layer.pre_ffw2_ns : layer.pre_ffw_norm_scale;
+  const MatPtr& moe_norm = layer.pre_ffw_norm_scale;
+  const MatPtr& shared_post_norm = layer.post_ffw2_ns;
+  const MatPtr& moe_post_norm = layer.post_ffw1_ns;
+
+  pre_norm(shared_norm, activations.pre_ffw_rms_out);
 
   // Shared MLP Path
   FFWNoVit(layer, activations, env);  // writes to activations.ffw_out
@@ -487,17 +491,17 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
     }
   }
 
-  if (layer.post_ffw2_ns.HasPtr()) {
-    rms_norm_inplace(layer.post_ffw2_ns, activations.attention.att_sums);
+  if (shared_post_norm.HasPtr()) {
+    rms_norm_inplace(shared_post_norm, activations.attention.att_sums);
   }
 
   // MoE Path
-  pre_norm(layer.pre_ffw_norm_scale, activations.pre_ffw_rms_out);
+  pre_norm(moe_norm, activations.pre_ffw_rms_out);
 
   Gemma4MoE::MoEFFW(layer, activations, env);  // writes to activations.ffw_out
 
-  if (layer.post_ffw1_ns.HasPtr()) {
-    rms_norm_inplace(layer.post_ffw1_ns, activations.ffw_out);
+  if (moe_post_norm.HasPtr()) {
+    rms_norm_inplace(moe_post_norm, activations.ffw_out);
   }
 
   // Combine & Final Norm (Fix for dual-path combination)

@@ -1725,6 +1725,322 @@ def export_qwen3_lm_sbs(
     csv.writer(csv_handle).writerows(metadata)
 
 
+def export_gemma4_moe_sbs(
+    model_specifier: str,
+    load_path: str,
+    tokenizer_file: str,
+    csv_file: str,
+    sbs_file: str,
+) -> None:
+  """Exports an sbs file from a Gemma 4 MoE safetensors checkpoint."""
+  if load_path.endswith(".json"):
+    with open(load_path, "r") as f:
+      j_obj = json.load(f)
+    files = list(set(j_obj["weight_map"].values()))
+    files = [os.path.join(os.path.dirname(load_path), f) for f in files]
+  else:
+    files = [load_path]
+
+  params = {}
+  for file in files:
+    with safetensors.safe_open(file, framework="pt") as f:
+      for k in f.keys():
+        if (
+            k.startswith("vision_tower.")
+            or k.startswith("multi_modal_projector.")
+            or k.startswith("model.vision_tower.")
+            or k.startswith("model.embed_vision.")
+        ):
+          continue
+        params[k] = f.get_tensor(k)
+
+  if "model.language_model.embed_tokens.weight" in params:
+    llm_prefix = "model.language_model."
+  elif "language_model.model.embed_tokens.weight" in params:
+    llm_prefix = "language_model.model."
+  elif "model.embed_tokens.weight" in params:
+    llm_prefix = "model."
+  elif "embed_tokens.weight" in params:
+    llm_prefix = ""
+  else:
+    raise ValueError(
+        "Could not locate embed_tokens.weight in Gemma 4 checkpoint."
+    )
+
+  embed_tokens = params[f"{llm_prefix}embed_tokens.weight"]
+  vocab_size, model_dim = embed_tokens.shape
+  head_dim = 256
+  num_layers = 30
+  ff_hidden_dim = 2112
+
+weight_type = configs.Type.kSFP
+  sbs_config = configs.ModelConfig(
+      configs.Model.GEMMA4_26B_MOE, weight_type, configs.PromptWrapping.GEMMA_IT
+  )
+  sbs_config.final_cap = 30.0
+
+  writer = compression.SbsWriter(sbs_file)
+  metadata = []
+  scales = {}
+
+  def add_data(
+      param_name,
+      data,
+      expected_shape,
+      sbs_name,
+      layer_index=None,
+      is_w2_ul=False,
+  ):
+    if expected_shape is not None:
+      if not isinstance(expected_shape, tuple):
+        expected_shape = (expected_shape,)
+      assert (
+          data.shape == expected_shape
+      ), f"{param_name}: got {data.shape}, expected {expected_shape}"
+
+    assert isinstance(data, torch.Tensor)
+    data = data.to(torch.float32).numpy()
+    data = np.array(data)
+
+    if layer_index is not None:
+      sbs_name = sbs_name + f"_{layer_index}"
+
+    value = flatten_f32(data)
+    scale = compute_scale(value)
+    both_names = param_name + "::" + sbs_name
+    metadata.append((both_names, data.dtype, data.shape, scale))
+
+  if _is_float_param(sbs_name):
+      packed = configs.Type.kF32
+    elif (
+        _is_bf16_param(sbs_name)
+        or sbs_name.startswith("router_scale")
+        or sbs_name.startswith("p_expert_sc")
+        or sbs_name.startswith("skip_scale")
+    ):
+      packed = configs.Type.kBF16
+    else:
+      packed = configs.Type.kSFP
+      scales[sbs_name] = scale
+
+    info = configs.TensorInfo()
+    info.name = sbs_name
+    info.shape = data.shape
+    writer.insert(sbs_name, value, packed, info)
+
+  # Embeddings & Final Norm
+  add_data(
+      f"{llm_prefix}embed_tokens.weight",
+      params.pop(f"{llm_prefix}embed_tokens.weight"),
+      (vocab_size, model_dim),
+      "c_embedding",
+  )
+  add_data(
+      f"{llm_prefix}norm.weight",
+      params.pop(f"{llm_prefix}norm.weight") - 1.0,
+      (model_dim,),
+      "c_final_norm",
+  )
+
+  for i in range(num_layers):
+    layer_head_dim = 512 if (i % 6 == 5) else 256
+
+    # Attention
+    if f"{llm_prefix}layers.{i}.self_attn.o_proj.weight" in params:
+      o = params.pop(f"{llm_prefix}layers.{i}.self_attn.o_proj.weight")
+      n_heads = o.shape[1] // layer_head_dim
+      o = o.reshape(model_dim, n_heads, layer_head_dim).permute(1, 0, 2)
+      add_data(
+          f"{llm_prefix}layers.{i}.self_attn.o_proj.weight",
+          o,
+          (n_heads, model_dim, layer_head_dim),
+          "att_ein",
+          i,
+      )
+
+    if f"{llm_prefix}layers.{i}.self_attn.q_proj.weight" in params:
+      q = params.pop(f"{llm_prefix}layers.{i}.self_attn.q_proj.weight")
+      k = params.pop(f"{llm_prefix}layers.{i}.self_attn.k_proj.weight")
+      if f"{llm_prefix}layers.{i}.self_attn.v_proj.weight" in params:
+        v = params.pop(f"{llm_prefix}layers.{i}.self_attn.v_proj.weight")
+      else:
+        # For full_attention layers where attention_k_eq_v is true
+        v = k.clone()
+      n_q = q.shape[0] // layer_head_dim
+      n_kv = k.shape[0] // layer_head_dim
+      q = q.reshape(n_q, layer_head_dim, model_dim)
+      k = k.reshape(n_kv, layer_head_dim, model_dim)
+      v = v.reshape(n_kv, layer_head_dim, model_dim)
+      stacked = (
+          torch.stack((k, v), dim=0)
+          .transpose(0, 1)
+          .reshape(2 * n_kv, layer_head_dim, model_dim)
+      )
+      qkv = torch.cat([q, stacked], dim=0)
+      add_data(
+          f"{llm_prefix}layers.{i}.self_attn.qkv_proj.weight",
+          qkv,
+          (n_q + 2 * n_kv, layer_head_dim, model_dim),
+          "qkv_ein",
+          i,
+      )
+
+    # Norms
+    for norm_name, sbs_norm in [
+        ("input_layernorm.weight", "pre_att_ns"),
+        ("post_attention_layernorm.weight", "post_att_ns"),
+        ("pre_feedforward_layernorm.weight", "pre_ffw2_ns"),
+        ("post_feedforward_layernorm.weight", "post_ff_ns"),
+        ("post_feedforward_layernorm_1.weight", "post_ffw2_ns"),
+        ("post_feedforward_layernorm_2.weight", "post_ffw1_ns"),
+        ("pre_feedforward_layernorm_2.weight", "pre_ff_ns"),
+    ]:
+      key = f"{llm_prefix}layers.{i}.{norm_name}"
+      if key in params:
+        add_data(key, params.pop(key) - 1.0, (model_dim,), sbs_norm, i)
+
+    for qk_name, sbs_qk in [
+        ("self_attn.q_norm.weight", "query_norm"),
+        ("self_attn.k_norm.weight", "key_norm"),
+    ]:
+      key = f"{llm_prefix}layers.{i}.{qk_name}"
+      if key in params:
+        qk_t = params.pop(key) - 1.0
+        add_data(key, qk_t, (qk_t.shape[0],), sbs_qk, i)
+
+    # Shared MLP
+    shared_gate_key = f"{llm_prefix}layers.{i}.mlp.gate_proj.weight"
+    shared_up_key = f"{llm_prefix}layers.{i}.mlp.up_proj.weight"
+    if shared_gate_key in params and shared_up_key in params:
+      shared_gate = params.pop(shared_gate_key)
+      shared_up = params.pop(shared_up_key)
+      add_data(
+          shared_gate_key,
+          shared_gate,
+          (ff_hidden_dim, model_dim),
+          "gating1_w",
+          i,
+      )
+      add_data(
+          shared_up_key,
+          shared_up,
+          (ff_hidden_dim, model_dim),
+          "gating2_w",
+          i,
+      )
+
+    shared_down_key = f"{llm_prefix}layers.{i}.mlp.down_proj.weight"
+    if shared_down_key in params:
+      shared_down = params.pop(shared_down_key)
+      add_data(
+          shared_down_key,
+          shared_down,
+          (model_dim, ff_hidden_dim),
+          "linear_w",
+          i,
+      )
+
+    scalar_key = f"{llm_prefix}layers.{i}.layer_scalar"
+    if scalar_key in params:
+      scalar = params.pop(scalar_key).reshape(1)
+      add_data(
+          scalar_key,
+          scalar,
+          (1,),
+          "skip_scale",
+          i,
+      )
+
+    # MoE Experts
+    gate_up_key = f"{llm_prefix}layers.{i}.experts.gate_up_proj"
+    if gate_up_key in params:
+      gate_up = params.pop(gate_up_key)
+      num_exp = gate_up.shape[0]
+      hidden_e = gate_up.shape[1] // 2
+      gate_up = gate_up.reshape(num_exp, 2, hidden_e, model_dim)
+      for e in range(num_exp):
+        add_data(
+            f"{gate_up_key}_{e}_1",
+            gate_up[e, 0, :, :],
+            (hidden_e, model_dim),
+            f"gating1_w_{i}_{e}",
+            layer_index=None,
+        )
+        add_data(
+            f"{gate_up_key}_{e}_2",
+            gate_up[e, 1, :, :],
+            (hidden_e, model_dim),
+            f"gating2_w_{i}_{e}",
+            layer_index=None,
+        )
+
+    down_key = f"{llm_prefix}layers.{i}.experts.down_proj"
+    if down_key in params:
+      down = params.pop(down_key)
+      num_exp = down.shape[0]
+      hidden_e = down.shape[2]
+      for e in range(num_exp):
+        add_data(
+            f"{down_key}_{e}",
+            down[e, :, :],
+            (model_dim, hidden_e),
+            f"linear_w_{i}_{e}",
+            layer_index=None,
+        )
+
+    router_key = f"{llm_prefix}layers.{i}.router.proj.weight"
+    if router_key in params:
+      router = params.pop(router_key)
+      add_data(
+          router_key,
+          router,
+          (router.shape[0], model_dim),
+          "moe_router",
+          i,
+      )
+
+    router_scale_key = f"{llm_prefix}layers.{i}.router.scale"
+    if router_scale_key in params:
+      router_scale = params.pop(router_scale_key)
+      add_data(
+          router_scale_key,
+          router_scale,
+          (model_dim,),
+          "router_scale",
+          i,
+      )
+
+    p_expert_sc_key = f"{llm_prefix}layers.{i}.router.per_expert_scale"
+    if p_expert_sc_key in params:
+      p_expert_sc = params.pop(p_expert_sc_key)
+      add_data(
+          p_expert_sc_key,
+          p_expert_sc,
+          (p_expert_sc.shape[0],),
+          "p_expert_sc",
+          i,
+      )
+
+  if params:
+    logging.info(
+        "Unconsumed parameters (e.g. vision or shared embeddings): %s",
+        list(params.keys())[:10],
+    )
+
+  if tokenizer_file.endswith(".json"):
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kHfBpe
+    tokenizer_blob = pack_bpe_tokenizer(tokenizer_file)
+  else:
+    sbs_config.tokenizer_kind = configs.TokenizerKind.kSentencePiece
+    with open(tokenizer_file, "rb") as f:
+      tokenizer_blob = f.read()
+  writer.write(sbs_config, tokenizer_blob)
+
+  with open(csv_file, "w") as csv_handle:
+    csv.writer(csv_handle).writerows(metadata)
+  logging.info("Successfully exported Gemma 4 MoE SBS to %s", sbs_file)
+
+
 def main(argv: Sequence[str]) -> None:
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
@@ -1772,6 +2088,10 @@ def main(argv: Sequence[str]) -> None:
     export_gemma4_lm_sbs(
         model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
     )
+  elif model_specifier.startswith("gemma4-"):
+    export_gemma4_moe_sbs(
+        model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
+    )
   elif model_specifier.startswith("t5gemma"):
     export_t5gemma_sbs(
         model_specifier,
@@ -1787,9 +2107,9 @@ def main(argv: Sequence[str]) -> None:
     )
   else:
     raise app.UsageError(
-        f"Unsupported model_specifier {model_specifier!r}. Expected a "
-        "'paligemma*', 'gemma3-*-lm-*', 'gemma4-*-lm-*', 'qwen3-*', or "
-        "'t5gemma*' specifier."
+        f"Unsupported model_specifier {model_specifier!r}. Expected a"
+        " 'paligemma*', 'gemma3-*-lm-*', 'gemma4-*-lm-*', 'gemma4-*',"
+        " 'qwen3-*', or 't5gemma*' specifier."
     )
 
 
