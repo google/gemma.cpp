@@ -101,6 +101,7 @@ enum class Callers {  // Keep sorted
   kMMClusterForMCNC,
   kMMClusterForN,
   kMMClusterForSFC,
+  kMMQuantizeA,
   kMMHierForMC,
   kMMHierForMCNC,
   kMMHierForN,
