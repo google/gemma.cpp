@@ -1188,7 +1188,8 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
                max_tbatch_size >= prefill_this_query);
 
     // For each batch of tokens in the query:
-    for (size_t tbatch_start = 0; tbatch_start < prefill_this_query;
+    for (size_t tbatch_start = qbatch_1.InitialPos(0);
+         tbatch_start < prefill_this_query;
          tbatch_start += max_tbatch_size) {
       const size_t tbatch_size =
           HWY_MIN(max_tbatch_size, prefill_this_query - tbatch_start);
@@ -1528,6 +1529,7 @@ size_t PrefillTBatchOrQBatch(const ModelConfig& config,
                              MatMulEnv& env, TimingInfo& timing_info) {
   size_t max_prompt_size = 0;
   bool all_prefix_end_are_zero = true;
+  bool all_initial_pos_are_zero = true;
   size_t total_prefill_tokens = 0;  // only for throughput stats.
   const size_t seq_len = qbatch.KV(0).SeqLen();
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
@@ -1540,9 +1542,13 @@ size_t PrefillTBatchOrQBatch(const ModelConfig& config,
 
     // Prefill stops before size - 1 because the last prompt token is the
     // first input token for generation.
-    total_prefill_tokens += prompt.size() - 1;
+    const size_t initial_pos = qbatch.InitialPos(qi);
+    if (prompt.size() - 1 > initial_pos) {
+      total_prefill_tokens += (prompt.size() - 1 - initial_pos);
+    }
 
     all_prefix_end_are_zero &= qbatch.PrefixEnd(qi) == 0;
+    all_initial_pos_are_zero &= initial_pos == 0;
 
     // We use a single divisor, so all sequence lengths must be the same.
     HWY_ASSERT(qbatch.KV(qi).SeqLen() == seq_len);
@@ -1559,7 +1565,8 @@ size_t PrefillTBatchOrQBatch(const ModelConfig& config,
 
   timing_info.prefill_start = hwy::platform::Now();
   // Batch over the larger of prompt length, or queries.
-  if ((qbatch.Size() > max_prompt_size) && all_prefix_end_are_zero) {
+  if ((qbatch.Size() > max_prompt_size) && all_prefix_end_are_zero &&
+      all_initial_pos_are_zero) {
     activations.SetBatchSize(qbatch.Size());  // required before PrefillQBatch
     PrefillQBatch(max_prompt_size, config, runtime_config, weights, activations,
                   qbatch, env, non_eos);
@@ -1586,7 +1593,9 @@ void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
                                     const RuntimeConfig& runtime_config,
                                     QBatch& qbatch, hwy::BitSet4096<>& non_eos,
                                     size_t qi) {
-  const size_t last_pos_in_prompt = qbatch.Pos(qi) - qbatch.InitialPos(qi);
+  const size_t prompt_size = qbatch.Prompt(qi).size();
+  const size_t last_pos_in_prompt =
+      prompt_size == 0 ? 0 : std::min(qbatch.Pos(qi), prompt_size - 1);
 
   const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
   // In autoregressive mode, we have not prefilled the last token, so do
