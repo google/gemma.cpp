@@ -1261,16 +1261,21 @@ class MMLoops {
           MMKernel::B3A2C0(A, B, range_mc, range_kc, range_nc, args, MMSetC(),
                            C.View(0, range_nc.begin(), range_nc.Num()));
 
-          const StridedViewBF C2 = args.env.C_tiles.C(
-              Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-          if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
-                             MMSetC(), C2);
-          }
-
           if constexpr (IsBF16<TC>()) {
+            const StridedViewBF C2 = args.env.C_tiles.C(
+                Extents2D(range_mc.Num(), range_nc.Num()), worker);
+            if (B2 != nullptr) {
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
             args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          } else {
+            if (B2 != nullptr) {
+              const StridedViewBF C2 = args.env.C_tiles.C(
+                  Extents2D(range_mc.Num(), range_nc.Num()), worker);
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
           }
         });
   }
@@ -1295,17 +1300,22 @@ class MMLoops {
                         A, B, range_mc, args.ranges_kc, range_nc, args,
                         C.View(0, range_nc.begin(), range_nc.Num()));
 
-                    const StridedViewBF C2 = args.env.C_tiles.C(
-                        Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-                    if (B2 != nullptr) {
-                      MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
-                                          range_nc, args, C2);
-                    }
-
                     if constexpr (IsBF16<TC>()) {
+                      const StridedViewBF C2 = args.env.C_tiles.C(
+                          Extents2D(range_mc.Num(), range_nc.Num()), worker);
+                      if (B2 != nullptr) {
+                        MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
+                                            range_nc, args, C2);
+                      }
                       args.options.MaybeCallFunc(C, range_mc, range_nc, C2,
                                                  worker);
+                    } else {
+                      if (B2 != nullptr) {
+                        const StridedViewBF C2 = args.env.C_tiles.C(
+                            Extents2D(range_mc.Num(), range_nc.Num()), worker);
+                        MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc,
+                                            range_nc, args, C2);
+                      }
                     }
                   });
   }
@@ -1331,15 +1341,21 @@ class MMLoops {
               A, B, range_mc, range_kc, range_nc, args, MMSetC(),
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
-          const StridedViewBF C2 = args.env.C_tiles.C(
-              Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-          if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
-                             MMSetC(), C2);
-          }
           if constexpr (IsBF16<TC>()) {
+            const StridedViewBF C2 = args.env.C_tiles.C(
+                Extents2D(range_mc.Num(), range_nc.Num()), worker);
+            if (B2 != nullptr) {
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
             args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          } else {
+            if (B2 != nullptr) {
+              const StridedViewBF C2 = args.env.C_tiles.C(
+                  Extents2D(range_mc.Num(), range_nc.Num()), worker);
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
           }
         });
   }
@@ -1363,16 +1379,21 @@ class MMLoops {
               A, B, range_mc, args.ranges_kc, range_nc, args,
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
-          const StridedViewBF C2 = args.env.C_tiles.C(
-              Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-          if (B2 != nullptr) {
-            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
-                                args, C2);
-          }
-
           if constexpr (IsBF16<TC>()) {
+            const StridedViewBF C2 = args.env.C_tiles.C(
+                Extents2D(range_mc.Num(), range_nc.Num()), worker);
+            if (B2 != nullptr) {
+              MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                  args, C2);
+            }
             args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          } else {
+            if (B2 != nullptr) {
+              const StridedViewBF C2 = args.env.C_tiles.C(
+                  Extents2D(range_mc.Num(), range_nc.Num()), worker);
+              MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                  args, C2);
+            }
           }
         });
   }
@@ -1397,15 +1418,21 @@ class MMLoops {
               A, B, range_mc, range_kc, range_nc, args, MMSetC(),
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
-          const StridedViewBF C2 = args.env.C_tiles.C(
-              Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-          if (B2 != nullptr) {
-            MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
-                             MMSetC(), C2);
-          }
           if constexpr (IsBF16<TC>()) {
+            const StridedViewBF C2 = args.env.C_tiles.C(
+                Extents2D(range_mc.Num(), range_nc.Num()), worker);
+            if (B2 != nullptr) {
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
             args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          } else {
+            if (B2 != nullptr) {
+              const StridedViewBF C2 = args.env.C_tiles.C(
+                  Extents2D(range_mc.Num(), range_nc.Num()), worker);
+              MMKernel::B3A2C0(A, *B2, range_mc, range_kc, range_nc, args,
+                               MMSetC(), C2);
+            }
           }
         });
   }
@@ -1428,16 +1455,21 @@ class MMLoops {
               A, B, range_mc, args.ranges_kc, range_nc, args,
               C.View(range_mc.begin(), range_nc.begin(), range_nc.Num()));
 
-          const StridedViewBF C2 = args.env.C_tiles.C(
-              Extents2D(range_mc.Num(), range_nc.Num()), worker);
-
-          if (B2 != nullptr) {
-            MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
-                                args, C2);
-          }
-
           if constexpr (IsBF16<TC>()) {
+            const StridedViewBF C2 = args.env.C_tiles.C(
+                Extents2D(range_mc.Num(), range_nc.Num()), worker);
+            if (B2 != nullptr) {
+              MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                  args, C2);
+            }
             args.options.MaybeCallFunc(C, range_mc, range_nc, C2, worker);
+          } else {
+            if (B2 != nullptr) {
+              const StridedViewBF C2 = args.env.C_tiles.C(
+                  Extents2D(range_mc.Num(), range_nc.Num()), worker);
+              MMKernel::ForeachKC(A, *B2, range_mc, args.ranges_kc, range_nc,
+                                  args, C2);
+            }
           }
         });
   }
