@@ -55,6 +55,11 @@ struct KVCache {
   // copy ctor to make the cost explicit.
   KVCache Copy();
 
+  // Default flash only needs the current layer's projections until transpose.
+  // Other backends can still use kv_cache as persistent inference state.
+  bool kv_is_scratch = false;
+  void EnsureProjectionRows(size_t num_tokens, size_t cols);
+
   size_t SeqLen() const {
     if (IsTiled()) {
       return tiled_seq_len.value();
