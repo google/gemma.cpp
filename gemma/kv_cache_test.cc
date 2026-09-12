@@ -60,6 +60,13 @@ TEST(KVCacheTest, EncoderDecoderUsesDecoderLayerConfig) {
   EXPECT_EQ(cache.kv_heads, model_config.decoder_layer_configs[0].kv_heads);
   EXPECT_EQ(cache.qkv_dim, model_config.decoder_layer_configs[0].qkv_dim);
   EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
+  RuntimeConfig runtime_config;
+  runtime_config.attention_impl = AttentionImpl::kFlash;
+  KVCache runtime_cache(model_config, inference_args, runtime_config,
+                         ctx.allocator);
+  EXPECT_FALSE(runtime_cache.kv_is_scratch);
+  EXPECT_EQ(runtime_cache.kv_cache.Rows(), inference_args.seq_len);
+  EXPECT_EQ(runtime_cache.kv_cache.Cols(), model_config.KVCacheCols());
 }
 
 // Layers that reuse an earlier layer's K/V own no region of the cache.
@@ -79,7 +86,52 @@ TEST(KVCacheTest, SharedLayersReserveNoCache) {
   EXPECT_EQ(cache.layer_flat_offsets[15], cache.layer_flat_offsets[13]);
   EXPECT_EQ(cache.layer_k_v_offsets[15], cache.layer_k_v_offsets[13]);
   EXPECT_EQ(cache.layer_kv_head_offsets[15], cache.layer_kv_head_offsets[13]);
-  EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
+  EXPECT_TRUE(cache.kv_is_scratch);
+  // Global layers project 1024 values; local layers project only 512.
+  EXPECT_EQ(cache.kv_cache.Cols(), 1024);
+}
+
+TEST(KVCacheTest, FlashScratchPreservesSequenceAndHistory) {
+  ModelConfig config(Model::GEMMA3_270M, Type::kSFP, PromptWrapping::GEMMA_IT);
+  config.num_layers = 2;
+  config.layer_configs.resize(2);
+  config.attention_window_sizes.resize(2);
+  InferenceArgs args;
+  args.seq_len = 32768;
+  RuntimeConfig runtime;
+  runtime.attention_impl = AttentionImpl::kFlash;
+  runtime.prefill_tbatch_size = 16;
+  ThreadingArgs threading;
+  ThreadingContext ctx(threading);
+  KVCache cache(config, args, runtime, ctx.allocator);
+  ASSERT_TRUE(cache.kv_is_scratch);
+  EXPECT_EQ(cache.SeqLen(), 32768);
+  EXPECT_EQ(cache.ToPtr().SeqLen(), 32768);
+  EXPECT_FALSE(cache.ToPtr().IsEmpty());
+  EXPECT_EQ(cache.kv_cache.Rows(), 16);
+  EXPECT_EQ(cache.kv_cache.Cols(), config.layer_configs[0].CacheLayerSize());
+  EXPECT_FALSE(cache.compact_kv_cache_ptr.HasPtr());
+
+  ZeroInit(cache.kv_cache);
+  ZeroInit(cache.k_cache);
+  ZeroInit(cache.v_cache);
+  cache.k_cache.Row(32767)[0] = hwy::BF16FromF32(3.0f);
+  cache.v_cache.Row(32767)[0] = hwy::BF16FromF32(5.0f);
+  cache.EnsureProjectionRows(33, cache.kv_cache.Cols());
+  EXPECT_EQ(cache.kv_cache.Rows(), 33);
+  cache.EnsureProjectionRows(1, cache.kv_cache.Cols());
+  EXPECT_EQ(cache.kv_cache.Rows(), 33);
+  const size_t wider_cols = 2 * cache.kv_cache.Cols();
+  cache.EnsureProjectionRows(1, wider_cols);
+  EXPECT_EQ(cache.kv_cache.Rows(), 33);
+  EXPECT_EQ(cache.kv_cache.Cols(), wider_cols);
+  ZeroInit(cache.kv_cache);
+  KVCache copy = cache.Copy();
+  EXPECT_TRUE(copy.kv_is_scratch);
+  EXPECT_EQ(copy.SeqLen(), 32768);
+  EXPECT_EQ(hwy::F32FromBF16(copy.k_cache.Row(32767)[0]), 3.0f);
+  EXPECT_EQ(hwy::F32FromBF16(copy.v_cache.Row(32767)[0]), 5.0f);
+  EXPECT_NE(copy.k_cache.Row(0), cache.k_cache.Row(0));
 }
 
 }  // namespace
