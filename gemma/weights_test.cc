@@ -219,5 +219,29 @@ TEST(WeightsTest, ExplicitSFPDisablesOnlyAutomaticMapping) {
             WeightsPtrs::Mode::kReadBF16);
 }
 
+TEST(WeightsTest, MapsNonPageAlignedFile) {
+  ThreadingContext ctx = MakeContext();
+  const size_t file_bytes = ctx.allocator.BasePageBytes() + 1;
+  std::vector<uint8_t> contents(file_bytes);
+  contents.front() = 1;
+  contents.back() = 2;
+
+  TemporaryBlob blob;
+  auto file = OpenFileOrAbort(blob.path(), "w+");
+  ASSERT_TRUE(file->Write(contents.data(), contents.size(), 0));
+  MapPtr mapped = file->Map();
+  ASSERT_NE(mapped, nullptr);
+  EXPECT_EQ(mapped[0], contents.front());
+  EXPECT_EQ(mapped[file_bytes - 1], contents.back());
+
+  InferenceArgs inference;
+  LoaderArgs loader("", "");
+  loader.map = Tristate::kTrue;
+  loader.to_bf16 = Tristate::kFalse;
+  EXPECT_EQ(weights_internal::ChooseMode(file_bytes, loader, inference,
+                                         ctx.allocator),
+            WeightsPtrs::Mode::kMap);
+}
+
 }  // namespace
 }  // namespace gcpp
