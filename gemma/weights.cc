@@ -676,16 +676,6 @@ WeightsPtrs::Mode weights_internal::ChooseMode(uint64_t file_bytes,
     map = Tristate::kFalse;
   }
 
-  // Disable mapping if not padded to the base page size.
-  if (file_bytes % allocator.BasePageBytes() != 0) {
-    if (map == Tristate::kTrue) {  // Only complain if explicitly requested.
-      HWY_WARN("Unable to map non-padded file (%zu, %zu), reading instead.",
-               static_cast<size_t>(file_bytes >> 10),
-               allocator.BasePageBytes());
-    }
-    map = Tristate::kFalse;
-  }
-
   // Check for user override:
   if (to_bf16 == Tristate::kTrue && map == Tristate::kTrue) {
     HWY_WARN("Cannot have to_bf16 && map, to_bf16 takes precedence.");
