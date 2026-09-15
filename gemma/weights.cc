@@ -676,6 +676,16 @@ WeightsPtrs::Mode weights_internal::ChooseMode(uint64_t file_bytes,
     map = Tristate::kFalse;
   }
 
+  // Kernels can read multiple vectors ahead, so retain blob alignment even
+  // though mapping itself does not require a page-aligned file length.
+  if (file_bytes % kBlobAlign != 0) {
+    if (map == Tristate::kTrue) {  // Only complain if explicitly requested.
+      HWY_WARN("File size %zu is not a multiple of %zu bytes, reading instead.",
+               static_cast<size_t>(file_bytes), kBlobAlign);
+    }
+    map = Tristate::kFalse;
+  }
+
   // Check for user override:
   if (to_bf16 == Tristate::kTrue && map == Tristate::kTrue) {
     HWY_WARN("Cannot have to_bf16 && map, to_bf16 takes precedence.");

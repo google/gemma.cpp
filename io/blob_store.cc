@@ -35,15 +35,9 @@ namespace gcpp {
 
 static_assert(HWY_IS_LITTLE_ENDIAN, "Assumes little endian");
 
-// Each blob offset is a multiple of this, an upper bound on SVE vectors and
-// usually also larger than L2 cache lines. This is useful when memory mapping
-// the entire file, because offset alignment then determines the alignment of
-// the blob in memory. Aligning each blob to the (largest) page size would be
-// too wasteful, see `kEndAlign`.
-constexpr size_t kBlobAlign = 256;  // test also hard-codes this value
-
-// Linux mmap requires the file to be a multiple of the (base) page size, which
-// can be up to 64 KiB on Arm. Apple uses 16 KiB, most others use 4 KiB.
+// Pad newly written files to cover base page sizes up to 64 KiB on Arm.
+// Apple uses 16 KiB, most others use 4 KiB. Mapping also accepts older files
+// padded only to kBlobAlign.
 constexpr size_t kEndAlign = 64 * 1024;
 
 constexpr size_t kU128Bytes = sizeof(hwy::uint128_t);
