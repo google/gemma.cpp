@@ -839,6 +839,7 @@ cc_library(
     textual_hdrs = [
         "gemma/gemma-inl.h",
         "gemma/flash_attention_arm-inl.h",
+        "gemma/online_softmax-inl.h",
     ],
     deps = [
         ":activations",
