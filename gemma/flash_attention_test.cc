@@ -355,14 +355,14 @@ void TestFlashAttention(size_t target_parallelism,
   const size_t kHeadGroups = layer_config.heads / layer_config.kv_heads;
   const size_t seq_len =
       static_cast<size_t>(att_activations.div_seq_len.GetDivisor());
-  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(),
-                    qbatch.KV(0).k_cache);
-  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(),
-                    qbatch.KV(0).v_cache);
-  auto& kvc = qbatch.KV(0).kv_cache;
   using DF = hn::ScalableTag<float>;
   const DF df;
   const size_t kNF = hn::Lanes(df);
+  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(), kNF,
+                    qbatch.KV(0).k_cache);
+  MaybeReshapeCache(qbatch.KV(0).cache->KOrVDefaultCols(), kNF,
+                    qbatch.KV(0).v_cache);
+  auto& kvc = qbatch.KV(0).kv_cache;
   const size_t kFloatsPerTile = 2 * kNF;
   for (size_t h = 0; h < layer_config.heads; ++h) {
     // Make strided views into the kv cache for

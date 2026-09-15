@@ -476,7 +476,7 @@ class VitGemma4Attention {
     const size_t qkv_dim = layer_config_.qkv_dim;
     const size_t heads = layer_config_.heads;
     HWY_ASSERT_M(heads == layer_config_.kv_heads, "Vit expects MHA");
-    const size_t kNF = FloatsPerVector();
+    const size_t kNF = hn::Lanes(hn::ScalableTag<float>());
     const size_t kRoundedKVDim = hwy::RoundUpTo(qkv_dim, 2 * kNF);
     auto& attn = activations_.attention;
     const size_t seq_len = static_cast<size_t>(attn.div_seq_len.GetDivisor());

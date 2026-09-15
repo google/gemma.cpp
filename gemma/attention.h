@@ -27,12 +27,8 @@
 #include "gemma/weights.h"   // LayerWeightsPtrs
 #include "ops/matmul.h"
 #include "hwy/highway.h"     // HWY_VISIT_TARGETS
-#include "hwy/per_target.h"  // VectorBytes
 
 namespace gcpp {
-
-// Returns the number of floats per vector (aka NF).
-inline size_t FloatsPerVector() { return hwy::VectorBytes() / sizeof(float); }
 
 // The attention window usually starts at 0 unless `pos` is larger than
 // the attention window size, then it is `pos` - window_size + 1.
@@ -44,10 +40,12 @@ inline size_t StartPos(size_t pos, const ModelConfig& config,
 
 // The k-cache and v-cache are setup without knowing NF. So if it hasn't been
 // done already, reshape it to take NF into account. Must be called before
-// FlashAttention.
-inline void MaybeReshapeCache(const size_t default_cols, MatPtrT<KV_t>& cache) {
+// FlashAttention. `nf` must be the number of floats per vector of the SIMD
+// target that runs it, i.e. `hn::Lanes(hn::ScalableTag<float>())`.
+inline void MaybeReshapeCache(const size_t default_cols, const size_t nf,
+                              MatPtrT<KV_t>& cache) {
   if (default_cols == cache.Cols()) {
-    cache.ReshapePackedRowsToCols(2 * FloatsPerVector());
+    cache.ReshapePackedRowsToCols(2 * nf);
   }
 }
 
