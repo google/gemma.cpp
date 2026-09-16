@@ -34,6 +34,11 @@
 
 namespace gcpp {
 
+// Blob offsets and padded sizes are multiples of this, an upper bound on SVE
+// vector bytes and usually also larger than L2 cache lines. This preserves blob
+// alignment when mapping the entire file without requiring page-sized padding.
+constexpr size_t kBlobAlign = 256;  // test also hard-codes this value
+
 // One blob's extents within the file.
 struct BlobRange {
   uint64_t End() const { return offset + bytes; }

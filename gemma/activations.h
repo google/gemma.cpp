@@ -801,7 +801,8 @@ struct Activations {
                                    config.model_dim, allocator)),
           mla_o_in(MatFactory("mla_o_in",
                               mla_dims.o_in_dim > 0 ? batch_size : 0,
-                              mla_dims.o_in_dim, allocator)) {
+                              mla_dims.o_in_dim, allocator))
+          {
       moe_C1.AllocateAndAttachRowPtrs(row_ptrs);
       moe_C2.AllocateAndAttachRowPtrs(row_ptrs);
       ffw_expert_in.AllocateAndAttachRowPtrs(row_ptrs);
