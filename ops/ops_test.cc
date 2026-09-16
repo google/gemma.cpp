@@ -20,9 +20,12 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cmath>
 #include <functional>
 #include <numeric>
@@ -47,8 +50,8 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/test_util-inl.h"
-#include "ops/ops-inl.h"
 #include "ops/fast_ops-inl.h"
+#include "ops/ops-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -925,6 +928,713 @@ void TestPackTokenAndProb() {
   EXPECT_LT(packed2, packed1);
 }
 
+void TestApplyLogitMaskAllAllowed() {
+  const std::vector<size_t> vocab_sizes = {
+      1,   3,   7,   8,    16,   63,     64,     65,     127,    128,   129,
+      255, 256, 257, 1000, 1001, 129280, 129281, 256000, 256001, 256063};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t kPad = 128;
+    std::vector<float> buffer(vocab_size + 2 * kPad, 777.0f);
+    float* logits_ptr = buffer.data() + kPad;
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_ptr[i] = static_cast<float>(i) * 0.05f - 10.0f;
+    }
+    const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<uint64_t> mask(num_words, ~0ULL);
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size), mask.data(),
+                         vocab_size);
+
+    // Verify all allowed tokens remain unchanged (delta == 0.0f).
+    for (size_t i = 0; i < vocab_size; ++i) {
+      EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+    }
+    // Verify padding canaries before and after are untouched.
+    for (size_t i = 0; i < kPad; ++i) {
+      EXPECT_FLOAT_EQ(buffer[i], 777.0f);
+      EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 777.0f);
+    }
+  }
+}
+
+void TestApplyLogitMaskAllDisallowed() {
+  const std::vector<size_t> vocab_sizes = {64,   65,     128,    129,   1000,
+                                           1001, 129280, 256000, 256001};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t kPad = 128;
+    std::vector<float> buffer(vocab_size + 2 * kPad, 777.0f);
+    float* logits_ptr = buffer.data() + kPad;
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_ptr[i] = static_cast<float>(i) * 0.1f + 1.0f;
+    }
+    const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+    const size_t num_words = (vocab_size + 63) / 64;
+    // Word 0 is all-disallowed (0ULL), word 1 has allowed token, remaining
+    // words 0ULL.
+    std::vector<uint64_t> mask(num_words, 0ULL);
+    if (num_words > 1) {
+      mask[1] = 1ULL;  // Token 64 allowed, words 0 and 2..end take Fast Path 2.
+    } else {
+      mask[0] = (1ULL << (vocab_size - 1));  // Only last token allowed.
+    }
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size), mask.data(),
+                         vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool is_allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+      if (is_allowed) {
+        EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+      } else {
+        EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+      }
+    }
+    // Verify canaries untouched.
+    for (size_t i = 0; i < kPad; ++i) {
+      EXPECT_FLOAT_EQ(buffer[i], 777.0f);
+      EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 777.0f);
+    }
+  }
+}
+
+void TestApplyLogitMaskEmptyMaskGuardrail() {
+  const std::vector<size_t> vocab_sizes = {1,   63,   64,     65,
+                                           128, 1000, 129280, 256000};
+
+  for (size_t vocab_size : vocab_sizes) {
+    std::vector<float> logits(vocab_size);
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits[i] = static_cast<float>(i) * 0.2f - 3.0f;
+    }
+    const std::vector<float> original = logits;
+
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<uint64_t> empty_mask(num_words, 0ULL);
+
+    // Empty mask must NOT zero or -inf out logits; must preserve original
+    // finite values.
+    ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                         empty_mask.data(), vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      EXPECT_FLOAT_EQ(logits[i], original[i]);
+    }
+  }
+
+  // Null/zero guardrails
+  std::vector<float> dummy(10, 1.0f);
+  ApplyLogitMaskKernel(hwy::Span<float>(), nullptr, 0);
+  ApplyLogitMaskKernel(hwy::Span<float>(dummy.data(), dummy.size()), nullptr,
+                       10);
+  EXPECT_FLOAT_EQ(dummy[0], 1.0f);
+}
+
+void TestApplyLogitMaskMixed() {
+  const std::vector<size_t> vocab_sizes = {64,  65,   127,  128,    129,
+                                           256, 1000, 1001, 129280, 256000};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<float> logits(vocab_size);
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits[i] = static_cast<float>(i) * 0.01f;
+    }
+    const std::vector<float> original = logits;
+
+    // Pattern 1: Alternating even/odd bits
+    std::vector<uint64_t> alt_mask(num_words, 0xAAAAAAAAAAAAAAAAULL);
+    ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                         alt_mask.data(), vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool is_allowed = (alt_mask[i / 64] & (1ULL << (i % 64))) != 0;
+      if (is_allowed) {
+        EXPECT_FLOAT_EQ(logits[i], original[i]);
+      } else {
+        EXPECT_TRUE(std::isinf(logits[i]) && logits[i] < 0.0f);
+      }
+    }
+
+    // Pattern 2: Custom mask value (-1000.0f) with inverted alternating bits
+    std::vector<float> logits_custom = original;
+    std::vector<uint64_t> alt_mask2(num_words, 0x5555555555555555ULL);
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_custom.data(), vocab_size),
+                         alt_mask2.data(), vocab_size, /*mask_value=*/-1000.0f);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool is_allowed = (alt_mask2[i / 64] & (1ULL << (i % 64))) != 0;
+      if (is_allowed) {
+        EXPECT_FLOAT_EQ(logits_custom[i], original[i]);
+      } else {
+        EXPECT_FLOAT_EQ(logits_custom[i], -1000.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskUnalignedVocabSizes() {
+  // Test irregular boundaries and odd non-multiples of 64
+  const std::vector<size_t> vocab_sizes = {
+      1,   2,   3,    5,    7,      9,      15,     17,     31,
+      33,  63,  65,   77,   99,     127,    129,    255,    257,
+      500, 501, 1023, 1025, 129279, 129281, 255999, 256001, 256063};
+
+  std::mt19937_64 rng(42);
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t kPad = 64;
+    std::vector<float> buffer(vocab_size + 2 * kPad, 9999.0f);
+    float* logits_ptr = buffer.data() + kPad;
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_ptr[i] = static_cast<float>(i % 100);
+    }
+    const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<uint64_t> mask(num_words);
+    for (size_t w = 0; w < num_words; ++w) {
+      mask[w] = rng();
+    }
+    // Ensure at least one token is allowed so guardrail doesn't trigger
+    mask[0] |= 1ULL;
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size), mask.data(),
+                         vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool is_allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+      if (is_allowed) {
+        EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+      } else {
+        EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+      }
+    }
+
+    // Verify bounds safety: no overrun before or after logits span
+    for (size_t i = 0; i < kPad; ++i) {
+      EXPECT_FLOAT_EQ(buffer[i], 9999.0f);
+      EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 9999.0f);
+    }
+  }
+}
+
+void TestApplyLogitMaskUnalignedPointers() {
+  const size_t vocab_size = 500;
+  const size_t num_words = (vocab_size + 63) / 64;
+  std::mt19937_64 rng(12345);
+
+  std::vector<uint64_t> mask(num_words);
+  for (size_t w = 0; w < num_words; ++w) {
+    mask[w] = rng();
+  }
+  mask[0] |= 1ULL;
+
+  // Test various pointer offsets from unaligned base
+  for (size_t misalign = 0; misalign < 16; ++misalign) {
+    std::vector<float> buffer(vocab_size + misalign + 32, 555.0f);
+    float* logits_ptr = buffer.data() + misalign;
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_ptr[i] = static_cast<float>(i + 1);
+    }
+    const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size), mask.data(),
+                         vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool is_allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+      if (is_allowed) {
+        EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+      } else {
+        EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskSingleBitSet() {
+  const std::vector<size_t> vocab_sizes = {1,   63,  64,   65,    127,
+                                           128, 129, 1000, 256000};
+  const std::vector<size_t> test_indices = {
+      0, 1, 2, 31, 32, 63, 64, 65, 127, 128, 129, 999, 1000, 255998, 255999};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    const size_t kPad = 128;
+
+    for (size_t target_idx : test_indices) {
+      if (target_idx >= vocab_size) continue;
+
+      std::vector<float> buffer(vocab_size + 2 * kPad, 777.0f);
+      float* logits_ptr = buffer.data() + kPad;
+      for (size_t i = 0; i < vocab_size; ++i) {
+        logits_ptr[i] = static_cast<float>(i) * 0.01f + 1.0f;
+      }
+      const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+      std::vector<uint64_t> mask(num_words, 0ULL);
+      mask[target_idx / 64] |= (1ULL << (target_idx % 64));
+
+      ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size),
+                           mask.data(), vocab_size);
+
+      for (size_t i = 0; i < vocab_size; ++i) {
+        if (i == target_idx) {
+          EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+        } else {
+          EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+        }
+      }
+
+      for (size_t i = 0; i < kPad; ++i) {
+        EXPECT_FLOAT_EQ(buffer[i], 777.0f);
+        EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 777.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskSingleBitUnset() {
+  const std::vector<size_t> vocab_sizes = {1,   63,  64,   65,    127,
+                                           128, 129, 1000, 256000};
+  const std::vector<size_t> test_indices = {
+      0, 1, 2, 31, 32, 63, 64, 65, 127, 128, 129, 999, 1000, 255998, 255999};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    const size_t kPad = 128;
+
+    for (size_t target_idx : test_indices) {
+      if (target_idx >= vocab_size) continue;
+
+      std::vector<float> buffer(vocab_size + 2 * kPad, 777.0f);
+      float* logits_ptr = buffer.data() + kPad;
+      for (size_t i = 0; i < vocab_size; ++i) {
+        logits_ptr[i] = static_cast<float>(i) * 0.01f + 1.0f;
+      }
+      const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+      std::vector<uint64_t> mask(num_words, ~0ULL);
+      mask[target_idx / 64] &= ~(1ULL << (target_idx % 64));
+
+      ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size),
+                           mask.data(), vocab_size);
+
+      if (vocab_size == 1) {
+        EXPECT_FLOAT_EQ(logits_ptr[0], original[0]);
+      } else {
+        for (size_t i = 0; i < vocab_size; ++i) {
+          if (i == target_idx) {
+            EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+          } else {
+            EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+          }
+        }
+      }
+
+      for (size_t i = 0; i < kPad; ++i) {
+        EXPECT_FLOAT_EQ(buffer[i], 777.0f);
+        EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 777.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskAlternatingPatterns() {
+  const std::vector<uint64_t> patterns = {
+      0xAAAAAAAAAAAAAAAAULL, 0x5555555555555555ULL, 0x3333333333333333ULL,
+      0x0F0F0F0F0F0F0F0FULL, 0x00FF00FF00FF00FFULL,
+  };
+  const std::vector<size_t> vocab_sizes = {63,  64,  65,  127,  128,   129,
+                                           255, 256, 257, 1000, 256000};
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    const size_t kPad = 64;
+
+    for (uint64_t pattern : patterns) {
+      std::vector<float> buffer(vocab_size + 2 * kPad, 888.0f);
+      float* logits_ptr = buffer.data() + kPad;
+      for (size_t i = 0; i < vocab_size; ++i) {
+        logits_ptr[i] = static_cast<float>(i % 256) - 128.0f;
+      }
+      const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+      std::vector<uint64_t> mask(num_words, pattern);
+
+      ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size),
+                           mask.data(), vocab_size);
+
+      for (size_t i = 0; i < vocab_size; ++i) {
+        const bool allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+        if (allowed) {
+          EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+        } else {
+          EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+        }
+      }
+
+      for (size_t i = 0; i < kPad; ++i) {
+        EXPECT_FLOAT_EQ(buffer[i], 888.0f);
+        EXPECT_FLOAT_EQ(buffer[kPad + vocab_size + i], 888.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskStressAndBenchmark() {
+  const size_t vocab_size = 256000;
+  const size_t num_words = (vocab_size + 63) / 64;
+  std::vector<float> logits(vocab_size, 1.0f);
+
+  struct BenchmarkCase {
+    const char* name;
+    std::vector<uint64_t> mask;
+  };
+
+  std::vector<BenchmarkCase> cases;
+  cases.push_back(
+      {"All-Allowed (No-op)", std::vector<uint64_t>(num_words, ~0ULL)});
+  cases.push_back(
+      {"Empty Mask (Guardrail)", std::vector<uint64_t>(num_words, 0ULL)});
+  {
+    std::vector<uint64_t> m(num_words, 0ULL);
+    m[0] = 1ULL;
+    cases.push_back({"All-Disallowed (Fast Path 2)", std::move(m)});
+  }
+  {
+    std::vector<uint64_t> m(num_words, 0ULL);
+    m[num_words - 1] = (1ULL << 63);
+    cases.push_back({"Single Bit Set (Tail)", std::move(m)});
+  }
+  {
+    std::vector<uint64_t> m(num_words, ~0ULL);
+    m[num_words - 1] &= ~(1ULL << 63);
+    cases.push_back({"Single Bit Unset (Tail)", std::move(m)});
+  }
+  cases.push_back({"Alternating 0xAAAA (SIMD Worst-Case)",
+                   std::vector<uint64_t>(num_words, 0xAAAAAAAAAAAAAAAAULL)});
+  cases.push_back({"Alternating 0x5555 (SIMD Worst-Case)",
+                   std::vector<uint64_t>(num_words, 0x5555555555555555ULL)});
+  {
+    std::mt19937_64 rng(42);
+    std::vector<uint64_t> m(num_words);
+    for (size_t w = 0; w < num_words; ++w) {
+      m[w] = rng();
+    }
+    cases.push_back({"Random 50% Mask", std::move(m)});
+  }
+
+  const int kWarmupIterations = 10;
+  const int kBenchIterations = 100;
+
+  for (const auto& bc : cases) {
+    for (int it = 0; it < kWarmupIterations; ++it) {
+      ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                           bc.mask.data(), vocab_size);
+    }
+
+    const auto start = std::chrono::high_resolution_clock::now();
+    for (int it = 0; it < kBenchIterations; ++it) {
+      ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                           bc.mask.data(), vocab_size);
+    }
+    const auto end = std::chrono::high_resolution_clock::now();
+
+    const double total_us =
+        std::chrono::duration<double, std::micro>(end - start).count();
+    const double avg_us = total_us / kBenchIterations;
+
+    printf("[BENCHMARK %s] Pattern '%s': %.2f us per call (vocab_size=%zu)\n",
+           hwy::TargetName(HWY_TARGET), bc.name, avg_us, vocab_size);
+    // Timing is logged for diagnostic purposes; wall-clock thresholds are
+    // omitted to prevent non-deterministic failures across varying hardware and
+    // emulation targets.
+    (void)avg_us;
+  }
+}
+
+static void ScalarApplyLogitMaskOracle(std::vector<float>& logits,
+                                       const uint64_t* mask_words,
+                                       size_t vocab_size, float mask_value) {
+  if (vocab_size == 0 || logits.empty() || mask_words == nullptr) return;
+  const size_t num_words = (vocab_size + 63) / 64;
+  bool has_any_allowed = false;
+  for (size_t w = 0; w < num_words; ++w) {
+    uint64_t w_val = mask_words[w];
+    if (w == num_words - 1 && (vocab_size % 64 != 0)) {
+      w_val &= (1ULL << (vocab_size % 64)) - 1;
+    }
+    if (w_val != 0ULL) {
+      has_any_allowed = true;
+      break;
+    }
+  }
+  if (!has_any_allowed) return;
+
+  for (size_t i = 0; i < vocab_size; ++i) {
+    const bool allowed = (mask_words[i / 64] & (1ULL << (i % 64))) != 0;
+    if (!allowed) {
+      logits[i] = mask_value;
+    }
+  }
+}
+
+void TestApplyLogitMaskFuzzingDifferentialOracle() {
+  std::vector<size_t> vocab_sizes;
+  // Sweep all small sizes 1 to 130
+  for (size_t s = 1; s <= 130; ++s) {
+    vocab_sizes.push_back(s);
+  }
+  // Sweep around powers of 2 and model vocabulary limits up to 300,000
+  const std::vector<size_t> large_sizes = {
+      255,    256,    257,    511,    512,    513,    1023,   1024,   1025,
+      2047,   2048,   2049,   4095,   4096,   4097,   8191,   8192,   8193,
+      16383,  16384,  16385,  32000,  32001,  65535,  65536,  65537,  129279,
+      129280, 129281, 256000, 256063, 256064, 256128, 299993, 299999, 300000};
+  vocab_sizes.insert(vocab_sizes.end(), large_sizes.begin(), large_sizes.end());
+
+  std::mt19937_64 rng(987654321ULL);
+  constexpr size_t kPad = 64;
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<float> buffer(vocab_size + 2 * kPad, 12345.0f);
+    float* logits_ptr = buffer.data() + kPad;
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_ptr[i] = static_cast<float>(i % 1000) * 0.1f - 50.0f;
+    }
+    const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+    for (int pattern_type = 0; pattern_type < 6; ++pattern_type) {
+      std::vector<uint64_t> mask(num_words, 0ULL);
+      switch (pattern_type) {
+        case 0:  // Only first token allowed
+          mask[0] = 1ULL;
+          break;
+        case 1:  // Only last valid token allowed
+          mask[(vocab_size - 1) / 64] = (1ULL << ((vocab_size - 1) % 64));
+          break;
+        case 2:  // Dense allowed (all 1s)
+          std::fill(mask.begin(), mask.end(), ~0ULL);
+          break;
+        case 3:  // Alternating 0xAAAAAAAAAAAAAAAA
+          std::fill(mask.begin(), mask.end(), 0xAAAAAAAAAAAAAAAAULL);
+          break;
+        case 4:  // Sparse random (~2% allowed)
+          for (size_t w = 0; w < num_words; ++w) {
+            mask[w] = (rng() & rng() & rng() & rng());
+          }
+          mask[0] |= 1ULL;  // Ensure at least one allowed
+          break;
+        case 5:  // Uniform random
+          for (size_t w = 0; w < num_words; ++w) {
+            mask[w] = rng();
+          }
+          mask[(vocab_size - 1) / 64] |= (1ULL << ((vocab_size - 1) % 64));
+          break;
+      }
+
+      std::vector<float> expected = original;
+      ScalarApplyLogitMaskOracle(expected, mask.data(), vocab_size,
+                                 -std::numeric_limits<float>::infinity());
+
+      std::copy(original.begin(), original.end(), logits_ptr);
+
+      ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size),
+                           mask.data(), vocab_size);
+
+      for (size_t i = 0; i < vocab_size; ++i) {
+        if (std::isinf(expected[i])) {
+          ASSERT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f)
+              << "Failed at vocab_size=" << vocab_size
+              << ", pattern=" << pattern_type << ", index=" << i;
+        } else {
+          ASSERT_FLOAT_EQ(logits_ptr[i], expected[i])
+              << "Failed at vocab_size=" << vocab_size
+              << ", pattern=" << pattern_type << ", index=" << i;
+        }
+      }
+
+      for (size_t i = 0; i < kPad; ++i) {
+        ASSERT_FLOAT_EQ(buffer[i], 12345.0f);
+        ASSERT_FLOAT_EQ(buffer[kPad + vocab_size + i], 12345.0f);
+      }
+    }
+  }
+}
+
+void TestApplyLogitMaskNumericalStabilityAndBitExactness() {
+  const size_t vocab_size = 256;
+  const size_t num_words = (vocab_size + 63) / 64;
+
+  std::vector<float> logits(vocab_size);
+  logits[0] = 0.0f;
+  logits[1] = -0.0f;
+  logits[2] = std::numeric_limits<float>::infinity();
+  logits[3] = -std::numeric_limits<float>::infinity();
+  logits[4] = std::numeric_limits<float>::denorm_min();
+  logits[5] = -std::numeric_limits<float>::denorm_min();
+  logits[6] = std::numeric_limits<float>::max();
+  logits[7] = std::numeric_limits<float>::lowest();
+  uint32_t nan_bits = 0x7fc01234;
+  float custom_nan;
+  hwy::CopySameSize(&nan_bits, &custom_nan);
+  logits[8] = custom_nan;
+
+  for (size_t i = 9; i < vocab_size; ++i) {
+    logits[i] = static_cast<float>(i);
+  }
+
+  std::vector<uint64_t> mask(num_words, 0x5555555555555555ULL);
+
+  std::vector<float> test_logits = logits;
+  ApplyLogitMaskKernel(hwy::Span<float>(test_logits.data(), vocab_size),
+                       mask.data(), vocab_size);
+
+  for (size_t i = 0; i < vocab_size; i += 2) {
+    uint32_t orig_bits, masked_bits;
+    hwy::CopySameSize(&logits[i], &orig_bits);
+    hwy::CopySameSize(&test_logits[i], &masked_bits);
+    EXPECT_EQ(orig_bits, masked_bits)
+        << "Bit mismatch for allowed token at index " << i;
+  }
+
+  const uint32_t kNegInfBits = 0xFF800000;
+  for (size_t i = 1; i < vocab_size; i += 2) {
+    uint32_t masked_bits;
+    hwy::CopySameSize(&test_logits[i], &masked_bits);
+    EXPECT_EQ(masked_bits, kNegInfBits)
+        << "Exact -inf bit mismatch for disallowed token at index " << i;
+  }
+
+  for (float custom_mask_val : {-1000.0f, -0.0f, 0.0f, 42.0f}) {
+    test_logits = logits;
+    ApplyLogitMaskKernel(hwy::Span<float>(test_logits.data(), vocab_size),
+                         mask.data(), vocab_size, custom_mask_val);
+    uint32_t expected_val_bits;
+    hwy::CopySameSize(&custom_mask_val, &expected_val_bits);
+    for (size_t i = 1; i < vocab_size; i += 2) {
+      uint32_t actual_val_bits;
+      hwy::CopySameSize(&test_logits[i], &actual_val_bits);
+      EXPECT_EQ(actual_val_bits, expected_val_bits);
+    }
+  }
+}
+
+void TestApplyLogitMaskPageBoundaryProtection() {
+  const size_t page_size = sysconf(_SC_PAGESIZE);
+  const size_t total_alloc = 2 * page_size;
+
+  void* addr = mmap(nullptr, total_alloc, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(addr, MAP_FAILED);
+
+  uint8_t* base = static_cast<uint8_t*>(addr);
+  ASSERT_EQ(mprotect(base + page_size, page_size, PROT_NONE), 0);
+
+  for (size_t vocab_size : {1, 7, 15, 16, 31, 32, 63, 64, 65, 127, 128}) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    const size_t bytes_needed = num_words * sizeof(uint64_t);
+
+    uint64_t* mask_words =
+        reinterpret_cast<uint64_t*>(base + page_size - bytes_needed);
+
+    for (size_t w = 0; w < num_words; ++w) {
+      mask_words[w] = 0xAAAAAAAAAAAAAAAAULL;
+    }
+    mask_words[0] |= 1ULL;
+
+    std::vector<float> logits(vocab_size, 1.0f);
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                         mask_words, vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool allowed = (mask_words[i / 64] & (1ULL << (i % 64))) != 0;
+      if (allowed) {
+        EXPECT_FLOAT_EQ(logits[i], 1.0f);
+      } else {
+        EXPECT_TRUE(std::isinf(logits[i]) && logits[i] < 0.0f);
+      }
+    }
+  }
+
+  for (size_t vocab_size : {1, 3, 7, 15, 16, 31, 32, 63, 64, 65, 127, 128}) {
+    const size_t bytes_needed = vocab_size * sizeof(float);
+    float* logits_at_edge =
+        reinterpret_cast<float*>(base + page_size - bytes_needed);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      logits_at_edge[i] = static_cast<float>(i);
+    }
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<uint64_t> mask(num_words, 0xAAAAAAAAAAAAAAAAULL);
+    mask[0] |= 1ULL;
+
+    ApplyLogitMaskKernel(hwy::Span<float>(logits_at_edge, vocab_size),
+                         mask.data(), vocab_size);
+
+    for (size_t i = 0; i < vocab_size; ++i) {
+      const bool allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+      if (allowed) {
+        EXPECT_FLOAT_EQ(logits_at_edge[i], static_cast<float>(i));
+      } else {
+        EXPECT_TRUE(std::isinf(logits_at_edge[i]) && logits_at_edge[i] < 0.0f);
+      }
+    }
+  }
+
+  munmap(addr, total_alloc);
+}
+
+void TestApplyLogitMaskExtremeMisalignments() {
+  const std::vector<size_t> vocab_sizes = {1,  7,   16,  63,  64,
+                                           65, 127, 128, 500, 129280};
+  std::mt19937_64 rng(54321);
+
+  for (size_t vocab_size : vocab_sizes) {
+    const size_t num_words = (vocab_size + 63) / 64;
+    std::vector<uint64_t> mask(num_words);
+    for (size_t w = 0; w < num_words; ++w) {
+      mask[w] = rng();
+    }
+    mask[0] |= 1ULL;
+
+    for (size_t misalign = 0; misalign < 16; ++misalign) {
+      std::vector<float> buffer(vocab_size + misalign + 32, 333.0f);
+      float* logits_ptr = buffer.data() + misalign;
+
+      for (size_t i = 0; i < vocab_size; ++i) {
+        logits_ptr[i] = static_cast<float>(i + 1);
+      }
+      const std::vector<float> original(logits_ptr, logits_ptr + vocab_size);
+
+      ApplyLogitMaskKernel(hwy::Span<float>(logits_ptr, vocab_size),
+                           mask.data(), vocab_size);
+
+      for (size_t i = 0; i < vocab_size; ++i) {
+        const bool is_allowed = (mask[i / 64] & (1ULL << (i % 64))) != 0;
+        if (is_allowed) {
+          EXPECT_FLOAT_EQ(logits_ptr[i], original[i]);
+        } else {
+          EXPECT_TRUE(std::isinf(logits_ptr[i]) && logits_ptr[i] < 0.0f);
+        }
+      }
+    }
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -954,7 +1664,38 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTopK);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestPackTokenAndProb);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskAllAllowed);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskAllDisallowed);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskEmptyMaskGuardrail);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskMixed);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskUnalignedVocabSizes);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskUnalignedPointers);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskSingleBitSet);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskSingleBitUnset);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskAlternatingPatterns);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskStressAndBenchmark);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskFuzzingDifferentialOracle);
+HWY_EXPORT_AND_TEST_P(OpsTest,
+                      TestApplyLogitMaskNumericalStabilityAndBitExactness);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskPageBoundaryProtection);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestApplyLogitMaskExtremeMisalignments);
 HWY_AFTER_TEST();
+
+TEST(OpsTest, TestApplyLogitMaskDynamicDispatch) {
+  const size_t vocab_size = 100;
+  std::vector<float> logits(vocab_size, 1.0f);
+  const size_t num_words = (vocab_size + 63) / 64;
+  std::vector<uint64_t> mask(num_words, 0ULL);
+  mask[0] = 1ULL;  // Only token 0 allowed
+
+  gcpp::ApplyLogitMaskKernel(hwy::Span<float>(logits.data(), vocab_size),
+                             mask.data(), vocab_size);
+
+  EXPECT_FLOAT_EQ(logits[0], 1.0f);
+  for (size_t i = 1; i < vocab_size; ++i) {
+    EXPECT_TRUE(std::isinf(logits[i]) && logits[i] < 0.0f);
+  }
+}
 
 }  // namespace gcpp
 
