@@ -212,12 +212,20 @@ template <class Func>
 void ParallelPartitionWithinCluster(const IndexRange range,
                                     size_t task_multiple, size_t inner_tasks,
                                     ThreadingContext& ctx, size_t cluster_idx,
-                                    hwy::pool::Caller caller,
-                                    const Func& func) {
+                                    hwy::pool::Caller caller, const Func& func,
+                                    size_t max_size = 0) {
   HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
   const size_t num_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+  size_t tasks = num_workers * inner_tasks;
+  if (max_size != 0) {
+    const size_t target_size = hwy::RoundDownTo(max_size, task_multiple);
+    if (target_size != 0) {
+      const size_t min_tasks = hwy::DivCeil(range.Num(), target_size);
+      tasks = std::max(tasks, min_tasks);
+    }
+  }
   const IndexRangePartition ranges =
-      StaticPartition(range, num_workers * inner_tasks, task_multiple);
+      StaticPartition(range, tasks, task_multiple);
   ParallelForWithinCluster(
       ranges.NumTasks(), ctx, cluster_idx, caller,
       [&](uint64_t task, size_t worker) { func(ranges.Range(task), worker); });
