@@ -55,6 +55,7 @@
 #include "gemma/attention.h"
 #include "gemma/flash_attention.h"
 #include "gemma/flash_attention_arm-inl.h"
+#include "gemma/online_softmax-inl.h"
 #include "ops/matmul-inl.h"
 #include "ops/ops-inl.h"
 #include "hwy/contrib/math/fast_math-inl.h"
