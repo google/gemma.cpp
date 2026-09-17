@@ -148,8 +148,8 @@ def render_table(rows: list[dict[str, Any]]) -> str:
     root_entropy = root.get("entropy")
     lines = [
         "| Model | Entropy bits/token | Δ entropy | tok/s | Speedup | "
-        "MMLU accuracy | Flips | Mean KL | p95 KL | Peak RSS |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "MMLU accuracy | Flips | Mean KL | p95 KL | Peak RSS | Inference s | Inference speedup |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         entropy = row.get("entropy")
@@ -171,9 +171,19 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         flips = row.get("flips")
         kl = row.get("kl")
         rss = row.get("peak_rss_kib")
+        inference = row.get("mmlu_inference_seconds")
+        root_inference = root.get("mmlu_inference_seconds")
+        inference_text = "—" if not inference else f"{inference:.3f}"
+        inference_speedup = (
+            "—" if not inference or not root_inference
+            else f"{root_inference / inference:.3f}x"
+        )
         lines.append(
             "| {name} | {entropy} | {delta} | {speed} | {speedup} | "
-            "{accuracy:.1f}% | {flips} | {mean_kl} | {p95_kl} | {rss} |".format(
+            "{accuracy:.1f}% | {flips} | {mean_kl} | {p95_kl} | {rss} | "
+            "{inference} | {infer_speedup} |".format(
+                inference=inference_text,
+                infer_speedup=inference_speedup,
                 name=row["name"],
                 entropy=entropy_text,
                 delta=delta_text,
@@ -214,6 +224,7 @@ def run_evaluation(
     command.extend(spec.args)
     mmlu_run = run_command(command, spec.env, mmlu_out, mmlu_err)
     mmlu_summary = parse_prefixed_json(mmlu_out, "MMLU_SUMMARY ")
+    timing = parse_prefixed_json(mmlu_out, "MMLU_TIMING ")
     kl_summary = (
         None
         if is_root
@@ -253,6 +264,8 @@ def run_evaluation(
             "mmlu": mmlu_summary,
             "kl": kl_summary,
             "entropy": entropy,
+            "mmlu_timing": timing,
+            "mmlu_inference_seconds": timing["inference_seconds"],
             "mmlu_wall_seconds": mmlu_run.wall_seconds,
             "entropy_wall_seconds": None
             if entropy_run is None
@@ -339,7 +352,7 @@ def main() -> int:
             rows.append(row)
 
         report = {
-            "schema_version": 1,
+            "schema_version": 2,
             "mmlu": str(mmlu),
             "cross_entropy": None if entropy_path is None else str(entropy_path),
             "reference": str(reference),

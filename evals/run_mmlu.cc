@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -47,6 +48,8 @@ struct JsonArgs : public ArgsBase<JsonArgs> {
   Path reference_in;
   size_t max_questions;
 
+  bool matmul_autotune;
+
   const char* Validate() const {
     if (input.Empty()) return "Must specify --input";
     if (!input.Exists()) return "--input file does not exist";
@@ -61,6 +64,9 @@ struct JsonArgs : public ArgsBase<JsonArgs> {
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
+    visitor(
+        matmul_autotune, "matmul_autotune", false,
+        "Enable timing-dependent MatMul tuning (off for reproducible evals).");
     visitor(input, "input", Path(), "Full pathname of mmlu.json.");
     visitor(reference_out, "reference_out", Path(),
             "Write root-model full-vocabulary logits to this binary file.");
@@ -110,6 +116,10 @@ double Percentile(const std::vector<double>& sorted, double quantile) {
 }
 
 void Run(GemmaEnv& env, JsonArgs& args) {
+  env.MutableEnv().autotune = args.matmul_autotune;
+  using Clock = std::chrono::steady_clock;
+  double generate_seconds = 0.0, sample_seconds = 0.0;
+  const double prepare_start = env.MutableEnv().weight_prepare_seconds;
   PROFILER_ZONE("Run.all");
 
   size_t answers = 0;
@@ -197,9 +207,10 @@ void Run(GemmaEnv& env, JsonArgs& args) {
         .stream_token = stream_token,
         .sample_func = [&answer_tokens, &answer_logits, &answer_probs,
                         &captured_logits, &full_vocab_kl, &reference_writer,
-                        &reference_reader, &root_record](
+                        &reference_reader, &root_record, &sample_seconds](
                            size_t /*query_idx*/, size_t /*pos*/, Logits logits,
                            size_t /*worker*/) -> TokenAndProb {
+          const auto sample_start = Clock::now();
           if (reference_writer) {
             captured_logits.assign(logits.data(),
                                    logits.data() + logits.size());
@@ -229,13 +240,20 @@ void Run(GemmaEnv& env, JsonArgs& args) {
             sum += answer_probs[label];
           }
           for (float& prob : answer_probs) prob /= sum;
+          sample_seconds +=
+              std::chrono::duration<double>(Clock::now() - sample_start)
+                  .count();
           return TokenAndProb{.token = best_token,
                               .prob = answer_probs[best_label]};
         },
     };
+    const auto generate_start = Clock::now();
     env.GetGemma()->Generate(runtime_config, prompt, /*pos=*/0,
                              env.MutableKVCache(), env.MutableEnv(),
                              timing_info);
+
+    generate_seconds +=
+        std::chrono::duration<double>(Clock::now() - generate_start).count();
 
     if (reference_writer) {
       if (captured_logits.size() != metadata.vocab_size) {
@@ -289,6 +307,19 @@ void Run(GemmaEnv& env, JsonArgs& args) {
   if (reference_writer) reference_writer->Finish();
   if (reference_reader) reference_reader->Finish();
 
+  const double prepare_seconds =
+      env.MutableEnv().weight_prepare_seconds - prepare_start;
+  const nlohmann::json timing = {
+      {"generate_seconds", generate_seconds},
+      {"weight_prepare_seconds", prepare_seconds},
+      {"sample_seconds", sample_seconds},
+      {"inference_seconds",
+       generate_seconds - prepare_seconds - sample_seconds},
+      {"matmul_autotune", args.matmul_autotune},
+      {"scope",
+       "Generate excluding lazy W8 preparation and evaluation sample callback"},
+  };
+  printf("MMLU_TIMING %s\n", timing.dump().c_str());
   const nlohmann::json summary = {
       {"answers", answers},
       {"correct", correct_answers},

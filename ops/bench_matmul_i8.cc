@@ -222,9 +222,11 @@ void BenchShape(size_t M, size_t K, size_t N, bool check_error,
 
   // Operands for the int8 kernel. `A` is quantized inside `MatMulI8`.
   MatStorageT<int8_t> B_i8("B_i8", B_extents, allocator, MatPadding::kOdd);
-  hwy::AlignedVector<float> b_scale(N);
+  const size_t block_size = MMI8QuantBlockSize();
+  hwy::AlignedVector<float> b_scale(N * (block_size ? K / block_size : 1));
   const double pack_t0 = hwy::platform::Now();
-  const MMI8B B_packed = PackB(B_f32, B_i8, b_scale.data(), ctx);
+  const MMI8B B_packed =
+      PackB(B_f32, B_i8, b_scale.data(), ctx, nullptr, block_size);
   const double pack_ms = (hwy::platform::Now() - pack_t0) * 1E3;
 
   MatStorageT<float> C_bf("C_bf", C_extents, allocator, MatPadding::kOdd);
@@ -380,6 +382,8 @@ void BenchAll() {
       HWY_NATIVE_DOT_BF16, hn::Lanes(hn::ScalableTag<uint8_t>()));
   BenchRotation();
 
+  if (MMI8Flag("GEMMA_MM_I8_BENCH_ROTATION_ONLY")) return;
+
   BenchDotThroughput();
 
   MatMulEnv env_bf(ctx), env_sfp(ctx), env_i8(ctx);
@@ -437,11 +441,12 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace gcpp {
 HWY_EXPORT(BenchAll);
+void RunBenchmarks() { HWY_DYNAMIC_DISPATCH(BenchAll)(); }
 }  // namespace gcpp
 
 int main(int /*argc*/, char** /*argv*/) {
   // Best available target only; this is a benchmark, not a test.
-  HWY_DYNAMIC_DISPATCH(gcpp::BenchAll)();
+  gcpp::RunBenchmarks();
   return 0;
 }
 #endif  // HWY_ONCE

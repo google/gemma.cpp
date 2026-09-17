@@ -458,7 +458,7 @@ class MMDecompress {
       const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
       std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
                                         other};
-      autotune.SetCandidates(candidates);
+      autotune.SetCandidates(candidates, env.autotune);
     }
 
     const MMParA& par_a = autotune.NextConfig();
@@ -1236,10 +1236,11 @@ class MMImpl {
   }
 
  public:
-  static MMPerKey& FindOrAddPerKey(size_t M, size_t K, size_t N, size_t num_B,
-                                   size_t vector_bytes,
-                                   MatMulEnv::PerCluster& per_cluster) {
-    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N, num_B);
+  static MMPerKey& FindOrAddPerKey(
+      size_t M, size_t K, size_t N, size_t num_B, size_t vector_bytes,
+      MatMulEnv::PerCluster& per_cluster,
+      MMActivation activation = MMActivation::kBF16) {
+    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N, num_B, activation);
     intptr_t index = IndexOfKey(key, per_cluster.keys);
     // First time we see this shape/key.
     if (HWY_UNLIKELY(index < 0)) {
@@ -1257,6 +1258,7 @@ class MMImpl {
                                    size_t num_B, double t0,
                                    MMAutoTune<MMConfig>& tuner,
                                    const MMConfig& cfg) {
+    if (!env.autotune) return;
     const uint64_t t1 =
         env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
     const double min_elapsed = static_cast<double>(tuner.NotifyTicks(t1 - t0)) /
@@ -1589,7 +1591,7 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
       }
 
       if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
-        brg_tuner.SetCandidates(BRGeMMCandidates(M, K, N));
+        brg_tuner.SetCandidates(BRGeMMCandidates(M, K, N), env.autotune);
       }
 
       const BRGeMMConfig& cfg = brg_tuner.NextConfig();
@@ -1653,7 +1655,8 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
     tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config));
+        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config),
+        env.autotune);
   }
 
   const MMConfig& cfg = tuner.NextConfig();
@@ -1714,8 +1717,9 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
     const size_t max_M = MMKeys::BucketM(M);
-    tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16),
-                                     env.print_config));
+    tuner.SetCandidates(
+        MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16), env.print_config),
+        env.autotune);
   }
 
   const MMConfig& cfg = tuner.NextConfig();

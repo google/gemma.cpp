@@ -24,6 +24,8 @@
 // scales baked in at pack time. Both are symmetric, i.e. no zero point, so
 // `C[r, c] = a_scale[r] * b_scale[c] * dot(qa[r], qb[c])` and the int32
 // accumulation can run over an entire `kc` range before a single scaling step.
+// Optional microscaling instead stores one A/B scale per rotation block and
+// accumulates dequantized block dot products in F32.
 //
 // On x86 the 4-way dot product requires one unsigned operand, so `B` is biased
 // by 128 and the `128 * sum_k(qa)` term is subtracted per `kc` range, using
@@ -170,6 +172,13 @@ static inline size_t MMI8HashBits() {
   return bits;
 }
 
+// Optional local quantization scales. Match the rotation block so each
+// transformed outlier only controls its own group; zero preserves row scales.
+static inline size_t MMI8QuantBlockSize() {
+  static const bool enabled = MMI8Flag("GEMMA_MM_I8_MICROSCALE");
+  return enabled ? MMI8RotateBlockSize() : 0;
+}
+
 // A bijective mixer over uint16_t. Thus the full 65536-value sequence has no
 // collisions and its high bit is exactly balanced. Only that high bit is used
 // as the Rademacher sign.
@@ -192,8 +201,9 @@ static HWY_INLINE bool MMI8NegativeSign(size_t position, size_t hash_bits) {
   return (hash >> 31) != 0;
 }
 
-static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
-                                    size_t block_size, size_t hash_bits) {
+template <size_t block_size>
+static HWY_NOINLINE void MMI8RotateFixed(float* HWY_RESTRICT row, size_t k,
+                                         size_t hash_bits) {
   HWY_DASSERT(block_size == 64 || block_size == 128);
   HWY_DASSERT(hash_bits == 16 || hash_bits == 32);
   HWY_DASSERT((k % block_size) == 0);
@@ -223,7 +233,26 @@ static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
       // Deterministic Rademacher diagonal, shared by A and B.
       if (MMI8NegativeSign(block + i, hash_bits)) x[i] = -x[i];
     }
-    for (size_t width = 1; width < block_size; width *= 2) {
+    // Complete stages smaller than a SIMD register with lane butterflies.
+    // Select left/right first so subtraction has exactly the scalar order.
+    if (fast) {
+      const auto lane = hn::Iota(du, 0);
+      for (size_t i = 0; i < block_size; i += lanes) {
+        auto v = hn::LoadU(df, x + i);
+        for (size_t width = 1; width < lanes; width *= 2) {
+          const auto bit = hn::Set(du, static_cast<uint32_t>(width));
+          const auto perm = hn::IndicesFromVec(df, hn::Xor(lane, bit));
+          const auto other = hn::TableLookupLanes(v, perm);
+          const auto upper =
+              hn::RebindMask(df, hn::Ne(hn::And(lane, bit), hn::Zero(du)));
+          const auto left = hn::IfThenElse(upper, other, v);
+          const auto right = hn::IfThenElse(upper, v, other);
+          v = hn::IfThenElse(upper, hn::Sub(left, right), hn::Add(left, right));
+        }
+        hn::StoreU(v, df, x + i);
+      }
+    }
+    for (size_t width = fast ? lanes : 1; width < block_size; width *= 2) {
       for (size_t start = 0; start < block_size; start += 2 * width) {
         size_t i = 0;
         for (; fast && i + lanes <= width; i += lanes) {
@@ -247,6 +276,15 @@ static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
     }
     for (; i < block_size; ++i) x[i] *= normalize;
   }
+}
+
+static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k,
+                                    size_t block_size, size_t hash_bits) {
+  HWY_ASSERT(block_size == 64 || block_size == 128);
+  if (block_size == 64)
+    MMI8RotateFixed<64>(row, k, hash_bits);
+  else
+    MMI8RotateFixed<128>(row, k, hash_bits);
 }
 
 static HWY_NOINLINE void MMI8Rotate(float* HWY_RESTRICT row, size_t k) {
@@ -282,8 +320,13 @@ struct MMI8AView {
   // Returns 2D subrange whose top-left is `r, c`, as `StridedView::View`.
   // Only called on the whole-matrix view, hence the offsets do not compound.
   MMI8AView View(size_t r, size_t c, size_t cols) const {
-    return MMI8AView{data.View(r, c, cols), scale + r,
-                     prefix + r * prefix_stride + c, prefix_stride};
+    return MMI8AView{
+        data.View(r, c, cols),
+        scale + r + (block_size ? c / block_size * scale_stride : 0),
+        prefix + r * prefix_stride + c,
+        prefix_stride,
+        scale_stride,
+        block_size};
   }
 
   // Sum of the quantized values of row `r` over the `cols` columns of this
@@ -297,6 +340,8 @@ struct MMI8AView {
   const float* HWY_RESTRICT scale;     // one per row of `data`
   const int32_t* HWY_RESTRICT prefix;  // null unless `GEMMA_MM_I8_BIASED_B`
   size_t prefix_stride;
+  size_t scale_stride = 0;  // group-major scales, one column per activation row
+  size_t block_size = 0;
 };
 
 // Transposed, symmetric-int8 `B`: `N` rows of `K` values each, so that a
@@ -314,6 +359,7 @@ struct MMI8B {
   // Optional per-K multiplier applied to A before rotation. The packed B has
   // already been divided by the same values, preserving the dot product.
   const float* HWY_RESTRICT a_pre_scale = nullptr;
+  size_t block_size = 0;  // scale[g * Rows() + row], or one scale per row
 };
 
 //------------------------------------------------------------------------------
@@ -466,6 +512,47 @@ class MMI8Kernel {
   static void B3A2C0(const AView A, const BT& B, const IndexRange& range_mc,
                      const IndexRange& range_kc, const IndexRange& range_nc,
                      const MMArgs& args, Tag out_tag, CView C_MC_NC) {
+    if (B.block_size != 0) {
+      // Accumulate group results in F32, rounding to BF16 only at the KC
+      // boundary. Adding BF16 partials per tiny group loses too much accuracy.
+      thread_local hwy::AlignedVector<float> sums;
+      sums.resize(range_mc.Num() * kNR);
+      const StridedView<float> tmp(sums.data(), kNR, kNR);
+      for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
+        const size_t row_b = range_nc.begin() + inc;
+        bool first = true;
+        for (size_t c = range_kc.begin(); c < range_kc.end();) {
+          const size_t group = c / B.block_size;
+          const size_t count = HWY_MIN(static_cast<size_t>(range_kc.end()),
+                                       (group + 1) * B.block_size) -
+                               c;
+          const auto av = A.View(range_mc.begin(), c, count);
+          const StridedView<int8_t> bv(*B.data, row_b, c, count);
+          const float* scales = B.scale + group * B.Rows() + row_b;
+          if (first)
+            A2C0(av, bv, scales, args.mr, range_mc, count, nullptr, MMSetC(),
+                 tmp);
+          else
+            A2C0(av, bv, scales, args.mr, range_mc, count, nullptr, MMAddC(),
+                 tmp);
+          first = false;
+          c += count;
+        }
+        using TC = hwy::RemoveCvRef<decltype(C_MC_NC.Row(0)[0])>;
+        for (size_t r = 0; r < range_mc.Num(); ++r) {
+          for (size_t j = 0; j < kNR; ++j) {
+            float value = sums[r * kNR + j];
+            if constexpr (hwy::IsSame<Tag, MMAddC>()) {
+              value += hwy::ConvertScalarTo<float>(C_MC_NC.Row(r)[inc + j]);
+            } else if (args.add) {
+              value += args.add[row_b + j];
+            }
+            C_MC_NC.Row(r)[inc + j] = hwy::ConvertScalarTo<TC>(value);
+          }
+        }
+      }
+      return;
+    }
     const size_t kc = range_kc.Num();
     const AView A_view = A.View(range_mc.begin(), range_kc.begin(), kc);
 
@@ -779,13 +866,20 @@ class MMI8AStorage {
         prefix_((GEMMA_MM_I8_BIASED_B ? max_M : 1) * prefix_stride_),
         scale_(max_M) {}
 
-  MMI8AView View(const Extents2D& extents) {
+  MMI8AView View(const Extents2D& extents, size_t block_size = 0) {
+    const size_t groups = block_size ? extents.cols / block_size : 1;
+    if (scale_.size() < groups * data_.Rows())
+      scale_.resize(groups * data_.Rows());
     HWY_DASSERT(extents.rows <= data_.Rows());
     HWY_DASSERT(extents.cols <= data_.Cols());
     return MMI8AView{
         StridedView<MMI8AT>(HWY_RCAST_ALIGNED(MMI8AT*, data_.Row(0)),
                             extents.cols, data_.Stride()),
-        scale_.data(), prefix_.data(), prefix_stride_};
+        scale_.data(),
+        prefix_.data(),
+        prefix_stride_,
+        data_.Rows(),
+        block_size};
   }
 
   float* HWY_RESTRICT scale() { return scale_.data(); }
@@ -809,9 +903,12 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
                                         MMI8AStorage& storage,
                                         ThreadingContext& ctx,
                                         size_t cluster_idx,
-                                        const float* a_pre_scale = nullptr) {
-  const MMI8AView view = storage.View(A.Extents());
+                                        const float* a_pre_scale = nullptr,
+                                        size_t block_size = 0) {
+  const MMI8AView view = storage.View(A.Extents(), block_size);
   const size_t k = A.Cols();
+  HWY_ASSERT(block_size == 0 ||
+             ((block_size == 64 || block_size == 128) && k % block_size == 0));
   const size_t padded_k =
       hwy::RoundUpTo(k, hn::Lanes(hn::ScalableTag<int8_t>()));
   float* HWY_RESTRICT scale = storage.scale();
@@ -828,8 +925,19 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
           rotated[c] = a_pre_scale == nullptr ? value : value * a_pre_scale[c];
         }
         MMI8Rotate(rotated.data(), k);
-        scale[r] = a_scale * QuantizeRowA(rotated.data(), k, view.data.Row(r),
-                                          storage.prefix(r), padded_k);
+        const size_t group_size = block_size ? block_size : k;
+        int32_t* prefix = storage.prefix(r);
+        for (size_t c = 0; c < k; c += group_size) {
+          const int32_t base = GEMMA_MM_I8_BIASED_B && c ? prefix[c] : 0;
+          scale[(c / group_size) * view.scale_stride + r] =
+              a_scale * QuantizeRowA(rotated.data() + c, group_size,
+                                     view.data.Row(r) + c, prefix + c,
+                                     group_size);
+          if (GEMMA_MM_I8_BIASED_B && c) {
+            for (size_t i = 0; i <= group_size; ++i) prefix[c + i] += base;
+          }
+        }
+        for (size_t c = k; c < padded_k; ++c) view.data.Row(r)[c] = 0;
       });
   return view;
 }
@@ -842,8 +950,11 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
                                 MatPtrT<int8_t>& data,
                                 float* HWY_RESTRICT scale,
                                 ThreadingContext& ctx,
-                                const float* a_pre_scale = nullptr) {
+                                const float* a_pre_scale = nullptr,
+                                size_t block_size = 0) {
   const size_t k = B_f32.Cols();
+  HWY_ASSERT(block_size == 0 ||
+             ((block_size == 64 || block_size == 128) && k % block_size == 0));
   HWY_DASSERT((k % MMI8RotateBlockSize()) == 0);
   const float b_scale = B_f32.Scale();
 
@@ -857,25 +968,24 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
         }
         MMI8Rotate(rotated.data(), k);
         const float* HWY_RESTRICT in = rotated.data();
-        float amax = 0.0f;
-        for (size_t c = 0; c < k; ++c) {
-          amax = HWY_MAX(amax, hwy::ScalarAbs(in[c]));
-        }
-        const float s = (amax == 0.0f) ? 1.0f : amax / kMMI8Max;
-        const float inv = (amax == 0.0f) ? 0.0f : kMMI8Max / amax;
+        const size_t group_size = block_size ? block_size : k;
         MMI8BT* HWY_RESTRICT out = HWY_RCAST_ALIGNED(MMI8BT*, data.Row(r));
-        for (size_t c = 0; c < k; ++c) {
-          const int32_t q = static_cast<int32_t>(std::lroundf(in[c] * inv));
-          HWY_DASSERT(-127 <= q && q <= 127);
-          out[c] = static_cast<MMI8BT>(q + (GEMMA_MM_I8_BIASED_B ? 128 : 0));
+        for (size_t begin = 0; begin < k; begin += group_size) {
+          float amax = 0.0f;
+          for (size_t c = begin; c < begin + group_size; ++c)
+            amax = HWY_MAX(amax, hwy::ScalarAbs(in[c]));
+          const float qs = amax == 0.0f ? 1.0f : amax / kMMI8Max;
+          const float inv = amax == 0.0f ? 0.0f : kMMI8Max / amax;
+          for (size_t c = begin; c < begin + group_size; ++c) {
+            const int32_t q = static_cast<int32_t>(std::lroundf(in[c] * inv));
+            out[c] = static_cast<MMI8BT>(q + (GEMMA_MM_I8_BIASED_B ? 128 : 0));
+          }
+          scale[(begin / group_size) * B_f32.Rows() + r] = b_scale * qs;
         }
-        for (size_t c = k; c < data.Stride(); ++c) {
-          out[c] = static_cast<MMI8BT>(0);
-        }
-        scale[r] = b_scale * s;
+        for (size_t c = k; c < data.Stride(); ++c) out[c] = 0;
       });
 
-  return MMI8B{&data, scale, a_pre_scale};
+  return MMI8B{&data, scale, a_pre_scale, block_size};
 }
 
 //------------------------------------------------------------------------------
@@ -883,9 +993,7 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
 
 // As `MatMul`, but `A` is quantized on the fly and `B` was packed by `PackB`.
 // Reuses the same blocking, parallelization and autotuning as `MatMul`; only
-// the kernel and operand types differ. `env` must not be shared with
-// (BF16) `MatMul` calls of the same shape, because the autotuner is keyed on
-// shape alone and the two kernels prefer different configs.
+// the kernel and operand types differ. Tuning keys distinguish A8 from BF16.
 template <typename TA, typename TC>
 HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
                                 const float* HWY_RESTRICT add, MatMulEnv& env,
@@ -904,11 +1012,12 @@ HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
 
   const CacheInfo& cache = env.ctx.cache_info;
   MMPerKey& per_key = MMImpl::FindOrAddPerKey(
-      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
+      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx],
+      B.block_size ? MMActivation::kI8Block : MMActivation::kI8);
 
   // Outside the timed section, as `MMDecompress::MaybeDecompressA`.
-  const MMI8AView A_view =
-      QuantizeA(A, a_storage, env.ctx, cluster_idx, B.a_pre_scale);
+  const MMI8AView A_view = QuantizeA(A, a_storage, env.ctx, cluster_idx,
+                                     B.a_pre_scale, B.block_size);
 
   const MMI8B* B2 = nullptr;  // required for type matching
 
@@ -927,7 +1036,8 @@ HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
     HWY_ASSERT(M <= kMaxBatchSize);
     HWY_ASSERT(N % kNR == 0);
     tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config));
+        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config),
+        env.autotune);
   }
 
   const MMConfig& cfg = tuner.NextConfig();
@@ -961,10 +1071,13 @@ static HWY_NOINLINE MMPerKey* TwoMatMulI8(const MatPtrT<BF16>& A,
 
   const CacheInfo& cache = env.ctx.cache_info;
   MMPerKey& per_key = MMImpl::FindOrAddPerKey(
-      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx]);
+      M, K, N, num_B, cache.VectorBytes(), env.per_cluster[cluster_idx],
+      B1.block_size ? MMActivation::kI8Block : MMActivation::kI8);
 
   HWY_DASSERT(B1.a_pre_scale == nullptr && B2.a_pre_scale == nullptr);
-  const MMI8AView A_view = QuantizeA(A, a_storage, env.ctx, cluster_idx);
+  HWY_ASSERT(B1.block_size == B2.block_size);
+  const MMI8AView A_view =
+      QuantizeA(A, a_storage, env.ctx, cluster_idx, nullptr, B1.block_size);
 
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
   if (HWY_LIKELY(tuner.Best())) {
@@ -980,8 +1093,9 @@ static HWY_NOINLINE MMPerKey* TwoMatMulI8(const MatPtrT<BF16>& A,
     HWY_ASSERT(M <= kMaxBatchSize);
     HWY_ASSERT(N % kNR == 0);
     const size_t max_M = MMKeys::BucketM(M);
-    tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16),
-                                     env.print_config));
+    tuner.SetCandidates(
+        MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16), env.print_config),
+        env.autotune);
   }
 
   const MMConfig& cfg = tuner.NextConfig();

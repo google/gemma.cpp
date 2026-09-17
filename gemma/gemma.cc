@@ -128,8 +128,23 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
     return;
   }
 
-  RMSNormBatched(activations.x, layer.pre_attention_norm_scale,
-                 activations.attention.pre_att_rms_out, env.ctx);
+  // Only Gemma's ordinary dense path uses this (gamma = 1 + stored weight).
+  const bool scale_i8 = layer_config.type == LayerAttentionType::kGemma &&
+                        !layer_config.IsMoE() &&
+                        MMI8WeightCache::Get().ScalingEnabled();
+  auto& i8_cache = MMI8WeightCache::Get();
+  std::vector<const MatPtr*> qkv;
+  if (scale_i8 && i8_cache.Enabled()) {
+    if (layer.qkv_einsum_w.HasPtr())
+      qkv = {&layer.qkv_einsum_w};
+    else
+      qkv = {&layer.qkv_einsum_w1, &layer.qkv_einsum_w2};
+  }
+  const MatPtr& att_norm =
+      scale_i8 ? i8_cache.NormWeights(layer.pre_attention_norm_scale, qkv, env)
+               : layer.pre_attention_norm_scale;
+  RMSNormBatched(activations.x, att_norm, activations.attention.pre_att_rms_out,
+                 env.ctx);
 
   Attention(layer_config.type, num_tokens, layer_idx, layer, activations,
             qbatch, env);
@@ -139,8 +154,12 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
   ResidualConnection(activations.attention.att_sums, activations.x, layer,
                      /*is_attention=*/true, env.ctx);
 
-  RMSNormBatched(activations.x, layer.pre_ffw_norm_scale,
-                 activations.pre_ffw_rms_out, env.ctx);
+  const MatPtr& ff_norm =
+      scale_i8 ? i8_cache.NormWeights(
+                     layer.pre_ffw_norm_scale,
+                     {&layer.gating_einsum_w1, &layer.gating_einsum_w2}, env)
+               : layer.pre_ffw_norm_scale;
+  RMSNormBatched(activations.x, ff_norm, activations.pre_ffw_rms_out, env.ctx);
 
   if (layer_config.type == LayerAttentionType::kVit) {
     FFWVit(layer, activations, env);
@@ -1421,8 +1440,14 @@ HWY_NOINLINE void FinalNormBatched(const ModelConfig& config,
   if (HWY_UNLIKELY(config.model_family_version == 4 && config.HasMLA())) {
     DeepSeekFinalNorm(weights, activations, env);
   } else {
-    RMSNormBatched(activations.x, weights.final_norm_scale, activations.x_bf,
-                   env.ctx);
+    const MatPtr& head = weights.lm_head.HasPtr()
+                             ? weights.lm_head
+                             : weights.embedder_input_embedding;
+    const MatPtr& norm = config.model_family_version == 3
+                             ? MMI8WeightCache::Get().NormWeights(
+                                   weights.final_norm_scale, {&head}, env)
+                             : weights.final_norm_scale;
+    RMSNormBatched(activations.x, norm, activations.x_bf, env.ctx);
   }
 }
 

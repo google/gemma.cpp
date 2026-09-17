@@ -50,6 +50,8 @@
 #include "ops/matmul-inl.h"
 #include "ops/matmul_i8-inl.h"
 
+#include "ops/matmul_i8_model-inl.h"
+
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 
@@ -252,7 +254,7 @@ void FillOperands(size_t M, size_t K, size_t N, MatStorageT<float>& A_f32,
 template <typename TC>
 void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
               MatMulEnv& env, MMI8AStorage& a_i8, float b_mean = 0.0f,
-              const float* a_pre_scale = nullptr) {
+              const float* a_pre_scale = nullptr, size_t block_size = 0) {
   const Allocator& allocator = ctx.allocator;
   MatStorageT<float> A_f32("A", Extents2D(M, K), allocator, MatPadding::kOdd);
   MatStorageT<float> B_f32("B", Extents2D(N, K), allocator, MatPadding::kOdd);
@@ -263,8 +265,10 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
 
   MatStorageT<int8_t> B_i8("B_i8", Extents2D(N, K), allocator,
                            MatPadding::kOdd);
-  hwy::AlignedVector<float> b_scale(N), add_row(N);
-  const MMI8B B_packed = PackB(B_f32, B_i8, b_scale.data(), ctx, a_pre_scale);
+  hwy::AlignedVector<float> b_scale(N * (block_size ? K / block_size : 1)),
+      add_row(N);
+  const MMI8B B_packed =
+      PackB(B_f32, B_i8, b_scale.data(), ctx, a_pre_scale, block_size);
   for (size_t n = 0; n < N; ++n)
     add_row[n] = 0.125f * static_cast<float>(n % 9);
 
@@ -286,22 +290,27 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
 
   // Reference from the quantized operands. `QuantizeA` has already written
   // them, so read them back rather than re-deriving.
-  const MMI8AView A_q = a_i8.View(Extents2D(M, K));
+  const MMI8AView A_q = a_i8.View(Extents2D(M, K), block_size);
   double max_abs_err = 0.0;
   double sum_sq = 0.0;
   for (size_t m = 0; m < M; ++m) {
     const MMI8AT* qa = A_q.data.Row(m);
     for (size_t n = 0; n < N; ++n) {
       const MMI8BT* qb = HWY_RCAST_ALIGNED(const MMI8BT*, B_i8.Row(n));
-      int64_t dot = 0;
-      for (size_t k = 0; k < K; ++k) {
-        const int32_t b =
-            static_cast<int32_t>(qb[k]) - (GEMMA_MM_I8_BIASED_B ? 128 : 0);
-        dot += static_cast<int64_t>(qa[k]) * static_cast<int64_t>(b);
+      double expected = add ? add_row[n] : 0.0;
+      const size_t group_size = block_size ? block_size : K;
+      for (size_t begin = 0; begin < K; begin += group_size) {
+        int64_t dot = 0;
+        for (size_t k = begin; k < begin + group_size; ++k) {
+          const int32_t b =
+              static_cast<int32_t>(qb[k]) - (GEMMA_MM_I8_BIASED_B ? 128 : 0);
+          dot += static_cast<int64_t>(qa[k]) * b;
+        }
+        const size_t group = begin / group_size;
+        expected +=
+            static_cast<double>(A_q.scale[group * A_q.scale_stride + m]) *
+            b_scale[group * N + n] * static_cast<double>(dot);
       }
-      const double expected = static_cast<double>(A_q.scale[m]) * b_scale[n] *
-                                  static_cast<double>(dot) +
-                              (add ? add_row[n] : 0.0f);
       const double actual = hwy::ConvertScalarTo<double>(C.Row(m)[n]);
       max_abs_err = HWY_MAX(max_abs_err, hwy::ScalarAbs(actual - expected));
       sum_sq += expected * expected;
@@ -380,7 +389,111 @@ void ControlBF16OutputError(size_t M, size_t K, size_t N, ThreadingContext& ctx,
       M, K, N, kc, k_ranges, rms == 0.0 ? 0.0 : max_abs / rms);
 }
 
+void TestMicroscaleIsolation(ThreadingContext& ctx) {
+  MatStorageT<float> a("a", Extents2D(1, 384), ctx.allocator, MatPadding::kOdd);
+  for (size_t c = 0; c < 384; ++c)
+    a.Row(0)[c] = c < 128 ? 10000.0f : c < 256 ? 0.001f : 0.0f;
+  MMI8AStorage storage(1, 384, ctx.allocator);
+  const auto q = QuantizeA(a, storage, ctx, 0, nullptr, 128);
+  double recovered = 0.0;
+  bool zero = q.scale[2 * q.scale_stride] == 1.0f;
+  for (size_t c = 128; c < 256; ++c) {
+    const double v = q.data.Row(0)[c] * q.scale[q.scale_stride];
+    recovered += v * v;
+  }
+  for (size_t c = 256; c < 384; ++c) zero &= q.data.Row(0)[c] == 0;
+  const bool ok = zero && std::abs(recovered / (128.0 * 1E-6) - 1.0) < 0.02;
+  if (!ok) ++g_failures;
+  printf("%s microscale isolates large outliers and zero blocks\n",
+         ok ? "  ok" : "FAIL");
+}
+
+void TestFixedTuningAndKeys() {
+  const auto bf = MMKeys::KeyFromDims(4, 256, 128, 1);
+  const auto i8 = MMKeys::KeyFromDims(4, 256, 128, 1, MMActivation::kI8);
+  const auto block =
+      MMKeys::KeyFromDims(4, 256, 128, 1, MMActivation::kI8Block);
+  MMAutoTune<int> tuner;
+  tuner.SetCandidates({7, 11, 19}, false);
+  bool ok = bf != i8 && i8 != block && bf != block;
+  for (int i = 0; i < 32; ++i) {
+    ok &= tuner.Best() && *tuner.Best() == 7 && tuner.NextConfig() == 7;
+    tuner.NotifyTicks(32 - i);
+  }
+  if (!ok) ++g_failures;
+  printf("%s separate precision keys and fixed tuning\n", ok ? "  ok" : "FAIL");
+}
+
+void TestModelScaling(ThreadingContext& ctx) {
+  auto& cache = MMI8WeightCache::Get();
+  if (!cache.Enabled() || !MMI8Flag("GEMMA_MM_I8_L2_SCALE")) return;
+  const size_t k = 256, n = 256;
+  MatMulEnv env(ctx);
+  MatStorageT<float> gate("test_gate", Extents2D(n, k), ctx.allocator,
+                          MatPadding::kOdd);
+  MatStorageT<float> up("test_up", Extents2D(n, k), ctx.allocator,
+                        MatPadding::kOdd);
+  MatStorageT<float> down("test_down", Extents2D(k, n), ctx.allocator,
+                          MatPadding::kOdd);
+  MatStorageT<float> norm("test_norm", Extents2D(1, k), ctx.allocator,
+                          MatPadding::kOdd);
+  Rng rng(315);
+  for (size_t r = 0; r < n; ++r)
+    for (size_t c = 0; c < k; ++c) {
+      gate.Row(r)[c] = rng.Normal() * (0.01f + 0.01f * (r % 7));
+      up.Row(r)[c] = rng.Normal() * 0.04f;
+      down.Row(r)[c] = rng.Normal() * 0.03f;
+    }
+  for (size_t c = 0; c < k; ++c) norm.Row(0)[c] = 0.25f;
+  const MatPtr& folded = cache.NormWeights(norm, {&gate, &up}, env);
+  cache.PrepareFFN(gate, up, down, env);
+  const auto* packed_down = cache.Lookup(down, env);
+  const auto* packed_up = cache.Lookup(up, env);
+  const size_t groups = packed_up->block_size ? k / packed_up->block_size : 1;
+  bool ok =
+      &folded != &norm && !packed_down->a_pre_scale && !packed_up->a_pre_scale;
+  const MatPtrT<float> folded_t(folded);
+  MatStorageT<float> compensated("compensated", up.Extents(), ctx.allocator,
+                                 MatPadding::kOdd);
+  for (size_t c = 0; c < k; ++c) {
+    double sum_sq = 0.0;
+    for (size_t r = 0; r < n; ++r)
+      sum_sq += double(gate.Row(r)[c]) * gate.Row(r)[c] +
+                double(up.Row(r)[c]) * up.Row(r)[c];
+    const float scale = MMI8L2Scale(1.25, std::sqrt(sum_sq));
+    ok &= std::abs((folded_t.Row(0)[c] + 1.0f) - 1.25f * scale) < 1E-6f;
+    for (size_t r = 0; r < n; ++r) compensated.Row(r)[c] = up.Row(r)[c] / scale;
+  }
+  MatStorageT<int8_t> bytes("bytes", up.Extents(), ctx.allocator,
+                            MatPadding::kOdd);
+  hwy::AlignedVector<float> scales(n * groups);
+  PackB(compensated, bytes, scales.data(), ctx, nullptr, packed_up->block_size);
+  for (size_t r = 0; r < n; ++r) {
+    double gs = 0.0, us = 0.0, ds = 0.0;
+    for (size_t c = 0; c < k; ++c) {
+      gs += double(gate.Row(r)[c]) * gate.Row(r)[c];
+      us += double(up.Row(r)[c]) * up.Row(r)[c];
+      ds += double(down.Row(c)[r]) * down.Row(c)[r];
+    }
+    const float expected =
+        MMI8L2Scale(std::sqrt(gs) * std::sqrt(us), std::sqrt(ds));
+    for (size_t g = 0; g < groups; ++g)
+      ok &= std::abs(packed_up->scale[g * n + r] / scales[g * n + r] -
+                     expected) < 2E-5f;
+  }
+  // A partially ineligible consumer set must leave RMSNorm untouched.
+  MatStorageT<float> bad("bad", Extents2D(3, k), ctx.allocator,
+                         MatPadding::kOdd);
+  ok &= &cache.NormWeights(norm, {&gate, &bad}, env) == &norm;
+  ok &= env.weight_prepare_seconds > 0.0;
+  if (!ok) ++g_failures;
+  printf(
+      "%s RMSNorm compensation, two-branch FFN scales, folding and fallback\n",
+      ok ? "  ok" : "FAIL");
+}
+
 void TestAll() {
+  TestFixedTuningAndKeys();
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   MatMulEnv env(ctx);
@@ -396,6 +509,8 @@ void TestAll() {
   }
   TestHash16();
   TestL2Scaling();
+
+  TestMicroscaleIsolation(ctx);
 
   // `kMaxKC` is 6 KiB, so K = 20096 forces several kc ranges and thus the
   // MMSetC-then-MMAddC path where the bias correction must be applied once.
@@ -428,6 +543,15 @@ void TestAll() {
   TestCase<float>(1, 20096, 8, false, ctx, env, a_i8);
   TestCase<float>(4, 20096, 64, true, ctx, env, a_i8);
   TestCase<float>(32, 12416, 64, true, ctx, env, a_i8);
+
+  // Local scales: signed/biased correction, output bias, partial M, and KC
+  // boundaries that need not coincide with a quantization group boundary.
+  for (size_t block : {size_t{64}, size_t{128}}) {
+    TestCase<float>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
+    TestCase<float>(4, 20096, 8, true, ctx, env, a_i8, 3.0f, nullptr, block);
+    TestCase<BF16>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
+  }
+  TestModelScaling(ctx);
 
   // BF16 output. The tolerance is loose because `MMAddC` accumulates through
   // `C`, so with several kc ranges the intermediate sums are rounded to BF16;

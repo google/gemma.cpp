@@ -60,6 +60,8 @@ class CompareModelsTest(unittest.TestCase):
     def test_render_table(self) -> None:
         root = {
             "name": "root",
+            "mmlu_inference_seconds": 8.0,
+            "mmlu_wall_seconds": 12.0,
             "mmlu": {"accuracy": 0.5},
             "entropy": {
                 "total_bits": 20.0,
@@ -72,6 +74,8 @@ class CompareModelsTest(unittest.TestCase):
         }
         target = {
             "name": "target",
+            "mmlu_inference_seconds": 4.0,
+            "mmlu_wall_seconds": 20.0,
             "mmlu": {"accuracy": 0.75},
             "entropy": {
                 "total_bits": 22.0,
@@ -85,6 +89,7 @@ class CompareModelsTest(unittest.TestCase):
 
         table = render_table([root, target])
 
+        self.assertIn("| 4.000 | 2.000x |", table)
         self.assertIn("| root | 2.0000 | +0.000% | 10.00 | +0.0%", table)
         self.assertIn(
             "| target | 2.2000 | +10.000% | 12.00 | +20.0% | "
