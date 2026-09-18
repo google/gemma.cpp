@@ -222,7 +222,10 @@ void BenchShape(size_t M, size_t K, size_t N, bool check_error,
 
   // Operands for the int8 kernel. `A` is quantized inside `MatMulI8`.
   MatStorageT<int8_t> B_i8("B_i8", B_extents, allocator, MatPadding::kOdd);
-  const size_t block_size = MMI8QuantBlockSize();
+  const size_t requested_block = MMI8QuantBlockSize();
+  const size_t block_size = requested_block && K % requested_block != 0
+                               ? MMI8RotateBlockSize()
+                               : requested_block;
   hwy::AlignedVector<float> b_scale(N * (block_size ? K / block_size : 1));
   const double pack_t0 = hwy::platform::Now();
   const MMI8B B_packed =

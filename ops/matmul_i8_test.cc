@@ -286,6 +286,8 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
   HWY_ASSERT(per_key->autotune.Best());
   const size_t kc = per_key->autotune.Best()->KC();
   const size_t k_ranges = per_key->autotune.Best()->RangesOfKC(K).NumTasks();
+  if (!env.autotune && MMI8Flag("GEMMA_MM_I8_MIN_K_SPLITS"))
+    HWY_ASSERT(K > kMaxKC || k_ranges == 1);
   MatMulI8(A_f32, B_packed, add ? add_row.data() : nullptr, env, C, a_i8);
 
   // Reference from the quantized operands. `QuantizeA` has already written
@@ -331,6 +333,17 @@ void TestCase(size_t M, size_t K, size_t N, bool add, ThreadingContext& ctx,
       "err/rms=%.2e\n",
       ok ? "  ok  " : "FAILED", M, K, N, add, TypeName<TC>(),
       GEMMA_MM_I8_BIASED_B, kc, k_ranges, err);
+  if (MMI8Flag("GEMMA_MM_I8_TEST_FIXED")) {
+    // Stable digest for comparing fast/reference kernels in separate runs.
+    uint64_t digest = 14695981039346656037ull;
+    for (size_t r = 0; r < M; ++r) {
+      const auto* bytes = reinterpret_cast<const unsigned char*>(C.Row(r));
+      for (size_t c = 0; c < N * sizeof(TC); ++c)
+        digest = (digest ^ bytes[c]) * 1099511628211ull;
+    }
+    printf("DIGEST M=%zu K=%zu N=%zu block=%zu TC=%s %016llx\n", M, K, N,
+           block_size, TypeName<TC>(), static_cast<unsigned long long>(digest));
+  }
 }
 
 // Control: how much precision the *existing* BF16 kernel loses when `TC` is
@@ -405,6 +418,31 @@ void TestMicroscaleIsolation(ThreadingContext& ctx) {
   const bool ok = zero && std::abs(recovered / (128.0 * 1E-6) - 1.0) < 0.02;
   if (!ok) ++g_failures;
   printf("%s microscale isolates large outliers and zero blocks\n",
+         ok ? "  ok" : "FAIL");
+}
+
+void TestQuantizedPrefixes() {
+  if constexpr (!GEMMA_MM_I8_BIASED_B) return;
+  hwy::AlignedVector<float> values(128);
+  hwy::AlignedVector<MMI8AT> quantized(128);
+  hwy::AlignedVector<int32_t> prefix(129);
+  bool ok = true;
+  for (size_t count : {size_t{7}, size_t{71}, size_t{128}}) {
+    for (int32_t base : {-4096, 0, 377}) {
+      for (size_t c = 0; c < count; ++c)
+        values[c] = base == 0 ? 0.0f : (static_cast<int>(c % 17) - 8) * 0.13f;
+      QuantizeRowA(values.data(), count, quantized.data(), prefix.data(),
+                   quantized.size(), base);
+      int32_t expected = base;
+      ok &= prefix[0] == expected;
+      for (size_t c = 0; c < count; ++c) {
+        expected += quantized[c];
+        ok &= prefix[c + 1] == expected;
+      }
+    }
+  }
+  if (!ok) ++g_failures;
+  printf("%s quantized prefixes, incoming bases, zeros and tails\n",
          ok ? "  ok" : "FAIL");
 }
 
@@ -485,6 +523,19 @@ void TestModelScaling(ThreadingContext& ctx) {
   MatStorageT<float> bad("bad", Extents2D(3, k), ctx.allocator,
                          MatPadding::kOdd);
   ok &= &cache.NormWeights(norm, {&gate, &bad}, env) == &norm;
+  const size_t odd_k = 3 * MMI8RotateBlockSize();
+  MatStorageT<float> odd_group("test_gate_odd", Extents2D(8, odd_k),
+                               ctx.allocator, MatPadding::kOdd);
+  const size_t chosen = cache.QuantBlockSize(odd_group);
+  const size_t requested = MMI8QuantBlockSize();
+  ok &= chosen == (requested && odd_k % requested != 0
+                       ? MMI8RotateBlockSize()
+                       : requested);
+  for (size_t r = 0; r < odd_group.Rows(); ++r)
+    for (size_t c = 0; c < odd_k; ++c)
+      odd_group.Row(r)[c] = static_cast<float>(static_cast<int>(c % 7) - 3);
+  const auto* packed_odd = cache.Lookup(odd_group, env);
+  ok &= packed_odd && packed_odd->block_size == chosen;
   ok &= env.weight_prepare_seconds > 0.0;
   if (!ok) ++g_failures;
   printf(
@@ -497,6 +548,7 @@ void TestAll() {
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   MatMulEnv env(ctx);
+  env.autotune = !MMI8Flag("GEMMA_MM_I8_TEST_FIXED");
   printf("target=%s biasedB=%d block=%zu hash=%zu vector bytes=%zu\n",
          hwy::TargetName(HWY_TARGET), GEMMA_MM_I8_BIASED_B,
          MMI8RotateBlockSize(), MMI8HashBits(),
@@ -511,6 +563,7 @@ void TestAll() {
   TestL2Scaling();
 
   TestMicroscaleIsolation(ctx);
+  TestQuantizedPrefixes();
 
   // `kMaxKC` is 6 KiB, so K = 20096 forces several kc ranges and thus the
   // MMSetC-then-MMAddC path where the bias correction must be applied once.
@@ -550,6 +603,7 @@ void TestAll() {
     TestCase<float>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
     TestCase<float>(4, 20096, 8, true, ctx, env, a_i8, 3.0f, nullptr, block);
     TestCase<BF16>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
+    TestCase<BF16>(5, 20096, 8, true, ctx, env, a_i8, 3.0f, nullptr, block);
   }
   TestModelScaling(ctx);
 

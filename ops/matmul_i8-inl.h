@@ -126,12 +126,28 @@ static inline bool MMI8NativeVNNI() {
 #endif
 }
 
-template <bool kNative, class DI32, class VA, class VB, class VI>
+template <bool kNative, bool kCompact = false, class DI32, class VA, class VB,
+          class VI>
 static HWY_INLINE void MMI8Dot4(DI32 di32, VA a, VB b0, VB b1, VB b2, VB b3,
                                 VI& c0, VI& c1, VI& c2, VI& c3) {
 #if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
     !defined(__clang__)
   if constexpr (kNative) {
+    if constexpr (kCompact && HWY_ARCH_X86_64) {
+      // Nine distinct registers are required; x86-32 has only eight.
+      // Keep all four B vectors live across the outputs. Separate asm blocks
+      // let the allocator repeatedly recycle accumulators for B loads when
+      // the microscale F32 accumulators also occupy registers.
+      asm("%{vex%} vpdpbusd %[a], %[b0], %[c0]\n\t"
+          "%{vex%} vpdpbusd %[a], %[b1], %[c1]\n\t"
+          "%{vex%} vpdpbusd %[a], %[b2], %[c2]\n\t"
+          "%{vex%} vpdpbusd %[a], %[b3], %[c3]"
+          : [c0] "+&x"(c0.raw), [c1] "+&x"(c1.raw), [c2] "+&x"(c2.raw),
+            [c3] "+&x"(c3.raw)
+          : [a] "x"(a.raw), [b0] "x"(b0.raw), [b1] "x"(b1.raw),
+            [b2] "x"(b2.raw), [b3] "x"(b3.raw));
+      return;
+    }
     // VEX encoding: AVX-VNNI is available without AVX-512. Dispatch per tile.
     asm("%{vex%} vpdpbusd %[a], %[b], %[c]"
         : [c] "+x"(c0.raw)
@@ -172,11 +188,22 @@ static inline size_t MMI8HashBits() {
   return bits;
 }
 
-// Optional local quantization scales. Match the rotation block so each
-// transformed outlier only controls its own group; zero preserves row scales.
+// Optional local quantization scales, independent of the rotation block.
+// Smaller groups limit outlier influence; larger groups reduce kernel overhead.
 static inline size_t MMI8QuantBlockSize() {
   static const bool enabled = MMI8Flag("GEMMA_MM_I8_MICROSCALE");
-  return enabled ? MMI8RotateBlockSize() : 0;
+  static const size_t block = []() {
+    const char* value = getenv("GEMMA_MM_I8_QUANT_BLOCK_SIZE");
+    const size_t requested = value ? strtoull(value, nullptr, 10) : 0;
+    return requested == 64 || requested == 128 ? requested
+                                               : MMI8RotateBlockSize();
+  }();
+  return enabled ? block : 0;
+}
+
+static inline bool MMI8FastMicro() {
+  static const bool enabled = MMI8Flag("GEMMA_MM_I8_FAST_MICRO", true);
+  return enabled;
 }
 
 // A bijective mixer over uint16_t. Thus the full 65536-value sequence has no
@@ -223,12 +250,6 @@ static HWY_NOINLINE void MMI8RotateFixed(float* HWY_RESTRICT row, size_t k,
   }
   for (size_t block = 0; block < k; block += block_size) {
     float* HWY_RESTRICT x = row + block;
-    for (size_t i = 0; fast && i < block_size; i += lanes) {
-      hn::StoreU(
-          hn::BitCast(df, hn::Xor(hn::BitCast(du, hn::LoadU(df, x + i)),
-                                  hn::LoadU(du, signs.data() + block + i))),
-          df, x + i);
-    }
     for (size_t i = 0; !fast && i < block_size; ++i) {
       // Deterministic Rademacher diagonal, shared by A and B.
       if (MMI8NegativeSign(block + i, hash_bits)) x[i] = -x[i];
@@ -238,7 +259,10 @@ static HWY_NOINLINE void MMI8RotateFixed(float* HWY_RESTRICT row, size_t k,
     if (fast) {
       const auto lane = hn::Iota(du, 0);
       for (size_t i = 0; i < block_size; i += lanes) {
-        auto v = hn::LoadU(df, x + i);
+        // Apply the signs while loading the first butterfly stage.
+        auto v = hn::BitCast(
+            df, hn::Xor(hn::BitCast(du, hn::LoadU(df, x + i)),
+                        hn::LoadU(du, signs.data() + block + i)));
         for (size_t width = 1; width < lanes; width *= 2) {
           const auto bit = hn::Set(du, static_cast<uint32_t>(width));
           const auto perm = hn::IndicesFromVec(df, hn::Xor(lane, bit));
@@ -252,7 +276,8 @@ static HWY_NOINLINE void MMI8RotateFixed(float* HWY_RESTRICT row, size_t k,
         hn::StoreU(v, df, x + i);
       }
     }
-    for (size_t width = fast ? lanes : 1; width < block_size; width *= 2) {
+    const size_t end_width = fast ? block_size / 2 : block_size;
+    for (size_t width = fast ? lanes : 1; width < end_width; width *= 2) {
       for (size_t start = 0; start < block_size; start += 2 * width) {
         size_t i = 0;
         for (; fast && i + lanes <= width; i += lanes) {
@@ -269,12 +294,21 @@ static HWY_NOINLINE void MMI8RotateFixed(float* HWY_RESTRICT row, size_t k,
         }
       }
     }
-    size_t i = 0;
-    for (; fast && i + lanes <= block_size; i += lanes) {
-      hn::StoreU(hn::Mul(hn::LoadU(df, x + i), hn::Set(df, normalize)), df,
-                 x + i);
+    if (fast) {
+      // Normalize the final butterfly outputs before storing them, preserving
+      // the original add/subtract-then-multiply order without another pass.
+      constexpr size_t half = block_size / 2;
+      const auto vnormalize = hn::Set(df, normalize);
+      for (size_t i = 0; i < half; i += lanes) {
+        const auto left = hn::LoadU(df, x + i);
+        const auto right = hn::LoadU(df, x + half + i);
+        hn::StoreU(hn::Mul(hn::Add(left, right), vnormalize), df, x + i);
+        hn::StoreU(hn::Mul(hn::Sub(left, right), vnormalize), df,
+                   x + half + i);
+      }
+    } else {
+      for (size_t i = 0; i < block_size; ++i) x[i] *= normalize;
     }
-    for (; i < block_size; ++i) x[i] *= normalize;
   }
 }
 
@@ -320,9 +354,15 @@ struct MMI8AView {
   // Returns 2D subrange whose top-left is `r, c`, as `StridedView::View`.
   // Only called on the whole-matrix view, hence the offsets do not compound.
   MMI8AView View(size_t r, size_t c, size_t cols) const {
+    return ViewGroup(r, c, cols, block_size ? c / block_size : 0);
+  }
+
+  // As View, with an already-known quantization group to avoid division in
+  // the microscaling kernel's group loop.
+  MMI8AView ViewGroup(size_t r, size_t c, size_t cols, size_t group) const {
     return MMI8AView{
         data.View(r, c, cols),
-        scale + r + (block_size ? c / block_size * scale_stride : 0),
+        scale + r + group * scale_stride,
         prefix + r * prefix_stride + c,
         prefix_stride,
         scale_stride,
@@ -376,7 +416,7 @@ class MMI8StoreHorizontalSumsIntoC {
   // same vector-length-agnostic transpose as the BF16 kernel. Valid because
   // the 4-way dot product, like BF16's pairwise add, only permutes the terms
   // of each dot product and thus preserves the horizontal sum.
-  template <class DI32, class VI32 = hn::Vec<DI32>,
+  template <bool kFast = false, class DI32, class VI32 = hn::Vec<DI32>,
             class D4 = hn::Full128<int32_t>, class V4 = hn::Vec<D4>>
   HWY_INLINE void Reduce4x4(DI32 di32,                               //
                             VI32 C00, VI32 C01, VI32 C02, VI32 C03,  //
@@ -384,6 +424,24 @@ class MMI8StoreHorizontalSumsIntoC {
                             VI32 C20, VI32 C21, VI32 C22, VI32 C23,  //
                             VI32 C30, VI32 C31, VI32 C32, VI32 C33,  //
                             V4& sum0, V4& sum1, V4& sum2, V4& sum3) {
+#if HWY_TARGET == HWY_AVX2
+    if constexpr (kFast) {
+      // Two pairwise additions produce the four column sums within each
+      // 128-bit half; one final add combines halves, without a stack transpose.
+      const D4 d4;
+      const auto reduce = [&](VI32 c0, VI32 c1, VI32 c2, VI32 c3) HWY_ATTR {
+        const auto pairs =
+            hn::PairwiseAdd128(di32, hn::PairwiseAdd128(di32, c0, c1),
+                               hn::PairwiseAdd128(di32, c2, c3));
+        return hn::Add(hn::LowerHalf(d4, pairs), hn::UpperHalf(d4, pairs));
+      };
+      sum0 = reduce(C00, C01, C02, C03);
+      if constexpr (kRowsAC > 1) sum1 = reduce(C10, C11, C12, C13);
+      if constexpr (kRowsAC > 2) sum2 = reduce(C20, C21, C22, C23);
+      if constexpr (kRowsAC > 3) sum3 = reduce(C30, C31, C32, C33);
+      return;
+    }
+#endif
     HWY_ALIGN int32_t buf[16 * hn::MaxLanes(di32)];
     HWY_LANES_CONSTEXPR const size_t N = hn::Lanes(di32);
 
@@ -513,6 +571,11 @@ class MMI8Kernel {
                      const IndexRange& range_kc, const IndexRange& range_nc,
                      const MMArgs& args, Tag out_tag, CView C_MC_NC) {
     if (B.block_size != 0) {
+      if (MMI8FastMicro()) {
+        MicroB3A2C0(A, B, range_mc, range_kc, range_nc, args, out_tag,
+                   C_MC_NC);
+        return;
+      }
       // Accumulate group results in F32, rounding to BF16 only at the KC
       // boundary. Adding BF16 partials per tiny group loses too much accuracy.
       thread_local hwy::AlignedVector<float> sums;
@@ -586,13 +649,11 @@ class MMI8Kernel {
   // `kRowsAC` rows of `A_view` and `kNR` rows of `B_view`. Mirrors
   // `MMKernel::LoopKC`: elementwise along `K` with 16 accumulators whose
   // horizontal sums are the `kRowsAC x kNR` results.
-  template <size_t kRowsAC, bool kNative, class Tag, class CView>
-  static HWY_INLINE void LoopKCImpl(const AView A_view,
-                                    const StridedView<int8_t> B_view,
-                                    const float* HWY_RESTRICT b_scale,
-                                    size_t imc, size_t kc,
-                                    const float* HWY_RESTRICT add, Tag tag,
-                                    CView C_MC_NR) {
+  template <size_t kRowsAC, bool kNative, bool kFastReduce, class V4>
+  static HWY_INLINE void DotProducts(const AView& A_view,
+                                     const StridedView<int8_t>& B_view,
+                                     size_t imc, size_t kc, V4& sum0, V4& sum1,
+                                     V4& sum2, V4& sum3) {
     const hn::ScalableTag<MMI8AT> da8;  // A: always i8
     const hn::ScalableTag<MMI8BT> db8;  // B: u8 or i8, same lane count
     const hn::Repartition<int32_t, decltype(da8)> di32;
@@ -638,19 +699,23 @@ class MMI8Kernel {
 
         {
           const VA8 a0 = hn::LoadU(da8, ar0 + ikc);
-          MMI8Dot4<kNative>(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
+          MMI8Dot4<kNative, kFastReduce>(di32, a0, b0, b1, b2, b3, C00, C01,
+                                         C02, C03);
         }
         if constexpr (kRowsAC > 1) {
           const VA8 a1 = hn::LoadU(da8, ar1 + ikc);
-          MMI8Dot4<kNative>(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
+          MMI8Dot4<kNative, kFastReduce>(di32, a1, b0, b1, b2, b3, C10, C11,
+                                         C12, C13);
         }
         if constexpr (kRowsAC > 2) {
           const VA8 a2 = hn::LoadU(da8, ar2 + ikc);
-          MMI8Dot4<kNative>(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
+          MMI8Dot4<kNative, kFastReduce>(di32, a2, b0, b1, b2, b3, C20, C21,
+                                         C22, C23);
         }
         if constexpr (kRowsAC > 3) {
           const VA8 a3 = hn::LoadU(da8, ar3 + ikc);
-          MMI8Dot4<kNative>(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
+          MMI8Dot4<kNative, kFastReduce>(di32, a3, b0, b1, b2, b3, C30, C31,
+                                         C32, C33);
         }
       }
     }
@@ -668,21 +733,43 @@ class MMI8Kernel {
 
       {
         const VA8 a0 = hn::LoadN(da8, ar0 + ikc, remaining_kc);
-        MMI8Dot4<kNative>(di32, a0, b0, b1, b2, b3, C00, C01, C02, C03);
+        MMI8Dot4<kNative, kFastReduce>(di32, a0, b0, b1, b2, b3, C00, C01, C02,
+                                       C03);
       }
       if constexpr (kRowsAC > 1) {
         const VA8 a1 = hn::LoadN(da8, ar1 + ikc, remaining_kc);
-        MMI8Dot4<kNative>(di32, a1, b0, b1, b2, b3, C10, C11, C12, C13);
+        MMI8Dot4<kNative, kFastReduce>(di32, a1, b0, b1, b2, b3, C10, C11, C12,
+                                       C13);
       }
       if constexpr (kRowsAC > 2) {
         const VA8 a2 = hn::LoadN(da8, ar2 + ikc, remaining_kc);
-        MMI8Dot4<kNative>(di32, a2, b0, b1, b2, b3, C20, C21, C22, C23);
+        MMI8Dot4<kNative, kFastReduce>(di32, a2, b0, b1, b2, b3, C20, C21, C22,
+                                       C23);
       }
       if constexpr (kRowsAC > 3) {
         const VA8 a3 = hn::LoadN(da8, ar3 + ikc, remaining_kc);
-        MMI8Dot4<kNative>(di32, a3, b0, b1, b2, b3, C30, C31, C32, C33);
+        MMI8Dot4<kNative, kFastReduce>(di32, a3, b0, b1, b2, b3, C30, C31, C32,
+                                       C33);
       }
     }
+
+    MMI8StoreHorizontalSumsIntoC<kRowsAC> horz;
+    horz.template Reduce4x4<kFastReduce>(di32, C00, C01, C02, C03, C10, C11,
+                                         C12, C13, C20, C21, C22, C23, C30, C31,
+                                         C32, C33, sum0, sum1, sum2, sum3);
+  }
+
+  template <size_t kRowsAC, bool kNative, class Tag, class CView>
+  static HWY_INLINE void LoopKCImpl(const AView A_view,
+                                    const StridedView<int8_t> B_view,
+                                    const float* HWY_RESTRICT b_scale,
+                                    size_t imc, size_t kc,
+                                    const float* HWY_RESTRICT add, Tag tag,
+                                    CView C_MC_NR) {
+    const hn::Full128<int32_t> d4i;
+    hn::Vec<decltype(d4i)> sum0, sum1, sum2, sum3;
+    DotProducts<kRowsAC, kNative, false>(A_view, B_view, imc, kc, sum0, sum1,
+                                       sum2, sum3);
 
     // Sums of the quantized `A` values over this `kc` range, for undoing `B`'s
     // bias. `A_view` is already restricted to the range, so `kc` is its width.
@@ -695,12 +782,156 @@ class MMI8Kernel {
     }
 
     MMI8StoreHorizontalSumsIntoC<kRowsAC> horz;
-    const hn::Full128<int32_t> d4i;
-    hn::Vec<decltype(d4i)> sum0, sum1, sum2, sum3;
-    horz.Reduce4x4(di32, C00, C01, C02, C03, C10, C11, C12, C13, C20, C21, C22,
-                   C23, C30, C31, C32, C33, sum0, sum1, sum2, sum3);
     horz.Store(d4i, sum0, sum1, sum2, sum3, A_view.scale, a_rowsum, b_scale,
                add, imc, tag, C_MC_NR);
+  }
+
+  template <size_t kRow, size_t kRowsAC, class V4I, class V4F>
+  static HWY_INLINE void AccumulateMicro(const AView A, size_t kc, V4I sum,
+                                         V4F b_scale, V4F& accum) {
+    if constexpr (kRow < kRowsAC) {
+      const hn::Full128<int32_t> di;
+      const hn::Full128<float> df;
+      if constexpr (GEMMA_MM_I8_BIASED_B) {
+        sum = hn::Sub(sum, hn::Set(di, A.RowSum(kRow, kc) * 128));
+      }
+      const auto scale = hn::Mul(b_scale, hn::Set(df, A.scale[kRow]));
+      // Match the reference's group order and one FMA per group exactly.
+      accum = hn::MulAdd(hn::ConvertTo(df, sum), scale, accum);
+    }
+  }
+
+  template <size_t kRow, size_t kRowsAC, class Tag, class CView, class V4F>
+  static HWY_INLINE void StoreMicro(V4F accum, size_t imc, const float* add,
+                                    Tag, CView C) {
+    if constexpr (kRow < kRowsAC) {
+      const hn::Full128<float> df;
+      using TC = hwy::RemoveCvRef<decltype(C.Row(0)[0])>;
+      const hn::Rebind<TC, decltype(df)> dc;
+      TC* HWY_RESTRICT pos = C.Row(imc + kRow);
+      if constexpr (hwy::IsSame<Tag, MMAddC>()) {
+        accum = hn::Add(accum, F32FromTC(dc, hn::LoadU(dc, pos)));
+      } else if (add != nullptr) {
+        accum = hn::Add(accum, hn::LoadU(df, add));
+      }
+      hn::StoreU(TCFromF32(dc, accum), dc, pos);
+    }
+  }
+
+  template <size_t kRowsAC, bool kNative, size_t kBlock, typename BT, class Tag,
+            class CView>
+  static HWY_NOINLINE void MicroTile(const AView& A, const BT& B,
+                                     const IndexRange& range_mc,
+                                     const IndexRange& range_kc, size_t row_b,
+                                     size_t imc, const float* add, Tag tag,
+                                     CView C) {
+    const hn::Full128<int32_t> di;
+    const hn::Full128<float> df;
+    auto accum0 = hn::Zero(df), accum1 = hn::Zero(df);
+    auto accum2 = hn::Zero(df), accum3 = hn::Zero(df);
+    // Keep one F32 vector per output row across all quantization groups;
+    // only the completed KC tile is written to C (and rounded if BF16).
+    const size_t block = kBlock ? kBlock : B.block_size;
+    size_t group = range_kc.begin() / block;
+    for (size_t c = range_kc.begin(); c < range_kc.end(); ++group) {
+      const size_t count = kBlock ? kBlock
+                                  : HWY_MIN(static_cast<size_t>(range_kc.end()),
+                                            (group + 1) * block) -
+                                        c;
+      const auto av = A.ViewGroup(range_mc.begin() + imc, c, count, group);
+      const StridedView<int8_t> bv(*B.data, row_b, c, count);
+      auto sum0 = hn::Zero(di), sum1 = hn::Zero(di);
+      auto sum2 = hn::Zero(di), sum3 = hn::Zero(di);
+      DotProducts<kRowsAC, kNative, true>(av, bv, 0, count, sum0, sum1, sum2,
+                                          sum3);
+      const auto scale = hn::LoadU(df, B.scale + group * B.Rows() + row_b);
+      AccumulateMicro<0, kRowsAC>(av, count, sum0, scale, accum0);
+      AccumulateMicro<1, kRowsAC>(av, count, sum1, scale, accum1);
+      AccumulateMicro<2, kRowsAC>(av, count, sum2, scale, accum2);
+      AccumulateMicro<3, kRowsAC>(av, count, sum3, scale, accum3);
+      c += count;
+    }
+    StoreMicro<0, kRowsAC>(accum0, imc, add, tag, C);
+    StoreMicro<1, kRowsAC>(accum1, imc, add, tag, C);
+    StoreMicro<2, kRowsAC>(accum2, imc, add, tag, C);
+    StoreMicro<3, kRowsAC>(accum3, imc, add, tag, C);
+  }
+
+  template <bool kNative, size_t kBlock, typename BT, class Tag, class CView>
+  static HWY_INLINE void MicroB3A2C0Impl(const AView A, const BT& B,
+                                         const IndexRange& range_mc,
+                                         const IndexRange& range_kc,
+                                         const IndexRange& range_nc,
+                                         const MMArgs& args, Tag tag, CView C) {
+    for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
+      const size_t row_b = range_nc.begin() + inc;
+      const auto tile = C.View(0, inc, kNR);
+      const float* add = args.add ? args.add + row_b : nullptr;
+      const size_t mc = range_mc.Num();
+      size_t r = 0;
+      if (args.mr == 4) {
+        for (; r + 4 <= mc; r += 4) {
+          MicroTile<4, kNative, kBlock>(A, B, range_mc, range_kc, row_b, r, add,
+                                        tag, tile);
+        }
+      }
+      if (args.mr >= 2) {
+        for (; r + 2 <= mc; r += 2) {
+          MicroTile<2, kNative, kBlock>(A, B, range_mc, range_kc, row_b, r, add,
+                                        tag, tile);
+        }
+      }
+      for (; r < mc; ++r) {
+        MicroTile<1, kNative, kBlock>(A, B, range_mc, range_kc, row_b, r, add,
+                                      tag, tile);
+      }
+    }
+  }
+
+  template <bool kNative, typename BT, class Tag, class CView>
+  static HWY_INLINE void DispatchMicroBlock(const AView& A, const BT& B,
+                                            const IndexRange& range_mc,
+                                            const IndexRange& range_kc,
+                                            const IndexRange& range_nc,
+                                            const MMArgs& args, Tag tag,
+                                            CView C) {
+    // Full groups dominate model inference. Fixed widths let the compiler
+    // unroll their dot loops and remove all masked loads and view copies.
+    const size_t block = B.block_size;
+    if (range_kc.begin() % block != 0 || range_kc.end() % block != 0) {
+      MicroB3A2C0Impl<kNative, 0>(A, B, range_mc, range_kc, range_nc, args, tag,
+                                  C);
+      return;
+    }
+    switch (block) {
+      case 64:
+        MicroB3A2C0Impl<kNative, 64>(A, B, range_mc, range_kc, range_nc, args,
+                                     tag, C);
+        return;
+      case 128:
+        MicroB3A2C0Impl<kNative, 128>(A, B, range_mc, range_kc, range_nc, args,
+                                      tag, C);
+        return;
+      default:
+        HWY_ABORT("Invalid microscaling group size %zu", block);
+    }
+  }
+
+  template <typename BT, class Tag, class CView>
+  static HWY_INLINE void MicroB3A2C0(const AView A, const BT& B,
+                                     const IndexRange& range_mc,
+                                     const IndexRange& range_kc,
+                                     const IndexRange& range_nc,
+                                     const MMArgs& args, Tag tag, CView C) {
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+    if (MMI8NativeVNNI()) {
+      DispatchMicroBlock<true>(A, B, range_mc, range_kc, range_nc, args, tag,
+                               C);
+      return;
+    }
+#endif
+    DispatchMicroBlock<false>(A, B, range_mc, range_kc, range_nc, args, tag, C);
   }
 
   template <size_t kRowsAC, class Tag, class CView>
@@ -801,7 +1032,8 @@ template <typename TA>
 static HWY_INLINE float QuantizeRowA(const TA* HWY_RESTRICT in, size_t k,
                                      MMI8AT* HWY_RESTRICT out,
                                      int32_t* HWY_RESTRICT prefix,
-                                     size_t padded_k) {
+                                     size_t padded_k,
+                                     int32_t prefix_base = 0) {
   const hn::ScalableTag<float> df;
   const hn::Rebind<int32_t, decltype(df)> di32;
   const hn::Rebind<MMI8AT, decltype(df)> d8;
@@ -842,8 +1074,8 @@ static HWY_INLINE float QuantizeRowA(const TA* HWY_RESTRICT in, size_t k,
   if constexpr (GEMMA_MM_I8_BIASED_B) {
     // Scalar, but only `M * K` additions per MatMul, i.e. the same order as
     // the quantization itself and negligible next to `M * K * N` products.
-    int32_t sum = 0;
-    prefix[0] = 0;
+    int32_t sum = prefix_base;
+    prefix[0] = prefix_base;
     for (size_t j = 0; j < k; ++j) {
       sum += out[j];
       prefix[j + 1] = sum;
@@ -932,10 +1164,7 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
           scale[(c / group_size) * view.scale_stride + r] =
               a_scale * QuantizeRowA(rotated.data() + c, group_size,
                                      view.data.Row(r) + c, prefix + c,
-                                     group_size);
-          if (GEMMA_MM_I8_BIASED_B && c) {
-            for (size_t i = 0; i <= group_size; ++i) prefix[c + i] += base;
-          }
+                                     group_size, base);
         }
         for (size_t c = k; c < padded_k; ++c) view.data.Row(r)[c] = 0;
       });
@@ -991,6 +1220,24 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
 //------------------------------------------------------------------------------
 // Entry point
 
+static inline std::vector<MMConfig> MMI8Candidates(
+    MatMulEnv& env, size_t M, size_t K, size_t N, size_t num_B,
+    size_t sizeof_TC) {
+  auto candidates = MMCandidates(env.ctx.cache_info, M, K, N, num_B,
+                                  sizeof_TC, env.print_config);
+  if (!env.autotune && MMI8Flag("GEMMA_MM_I8_MIN_K_SPLITS")) {
+    // Generic candidates enumerate split-K loop orders first. Prefer fewer
+    // intermediate output rounds in fixed W8A8 evaluation while retaining the
+    // generator's legal cache/thread partitions and its order among ties.
+    const auto best = std::min_element(
+        candidates.begin(), candidates.end(), [&](const auto& a, const auto& b) {
+          return a.RangesOfKC(K).NumTasks() < b.RangesOfKC(K).NumTasks();
+        });
+    if (best != candidates.end()) std::iter_swap(candidates.begin(), best);
+  }
+  return candidates;
+}
+
 // As `MatMul`, but `A` is quantized on the fly and `B` was packed by `PackB`.
 // Reuses the same blocking, parallelization and autotuning as `MatMul`; only
 // the kernel and operand types differ. Tuning keys distinguish A8 from BF16.
@@ -1036,7 +1283,7 @@ HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
     HWY_ASSERT(M <= kMaxBatchSize);
     HWY_ASSERT(N % kNR == 0);
     tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config),
+        MMI8Candidates(env, M, K, N, num_B, sizeof(TC)),
         env.autotune);
   }
 
@@ -1094,7 +1341,7 @@ static HWY_NOINLINE MMPerKey* TwoMatMulI8(const MatPtrT<BF16>& A,
     HWY_ASSERT(N % kNR == 0);
     const size_t max_M = MMKeys::BucketM(M);
     tuner.SetCandidates(
-        MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16), env.print_config),
+        MMI8Candidates(env, max_M, K, N, num_B, sizeof(BF16)),
         env.autotune);
   }
 

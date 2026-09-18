@@ -37,7 +37,11 @@
 //   GEMMA_MM_I8_BLOCK_SIZE=64 select 64-wide instead of 128-wide rotation
 //   GEMMA_MM_I8_HASH_BITS=16  select the cheaper 16-bit sign hash
 //   GEMMA_MM_I8_L2_SCALE=1    equalize FFN hidden and RMSNorm input channels
-//   GEMMA_MM_I8_MICROSCALE=1  use per-rotation-block A/B quantization scales
+//   GEMMA_MM_I8_MICROSCALE=1  use local A/B quantization scales
+//   GEMMA_MM_I8_FAST_MICRO=0  use the reference microscaling kernel
+//   GEMMA_MM_I8_MIN_K_SPLITS=1 prefer fewer KC ranges when autotuning is off
+//   GEMMA_MM_I8_QUANT_BLOCK_SIZE=<n> quantize groups of 64 or 128 values;
+//                            fall back to rotation width if K is not divisible
 //   GEMMA_MM_I8_SCALE_FFN=0  disable hidden-channel scaling for ablation
 //   GEMMA_MM_I8_SCALE_NORM=0 disable RMSNorm folding for ablation
 
@@ -176,6 +180,14 @@ class MMI8WeightCache {
     return !MMI8NameMatches(B.Name(), exclude_);
   }
 
+  // Keep every eligible tensor in W8A8 even if its K cannot use the requested
+  // quantization group. Fused FFN inputs have the same K and choose alike.
+  size_t QuantBlockSize(const MatPtr& B) const {
+    const size_t requested = MMI8QuantBlockSize();
+    if (requested == 0) return 0;
+    return B.Cols() % requested == 0 ? requested : MMI8RotateBlockSize();
+  }
+
   // Explicit pairing avoids stale "previous tensor" state, including when
   // routing filters skip a projection or an unfused FFN is used.
   void PrepareFFN(const MatPtr& gate, const MatPtr& up, const MatPtr& down,
@@ -200,7 +212,8 @@ class MMI8WeightCache {
     // Data-free proxy for the magnitude of act(W1*x) * (W2*x).
     // This is a heuristic, not an exact GELU/SILU activation statistic.
     for (size_t i = 0; i < up_norms.size(); ++i) up_norms[i] *= gate_norms[i];
-    auto entry = std::make_unique<Entry>(down, env.ctx.allocator);
+    auto entry = std::make_unique<Entry>(down, env.ctx.allocator,
+                                       QuantBlockSize(down));
     CallUpcasted(&down, [&](const auto* typed) {
       ConfigureL2Scale(*typed, up_norms, up.RowBytes(0), *entry, env.ctx);
       Quantize(*typed, *entry);
@@ -277,7 +290,8 @@ class MMI8WeightCache {
     auto it = map_.find(key);
     if (it != map_.end()) return &it->second->b;
     PrepareTimer timer(env);
-    auto entry = std::make_unique<Entry>(B, env.ctx.allocator);
+    auto entry = std::make_unique<Entry>(B, env.ctx.allocator,
+                                       QuantBlockSize(B));
     const auto input = input_scales_.find(key);
     if (input != input_scales_.end()) entry->input_scale = input->second;
     Quantize(B, *entry);
@@ -327,12 +341,11 @@ class MMI8WeightCache {
   };
 
   struct Entry {
-    Entry(const MatPtr& B, const Allocator& allocator)
+    Entry(const MatPtr& B, const Allocator& allocator, size_t block_size)
         : data("B_i8", Extents2D(B.Rows(), B.Cols()), allocator,
                MatPadding::kOdd),
-          scale(B.Rows() *
-                (MMI8QuantBlockSize() ? B.Cols() / MMI8QuantBlockSize() : 1)) {
-      b = MMI8B{&data, scale.data(), nullptr, MMI8QuantBlockSize()};
+          scale(B.Rows() * (block_size ? B.Cols() / block_size : 1)) {
+      b = MMI8B{&data, scale.data(), nullptr, block_size};
     }
     MatStorageT<int8_t> data;
     hwy::AlignedVector<float> scale;
