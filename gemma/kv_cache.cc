@@ -275,9 +275,20 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       runtime_config.attention_impl == AttentionImpl::kInt8MatrixAccumulation
       ) {
     // clang-format on
+    kv_is_scratch = runtime_config.attention_impl == AttentionImpl::kFlash &&
+                    !config.is_encoder_decoder && !config.HasMLA();
+    size_t projection_cols = config.KVCacheCols();
+    size_t projection_rows = CappedSeqLen(config, inference_args);
+    if (kv_is_scratch) {
+      projection_cols = 0;
+      for (const auto& layer : kv_layer_configs) {
+        projection_cols = std::max(projection_cols, layer.CacheLayerSize());
+      }
+      projection_rows = std::min(
+          projection_rows, std::max(size_t{1}, runtime_config.prefill_tbatch_size));
+    }
     kv_cache = MatStorageT<KV_t>(
-        "kv",
-        Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
+        "kv", Extents2D(projection_rows, projection_cols),
         allocator, MatPadding::kOdd);
     k_cache = MatStorageT<KV_t>(
         "k",
@@ -294,6 +305,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     const size_t num_tiles =
         hwy::DivCeil(CappedSeqLen(config, inference_args), kTileSize);
     tiled_seq_len = num_tiles * kTileSize;
+    // Default flash reads k_cache/v_cache, never the compact tiled buffers.
+    if (kv_is_scratch) return;
     Type kv_cache_type;
     if (runtime_config.attention_impl ==
         AttentionImpl::kFlashMatrixAccumulation) {
@@ -467,10 +480,33 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   InitDSState(config, allocator, ds_state, ds_state_snapshot, ds_state_offsets);
 }
 
+void KVCache::EnsureProjectionRows(size_t num_tokens, size_t cols) {
+  // The constructor without RuntimeConfig also serves legacy callers. Convert
+  // its projection storage only once we know GemmaAttention is consuming it.
+  if (!kv_is_scratch || num_tokens > kv_cache.Rows() || cols > kv_cache.Cols()) {
+    const size_t rows = kv_is_scratch ? std::max(num_tokens, kv_cache.Rows())
+                                     : num_tokens;
+    cols = kv_is_scratch ? std::max(cols, kv_cache.Cols()) : cols;
+    kv_cache = MatStorageT<KV_t>(
+        "kv", Extents2D(rows, cols), allocator_, MatPadding::kOdd);
+    kv_is_scratch = true;
+  }
+}
+
 KVCache KVCache::Copy() {
   KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
 
   CopyMat(kv_cache, copy.kv_cache);
+  copy.kv_is_scratch = kv_is_scratch;
+  if (kv_is_scratch) {
+    copy.k_cache = MatStorageT<KV_t>("k", k_cache.Extents(), allocator_,
+                                    MatPadding::kPacked);
+    copy.v_cache = MatStorageT<KV_t>("v", v_cache.Extents(), allocator_,
+                                    MatPadding::kPacked);
+    CopyMat(k_cache, copy.k_cache);
+    CopyMat(v_cache, copy.v_cache);
+    copy.k_v_cols = k_v_cols;
+  }
   if (compact_local_kv_cache_ptr.HasPtr()) {
     CopyMat(compact_local_kv_cache_ptr, copy.compact_local_kv_cache_ptr);
   }
