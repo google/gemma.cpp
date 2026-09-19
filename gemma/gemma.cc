@@ -1443,10 +1443,11 @@ HWY_NOINLINE void FinalNormBatched(const ModelConfig& config,
     const MatPtr& head = weights.lm_head.HasPtr()
                              ? weights.lm_head
                              : weights.embedder_input_embedding;
-    const MatPtr& norm = config.model_family_version == 3
-                             ? MMI8WeightCache::Get().NormWeights(
-                                   weights.final_norm_scale, {&head}, env)
-                             : weights.final_norm_scale;
+    // This branch uses Gemma's offset gamma regardless of family metadata.
+    // Older Gemma3 configs retain model_family_version=1. NormWeights checks
+    // whether the optional fold and its consumer are eligible.
+    const MatPtr& norm = MMI8WeightCache::Get().NormWeights(
+        weights.final_norm_scale, {&head}, env);
     RMSNormBatched(activations.x, norm, activations.x_bf, env.ctx);
   }
 }

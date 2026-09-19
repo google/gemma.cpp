@@ -195,8 +195,9 @@ static inline size_t MMI8QuantBlockSize() {
   static const size_t block = []() {
     const char* value = getenv("GEMMA_MM_I8_QUANT_BLOCK_SIZE");
     const size_t requested = value ? strtoull(value, nullptr, 10) : 0;
-    return requested == 64 || requested == 128 ? requested
-                                               : MMI8RotateBlockSize();
+    return requested == 32 || requested == 64 || requested == 128
+               ? requested
+               : MMI8RotateBlockSize();
   }();
   return enabled ? block : 0;
 }
@@ -376,12 +377,15 @@ struct MMI8AView {
     return p[cols] - p[0];
   }
 
-  StridedView<MMI8AT> data;
+  StridedView<MMI8AT> data{nullptr, 0, 0};
   const float* HWY_RESTRICT scale;     // one per row of `data`
   const int32_t* HWY_RESTRICT prefix;  // null unless `GEMMA_MM_I8_BIASED_B`
   size_t prefix_stride;
   size_t scale_stride = 0;  // group-major scales, one column per activation row
   size_t block_size = 0;
+  // Optional second quantization of the first stream's reconstruction error.
+  // Set only on the whole-matrix view; its lifetime covers MMLoops::Dispatch.
+  const MMI8AView* residual = nullptr;
 };
 
 // Transposed, symmetric-int8 `B`: `N` rows of `K` values each, so that a
@@ -400,7 +404,60 @@ struct MMI8B {
   // already been divided by the same values, preserving the dot product.
   const float* HWY_RESTRICT a_pre_scale = nullptr;
   size_t block_size = 0;  // scale[g * Rows() + row], or one scale per row
+  const float* HWY_RESTRICT bias = nullptr;  // optional calibrated output bias
+  // Eight output channels interleaved in four-K chunks. Each packed tile
+  // starts at data->Row(tile_row), preserving the allocation and its padding.
+  // Individual data->Row(r) values are no longer ordinary weight rows.
+  bool packed_micro = false;
+  bool dual_a = false;  // two activation streams with shared weights
 };
+
+static inline bool MMI8UseDualA(const MMI8B& B, size_t m) {
+  static const bool m1_only = MMI8Flag("GEMMA_MM_I8_DUAL_A_M1_ONLY");
+  return B.dual_a && B.packed_micro && B.block_size != 0 &&
+         (!m1_only || m == 1);
+}
+
+// Existing model bias takes precedence. This experimental correction currently
+// applies only to otherwise bias-free MatMuls, including each fused FFN branch.
+static HWY_INLINE const float* MMI8Bias(const MMI8B& B, const float* add,
+                                        size_t row_b) {
+  const float* base = add != nullptr ? add : B.bias;
+  return base != nullptr ? base + row_b : nullptr;
+}
+
+// Restrict automatic packing to the measured AVX2/VNNI path. A packed B is
+// always interpreted by its layout flag, even if a kernel control is disabled.
+static inline bool MMI8PackedHead() {
+  static const bool enabled = MMI8Flag("GEMMA_MM_I8_PACKED_HEAD");
+  return enabled && MMI8FastMicro() && MMI8NativeVNNI();
+}
+
+// A continuous head scan can improve bandwidth. Keep this independent from
+// transformer scheduling: only a single-token, packed head with F32 output is
+// eligible, because a changed KC boundary changes floating-point sum order.
+static inline bool MMI8PreferFullHeadK(const MMI8B& B, size_t m,
+                                      bool f32_output) {
+  static const bool enabled = MMI8Flag("GEMMA_MM_I8_PACKED_HEAD_FULL_K");
+  return enabled && B.packed_micro && B.Rows() >= 65536 && m == 1 && f32_output;
+}
+
+// In-place N8 x K4 transpose, using only one tile of temporary storage. The
+// original eight-row padding follows the packed bytes at the end of the tile.
+// Call only after every quantized weight and calibration update is final.
+static HWY_NOINLINE void MMI8PackMicroB(MatPtrT<int8_t>& data) {
+  const size_t k = data.Cols();
+  HWY_ASSERT(data.Rows() % 8 == 0 && k % 4 == 0);
+  hwy::AlignedVector<int8_t> tile(8 * k);
+  for (size_t r = 0; r < data.Rows(); r += 8) {
+    for (size_t c = 0; c < k; c += 4) {
+      for (size_t n = 0; n < 8; ++n) {
+        hwy::CopyBytes<4>(data.Row(r + n) + c, tile.data() + 8 * c + 4 * n);
+      }
+    }
+    hwy::CopyBytes(tile.data(), data.Row(r), tile.size());
+  }
+}
 
 //------------------------------------------------------------------------------
 // Reduction and store
@@ -570,6 +627,11 @@ class MMI8Kernel {
   static void B3A2C0(const AView A, const BT& B, const IndexRange& range_mc,
                      const IndexRange& range_kc, const IndexRange& range_nc,
                      const MMArgs& args, Tag out_tag, CView C_MC_NC) {
+    if (B.packed_micro) {
+      PackedMicroB3A2C0(A, B, range_mc, range_kc, range_nc, args, out_tag,
+                       C_MC_NC);
+      return;
+    }
     if (B.block_size != 0) {
       if (MMI8FastMicro()) {
         MicroB3A2C0(A, B, range_mc, range_kc, range_nc, args, out_tag,
@@ -583,6 +645,7 @@ class MMI8Kernel {
       const StridedView<float> tmp(sums.data(), kNR, kNR);
       for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
         const size_t row_b = range_nc.begin() + inc;
+        const float* add = MMI8Bias(B, args.add, row_b);
         bool first = true;
         for (size_t c = range_kc.begin(); c < range_kc.end();) {
           const size_t group = c / B.block_size;
@@ -607,8 +670,8 @@ class MMI8Kernel {
             float value = sums[r * kNR + j];
             if constexpr (hwy::IsSame<Tag, MMAddC>()) {
               value += hwy::ConvertScalarTo<float>(C_MC_NC.Row(r)[inc + j]);
-            } else if (args.add) {
-              value += args.add[row_b + j];
+            } else if (add != nullptr) {
+              value += add[j];
             }
             C_MC_NC.Row(r)[inc + j] = hwy::ConvertScalarTo<TC>(value);
           }
@@ -625,7 +688,7 @@ class MMI8Kernel {
       // No decompression: `B` is already in the layout the kernel wants.
       const StridedView<int8_t> B_view(*B.data, row_b, range_kc.begin(), kc);
       const CView C_MC_NR = C_MC_NC.View(0, inc, kNR);
-      const float* HWY_RESTRICT add = args.add ? args.add + row_b : nullptr;
+      const float* HWY_RESTRICT add = MMI8Bias(B, args.add, row_b);
       A2C0(A_view, B_view, B.scale + row_b, args.mr, range_mc, kc, add, out_tag,
            C_MC_NR);
     }
@@ -866,7 +929,7 @@ class MMI8Kernel {
     for (size_t inc = 0; inc < range_nc.Num(); inc += kNR) {
       const size_t row_b = range_nc.begin() + inc;
       const auto tile = C.View(0, inc, kNR);
-      const float* add = args.add ? args.add + row_b : nullptr;
+      const float* add = MMI8Bias(B, args.add, row_b);
       const size_t mc = range_mc.Num();
       size_t r = 0;
       if (args.mr == 4) {
@@ -888,6 +951,239 @@ class MMI8Kernel {
     }
   }
 
+  // Covers arbitrary KC boundaries and targets without the optimized packed
+  // kernel. Keeping this path makes the layout independent of runtime flags.
+  template <typename BT, class Tag, class CView>
+  static HWY_NOINLINE void PackedMicroReference(const AView& A, const BT& B,
+                                                const IndexRange& range_mc,
+                                                const IndexRange& range_kc,
+                                                const IndexRange& range_nc,
+                                                const MMArgs& args, Tag tag,
+                                                CView C) {
+    const hn::Full128<int32_t> di;
+    const hn::Full128<float> df;
+    for (size_t inc = 0; inc < range_nc.Num(); inc += 4) {
+      const size_t row_b = range_nc.begin() + inc;
+      const size_t packed_row = row_b & ~size_t{7};
+      const size_t lane = row_b % 8;
+      const auto* packed =
+          reinterpret_cast<const MMI8BT*>(B.data->Row(packed_row));
+      const float* add = MMI8Bias(B, args.add, row_b);
+      const auto out = C.View(0, inc, 4);
+      for (size_t r = 0; r < range_mc.Num(); ++r) {
+        const auto* ar = A.data.Row(range_mc.begin() + r);
+        auto accum = hn::Zero(df);
+        for (size_t c = range_kc.begin(); c < range_kc.end();) {
+          const size_t group = c / B.block_size;
+          const size_t count = HWY_MIN(static_cast<size_t>(range_kc.end()),
+                                       (group + 1) * B.block_size) -
+                               c;
+          HWY_ALIGN int32_t sums[4] = {};
+          HWY_ALIGN int32_t residual_sums[4] = {};
+          for (size_t k = c; k < c + count; ++k) {
+            const auto* bp = packed + (k / 4) * 32 + lane * 4 + k % 4;
+            for (size_t n = 0; n < 4; ++n) {
+              sums[n] += static_cast<int32_t>(ar[k]) * bp[4 * n];
+              if (A.residual != nullptr) {
+                residual_sums[n] += static_cast<int32_t>(A.residual->data.Row(
+                                        range_mc.begin() + r)[k]) *
+                                    bp[4 * n];
+              }
+            }
+          }
+          const auto av = A.ViewGroup(range_mc.begin() + r, c, count, group);
+          const auto scale = hn::LoadU(df, B.scale + group * B.Rows() + row_b);
+          AccumulateMicro<0, 1>(av, count, hn::LoadU(di, sums), scale, accum);
+          if (A.residual != nullptr) {
+            const auto rv =
+                A.residual->ViewGroup(range_mc.begin() + r, c, count, group);
+            AccumulateMicro<0, 1>(rv, count, hn::LoadU(di, residual_sums),
+                                  scale, accum);
+          }
+          c += count;
+        }
+        StoreMicro<0, 1>(accum, r, add, tag, out);
+      }
+    }
+  }
+
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+  // Each dot lane directly produces one of eight output channels. Four
+  // independent chains hide VNNI latency; no horizontal reduction is needed.
+  template <size_t kBlock, bool kAlignedGroups = true, bool kDual = false,
+            typename BT, class Tag, class CView>
+  static HWY_NOINLINE void PackedMicroNative(const AView& A, const BT& B,
+                                             const IndexRange& range_mc,
+                                             const IndexRange& range_kc,
+                                             const IndexRange& range_nc,
+                                             const MMArgs& args, Tag tag,
+                                             CView C) {
+    const hn::ScalableTag<int8_t> da;
+    const hn::ScalableTag<uint8_t> db;
+    const hn::Repartition<int32_t, decltype(da)> di;
+    const hn::Repartition<uint32_t, decltype(da)> du;
+    const hn::ScalableTag<float> df;
+    const hn::Full128<float> d4f;
+    for (size_t nc = range_nc.begin(); nc < range_nc.end();) {
+      const size_t row_b = nc & ~size_t{7};
+      const size_t lane = nc % 8;
+      const size_t count = HWY_MIN(size_t{8} - lane, range_nc.end() - nc);
+      const size_t inc = nc - range_nc.begin();
+      const auto* packed = reinterpret_cast<const uint8_t*>(B.data->Row(row_b));
+      const float* add = MMI8Bias(B, args.add, nc);
+      for (size_t r = 0; r < range_mc.Num(); ++r) {
+        const auto* ar = A.data.Row(range_mc.begin() + r);
+        const auto* ar1 =
+            kDual ? A.residual->data.Row(range_mc.begin() + r) : nullptr;
+        auto accum = hn::Zero(df);
+        size_t group = range_kc.begin() / kBlock;
+        for (size_t c = range_kc.begin(); c < range_kc.end(); ++group) {
+          const size_t num_k =
+              kAlignedGroups ? kBlock
+                             : HWY_MIN(kBlock - c % kBlock, range_kc.end() - c);
+          const auto* br = packed + c * 8;
+          auto d0 = hn::Zero(di), d1 = hn::Zero(di);
+          auto d2 = hn::Zero(di), d3 = hn::Zero(di);
+          auto e0 = hn::Zero(di), e1 = hn::Zero(di);
+          auto e2 = hn::Zero(di), e3 = hn::Zero(di);
+          const auto dot = [&](size_t offset, auto& sum,
+                               auto& residual_sum) HWY_ATTR {
+            uint32_t bits;
+            hwy::CopyBytes<4>(ar + c + offset, &bits);
+            const auto a = hn::BitCast(da, hn::Set(du, bits));
+            const auto b = hn::LoadU(db, br + offset * 8);
+            if constexpr (kDual) {
+              uint32_t residual_bits;
+              hwy::CopyBytes<4>(ar1 + c + offset, &residual_bits);
+              const auto a1 = hn::BitCast(da, hn::Set(du, residual_bits));
+              // Keep B in a register for both dots. The dual specialization
+              // requires more than the eight SIMD registers of x86-32.
+              asm("%{vex%} vpdpbusd %[a], %[b], %[sum]\n\t"
+                  "%{vex%} vpdpbusd %[a1], %[b], %[residual_sum]"
+                  : [sum] "+&x"(sum.raw), [residual_sum] "+&x"(residual_sum.raw)
+                  : [a] "x"(a.raw), [a1] "x"(a1.raw), [b] "x"(b.raw));
+            } else {
+              asm("%{vex%} vpdpbusd %[a], %[b], %[sum]"
+                  : [sum] "+x"(sum.raw)
+                  : [a] "x"(a.raw), [b] "x"(b.raw));
+            }
+          };
+          size_t k = 0;
+          for (; k + 16 <= num_k; k += 16) {
+            dot(k, d0, e0);
+            dot(k + 4, d1, e1);
+            dot(k + 8, d2, e2);
+            dot(k + 12, d3, e3);
+          }
+          if constexpr (!kAlignedGroups) {
+            for (; k < num_k; k += 4) dot(k, d0, e0);
+          }
+          auto sum = hn::Add(hn::Add(d0, d1), hn::Add(d2, d3));
+          const auto av = A.ViewGroup(range_mc.begin() + r, c, num_k, group);
+          sum = hn::Sub(sum, hn::Set(di, av.RowSum(0, num_k) * 128));
+          const auto bs = hn::LoadU(df, B.scale + group * B.Rows() + row_b);
+          const auto scale = hn::Mul(bs, hn::Set(df, av.scale[0]));
+          accum = hn::MulAdd(hn::ConvertTo(df, sum), scale, accum);
+          if constexpr (kDual) {
+            auto residual_sum = hn::Add(hn::Add(e0, e1), hn::Add(e2, e3));
+            const auto rv =
+                A.residual->ViewGroup(range_mc.begin() + r, c, num_k, group);
+            residual_sum =
+                hn::Sub(residual_sum, hn::Set(di, rv.RowSum(0, num_k) * 128));
+            const auto residual_scale = hn::Mul(bs, hn::Set(df, rv.scale[0]));
+            accum = hn::MulAdd(hn::ConvertTo(df, residual_sum), residual_scale,
+                               accum);
+          }
+          c += num_k;
+        }
+        if (count == 8) {
+          using TC = hwy::RemoveCvRef<decltype(C.Row(0)[0])>;
+          const hn::Rebind<TC, decltype(df)> dc;
+          TC* pos = C.Row(r) + inc;
+          if constexpr (hwy::IsSame<Tag, MMAddC>()) {
+            accum = hn::Add(accum, F32FromTC(dc, hn::LoadU(dc, pos)));
+          } else if (add != nullptr) {
+            accum = hn::Add(accum, hn::LoadU(df, add));
+          }
+          hn::StoreU(TCFromF32(dc, accum), dc, pos);
+        } else {
+          // Generic scheduling may split N at four-channel boundaries.
+          HWY_DASSERT(count == 4);
+          const auto half =
+              lane ? hn::UpperHalf(d4f, accum) : hn::LowerHalf(d4f, accum);
+          StoreMicro<0, 1>(half, r, add, tag, C.View(0, inc, 4));
+        }
+      }
+      nc += count;
+    }
+  }
+#endif
+
+  template <bool kDual, typename BT, class Tag, class CView>
+  static HWY_INLINE void DispatchPackedMicro(const AView& A, const BT& B,
+                                             const IndexRange& range_mc,
+                                             const IndexRange& range_kc,
+                                             const IndexRange& range_nc,
+                                             const MMArgs& args, Tag tag,
+                                             CView C) {
+    HWY_DASSERT(B.block_size == 32 || B.block_size == 64 ||
+                B.block_size == 128);
+    HWY_DASSERT(B.Rows() % 8 == 0 && range_nc.begin() % 4 == 0 &&
+                range_nc.Num() % 4 == 0);
+#if HWY_TARGET == HWY_AVX2 && GEMMA_MM_I8_BIASED_B && defined(__GNUC__) && \
+    !defined(__clang__)
+    if constexpr (HWY_ARCH_X86_64 || !kDual) {
+      if (MMI8FastMicro() && MMI8NativeVNNI() && range_kc.begin() % 4 == 0 &&
+          range_kc.end() % 4 == 0) {
+        const bool aligned = range_kc.begin() % B.block_size == 0 &&
+                             range_kc.end() % B.block_size == 0;
+        if (B.block_size == 32) {
+          if (aligned)
+            PackedMicroNative<32, true, kDual>(A, B, range_mc, range_kc,
+                                               range_nc, args, tag, C);
+          else
+            PackedMicroNative<32, false, kDual>(A, B, range_mc, range_kc,
+                                                range_nc, args, tag, C);
+        } else if (B.block_size == 64) {
+          if (aligned)
+            PackedMicroNative<64, true, kDual>(A, B, range_mc, range_kc,
+                                               range_nc, args, tag, C);
+          else
+            PackedMicroNative<64, false, kDual>(A, B, range_mc, range_kc,
+                                                range_nc, args, tag, C);
+        } else {
+          if (aligned)
+            PackedMicroNative<128, true, kDual>(A, B, range_mc, range_kc,
+                                                range_nc, args, tag, C);
+          else
+            PackedMicroNative<128, false, kDual>(A, B, range_mc, range_kc,
+                                                 range_nc, args, tag, C);
+        }
+        return;
+      }
+    }
+#endif
+    PackedMicroReference(A, B, range_mc, range_kc, range_nc, args, tag, C);
+  }
+
+  template <typename BT, class Tag, class CView>
+  static HWY_INLINE void PackedMicroB3A2C0(const AView& A, const BT& B,
+                                           const IndexRange& range_mc,
+                                           const IndexRange& range_kc,
+                                           const IndexRange& range_nc,
+                                           const MMArgs& args, Tag tag,
+                                           CView C) {
+    if (B.dual_a && A.residual != nullptr) {
+      DispatchPackedMicro<true>(A, B, range_mc, range_kc, range_nc, args, tag,
+                                C);
+    } else {
+      AView primary = A;
+      primary.residual = nullptr;
+      DispatchPackedMicro<false>(primary, B, range_mc, range_kc, range_nc, args,
+                                 tag, C);
+    }
+  }
   template <bool kNative, typename BT, class Tag, class CView>
   static HWY_INLINE void DispatchMicroBlock(const AView& A, const BT& B,
                                             const IndexRange& range_mc,
@@ -904,6 +1200,10 @@ class MMI8Kernel {
       return;
     }
     switch (block) {
+      case 32:
+        MicroB3A2C0Impl<kNative, 32>(A, B, range_mc, range_kc, range_nc, args,
+                                     tag, C);
+        return;
       case 64:
         MicroB3A2C0Impl<kNative, 64>(A, B, range_mc, range_kc, range_nc, args,
                                      tag, C);
@@ -1120,31 +1420,89 @@ class MMI8AStorage {
   }
   size_t Stride() const { return data_.Stride(); }
 
+  // Allocate only when requested; additional storage scales with the current
+  // activation batch. Both streams use the same quantized weights.
+  MMI8AView ResidualView(const Extents2D& extents, size_t block_size) {
+    HWY_ASSERT(block_size != 0);
+    const size_t groups = extents.cols / block_size;
+    residual_data_.resize(extents.rows * data_.Stride());
+    residual_prefix_.resize((GEMMA_MM_I8_BIASED_B ? extents.rows : 1) *
+                            prefix_stride_);
+    residual_scale_.resize(extents.rows * groups);
+    return MMI8AView{StridedView<MMI8AT>(residual_data_.data(), extents.cols,
+                                         data_.Stride()),
+                     residual_scale_.data(),
+                     residual_prefix_.data(),
+                     prefix_stride_,
+                     extents.rows,
+                     block_size};
+  }
+
+  float* residual_scale() { return residual_scale_.data(); }
+  int32_t* residual_prefix(size_t row) {
+    return residual_prefix_.data() +
+           (GEMMA_MM_I8_BIASED_B ? row : 0) * prefix_stride_;
+  }
+
  private:
   MatStorageT<uint8_t> data_;
   size_t prefix_stride_;
   hwy::AlignedVector<int32_t> prefix_;
   hwy::AlignedVector<float> scale_;
+  hwy::AlignedVector<int8_t> residual_data_;
+  hwy::AlignedVector<int32_t> residual_prefix_;
+  hwy::AlignedVector<float> residual_scale_;
 };
+
+// Copies an activation row before rotation. The optional F32 roundtrip uses
+// exactly the same decompressor as MMDecompress::DecompressA, so comparisons
+// with the SFP path begin with the same BF16-rounded activation values.
+template <typename TA>
+static HWY_INLINE void MMI8PrepareInputRow(
+    const TA* HWY_RESTRICT in, size_t k, const float* HWY_RESTRICT a_pre_scale,
+    bool match_bf16, float* HWY_RESTRICT out) {
+  if constexpr (IsF32<TA>()) {
+    if (match_bf16) {
+      const hn::ScalableTag<BF16> dbf;
+      const size_t padded = hwy::RoundUpTo(k, hn::Lanes(dbf));
+      thread_local hwy::AlignedVector<BF16> rounded;
+      if (rounded.size() < padded) rounded.resize(padded);
+      DecompressAndZeroPad(dbf, MakeSpan(in, k), 0, rounded.data(), k);
+      for (size_t c = 0; c < k; ++c) {
+        const float value = hwy::ConvertScalarTo<float>(rounded[c]);
+        out[c] = a_pre_scale == nullptr ? value : value * a_pre_scale[c];
+      }
+      return;
+    }
+  }
+  for (size_t c = 0; c < k; ++c) {
+    const float value = hwy::ConvertScalarTo<float>(in[c]);
+    out[c] = a_pre_scale == nullptr ? value : value * a_pre_scale[c];
+  }
+}
 
 // Quantizes all `M x K` of `A` into `storage`, in parallel over rows.
 // This replaces `MMDecompress::DecompressA` and is the same order of cost:
 // one pass over `A`, once per `MatMul` rather than per B tile.
 template <typename TA>
-static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
-                                        MMI8AStorage& storage,
-                                        ThreadingContext& ctx,
-                                        size_t cluster_idx,
-                                        const float* a_pre_scale = nullptr,
-                                        size_t block_size = 0) {
-  const MMI8AView view = storage.View(A.Extents(), block_size);
+static HWY_NOINLINE MMI8AView
+QuantizeA(const MatPtrT<TA>& A, MMI8AStorage& storage, ThreadingContext& ctx,
+          size_t cluster_idx, const float* a_pre_scale = nullptr,
+          size_t block_size = 0, MMI8AView* residual = nullptr) {
+  MMI8AView view = storage.View(A.Extents(), block_size);
+  if (residual != nullptr) {
+    *residual = storage.ResidualView(A.Extents(), block_size);
+    view.residual = residual;
+  }
   const size_t k = A.Cols();
   HWY_ASSERT(block_size == 0 ||
-             ((block_size == 64 || block_size == 128) && k % block_size == 0));
+             ((block_size == 32 || block_size == 64 || block_size == 128) &&
+              k % block_size == 0));
   const size_t padded_k =
       hwy::RoundUpTo(k, hn::Lanes(hn::ScalableTag<int8_t>()));
   float* HWY_RESTRICT scale = storage.scale();
   const float a_scale = A.Scale();
+  static const bool match_bf16 = MMI8Flag("GEMMA_MM_I8_MATCH_BF16_A");
   HWY_DASSERT((k % MMI8RotateBlockSize()) == 0);
 
   ParallelFor(
@@ -1152,21 +1510,43 @@ static HWY_NOINLINE MMI8AView QuantizeA(const MatPtrT<TA>& A,
       [&](size_t r, size_t /*worker*/) HWY_ATTR {
         thread_local hwy::AlignedVector<float> rotated;
         if (rotated.size() < padded_k) rotated.resize(padded_k);
-        for (size_t c = 0; c < k; ++c) {
-          const float value = hwy::ConvertScalarTo<float>(A.Row(r)[c]);
-          rotated[c] = a_pre_scale == nullptr ? value : value * a_pre_scale[c];
-        }
+        MMI8PrepareInputRow(A.Row(r), k, a_pre_scale, match_bf16,
+                            rotated.data());
         MMI8Rotate(rotated.data(), k);
         const size_t group_size = block_size ? block_size : k;
         int32_t* prefix = storage.prefix(r);
         for (size_t c = 0; c < k; c += group_size) {
           const int32_t base = GEMMA_MM_I8_BIASED_B && c ? prefix[c] : 0;
-          scale[(c / group_size) * view.scale_stride + r] =
-              a_scale * QuantizeRowA(rotated.data() + c, group_size,
-                                     view.data.Row(r) + c, prefix + c,
-                                     group_size, base);
+          const float raw_scale =
+              QuantizeRowA(rotated.data() + c, group_size, view.data.Row(r) + c,
+                           prefix + c, group_size, base);
+          scale[(c / group_size) * view.scale_stride + r] = a_scale * raw_scale;
+          if (residual != nullptr) {
+            const hn::CappedTag<float, 32> df;
+            const hn::Rebind<int32_t, decltype(df)> di;
+            const hn::Rebind<int8_t, decltype(df)> d8;
+            for (size_t j = 0; j < group_size; j += hn::Lanes(df)) {
+              const auto q = hn::ConvertTo(
+                  df,
+                  hn::PromoteTo(di, hn::LoadU(d8, view.data.Row(r) + c + j)));
+              const auto error =
+                  hn::NegMulAdd(q, hn::Set(df, raw_scale),
+                                hn::LoadU(df, rotated.data() + c + j));
+              hn::StoreU(error, df, rotated.data() + c + j);
+            }
+            int32_t* rp = storage.residual_prefix(r);
+            const int32_t residual_base = GEMMA_MM_I8_BIASED_B && c ? rp[c] : 0;
+            storage.residual_scale()[(c / group_size) * residual->scale_stride +
+                                     r] =
+                a_scale * QuantizeRowA(rotated.data() + c, group_size,
+                                       residual->data.Row(r) + c, rp + c,
+                                       group_size, residual_base);
+          }
         }
-        for (size_t c = k; c < padded_k; ++c) view.data.Row(r)[c] = 0;
+        for (size_t c = k; c < padded_k; ++c) {
+          view.data.Row(r)[c] = 0;
+          if (residual != nullptr) residual->data.Row(r)[c] = 0;
+        }
       });
   return view;
 }
@@ -1183,7 +1563,8 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
                                 size_t block_size = 0) {
   const size_t k = B_f32.Cols();
   HWY_ASSERT(block_size == 0 ||
-             ((block_size == 64 || block_size == 128) && k % block_size == 0));
+             ((block_size == 32 || block_size == 64 || block_size == 128) &&
+              k % block_size == 0));
   HWY_DASSERT((k % MMI8RotateBlockSize()) == 0);
   const float b_scale = B_f32.Scale();
 
@@ -1222,10 +1603,11 @@ static HWY_NOINLINE MMI8B PackB(const MatPtrT<float>& B_f32,
 
 static inline std::vector<MMConfig> MMI8Candidates(
     MatMulEnv& env, size_t M, size_t K, size_t N, size_t num_B,
-    size_t sizeof_TC) {
+    size_t sizeof_TC, bool prefer_full_k = false) {
   auto candidates = MMCandidates(env.ctx.cache_info, M, K, N, num_B,
                                   sizeof_TC, env.print_config);
-  if (!env.autotune && MMI8Flag("GEMMA_MM_I8_MIN_K_SPLITS")) {
+  if (!env.autotune &&
+      (prefer_full_k || MMI8Flag("GEMMA_MM_I8_MIN_K_SPLITS"))) {
     // Generic candidates enumerate split-K loop orders first. Prefer fewer
     // intermediate output rounds in fixed W8A8 evaluation while retaining the
     // generator's legal cache/thread partitions and its order among ties.
@@ -1263,8 +1645,10 @@ HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
       B.block_size ? MMActivation::kI8Block : MMActivation::kI8);
 
   // Outside the timed section, as `MMDecompress::MaybeDecompressA`.
-  const MMI8AView A_view = QuantizeA(A, a_storage, env.ctx, cluster_idx,
-                                     B.a_pre_scale, B.block_size);
+  MMI8AView residual;
+  const MMI8AView A_view =
+      QuantizeA(A, a_storage, env.ctx, cluster_idx, B.a_pre_scale, B.block_size,
+                MMI8UseDualA(B, M) ? &residual : nullptr);
 
   const MMI8B* B2 = nullptr;  // required for type matching
 
@@ -1283,7 +1667,8 @@ HWY_NOINLINE MMPerKey* MatMulI8(const MatPtrT<TA>& A, const MMI8B& B,
     HWY_ASSERT(M <= kMaxBatchSize);
     HWY_ASSERT(N % kNR == 0);
     tuner.SetCandidates(
-        MMI8Candidates(env, M, K, N, num_B, sizeof(TC)),
+        MMI8Candidates(env, M, K, N, num_B, sizeof(TC),
+                       MMI8PreferFullHeadK(B, M, hwy::IsSame<TC, float>())),
         env.autotune);
   }
 
@@ -1323,8 +1708,11 @@ static HWY_NOINLINE MMPerKey* TwoMatMulI8(const MatPtrT<BF16>& A,
 
   HWY_DASSERT(B1.a_pre_scale == nullptr && B2.a_pre_scale == nullptr);
   HWY_ASSERT(B1.block_size == B2.block_size);
+  MMI8AView residual;
+  const bool dual = MMI8UseDualA(B1, M) || MMI8UseDualA(B2, M);
   const MMI8AView A_view =
-      QuantizeA(A, a_storage, env.ctx, cluster_idx, nullptr, B1.block_size);
+      QuantizeA(A, a_storage, env.ctx, cluster_idx, nullptr, B1.block_size,
+                dual ? &residual : nullptr);
 
   MMAutoTune<MMConfig>& tuner = per_key.autotune;
   if (HWY_LIKELY(tuner.Best())) {

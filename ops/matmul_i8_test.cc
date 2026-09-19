@@ -402,6 +402,358 @@ void ControlBF16OutputError(size_t M, size_t K, size_t N, ThreadingContext& ctx,
       M, K, N, kc, k_ranges, rms == 0.0 ? 0.0 : max_abs / rms);
 }
 
+// Packing must preserve exact values, KC rounding, partial N tiles, row
+// offsets, and first-KC bias semantics for both F32 and BF16 outputs.
+template <typename TC>
+void TestPackedMicro(ThreadingContext& ctx, size_t k, bool dense = false) {
+  constexpr size_t m = 4, n = 24;
+  MatMulEnv env(ctx);
+  MatStorageT<float> a("a", Extents2D(m, k), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<float> b("b", Extents2D(n, k), ctx.allocator, MatPadding::kOdd);
+  FillOperands(m, k, n, a, b, 0.3f);
+  MatStorageT<int8_t> q("q", b.Extents(), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<int8_t> packed("packed", b.Extents(), ctx.allocator,
+                             dense ? MatPadding::kPacked : MatPadding::kOdd);
+  MatStorageT<TC> expected("expected", Extents2D(m, n), ctx.allocator,
+                           MatPadding::kOdd);
+  MatStorageT<TC> actual("actual", expected.Extents(), ctx.allocator,
+                         MatPadding::kOdd);
+  MMI8AStorage storage(m, k, ctx.allocator);
+  hwy::AlignedVector<float> scales(n * k / 32), add(n), bias(n);
+  for (size_t c = 0; c < n; ++c) {
+    add[c] = static_cast<float>(c % 5) * 0.0625f;
+    bias[c] = -static_cast<float>(c % 7) * 0.09375f;
+  }
+  const MMConfig cfg(1, k, n, 1, 1, k, n, 1, 4, MMOrder::kNT, 1);
+  MMAutoTune<MMConfig> tuner;
+  tuner.SetCandidates({cfg}, false);
+  size_t cases = 0;
+  bool ok = true;
+  for (size_t block : {size_t{32}, size_t{64}, size_t{128}}) {
+    auto ordinary = PackB(b, q, scales.data(), ctx, nullptr, block);
+    for (size_t r = 0; r < n; ++r)
+      hwy::CopyBytes(q.Row(r), packed.Row(r), k);
+    MMI8PackMicroB(packed);
+    auto interleaved = ordinary;
+    interleaved.data = &packed;
+    interleaved.packed_micro = true;
+    const auto av = QuantizeA(a, storage, ctx, 0, nullptr, block);
+    for (int bias_mode = 0; bias_mode < 4; ++bias_mode) {
+      ordinary.bias = interleaved.bias = bias_mode & 2 ? bias.data() : nullptr;
+      const MMArgs args(env, m, k, n, 1.0f,
+                        bias_mode & 1 ? add.data() : nullptr, MMOptions(),
+                        tuner, cfg);
+      for (size_t split : {size_t{0}, size_t{64}, size_t{128}, size_t{71},
+                            size_t{76}, size_t{576}}) {
+        if (split >= k) continue;
+        for (const IndexRange rm : {IndexRange(0, 1), IndexRange(1, m)}) {
+          for (const IndexRange rn : {IndexRange(0, n), IndexRange(4, n),
+                                      IndexRange(0, n - 4),
+                                      IndexRange(4, n - 4)}) {
+            for (size_t r = 0; r < m; ++r)
+              for (size_t c = 0; c < n; ++c)
+                expected.Row(r)[c] = actual.Row(r)[c] =
+                    hwy::ConvertScalarTo<TC>(-123.5f);
+            const auto run = [&](const MMI8B& weights, MatStorageT<TC>& out) {
+              const StridedView<TC> cv(out.Row(rm.begin()) + rn.begin(),
+                                       rn.Num(), out.Stride());
+              const IndexRange first(0, split ? split : k);
+              MMI8Kernel::B3A2C0(av, weights, rm, first, rn, args, MMSetC(), cv);
+              if (split)
+                MMI8Kernel::B3A2C0(av, weights, rm, IndexRange(split, k), rn,
+                                   args, MMAddC(), cv);
+            };
+            run(ordinary, expected);
+            run(interleaved, actual);
+            for (size_t r = 0; r < m; ++r)
+              ok &= memcmp(expected.Row(r), actual.Row(r), n * sizeof(TC)) == 0;
+            ++cases;
+          }
+        }
+      }
+    }
+  }
+  if (!ok) ++g_failures;
+  printf("%s packed N8 exact outputs, splits, N tails, M offsets, bias "
+         "K=%zu TC=%s dense=%d (%zu cases)\n", ok ? "  ok" : "FAIL", k,
+         TypeName<TC>(), dense, cases);
+}
+
+// Scalar integer dots independently verify both biased-weight corrections.
+// Use the target's F32 multiply-add semantics, then round once per KC range.
+template <typename TC>
+void DualMicroReference(const MMI8AView& a, const MMI8B& b,
+                        const IndexRange& rm, const IndexRange& rk,
+                        const IndexRange& rn, bool add_previous,
+                        const float* add, bool dual, MatStorageT<TC>& out) {
+  const hn::CappedTag<float, 1> df;
+  const auto madd = [&](float x, float y, float z) {
+    return hn::GetLane(
+        hn::MulAdd(hn::Set(df, x), hn::Set(df, y), hn::Set(df, z)));
+  };
+  for (size_t r : rm) {
+    for (size_t n : rn) {
+      float sum = 0;
+      for (size_t c = rk.begin(); c < rk.end();) {
+        const size_t g = c / b.block_size;
+        const size_t count = HWY_MIN(static_cast<size_t>(rk.end()), (g + 1) * b.block_size) - c;
+        for (size_t stream = 0; stream < (dual ? 2 : 1); ++stream) {
+          const auto& av = stream ? *a.residual : a;
+          int32_t dot = 0, encoded_dot = 0;
+          const auto* q = reinterpret_cast<const MMI8BT*>(b.data->Row(n));
+          for (size_t k = c; k < c + count; ++k) {
+            dot += av.data.Row(r)[k] * (static_cast<int32_t>(q[k]) -
+                                        (GEMMA_MM_I8_BIASED_B ? 128 : 0));
+            encoded_dot += av.data.Row(r)[k] * static_cast<int32_t>(q[k]);
+          }
+          if constexpr (GEMMA_MM_I8_BIASED_B) {
+            HWY_ASSERT(dot ==
+                       encoded_dot -
+                           128 * av.ViewGroup(r, c, count, g).RowSum(0, count));
+          }
+          sum = madd(
+              static_cast<float>(dot),
+              av.scale[g * av.scale_stride + r] * b.scale[g * b.Rows() + n],
+              sum);
+        }
+        c += count;
+      }
+      if (add_previous)
+        sum += hwy::ConvertScalarTo<float>(out.Row(r)[n]);
+      else if (const float* bias = MMI8Bias(b, add, n))
+        sum += *bias;
+      out.Row(r)[n] = hwy::ConvertScalarTo<TC>(sum);
+    }
+  }
+}
+
+template <typename TA, typename TC>
+void TestDualMicro(ThreadingContext& ctx, size_t k) {
+  constexpr size_t m = 4, n = 24;
+  MatMulEnv env(ctx);
+  env.autotune = false;
+  MatStorageT<float> af("af", Extents2D(m, k), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<float> b("b", Extents2D(n, k), ctx.allocator, MatPadding::kOdd);
+  FillOperands(m, k, n, af, b, 0.7f);
+  MatStorageT<TA> a("a", af.Extents(), ctx.allocator, MatPadding::kOdd);
+  for (size_t r = 0; r < m; ++r)
+    for (size_t c = 0; c < k; ++c)
+      a.Row(r)[c] = hwy::ConvertScalarTo<TA>(af.Row(r)[c]);
+  a.SetScale(0.75f);
+  MatStorageT<int8_t> q("q", b.Extents(), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<int8_t> packed("p", b.Extents(), ctx.allocator,
+                             MatPadding::kPacked);
+  MatStorageT<TC> expected("expected", Extents2D(m, n), ctx.allocator,
+                           MatPadding::kOdd);
+  MatStorageT<TC> actual("actual", expected.Extents(), ctx.allocator,
+                         MatPadding::kOdd);
+  // Storage capacity deliberately exceeds the batch size: primary and residual
+  // scale strides differ, and both must survive later M=1 calls.
+  MMI8AStorage storage(m + 3, k, ctx.allocator),
+      primary(m + 3, k, ctx.allocator);
+  hwy::AlignedVector<float> scales(n * k / 32), add(n), bias(n), pre(k),
+      rotated(k);
+  for (size_t c = 0; c < k; ++c) pre[c] = 0.75f + 0.25f * (c % 3);
+  for (size_t c = 0; c < n; ++c) {
+    add[c] = static_cast<float>(c % 5) * 0.0625f;
+    bias[c] = -static_cast<float>(c % 7) * 0.09375f;
+  }
+  const MMConfig cfg(m, k, n, 1, m, k, n, 1, 4, MMOrder::kNT, 1);
+  MMAutoTune<MMConfig> tuner;
+  tuner.SetCandidates({cfg}, false);
+  bool ok = true;
+  size_t cases = 0;
+  for (size_t block : {size_t{32}, size_t{64}, size_t{128}}) {
+    auto ordinary = PackB(b, q, scales.data(), ctx, pre.data(), block);
+    for (size_t r = 0; r < n; ++r) hwy::CopyBytes(q.Row(r), packed.Row(r), k);
+    MMI8PackMicroB(packed);
+    auto weights = ordinary;
+    weights.data = &packed;
+    weights.packed_micro = true;
+    weights.dual_a = true;
+    MMI8AView residual;
+    const auto av = QuantizeA(a, storage, ctx, 0, pre.data(), block, &residual);
+    const auto original = QuantizeA(a, primary, ctx, 0, pre.data(), block);
+    double first_error = 0, residual_error = 0;
+    for (size_t r = 0; r < m; ++r) {
+      ok &= memcmp(av.data.Row(r), original.data.Row(r), k) == 0;
+      if constexpr (GEMMA_MM_I8_BIASED_B)
+        ok &= memcmp(storage.prefix(r), primary.prefix(r),
+                     (k + 1) * sizeof(int32_t)) == 0;
+      MMI8PrepareInputRow(a.Row(r), k, pre.data(),
+                          MMI8Flag("GEMMA_MM_I8_MATCH_BF16_A"), rotated.data());
+      MMI8Rotate(rotated.data(), k);
+      for (size_t c = 0; c < k; ++c) {
+        const size_t g = c / block;
+        const float s = av.scale[g * av.scale_stride + r];
+        ok &= s == original.scale[g * original.scale_stride + r];
+        const double exact = rotated[c] * a.Scale();
+        const double first = av.data.Row(r)[c] * s;
+        const double both =
+            first + residual.data.Row(r)[c] *
+                        residual.scale[g * residual.scale_stride + r];
+        first_error += (exact - first) * (exact - first);
+        residual_error += (exact - both) * (exact - both);
+      }
+    }
+    ok &= residual_error < first_error * 0.001;
+    for (bool dual : {false, true}) {
+      weights.dual_a = dual;
+      for (int bias_mode = 0; bias_mode < 4; ++bias_mode) {
+        ordinary.bias = weights.bias = bias_mode & 2 ? bias.data() : nullptr;
+        const float* add_row = bias_mode & 1 ? add.data() : nullptr;
+        const MMArgs args(env, m, k, n, 1.0f, add_row, MMOptions(), tuner, cfg);
+        for (size_t split :
+             {size_t{0}, size_t{64}, size_t{71}, size_t{76}, size_t{576}}) {
+          if (split >= k) continue;
+          for (const IndexRange rm : {IndexRange(0, 1), IndexRange(1, m)}) {
+            for (const IndexRange rn :
+                 {IndexRange(0, n), IndexRange(4, n - 4)}) {
+              for (size_t r = 0; r < m; ++r)
+                for (size_t c = 0; c < n; ++c)
+                  expected.Row(r)[c] = actual.Row(r)[c] =
+                      hwy::ConvertScalarTo<TC>(-123.5f);
+              const StridedView<TC> cv(actual.Row(rm.begin()) + rn.begin(),
+                                       rn.Num(), actual.Stride());
+              const IndexRange first(0, split ? split : k);
+              DualMicroReference(av, ordinary, rm, first, rn, false, add_row,
+                                 dual, expected);
+              MMI8Kernel::B3A2C0(av, weights, rm, first, rn, args, MMSetC(),
+                                 cv);
+              if (split) {
+                const IndexRange rest(split, k);
+                DualMicroReference(av, ordinary, rm, rest, rn, true, add_row,
+                                   dual, expected);
+                MMI8Kernel::B3A2C0(av, weights, rm, rest, rn, args, MMAddC(),
+                                   cv);
+              }
+              for (size_t r = 0; r < m; ++r)
+                ok &=
+                    memcmp(expected.Row(r), actual.Row(r), n * sizeof(TC)) == 0;
+              ++cases;
+            }
+          }
+        }
+      }
+    }
+    weights.dual_a = true;
+    for (size_t rows : {size_t{1}, m, size_t{1}}) {
+      a.OverrideRows(rows);
+      actual.OverrideRows(rows);
+      MMI8AView rv;
+      const auto qa = QuantizeA(a, primary, ctx, 0, pre.data(), block, &rv);
+      const auto* key = MatMulI8(a, weights, add.data(), env, actual, storage);
+      const auto ranges = key->autotune.Best()->RangesOfKC(k);
+      for (size_t i = 0; i < ranges.NumTasks(); ++i)
+        DualMicroReference(qa, ordinary, IndexRange(0, rows), ranges.Range(i),
+                           IndexRange(0, n), i != 0, add.data(),
+                           MMI8UseDualA(weights, rows), expected);
+      for (size_t r = 0; r < rows; ++r)
+        ok &= memcmp(expected.Row(r), actual.Row(r), n * sizeof(TC)) == 0;
+    }
+    a.OverrideRows(m);
+    actual.OverrideRows(m);
+  }
+  if (!ok) ++g_failures;
+  printf(
+      "%s dual A scalar dots, A8 identity, prefixes, KC/N/M tails, bias, reuse "
+      "K=%zu TA=%s TC=%s (%zu cases)\n",
+      ok ? "  ok" : "FAIL", k, TypeName<TA>(), TypeName<TC>(), cases);
+}
+
+void TestDualFused(ThreadingContext& ctx) {
+  constexpr size_t m = 3, k = 1152, n = 24, block = 128;
+  MatMulEnv env(ctx);
+  env.autotune = false;
+  MatStorageT<float> af("af", Extents2D(m, k), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<float> b("b", Extents2D(n, k), ctx.allocator, MatPadding::kOdd);
+  FillOperands(m, k, n, af, b, 0.5f);
+  MatStorageT<BF16> a("a", af.Extents(), ctx.allocator, MatPadding::kOdd);
+  for (size_t r = 0; r < m; ++r)
+    for (size_t c = 0; c < k; ++c)
+      a.Row(r)[c] = hwy::ConvertScalarTo<BF16>(af.Row(r)[c]);
+  MatStorageT<int8_t> q("q", b.Extents(), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<int8_t> p("p", b.Extents(), ctx.allocator, MatPadding::kPacked);
+  MatStorageT<BF16> c1("c1", Extents2D(m, n), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<BF16> c2("c2", c1.Extents(), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<BF16> expected("e", c1.Extents(), ctx.allocator,
+                             MatPadding::kOdd);
+  hwy::AlignedVector<float> scale(n * k / block), bias(n);
+  for (size_t c = 0; c < n; ++c) bias[c] = 0.125f * static_cast<float>(c % 5);
+  auto ordinary = PackB(b, q, scale.data(), ctx, nullptr, block);
+  for (size_t r = 0; r < n; ++r) hwy::CopyBytes(q.Row(r), p.Row(r), k);
+  MMI8PackMicroB(p);
+  auto b1 = ordinary, b2 = ordinary;
+  b1.data = b2.data = &p;
+  b1.packed_micro = b2.packed_micro = true;
+  b1.bias = bias.data();
+  const auto copy_second = [&](RowPtrsBF, IndexRange rm, IndexRange rn,
+                               StridedViewBF tile, size_t) {
+    for (size_t r = 0; r < rm.Num(); ++r)
+      hwy::CopyBytes(tile.Row(r), c2.Row(rm.begin() + r) + rn.begin(),
+                     rn.Num() * sizeof(BF16));
+  };
+  MMOptions options;
+  options.SetFunc(copy_second);
+  MMI8AStorage storage(m, k, ctx.allocator), reference(m, k, ctx.allocator);
+  MMI8AView residual;
+  const auto av = QuantizeA(a, reference, ctx, 0, nullptr, block, &residual);
+  bool ok = true;
+  for (int flags = 0; flags < 4; ++flags) {
+    b1.dual_a = flags & 1;
+    b2.dual_a = flags & 2;
+    const auto* key = TwoMatMulI8(a, b1, b2, env, c1, storage, options);
+    const auto ranges = key->autotune.Best()->RangesOfKC(k);
+    for (size_t branch = 0; branch < 2; ++branch) {
+      const auto& weights = branch ? b2 : b1;
+      ordinary.bias = weights.bias;
+      for (size_t i = 0; i < ranges.NumTasks(); ++i)
+        DualMicroReference(av, ordinary, IndexRange(0, m), ranges.Range(i),
+                           IndexRange(0, n), i != 0, nullptr,
+                           MMI8UseDualA(weights, m), expected);
+      for (size_t r = 0; r < m; ++r)
+        ok &= memcmp(expected.Row(r), (branch ? c2 : c1).Row(r),
+                     n * sizeof(BF16)) == 0;
+    }
+  }
+  if (!ok) ++g_failures;
+  printf("%s dual A fused shared quantization and per-branch selection/bias\n",
+         ok ? "  ok" : "FAIL");
+}
+void TestPackedHeadScheduling(ThreadingContext& ctx) {
+  constexpr size_t k = 1152, n = 262144;
+  MatPtrT<int8_t> head("head_shape", Extents2D(n, k));
+  MatPtrT<int8_t> small("small_shape", Extents2D(24, k));
+  MMI8B weights{&head, nullptr, nullptr, 128};
+  weights.packed_micro = true;
+  const bool enabled = MMI8Flag("GEMMA_MM_I8_PACKED_HEAD_FULL_K");
+  bool ok = MMI8PreferFullHeadK(weights, 1, true) == enabled;
+  ok &= !MMI8PreferFullHeadK(weights, 2, true);
+  ok &= !MMI8PreferFullHeadK(weights, 1, false);
+  weights.packed_micro = false;
+  ok &= !MMI8PreferFullHeadK(weights, 1, true);
+  weights.packed_micro = true;
+  weights.data = &small;
+  ok &= !MMI8PreferFullHeadK(weights, 1, true);
+
+  MatMulEnv env(ctx);
+  env.autotune = false;
+  const auto generic = MMCandidates(ctx.cache_info, 1, k, n, 1, 4, false);
+  const auto full = MMI8Candidates(env, 1, k, n, 1, 4, true);
+  ok &= full.front().RangesOfKC(k).NumTasks() == 1;
+  const auto defaults = MMI8Candidates(env, 1, k, n, 1, 4);
+  if (!MMI8Flag("GEMMA_MM_I8_MIN_K_SPLITS"))
+    ok &= defaults.front().KC() == generic.front().KC() &&
+          defaults.front().Order() == generic.front().Order();
+  env.autotune = true;
+  const auto tunable = MMI8Candidates(env, 1, k, n, 1, 4, true);
+  ok &= tunable.front().KC() == generic.front().KC() &&
+        tunable.front().Order() == generic.front().Order();
+  if (!ok) ++g_failures;
+  printf("%s optional packed F32 M1 head scheduling and unchanged defaults\n",
+         ok ? "  ok" : "FAIL");
+}
+
 void TestMicroscaleIsolation(ThreadingContext& ctx) {
   MatStorageT<float> a("a", Extents2D(1, 384), ctx.allocator, MatPadding::kOdd);
   for (size_t c = 0; c < 384; ++c)
@@ -418,6 +770,58 @@ void TestMicroscaleIsolation(ThreadingContext& ctx) {
   const bool ok = zero && std::abs(recovered / (128.0 * 1E-6) - 1.0) < 0.02;
   if (!ok) ++g_failures;
   printf("%s microscale isolates large outliers and zero blocks\n",
+         ok ? "  ok" : "FAIL");
+}
+
+void TestF32MatchesBF16Inputs(ThreadingContext& ctx) {
+  constexpr size_t k = 384;
+  MatStorageT<float> input("f32_input", Extents2D(2, k), ctx.allocator,
+                            MatPadding::kOdd);
+  MatStorageT<BF16> rounded("bf16_input", input.Extents(), ctx.allocator,
+                            MatPadding::kOdd);
+  hwy::AlignedVector<float> copied(k), pre_scale(k);
+  const hn::ScalableTag<BF16> dbf;
+  bool ok = true;
+  for (size_t c = 0; c < k; ++c)
+    pre_scale[c] = 0.75f + static_cast<float>(c % 9) * 0.0625f;
+  for (size_t r = 0; r < input.Rows(); ++r) {
+    for (size_t c = 0; c < k; ++c)
+      input.Row(r)[c] = static_cast<float>(static_cast<int>(c % 37) - 18) *
+                         0.0712345f + static_cast<float>(r) * 0.012345f;
+    DecompressAndZeroPad(dbf, MakeConst(MakeSpan(input.Row(r), k)), 0,
+                         rounded.Row(r), k);
+    MMI8PrepareInputRow(input.Row(r), k, pre_scale.data(), false, copied.data());
+    for (size_t c = 0; c < k; ++c)
+      ok &= copied[c] == input.Row(r)[c] * pre_scale[c];
+    MMI8PrepareInputRow(input.Row(r), k, pre_scale.data(), true, copied.data());
+    for (size_t c = 0; c < k; ++c)
+      ok &= copied[c] == hwy::ConvertScalarTo<float>(rounded.Row(r)[c]) *
+                           pre_scale[c];
+  }
+  if (MMI8Flag("GEMMA_MM_I8_MATCH_BF16_A")) {
+    MMI8AStorage f32_storage(2, k, ctx.allocator);
+    MMI8AStorage bf16_storage(2, k, ctx.allocator);
+    for (size_t block : {size_t{0}, size_t{64}, size_t{128}}) {
+      const auto a =
+          QuantizeA(input, f32_storage, ctx, 0, pre_scale.data(), block);
+      const auto b =
+          QuantizeA(rounded, bf16_storage, ctx, 0, pre_scale.data(), block);
+      const size_t groups = block ? k / block : 1;
+      for (size_t r = 0; r < input.Rows(); ++r) {
+        for (size_t c = 0; c < k; ++c)
+          ok &= a.data.Row(r)[c] == b.data.Row(r)[c];
+        for (size_t g = 0; g < groups; ++g)
+          ok &= a.scale[g * a.scale_stride + r] ==
+                b.scale[g * b.scale_stride + r];
+        if constexpr (GEMMA_MM_I8_BIASED_B)
+          for (size_t c = 0; c <= k; ++c)
+            ok &= a.prefix[r * a.prefix_stride + c] ==
+                  b.prefix[r * b.prefix_stride + c];
+      }
+    }
+  }
+  if (!ok) ++g_failures;
+  printf("%s F32 activation rounding matches SFP BF16 preparation\n",
          ok ? "  ok" : "FAIL");
 }
 
@@ -563,6 +967,17 @@ void TestAll() {
   TestL2Scaling();
 
   TestMicroscaleIsolation(ctx);
+  TestPackedHeadScheduling(ctx);
+  TestDualMicro<float, float>(ctx, 1152);
+  TestDualMicro<BF16, BF16>(ctx, 1152);
+  TestDualFused(ctx);
+  for (size_t k : {size_t{384}, size_t{1152}}) {
+    TestPackedMicro<float>(ctx, k);
+    TestPackedMicro<BF16>(ctx, k);
+  }
+  TestPackedMicro<float>(ctx, 1152, true);
+  TestPackedMicro<BF16>(ctx, 1152, true);
+  TestF32MatchesBF16Inputs(ctx);
   TestQuantizedPrefixes();
 
   // `kMaxKC` is 6 KiB, so K = 20096 forces several kc ranges and thus the
@@ -599,7 +1014,7 @@ void TestAll() {
 
   // Local scales: signed/biased correction, output bias, partial M, and KC
   // boundaries that need not coincide with a quantization group boundary.
-  for (size_t block : {size_t{64}, size_t{128}}) {
+  for (size_t block : {size_t{32}, size_t{64}, size_t{128}}) {
     TestCase<float>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
     TestCase<float>(4, 20096, 8, true, ctx, env, a_i8, 3.0f, nullptr, block);
     TestCase<BF16>(5, 1152, 12, true, ctx, env, a_i8, 3.0f, nullptr, block);
