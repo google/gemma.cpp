@@ -569,21 +569,24 @@ class MMAutoTune {
     HWY_DASSERT(!Best());
     return !candidates_.empty();
   }
-  void SetCandidates(std::vector<TConfig> candidates) {
+  void SetCandidates(std::vector<TConfig> candidates, bool tune = true) {
     HWY_DASSERT(!HasCandidates());
     candidates_.swap(candidates);
     HWY_DASSERT(HasCandidates());
     min_ticks_.resize(candidates_.size(), ~uint64_t{0});
+    fixed_ = !tune;
+    if (fixed_) best_ = &candidates_.front();
   }
 
   // Returns the current `TConfig` to measure.
   const TConfig& NextConfig() const {
-    HWY_DASSERT(!Best() && HasCandidates());
+    HWY_DASSERT(fixed_ || (!Best() && HasCandidates()));
     return candidates_[config_idx_];
   }
 
   // Returns the best ticks so far for this candidate. Negligible CPU time.
   uint64_t NotifyTicks(uint64_t ticks) {
+    if (fixed_) return ticks;
     HWY_DASSERT(HasCandidates());
     HWY_DASSERT(!skipped_.Get(config_idx_));
 
@@ -641,6 +644,7 @@ class MMAutoTune {
   uint64_t FirstConfigTicks() const { return min_ticks_[0]; }
 
  private:
+  bool fixed_ = false;
   const TConfig* best_ = nullptr;
   std::vector<TConfig> candidates_;
   // Use Min because threads are pinned, so we only expect additive noise.
@@ -653,6 +657,8 @@ class MMAutoTune {
 };
 
 //------------------------------------------------------------------------------
+
+enum class MMActivation : uint8_t { kBF16, kI8, kI8Block };
 
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
@@ -676,14 +682,16 @@ class MMKeys {
   }
 
   // Compresses the dimensions into a single Key for faster comparison.
-  static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B) {
+  static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B,
+                         MMActivation activation = MMActivation::kBF16) {
     HWY_DASSERT(M < (Key{1} << 16));  // batch sizes are smaller
     HWY_DASSERT(K < (Key{1} << 20));
     HWY_DASSERT(N < (Key{1} << 20));
     HWY_DASSERT(num_B == 1 || num_B == 2);
     const Key key = static_cast<Key>(BucketM(M)) | (static_cast<Key>(K) << 16) |
                     (static_cast<Key>(N) << 40) |
-                    (static_cast<Key>(num_B) << 60);
+                    (static_cast<Key>(num_B) << 60) |
+                    (static_cast<Key>(activation) << 36);
     HWY_DASSERT(key != kPadding);
     return key;
   }
@@ -747,6 +755,10 @@ struct MatMulEnv {
 
   ThreadingContext& ctx;
   bool have_timer_stop = false;
+  // Disable before the first MatMul for reproducible evaluation.
+  bool autotune = true;
+  // Lazy experimental weight preparation, excluded from inference timing.
+  double weight_prepare_seconds = 0.0;
 
   // Whether `MMCandidates()` should print the set of parameters.
   bool print_config = false;
