@@ -51,9 +51,22 @@ struct KVCache {
           const Allocator& allocator);
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const RuntimeConfig& runtime_config, const Allocator& allocator);
+  KVCache(KVCache&&) noexcept = default;
+  KVCache& operator=(KVCache&&) noexcept = default;
   // Returns a deep copy of the KVCache. Use explicit function instead of
   // copy ctor to make the cost explicit.
+  KVCache Copy() const;
   KVCache Copy();
+
+  // Clones prefix of length prefix_len into a cache with full sequence capacity
+  // allocated via the specified allocator.
+  KVCache ClonePrefix(size_t prefix_len, const Allocator& allocator) const;
+
+  // Calculates total byte consumption of all owned buffers.
+  size_t TotalByteSize() const;
+
+  // Restores ds_state from snapshot row.
+  void RestoreDSStateFromSnapshot(size_t snapshot_row = 0);
 
   size_t SeqLen() const {
     if (IsTiled()) {
@@ -234,9 +247,9 @@ struct KVCache {
  private:
   const Allocator& allocator_;
 
-  // For use by other ctor and Copy()
+  // For use by Copy() and ClonePrefix()
   KVCache(const Extents2D& kv_extents, size_t num_layers, size_t kv_heads,
-          size_t qkv_dim, const Allocator& allocator);
+          size_t qkv_dim, size_t k_v_cols, const Allocator& allocator);
 };
 
 inline size_t KVCachePtr::SeqLen() const {
