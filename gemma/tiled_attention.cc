@@ -39,39 +39,12 @@
 #include "gemma/attention.h"
 #include "gemma/flash_attention.h"  // includes highway.h
 #include "gemma/gemma-inl.h"
+#include "gemma/online_softmax-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace gcpp {
 namespace HWY_NAMESPACE {
-
-static HWY_INLINE void MergeOnlineSoftmax(
-    const float* HWY_RESTRICT other_att_out, const float other_softmax_max,
-    const float other_softmax_d, size_t qkv_dim,
-    float* HWY_RESTRICT accumulator_att_out, float& accumulator_softmax_max,
-    float& accumulator_softmax_d) {
-  if (other_softmax_d == 0.0f) {
-    return;
-  }
-  if (accumulator_softmax_d == 0.0f) {
-    memcpy(accumulator_att_out, other_att_out,
-           qkv_dim * sizeof(*accumulator_att_out));
-    accumulator_softmax_max = other_softmax_max;
-    accumulator_softmax_d = other_softmax_d;
-    return;
-  }
-  const float m_new = std::max(accumulator_softmax_max, other_softmax_max);
-  const float exp_l = std::exp(accumulator_softmax_max - m_new);
-  const float exp_r = std::exp(other_softmax_max - m_new);
-  const float d_new = accumulator_softmax_d * exp_l + other_softmax_d * exp_r;
-  const float d_new_inv = 1.0f / d_new;
-  const float c1 = accumulator_softmax_d * exp_l * d_new_inv;
-  const float c2 = other_softmax_d * exp_r * d_new_inv;
-  MulByConst(c1, accumulator_att_out, qkv_dim);
-  MulByConstAndAdd(c2, other_att_out, accumulator_att_out, qkv_dim);
-  accumulator_softmax_max = m_new;
-  accumulator_softmax_d = d_new;
-}
 
 static constexpr size_t kMergeGroupSize = 32;
 
