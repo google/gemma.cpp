@@ -144,6 +144,30 @@ struct AttentionActivations {
     flash_params.reserve(batch_size * layer_config.heads);
     split_flash_params.reserve(batch_size * layer_config.heads);
 
+    const size_t kv_out_elems =
+        batch_size * layer_config.kv_heads * 2 * max_qkv_dim;
+    kv_out_mem.resize(kv_out_elems, 0.0f);
+    const size_t total_queries = batch_size * layer_config.heads;
+    const size_t query_elems = total_queries * max_qkv_dim;
+    float_queries.resize(query_elems, 0.0f);
+    bf16_queries.resize(query_elems);
+    hwy::ZeroBytes(bf16_queries.data(), bf16_queries.size() * sizeof(BF16));
+    constexpr size_t kSubtaskQueries = 128;
+    const size_t num_sub_tasks_init =
+        hwy::DivCeil(total_queries, kSubtaskQueries) * rep_factor;
+    const size_t max_q_per_subtask = std::min(total_queries, kSubtaskQueries);
+    const size_t max_q_rounded_8 = hwy::RoundUpTo(max_q_per_subtask, 8);
+    sub_task_att_out.resize(num_sub_tasks_init);
+    sub_task_exp_denominator_sums.resize(num_sub_tasks_init);
+    sub_task_max_logits.resize(num_sub_tasks_init);
+    for (size_t t = 0; t < num_sub_tasks_init; ++t) {
+      sub_task_att_out[t] = MatFactory("att_out", max_q_per_subtask,
+                                       max_qkv_dim, allocator);
+      ZeroInit(sub_task_att_out[t]);
+      sub_task_exp_denominator_sums[t].resize(max_q_rounded_8, 0.0f);
+      sub_task_max_logits[t].resize(max_q_rounded_8, 0.0f);
+    }
+
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.

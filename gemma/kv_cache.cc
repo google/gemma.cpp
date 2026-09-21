@@ -343,10 +343,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     size_t local_tile_length = 0;
     size_t global_tile_length = 0;
 
+    const size_t capped_seq_len = CappedSeqLen(config, inference_args);
     for (size_t i = 0; i < num_layers; ++i) {
       size_t num_tiles = num_tiles_per_head(kv_attention_window_sizes[i],
                                             runtime_config.prefill_tbatch_size,
-                                            config.max_seq_len) *
+                                            capped_seq_len) *
                          kv_layer_configs[i].kv_heads;
 
       size_t tile_len = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
@@ -383,6 +384,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       }
       compact_local_kv_cache.AllocateFor(compact_local_kv_cache_ptr, allocator,
                                          MatPadding::kPacked);
+      ZeroInit(compact_local_kv_cache_ptr);
     }
 
     if (total_global_num_tiles > 0) {
@@ -401,6 +403,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       compact_global_kv_cache.AllocateFor(compact_global_kv_cache_ptr,
                                           allocator,
                                           MatPadding::kPacked);
+      ZeroInit(compact_global_kv_cache_ptr);
     }
 
     if (compact_global_kv_cache_ptr.HasPtr()) {
@@ -427,7 +430,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       for (size_t kv = 0; kv < kv_layer_configs[i].kv_heads; ++kv) {
         size_t num_tiles_per_kv_head = num_tiles_per_head(
             kv_attention_window_sizes[i], runtime_config.prefill_tbatch_size,
-            config.max_seq_len);
+            CappedSeqLen(config, inference_args));
         MatPtr kv_ptr("kv_ptr", kv_cache_type,
                       Extents2D(num_tiles_per_kv_head, layer_tile_length));
         if (is_global) {
