@@ -100,7 +100,7 @@ struct TestModelState {
 struct TestAttentionState {
   TestAttentionState(TestState& state, TestModelState& model_state,
                      size_t num_tokens, size_t qbatch_size,
-                     AttentionImpl attention_impl)
+                     AttentionImpl attention_impl, bool projection_scratch)
       : num_tokens(num_tokens),
         qbatch_size(qbatch_size),
         batch_size(qbatch_size * num_tokens),
@@ -112,8 +112,13 @@ struct TestAttentionState {
                            row_ptrs_),
         attention(model_state.config, num_tokens, attention_storage_) {
     for (size_t i = 0; i < qbatch_size; ++i) {
-      kv_caches.emplace_back(model_state.config, inference_args,
-                             state.ctx.allocator);
+      if (projection_scratch) {
+        kv_caches.emplace_back(model_state.config, inference_args,
+                               runtime_config, state.ctx.allocator);
+      } else {
+        kv_caches.emplace_back(model_state.config, inference_args,
+                               state.ctx.allocator);
+      }
     }
     activations.emplace(
         runtime_config, model_state.config, runtime_config.prefill_tbatch_size,
@@ -550,11 +555,12 @@ const float kGoldenQ[kNumTokens][kQBatchSize][kDimsToCompare] = {
       0.484799922, 0.0824087635}},
 };
 
-void RunAttentionTest(AttentionImpl attention_impl) {
+void RunAttentionTest(AttentionImpl attention_impl, bool projection_scratch) {
   TestState state;
   TestModelState model_state(state);
   TestAttentionState attention_state(state, model_state, kNumTokens,
-                                     kQBatchSize, attention_impl);
+                                     kQBatchSize, attention_impl,
+                                     projection_scratch);
 
   GemmaAttention(attention_state.tokens.size(), 0, model_state.layer,
                  attention_state.attention, *attention_state.qbatch, state.env,
@@ -569,7 +575,10 @@ void RunAttentionTest(AttentionImpl attention_impl) {
                          /*q_head=*/0, kGoldenQ);
 }
 
-void TestGemmaAttentionFlash() { RunAttentionTest(AttentionImpl::kFlash); }
+void TestGemmaAttentionFlash() {
+  RunAttentionTest(AttentionImpl::kFlash, false);
+  RunAttentionTest(AttentionImpl::kFlash, true);
+}
 
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
