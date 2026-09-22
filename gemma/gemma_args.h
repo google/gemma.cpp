@@ -287,7 +287,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             "Attention implementation (flash, flash_transposed_qs, "
             "flash_transposed_qs_bf16, flash_transposed_qs_int16, "
             "flash_transposed_qs_int8, flash_matrix_accumulation, "
-            "int8_matrix_accumulation).",
+            "int8_matrix_accumulation, flash_amx).",
             2);
     visitor(kv_cache_type, "kv_cache_type", std::string(""),
             "KV cache data type (f32, bf16, int8). If empty, deduced from "

@@ -359,8 +359,8 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   hwy::Divisor div_kv_heads(kv_heads);
 
   bool is_transposed_qs =
-      attention_impl == AttentionImpl::kFlashTransposedQsBF16
-      || attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
+      IsBF16TransposedQsAttention(attention_impl) ||
+      attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
       attention_impl == AttentionImpl::kFlashTransposedQsInt8;
 
   hn::ScalableTag<float> df;
@@ -1071,7 +1071,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     activations.sub_task_max_logits->resize(num_sub_tasks);
   }
   size_t max_queries_per_subtask = std::min(num_queries, kQueriesPerSubtask);
-  if (attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+  if (IsBF16TransposedQsAttention(attention_impl) ||
       attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
     if (activations.bf16_queries != nullptr &&
         num_sub_tasks * max_queries_per_subtask * qkv_dim >
@@ -1367,6 +1367,18 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data(), worker_workspace);
+
+        } else if (attention_impl == AttentionImpl::kFlashAMX) {
+          HWY_DASSERT(activations.bf16_queries != nullptr);
+          BF16* bf16_queries_ptr = activations.bf16_queries->data() +
+                                   task_idx * max_queries_per_subtask * qkv_dim;
+          CompressQueriesBF16(queries_ptrs_span, qkv_dim, bf16_queries_ptr);
+          DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+              kv_ptrs, sub_num_queries, bf16_queries_ptr,
+              hwy::Span<const size_t>(start_pos_per_query),
+              hwy::Span<const size_t>(last_pos_per_query),
+              activations.config.att_cap, att_out, exp_denominator_sums.data(),
+              max_logits.data());
 
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);

@@ -1303,6 +1303,7 @@ constexpr std::pair<const char*, AttentionImpl> kAttentionImplNameToEnum[] = {
     {"flash_transposed_qs_int8", AttentionImpl::kFlashTransposedQsInt8},
     {"flash_matrix_accumulation", AttentionImpl::kFlashMatrixAccumulation},
     {"int8_matrix_accumulation", AttentionImpl::kInt8MatrixAccumulation},
+    {"flash_amx", AttentionImpl::kFlashAMX},
 };
 
 std::string GetAttentionImplName(AttentionImpl impl) {

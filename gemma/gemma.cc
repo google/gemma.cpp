@@ -92,12 +92,7 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   const int kFlags = 0;
-  if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
-      activations.attention_impl == AttentionImpl::kInt8MatrixAccumulation ||
-      activations.attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+  if (IsTiledAttention(activations.attention_impl)) {
     TiledAttention(activations.attention_impl, num_tokens, layer_idx, layer,
                    activations.attention, qbatch, env, kFlags);
     return;

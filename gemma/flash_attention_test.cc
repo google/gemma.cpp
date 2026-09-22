@@ -56,6 +56,7 @@
 #include "gemma/attention.h"
 #include "gemma/configs.h"
 #include "gemma/flash_attention.h"
+#include "gemma/flash_attention_amx-inl.h"
 #include "gemma/tiled_attention.h"
 #include "ops/ops-inl.h"
 #include "hwy/tests/test_util-inl.h"
@@ -616,6 +617,18 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
         exp_denominator_sums.data(), max_logits.data(),
         /*worker_workspace=*/nullptr);
+  } else if (attention_impl == AttentionImpl::kFlashAMX) {
+    std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries(num_queries *
+                                                                qkv_dim);
+    CompressQueriesBF16Contiguous(q_all.data(), qkv_dim, num_queries,
+                                  bf16_queries.data());
+
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+        kvs, num_queries, bf16_queries.data(),
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
+        exp_denominator_sums.data(), max_logits.data());
+
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
         kvs, num_queries, q_all.data(),
@@ -725,6 +738,17 @@ void TestTiledFlashAttentionBF16MatrixAccumulation() {
                                    tol_exp, tol_max, 0.0f);
 }
 
+void TestTiledFlashAttentionAMX() {
+  if (!HaveAmxBf16()) return;
+  const float tol = 2.0e-3f;
+  const float tol_exp = 4e-2f;
+  const float tol_max = 1e-3f;
+
+  RunTiledFlashAttentionTest<BF16>(gcpp::KVEncoding::kBF16TwoTranspositions,
+                                   AttentionImpl::kFlashAMX, tol, tol_exp,
+                                   tol_max, 0.0f);
+}
+
 void TestTiledFlashAttentionInt8MatrixAccumulation() {
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   if (hn::Lanes(dbf) > 32) {
@@ -745,12 +769,10 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
 }
 
 template <typename KV_T>
-void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
-                                            float tol_exp, float tol_max,
-                                            gcpp::KVEncoding ref_encoding,
-                                            gcpp::KVEncoding opt_encoding,
-                                            AttentionImpl opt_impl,
-                                            const char* type_name) {
+void RunTiledFlashAttentionDifferentialTest(
+    size_t kv_seq_len, float tol, float tol_exp, float tol_max,
+    gcpp::KVEncoding ref_encoding, gcpp::KVEncoding opt_encoding,
+    AttentionImpl opt_impl, const char* type_name, size_t num_queries = 37) {
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   if (hn::Lanes(dbf) > 32) {
     GTEST_SKIP() << "Skipping MatrixAccumulation test for target with register "
@@ -762,7 +784,6 @@ void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
   size_t padded_kv_seq_len =
       hwy::RoundUpTo(kv_seq_len, gcpp::KVCache::kTileSize);
   float att_cap = 0.0f;
-  size_t num_queries = 37;
   size_t num_queries_per_timestep = 1;
   size_t num_tokens = num_queries / num_queries_per_timestep;
   size_t kv_seq_end =
@@ -823,6 +844,11 @@ void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
     CompressAndQuantizeQueriesMatrixAccumulationInt8(
         q_all.data(), int8_queries.data(), q_scales.data(), num_queries,
         qkv_dim);
+  } else if (opt_impl == AttentionImpl::kFlashAMX) {
+    bf16_queries.resize(num_queries * qkv_dim);
+    CompressQueriesBF16Contiguous(q_all.data(), qkv_dim, num_queries,
+                                  bf16_queries.data());
+
   } else {
     bf16_queries.resize(num_queries_rounded * qkv_dim);
     CompressAndTransposeQueriesMatrixAccumulation(
@@ -874,6 +900,12 @@ void RunTiledFlashAttentionDifferentialTest(size_t kv_seq_len, float tol,
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
         exp_denominator_sums.data(), max_logits.data(),
         /*worker_workspace=*/nullptr);
+  } else if (opt_impl == AttentionImpl::kFlashAMX) {
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+        kvs, num_queries, bf16_queries.data(),
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
+        exp_denominator_sums.data(), max_logits.data());
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
         kvs, num_queries, bf16_queries.data(),
@@ -956,6 +988,14 @@ void TestTiledFlashAttentionInt8MatrixAccumulationLargeVerification() {
       AttentionImpl::kInt8MatrixAccumulation, "Int8");
 }
 
+void TestTiledFlashAttentionAMXLargeVerification() {
+  if (!HaveAmxBf16()) return;
+  RunTiledFlashAttentionDifferentialTest<BF16>(
+      2048, 1.0e-1f, 1.1e-1f, 1e-4f, gcpp::KVEncoding::kBF16TwoTranspositions,
+      gcpp::KVEncoding::kBF16TwoTranspositions, AttentionImpl::kFlashAMX,
+      "AMX_BF16");
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -971,10 +1011,13 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttention);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionBF16);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionBF16MatrixAccumulation);
+HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest, TestTiledFlashAttentionAMX);
 
 HWY_EXPORT_AND_TEST_P(
     FlashAttentionTest,
     TestTiledFlashAttentionBF16MatrixAccumulationLargeVerification);
+HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest,
+                           TestTiledFlashAttentionAMXLargeVerification);
 HWY_EXPORT_AND_TEST_P(
     FlashAttentionTest,
     TestTiledFlashAttentionInt8MatrixAccumulationLargeVerification);

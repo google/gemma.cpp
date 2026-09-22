@@ -265,16 +265,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   qkv_dim = kv_layer_configs[0].qkv_dim;
   rounded_qkv_dim = hwy::RoundUpTo(qkv_dim, kMaxBF16PerVector);
 
-  // clang-format off
   if (runtime_config.attention_impl == AttentionImpl::kFlash ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
-      runtime_config.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      runtime_config.attention_impl ==  AttentionImpl::kFlashMatrixAccumulation ||
-      runtime_config.attention_impl == AttentionImpl::kInt8MatrixAccumulation
-      ) {
-    // clang-format on
+      IsTiledAttention(runtime_config.attention_impl)) {
     kv_cache = MatStorageT<KV_t>(
         "kv",
         Extents2D(CappedSeqLen(config, inference_args), config.KVCacheCols()),
@@ -298,9 +290,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     if (runtime_config.attention_impl ==
         AttentionImpl::kFlashMatrixAccumulation) {
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
-    } else if (runtime_config.attention_impl ==
-                   AttentionImpl::kFlashTransposedQsBF16
-    ) {
+    } else if (IsBF16TransposedQsAttention(runtime_config.attention_impl)) {
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
     } else if (runtime_config.attention_impl ==
                    AttentionImpl::kFlashTransposedQsInt16 ||

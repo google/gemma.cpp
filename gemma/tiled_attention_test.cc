@@ -30,6 +30,7 @@
 #include "hwy/foreach_target.h"  // IWYU pragma: keep
 #include "hwy/highway.h"
 // After highway.h
+#include "gemma/flash_attention_amx-inl.h"
 #include "gemma/tiled_attention.h"
 #include "util/test_util.h"
 #include "hwy/aligned_allocator.h"
@@ -95,8 +96,7 @@ struct AttentionTestEnv {
             }
           }
 
-          bool transposed =
-              attention_impl == AttentionImpl::kFlashTransposedQsBF16;
+          const bool transposed = IsBF16TransposedQsAttention(attention_impl);
           gcpp::KVEncoding encoding;
           const MatPtr& compact_kv = kv_caches.back().compact_kv_cache_ptr;
           const Type type = compact_kv.GetType();
@@ -812,6 +812,43 @@ void TestAttentionMultipleTokensBF16() {
   }
 }
 
+void TestAttentionMultipleTokensAMX() {
+  if (!HaveAmxBf16()) return;
+  int qkv_dim = 64;
+  int kv_seq_len = 64;
+  int num_kv_heads = 2;
+  int num_heads = 4;
+  int num_tokens = 2;
+  int last_pos = 62;
+  float att_cap = 10.0f;
+  int layer_idx = 0;
+  int layers_total = 1;
+  int qbatch_size = 2;
+  AttentionImpl attention_impl = AttentionImpl::kFlashAMX;
+  AttentionTestEnv test_env(qkv_dim, kv_seq_len, kv_seq_len, num_kv_heads,
+                            num_heads, num_tokens, last_pos, att_cap, layer_idx,
+                            layers_total, qbatch_size, attention_impl);
+  test_env.SetupWeights();
+  FillMatPtrT(test_env.activations->attention.pre_att_rms_out);
+  FillMatPtrT(test_env.activations->attention.q);
+  FillMatPtrT(test_env.activations->attention.att_out);
+  FillMatPtrT(test_env.activations->attention.softmax_max);
+  FillMatPtrT(test_env.activations->attention.softmax_d);
+
+  TiledAttention(attention_impl, num_tokens, layer_idx, *test_env.layer,
+                 test_env.activations->attention, *test_env.qbatch,
+                 test_env.env, kTiledFlags);
+  for (size_t i = 0; i < test_env.activations->attention.att_out.Rows(); ++i) {
+    EXPECT_TRUE(hwy::CompareArraySimilar(
+        AttentionMultipleTokensAttentionGoldens.data() +
+            i * test_env.activations->attention.att_out.Cols(),
+        test_env.activations->attention.att_out.Row(i),
+        test_env.activations->attention.att_out.Cols(), 1e-1,
+        hwy::TargetName(HWY_TARGET), __FILE__, __LINE__))
+        << "att_out mismatch for query: " << i;
+  }
+}
+
 void TestAttentionMultipleTokensBF16MatrixAccumulation() {
   int qkv_dim = 64;
   int kv_seq_len = 64;
@@ -904,6 +941,7 @@ HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
 //                       TestLocalAttentionForAllHeadsTokensAndBatch);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestAttentionMultipleTokens);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest, TestAttentionMultipleTokensBF16);
+HWY_EXPORT_AND_TEST_BEST_P(TiledAttentionTest, TestAttentionMultipleTokensAMX);
 HWY_EXPORT_AND_TEST_P(TiledAttentionTest,
                       TestAttentionMultipleTokensBF16MatrixAccumulation);
 

@@ -54,6 +54,7 @@
 #include "compression/compress-inl.h"
 #include "gemma/attention.h"
 #include "gemma/flash_attention.h"
+#include "gemma/flash_attention_amx-inl.h"
 #include "gemma/flash_attention_arm-inl.h"
 #include "ops/matmul-inl.h"
 #include "ops/ops-inl.h"
@@ -1864,6 +1865,18 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
         kv_t, q_count, q_base, {}, start_pos_per_query, last_pos_per_query,
         att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
   });
+}
+
+void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+    hwy::Span<const MatPtr> kvs, size_t q_count,
+    const BF16* HWY_RESTRICT q_base,
+    hwy::Span<const size_t> start_pos_per_query,
+    hwy::Span<const size_t> last_pos_per_query, const float att_cap,
+    MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
+    float* HWY_RESTRICT max_logits) {
+  TileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+      kvs, q_count, q_base, start_pos_per_query, last_pos_per_query, att_cap,
+      att_out, exp_denominator_sums, max_logits);
 }
 
 void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
