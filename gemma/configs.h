@@ -150,11 +150,27 @@ enum class AttentionImpl {
   kFlashMatrixAccumulation,
   kInt8MatrixAccumulation,
   kFlashTransposedQsInt8,
+  kFlashAMX,
   kSentinel,
 };
 
 std::string GetAttentionImplName(AttentionImpl impl);
 AttentionImpl GetAttentionImpl(const std::string& impl);
+
+static inline bool IsTiledAttention(AttentionImpl impl) {
+  return impl == AttentionImpl::kFlashTransposedQs ||
+         impl == AttentionImpl::kFlashTransposedQsBF16 ||
+         impl == AttentionImpl::kFlashTransposedQsInt16 ||
+         impl == AttentionImpl::kFlashTransposedQsInt8 ||
+         impl == AttentionImpl::kInt8MatrixAccumulation ||
+         impl == AttentionImpl::kFlashMatrixAccumulation ||
+         impl == AttentionImpl::kFlashAMX;
+}
+
+static inline bool IsBF16TransposedQsAttention(AttentionImpl impl) {
+  return impl == AttentionImpl::kFlashTransposedQsBF16 ||
+         impl == AttentionImpl::kFlashAMX;
+}
 
 // Post attention and ffw normalization type.
 enum class PostNormType {
@@ -810,6 +826,7 @@ struct ModelConfig : public IFields {
   }
 
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
+  bool IsEmbedding() const { return false; }
 
   // Major version of the model family, reflecting architecture changes. This is
   // more convenient to compare than `Model` because that also includes the

@@ -219,5 +219,71 @@ TEST(WeightsTest, ExplicitSFPDisablesOnlyAutomaticMapping) {
             WeightsPtrs::Mode::kReadBF16);
 }
 
+TEST(WeightsTest, MapsBlobAlignedNonPageAlignedFile) {
+  ThreadingContext ctx = MakeContext();
+  const size_t file_bytes = ctx.allocator.BasePageBytes() + kBlobAlign;
+  ASSERT_EQ(file_bytes % kBlobAlign, 0);
+  ASSERT_NE(file_bytes % ctx.allocator.BasePageBytes(), 0);
+  std::vector<uint8_t> contents(file_bytes);
+  contents.front() = 1;
+  contents.back() = 2;
+
+  TemporaryBlob blob;
+  auto file = OpenFileOrAbort(blob.path(), "w+");
+  ASSERT_TRUE(file->Write(contents.data(), contents.size(), 0));
+  MapPtr mapped = file->Map();
+  ASSERT_NE(mapped, nullptr);
+  EXPECT_EQ(mapped[0], contents.front());
+  EXPECT_EQ(mapped[file_bytes - 1], contents.back());
+
+  InferenceArgs inference;
+  LoaderArgs loader("", "");
+  loader.map = Tristate::kTrue;
+  loader.to_bf16 = Tristate::kFalse;
+  EXPECT_EQ(weights_internal::ChooseMode(file_bytes, loader, inference,
+                                         ctx.allocator),
+            WeightsPtrs::Mode::kMap);
+}
+
+TEST(WeightsTest, MappingRequiresBlobAlignment) {
+  ThreadingContext ctx = MakeContext();
+  InferenceArgs inference;
+  LoaderArgs loader("", "");
+  loader.to_bf16 = Tristate::kFalse;
+
+  // Large enough for the automatic mapping heuristic to select kMap.
+  const uint64_t file_mib = ctx.allocator.TotalMiB() / 3 + 1;
+  const uint64_t page_bytes = ctx.allocator.BasePageBytes();
+  const uint64_t page_aligned_bytes =
+      hwy::RoundUpTo(file_mib << 20, page_bytes);
+
+  for (const Tristate map : {Tristate::kDefault, Tristate::kTrue}) {
+    loader.map = map;
+    for (const uint64_t file_bytes :
+         {page_aligned_bytes, page_aligned_bytes + kBlobAlign}) {
+      EXPECT_EQ(weights_internal::ChooseMode(file_bytes, loader, inference,
+                                             ctx.allocator),
+                WeightsPtrs::Mode::kMap)
+          << "file_bytes=" << file_bytes;
+    }
+    // Cover both an almost-full page (Jan's 4090-byte example) and a file
+    // whose final page has plenty of space but lacks blob alignment.
+    for (const uint64_t file_bytes :
+         {page_bytes - 6, page_bytes + 1, page_aligned_bytes - 6,
+          page_aligned_bytes + 1}) {
+      EXPECT_EQ(weights_internal::ChooseMode(file_bytes, loader, inference,
+                                             ctx.allocator),
+                WeightsPtrs::Mode::kRead)
+          << "file_bytes=" << file_bytes;
+    }
+  }
+
+  loader.map = Tristate::kTrue;
+  loader.to_bf16 = Tristate::kTrue;
+  EXPECT_EQ(weights_internal::ChooseMode(page_aligned_bytes + 1, loader,
+                                         inference, ctx.allocator),
+            WeightsPtrs::Mode::kReadBF16);
+}
+
 }  // namespace
 }  // namespace gcpp

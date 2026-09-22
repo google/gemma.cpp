@@ -109,14 +109,22 @@ TEST(KVCacheTest, ConstructorsSelectSameCompactLayout) {
   ThreadingContext ctx{ThreadingArgs{}};
   for (auto impl : {AttentionImpl::kFlash, AttentionImpl::kFlashTransposedQs,
                     AttentionImpl::kFlashTransposedQsBF16,
+                    AttentionImpl::kFlashAMX,
                     AttentionImpl::kFlashTransposedQsInt8,
                     AttentionImpl::kFlashMatrixAccumulation,
                     AttentionImpl::kInt8MatrixAccumulation}) {
     inference.attention_impl = GetAttentionImplName(impl);
     KVCache implicit(config, inference, ctx.allocator);
     KVCache explicit_cache(config, inference, impl, ctx.allocator);
+    RuntimeConfig runtime;
+    runtime.attention_impl = impl;
+    KVCache runtime_cache(config, inference, runtime, ctx.allocator);
     EXPECT_EQ(implicit.SeqLen(), 1031u);
     EXPECT_EQ(implicit.AllocatedBytes(), explicit_cache.AllocatedBytes());
+    EXPECT_EQ(implicit.AllocatedBytes(), runtime_cache.AllocatedBytes());
+    if (impl == AttentionImpl::kFlashAMX) {
+      EXPECT_EQ(implicit.kv_head_ptrs.front().GetType(), Type::kBF16);
+    }
     ASSERT_EQ(implicit.kv_head_ptrs.size(), explicit_cache.kv_head_ptrs.size());
     EXPECT_FALSE(implicit.kv_cache.HasPtr());
     for (size_t h = 0; h < implicit.kv_head_ptrs.size(); ++h) {

@@ -463,11 +463,11 @@ struct LayerWeightsPtrs {
           func(TENSOR_ARGS(hash_tid2eid, kMustRead));
         }
       } else {
-        func(TENSOR_ARGS(router_scale, kMustRead));
-        func(TENSOR_ARGS(p_expert_sc, kMustRead));
-        func(TENSOR_ARGS(post_ffw1_ns, kMustRead));
-        func(TENSOR_ARGS(post_ffw2_ns, kMustRead));
-        func(TENSOR_ARGS(pre_ffw2_ns, kMustRead));
+        func(TENSOR_ARGS(router_scale, kMaybeRead));
+        func(TENSOR_ARGS(p_expert_sc, kMaybeRead));
+        func(TENSOR_ARGS(post_ffw1_ns, kMaybeRead));
+        func(TENSOR_ARGS(post_ffw2_ns, kMaybeRead));
+        func(TENSOR_ARGS(pre_ffw2_ns, kMaybeRead));
       }
       for (uint32_t i = 0; i < layer_config.NumExperts(); ++i) {
         func(TENSOR_ARGS(moe_gating_einsum_w1[i], kMustRead));

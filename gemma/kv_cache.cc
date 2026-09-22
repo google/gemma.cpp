@@ -99,6 +99,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
               GetAttentionImpl(inference_args.attention_impl), allocator) {}
 
 KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+                 const RuntimeConfig& runtime_config, const Allocator& allocator)
+    : KVCache(config, inference_args, runtime_config.attention_impl, allocator,
+              runtime_config.kv_cache_type) {}
+
+KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  AttentionImpl attention_impl, const Allocator& allocator,
                  std::optional<Type> kv_cache_type)
     : seq_len_(CappedSeqLen(config, inference_args)),
@@ -169,7 +174,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   Type type = kv_cache_type.value_or(Type::kF32);
   MatPtr::Layout layout = MatPtr::Layout::kFlat;
   if (attention_impl == AttentionImpl::kFlash ||
-      attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
+      IsBF16TransposedQsAttention(attention_impl) ||
       attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
     type = kv_cache_type.value_or(Type::kBF16);
   }

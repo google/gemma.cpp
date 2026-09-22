@@ -66,14 +66,30 @@ HWY_INLINE_VAR constexpr size_t kMaxKC = 6 * 1024;
 
 // Policy classes for parallelism, implementing some of `Parallelism`.
 
+// Returns a partition of `range` for `num_workers * inner_tasks` where each
+// task is a multiple of `n_multiple` and at most `kMaxNC` (so it fits in
+// `MMTilesC`).
+static inline IndexRangePartition PartitionForN(const IndexRange& range,
+                                                size_t num_workers,
+                                                size_t inner_tasks,
+                                                size_t n_multiple) {
+  HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
+  const IndexRangePartition ranges =
+      StaticPartition(range, num_workers * inner_tasks, n_multiple);
+  return MaxSizePartition(range, HWY_MIN(ranges.TaskSize(), kMaxNC),
+                          n_multiple);
+}
+
 struct MMParallelNone {
   template <class Func>
-  void ForN(ThreadingContext& ctx, const IndexRange& range_n,
-            size_t /*n_multiple*/, size_t inner_tasks, size_t cluster_idx,
-            const Func& func) const {
+  void ForN(ThreadingContext& ctx, const IndexRange& range_n, size_t n_multiple,
+            size_t inner_tasks, size_t cluster_idx, const Func& func) const {
     HWY_DASSERT(1 <= inner_tasks && inner_tasks <= 4);
     const size_t worker = ctx.Worker(cluster_idx);
-    func(range_n, worker);
+    MaxSizePartition(range_n, kMaxNC, n_multiple)
+        .VisitAll([&](const IndexRange& worker_range) {
+          func(worker_range, worker);
+        });
   }
 
   template <class Func>
@@ -128,10 +144,13 @@ struct MMParallelWithinCluster {
     const hwy::pool::Caller caller =
         ctx.pool_callers.Get(Callers::kMMClusterForN);
 
-    ParallelPartitionWithinCluster(
-        range_n, n_multiple, inner_tasks, ctx, cluster_idx, caller,
-        [&](const IndexRange& worker_range, size_t worker) {
-          func(worker_range, worker);
+    const size_t num_workers = ctx.pools.Cluster(cluster_idx).NumWorkers();
+    const IndexRangePartition ranges =
+        PartitionForN(range_n, num_workers, inner_tasks, n_multiple);
+    ParallelForWithinCluster(
+        ranges.NumTasks(), ctx, cluster_idx, caller,
+        [&](uint64_t task, size_t worker) {
+          func(ranges.Range(task), worker);
         });
   }
 
@@ -209,10 +228,14 @@ struct MMParallelHierarchical {
     ParallelPartitionAcrossClusters(
         range_n, n_multiple, /*inner_tasks=*/1, ctx, caller,
         [&](const IndexRange& cluster_range, size_t cluster_idx) {
-          ParallelPartitionWithinCluster(
-              cluster_range, n_multiple, inner_tasks, ctx, cluster_idx, caller,
-              [&](const IndexRange& worker_range, size_t worker) {
-                func(worker_range, worker);
+          const size_t num_workers =
+              ctx.pools.Cluster(cluster_idx).NumWorkers();
+          const IndexRangePartition ranges = PartitionForN(
+              cluster_range, num_workers, inner_tasks, n_multiple);
+          ParallelForWithinCluster(
+              ranges.NumTasks(), ctx, cluster_idx, caller,
+              [&](uint64_t task, size_t worker) {
+                func(ranges.Range(task), worker);
               });
         });
   }

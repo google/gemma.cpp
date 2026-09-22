@@ -35,6 +35,7 @@
 #include "paligemma/image.h"
 #include "util/basics.h"  // TokenAndProb
 #include "util/threading_context.h"
+#include "hwy/aligned_allocator.h"  // AlignedVector
 #include "hwy/timer.h"
 // IWYU pragma: end_exports
 

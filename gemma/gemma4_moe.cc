@@ -383,12 +383,12 @@ struct Gemma4MoE {
             HWY_DASSERT(row < expert_sizes[expert_idx]);
             return activations.ffw_expert_out[expert_idx].Row(row);
           };
-          
+
           // First expert: write to `ffw_out` without accumulating.
           MulByConstTo(per_token[0].weight, get_expert_row(0),
                        activations.ffw_out.Row(token_idx), model_dim, env.ctx,
                        worker);
-          
+
           // Subsequent experts: accumulate into `ffw_out`.
           for (size_t i = 1; i < experts_per_token; ++i) {
             MulByConstAndAdd(per_token[i].weight, get_expert_row(i),
@@ -451,12 +451,7 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
   HWY_DASSERT(layer.layer_config.type == LayerAttentionType::kGemma);
   HWY_DASSERT(qbatch.PrefixEnd(0) == 0);  // expect causal attention
   int flags = 0;
-  if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
-      activations.attention_impl == AttentionImpl::kInt8MatrixAccumulation ||
-      activations.attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+  if (IsTiledAttention(activations.attention_impl)) {
     TiledAttention(activations.attention_impl, num_tokens, kv_cache_layer_idx, layer,
                    activations.attention, qbatch, env, flags);
   } else {

@@ -155,6 +155,30 @@ struct AttentionActivations {
     flash_params.reserve(batch_size * layer_config.heads);
     split_flash_params.reserve(batch_size * layer_config.heads);
 
+    const size_t kv_out_elems =
+        batch_size * layer_config.kv_heads * 2 * max_qkv_dim;
+    kv_out_mem.resize(kv_out_elems, 0.0f);
+    const size_t total_queries = batch_size * layer_config.heads;
+    const size_t query_elems = total_queries * max_qkv_dim;
+    float_queries.resize(query_elems, 0.0f);
+    bf16_queries.resize(query_elems);
+    hwy::ZeroBytes(bf16_queries.data(), bf16_queries.size() * sizeof(BF16));
+    constexpr size_t kSubtaskQueries = 128;
+    const size_t num_sub_tasks_init =
+        hwy::DivCeil(total_queries, kSubtaskQueries) * rep_factor;
+    const size_t max_q_per_subtask = std::min(total_queries, kSubtaskQueries);
+    const size_t max_q_rounded_8 = hwy::RoundUpTo(max_q_per_subtask, 8);
+    sub_task_att_out.resize(num_sub_tasks_init);
+    sub_task_exp_denominator_sums.resize(num_sub_tasks_init);
+    sub_task_max_logits.resize(num_sub_tasks_init);
+    for (size_t t = 0; t < num_sub_tasks_init; ++t) {
+      sub_task_att_out[t] = MatFactory("att_out", max_q_per_subtask,
+                                       max_qkv_dim, allocator);
+      ZeroInit(sub_task_att_out[t]);
+      sub_task_exp_denominator_sums[t].resize(max_q_rounded_8, 0.0f);
+      sub_task_max_logits[t].resize(max_q_rounded_8, 0.0f);
+    }
+
     // For MatMul outputs, precompute their row pointers.
     // If we forget any MatMul outputs here, debug builds print a warning but
     // fill them in each MatMul call.
@@ -229,6 +253,8 @@ struct AttentionActivations {
       sub_task_exp_denominator_sums;
   std::vector<AlignedFloatVector>
       sub_task_max_logits;
+  std::vector<hwy::AlignedVector<uint8_t>> worker_workspaces;
+  hwy::AlignedVector<float> kv_out_mem;
 
   // Rope
   MatStorageT<float> inv_timescale;
@@ -248,6 +274,8 @@ struct AttentionActivationsPtrs {
         sub_task_att_out(nullptr),
         sub_task_exp_denominator_sums(nullptr),
         sub_task_max_logits(nullptr),
+        worker_workspaces(nullptr),
+        kv_out_mem(nullptr),
         bf16_queries(nullptr),
         int16_queries(nullptr),
         int8_queries(nullptr),
@@ -280,6 +308,8 @@ struct AttentionActivationsPtrs {
     sub_task_att_out = &activations.sub_task_att_out;
     sub_task_exp_denominator_sums = &activations.sub_task_exp_denominator_sums;
     sub_task_max_logits = &activations.sub_task_max_logits;
+    worker_workspaces = &activations.worker_workspaces;
+    kv_out_mem = &activations.kv_out_mem;
     bf16_queries = &activations.bf16_queries;
     int16_queries = &activations.int16_queries;
     int8_queries = &activations.int8_queries;
@@ -352,6 +382,8 @@ struct AttentionActivationsPtrs {
       sub_task_exp_denominator_sums;
   std::vector<AlignedFloatVector>*
       sub_task_max_logits;
+  std::vector<hwy::AlignedVector<uint8_t>>* worker_workspaces;
+  hwy::AlignedVector<float>* kv_out_mem;
   AlignedBF16Vector* bf16_queries;
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>>* int16_queries;
   hwy::AlignedVector<int8_t>* int8_queries;

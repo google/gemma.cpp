@@ -17,6 +17,7 @@
 
 #include <stdio.h>
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -41,8 +42,17 @@ class GemmaTest : public ::testing::Test {
   // Requires argc/argv, hence do not use `SetUpTestSuite`.
   static void InitEnv(int argc, char** argv) {
     HWY_ASSERT(s_env == nullptr);  // Should only be called once.
-    ConsumedArgs consumed(argc, argv);
-    GemmaArgs args(argc, argv, consumed);
+    std::vector<char*> filtered_argv;
+    for (int i = 0; i < argc; ++i) {
+      // Test runners may pass `--logtostderr`, which is not
+      // recognized by `GemmaArgs`. Filter it out so
+      // `ConsumedArgs::AbortIfUnconsumed` does not abort.
+      if (std::string_view(argv[i]) == "--logtostderr") continue;
+      filtered_argv.push_back(argv[i]);
+    }
+    int filtered_argc = static_cast<int>(filtered_argv.size());
+    ConsumedArgs consumed(filtered_argc, filtered_argv.data());
+    GemmaArgs args(filtered_argc, filtered_argv.data(), consumed);
     consumed.AbortIfUnconsumed();
 
     s_env = new GemmaEnv(args);
@@ -75,6 +85,9 @@ class GemmaTest : public ::testing::Test {
 GemmaEnv* GemmaTest::s_env = nullptr;
 
 TEST_F(GemmaTest, Batched) {
+  if (s_env->GetGemma()->Config().IsEmbedding()) {
+    GTEST_SKIP() << "Not applicable for embedding models";
+  }
   // Test remainder handling in MatMul (four rows per tile), but avoid a
   // second batch in debug builds to speed up the test.
   s_env->MutableConfig().decode_qbatch_size = HWY_IS_DEBUG_BUILD ? 6 : 3;
@@ -102,6 +115,9 @@ TEST_F(GemmaTest, Batched) {
 TEST_F(GemmaTest, Multiturn) {
   const Gemma* model = s_env->GetGemma();
   const ModelConfig& config = model->Config();
+  if (config.IsEmbedding()) {
+    GTEST_SKIP() << "Not applicable for embedding models";
+  }
   size_t abs_pos = 0;
   std::string response;
   auto stream_token = [&](size_t query_idx, size_t pos, int token, float) {
@@ -156,6 +172,9 @@ TEST_F(GemmaTest, Multiturn) {
 TEST_F(GemmaTest, CrossEntropySmall) {
   HWY_ASSERT(s_env->GetGemma() != nullptr);
   const ModelConfig& config = s_env->GetGemma()->Config();
+  if (config.IsEmbedding()) {
+    GTEST_SKIP() << "Not applicable for embedding models";
+  }
   static const char kSmall[] =
       "The capital of Hungary is Budapest which is located in Europe.";
   float entropy = s_env->CrossEntropy(kSmall);

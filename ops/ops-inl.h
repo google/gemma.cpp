@@ -131,15 +131,21 @@ StaticCast(From from) noexcept {
 //         = 0.5 * x * (1 + tanh(x * (0.79788 + 0.035677 * x^2)))
 //         = x * (0.5 + 0.5 * tanh(x * (0.79788 + 0.035677 * x^2))))
 template <class D, HWY_IF_F32_D(D)>
-HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
+HWY_INLINE hn::Vec<D> GeluCdf(D d, hn::Vec<D> v) {
   const hn::Vec<D> kMul = hn::Set(d, 0.03567740813636141f);
   const hn::Vec<D> kSqrt2OverPi = hn::Set(d, 0.797884560804236f);
   const hn::Vec<D> kHalf = hn::Set(d, 0.5f);
 
   const hn::Vec<D> v2 = hn::Mul(v, v);
-  const hn::Vec<D> arg = hn::Mul(v, hn::MulAdd(kMul, v2, kSqrt2OverPi));
-  const hn::Vec<D> cdf = hn::MulAdd(kHalf, hn::Tanh(d, arg), kHalf);
-  return hn::Mul(v, cdf);
+  const hn::Vec<D> v_kMul = hn::Mul(kMul, v);
+  const hn::Vec<D> v_kSqrt = hn::Mul(kSqrt2OverPi, v);
+  const hn::Vec<D> arg = hn::MulAdd(v_kMul, v2, v_kSqrt);
+  return hn::MulAdd(kHalf, hn::Tanh(d, arg), kHalf);
+}
+
+template <class D, HWY_IF_F32_D(D)>
+HWY_INLINE hn::Vec<D> Gelu(D d, hn::Vec<D> v) {
+  return hn::Mul(v, GeluCdf(d, v));
 }
 
 // Activation already has a profiler zone.
@@ -1767,6 +1773,32 @@ HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DI32 di32, VI8 a, VI8 b, VI32 c) {
     }
   }
   return hn::Load(di32, expected);
+#endif
+}
+
+template <class DI32, class VU8, class VI8, class VI32, HWY_IF_I32_D(DI32)>
+HWY_API VI32 PerBlock2x2MatMulMaybeEmulate(DI32 di32, VU8 a, VI8 b, VI32 c) {
+#if HWY_NATIVE_PER_BLOCK_2X2_MATMUL_INT8
+  return hn::PerBlock2x2MatMul(di32, a, b, c);
+#else
+  const hn::Repartition<uint8_t, DI32> du8;
+  const hn::Repartition<int8_t, DI32> di8;
+  const auto a_32 = hn::BitCast(di32, a);
+  const auto a1 = hn::BitCast(du8, hn::Per4LaneBlockShuffle<2, 2, 0, 0>(a_32));
+  const auto a2 = hn::BitCast(du8, hn::Per4LaneBlockShuffle<3, 3, 1, 1>(a_32));
+
+  HWY_ALIGN static constexpr uint8_t kIdxB1[16] = {
+      0, 1, 2, 3, 8, 9, 10, 11, 0, 1, 2, 3, 8, 9, 10, 11};
+  HWY_ALIGN static constexpr uint8_t kIdxB2[16] = {
+      4, 5, 6, 7, 12, 13, 14, 15, 4, 5, 6, 7, 12, 13, 14, 15};
+
+  const auto idx1 = hn::BitCast(di8, hn::LoadDup128(du8, kIdxB1));
+  const auto idx2 = hn::BitCast(di8, hn::LoadDup128(du8, kIdxB2));
+  const auto b1 = hn::TableLookupBytes(b, idx1);
+  const auto b2 = hn::TableLookupBytes(b, idx2);
+
+  const auto sum0 = hn::SumOfMulQuadAccumulate(di32, a1, b1, c);
+  return hn::SumOfMulQuadAccumulate(di32, a2, b2, sum0);
 #endif
 }
 

@@ -47,8 +47,8 @@
 #include "hwy/highway.h"
 // After highway.h
 #include "compression/test_util-inl.h"
-#include "ops/ops-inl.h"
 #include "ops/fast_ops-inl.h"
+#include "ops/ops-inl.h"
 #include "hwy/tests/test_util-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -494,7 +494,7 @@ struct TestFastSigmoid {
     gcpp::HWY_NAMESPACE::FastSigmoid(result.data(), result.size());
 
     for (size_t i = 0; i < values.size(); i++) {
-      const float max_error = IsBF16<T>() ? 0.003f : 0.0004f;
+      const float max_error = IsBF16<T>() ? 0.003f : 0.000002f;
       const float value = hwy::ConvertScalarTo<float>(values[i]);
       const float actual = hwy::ConvertScalarTo<float>(result[i]);
       const float expected = (1 / (1 + std::exp(-value)));

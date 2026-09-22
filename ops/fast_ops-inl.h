@@ -52,238 +52,85 @@ namespace hn = hwy::HWY_NAMESPACE;
 // This uses hn::FastTanh from
 // third_party/highway/hwy/contrib/math/fast_math-inl.h
 template <class D, HWY_IF_F32_D(D)>
-HWY_INLINE hn::Vec<D> FastGelu(D d, hn::Vec<D> v) {
+HWY_INLINE hn::Vec<D> FastGeluCdf(D d, hn::Vec<D> v) {
   const hn::Vec<D> kMul = hn::Set(d, 0.03567740813636141f);
   const hn::Vec<D> kSqrt2OverPi = hn::Set(d, 0.797884560804236f);
   const hn::Vec<D> kHalf = hn::Set(d, 0.5f);
 
   const hn::Vec<D> v2 = hn::Mul(v, v);
-  const hn::Vec<D> arg = hn::Mul(v, hn::MulAdd(kMul, v2, kSqrt2OverPi));
-  const hn::Vec<D> cdf = hn::MulAdd(kHalf, hn::FastTanh(d, arg), kHalf);
-  return hn::Mul(v, cdf);
+  const hn::Vec<D> v_kMul = hn::Mul(kMul, v);
+  const hn::Vec<D> v_kSqrt = hn::Mul(kSqrt2OverPi, v);
+  const hn::Vec<D> arg = hn::MulAdd(v_kMul, v2, v_kSqrt);
+  return hn::MulAdd(kHalf, hn::FastTanh(d, arg), kHalf);
+}
+
+template <class D, HWY_IF_F32_D(D)>
+HWY_INLINE hn::Vec<D> FastGelu(D d, hn::Vec<D> v) {
+  return hn::Mul(v, FastGeluCdf(d, v));
 }
 
 // Fast approximation of sigmoid(x) = 1 / (1 + exp(-x))
-// Derived from FastTanh by substituting x/2.
+// Derived from FastTanh using the identity:
+//   sigmoid(x) = 0.5 + 0.5 * tanh(x / 2)
+//              = 0.5 + CopySign(0.5 * tanh(|x| / 2), x)
+//
+// In FastTanh(z) (third_party/highway/hwy/contrib/math/fast_math-inl.h),
+// z in [0, 6.65] with u_z = z^2 is approximated by a degree-(7, 6) rational
+// function z * P3(u_z) / Q3(u_z):
+//   P3(u_z) / Q3(u_z) = (p3*u_z^3 + p2*u_z^2 + p1*u_z + 1) /
+//                       (q3*u_z^3 + q2*u_z^2 + q1*u_z + 1)
+//
+// Substituting z = y / 2 (where y = |x|, clamped to kMax = 2 * 6.65 = 13.30)
+// and u = y^2 (so u_z = u / 4), and multiplying by 0.5:
+//   0.5 * tanh(y / 2) ~= (y / 4) * P3(u / 4) / Q3(u / 4)
+//                      = y * (p3' * u^3 + p2' * u^2 + p1' * u + 0.25) /
+//                            (q3' * u^3 + q2' * u^2 + q1' * u + 1)
+// where p_k' = p_k / 4^(k+1) and q_k' = q_k / 4^k.
 template <class D, HWY_IF_F32_D(D)>
 HWY_INLINE hn::Vec<D> FastSigmoid(D d, hn::Vec<D> val) {
   using T = hn::TFromD<D>;
 
-  // Abs(val) and preserve sign for later for symmetric rational approximation
-  auto y = hn::Abs(val);
+  // Clamp |val| to kMax = 13.30 (= 2 * 6.65) before squaring.
+  const auto kMax = hn::Set(d, static_cast<T>(13.30));
+  const auto kOne = hn::Set(d, static_cast<T>(1.0));
+  const auto kHalf = hn::Set(d, static_cast<T>(0.5));
+  const auto kQuarter = hn::Set(d, static_cast<T>(0.25));
 
-  constexpr size_t kLanes = HWY_MAX_LANES_D(D);
-  hn::Vec<D> b, c, d_coef;
+  const auto y = hn::Min(hn::Abs(val), kMax);
+  const auto u = hn::Mul(y, y);
 
-  if constexpr ((kLanes >= 4 && !HWY_HAVE_SCALABLE) ||
-                (HWY_HAVE_SCALABLE && sizeof(T) == 4 &&
-                 hn::detail::IsFull(d))) {
-    // Coefficients for P(y/2) ~ index using CF algo
-    const auto k0 = hn::Set(d, static_cast<T>(-0.1145426548151546));
-    const auto k1 = hn::Set(d, static_cast<T>(3.4556654973457404));
-    const auto k2 = hn::Set(d, static_cast<T>(-0.6278480784875462));
-    const auto k3 = hn::Set(d, static_cast<T>(0.04331384030062471));
+  const auto p1 = hn::Set(d, static_cast<T>(0.007756593499492869));
+  const auto p2 = hn::Set(d, static_cast<T>(3.708395652393883e-05));
+  const auto p3 = hn::Set(d, static_cast<T>(1.712842747715196e-08));
 
-    // Index calculation: idx = P(y/2)
-    // Estrin's scheme
-    // k0 + y * k1 + y^2 * (k2 + y * k3)
-    const auto y2 = hn::Mul(y, y);
-    const auto p01 = hn::MulAdd(k1, y, k0);
-    const auto p23 = hn::MulAdd(k3, y, k2);
-    auto idx_poly = hn::MulAdd(y2, p23, p01);
+  const auto q1 = hn::Set(d, static_cast<T>(0.11435917491679918));
+  const auto q2 = hn::Set(d, static_cast<T>(0.0013451487514049556));
+  const auto q3 = hn::Set(d, static_cast<T>(2.3876605672811625e-06));
 
-    // Convert to integer index
-    using DI = hn::RebindToSigned<D>;
-    auto idx_i = hn::ConvertTo(DI(), idx_poly);
+  // Evaluate P3(u) and Q3(u) using Estrin's scheme maximizing ILP:
+  const auto u2 = hn::Mul(u, u);
 
-    // Clamp index to 7
-    idx_i = hn::Min(idx_i, hn::Set(DI(), 7));
+  // p_term0 = p1 * u + 0.25
+  const auto p_term0 = hn::MulAdd(p1, u, kQuarter);
+  // p_term1 = p3 * u + p2
+  const auto p_term1 = hn::MulAdd(p3, u, p2);
+  // q_term0 = q1 * u + 1.0
+  const auto q_term0 = hn::MulAdd(q1, u, kOne);
+  // q_term1 = q3 * u + q2
+  const auto q_term1 = hn::MulAdd(q3, u, q2);
 
-    HWY_ALIGN static constexpr T arr_b[8] = {
-        static_cast<T>(-0.0006967055197996615),
-        static_cast<T>(-0.010315055591476996),
-        static_cast<T>(-0.05367999021047822),
-        static_cast<T>(-0.16943664192343108),
-        static_cast<T>(-0.42437007298661206),
-        static_cast<T>(-0.9556349519550872),
-        static_cast<T>(-2.0824831112860647),
-        static_cast<T>(-4.688832585616333)};
-    HWY_ALIGN static constexpr T arr_c[8] = {
-        static_cast<T>(0.220551955463595),  static_cast<T>(0.5069204289218385),
-        static_cast<T>(0.8423809865207907), static_cast<T>(1.1775629610724903),
-        static_cast<T>(1.4909222917402543), static_cast<T>(1.757582383623199),
-        static_cast<T>(1.9363640518503402), static_cast<T>(1.9985234759675707)};
-    HWY_ALIGN static constexpr T arr_d[8] = {
-        static_cast<T>(3.9548607753775276), static_cast<T>(3.7450486139396544),
-        static_cast<T>(3.253860706225495),  static_cast<T>(2.4240814251983283),
-        static_cast<T>(1.1565092321921886), static_cast<T>(-0.7540678688218365),
-        static_cast<T>(-3.767209600467866), static_cast<T>(-9.357047249878605)};
+  // p3_u = p_term1 * u^2 + p_term0 = p3*u^3 + p2*u^2 + p1*u + 0.25
+  const auto p3_u = hn::MulAdd(p_term1, u2, p_term0);
+  // q3_u = q_term1 * u^2 + q_term0 = q3*u^3 + q2*u^2 + q1*u + 1.0
+  const auto q3_u = hn::MulAdd(q_term1, u2, q_term0);
+  const auto num = hn::Mul(y, p3_u);
 
-    // Since Lookup8 is available for HWY_MIN_BYTES / sizeof(T) >= 4, this
-    // condition covers all cases we encounter inside the top level if block
-    // inside FastSigmoid
-    b = hn::Lookup8(d, arr_b, idx_i);
-    c = hn::Lookup8(d, arr_c, idx_i);
-    d_coef = hn::Lookup8(d, arr_d, idx_i);
-  } else {
-    // --- FALLBACK PATH: Blend Chain ---
-    // Thresholds for intervals
-    const auto t0 = hn::Set(d, static_cast<T>(0.3434497447432422));
-    const auto t1 = hn::Set(d, static_cast<T>(0.6955976007186494));
-    const auto t2 = hn::Set(d, static_cast<T>(1.1068914127668934));
-    const auto t3 = hn::Set(d, static_cast<T>(1.608648163822941));
-    const auto t4 = hn::Set(d, static_cast<T>(2.269039121646492));
-    const auto t5 = hn::Set(d, static_cast<T>(3.288402547357102));
-    const auto t6 = hn::Set(d, static_cast<T>(5.271780018997146));
+  // Clamp the approx value to 0.5 for safety in case of rounding differences
+  // across architectures.
+  const auto approx = hn::Min(hn::Div(num, q3_u), kHalf);
 
-    if constexpr (HWY_REGISTERS >= 32) {
-      // Split into two parallel chains to reduce dependency latency.
-
-      // -- Chain 1: Indices 0 to 3 (Evaluated starting from t3 down to t0)
-      auto b_low = hn::Set(d, static_cast<T>(-0.16943664192343108));  // idx 3
-      auto c_low = hn::Set(d, static_cast<T>(1.1775629610724903));
-      auto d_low = hn::Set(d, static_cast<T>(2.4240814251983283));
-
-      auto mask = hn::Lt(y, t2);
-      b_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.05367999021047822)), b_low);
-      c_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(0.8423809865207907)), c_low);
-      d_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.253860706225495)), d_low);
-
-      mask = hn::Lt(y, t1);
-      b_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.010315055591476996)), b_low);
-      c_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(0.5069204289218385)), c_low);
-      d_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.7450486139396544)), d_low);
-
-      mask = hn::Lt(y, t0);
-      b_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.0006967055197996615)), b_low);
-      c_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(0.220551955463595)), c_low);
-      d_low = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.9548607753775276)), d_low);
-
-      // -- Chain 2: Indices 4 to 7 (Evaluated starting from t6 down to t4)
-      auto b_high = hn::Set(d, static_cast<T>(-4.688832585616333));  // idx 7
-      auto c_high = hn::Set(d, static_cast<T>(1.9985234759675707));
-      auto d_high = hn::Set(d, static_cast<T>(-9.357047249878605));
-
-      mask = hn::Lt(y, t6);
-      b_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-2.0824831112860647)), b_high);
-      c_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(1.9363640518503402)), c_high);
-      d_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-3.767209600467866)), d_high);
-
-      mask = hn::Lt(y, t5);
-      b_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.9556349519550872)), b_high);
-      c_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(1.757582383623199)), c_high);
-      d_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.7540678688218365)), d_high);
-
-      mask = hn::Lt(y, t4);
-      b_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.42437007298661206)), b_high);
-      c_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(1.4909222917402543)), c_high);
-      d_high = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(1.1565092321921886)), d_high);
-
-      // -- Merge the two chains
-      auto merge_mask = hn::Lt(y, t3);
-      b = hn::IfThenElse(merge_mask, b_low, b_high);
-      c = hn::IfThenElse(merge_mask, c_low, c_high);
-      d_coef = hn::IfThenElse(merge_mask, d_low, d_high);
-    } else {
-      // Start with highest index (7)
-      b = hn::Set(d, static_cast<T>(-4.688832585616333));
-      c = hn::Set(d, static_cast<T>(1.9985234759675707));
-      d_coef = hn::Set(d, static_cast<T>(-9.357047249878605));
-
-      // If y < t6 (idx 6)
-      auto mask = hn::Lt(y, t6);
-      b = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(-2.0824831112860647)),
-                         b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(1.9363640518503402)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-3.767209600467866)), d_coef);
-
-      // If y < t5 (idx 5)
-      mask = hn::Lt(y, t5);
-      b = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(-0.9556349519550872)),
-                         b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(1.757582383623199)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(-0.7540678688218365)), d_coef);
-
-      // If y < t4 (idx 4)
-      mask = hn::Lt(y, t4);
-      b = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(-0.42437007298661206)),
-                         b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(1.4909222917402543)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(1.1565092321921886)), d_coef);
-
-      // If y < t3 (idx 3)
-      mask = hn::Lt(y, t3);
-      b = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(-0.16943664192343108)),
-                         b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(1.1775629610724903)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(2.4240814251983283)), d_coef);
-
-      // If y < t2 (idx 2)
-      mask = hn::Lt(y, t2);
-      b = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(-0.05367999021047822)),
-                         b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(0.8423809865207907)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.253860706225495)), d_coef);
-
-      // If y < t1 (idx 1)
-      mask = hn::Lt(y, t1);
-      b = hn::IfThenElse(mask,
-                         hn::Set(d, static_cast<T>(-0.010315055591476996)), b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(0.5069204289218385)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.7450486139396544)), d_coef);
-
-      // If y < t0 (idx 0)
-      mask = hn::Lt(y, t0);
-      b = hn::IfThenElse(mask,
-                         hn::Set(d, static_cast<T>(-0.0006967055197996615)), b);
-      c = hn::IfThenElse(mask, hn::Set(d, static_cast<T>(0.220551955463595)),
-                         c);
-      d_coef = hn::IfThenElse(
-          mask, hn::Set(d, static_cast<T>(3.9548607753775276)), d_coef);
-    }
-  }
-
-  // Math: 0.5 * tanh(y/2) = (y + b)/(cy + d_coef)
-  auto num = hn::Add(y, b);
-  auto den = hn::MulAdd(c, y, d_coef);
-
-  auto approx = hn::Div(num, den);
-
-  const auto half = hn::Set(d, static_cast<T>(0.5));
-  // Clamp the approx value to 0.5
-  approx = hn::Min(approx, half);
   // sigmoid(x) = 0.5 + sign(x) * (0.5 * tanh(|x|/2))
-  return hn::Add(half, hn::CopySign(approx, val));
+  return hn::Add(kHalf, hn::CopySign(approx, val));
 }
 
 // Activation already has a profiler zone.

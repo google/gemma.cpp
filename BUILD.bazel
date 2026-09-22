@@ -783,7 +783,6 @@ cc_library(
         ":ops",
         ":tensor_stats",
         ":threading_context",
-        "@highway//:abort_header_only",
     ],
 )
 
@@ -843,6 +842,7 @@ cc_library(
     textual_hdrs = [
         "gemma/gemma-inl.h",
         "gemma/flash_attention_arm-inl.h",
+        "gemma/flash_attention_amx-inl.h",
     ],
     deps = [
         ":activations",
@@ -927,6 +927,7 @@ cc_library(
         ":query",
         ":tensor_stats",
         ":threading_context",
+        ":tokenizer",
         ":weights",
         ":zones",
         "//compression:compress",
@@ -1034,7 +1035,9 @@ cc_library(
 
 cc_test(
     name = "gemma_test",
-    srcs = ["evals/gemma_test.cc"],
+    srcs = [
+        "evals/gemma_test.cc",
+    ],
     linkstatic = True,
     # Requires model files
     tags = [

@@ -741,7 +741,7 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
       });
   Add(suffix, {
                   .base_name = "qkv1_w",
-                  .source_names = {"attn/q_einsum/w"},
+                  .source_names = {"attn/q_einsum/w", "attn/q_einsum"},
                   .axes = {0, 2, 1},
                   .shape = {layer_config.heads * layer_config.qkv_dim,
                             config.model_dim},
@@ -750,11 +750,18 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
   Add(suffix,
       {
           .base_name = "qkv2_w",
-          .source_names = {layer_config.kv_heads == 1
-                               ? "attn/k_einsum/w"
-                               : "attn/kv_einsum/w"},
-          .axes = layer_config.kv_heads == 1 ? std::vector<size_t>{0, 2, 1}
-                                             : std::vector<size_t>{1, 0, 3, 2},
+          .source_names = (layer_config.kv_heads == 1 &&
+                           config.model_family_version < 3)
+                              ? std::vector<std::string>{"attn/k_einsum/w",
+                                                         "attn/k_einsum"}
+                              : std::vector<std::string>{"attn/kv_einsum/w",
+                                                         "attn/kv_einsum",
+                                                         "attn/k_einsum/w",
+                                                         "attn/k_einsum"},
+          .axes = (layer_config.kv_heads == 1 &&
+                   config.model_family_version < 3)
+                      ? std::vector<size_t>{0, 2, 1}
+                      : std::vector<size_t>{1, 0, 3, 2},
           .shape = {2 * layer_config.kv_heads * layer_config.qkv_dim,
                     config.model_dim},
           .concat_names = {""},
@@ -1056,7 +1063,7 @@ void TensorInfoRegistry::AddLayerTensors(const ModelConfig& config,
   Add(suffix,
       {
           .base_name = "att_ein",
-          .source_names = {"attn/attn_vec_einsum/w",
+          .source_names = {"attn/attn_vec_einsum/w", "attn/attn_vec_einsum",
                            "attention_block/proj_final/kernel"},
           .preshape = {layer_config.heads, layer_config.qkv_dim,
                        config.model_dim},

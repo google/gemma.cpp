@@ -49,6 +49,8 @@ struct KVCache {
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           const Allocator& allocator);
   KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
+          const RuntimeConfig& runtime_config, const Allocator& allocator);
+  KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           AttentionImpl attention_impl, const Allocator& allocator,
           std::optional<Type> kv_cache_type = std::nullopt);
 
