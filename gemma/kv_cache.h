@@ -40,6 +40,7 @@ struct KVCachePtr {
   size_t SeqLen() const;
 
   bool IsTiled() const;
+  void ZeroInit();
   MatPtrT<KV_t> kv_cache;
   KVCache* cache = nullptr;
 };
@@ -66,7 +67,7 @@ struct KVCache {
   MatPtrT<KV_t> FlashK(size_t layer, size_t head) const;
   MatPtrT<KV_t> FlashV(size_t layer, size_t head) const;
   size_t LayerCapacity(size_t layer) const;
-  void Clear();
+  void ZeroInit();
   size_t AllocatedBytes() const;
 
   bool IsTiled() const { return !kv_head_ptrs.empty(); }

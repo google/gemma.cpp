@@ -128,7 +128,7 @@ std::vector<int> GenerateSyntheticPrompt(const gcpp::Gemma& gemma,
 }
 
 // Zero out all allocated buffers in the KV cache to ensure clean state.
-void ZeroKVCache(gcpp::KVCache& kv_cache) { kv_cache.Clear(); }
+void ZeroKVCache(gcpp::KVCache& kv_cache) { kv_cache.ZeroInit(); }
 
 }  // namespace
 

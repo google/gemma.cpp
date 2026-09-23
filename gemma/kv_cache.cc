@@ -285,11 +285,19 @@ MatPtrT<KV_t> KVCache::FlashV(size_t layer, size_t head) const {
   return view;
 }
 
-void KVCache::Clear() {
-  if (kv_cache.HasPtr()) ZeroInit(kv_cache);
-  for (auto& ptr : kv_head_ptrs) ZeroInit(ptr);
-  if (ds_state.HasPtr()) ZeroInit(ds_state);
-  if (ds_state_snapshot.HasPtr()) ZeroInit(ds_state_snapshot);
+void KVCache::ZeroInit() {
+  if (kv_cache.HasPtr()) gcpp::ZeroInit(kv_cache);
+  for (auto& ptr : kv_head_ptrs) gcpp::ZeroInit(ptr);
+  if (ds_state.HasPtr()) gcpp::ZeroInit(ds_state);
+  if (ds_state_snapshot.HasPtr()) gcpp::ZeroInit(ds_state_snapshot);
+}
+
+void KVCachePtr::ZeroInit() {
+  if (cache != nullptr) {
+    cache->ZeroInit();
+    return;
+  }
+  if (kv_cache.HasPtr()) gcpp::ZeroInit(kv_cache);
 }
 
 size_t KVCache::AllocatedBytes() const {

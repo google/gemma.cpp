@@ -1,6 +1,8 @@
 #include "gemma/kv_cache.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "gemma/configs.h"
@@ -61,6 +63,13 @@ TEST(KVCacheTest, EncoderDecoderUsesDecoderLayerConfig) {
   EXPECT_EQ(cache.qkv_dim, model_config.decoder_layer_configs[0].qkv_dim);
   EXPECT_EQ(cache.kv_cache.Cols(), model_config.KVCacheCols());
   EXPECT_FALSE(cache.IsTiled());
+  RuntimeConfig runtime_config;
+  runtime_config.attention_impl = AttentionImpl::kFlash;
+  KVCache runtime_cache(model_config, inference_args, runtime_config,
+                        ctx.allocator);
+  EXPECT_FALSE(runtime_cache.IsTiled());
+  EXPECT_EQ(runtime_cache.kv_cache.Rows(), inference_args.seq_len);
+  EXPECT_EQ(runtime_cache.kv_cache.Cols(), model_config.KVCacheCols());
 }
 
 // Layers that reuse an earlier layer's K/V own no region of the cache.
@@ -99,6 +108,80 @@ ModelConfig RingConfig() {
   }
   config.attention_window_sizes = {512, 8192};
   return config;
+}
+
+TEST(KVCacheTest, ZeroInitClearsAllOwnedBuffers) {
+  const auto config = RingConfig();
+  InferenceArgs inference;
+  inference.seq_len = 1031;
+  inference.prefill_tbatch_size = 17;
+  ThreadingContext ctx{ThreadingArgs{}};
+  for (auto impl : {AttentionImpl::kFlash, AttentionImpl::kFlashTransposedQs,
+                    AttentionImpl::kFlashTransposedQsBF16,
+                    AttentionImpl::kFlashAMX,
+                    AttentionImpl::kFlashMatrixAccumulation,
+                    AttentionImpl::kInt8MatrixAccumulation}) {
+    KVCache cache(config, inference, impl, ctx.allocator);
+    if (impl == AttentionImpl::kFlash) cache.PrepareLayer(0, 17, 0, 16);
+    // Add small stand-ins for the flat cache and DeepSeek compressor buffers
+    // so both reset entry points must clear every kind of owned storage.
+    cache.kv_cache = MatStorageT<KV_t>(
+        "kv", Extents2D(3, 5), ctx.allocator, MatPadding::kOdd);
+    cache.ds_state = MatStorageT<float>(
+        "ds_state", Extents2D(1, 8), ctx.allocator, MatPadding::kPacked);
+    cache.ds_state_snapshot = MatStorageT<float>(
+        "ds_snap", Extents2D(2, 8), ctx.allocator, MatPadding::kPacked);
+    auto buffers = cache.kv_head_ptrs;
+    buffers.push_back(cache.kv_cache);
+    buffers.push_back(cache.ds_state);
+    buffers.push_back(cache.ds_state_snapshot);
+    const size_t allocated_bytes = cache.AllocatedBytes();
+    for (bool via_view : {false, true}) {
+      for (auto& buffer : buffers) {
+        for (size_t r = 0; r < buffer.Rows(); ++r) {
+          std::fill_n(buffer.RowBytes(r), buffer.Cols() * buffer.ElementBytes(),
+                      uint8_t{42});
+        }
+      }
+      if (via_view) {
+        cache.ToPtr().ZeroInit();
+      } else {
+        cache.ZeroInit();
+      }
+      EXPECT_EQ(cache.SeqLen(), inference.seq_len);
+      EXPECT_EQ(cache.AllocatedBytes(), allocated_bytes);
+      // Check the original views: resetting must preserve the allocations.
+      for (const auto& buffer : buffers) {
+        for (size_t r = 0; r < buffer.Rows(); ++r) {
+          const auto* begin = buffer.RowBytes(r);
+          EXPECT_TRUE(std::all_of(
+              begin, begin + buffer.Cols() * buffer.ElementBytes(),
+              [](uint8_t value) { return value == 0; }));
+        }
+      }
+    }
+  }
+}
+
+TEST(KVCacheTest, ZeroInitStandaloneAndEmptyViews) {
+  ThreadingContext ctx{ThreadingArgs{}};
+  MatStorageT<KV_t> storage("kv", Extents2D(3, 5), ctx.allocator,
+                           MatPadding::kOdd);
+  for (size_t r = 0; r < storage.Rows(); ++r) {
+    std::fill_n(storage.Row(r), storage.Cols(), hwy::BF16FromF32(3.0f));
+  }
+  KVCachePtr view;
+  view.kv_cache = storage;
+  view.ZeroInit();
+  EXPECT_EQ(view.kv_cache.Row(0), storage.Row(0));
+  for (size_t r = 0; r < storage.Rows(); ++r) {
+    for (size_t c = 0; c < storage.Cols(); ++c) {
+      EXPECT_EQ(hwy::F32FromBF16(storage.Row(r)[c]), 0.0f);
+    }
+  }
+  KVCachePtr empty;
+  empty.ZeroInit();
+  EXPECT_TRUE(empty.IsEmpty());
 }
 
 TEST(KVCacheTest, ConstructorsSelectSameCompactLayout) {
@@ -170,10 +253,10 @@ TEST(KVCacheTest, HeterogeneousSharedHeadsAndTiledSnapshot) {
     EXPECT_GE(cache.LayerCapacity(0), 2048u + 32u);
     EXPECT_EQ(cache.LayerCapacity(1), 4096u);
     EXPECT_GT(cache.kv_head_ptrs[1].Cols(), cache.kv_head_ptrs[0].Cols());
-    cache.Clear();
+    cache.ZeroInit();
     for (auto& ptr : cache.kv_head_ptrs) ptr.RowBytes(0)[0] = 42;
     auto copy = cache.Copy();
-    cache.Clear();
+    cache.ZeroInit();
     for (size_t h = 0; h < cache.kv_head_ptrs.size(); ++h) {
       EXPECT_EQ(cache.kv_head_ptrs[h].RowBytes(0)[0], 0);
       EXPECT_EQ(copy.kv_head_ptrs[h].RowBytes(0)[0], 42);
@@ -241,7 +324,7 @@ TEST(KVCacheTest, WrapGrowthAndIndependentSnapshot) {
         hwy::ConvertScalarTo<float>(v.Row((p / tile) % v.Rows())[p % tile]),
         value);
   }
-  cache.Clear();
+  cache.ZeroInit();
   auto cleared = cache.FlashK(0, 0);
   auto saved = snapshot.FlashK(0, 0);
   EXPECT_EQ(hwy::ConvertScalarTo<float>(cleared.Row(0)[0]), 0.0f);

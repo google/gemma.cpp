@@ -193,9 +193,10 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   const size_t kv_heads = layer_config.kv_heads;
 
   // Resolve KV cache layer index and skip flag
-  const size_t kv_layer_idx = (layer_config.kv_share_layer_idx >= 0)
-                                  ? static_cast<size_t>(layer_config.kv_share_layer_idx)
-                                  : layer_idx;
+  const size_t kv_layer_idx =
+      (layer_config.kv_share_layer_idx >= 0)
+          ? static_cast<size_t>(layer_config.kv_share_layer_idx)
+          : layer_idx;
   const bool skip_kv =
       (layer_config.kv_share_layer_idx >= 0) || (flags & kSkipKV);
 
@@ -279,7 +280,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
             RMSNormInplace(weights_t->PackedScale1(), /*w_ofs=*/0, kv_f32,
                                  qkv_dim, env.ctx, worker);
           });
-        } else if (layer_config.post_qk == PostQKType::NormLocalRope || layer_config.use_qk_norm) {
+        } else if (layer_config.post_qk == PostQKType::NormLocalRope ||
+                   layer_config.use_qk_norm) {
           RMSNormNoScaleInplace(kv_f32, qkv_dim, env.ctx, worker);
         }
 

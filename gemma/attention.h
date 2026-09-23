@@ -27,12 +27,8 @@
 #include "gemma/weights.h"   // LayerWeightsPtrs
 #include "ops/matmul.h"
 #include "hwy/highway.h"     // HWY_VISIT_TARGETS
-#include "hwy/per_target.h"  // VectorBytes
 
 namespace gcpp {
-
-// Returns the number of floats per vector (aka NF).
-inline size_t FloatsPerVector() { return hwy::VectorBytes() / sizeof(float); }
 
 // The attention window usually starts at 0 unless `pos` is larger than
 // the attention window size, then it is `pos` - window_size + 1.

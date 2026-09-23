@@ -92,12 +92,7 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   const int kFlags = 0;
-  if (activations.attention_impl == AttentionImpl::kFlashTransposedQs ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsBF16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      activations.attention_impl == AttentionImpl::kFlashTransposedQsInt8 ||
-      activations.attention_impl == AttentionImpl::kInt8MatrixAccumulation ||
-      activations.attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
+  if (IsTiledAttention(activations.attention_impl)) {
     TiledAttention(activations.attention_impl, num_tokens, layer_idx, layer,
                    activations.attention, qbatch, env, kFlags);
     return;
@@ -1971,11 +1966,7 @@ void ContinuousQBatch::MaybeReleaseKV(const QBatch& from) {
     // we get a crash because Transformer will still access that KV cache.
     if (next_to_insert_ < queries_.NumQueries()) {
       available_kv_caches_.push_back(from.KV(0));
-      if (from.KV(0).cache) {
-        from.KV(0).cache->Clear();
-      } else {
-        ZeroInit(from.KV(0).kv_cache);
-      }
+      from.KV(0).ZeroInit();
       from.KV(0) = KVCachePtr();
     }
   }
