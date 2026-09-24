@@ -1068,7 +1068,8 @@ cc_test(
         ":configs",
         ":cross_entropy",
         ":gemma_lib",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        ":test_util",
+        "//testing/base/public:gunit_for_library_testonly",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
@@ -1088,7 +1089,7 @@ cc_test(
         ":benchmark_helper",
         ":gemma_lib",
         ":test_util",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//testing/base/public:gunit_for_library_testonly",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",

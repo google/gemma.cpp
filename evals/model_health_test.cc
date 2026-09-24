@@ -44,6 +44,7 @@
 #include "evals/cross_entropy.h"
 #include "gemma/configs.h"
 #include "gemma/gemma.h"
+#include "util/test_util.h"
 #include "hwy/base.h"
 #include "hwy/tests/hwy_gtest.h"
 
@@ -485,7 +486,7 @@ TEST_F(ModelHealthTest, DeterministicGeneration) {
 }  // namespace gcpp
 
 int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
+  gcpp::InternalInitTest();
   gcpp::ModelHealthTest::InitEnv(argc, argv);
   int ret = RUN_ALL_TESTS();
   gcpp::ModelHealthTest::DeleteEnv();
