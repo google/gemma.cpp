@@ -74,16 +74,18 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
   const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
   const float query_scale = activations.query_scale;
   const hwy::Divisor div_qbatch(qbatch.Size());
+
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
     GCPP_ZONE(ctx, worker, Zones::kFlashAttentionRmsNormAndPositionalEncoding);
     size_t qi = div_qbatch.Remainder(task);
     size_t batch_idx = div_qbatch.Divide(task);
+    const size_t tq_idx = qbatch.Size() * batch_idx + qi;
+    // Find the token position in the query and calculate
+    // the range of cache positions to attend to.
+    constexpr size_t offset = 0;  // placeholder, do not remove
+    const size_t pos = qbatch.Pos(qi) + batch_idx + offset;
+    float q_scale = query_scale;
     for (size_t h = 0; h < layer_config.heads; ++h) {
-      const size_t tq_idx = qbatch.Size() * batch_idx + qi;
-      // Find the token position in the query and calculate
-      // the range of cache positions to attend to.
-      constexpr size_t offset = 0;  // placeholder, do not remove
-      const size_t pos = qbatch.Pos(qi) + batch_idx + offset;
       float* HWY_RESTRICT q_row = q.Row(tq_idx) + h * layer_config.qkv_dim;
       // Apply rope and scaling to Q.
       if (query_norm_scale.HasPtr()) {
@@ -96,9 +98,10 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
         RMSNormNoScaleInplace(q_row, layer_config.qkv_dim, ctx, worker);
       }
       PositionalEncodingQK(q_row, layer_idx, activations, ctx, worker, pos,
-                           query_scale);
+                           q_scale);
     }
   };
+
   {
     // kHierarchical is not worth the extra sync overhead because the tasks are
     // very lightweight.

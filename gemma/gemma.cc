@@ -1169,13 +1169,17 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
     // Special case: if the prefix includes the last token, we need to prefill
     // the last token, too. However, we need to rewind this for the generation
     // of the first token. So we need to keep track of this.
+    // Embedding models never generate, and they pool over every token, so the
+    // last token must always be prefilled - including when the prompt is
+    // causal (`prefix_end` == 0) and the condition below would not fire.
     // TODO: consider implementing masking instead of this logic?
     const bool attend_to_last_token =
-        (prefill_this_query < prefix_end_this_query);
+        (prefill_this_query < prefix_end_this_query) || config.IsEmbedding();
     if (attend_to_last_token) {
       // The difference can be at most 1.
       prefill_this_query += 1;
-      HWY_ASSERT(prefill_this_query == prefix_end_this_query);
+      HWY_ASSERT(config.IsEmbedding() ||
+                 prefill_this_query == prefix_end_this_query);
     }
     // In prefix-LM mode, we need to look at all the tokens for the prefix in
     // one iteration through the layers, so we need a large enough batch size.
@@ -1586,7 +1590,8 @@ void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
   const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
   // In autoregressive mode, we have not prefilled the last token, so do
   // not advance.
-  const bool update_pos = (qbatch.Pos(qi) < qbatch.PrefixEnd(qi));
+  const bool update_pos =
+      (qbatch.Pos(qi) < qbatch.PrefixEnd(qi)) || config.IsEmbedding();
   StreamAndUpdateEOS(qi, pos, qbatch.Prompt(qi)[last_pos_in_prompt], 0.0f,
                      config, runtime_config, qbatch, update_pos, non_eos);
 }

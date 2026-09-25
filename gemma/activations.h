@@ -20,7 +20,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 #include "deepseek/deepseek_dims.h"  // MLADims, CreateYarnInvTimescale

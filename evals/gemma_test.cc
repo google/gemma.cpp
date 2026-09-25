@@ -44,10 +44,11 @@ class GemmaTest : public ::testing::Test {
     HWY_ASSERT(s_env == nullptr);  // Should only be called once.
     std::vector<char*> filtered_argv;
     for (int i = 0; i < argc; ++i) {
-      // Test runners may pass `--logtostderr`, which is not
-      // recognized by `GemmaArgs`. Filter it out so
+      // Test runners may pass `--logtostderr` or `--gtest_*`, which are not
+      // recognized by `GemmaArgs`. Filter them out so
       // `ConsumedArgs::AbortIfUnconsumed` does not abort.
-      if (std::string_view(argv[i]) == "--logtostderr") continue;
+      std::string_view arg(argv[i]);
+      if (arg == "--logtostderr" || arg.rfind("--gtest_", 0) == 0) continue;
       filtered_argv.push_back(argv[i]);
     }
     int filtered_argc = static_cast<int>(filtered_argv.size());
