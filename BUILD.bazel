@@ -690,6 +690,9 @@ cc_test(
     name = "kv_cache_test",
     srcs = ["gemma/kv_cache_test.cc"],
     deps = [
+        ":activations",
+        ":attention",
+        ":mat",
         ":configs",
         ":gemma_args",
         ":kv_cache",

@@ -266,7 +266,8 @@ void Run(const GemmaArgs& args) {
   const Gemma gemma(args, ctx);
   RuntimeConfig runtime_config;
   inference.CopyTo(runtime_config);
-  KVCache kv_cache(gemma.Config(), inference, runtime_config, ctx.allocator);
+  KVCache kv_cache(gemma.Config(), inference, runtime_config.attention_impl,
+                   ctx.allocator, runtime_config.kv_cache_type);
 
   if (inference.verbosity >= 1) {
     ShowConfig(args, gemma.Config(), gemma.WeightReadMode(), ctx);

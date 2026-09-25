@@ -38,17 +38,6 @@ inline size_t StartPos(size_t pos, const ModelConfig& config,
   return pos - HWY_MIN(att_window_size - 1, pos);
 }
 
-// The k-cache and v-cache are setup without knowing NF. So if it hasn't been
-// done already, reshape it to take NF into account. Must be called before
-// FlashAttention. `nf` must be the number of floats per vector of the SIMD
-// target that runs it, i.e. `hn::Lanes(hn::ScalableTag<float>())`.
-inline void MaybeReshapeCache(const size_t default_cols, const size_t nf,
-                              MatPtrT<KV_t>& cache) {
-  if (default_cols == cache.Cols()) {
-    cache.ReshapePackedRowsToCols(2 * nf);
-  }
-}
-
 // Passed to HWY_VISIT_TARGETS; declares for one target.
 #define GEMMA_DECL_ATTENTION(TARGET, NAMESPACE)                               \
   namespace NAMESPACE {                                                       \
