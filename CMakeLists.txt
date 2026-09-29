@@ -407,6 +407,12 @@ set(GEMMA_INTEGRATION_TEST_FILES
 foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
   # The TESTNAME is the name without the extension or directory.
   get_filename_component(TESTNAME ${TESTFILE} NAME_WE)
+  # Highway names its own test targets the same way, so a shared basename
+  # (compress_test, dot_test, image_test) collides and fails the configure
+  # step. Prefix ours only when the name is already taken.
+  if (TARGET ${TESTNAME})
+    set(TESTNAME gemma_${TESTNAME})
+  endif()
   add_executable(${TESTNAME} ${TESTFILE})
   # Test all targets, not just the best/baseline. This changes the default
   # policy to all-attainable; note that setting -DHWY_COMPILE_* directly can
@@ -415,6 +421,13 @@ foreach (TESTFILE IN LISTS GEMMA_TEST_FILES)
   target_compile_options(${TESTNAME} PRIVATE -DHWY_IS_TEST=1)
 
   target_link_libraries(${TESTNAME} PRIVATE libgemma GTest::Main hwy hwy_contrib hwy_test)
+  # threading_test includes gmock/gmock.h, whose headers come with the gmock
+  # target rather than with GTest::Main.
+  if (TARGET gmock)
+    target_link_libraries(${TESTNAME} PRIVATE gmock)
+  elseif (TARGET GTest::gmock)
+    target_link_libraries(${TESTNAME} PRIVATE GTest::gmock)
+  endif()
 
   # Run discovered tests from the repo root so tests using relative paths
   # (e.g. paligemma/image_test.cc reading paligemma/testdata/image.ppm) work.
