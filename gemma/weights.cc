@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <cstring>
 #include <mutex>  // NOLINT
 #include <string>
 #include <vector>
@@ -129,7 +130,10 @@ static void SplitPackedMatrix(MatPtr& parent, size_t split_row, MatPtr& w1,
 void LayerWeightsPtrs::SplitW1() {
   // Used for Gemma layers; FFWVit uses different tensors.
   if (layer_config.type == LayerAttentionType::kVit) return;
-  if (layer_config.IsMoE()) return;
+  if (layer_config.IsMoE() && !gating_einsum_w.HasPtr() &&
+      !gating_einsum_w1.HasPtr()) {
+    return;
+  }
 
   // Files have both or neither of w1 and w2.
   HWY_ASSERT(gating_einsum_w1.HasPtr() == gating_einsum_w2.HasPtr());
@@ -543,6 +547,18 @@ void LayerWeightsPtrs::Fixup(Model model, std::vector<MatOwner>& mat_owners,
       const size_t elem_bytes = qkv_einsum_w2.ElementBytes();
       const size_t old_row_bytes = old_stride * elem_bytes;
       const size_t kv_heads = layer_config.kv_heads;
+      const size_t qkv_dim = layer_config.qkv_dim;
+
+      // In Gemma 4 global layers, attention_k_eq_v is true (K0 == V0).
+      // If already interleaved by exporter: [K0, V0, K1, V1], slice 0 == slice 1.
+      // If not interleaved: [K0, K1, V0, V1], slice 0 (K0) != slice 1 (K1).
+      const uint8_t* slice0 = qkv_einsum_w2.RowBytes(0);
+      const uint8_t* slice1 = qkv_einsum_w2.RowBytes(qkv_dim);
+      if (std::memcmp(slice0, slice1, old_row_bytes) == 0) {
+        // Exporter already emitted interleaved layout; skip fixup.
+        return;
+      }
+
       const size_t total_bytes = qkv_einsum_w2.Rows() * old_row_bytes;
       hwy::AlignedFreeUniquePtr<uint8_t[]> tmp =
           hwy::AllocateAligned<uint8_t>(total_bytes);
@@ -556,7 +572,6 @@ void LayerWeightsPtrs::Fixup(Model model, std::vector<MatOwner>& mat_owners,
       }
 
       const size_t new_row_bytes = qkv_einsum_w2.Cols() * elem_bytes;
-      const size_t qkv_dim = layer_config.qkv_dim;
       const uint8_t* src_ptr = tmp.get();
       for (size_t i = 0; i < kv_heads; ++i) {
         for (size_t row = 0; row < qkv_dim; ++row) {
