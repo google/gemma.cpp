@@ -259,7 +259,7 @@ class MxFp4Codec {
     const float max_abs = hn::ReduceMax(df, max_vec);
 
     if (max_abs == 0.0f) {
-      hwy::ZeroBytes(block_ptr, kBlockSize);
+      hwy::ZeroBytes(block_ptr, sizeof(MxFp4Stream));
       return;
     }
 
