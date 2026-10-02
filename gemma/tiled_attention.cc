@@ -16,7 +16,6 @@
 #include "gemma/gemma.h"
 #include "gemma/kv_cache.h"
 #include "gemma/kv_transcoding.h"
-#include "gemma/tensor_stats.h"
 #include "ops/matmul.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
@@ -362,7 +361,7 @@ static HWY_INLINE void ComputeQKVTransposedTile(
   bool is_transposed_qs =
       IsBF16TransposedQsAttention(attention_impl) ||
       attention_impl == AttentionImpl::kFlashTransposedQsInt16 ||
-      IsInt8VNNIAttention(attention_impl);
+      attention_impl == AttentionImpl::kFlashTransposedQsInt8;
 
   hn::ScalableTag<float> df;
   static hwy::Divisor tile_size_divisor(KVCache::kTileSize);
@@ -450,16 +449,6 @@ static HWY_INLINE void ComputeQKVTransposedTile(
               RMSNormNoScaleInplace(v_norm_buf, qkv_dim, env.ctx, worker);
               v_source = v_norm_buf;
             }
-#if GCPP_TENSOR_STATS
-            float* kv_row_mut =
-                kv_out_data +
-                (token_in_tile_idx * qbatch.Size() + query_idx) * kv_out_cols;
-            hwy::CopyBytes(k_f32, kv_row_mut + kv_head * 2 * qkv_dim,
-                           qkv_dim * sizeof(float));
-            hwy::CopyBytes(v_source,
-                           kv_row_mut + kv_head * 2 * qkv_dim + qkv_dim,
-                           qkv_dim * sizeof(float));
-#endif  // GCPP_TENSOR_STATS
             // `v_cache_values` is a pointer to the V data that will be
             // compressed and stored in the KV cache. By default, it points to
             // the raw `v_source`.
@@ -476,49 +465,38 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                                          size_t scale_idx) HWY_ATTR {
                 const float max_abs =
                     AbsMaxOfSpan(hwy::Span<const float>(values, dim));
-                float scale = max_abs == 0.0f ? 1.0f : max_abs / 127.0f;
-                const BF16 scale_bf16 = hwy::ConvertScalarTo<BF16>(scale);
-                scales_ptr[scale_idx] = scale_bf16;
-                // Quantizing with the stored scale keeps encode/decode
-                // consistent.
-                scale = hwy::ConvertScalarTo<float>(scale_bf16);
-                const float inv_scale = (scale == 0.0f) ? 0.0f : (1.0f / scale);
+                float scale = max_abs / 127.0f;
+                if (scale == 0.0f) scale = 1.0f;
+                scales_ptr[scale_idx] = hwy::ConvertScalarTo<BF16>(scale);
+                const float inv_scale = 1.0f / scale;
                 const hn::Vec<decltype(df)> v_inv_scale =
                     hn::Set(df, inv_scale);
-                // With a normal scale, bf16 round-to-nearest keeps |x/scale|
-                // below 127.5, so values already round into [-127, 127]. The
-                // clamp only guards tiny/subnormal scales, whose bf16 rounding
-                // (possibly to 0) would otherwise blow up `inv_scale`.
-                const hn::Vec<decltype(df)> v_min = hn::Set(df, -127.0f);
-                const hn::Vec<decltype(df)> v_max = hn::Set(df, 127.0f);
                 const size_t lanes = hn::Lanes(df);
 
                 const hn::Rebind<int32_t, decltype(df)> di32;
                 auto sum_vec = hn::Zero(di32);
-                const bool is_k = scale_idx < KVCache::kTileSize;
-                const bool write_k_sums =
-                    is_k && IsInt8VNNIAttention(attention_impl);
+                bool is_k = scale_idx < KVCache::kTileSize;
 
                 size_t i = 0;
                 for (; i + lanes <= dim; i += lanes) {
-                  auto scaled = hn::Clamp(
-                      hn::Mul(hn::LoadU(df, values + i), v_inv_scale),
-                      v_min, v_max);
+                  auto scaled = hn::Mul(hn::LoadU(df, values + i), v_inv_scale);
                   hn::StoreU(scaled, df, values + i);
-                  if (write_k_sums) {
+                  if (is_k &&
+                      attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
                     sum_vec = hn::Add(sum_vec, hn::NearestInt(scaled));
                   }
                 }
                 if (HWY_UNLIKELY(i < dim)) {
-                  auto scaled = hn::Clamp(
-                      hn::Mul(hn::LoadN(df, values + i, dim - i), v_inv_scale),
-                      v_min, v_max);
+                  auto scaled =
+                      hn::Mul(hn::LoadN(df, values + i, dim - i), v_inv_scale);
                   hn::StoreN(scaled, df, values + i, dim - i);
-                  if (write_k_sums) {
+                  if (is_k &&
+                      attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
                     sum_vec = hn::Add(sum_vec, hn::NearestInt(scaled));
                   }
                 }
-                if (write_k_sums) {
+                if (is_k &&
+                    attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
                   int32_t* k_sums_ptr = reinterpret_cast<int32_t*>(
                       scales_ptr + 2 * KVCache::kTileSize);
                   k_sums_ptr[scale_idx] = hn::ReduceSum(di32, sum_vec);
@@ -560,7 +538,8 @@ static HWY_INLINE void ComputeQKVTransposedTile(
                     qkv_dim, in_tile_idx, dim);
                 v_tile_vec[v_offset_local] = v_cache_values[dim];
               }
-            } else if (IsInt8VNNIAttention(attention_impl)) {
+            } else if (attention_impl ==
+                       AttentionImpl::kFlashTransposedQsInt8) {
               for (int dim = 0; dim < qkv_dim; ++dim) {
                 // K VNNI layout: [qkv_dim/4, kTileSize, 4]
                 size_t k_offset = (dim - dim % 4) * KVCache::kTileSize +
@@ -628,21 +607,6 @@ static HWY_INLINE void ComputeQKVTransposedTile(
           current_token_idx = token_in_tile_idx;
         }
       });
-#if GCPP_TENSOR_STATS
-  // K is post-norm+RoPE and V is post-norm. Uses the weight layer index
-  // because `layer_idx` may refer to a shared KV cache layer.
-  const size_t kv_stats_rows = num_interleaved * kv_heads;
-  MatPtrT<float> k_view("att_k", Extents2D(kv_stats_rows, qkv_dim));
-  k_view.SetPtr(kv_out_data, 2 * qkv_dim);
-  if (activations.s_att_k) {
-    activations.s_att_k->Notify(layer.layer_idx, k_view, env.ctx);
-  }
-  MatPtrT<float> v_view("att_v", Extents2D(kv_stats_rows, qkv_dim));
-  v_view.SetPtr(kv_out_data + qkv_dim, 2 * qkv_dim);
-  if (activations.s_att_v) {
-    activations.s_att_v->Notify(layer.layer_idx, v_view, env.ctx);
-  }
-#endif  // GCPP_TENSOR_STATS
 }
 
 // Note: q_ptr and out_ptr do not use HWY_RESTRICT because this function may be
@@ -738,13 +702,10 @@ void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,
                                        scale);
 }
 
-// Quantizes one query row to int8 with a per-row scale. If `kBiased`, adds
-// 128 (mod 256) so the bytes can be read as uint8 by VPDPBUSD (see k_sums);
-// otherwise stores signed int8 for AMX TDPBSSD.
-template <bool kBiased, class DF>
-static HWY_INLINE void CompressSingleQueryInt8T(DF df, const float* q_ptr,
-                                                int qkv_dim, int8_t* out_ptr,
-                                                float* scale_out) {
+template <class DF>
+static HWY_INLINE void CompressSingleQueryInt8(DF df, const float* q_ptr,
+                                               int qkv_dim, int8_t* out_ptr,
+                                               float* scale_out) {
   namespace hn = hwy::HWY_NAMESPACE;
   const size_t lanes = hn::Lanes(df);
   const hn::ScalableTag<int8_t> d_out_full;
@@ -773,58 +734,12 @@ static HWY_INLINE void CompressSingleQueryInt8T(DF df, const float* q_ptr,
         hn::OrderedDemote2To(d16, hn::NearestInt(x0), hn::NearestInt(x1));
     const hn::Vec<decltype(d16)> demoted16_1 =
         hn::OrderedDemote2To(d16, hn::NearestInt(x2), hn::NearestInt(x3));
-    hn::Vec<decltype(d_out_full)> demoted8 =
+    const hn::Vec<decltype(d_out_full)> demoted8 =
         hn::OrderedDemote2To(d_out_full, demoted16_0, demoted16_1);
-    if constexpr (kBiased) {
-      demoted8 =
-          hn::Add(demoted8, hn::Set(d_out_full, static_cast<int8_t>(-128)));
-    }
-    hn::StoreU(demoted8, d_out_full, out_ptr + i);
+    const hn::Vec<decltype(d_out_full)> biased8 =
+        hn::Add(demoted8, hn::Set(d_out_full, static_cast<int8_t>(-128)));
+    hn::StoreU(biased8, d_out_full, out_ptr + i);
   }
-}
-
-template <class DF>
-static HWY_INLINE void CompressSingleQueryUint8(DF df, const float* q_ptr,
-                                                int qkv_dim, int8_t* out_ptr,
-                                                float* scale_out) {
-  CompressSingleQueryInt8T</*kBiased=*/true>(df, q_ptr, qkv_dim, out_ptr,
-                                             scale_out);
-}
-
-void CompressQueriesUint8(hwy::Span<const float* const> input, int qkv_dim,
-                          int8_t* HWY_RESTRICT output,
-                          float* HWY_RESTRICT scale) {
-  namespace hn = hwy::HWY_NAMESPACE;
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-  const size_t num_queries = input.size();
-
-  for (size_t q = 0; q < num_queries; ++q) {
-    CompressSingleQueryUint8(df, input[q], qkv_dim, output + q * qkv_dim,
-                             scale + q);
-  }
-}
-
-void CompressQueriesUint8Contiguous(const float* HWY_RESTRICT input,
-                                    int qkv_dim, size_t num_queries,
-                                    int8_t* HWY_RESTRICT output,
-                                    float* HWY_RESTRICT scale) {
-  namespace hn = hwy::HWY_NAMESPACE;
-  using DF = hn::ScalableTag<float>;
-  const DF df;
-
-  for (size_t q = 0; q < num_queries; ++q) {
-    CompressSingleQueryUint8(df, input + q * qkv_dim, qkv_dim,
-                             output + q * qkv_dim, scale + q);
-  }
-}
-
-template <class DF>
-static HWY_INLINE void CompressSingleQueryInt8(DF df, const float* q_ptr,
-                                               int qkv_dim, int8_t* out_ptr,
-                                               float* scale_out) {
-  CompressSingleQueryInt8T</*kBiased=*/false>(df, q_ptr, qkv_dim, out_ptr,
-                                              scale_out);
 }
 
 void CompressQueriesInt8(hwy::Span<const float* const> input, int qkv_dim,
@@ -1156,9 +1071,6 @@ void LocalAttentionForAllHeadsTokensAndBatch(
     activations.sub_task_max_logits->resize(num_sub_tasks);
   }
   size_t max_queries_per_subtask = std::min(num_queries, kQueriesPerSubtask);
-  // Without AMX-INT8, kFlashAMXInt8 falls back to the VNNI kernel below.
-  const bool use_amx_int8 =
-      attention_impl == AttentionImpl::kFlashAMXInt8 && AmxInt8Available();
   if (IsBF16TransposedQsAttention(attention_impl) ||
       attention_impl == AttentionImpl::kFlashMatrixAccumulation) {
     if (activations.bf16_queries != nullptr &&
@@ -1179,7 +1091,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             activations.q_scales->size()) {
       activations.q_scales->resize(num_sub_tasks * max_queries_per_subtask);
     }
-  } else if (IsInt8VNNIAttention(attention_impl)) {
+  } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
     if (activations.int8_queries != nullptr &&
         num_sub_tasks * max_queries_per_subtask * qkv_dim >
             activations.int8_queries->size()) {
@@ -1516,7 +1428,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
               max_logits.data(), worker_workspace);
-        } else if (use_amx_int8) {
+        } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt8) {
           HWY_DASSERT(activations.int8_queries != nullptr);
           HWY_DASSERT(activations.q_scales != nullptr);
           int8_t* int8_queries_ptr =
@@ -1526,25 +1438,6 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               activations.q_scales->data() + task_idx * max_queries_per_subtask;
           CompressQueriesInt8(queries_ptrs_span, qkv_dim, int8_queries_ptr,
                               q_scales_ptr);
-          DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
-              kv_ptrs, sub_num_queries, int8_queries_ptr,
-              hwy::Span<const float>(q_scales_ptr, sub_num_queries),
-              hwy::Span<const size_t>(start_pos_per_query),
-              hwy::Span<const size_t>(last_pos_per_query),
-              activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data(), worker_workspace);
-        } else if (IsInt8VNNIAttention(attention_impl)) {
-          // kFlashTransposedQsInt8, or kFlashAMXInt8 on CPUs without AMX-INT8:
-          // both share the VNNI KV layout, so use the VNNI kernel directly.
-          HWY_DASSERT(activations.int8_queries != nullptr);
-          HWY_DASSERT(activations.q_scales != nullptr);
-          int8_t* int8_queries_ptr =
-              activations.int8_queries->data() +
-              task_idx * max_queries_per_subtask * qkv_dim;
-          float* q_scales_ptr =
-              activations.q_scales->data() + task_idx * max_queries_per_subtask;
-          CompressQueriesUint8(queries_ptrs_span, qkv_dim, int8_queries_ptr,
-                               q_scales_ptr);
           DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
               kv_ptrs, sub_num_queries, int8_queries_ptr,
               hwy::Span<const float>(q_scales_ptr, sub_num_queries),
@@ -1591,16 +1484,7 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
 
   HWY_DASSERT_M((layer_config.heads % layer_config.kv_heads) == 0,
                 "query heads must be a multiple of key-value heads");
-
-  if (attention_impl == AttentionImpl::kFlashAMXInt8 && !layer_config.norm_v) {
-    static std::atomic_flag warned = ATOMIC_FLAG_INIT;
-    if (!warned.test_and_set()) {
-      HWY_WARN(
-          "flash_amx_int8 quantizes softmax probabilities weighted by "
-          "per-token V scales to uint8; without norm_v, V outliers can reduce "
-          "accuracy. Consider flash_amx (BF16) instead.");
-    }
-  }
+  (void)layer_config;  // only used in HWY_DASSERT
 
   const size_t active_qkv_dim = layer_config.heads * layer_config.qkv_dim;
   activations.q.OverrideCols(active_qkv_dim);
@@ -1627,15 +1511,8 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q,
                                layer.query_norm_scale, layer_idx, activations,
                                env.ctx);
-  if (activations.s_att_q) {
-    activations.s_att_q->Notify(layer.layer_idx, activations.q, env.ctx);
-  }
   LocalAttentionForAllHeadsTokensAndBatch(attention_impl, num_tokens, layer_idx,
                                           layer, activations, qbatch, env.ctx);
-  if (activations.s_att_out) {
-    activations.s_att_out->Notify(layer.layer_idx, activations.att_out,
-                                  env.ctx);
-  }
   SumHeads(layer, activations, env);
 }
 

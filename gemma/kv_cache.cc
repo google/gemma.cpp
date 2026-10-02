@@ -227,9 +227,11 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
   size_t flat_accum = 0;
   size_t k_v_accum = 0;
   size_t kv_head_accum = 0;
+  size_t max_qkv_dim = 0;
   size_t max_kv_heads = 0;
 
   for (size_t i = 0; i < num_layers; ++i) {
+    max_qkv_dim = HWY_MAX(max_qkv_dim, kv_layer_configs[i].qkv_dim);
     max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
 
     if (!kv_layer_configs[i].HasOwnKVCache()) {
@@ -306,7 +308,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kBF16);
     } else if (runtime_config.attention_impl ==
                    AttentionImpl::kFlashTransposedQsInt16 ||
-               IsInt8VNNIAttention(runtime_config.attention_impl) ||
+               runtime_config.attention_impl ==
+                   AttentionImpl::kFlashTransposedQsInt8 ||
                runtime_config.attention_impl ==
                    AttentionImpl::kInt8MatrixAccumulation) {
       if (runtime_config.kv_cache_type.has_value() &&
@@ -322,6 +325,17 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       kv_cache_type = runtime_config.kv_cache_type.value_or(Type::kF32);
     }
 
+    // Allocate tile size using max_qkv_dim to prevent out-of-bounds corruption
+    int max_tile_length = 2 * max_qkv_dim * kTileSize;
+    if (kv_cache_type == Type::kInt8) {
+      // microscaling
+      max_tile_length += 2 * sizeof(BF16) * kTileSize;
+      if (runtime_config.attention_impl ==
+          AttentionImpl::kFlashTransposedQsInt8) {
+        // K sums
+        max_tile_length += sizeof(int32_t) * kTileSize;
+      }
+    }
     auto num_tiles_per_head = [](size_t window_size, size_t prefill_tbatch_size,
                                  size_t max_seq_len) {
       return hwy::DivCeil(
@@ -343,7 +357,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       size_t tile_len = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         tile_len += 2 * sizeof(BF16) * kTileSize;
-        if (IsInt8VNNIAttention(runtime_config.attention_impl)) {
+        if (runtime_config.attention_impl ==
+            AttentionImpl::kFlashTransposedQsInt8) {
           // K sums
           tile_len += sizeof(int32_t) * kTileSize;
         }
@@ -409,7 +424,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         layer_tile_length += 2 * sizeof(BF16) * kTileSize;
-        if (IsInt8VNNIAttention(runtime_config.attention_impl)) {
+        if (runtime_config.attention_impl ==
+            AttentionImpl::kFlashTransposedQsInt8) {
           // K sums
           layer_tile_length += sizeof(int32_t) * kTileSize;
         }

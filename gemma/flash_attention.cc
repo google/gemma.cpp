@@ -1882,27 +1882,6 @@ void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
       att_out, exp_denominator_sums, max_logits);
 }
 
-void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
-    hwy::Span<const MatPtr> kvs, size_t q_count,
-    const int8_t* HWY_RESTRICT q_base, const hwy::Span<const float> q_scales,
-    hwy::Span<const size_t> start_pos_per_query,
-    hwy::Span<const size_t> last_pos_per_query, const float att_cap,
-    MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits,
-    hwy::AlignedVector<uint8_t>* worker_workspace) {
-  TileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
-      kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
-      att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
-}
-
-bool AmxInt8Available() {
-#if GEMMA_HAVE_AMX_INT8
-  return hwy::HaveTile64BMatMulI8();
-#else
-  return false;
-#endif
-}
-
 void DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
     hwy::Span<const MatPtr> kvs, size_t q_count,
     const int16_t* HWY_RESTRICT q_base, const hwy::Span<const float> q_scales,
