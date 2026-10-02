@@ -62,7 +62,7 @@ if(GEMMA_ONEDNN_BRGEMM OR GEMMA_ONEDNN_MATMUL)
 endif()
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/GemmaFetch.cmake)
 
-gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 97a5dd1af1a43a8b2ccbd31e556b4139bffbdafd EXCLUDE_FROM_ALL)
+gemma_fetch(highway GIT_REPOSITORY https://github.com/google/highway.git GIT_TAG 353597727402dfc7b28e5b1474766e366ceafd24 EXCLUDE_FROM_ALL)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)

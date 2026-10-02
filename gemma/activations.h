@@ -131,7 +131,19 @@ struct AttentionActivations {
         inv_timescale_global(CreateInvTimescale(
             allocator, max_qkv_dim,
             layer_config.post_qk == PostQKType::HalfRope,
-            config.global_rope_theta, config.partial_rotary_factor)) {
+            config.global_rope_theta, config.partial_rotary_factor)),
+        s_att_q(config.is_encoder_decoder ? config.decoder_num_layers
+                                          : config.num_layers,
+                max_workers),
+        s_att_k(config.is_encoder_decoder ? config.decoder_num_layers
+                                          : config.num_layers,
+                max_workers),
+        s_att_v(config.is_encoder_decoder ? config.decoder_num_layers
+                                          : config.num_layers,
+                max_workers),
+        s_att_out(config.is_encoder_decoder ? config.decoder_num_layers
+                                            : config.num_layers,
+                  max_workers) {
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -246,6 +258,13 @@ struct AttentionActivations {
   // Rope
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
+
+  // Only active when GCPP_TENSOR_STATS.
+  TensorStats s_att_q;
+  TensorStats s_att_k;
+  TensorStats s_att_v;
+  TensorStats s_att_out;
+
   // Replication factor to help evenly share work over threads.
   static constexpr size_t kThreadReplicationFactor = 4;
 };
@@ -301,6 +320,10 @@ struct AttentionActivationsPtrs {
     int8_queries = &activations.int8_queries;
     float_queries = &activations.float_queries;
     q_scales = &activations.q_scales;
+    s_att_q = &activations.s_att_q;
+    s_att_k = &activations.s_att_k;
+    s_att_v = &activations.s_att_v;
+    s_att_out = &activations.s_att_out;
   }
 
   void SetBatchSize(size_t batch_size) {
@@ -383,6 +406,12 @@ struct AttentionActivationsPtrs {
   hwy::Divisor div_heads;
   // Query scaling factor for attention computation.
   float query_scale;
+
+  // Only active when GCPP_TENSOR_STATS.
+  TensorStats* s_att_q = nullptr;
+  TensorStats* s_att_k = nullptr;
+  TensorStats* s_att_v = nullptr;
+  TensorStats* s_att_out = nullptr;
 };
 
 static inline size_t MoEBatchSize(const LayerConfig& layer_config,
@@ -646,6 +675,10 @@ struct Activations {
   }
 
   ~Activations() {
+    attention_storage.s_att_q.ReduceAndPrint("att_q");
+    attention_storage.s_att_k.ReduceAndPrint("att_k");
+    attention_storage.s_att_v.ReduceAndPrint("att_v");
+    attention_storage.s_att_out.ReduceAndPrint("att_out");
     s_ffw_in.ReduceAndPrint("ffw_in");
     s_ffw_hidden.ReduceAndPrint("ffw_hidden");
     s_ffw_out.ReduceAndPrint("ffw_out");
