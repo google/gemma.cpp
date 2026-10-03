@@ -372,10 +372,7 @@ class MMDecompress {
 
     // First call: generate candidates.
     if (HWY_UNLIKELY(!autotune.HasCandidates())) {
-      const MMParA other = (A.Rows() == 1) ? MMParA::kNone : MMParA::kM;
-      std::vector<MMParA> candidates = {MMParA::kK1, MMParA::kK2, MMParA::kK4,
-                                        other};
-      autotune.SetCandidates(candidates);
+      autotune.SetCandidates(MMParACandidates(A.Rows(), env.schedule));
     }
 
     const MMParA& par_a = autotune.NextConfig();
@@ -1150,10 +1147,11 @@ class MMImpl {
   }
 
  public:
-  static MMPerKey& FindOrAddPerKey(size_t M, size_t K, size_t N, size_t num_B,
-                                   size_t vector_bytes,
-                                   MatMulEnv::PerCluster& per_cluster) {
-    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N, num_B);
+  static MMPerKey& FindOrAddPerKey(
+      size_t M, size_t K, size_t N, size_t num_B, size_t vector_bytes,
+      MatMulEnv::PerCluster& per_cluster,
+      MMActivation activation = MMActivation::kBF16) {
+    const MMKeys::Key key = MMKeys::KeyFromDims(M, K, N, num_B, activation);
     intptr_t index = IndexOfKey(key, per_cluster.keys);
     // First time we see this shape/key.
     if (HWY_UNLIKELY(index < 0)) {
@@ -1498,26 +1496,33 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
         // BRGeMM failed; fall through to standard matmul.
       }
 
-      if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
-        brg_tuner.SetCandidates(BRGeMMCandidates(M, K, N));
-      }
-
-      const BRGeMMConfig& cfg = brg_tuner.NextConfig();
-      const uint64_t t0 = hwy::timer::Start();
-      if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
-                          cluster_idx)) {
-        const uint64_t t1 =
-            env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
-        brg_tuner.NotifyTicks(t1 - t0);
-
-        if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
-          const BRGeMMConfig& best = *brg_tuner.Best();
-          fprintf(stderr,
-                  "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
-                  "batch=%zu\n",
-                  M, K, N, best.M_blk, best.N_blk, best.K_blk, best.batch_size);
+      // A cached BRGeMM candidate may fail and fall back to the generic
+      // kernel. Do not re-enter the tuner after it has chosen a winner.
+      if (!brg_tuner.Best()) {
+        if (HWY_UNLIKELY(!brg_tuner.HasCandidates())) {
+          brg_tuner.SetCandidates(
+              BRGeMMCandidates(M, K, N, env.schedule == MMSchedule::kAutoTune,
+                               env.schedule == MMSchedule::kFixedMinK));
         }
-        return &per_key;
+
+        const BRGeMMConfig& cfg = brg_tuner.NextConfig();
+        const uint64_t t0 = hwy::timer::Start();
+        if (DoMatMul_BRGeMM(A, B, C_rows, M, K, N, scale, add, cfg, env.ctx,
+                            cluster_idx)) {
+          const uint64_t t1 =
+              env.have_timer_stop ? hwy::timer::Stop() : hwy::timer::Start();
+          brg_tuner.NotifyTicks(t1 - t0);
+
+          if (HWY_UNLIKELY(env.print_best && brg_tuner.Best())) {
+            const BRGeMMConfig& best = *brg_tuner.Best();
+            fprintf(stderr,
+                    "BRGeMM best: %zux%zux%zu M_blk=%zu N_blk=%zu K_blk=%zu "
+                    "batch=%zu\n",
+                    M, K, N, best.M_blk, best.N_blk, best.K_blk,
+                    best.batch_size);
+          }
+          return &per_key;
+        }
       }
       // BRGeMM failed; fall through to standard matmul.
     }
@@ -1562,8 +1567,12 @@ HWY_NOINLINE MMPerKey* MatMul(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
     HWY_ASSERT(K <= MMEntireA::kMaxK);
     HWY_ASSERT(N % kNR == 0);
     MMImpl::EnsureAligned(A, cache.VectorBytes());
-    tuner.SetCandidates(
-        MMCandidates(cache, M, K, N, num_B, sizeof(TC), env.print_config));
+    // Fixed scheduling must not depend on which M in this key's bucket
+    // happened to be seen first.
+    const size_t max_M =
+        env.schedule == MMSchedule::kAutoTune ? M : MMKeys::BucketM(M);
+    tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(TC),
+                                     env.print_config, env.schedule));
   }
 
   const MMConfig& cfg = tuner.NextConfig();
@@ -1625,7 +1634,7 @@ HWY_NOINLINE MMPerKey* TwoMatMul(const MatPtrT<BF16>& A, const MatPtrT<TB>& B1,
     MMImpl::EnsureAligned(A, cache.VectorBytes());
     const size_t max_M = MMKeys::BucketM(M);
     tuner.SetCandidates(MMCandidates(cache, max_M, K, N, num_B, sizeof(BF16),
-                                     env.print_config));
+                                     env.print_config, env.schedule));
   }
 
   const MMConfig& cfg = tuner.NextConfig();

@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -50,6 +51,31 @@ TEST(GemmaArgsTest, AllConsumedArgs) {
   CheckAllConsumed({"gemma", "--weights=x", "--verbosity", "2"});
   // Two args with values
   CheckAllConsumed({"gemma", "--verbosity", "2", "--deterministic=true"});
+}
+
+TEST(GemmaArgsTest, MatMulSchedule) {
+  EXPECT_EQ(InferenceArgs().MatMulSchedule(), MMSchedule::kAutoTune);
+  for (const auto& entry : std::vector<std::pair<std::string, MMSchedule>>{
+           {"auto", MMSchedule::kAutoTune},
+           {"fixed", MMSchedule::kFixed},
+           {"fixed_min_k", MMSchedule::kFixedMinK}}) {
+    const std::vector<std::string> args = {"gemma", "--matmul_schedule",
+                                           entry.first};
+    std::vector<char*> ptrs;
+    FillPtrs(args, ptrs);
+    ConsumedArgs consumed(ptrs.size(), ptrs.data());
+    GemmaArgs parsed(ptrs.size(), ptrs.data(), consumed);
+    consumed.AbortIfUnconsumed();
+    EXPECT_EQ(parsed.inference.MatMulSchedule(), entry.second);
+    EXPECT_FALSE(parsed.inference.deterministic);
+    CheckAllConsumed({"gemma", "--matmul_schedule=" + entry.first});
+  }
+}
+
+TEST(GemmaArgsTest, InvalidMatMulSchedule) {
+  InferenceArgs args;
+  args.matmul_schedule = "fixd";
+  EXPECT_DEATH(args.MatMulSchedule(), "Invalid --matmul_schedule");
 }
 
 TEST(GemmaArgsTest, UnconsumedArgs) {

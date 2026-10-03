@@ -802,6 +802,7 @@ cc_library(
         ":basics",
         ":configs",
         ":mat",
+        ":matmul_env",
         ":threading_context",
         "//compression:types",
         "//io",

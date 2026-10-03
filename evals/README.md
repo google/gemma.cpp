@@ -69,10 +69,26 @@ targets. A failed process or invalid result stops the series without producing a
 successful comparison report; existing logs remain available for diagnosis.
 `max_questions: 0` runs all samples; a positive value selects the first N.
 To measure run-to-run variation, use the same weights and settings for root
-and target. Existing timing-dependent MatMul autotuning can change floating-point
-results between processes, so this self-comparison need not have zero KL or
-flips. The later autotuner-control step is needed for reproducible schedules;
-`--deterministic` controls sampling, not MatMul tuning.
+and target. For reproducible MatMul schedules, add `--matmul_schedule fixed` to
+both models' `args` arrays. The available modes are:
+
+- `auto` (default): measure candidates and choose the fastest.
+- `fixed`: choose the first legal candidate without comparing timings.
+- `fixed_min_k`: choose the legal candidate with the fewest K partitions,
+  retaining candidate order to break ties. This reduces intermediate output
+  rounding but may be slower.
+
+Fixed modes also fix activation-conversion scheduling and, when enabled, the
+oneDNN BRGeMM candidate. A single candidate is measured once, then reused.
+The policy is set when `MatMulEnv` is constructed and cannot change within that
+environment. C++ callers can pass `MMSchedule::kFixed` or
+`MMSchedule::kFixedMinK` as its second constructor argument.
+
+For a self-comparison, keep the binary, SIMD target, thread/topology settings,
+batch sizes, weights, and prompts identical. Fixed scheduling removes variation
+from timing-based MatMul candidate selection; it does not promise identical
+results across hardware or builds. `--deterministic` separately controls sampling.
+The comparison report retains each model's scheduling option in its arguments.
 
 ## Scoring and metrics
 
@@ -98,8 +114,8 @@ results from the two protocols should not be mixed.
   labels. Aggregate accuracy can hide changes in individual answers.
 - `MMLU_TIMING`: time in `Generate`, time inside the evaluation sampling callback,
   and their difference (`inference_seconds`). The latter includes MatMul
-  autotuning; it excludes prompt construction, reference serialization/parsing,
-  and result printing. This step does not add autotuner controls.
+  candidate measurements; it excludes prompt construction, reference
+  serialization/parsing, and result printing.
 - **Wall time** includes process startup, model loading, evaluation, and reference
   I/O. It is not directly comparable between writing and reading references.
   Peak RSS is sampled from Linux `/proc` every 20 ms and can miss short-lived

@@ -367,6 +367,13 @@ enable_testing()
 find_package(GTest REQUIRED)
 include(GoogleTest)
 
+# Gemma's SIMD tests need Highway's test helpers even when its own test suite
+# is disabled (enabling both suites introduces duplicate target names).
+if(NOT TARGET hwy_test)
+  add_library(hwy_test ${highway_SOURCE_DIR}/hwy/tests/test_util.cc)
+  target_link_libraries(hwy_test PUBLIC hwy)
+endif()
+
 add_executable(model_comparison_test evals/model_comparison_test.cc)
 target_link_libraries(model_comparison_test PRIVATE model_comparison GTest::Main)
 gtest_discover_tests(model_comparison_test)
