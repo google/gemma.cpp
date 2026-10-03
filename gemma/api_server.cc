@@ -427,7 +427,7 @@ void RunServer(const GemmaArgs& args) {
 
   // Initialize model
   ThreadingContext ctx(args.threading);
-  MatMulEnv env(ctx);
+  MatMulEnv env(ctx, args.inference.MatMulSchedule());
   ServerState state;
   state.gemma = std::make_unique<Gemma>(args, ctx);
   state.env = &env;

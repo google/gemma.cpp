@@ -260,7 +260,7 @@ void Run(const GemmaArgs& args) {
   PROFILER_ZONE("Run.misc");
 
   ThreadingContext ctx(args.threading);
-  MatMulEnv env(ctx);
+  MatMulEnv env(ctx, args.inference.MatMulSchedule());
   const InferenceArgs& inference = args.inference;
   if (inference.verbosity >= 3) env.print_best = true;
   const Gemma gemma(args, ctx);
