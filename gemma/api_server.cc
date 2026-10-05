@@ -88,7 +88,7 @@ struct ServerState {
     if (!session) {
       session = std::make_shared<Session>();
       session->kv_cache = std::make_unique<KVCache>(
-          gemma->Config(), InferenceArgs(), env->ctx.allocator);
+          gemma->Config(), gemma->Inference(), env->ctx.allocator);
     }
     session->last_access = std::chrono::steady_clock::now();
     return session;

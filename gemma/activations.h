@@ -50,6 +50,15 @@ static inline size_t MaxQkvDim(const ModelConfig& config) {
   }
   return max_dim;
 }
+// Maximum width of the batch-local KV projection, including both K and V.
+static inline size_t MaxKVProjectionCols(const ModelConfig& config) {
+  size_t cols = 0;
+  for (const auto& layer : config.layer_configs) {
+    cols = HWY_MAX(cols, 2 * layer.kv_heads * layer.qkv_dim);
+  }
+  return cols;
+}
+
 static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
   size_t max_dim = config.model_dim;
   if (config.num_mtp_layers > 1) {
@@ -98,6 +107,8 @@ struct AttentionActivations {
                             : layer_config.heads * max_qkv_dim,
                         allocator)),
 
+        kv_projection(MatFactory("kv_projection", batch_size,
+                                 MaxKVProjectionCols(config), allocator)),
         vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
         vit_K_T(MatFactory(
             "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
@@ -175,12 +186,14 @@ struct AttentionActivations {
     // fill them in each MatMul call.
     q.AllocateAndAttachRowPtrs(row_ptrs);
     q_bf.AllocateAndAttachRowPtrs(row_ptrs);
+    kv_projection.AllocateAndAttachRowPtrs(row_ptrs);
     att_sums.AllocateAndAttachRowPtrs(row_ptrs);
   }
 
   void SetBatchSize(size_t batch_size) {
     q.OverrideRows(batch_size);
     q_bf.OverrideRows(batch_size);
+    kv_projection.OverrideRows(batch_size);
 
     vit_Q.OverrideRows(batch_size);
     // vit_K_T and vit_V_T stay seq_len!
@@ -218,6 +231,8 @@ struct AttentionActivations {
   std::vector<Tile148Params> split_flash_params;
   MatStorageT<float> q;  // query
   MatStorageT<BF16> q_bf;
+  MatStorageT<KV_t>
+      kv_projection;  // Reused across layers; never holds history.
 
   MatStorageT<float> vit_Q;
   MatStorageT<KV_t> vit_K_T;
@@ -278,6 +293,7 @@ struct AttentionActivationsPtrs {
                                  activations.split_flash_params) {
     q = activations.q;
     q_bf = activations.q_bf;
+    kv_projection = activations.kv_projection;
     vit_Q = activations.vit_Q;
     vit_K_T = activations.vit_K_T;
     vit_V_T = activations.vit_V_T;
@@ -306,6 +322,7 @@ struct AttentionActivationsPtrs {
   void SetBatchSize(size_t batch_size) {
     q.OverrideRows(batch_size);
     q_bf.OverrideRows(batch_size);
+    kv_projection.OverrideRows(batch_size);
 
     vit_Q.OverrideRows(batch_size);
     // vit_K_T and vit_V_T stay seq_len!
@@ -336,6 +353,7 @@ struct AttentionActivationsPtrs {
   MatPtrT<float> q;
   // Query matrix of size batch_size x (q_heads * qkv_dim).
   MatPtrT<BF16> q_bf;
+  MatPtrT<KV_t> kv_projection;
 
   MatPtrT<float> vit_Q;
   MatPtrT<KV_t> vit_K_T;

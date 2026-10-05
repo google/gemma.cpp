@@ -206,50 +206,33 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
              /*add=*/nullptr, env, activations.q);
 
   if (skip_kv) return;
-  // Each query reuses one layer of BF16 projections for the current batch.
-  // Grow for callers that override the configured prefill batch size.
+  const size_t tile_size = 2 * hn::Lanes(hn::ScalableTag<float>());
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    KVCachePtr& kv = qbatch.KV(qi);
-    kv.cache->EnsureProjectionRows(num_tokens, layer.qkv_einsum_w2.Rows());
-    kv.kv_cache = kv.cache->kv_cache;
+    qbatch.KV(qi).cache->PrepareLayer(kv_layer_idx, num_tokens, qbatch.Pos(qi),
+                                      tile_size);
   }
-  // Set up MatMul row pointers for `kv_heads` pairs of (k, v) vectors.
-  MatPtrT<KV_t> kv_rows("kv", Extents2D(activations.pre_att_rms_out.Rows(),
-                                        layer.qkv_einsum_w2.Rows()));
-  for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
-       ++interleaved_idx) {
-    // Index into qbatch, within [0, qbatch.Size()]
-    const size_t qi = div_qbatch.Remainder(interleaved_idx);
-    const size_t token_idx = div_qbatch.Divide(interleaved_idx);
-    const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-    // --seq_len must be large enough to avoid wraparound.
-    HWY_DASSERT(cache_pos < activations.SeqLen());
-    (void)cache_pos;
-
-    env.row_ptrs[0][interleaved_idx] =
-        reinterpret_cast<uint8_t*>(qbatch.KV(qi).kv_cache.Row(token_idx));
-  }
-  kv_rows.AttachRowPtrs(env.row_ptrs[0].get());
+  // Only this batch needs the untransposed projection. Persistent K/V lives
+  // in the compact head tiles used directly by Flash attention.
+  auto& kv_rows = activations.kv_projection;
+  kv_rows.OverrideRows(num_interleaved);
+  kv_rows.OverrideCols(2 * kv_heads * qkv_dim);
   CallMatMul(activations.pre_att_rms_out, layer.qkv_einsum_w2,
              /*add=*/nullptr, env, kv_rows);
 
-  const size_t kFloatsPerVector = hn::Lanes(hn::ScalableTag<float>());
+  size_t rounded_tokens = 0;
   for (size_t qi = 0; qi < qbatch.Size(); ++qi) {
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(), kFloatsPerVector,
-                      qbatch.KV(qi).k_cache);
-    MaybeReshapeCache(qbatch.KV(qi).cache->KOrVDefaultCols(), kFloatsPerVector,
-                      qbatch.KV(qi).v_cache);
+    rounded_tokens = HWY_MAX(
+        rounded_tokens, hwy::RoundUpTo(qbatch.Pos(qi) + num_tokens, tile_size) -
+                            qbatch.Pos(qi));
   }
-  const size_t kRoundedTokens =
-      hwy::RoundUpTo(num_tokens, 2 * kFloatsPerVector);
-  const size_t kRoundedNumInterleaved =
-      kRoundedTokens * div_qbatch.GetDivisor();
+  const size_t rounded_num_interleaved =
+      rounded_tokens * div_qbatch.GetDivisor();
 
   // Apply positional encodings for K.
   // Note that 2D parallelism is not worth the fork/join overhead because the
   // tasks are very lightweight.
   ParallelFor(
-      Parallelism::kFlat, kv_heads * kRoundedNumInterleaved, env.ctx,
+      Parallelism::kFlat, kv_heads * rounded_num_interleaved, env.ctx,
       /*cluster_idx=*/0, Callers::kAttComputeQKV,
       [&](size_t task, size_t worker) HWY_ATTR {
         const size_t head = task % kv_heads;
@@ -257,22 +240,20 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         const size_t qi = div_qbatch.Remainder(interleaved_idx);
         const size_t token_idx = div_qbatch.Divide(interleaved_idx);
         const size_t cache_pos = qbatch.Pos(qi) + token_idx;
-        if (token_idx >= kRoundedTokens) {
+        if (cache_pos >=
+            hwy::RoundUpTo(qbatch.Pos(qi) + num_tokens, tile_size)) {
           return;
         }
         // The innermost dimension of v is 2NF values from qkv_dim because they
         // will be loaded into a BF16 vector to be scaled and added to the
         // cached attention output in 2 NF-sized registers.
-        auto& k_cache = qbatch.KV(qi).k_cache;
-        KV_t* HWY_RESTRICT k =
-            k_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->KOffset(kv_layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
-        auto& v_cache = qbatch.KV(qi).v_cache;
-        KV_t* HWY_RESTRICT v =
-            v_cache.Row(cache_pos / (2 * kFloatsPerVector)) +
-            qbatch.KV(qi).cache->VOffset(kv_layer_idx, head, kFloatsPerVector,
-                                         cache_pos);
+        auto& cache = *qbatch.KV(qi).cache;
+        auto k_cache = cache.FlashK(kv_layer_idx, head);
+        auto v_cache = cache.FlashV(kv_layer_idx, head);
+        const size_t tile = (cache_pos / tile_size) % k_cache.Rows();
+        const size_t in_tile = cache_pos % tile_size;
+        KV_t* HWY_RESTRICT k = k_cache.Row(tile) + in_tile * 2;
+        KV_t* HWY_RESTRICT v = v_cache.Row(tile) + in_tile * tile_size;
         if (token_idx >= num_tokens) {
           // Create a zero-filled K/V pair for padding for out-of-sequence
           // tokens.
@@ -281,8 +262,8 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
         }
         // --seq_len must be large enough to avoid wraparound.
         HWY_DASSERT(cache_pos < activations.SeqLen());
-        auto& kv_cache = qbatch.KV(qi).kv_cache;
-        KV_t* HWY_RESTRICT kv = kv_cache.Row(token_idx) + head * qkv_dim * 2;
+        KV_t* HWY_RESTRICT kv =
+            kv_rows.Row(interleaved_idx) + head * qkv_dim * 2;
         // Note that k_cache and v_cache are different shapes.
         // The innermost dimension of k is 2 values from qkv_dim because they
         // are going to be used in a BF16 dot product involving pairs of
