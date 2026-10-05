@@ -27,6 +27,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <random>
 #include <vector>
 
 #include "compression/types.h"
@@ -274,34 +275,104 @@ void AssertClose(const MatPtrT<float>& a, const MatPtrT<float>& b) {
   }
 }
 
+enum class TestDataDistribution {
+  kPositiveRamp,
+  kGaussian,
+  kGaussianWithOutliers,
+};
+
 template <typename T>
-void PopulateTestKVCache(MatStorageT<T>& kv, gcpp::KVEncoding encoding,
-                         size_t qkv_dim) {
+void PopulateTestKVCache(
+    MatStorageT<T>& kv, gcpp::KVEncoding encoding, size_t qkv_dim,
+    TestDataDistribution dist = TestDataDistribution::kPositiveRamp) {
   gcpp::DecodedTile tile(qkv_dim, gcpp::KVCache::kTileSize);
 
   size_t num_tiles = kv.Rows();
-  float unpredictable = hwy::Unpredictable1() * 0.01f;
+  if (dist == TestDataDistribution::kPositiveRamp) {
+    float unpredictable = hwy::Unpredictable1() * 0.01f;
+    for (size_t tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
+      for (size_t in_tile = 0; in_tile < gcpp::KVCache::kTileSize; ++in_tile) {
+        size_t i = tile_idx * gcpp::KVCache::kTileSize + in_tile;
+        for (size_t j = 0; j < qkv_dim; ++j) {
+          tile.k_elem(in_tile, j) = unpredictable * (i + 1) / (j + 1);
+          tile.v_elem(in_tile, j) = unpredictable * 2 * (i + 1) / (j + 1);
+        }
+      }
+      size_t row_bytes = kv.Cols() * sizeof(T);
+      HWY_ASSERT(gcpp::EncodeTile(
+          encoding, tile, qkv_dim,
+          hwy::Span<char>(reinterpret_cast<char*>(kv.Row(tile_idx)),
+                          row_bytes)));
+    }
+    return;
+  }
+
+  std::mt19937 rng_k(12345);
+  std::mt19937 rng_v(67890);
+  std::normal_distribution<float> norm_dist(0.0f, 1.0f);
+  std::bernoulli_distribution outlier_dist(0.01);
+  std::bernoulli_distribution sign_dist(0.5);
+
   for (size_t tile_idx = 0; tile_idx < num_tiles; ++tile_idx) {
     for (size_t in_tile = 0; in_tile < gcpp::KVCache::kTileSize; ++in_tile) {
       size_t i = tile_idx * gcpp::KVCache::kTileSize + in_tile;
+      float token_scale = 1.0f;
+      if (dist == TestDataDistribution::kGaussianWithOutliers &&
+          (i == 2 || i == 7 || i == 35)) {
+        token_scale = 10.0f;
+      }
       for (size_t j = 0; j < qkv_dim; ++j) {
-        tile.k_elem(in_tile, j) = unpredictable * (i + 1) / (j + 1);
-        tile.v_elem(in_tile, j) = unpredictable * 2 * (i + 1) / (j + 1);
+        float k_val = norm_dist(rng_k);
+        float v_val = norm_dist(rng_v);
+        if (dist == TestDataDistribution::kGaussianWithOutliers) {
+          if (outlier_dist(rng_k)) {
+            k_val *= (sign_dist(rng_k) ? 20.0f : -20.0f);
+          }
+          if (outlier_dist(rng_v)) {
+            v_val *= (sign_dist(rng_v) ? 20.0f : -20.0f);
+          }
+        }
+        tile.k_elem(in_tile, j) = k_val * token_scale;
+        tile.v_elem(in_tile, j) = v_val * token_scale;
       }
     }
     size_t row_bytes = kv.Cols() * sizeof(T);
     HWY_ASSERT(gcpp::EncodeTile(
         encoding, tile, qkv_dim,
-        hwy::Span<char>(reinterpret_cast<char*>(kv.Row(tile_idx)), row_bytes)));
+        hwy::Span<char>(reinterpret_cast<char*>(kv.Row(tile_idx)),
+                        row_bytes)));
   }
 }
 
-AlignedFloatVector PopulateTestQueries(size_t num_queries, size_t qkv_dim) {
+AlignedFloatVector PopulateTestQueries(
+    size_t num_queries, size_t qkv_dim,
+    TestDataDistribution dist = TestDataDistribution::kPositiveRamp) {
   AlignedFloatVector q_all(num_queries * qkv_dim);
-  const float unpredictable_factor = 0.01f * hwy::Unpredictable1();
+  if (dist == TestDataDistribution::kPositiveRamp) {
+    const float unpredictable_factor = 0.01f * hwy::Unpredictable1();
+    for (size_t i = 0; i < num_queries; ++i) {
+      for (size_t j = 0; j < qkv_dim; ++j) {
+        q_all[i * qkv_dim + j] = unpredictable_factor * (i + 1) / (j + 1);
+      }
+    }
+    return q_all;
+  }
+
+  std::mt19937 rng(13579);
+  std::normal_distribution<float> norm_dist(0.0f, 1.0f);
+  std::bernoulli_distribution outlier_dist(0.01);
+  std::bernoulli_distribution sign_dist(0.5);
+  // As in real usage.
+  const float query_scale = 1.0f / std::sqrt(static_cast<float>(qkv_dim));
+
   for (size_t i = 0; i < num_queries; ++i) {
     for (size_t j = 0; j < qkv_dim; ++j) {
-      q_all[i * qkv_dim + j] = unpredictable_factor * (i + 1) / (j + 1);
+      float val = norm_dist(rng);
+      if (dist == TestDataDistribution::kGaussianWithOutliers &&
+          outlier_dist(rng)) {
+        val *= (sign_dist(rng) ? 20.0f : -20.0f);
+      }
+      q_all[i * qkv_dim + j] = val * query_scale;
     }
   }
   return q_all;
@@ -494,6 +565,7 @@ const std::vector<float> att_out_gold = {
     0.010839, 0.010652, 0.010471, 0.010297, 0.010128, 0.009965, 0.009807,
     0.009653};
 
+// Compares against goldens computed from kPositiveRamp data.
 template <typename KV_T>
 void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
                                 AttentionImpl attention_impl, float tol,
@@ -582,7 +654,7 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
     std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries(
         num_queries * qkv_dim);
     AlignedFloatVector q_scales(num_queries);
-    CompressQueriesInt8Contiguous(q_all.data(), qkv_dim, num_queries,
+    CompressQueriesUint8Contiguous(q_all.data(), qkv_dim, num_queries,
                                    int8_queries.data(), q_scales.data());
 
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
@@ -628,7 +700,19 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
         exp_denominator_sums.data(), max_logits.data());
+  } else if (attention_impl == AttentionImpl::kFlashAMXInt8) {
+    std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries(
+        num_queries * qkv_dim);
+    AlignedFloatVector q_scales(num_queries);
+    CompressQueriesInt8Contiguous(q_all.data(), qkv_dim, num_queries,
+                                  int8_queries.data(), q_scales.data());
 
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
+        kvs, num_queries, int8_queries.data(), q_scales,
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
         kvs, num_queries, q_all.data(),
@@ -749,6 +833,13 @@ void TestTiledFlashAttentionAMX() {
                                    tol_max, 0.0f);
 }
 
+void TestTiledFlashAttentionAMXInt8() {
+  if (!HaveAmxInt8()) return;
+  RunTiledFlashAttentionTest<int8_t>(
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, 5e-3f, 2e-2f, 1e-3f);
+}
+
 void TestTiledFlashAttentionInt8MatrixAccumulation() {
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   if (hn::Lanes(dbf) > 32) {
@@ -772,7 +863,9 @@ template <typename KV_T>
 void RunTiledFlashAttentionDifferentialTest(
     size_t kv_seq_len, float tol, float tol_exp, float tol_max,
     gcpp::KVEncoding ref_encoding, gcpp::KVEncoding opt_encoding,
-    AttentionImpl opt_impl, const char* type_name, size_t num_queries = 37) {
+    AttentionImpl opt_impl, const char* type_name, size_t num_queries = 37,
+    size_t qkv_dim = 64,
+    TestDataDistribution dist = TestDataDistribution::kPositiveRamp) {
   const hn::ScalableTag<hwy::bfloat16_t> dbf;
   if (hn::Lanes(dbf) > 32) {
     GTEST_SKIP() << "Skipping MatrixAccumulation test for target with register "
@@ -780,7 +873,6 @@ void RunTiledFlashAttentionDifferentialTest(
     return;
   }
 
-  size_t qkv_dim = 64;
   size_t padded_kv_seq_len =
       hwy::RoundUpTo(kv_seq_len, gcpp::KVCache::kTileSize);
   float att_cap = 0.0f;
@@ -799,9 +891,10 @@ void RunTiledFlashAttentionDifferentialTest(
       Extents2D(padded_kv_seq_len / gcpp::KVCache::kTileSize,
                 ref_tile_size_in_elements),
       ctx.allocator, MatPadding::kPacked);
-  PopulateTestKVCache(kv_ref, ref_encoding, qkv_dim);
+  PopulateTestKVCache(kv_ref, ref_encoding, qkv_dim, dist);
 
-  AlignedFloatVector q_all_ref = PopulateTestQueries(num_queries, qkv_dim);
+  AlignedFloatVector q_all_ref =
+      PopulateTestQueries(num_queries, qkv_dim, dist);
   std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries_ref(num_queries *
                                                                   qkv_dim);
   CompressQueriesBF16Contiguous(q_all_ref.data(), qkv_dim, num_queries,
@@ -828,9 +921,9 @@ void RunTiledFlashAttentionDifferentialTest(
                        Extents2D(padded_kv_seq_len / gcpp::KVCache::kTileSize,
                                  opt_tile_size_in_elements),
                        ctx.allocator, MatPadding::kPacked);
-  PopulateTestKVCache(kv, opt_encoding, qkv_dim);
+  PopulateTestKVCache(kv, opt_encoding, qkv_dim, dist);
 
-  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim);
+  AlignedFloatVector q_all = PopulateTestQueries(num_queries, qkv_dim, dist);
 
   hwy::AlignedVector<int8_t> int8_queries;
   std::vector<BF16, hwy::AlignedAllocator<BF16>> bf16_queries;
@@ -848,7 +941,11 @@ void RunTiledFlashAttentionDifferentialTest(
     bf16_queries.resize(num_queries * qkv_dim);
     CompressQueriesBF16Contiguous(q_all.data(), qkv_dim, num_queries,
                                   bf16_queries.data());
-
+  } else if (opt_impl == AttentionImpl::kFlashAMXInt8) {
+    int8_queries.resize(num_queries * qkv_dim);
+    q_scales.resize(num_queries);
+    CompressQueriesInt8Contiguous(q_all.data(), qkv_dim, num_queries,
+                                  int8_queries.data(), q_scales.data());
   } else {
     bf16_queries.resize(num_queries_rounded * qkv_dim);
     CompressAndTransposeQueriesMatrixAccumulation(
@@ -884,12 +981,27 @@ void RunTiledFlashAttentionDifferentialTest(
 
   // Run reference
   hwy::Span<const MatPtr> kvs_ref(&kv_ref, 1);
-  DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
-      kvs_ref, num_queries, bf16_queries_ref.data(),
-      hwy::Span<const size_t>(start_pos_per_query),
-      hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out_ref,
-      exp_denominator_sums_ref.data(), max_logits_ref.data(),
-      /*worker_workspace=*/nullptr);
+  if (ref_encoding == gcpp::KVEncoding::kInt8VNNITwoTranspositions) {
+    std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries_ref(
+        num_queries * qkv_dim);
+    AlignedFloatVector q_scales_ref(num_queries);
+    CompressQueriesUint8Contiguous(q_all_ref.data(), qkv_dim, num_queries,
+                                   int8_queries_ref.data(),
+                                   q_scales_ref.data());
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
+        kvs_ref, num_queries, int8_queries_ref.data(), q_scales_ref,
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out_ref,
+        exp_denominator_sums_ref.data(), max_logits_ref.data(),
+        /*worker_workspace=*/nullptr);
+  } else {
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
+        kvs_ref, num_queries, bf16_queries_ref.data(),
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out_ref,
+        exp_denominator_sums_ref.data(), max_logits_ref.data(),
+        /*worker_workspace=*/nullptr);
+  }
 
   // Run optimized
   hwy::Span<const MatPtr> kvs(&kv, 1);
@@ -906,6 +1018,13 @@ void RunTiledFlashAttentionDifferentialTest(
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
         exp_denominator_sums.data(), max_logits.data());
+  } else if (opt_impl == AttentionImpl::kFlashAMXInt8) {
+    DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
+        kvs, num_queries, int8_queries.data(), q_scales,
+        hwy::Span<const size_t>(start_pos_per_query),
+        hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
         kvs, num_queries, bf16_queries.data(),
@@ -917,6 +1036,9 @@ void RunTiledFlashAttentionDifferentialTest(
 
   // Verification
   float max_abs_err = 0.0f;
+  float max_exp_err = 0.0f;
+  float max_logit_err = 0.0f;
+  float max_abs_ref = 0.0f;
   float mse_sum = 0.0f;
   float dot_prod = 0.0f;
   float norm_ref = 0.0f;
@@ -926,6 +1048,7 @@ void RunTiledFlashAttentionDifferentialTest(
   for (size_t i = 0; i < num_queries; ++i) {
     float diff_exp =
         std::abs(exp_denominator_sums[i] - exp_denominator_sums_ref[i]);
+    max_exp_err = std::max(max_exp_err, diff_exp);
     if (diff_exp >= tol_exp) {
       if (failures < 5) {
         EXPECT_NEAR(exp_denominator_sums[i], exp_denominator_sums_ref[i],
@@ -937,6 +1060,7 @@ void RunTiledFlashAttentionDifferentialTest(
     }
 
     float diff_max = std::abs(max_logits[i] - max_logits_ref[i]);
+    max_logit_err = std::max(max_logit_err, diff_max);
     if (diff_max >= tol_max) {
       if (failures < 5) {
         EXPECT_NEAR(max_logits[i], max_logits_ref[i], tol_max)
@@ -951,6 +1075,7 @@ void RunTiledFlashAttentionDifferentialTest(
       float v_out = att_out.Row(i)[j];
       float diff = std::abs(v_ref - v_out);
       max_abs_err = std::max(max_abs_err, diff);
+      max_abs_ref = std::max(max_abs_ref, std::abs(v_ref));
       mse_sum += diff * diff;
       dot_prod += v_ref * v_out;
       norm_ref += v_ref * v_ref;
@@ -971,7 +1096,11 @@ void RunTiledFlashAttentionDifferentialTest(
             << ", SeqLen: " << kv_seq_len << ") ===\n"
             << "  Cosine Similarity:  " << cosine_sim << "\n"
             << "  Max Absolute Error: " << max_abs_err << "\n"
-            << "  Mean Squared Error: " << mse << "\n";
+            << "  Mean Squared Error: " << mse << "\n"
+            << "  Max |Reference|:    " << max_abs_ref << "\n"
+            << "  Max Exp Sum Error:  " << max_exp_err << "\n"
+            << "  Max Logit Error:    " << max_logit_err << "\n"
+            << "  Failures:           " << failures << "\n";
 }
 
 void TestTiledFlashAttentionBF16MatrixAccumulationLargeVerification() {
@@ -996,6 +1125,46 @@ void TestTiledFlashAttentionAMXLargeVerification() {
       "AMX_BF16");
 }
 
+void TestTiledFlashAttentionAMXInt8LargeVerification() {
+  if (!HaveAmxInt8()) return;
+  RunTiledFlashAttentionDifferentialTest<int8_t>(
+      2048, 3.0e-2f, 5.0e-2f, 1.0e-3f,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, "AMX_Int8");
+  RunTiledFlashAttentionDifferentialTest<int8_t>(
+      2048, 1.0e-1f, 5.0e-2f, 1.0e-3f,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, "AMX_Int8_Dim256", /*num_queries=*/68,
+      /*qkv_dim=*/256);
+  RunTiledFlashAttentionDifferentialTest<int8_t>(
+      2048, 5.0e-3f, 1.0e-3f, 1.0e-4f,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, "AMX_Int8_Gaussian", /*num_queries=*/37,
+      /*qkv_dim=*/64, TestDataDistribution::kGaussian);
+  RunTiledFlashAttentionDifferentialTest<int8_t>(
+      2048, 2.0e-1f, 1.0e-3f, 1.0e-4f,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, "AMX_Int8_GaussianOutliers",
+      /*num_queries=*/37, /*qkv_dim=*/64,
+      TestDataDistribution::kGaussianWithOutliers);
+}
+
+void TestTiledFlashAttentionAMXInt8Fallback() {
+  // Only meaningful when AMX-INT8 is unavailable (exercises the VNNI fallback).
+#if GEMMA_HAVE_AMX_INT8
+  if (hwy::HaveTile64BMatMulI8()) return;
+#endif
+  RunTiledFlashAttentionDifferentialTest<int8_t>(
+      2048, 1e-5f, 1e-5f, 1e-5f, gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+      AttentionImpl::kFlashAMXInt8, "AMX_Int8_Fallback", /*num_queries=*/37,
+      /*qkv_dim=*/64, TestDataDistribution::kGaussianWithOutliers);
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -1012,12 +1181,17 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionBF16);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionBF16MatrixAccumulation);
 HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest, TestTiledFlashAttentionAMX);
+HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest, TestTiledFlashAttentionAMXInt8);
 
 HWY_EXPORT_AND_TEST_P(
     FlashAttentionTest,
     TestTiledFlashAttentionBF16MatrixAccumulationLargeVerification);
 HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest,
                            TestTiledFlashAttentionAMXLargeVerification);
+HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest,
+                           TestTiledFlashAttentionAMXInt8LargeVerification);
+HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
+                      TestTiledFlashAttentionAMXInt8Fallback);
 HWY_EXPORT_AND_TEST_P(
     FlashAttentionTest,
     TestTiledFlashAttentionInt8MatrixAccumulationLargeVerification);

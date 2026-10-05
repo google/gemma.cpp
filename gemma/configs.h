@@ -151,6 +151,7 @@ enum class AttentionImpl {
   kInt8MatrixAccumulation,
   kFlashTransposedQsInt8,
   kFlashAMX,
+  kFlashAMXInt8,
   kSentinel,
 };
 
@@ -164,12 +165,21 @@ static inline bool IsTiledAttention(AttentionImpl impl) {
          impl == AttentionImpl::kFlashTransposedQsInt8 ||
          impl == AttentionImpl::kInt8MatrixAccumulation ||
          impl == AttentionImpl::kFlashMatrixAccumulation ||
-         impl == AttentionImpl::kFlashAMX;
+         impl == AttentionImpl::kFlashAMX ||
+         impl == AttentionImpl::kFlashAMXInt8;
 }
 
 static inline bool IsBF16TransposedQsAttention(AttentionImpl impl) {
   return impl == AttentionImpl::kFlashTransposedQsBF16 ||
          impl == AttentionImpl::kFlashAMX;
+}
+
+// Int8 implementations sharing the VNNI KV tile layout (K as
+// [qkv_dim/4][kTileSize][4], V as [kTileSize/4][qkv_dim][4], BF16 K/V scales,
+// then int32 K sums) and int8 queries with per-query scales.
+static inline bool IsInt8VNNIAttention(AttentionImpl impl) {
+  return impl == AttentionImpl::kFlashTransposedQsInt8 ||
+         impl == AttentionImpl::kFlashAMXInt8;
 }
 
 // Post attention and ffw normalization type.
