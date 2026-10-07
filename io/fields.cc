@@ -188,6 +188,7 @@ class ReadVisitor : public VisitorBase {
     if (HWY_UNLIKELY(result_.pos + num_u32 > span_.size())) {
       NotifyInvalid("Invalid IFields: pos %zu + num_u32 %u > size %zu\n",
                     result_.pos, num_u32, span_.size());
+      end_.pop_back();  // keep the stack balanced, see `~ReadVisitor`
       return;
     }
     end_.back() = result_.pos + num_u32;

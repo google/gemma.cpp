@@ -365,6 +365,18 @@ TEST(FieldsTest, TestOldCodeNewData) {
   // (Can't check new fields because we only read OldFields)
 }
 
+// If the stored size exceeds the span, Read must report the error via
+// `pos == 0` (see `ReadResult`) instead of aborting.
+TEST(FieldsTest, TestTruncatedData) {
+  const NewFields new_fields = ModifiedNewFields();
+  const std::vector<uint32_t> storage = new_fields.Write();
+  ASSERT_GT(storage.size(), 2u);
+
+  NewFields copy;
+  const ReadResult result = copy.Read(Span(storage.data(), 2), 0);
+  EXPECT_EQ(0, result.pos);
+}
+
 }  // namespace
 }  // namespace gcpp
 
