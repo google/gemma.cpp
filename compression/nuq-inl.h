@@ -753,6 +753,8 @@ class NuqCodec {
   static HWY_INLINE void DecompressAndZeroPad(
       D d, const PackedSpan<const NuqStream>& packed, size_t packed_ofs,
       Raw* HWY_RESTRICT raw, size_t num) {
+    // num == 0 would make `num_groups - 1` below wrap to SIZE_MAX.
+    if (num == 0) return;
     // If unaligned, load elements from the first group and update the args,
     // from which we compute new tables/indices below.
     size_t current_offset = packed_ofs;
