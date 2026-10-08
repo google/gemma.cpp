@@ -1379,23 +1379,22 @@ static HWY_INLINE void UpdateOnlineSoftmaxAndPackSingleQuery(
 
   float block_max_val = 1e-10f;
   if constexpr (IsInt16<Q_T>() || IsInt8<Q_T>()) {
+    VF v_block_max = hn::Zero(df);  // p >= 0 and v_scale >= 0.
     for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
       const float* ptr = q_logits + step_idx * step_size;
       VF p0 = hn::LoadU(df, ptr);
       VF p1 = hn::LoadU(df, ptr + L_f);
-      float step_max_v_scale = 1.0f;
       if constexpr (IsInt8<KV_T>()) {
         const PackedSpan<const BF16> scales_span =
             MakeConstSpan(step_microscaling_v_ptrs[step_idx], 2 * L_f);
         VF v_scales_p0, v_scales_p1;
         Decompress2(df, scales_span, 0, v_scales_p0, v_scales_p1);
-        step_max_v_scale = hn::ReduceMax(df, hn::Max(v_scales_p0, v_scales_p1));
+        p0 = hn::Mul(p0, v_scales_p0);
+        p1 = hn::Mul(p1, v_scales_p1);
       }
-      float step_max_val = std::max(
-          std::max(hn::ReduceMax(df, p0), hn::ReduceMax(df, p1)), 0.0f);
-      float eff_v_scale = std::max(step_max_v_scale, 1e-10f);
-      block_max_val = std::max(block_max_val, step_max_val * eff_v_scale);
+      v_block_max = hn::Max(v_block_max, hn::Max(p0, p1));
     }
+    block_max_val = HWY_MAX(hn::ReduceMax(df, v_block_max), 1e-10f);
   }
 
   for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
