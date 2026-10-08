@@ -131,7 +131,8 @@ PYBIND11_MODULE(configs, py_module) {
       .def_readwrite("min_size", &gcpp::TensorInfo::min_size)
       .def_readwrite("scaled_softplus", &gcpp::TensorInfo::scaled_softplus)
       .def_readwrite("cols_take_extra_dims",
-                     &gcpp::TensorInfo::cols_take_extra_dims);
+                     &gcpp::TensorInfo::cols_take_extra_dims)
+      .def_readwrite("scale", &gcpp::TensorInfo::scale);
 
   class_<gcpp::TensorInfoRegistry>(py_module, "TensorInfoRegistry")
       .def(init<const gcpp::ModelConfig&>())

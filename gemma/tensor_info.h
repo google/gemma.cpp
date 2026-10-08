@@ -68,6 +68,9 @@ struct TensorInfo {
   // If false, then [10, 20, 30] -> [10*20, 30] and [30] -> [1, 30].
   // If true, then [10, 20, 30] -> [10, 20*30] and [30] -> [1, 30].
   bool cols_take_extra_dims = false;
+  // Optional pre-computed scale (e.g. for kW2_UL weights from QAFT).
+  // If > 0.0, used directly instead of re-estimating via ScaleWeightsW2UL.
+  float scale = 0.0f;
 };
 
 // Collapses/expands the tensor dims into 2D extents, which may be 0, 0 for
