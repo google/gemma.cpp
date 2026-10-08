@@ -507,6 +507,31 @@ struct TestEncDec {
 void TestEncDecBF16() { hn::ForGEVectors<128, TestEncDec>()(BF16()); }
 void TestEncDecF32() { hn::ForGEVectors<128, TestEncDec>()(float()); }
 
+// Regression test: num == 0 must return immediately without any
+// out-of-bounds access (previously `num_groups - 1` wrapped to SIZE_MAX).
+struct TestZeroNum {
+  template <typename T, class D>
+  HWY_INLINE void operator()(T /*unused*/, D d) {
+    const hn::Repartition<float, D> df;
+    auto out = hwy::AllocateAligned<T>(kGroupSize);
+    auto nuq = hwy::AllocateAligned<NuqStream>(
+        hwy::RoundUpTo(NuqStream::PackedEnd(kGroupSize), hwy::VectorBytes()));
+    HWY_ASSERT(out && nuq);
+    // Sentinel-fill the output; the call must not touch it.
+    for (size_t i = 0; i < kGroupSize; ++i) {
+      out[i] = hwy::ConvertScalarTo<T>(-1.0f);
+    }
+    const auto nuq_span = MakeSpan(nuq.get(), kGroupSize);
+    NuqCodec::DecompressAndZeroPad(d, MakeConst(nuq_span), 0, out.get(), 0);
+    for (size_t i = 0; i < kGroupSize; ++i) {
+      HWY_ASSERT_EQ(hwy::ConvertScalarTo<T>(-1.0f), out[i]);
+    }
+  }
+};
+
+void TestZeroNumBF16() { hn::ForGEVectors<128, TestZeroNum>()(BF16()); }
+void TestZeroNumF32() { hn::ForGEVectors<128, TestZeroNum>()(float()); }
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -529,6 +554,8 @@ HWY_EXPORT_AND_TEST_P(NuqTest, TestUnalignedOffsetF32);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestAllNibble);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecBF16);
 HWY_EXPORT_AND_TEST_P(NuqTest, TestEncDecF32);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestZeroNumBF16);
+HWY_EXPORT_AND_TEST_P(NuqTest, TestZeroNumF32);
 #else
 GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(NuqTest);
 #endif  // GEMMA_ENABLE_NUQ
