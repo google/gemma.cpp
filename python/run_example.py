@@ -65,6 +65,10 @@ def main(argv: Sequence[str]) -> None:
   print("Generating output:\n")
   model.generate_ex(prompt, callback, skip_prompt=True)
 
+  question = "Is the sky blue on a clear day? Answer yes or no."
+  p_yes, p_no = model.score_next(question, ["yes", "no"])
+  print(f"\n\nscore_next: P(yes)={p_yes:.4f} P(no)={p_no:.4f}")
+
   prompts = [
       prompt,
       "Tell me a joke.",
