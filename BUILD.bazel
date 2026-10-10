@@ -1206,6 +1206,22 @@ cc_binary(
     ],
 )
 
+cc_library(
+    name = "model_comparison",
+    srcs = ["evals/model_comparison.cc"],
+    hdrs = ["evals/model_comparison.h"],
+    deps = ["@nlohmann_json//:json"],
+)
+
+cc_test(
+    name = "model_comparison_test",
+    srcs = ["evals/model_comparison_test.cc"],
+    deps = [
+        ":model_comparison",
+        "@googletest//:gtest_main",
+    ],
+)
+
 cc_binary(
     name = "gemma_mmlu",
     srcs = ["evals/run_mmlu.cc"],
@@ -1213,6 +1229,7 @@ cc_binary(
         ":args",
         ":benchmark_helper",
         ":gemma_lib",
+        ":model_comparison",
         "//io",
         "@highway//:hwy",
         "@highway//:profiler",
