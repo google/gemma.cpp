@@ -530,6 +530,9 @@ cc_library(
 
 cc_library(
     name = "ops",
+    srcs = [
+        "ops/ops.cc",
+    ],
     hdrs = [
         "ops/ops.h",
     ],
