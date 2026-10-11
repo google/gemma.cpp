@@ -30,6 +30,9 @@
 #include <stdio.h>
 
 #include <atomic>
+#include <cstring>
+#include <set>
+#include <vector>
 
 #include "ops/matmul.h"
 #include "util/basics.h"
@@ -131,11 +134,36 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
   MatMulSlow(A, BT, add_row, env, C_slow);
   // A few reps to get coverage of the various autotuned code paths.
   MMOptions options;
+  std::vector<TC> first_output;
+  std::vector<TC> first_fused_output;
   for (size_t rep = 0; rep < 16; ++rep) {
     MMPerKey* per_key = MatMulStatic(A, BT, add_row, env, C, options);
     AssertClose(A, BT, C_slow, C, env.ctx.allocator, env.row_ptrs, line);
     // Check before TwoMatMulStatic(), which can invalidate per_key.
     const bool autotune_done = !!per_key->autotune.Best();
+    if (env.schedule != MMSchedule::kAutoTune) {
+      bool selected = autotune_done;
+#if GEMMA_ONEDNN_BRGEMM
+      selected |= per_key->brgemm_autotune.Best() != nullptr;
+#endif
+#if GEMMA_ONEDNN_MATMUL
+      selected |= per_key->onednn_built;
+#endif
+      HWY_ASSERT(selected);
+      if constexpr (!IsBF16<TA>()) {
+        HWY_ASSERT(per_key->autotune_par_a.Best() != nullptr);
+      }
+      if (rep == 0) first_output.resize(C.Extents().Area());
+      for (size_t row = 0; row < C.Rows(); ++row) {
+        TC* first = first_output.data() + row * C.Cols();
+        if (rep == 0) {
+          hwy::CopyBytes(C.Row(row), first, C.Cols() * sizeof(TC));
+        } else {
+          HWY_ASSERT(std::memcmp(first, C.Row(row), C.Cols() * sizeof(TC)) ==
+                     0);
+        }
+      }
+    }
 
     // Ensure the tiled view returns the same result as C.
     if constexpr (IsBF16<TA>() && IsBF16<TC>()) {
@@ -167,6 +195,18 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
       options.SetFunc(fused);
       TwoMatMulStatic(A, BT, BT, env, C2, options);
       HWY_ASSERT_EQ(C.Extents().Area(), total_view_area.load());
+      if (env.schedule != MMSchedule::kAutoTune) {
+        if (rep == 0) first_fused_output.resize(C2.Extents().Area());
+        for (size_t row = 0; row < C2.Rows(); ++row) {
+          TC* first = first_fused_output.data() + row * C2.Cols();
+          if (rep == 0) {
+            hwy::CopyBytes(C2.Row(row), first, C2.Cols() * sizeof(TC));
+          } else {
+            HWY_ASSERT(std::memcmp(first, C2.Row(row),
+                                   C2.Cols() * sizeof(TC)) == 0);
+          }
+        }
+      }
       options.func = nullptr;  // reset for next call
 
       // TwoMatMulStatic() does not support adding a bias vector.
@@ -175,12 +215,114 @@ void TestMatMul(size_t rows_ac, size_t cols_a_rows_b, size_t cols_bc, bool add,
       }
     }
 
-    if (autotune_done) break;
+    if (autotune_done && env.schedule == MMSchedule::kAutoTune) break;
   }
 }
 
 using F32 = float;
 using SFP = SfpStream;
+
+// Fixed schedules exercise both activation conversion and the fused path.
+// TestMatMul compares against the scalar reference and checks repeated results
+// bit-for-bit, including the transition from the first call to the cached path.
+void TestFixedSchedules() {
+  ThreadingArgs threading_args;
+  threading_args.max_threads = 2;
+  threading_args.bind = Tristate::kFalse;
+  ThreadingContext ctx(threading_args);
+  for (MMSchedule schedule : {MMSchedule::kFixed, MMSchedule::kFixedMinK}) {
+    MatMulEnv env(ctx, schedule);
+    for (size_t M : {size_t{1}, size_t{3}, size_t{4}, size_t{17}, size_t{65}}) {
+      TestMatMul<F32, BF16, F32>(M, 258, 32, true, env, __LINE__);
+      TestMatMul<BF16, BF16, BF16>(M, 256, 32, false, env, __LINE__);
+      TestMatMul<BF16, SFP, BF16>(M, 4096, 32, false, env, __LINE__);
+    }
+    // K above the one-block limit must still yield a legal fixed schedule.
+    TestMatMul<F32, BF16, BF16>(3, 2 * kMaxKC, 32, true, env, __LINE__);
+  }
+}
+
+void AssertSameConfig(const MMConfig& a, const MMConfig& b) {
+  HWY_ASSERT_EQ(a.MR(), b.MR());
+  HWY_ASSERT_EQ(a.MC(), b.MC());
+  HWY_ASSERT_EQ(a.KC(), b.KC());
+  HWY_ASSERT_EQ(a.NC(), b.NC());
+  HWY_ASSERT_EQ(static_cast<int>(a.Order()), static_cast<int>(b.Order()));
+  HWY_ASSERT_EQ(a.InnerTasks(), b.InnerTasks());
+}
+
+// The first M encountered in a shared bucket must not affect a fixed config.
+void TestFixedBucketOrder() {
+  ThreadingArgs threading_args;
+  threading_args.max_threads = 2;
+  threading_args.bind = Tristate::kFalse;
+  ThreadingContext ctx(threading_args);
+  auto A = GenerateMat<BF16>(Extents2D(7, 4096), MatPadding::kOdd, ctx);
+  auto B = GenerateTransposedMat<SFP>(Extents2D(32, 4096),
+                                      MatPadding::kPacked, ctx);
+  MatStorageT<BF16> C1("C1", Extents2D(7, 32), ctx.allocator, MatPadding::kOdd);
+  MatStorageT<BF16> C2("C2", Extents2D(7, 32), ctx.allocator, MatPadding::kOdd);
+  for (MMSchedule schedule : {MMSchedule::kFixed, MMSchedule::kFixedMinK}) {
+    MatMulEnv small_first(ctx, schedule);
+    MatMulEnv large_first(ctx, schedule);
+    A.OverrideRows(4);
+    C1.OverrideRows(4);
+    const MMConfig small_config = *MatMulStatic(
+        A, B, nullptr, small_first, C1, MMOptions())->autotune.Best();
+    A.OverrideRows(7);
+    C2.OverrideRows(7);
+    const MMConfig large_config = *MatMulStatic(
+        A, B, nullptr, large_first, C2, MMOptions())->autotune.Best();
+    AssertSameConfig(small_config, large_config);
+    C1.OverrideRows(7);
+    MatMulStatic(A, B, nullptr, small_first, C1, MMOptions());
+    for (size_t row = 0; row < C1.Rows(); ++row) {
+      HWY_ASSERT(std::memcmp(C1.Row(row), C2.Row(row),
+                             C1.Cols() * sizeof(BF16)) == 0);
+    }
+  }
+}
+
+void TestScheduleCandidates() {
+  ThreadingArgs threading_args;
+  threading_args.max_threads = 2;
+  threading_args.bind = Tristate::kFalse;
+  ThreadingContext ctx(threading_args);
+  for (size_t M : {size_t{1}, size_t{3}, size_t{17}, size_t{127}}) {
+    for (size_t K : {size_t{1}, size_t{258}, size_t{4096}, 2 * kMaxKC}) {
+      for (size_t num_B : {size_t{1}, size_t{2}}) {
+        for (size_t sizeof_TC : {sizeof(BF16), sizeof(float)}) {
+          const auto all =
+              MMCandidates(ctx.cache_info, M, K, 128, num_B, sizeof_TC, false);
+          for (MMSchedule schedule :
+               {MMSchedule::kFixed, MMSchedule::kFixedMinK}) {
+            const auto fixed = MMCandidates(ctx.cache_info, M, K, 128, num_B,
+                                            sizeof_TC, false, schedule);
+            HWY_ASSERT_EQ(size_t{1}, fixed.size());
+            const auto again = MMCandidates(ctx.cache_info, M, K, 128, num_B,
+                                            sizeof_TC, false, schedule);
+            AssertSameConfig(fixed.front(), again.front());
+            if (schedule == MMSchedule::kFixed) {
+              AssertSameConfig(all.front(), fixed.front());
+            } else {
+              const size_t splits = fixed.front().RangesOfKC(K).NumTasks();
+              for (const MMConfig& candidate : all) {
+                HWY_ASSERT(splits <= candidate.RangesOfKC(K).NumTasks());
+              }
+              // First candidate with this split count wins ties.
+              for (const MMConfig& candidate : all) {
+                if (candidate.RangesOfKC(K).NumTasks() == splits) {
+                  AssertSameConfig(candidate, fixed.front());
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
 
 // Sweep all dimensions for a single input type and Highway target, to verify
 // the remainder handling.
@@ -339,8 +481,95 @@ namespace gcpp {
 int64_t first_target = 0;  // none run yet
 HWY_BEFORE_TEST(MatMulTest);
 HWY_EXPORT_AND_TEST_P(MatMulTest, TestTiny);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestFixedSchedules);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestFixedBucketOrder);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestScheduleCandidates);
 HWY_EXPORT_AND_TEST_P(MatMulTest, TestAllMatMul);
 HWY_AFTER_TEST();
+
+TEST(MatMulSchedulingTest, SingleCandidate) {
+  MMAutoTune<int> tuner;
+  tuner.SetCandidates({42});
+  ASSERT_EQ(tuner.NextConfig(), 42);
+  tuner.NotifyTicks(123);
+  ASSERT_NE(tuner.Best(), nullptr);
+  EXPECT_EQ(*tuner.Best(), 42);
+  EXPECT_EQ(tuner.BestTicks(), 123);
+  EXPECT_EQ(tuner.FirstConfigTicks(), 123);
+  EXPECT_EQ(tuner.WorstMinTicks(), 123);
+}
+
+TEST(MatMulSchedulingTest, MultipleCandidatesStillTune) {
+  MMAutoTune<int> tuner;
+  tuner.SetCandidates({0, 1});
+  for (size_t round = 0; round < 4; ++round) {
+    ASSERT_EQ(tuner.Best(), nullptr);
+    ASSERT_EQ(tuner.NextConfig(), 0);
+    tuner.NotifyTicks(110);
+    ASSERT_EQ(tuner.Best(), nullptr);
+    ASSERT_EQ(tuner.NextConfig(), 1);
+    tuner.NotifyTicks(100);
+  }
+  ASSERT_NE(tuner.Best(), nullptr);
+  EXPECT_EQ(*tuner.Best(), 1);
+}
+
+TEST(MatMulSchedulingTest, ActivationConversionCandidates) {
+  for (size_t M : {size_t{1}, size_t{17}}) {
+    EXPECT_EQ(MMParACandidates(M, MMSchedule::kAutoTune).size(), 4);
+    for (MMSchedule schedule : {MMSchedule::kFixed, MMSchedule::kFixedMinK}) {
+      const auto candidates = MMParACandidates(M, schedule);
+      ASSERT_EQ(candidates.size(), 1);
+      EXPECT_EQ(candidates.front(), MMParA::kK1);
+    }
+  }
+}
+
+#if GEMMA_ONEDNN_BRGEMM
+TEST(MatMulSchedulingTest, BRGeMMCandidates) {
+  for (size_t M : {size_t{32}, size_t{64}, size_t{127}}) {
+    for (size_t K : {size_t{32}, size_t{1024}, size_t{16384}}) {
+      const auto all = BRGeMMCandidates(M, K, 128);
+      const auto fixed = BRGeMMCandidates(M, K, 128, false);
+      ASSERT_EQ(fixed.size(), 1);
+      EXPECT_EQ(fixed.front().M_blk, all.front().M_blk);
+      EXPECT_EQ(fixed.front().batch_size, all.front().batch_size);
+      const auto min_k = BRGeMMCandidates(M, K, 128, false, true);
+      ASSERT_EQ(min_k.size(), 1);
+      const size_t splits = hwy::DivCeil(K / 32, min_k.front().batch_size);
+      for (const auto& candidate : all) {
+        EXPECT_LE(splits, hwy::DivCeil(K / 32, candidate.batch_size));
+      }
+    }
+  }
+}
+#endif
+
+TEST(MatMulSchedulingTest, ActivationKeys) {
+  std::set<MMKeys::Key> keys;
+  for (size_t M : {size_t{1}, size_t{4}, size_t{64}, size_t{65535}}) {
+    for (size_t K : {size_t{1}, size_t{1} << 19, (size_t{1} << 20) - 1}) {
+      for (size_t N : {size_t{4}, size_t{1} << 19, (size_t{1} << 20) - 1}) {
+        for (size_t num_B : {size_t{1}, size_t{2}}) {
+          const auto original = static_cast<MMKeys::Key>(MMKeys::BucketM(M)) |
+                                (static_cast<MMKeys::Key>(K) << 16) |
+                                (static_cast<MMKeys::Key>(N) << 40) |
+                                (static_cast<MMKeys::Key>(num_B) << 60);
+          EXPECT_EQ(original, MMKeys::KeyFromDims(M, K, N, num_B));
+          for (MMActivation activation :
+               {MMActivation::kBF16, MMActivation::kI8,
+                MMActivation::kI8Block}) {
+            const auto key = MMKeys::KeyFromDims(M, K, N, num_B, activation);
+            EXPECT_NE(key, MMKeys::kPadding);
+            EXPECT_TRUE(keys.insert(key).second);
+            EXPECT_EQ(key, MMKeys::KeyFromDims(MMKeys::BucketM(M), K, N, num_B,
+                                               activation));
+          }
+        }
+      }
+    }
+  }
+}
 
 }  // namespace gcpp
 
