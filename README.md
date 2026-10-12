@@ -1,5 +1,9 @@
 # gemma.cpp
 
+<p align="center">
+  <b>English</b> · <a href="README.zh.md">简体中文</a>
+</p>
+
 gemma.cpp is a lightweight, standalone C++ inference engine for the Gemma
 foundation models from Google.
 
