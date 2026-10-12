@@ -859,6 +859,176 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
                                      tol, tol_exp, tol_max, 0.0f);
 }
 
+enum class MixedRangesQueryType { kF32, kBF16, kInt16, kInt8 };
+
+// Queries in the same kernel group (4 or 8 queries) whose [start, last] ranges
+// cover different kernel blocks: some start late, some end early. A query that
+// is inactive in a block must not pick up stale step constants from the
+// workspace, which is poisoned with 0xFF (NaN) here. The reference runs every
+// query on its own, so no query is ever inactive while others are active.
+template <typename KV_T>
+void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
+                                           MixedRangesQueryType q_type,
+                                           const char* name, float tol) {
+  constexpr size_t kQkvDim = 64;
+  // More than two kernel blocks (256 tokens), with a partial last tile.
+  constexpr size_t kSeqLen = 600;
+  constexpr size_t kNumQueries = 16;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+
+  const size_t num_tiles = hwy::DivCeil(kSeqLen, gcpp::KVCache::kTileSize);
+  const size_t tile_elems =
+      *gcpp::GetTileSizeBytes(kv_encoding, kQkvDim) / sizeof(KV_T);
+  MatStorageT<KV_T> kv("kv", Extents2D(num_tiles, tile_elems), ctx.allocator,
+                       MatPadding::kPacked);
+  PopulateTestKVCache(kv, kv_encoding, kQkvDim,
+                      TestDataDistribution::kGaussian);
+  const hwy::Span<const MatPtr> kvs(&kv, 1);
+
+  const AlignedFloatVector q_f32 = PopulateTestQueries(
+      kNumQueries, kQkvDim, TestDataDistribution::kGaussian);
+  std::vector<BF16, hwy::AlignedAllocator<BF16>> q_bf16(kNumQueries * kQkvDim);
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> q_i16(kNumQueries *
+                                                             kQkvDim);
+  std::vector<int8_t, hwy::AlignedAllocator<int8_t>> q_i8(kNumQueries *
+                                                          kQkvDim);
+  AlignedFloatVector q_scales(kNumQueries);
+  if (q_type == MixedRangesQueryType::kBF16) {
+    CompressQueriesBF16Contiguous(q_f32.data(), kQkvDim, kNumQueries,
+                                  q_bf16.data());
+  } else if (q_type == MixedRangesQueryType::kInt16) {
+    CompressQueriesInt16Contiguous(q_f32.data(), kQkvDim, kNumQueries,
+                                   q_i16.data(), q_scales.data());
+  } else if (q_type == MixedRangesQueryType::kInt8) {
+    CompressQueriesUint8Contiguous(q_f32.data(), kQkvDim, kNumQueries,
+                                   q_i8.data(), q_scales.data());
+  }
+
+  std::vector<size_t, hwy::AlignedAllocator<size_t>> start_pos(kNumQueries);
+  std::vector<size_t, hwy::AlignedAllocator<size_t>> last_pos(kNumQueries);
+  for (size_t i = 0; i < kNumQueries; ++i) {
+    switch (i % 4) {
+      case 0:  // Full range.
+        start_pos[i] = 0;
+        last_pos[i] = kSeqLen - 1;
+        break;
+      case 1:  // Late start: inactive in the first block.
+        start_pos[i] = 300;
+        last_pos[i] = kSeqLen - 1;
+        break;
+      case 2:  // Early end: inactive in the later blocks.
+        start_pos[i] = 0;
+        last_pos[i] = 200;
+        break;
+      default:  // Short range spanning a block boundary.
+        start_pos[i] = 250;
+        last_pos[i] = 270;
+        break;
+    }
+  }
+
+  // Runs `q_count` queries starting at `first_q`.
+  auto run = [&](size_t first_q, size_t q_count,
+                 hwy::Span<const size_t> starts, hwy::Span<const size_t> lasts,
+                 MatPtrT<float>& att_out, float* exp_sums, float* max_logits,
+                 hwy::AlignedVector<uint8_t>* workspace) {
+    const hwy::Span<const float> scales(q_scales.data() + first_q, q_count);
+    switch (q_type) {
+      case MixedRangesQueryType::kF32:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
+            kvs, q_count, q_f32.data() + first_q * kQkvDim, starts, lasts,
+            /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
+      case MixedRangesQueryType::kBF16:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
+            kvs, q_count, q_bf16.data() + first_q * kQkvDim, starts, lasts,
+            /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
+      case MixedRangesQueryType::kInt16:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
+            kvs, q_count, q_i16.data() + first_q * kQkvDim, scales, starts,
+            lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
+      case MixedRangesQueryType::kInt8:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
+            kvs, q_count, q_i8.data() + first_q * kQkvDim, scales, starts,
+            lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
+    }
+  };
+
+  constexpr float kInitMax = -std::numeric_limits<float>::max() / 2.0f;
+  const size_t padded_queries = hwy::RoundUpTo(kNumQueries, 16);
+
+  // All queries in one call, with a NaN-poisoned workspace.
+  MatStorageT<float> att_out("att_out", Extents2D(kNumQueries, kQkvDim),
+                             ctx.allocator, MatPadding::kPacked);
+  std::vector<float> exp_sums(padded_queries, 0.0f);
+  std::vector<float> max_logits(padded_queries, kInitMax);
+  hwy::AlignedVector<uint8_t> poisoned_workspace(size_t{1} << 20, 0xFF);
+  run(0, kNumQueries, hwy::Span<const size_t>(start_pos),
+      hwy::Span<const size_t>(last_pos), att_out, exp_sums.data(),
+      max_logits.data(), &poisoned_workspace);
+
+  size_t num_failed_queries = 0;
+  for (size_t i = 0; i < kNumQueries; ++i) {
+    MatStorageT<float> ref_out("ref_out", Extents2D(1, kQkvDim), ctx.allocator,
+                               MatPadding::kPacked);
+    std::vector<float> ref_exp_sums(16, 0.0f);
+    std::vector<float> ref_max_logits(16, kInitMax);
+    hwy::AlignedVector<uint8_t> ref_workspace(size_t{1} << 20, 0);
+    run(i, 1, hwy::Span<const size_t>(&start_pos[i], 1),
+        hwy::Span<const size_t>(&last_pos[i], 1), ref_out, ref_exp_sums.data(),
+        ref_max_logits.data(), &ref_workspace);
+
+    // The single-query reference starts its block loop at its own start
+    // position, so block boundaries (and hence rescaling and BF16/quantized
+    // rounding of the step constants) differ from the grouped call; compare
+    // with the same tolerances as the other tiled tests.
+    float max_out_err = 0.0f;
+    bool all_finite = true;
+    for (size_t j = 0; j < kQkvDim; ++j) {
+      const float out = att_out.Row(i)[j];
+      all_finite &= std::isfinite(out);
+      max_out_err = std::max(max_out_err, std::abs(out - ref_out.Row(0)[j]));
+    }
+    const float sum_err = std::abs(exp_sums[i] - ref_exp_sums[0]) /
+                          std::max(1.0f, std::abs(ref_exp_sums[0]));
+    const float max_err = std::abs(max_logits[i] - ref_max_logits[0]);
+    if (!all_finite || !(max_out_err <= tol) || !(sum_err <= tol) ||
+        !(max_err <= tol)) {
+      ++num_failed_queries;
+      ADD_FAILURE() << name << " q=" << i << " [" << start_pos[i] << ","
+                    << last_pos[i] << "] finite=" << all_finite
+                    << " max_att_out_err=" << max_out_err
+                    << " rel_exp_sum_err=" << sum_err
+                    << " max_logit_err=" << max_err << " tol=" << tol;
+    }
+  }
+  EXPECT_EQ(num_failed_queries, size_t{0}) << name;
+}
+
+void TestTiledFlashAttentionMixedQueryRanges() {
+  RunTiledFlashAttentionMixedRangesTest<float>(
+      gcpp::KVEncoding::kF32, MixedRangesQueryType::kF32, "F32kv_F32q", 1e-4f);
+  RunTiledFlashAttentionMixedRangesTest<BF16>(
+      gcpp::KVEncoding::kBF16TwoTranspositions, MixedRangesQueryType::kBF16,
+      "BF16TTkv_BF16q", 1e-3f);
+  RunTiledFlashAttentionMixedRangesTest<int8_t>(
+      gcpp::KVEncoding::kInt8, MixedRangesQueryType::kF32, "Int8kv_F32q",
+      5e-3f);
+  RunTiledFlashAttentionMixedRangesTest<int8_t>(
+      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kBF16,
+      "Int8TTkv_BF16q", 5e-3f);
+  RunTiledFlashAttentionMixedRangesTest<int8_t>(
+      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kInt16,
+      "Int8TTkv_Int16q", 5e-3f);
+  RunTiledFlashAttentionMixedRangesTest<int8_t>(
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions, MixedRangesQueryType::kInt8,
+      "Int8VNNIkv_Uint8q", 5e-3f);
+}
+
 template <typename KV_T>
 void RunTiledFlashAttentionDifferentialTest(
     size_t kv_seq_len, float tol, float tol_exp, float tol_max,
@@ -1201,6 +1371,8 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionInt8BF16);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionInt8Int16);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionInt8MatrixAccumulation);
+HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
+                      TestTiledFlashAttentionMixedQueryRanges);
 
 HWY_AFTER_TEST();
 

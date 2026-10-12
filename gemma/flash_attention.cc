@@ -1548,6 +1548,21 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
     size_t q = q_base_idx + q_offset;
     if (position + actual_block_size <= start_pos_per_query[q] ||
         position > last_pos_per_query[q]) {
+      // This query attends to no token in this block, but the multiply-add
+      // below still runs over all kNumQueries rows with scales_old == 1.
+      // Zero its step constants (and Int16/Int8 query scales) so that its
+      // accumulator row is left unchanged; otherwise stale or uninitialized
+      // workspace values leak into att_out.
+      constexpr size_t kMaxLanes = hn::MaxLanes(df);
+      for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
+        FlashStepBufT<Q_T>* dst = step_consts_buf +
+                                  step_idx * (kNumQueries * 2 * kMaxLanes) +
+                                  q_offset * 2 * kMaxLanes;
+        hwy::ZeroBytes(dst, 2 * kMaxLanes * sizeof(FlashStepBufT<Q_T>));
+        if constexpr (IsInt16<Q_T>() || IsInt8<Q_T>()) {
+          step_q_scales_s_buf[step_idx * kNumQueries + q_offset] = 0.0f;
+        }
+      }
       continue;
     }
     any_query_active = true;
