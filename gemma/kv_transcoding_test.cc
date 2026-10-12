@@ -105,6 +105,61 @@ INSTANTIATE_TEST_SUITE_P(
            EncodingTestCase{gcpp::KVEncoding::kInt8VNNITwoTranspositions, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8MatrixAccumulation, 0.02f}));
 
+class Int8EncodingTest : public TestWithParam<gcpp::KVEncoding> {};
+
+// Decoding `q * scale` must be within half a quantization step of the input,
+// as in tiled_attention.cc, which quantizes with the stored bf16 scale.
+TEST_P(Int8EncodingTest, RoundTripIsWithinHalfAStep) {
+  const gcpp::KVEncoding encoding = GetParam();
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 256;
+
+  DecodedTile original(qkv_dim, kTileSize);
+  for (size_t token = 0; token < kTileSize; ++token) {
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      // Per-token magnitudes vary so that absmax / 127 is rarely exact in bf16.
+      const float i = static_cast<float>(dim * kTileSize + token);
+      original.k_elem(token, dim) = std::sin(i * 0.37f) * (1.0f + token);
+      original.v_elem(token, dim) = std::cos(i * 0.53f) * (3.0f + 0.7f * token);
+    }
+  }
+
+  hwy::AlignedVector<char> encoded(GetTileSizeBytes(encoding, qkv_dim).value());
+  ASSERT_TRUE(EncodeTile(encoding, original, qkv_dim,
+                         hwy::Span<char>(encoded.data(), encoded.size())));
+  DecodedTile decoded(qkv_dim, kTileSize);
+  ASSERT_TRUE(DecodeTile(encoding,
+                         hwy::Span<const char>(encoded.data(), encoded.size()),
+                         qkv_dim, &decoded));
+
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float k_max = 0.0f, v_max = 0.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      k_max = std::max(k_max, std::abs(original.k_elem(token, dim)));
+      v_max = std::max(v_max, std::abs(original.v_elem(token, dim)));
+    }
+    // Half a step, plus slack for rounding the scale to bf16.
+    const float k_bound = 0.51f * k_max / 127.0f;
+    const float v_bound = 0.51f * v_max / 127.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      ASSERT_LE(
+          std::abs(decoded.k_elem(token, dim) - original.k_elem(token, dim)),
+          k_bound)
+          << "k token=" << token << " dim=" << dim;
+      ASSERT_LE(
+          std::abs(decoded.v_elem(token, dim) - original.v_elem(token, dim)),
+          v_bound)
+          << "v token=" << token << " dim=" << dim;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(AllInt8Encodings, Int8EncodingTest,
+                         Values(gcpp::KVEncoding::kInt8,
+                                gcpp::KVEncoding::kInt8TwoTranspositions,
+                                gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+                                gcpp::KVEncoding::kInt8MatrixAccumulation));
+
 TEST(KVEncodingTest, ConvertTileFloat32ToBfloat16) {
   constexpr size_t kTileSize = 32;
   constexpr size_t qkv_dim = 256;

@@ -257,11 +257,17 @@ void EncodeTileInt8(bool transposed, size_t qkv_dim, const DecodedTile& decoded,
   for (size_t token = 0; token < kTileSize; ++token) {
     float scale_k = k_max_abs[token] == 0.0f ? 1.0f : k_max_abs[token] / 127.0f;
     k_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_k);
-    inv_scales_k[token] = 1.0f / scale_k;
+    // Quantize with the stored (bf16) scale, as tiled_attention.cc does, so
+    // that decoding `q * scale` is within half a step of the input.
+    const float stored_k = hwy::ConvertScalarTo<float>(k_scales[token]);
+    inv_scales_k[token] = stored_k == 0.0f ? 0.0f : 1.0f / stored_k;
 
     float scale_v = v_max_abs[token] == 0.0f ? 1.0f : v_max_abs[token] / 127.0f;
     v_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_v);
-    inv_scales_v[token] = 1.0f / scale_v;
+    // Quantize with the stored (bf16) scale, as tiled_attention.cc does, so
+    // that decoding `q * scale` is within half a step of the input.
+    const float stored_v = hwy::ConvertScalarTo<float>(v_scales[token]);
+    inv_scales_v[token] = stored_v == 0.0f ? 0.0f : 1.0f / stored_v;
   }
 
   EncodeTileWithFn(
@@ -303,11 +309,17 @@ void EncodeTileInt8VNNI(size_t qkv_dim, const DecodedTile& decoded,
   for (size_t token = 0; token < kTileSize; ++token) {
     float scale_k = k_max_abs[token] == 0.0f ? 1.0f : k_max_abs[token] / 127.0f;
     k_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_k);
-    inv_scales_k[token] = 1.0f / scale_k;
+    // Quantize with the stored (bf16) scale, as tiled_attention.cc does, so
+    // that decoding `q * scale` is within half a step of the input.
+    const float stored_k = hwy::ConvertScalarTo<float>(k_scales[token]);
+    inv_scales_k[token] = stored_k == 0.0f ? 0.0f : 1.0f / stored_k;
 
     float scale_v = v_max_abs[token] == 0.0f ? 1.0f : v_max_abs[token] / 127.0f;
     v_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_v);
-    inv_scales_v[token] = 1.0f / scale_v;
+    // Quantize with the stored (bf16) scale, as tiled_attention.cc does, so
+    // that decoding `q * scale` is within half a step of the input.
+    const float stored_v = hwy::ConvertScalarTo<float>(v_scales[token]);
+    inv_scales_v[token] = stored_v == 0.0f ? 0.0f : 1.0f / stored_v;
   }
 
   for (size_t token = 0; token < kTileSize; ++token) {
