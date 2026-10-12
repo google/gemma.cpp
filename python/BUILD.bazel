@@ -26,6 +26,7 @@ pybind_extension(
         "//:benchmark_helper",
         "//:gemma_args",
         "//:gemma_lib",
+        "//:ops",
         "//:threading_context",
         "@highway//:hwy",
     ],
