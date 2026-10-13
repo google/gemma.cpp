@@ -13,16 +13,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Safe to be first, does not include POSIX headers.
-#include <new>
+// Feature-test macros must be defined before including any system header,
+// including C++ headers such as <new>, which may include <features.h>.
+// Replacement for the _BSD_SOURCE specified by preadv documentation (glibc).
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
 
+// Safe to include here: does not include any system headers.
 #include "hwy/detect_compiler_arch.h"
+
+#if HWY_OS_LINUX
 // Request POSIX 2008, including `pread()` and `posix_fadvise()`. This also
-// implies `_POSIX_C_SOURCE`.
+// implies `_POSIX_C_SOURCE`. Not done on BSD/Apple, where it would hide
+// extensions such as `preadv` and `madvise`.
 #if !defined(_XOPEN_SOURCE) || _XOPEN_SOURCE < 700
 #undef _XOPEN_SOURCE
 #define _XOPEN_SOURCE 700  // SUSv4
 #endif
+// FilePosix should only be compiled on non-Windows. It is easier to
+// check this in source code because we support multiple build systems. Note
+// that IOBatch at the end of this TU is still compiled on all platforms.
+#include <errno.h>
+
+#endif  // HWY_OS_LINUX
 
 // Make `off_t` 64-bit even on 32-bit systems. Works for Android >= r15c.
 #undef _FILE_OFFSET_BITS
@@ -32,7 +46,9 @@
 
 #include <cstring>
 #include <memory>
+#include <new>
 #include <string>
+#include <vector>
 
 #include "io/io.h"
 #include "hwy/base.h"  // HWY_ASSERT
@@ -51,43 +67,39 @@
 #define GEMMA_IO_FADVISE 0
 #endif
 
-// FilePosix should only be compiled on non-Windows. It is easier to
-// check this in source code because we support multiple build systems. Note
-// that IOBatch at the end of this TU is still compiled on all platforms.
 #if !HWY_OS_WIN
 
 #if GEMMA_IO_PREADV
-// Replacement for the _BSD_SOURCE specified by preadv documentation.
-#ifndef _DEFAULT_SOURCE
-#define _DEFAULT_SOURCE
-#endif
-#include <errno.h>
 #include <sys/uio.h>  // preadv
-#endif                // GEMMA_IO_PREADV
+#endif
 
 #include <fcntl.h>   // open
 #include <limits.h>  // IOV_MAX
 #include <stdint.h>
-#include <stdio.h>  // SEEK_END - unistd isn't enough for IDE.
 #include <sys/types.h>
 // Old OSX may require sys/types.h before sys/mman.h.
 #include <sys/mman.h>  // mmap
-#include <sys/stat.h>  // O_RDONLY
-#include <unistd.h>    // read, write, close
+#include <sys/stat.h>  // fstat, O_RDONLY
+#include <unistd.h>    // pread, pwrite, close
 
 // Placeholder for internal header, do not modify.
 #include "util/allocator.h"
 
 namespace gcpp {
 
+HWY_INLINE_VAR constexpr size_t kMaxBytesPerSyscall =
+    0x7FFFF000;  // Linux limit
+
 class FilePosix : public File {
-  int fd_ = 0;
+  int fd_ = -1;
 
  public:
-  explicit FilePosix(int fd) : fd_(fd) { HWY_ASSERT(fd > 0); }
+  explicit FilePosix(int fd) : fd_(fd) { HWY_ASSERT(fd >= 0); }
   ~FilePosix() override {
-    if (fd_ != 0) {
-      HWY_ASSERT(close(fd_) != -1);
+    if (fd_ >= 0) {
+      // Do not retry on EINTR: Linux releases the fd regardless, and retrying
+      // could close an fd that another thread was just given.
+      HWY_ASSERT(close(fd_) == 0 || errno == EINTR);
     }
   }
 
@@ -96,20 +108,24 @@ class FilePosix : public File {
 
   uint64_t FileSize() const override {
     static_assert(sizeof(off_t) == 8, "64-bit off_t required");
-    const off_t size = lseek(fd_, 0, SEEK_END);
-    if (size < 0) {
+    struct stat st;
+    if (fstat(fd_, &st) != 0 || st.st_size < 0) {
       return 0;
     }
-    return static_cast<uint64_t>(size);
+    return static_cast<uint64_t>(st.st_size);
   }
 
   bool Read(uint64_t offset, uint64_t size, void* to) const override {
     uint8_t* bytes = reinterpret_cast<uint8_t*>(to);
     uint64_t pos = 0;
-    for (;;) {
+    while (pos < size) {
       // pread seems to be faster than lseek + read when parallelized.
-      const auto bytes_read = pread(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_read <= 0) {
+      const size_t want = static_cast<size_t>(
+          HWY_MIN(size - pos, uint64_t{kMaxBytesPerSyscall}));
+      const ssize_t bytes_read =
+          pread(fd_, bytes + pos, want, static_cast<off_t>(offset + pos));
+      if (bytes_read < 0) {
+        if (errno == EINTR) continue;
         HWY_WARN(
             "Read failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
@@ -117,9 +133,9 @@ class FilePosix : public File {
             static_cast<size_t>(offset), errno);
         break;
       }
-      pos += bytes_read;
+      if (bytes_read == 0) break;  // EOF before reading `size` bytes.
+      pos += static_cast<uint64_t>(bytes_read);
       HWY_ASSERT(pos <= size);
-      if (pos == size) break;
     }
     return pos == size;  // success if managed to read desired size
   }
@@ -127,10 +143,13 @@ class FilePosix : public File {
   bool Write(const void* from, uint64_t size, uint64_t offset) override {
     const uint8_t* bytes = reinterpret_cast<const uint8_t*>(from);
     uint64_t pos = 0;
-    for (;;) {
-      const auto bytes_written =
-          pwrite(fd_, bytes + pos, size - pos, offset + pos);
-      if (bytes_written <= 0) {
+    while (pos < size) {
+      const size_t want = static_cast<size_t>(
+          HWY_MIN(size - pos, uint64_t{kMaxBytesPerSyscall}));
+      const ssize_t bytes_written =
+          pwrite(fd_, bytes + pos, want, static_cast<off_t>(offset + pos));
+      if (bytes_written < 0) {
+        if (errno == EINTR) continue;
         HWY_WARN(
             "Write failure at pos %zu within size %zu with offset %zu and "
             "errno %d\n",
@@ -138,15 +157,19 @@ class FilePosix : public File {
             static_cast<size_t>(offset), errno);
         break;
       }
-      pos += bytes_written;
+      if (bytes_written == 0) break;
+      pos += static_cast<uint64_t>(bytes_written);
       HWY_ASSERT(pos <= size);
-      if (pos == size) break;
     }
     return pos == size;  // success if managed to write desired size
   }
 
   MapPtr Map() override {
-    const size_t mapping_size = FileSize();
+    const uint64_t file_size = FileSize();
+    if (file_size == 0 || file_size > static_cast<uint64_t>(~size_t{0})) {
+      return MapPtr();
+    }
+    const size_t mapping_size = static_cast<size_t>(file_size);
     // No `MAP_POPULATE` because we do not want to wait for I/O, and
     // `MAP_NONBLOCK` is not guaranteed. `MAP_HUGETLB` fails. `MAP_SHARED` is
     // more efficient than `MAP_PRIVATE`; the main difference is that the former
@@ -174,13 +197,14 @@ HWY_MAYBE_UNUSED extern std::unique_ptr<File> OpenFileGoogle(
     const Path& filename, const char* mode);
 
 std::unique_ptr<File> OpenFileOrNull(const Path& filename, const char* mode) {
-  std::unique_ptr<File> file;  // OpenFileGoogle omitted
-  if (file) return file;
-
   const bool is_read = mode[0] != 'w';
+  // Tries POSIX first because local paths (including FUSE mounts) are faster.
   const int flags = is_read ? O_RDONLY : O_CREAT | O_RDWR | O_TRUNC;
-  const int fd = open(filename.path.c_str(), flags, 0644);
-  if (fd < 0) return file;
+  int fd;
+  do {
+    fd = open(filename.path.c_str(), flags, 0644);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) return std::unique_ptr<File>();
 
 #if GEMMA_IO_FADVISE
   if (is_read) {
@@ -230,11 +254,15 @@ IOBatch::IOBatch(uint64_t offset, size_t key_idx)
   spans_.reserve(kMaxSpans);
 }
 
-// Returns true if the batch was full; if so, call again on the new batch.
 bool IOBatch::Add(void* mem, size_t bytes) {
-  if (spans_.size() >= kMaxSpans) return false;
-  if (total_bytes_ + bytes > 0x7FFFF000) return false;  // Linux limit
-  spans_.push_back({.mem = mem, .bytes = bytes});
+  // Always accept the first span, otherwise callers would loop forever.
+  if (!spans_.empty()) {
+    if (spans_.size() >= kMaxSpans) return false;
+#if !HWY_OS_WIN
+    if (total_bytes_ + bytes > kMaxBytesPerSyscall) return false;
+#endif
+  }
+  spans_.push_back(IOSpan{mem, bytes});
   total_bytes_ += bytes;
   return true;
 }
@@ -247,19 +275,46 @@ uint64_t IOBatch::Read(const File& file) const {
   HWY_ASSERT(!spans_.empty());
 
 #if GEMMA_IO_PREADV
-  if (file.Handle() != -1) {
-    ssize_t bytes_read;
-    for (;;) {
-      bytes_read =
-          preadv(file.Handle(), reinterpret_cast<const iovec*>(spans_.data()),
-                 static_cast<int>(spans_.size()), offset_);
-      if (bytes_read >= 0) break;
-      if (errno == EINTR) continue;  // signal: retry
-      HWY_WARN("preadv(%d) for %4zu spans from offset %12zu failed, errno %d.",
-               file.Handle(), spans_.size(), offset_, errno);
-      return 0;
+  const int fd = file.Handle();
+  if (fd != -1) {
+    static_assert(sizeof(IOSpan) == sizeof(iovec), "IOSpan must match iovec");
+    const IOSpan* spans = spans_.data();
+    size_t num_spans = spans_.size();
+    std::vector<IOSpan> remaining;  // Only used after a short read.
+    uint64_t pos = 0;
+    while (pos < total_bytes_) {
+      const ssize_t bytes_read = preadv(
+          fd, reinterpret_cast<const iovec*>(spans),
+          static_cast<int>(num_spans), static_cast<off_t>(offset_ + pos));
+      if (bytes_read < 0) {
+        if (errno == EINTR) continue;  // signal: retry
+        HWY_WARN(
+            "preadv(%d) for %4zu spans from offset %12zu failed, errno %d.", fd,
+            num_spans, static_cast<size_t>(offset_ + pos), errno);
+        return 0;
+      }
+      if (bytes_read == 0) return 0;  // EOF before reading `total_bytes_`.
+      pos += static_cast<uint64_t>(bytes_read);
+      HWY_ASSERT(pos <= total_bytes_);
+      if (pos == total_bytes_) break;
+
+      // Short read: rebuild the list of not yet (fully) read spans.
+      remaining.clear();
+      uint64_t skip = pos;
+      for (const IOSpan& span : spans_) {
+        if (skip >= span.bytes) {
+          skip -= span.bytes;
+          continue;
+        }
+        const size_t skip_s = static_cast<size_t>(skip);
+        remaining.push_back(IOSpan{static_cast<uint8_t*>(span.mem) + skip_s,
+                                   span.bytes - skip_s});
+        skip = 0;
+      }
+      spans = remaining.data();
+      num_spans = remaining.size();
     }
-    return static_cast<uint64_t>(bytes_read);
+    return total_bytes_;
   }
 #endif  // GEMMA_IO_PREADV
 

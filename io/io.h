@@ -95,15 +95,16 @@ class IOBatch {
   // Reserves memory in `spans_`. `key_idx` identifies the blob/tensor.
   explicit IOBatch(uint64_t offset, size_t key_idx);
 
-  // The next `bytes` will be read from file into `mem`.
-  // Returns true if the batch was full; if so, call again on the new batch.
+  // The next `bytes` will be read from file into `mem`. Returns false if the
+  // batch is full; if so, call again on a new batch. Always succeeds for the
+  // first span, regardless of its size, so this cannot loop forever.
   bool Add(void* mem, size_t bytes);
 
   uint64_t Offset() const { return offset_; }
   uint64_t TotalBytes() const { return total_bytes_; }
   size_t KeyIdx() const { return key_idx_; }
 
-  // Returns the total number of bytes read, or 0 if any I/O failed.
+  // Returns `TotalBytes()` if all spans were completely read, otherwise 0.
   // Thread-compatible.
   uint64_t Read(const File& file) const;
 

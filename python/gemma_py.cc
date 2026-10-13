@@ -31,8 +31,10 @@
 #include "evals/benchmark_helper.h"
 #include "gemma/gemma.h"
 #include "gemma/gemma_args.h"
+#include "ops/ops-inl.h"  // Softmax, static dispatch
 #include "util/threading_context.h"
 #include "hwy/base.h"
+#include "hwy/highway.h"
 
 namespace py = pybind11;
 
@@ -234,6 +236,50 @@ class GemmaModel {
     return {response, response_tokens};
   }
 
+  // Returns, for each candidate, the probability that the model's next token
+  // after `prompt` is the candidate's first token, from the full-vocabulary
+  // softmax of the next-token logits. Generates nothing.
+  std::vector<float> ScoreNext(const std::string& prompt,
+                               const std::vector<std::string>& candidates) {
+    if (candidates.empty()) return {};
+    std::vector<int> ids;
+    ids.reserve(candidates.size());
+    for (const std::string& candidate : candidates) {
+      const std::vector<int> tokens = env_.Tokenize(candidate);
+      if (tokens.empty()) {
+        throw std::invalid_argument("Candidate has no tokens: " + candidate);
+      }
+      ids.push_back(tokens[0]);
+    }
+    std::vector<float> probs(ids.size(), 0.0f);
+    bool scored = false;
+    gcpp::RuntimeConfig& config = env_.MutableConfig();
+    // Restores the config on every exit, including exceptions.
+    struct ConfigRestore {
+      gcpp::RuntimeConfig& config;
+      const gcpp::RuntimeConfig saved;
+      ~ConfigRestore() { config = saved; }
+    } restore{config, config};
+    config.max_generated_tokens = 1;
+    config.verbosity = 0;
+    config.accept_token = gcpp::AcceptFunc();
+    config.batch_stream_token = gcpp::BatchStreamFunc();
+    gcpp::ThreadingContext& ctx = env_.MutableEnv().ctx;
+    config.sample_func = [&](size_t, size_t, gcpp::Logits logits,
+                             size_t worker) -> gcpp::TokenAndProb {
+      if (!scored) {
+        // Vectorized and in place: logits become probabilities.
+        gcpp::HWY_NAMESPACE::Softmax(logits, ctx, worker);
+        for (size_t i = 0; i < ids.size(); ++i) probs[i] = logits[ids[i]];
+        scored = true;
+      }
+      return {ids[0], probs[0]};
+    };
+    env_.QueryModel(env_.WrapAndTokenize(prompt),
+                    [](int, float) { return true; });
+    return probs;
+  }
+
   float GetLastProb() const { return last_prob_; }
 
   std::string Detokenize(const std::vector<int>& token_ids) const {
@@ -289,6 +335,8 @@ PYBIND11_MODULE(gemma, mod) {
            py::arg("temperature") = 0.9, py::arg("seed") = 123456789,
            py::arg("accept") = gcpp::AcceptFunc(),
            py::arg("prompt_tokens") = std::vector<int>())
+      .def("score_next", &GemmaModel::ScoreNext, py::arg("prompt"),
+           py::arg("candidates"))
       .def("get_last_prob", &GemmaModel::GetLastProb)
       .def("detokenize", &GemmaModel::Detokenize, py::arg("token_ids"));
 }
