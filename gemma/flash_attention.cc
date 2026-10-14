@@ -1094,8 +1094,8 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
 // q_T_in_groups_up_to_4 - Span of float* All except last float*
 // should have (qkv_dim, 4) Last one can have any size up to 4.
 // q_scales - Span of float of shape (q_count,) used for Queries in int16 format
-// start_pos_per_query - start position in kv to start attention from ()
-// last_pos_per_query - last position in kv to attend to (exclusive)
+// start_pos_per_query - first position in kv to attend to (inclusive)
+// last_pos_per_query - last position in kv to attend to (inclusive)
 // queries_per_timestep - how many queries begin/end on the same timestep
 // attention_shape - see struct definition for more details.
 // att_cap - soft cap on attention logits
