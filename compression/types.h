@@ -168,6 +168,7 @@ struct NuqStream {
   // smaller size (table amortized over more weights).
   static constexpr size_t kGroupSize = 256;
 
+#pragma pack(pop)
   // Storage for dynamic programming. There are two matrices; we use separate
   // allocations to avoid type punning.
   template <class T>
@@ -200,6 +201,7 @@ struct NuqStream {
     AlignedMatrix<float> costs;
     AlignedMatrix<int32_t> argmin;
   };
+#pragma pack(push, 1)
 
   // Returns offset of packed indices from the start of the stream. This matches
   // the (padded) total table size because table entries are bytes.
