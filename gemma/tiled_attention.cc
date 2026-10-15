@@ -1254,8 +1254,9 @@ void LocalAttentionForAllHeadsTokensAndBatch(
             size_t token_idx = div_heads_per_kv_head.Divide(q_idx);
             size_t head_in_group_idx = div_heads_per_kv_head.Remainder(q_idx);
 
+            // Rows are interleaved token-major, as for the Q read and KV write.
             const size_t batch_index =
-                current_qbatch_idx * num_query_tokens + token_idx;
+                token_idx * qbatch.Size() + current_qbatch_idx;
             const size_t q_head_idx =
                 kv_head_idx * heads_per_kv_head + head_in_group_idx;
             const size_t activations_att_out_start_idx = q_head_idx * qkv_dim;
