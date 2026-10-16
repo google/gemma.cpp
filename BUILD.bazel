@@ -693,8 +693,10 @@ cc_test(
         ":configs",
         ":gemma_args",
         ":kv_cache",
+        ":mat",
         ":threading_context",
         "@googletest//:gtest_main",
+        "//compression:types",
         "@highway//:hwy",
     ],
 )

@@ -1160,10 +1160,11 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
     // One query at a time, batching will be the query's prompt tokens.
     QBatch qbatch_1 = qbatch.Single(qi);
 
-    const size_t prompt_size = qbatch_1.Prompt(0).size();
+    const PromptTokens& prompt = qbatch.Prompt(qi);
+    const size_t prompt_size = prompt.size();
     // In autoregressive mode, we don't need to prefill the last token, so - 1.
     size_t prefill_this_query = prompt_size - 1;
-    const size_t prefix_end_this_query = qbatch_1.PrefixEnd(0);
+    const size_t prefix_end_this_query = qbatch.PrefixEnd(qi);
     // We can't attend beyond the prompt_size.
     HWY_ASSERT(prefix_end_this_query <= prompt_size);
     // Special case: if the prefix includes the last token, we need to prefill
@@ -1172,13 +1173,22 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
     // Embedding models never generate, and they pool over every token, so the
     // last token must always be prefilled - including when the prompt is
     // causal (`prefix_end` == 0) and the condition below would not fire.
+    // `prefill_last_token` requests the same for prefill-only calls that export
+    // the KV cache. MTP prefill pairs each row with the next prompt token and
+    // therefore requires prefill to stop before the last one.
     // TODO: consider implementing masking instead of this logic?
+    if (runtime_config.prefill_last_token) {
+      HWY_ASSERT(runtime_config.max_generated_tokens == 0);
+      HWY_ASSERT(!runtime_config.use_continuous_batching);
+      HWY_ASSERT(!(runtime_config.use_mtp && !weights.mtp_layers.empty()));
+    }
     const bool attend_to_last_token =
-        (prefill_this_query < prefix_end_this_query) || config.IsEmbedding();
+        (prompt.size() - 1 < qbatch.PrefixEnd(qi)) || config.IsEmbedding() ||
+        runtime_config.prefill_last_token;
     if (attend_to_last_token) {
       // The difference can be at most 1.
       prefill_this_query += 1;
-      HWY_ASSERT(config.IsEmbedding() ||
+      HWY_ASSERT(config.IsEmbedding() || runtime_config.prefill_last_token ||
                  prefill_this_query == prefix_end_this_query);
     }
     // In prefix-LM mode, we need to look at all the tokens for the prefix in
@@ -1231,7 +1241,17 @@ static HWY_NOINLINE void PrefillTBatch(const ModelConfig& config,
 
       // Transformer with one batch of tokens from a single query. No need to
       // set `PrevToken` because we already did the embedding above.
-      for (size_t layer_idx = 0; layer_idx < config.layer_configs.size();
+      // Trailing layers with HasOwnKVCache() == false (e.g. layers 15..34 in
+      // Gemma 4) do not write to KVCache and their activations are overwritten
+      // by the next tbatch or decode step, so prefill can stop after the last
+      // unshared KV torso layer. `prefill_all_layers` opts out.
+      size_t prefill_layer_limit = config.layer_configs.size();
+      if (!kObserver && !config.IsEmbedding() &&
+          !runtime_config.prefill_all_layers &&
+          !(runtime_config.use_mtp && !weights.mtp_layers.empty())) {
+        prefill_layer_limit = config.NumPrefillLayers();
+      }
+      for (size_t layer_idx = 0; layer_idx < prefill_layer_limit;
            ++layer_idx) {
         TransformerLayer(tbatch_size, layer_idx, *weights.GetLayer(layer_idx),
                          activations, qbatch_1, env);
@@ -1557,8 +1577,16 @@ size_t PrefillTBatchOrQBatch(const ModelConfig& config,
   hwy::BitSet4096<> non_eos;  // indexed by qi
 
   timing_info.prefill_start = hwy::platform::Now();
-  // Batch over the larger of prompt length, or queries.
-  if ((qbatch.Size() > max_prompt_size) && all_prefix_end_are_zero) {
+  if (runtime_config.prefill_last_token) {
+    HWY_ASSERT(runtime_config.max_generated_tokens == 0);
+    HWY_ASSERT(!runtime_config.use_continuous_batching);
+    HWY_ASSERT(!(runtime_config.use_mtp && !weights.mtp_layers.empty()));
+  }
+  // Batch over the larger of prompt length, or queries. `PrefillQBatch` always
+  // stops before the last prompt token, so `prefill_last_token` requires the
+  // token-batched path.
+  if ((qbatch.Size() > max_prompt_size) && all_prefix_end_are_zero &&
+      !runtime_config.prefill_last_token) {
     activations.SetBatchSize(qbatch.Size());  // required before PrefillQBatch
     PrefillQBatch(max_prompt_size, config, runtime_config, weights, activations,
                   qbatch, env, non_eos);
@@ -1590,8 +1618,9 @@ void StreamAndUpdateEOSAfterPrefill(const ModelConfig& config,
   const size_t pos = qbatch.Pos(qi);  // during prefill, pos is still correct.
   // In autoregressive mode, we have not prefilled the last token, so do
   // not advance.
-  const bool update_pos =
-      (qbatch.Pos(qi) < qbatch.PrefixEnd(qi)) || config.IsEmbedding();
+  const bool update_pos = (qbatch.Pos(qi) < qbatch.PrefixEnd(qi)) ||
+                          config.IsEmbedding() ||
+                          runtime_config.prefill_last_token;
   StreamAndUpdateEOS(qi, pos, qbatch.Prompt(qi)[last_pos_in_prompt], 0.0f,
                      config, runtime_config, qbatch, update_pos, non_eos);
 }

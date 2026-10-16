@@ -835,6 +835,19 @@ struct ModelConfig : public IFields {
     return cols;
   }
 
+  // Number of leading layers that prefill has to run: all layers up to and
+  // including the last one with its own KV cache. Trailing layers that reuse
+  // an earlier layer's KV (`LayerConfig::kv_share_layer_idx`, e.g. Gemma 4's
+  // upper stack) write nothing to the cache, and prefill activations are not
+  // carried into decoding, so prefill may stop before them.
+  size_t NumPrefillLayers() const {
+    size_t num_layers = layer_configs.size();
+    while (num_layers > 0 && !layer_configs[num_layers - 1].HasOwnKVCache()) {
+      --num_layers;
+    }
+    return num_layers;
+  }
+
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
   bool IsEmbedding() const { return false; }
 

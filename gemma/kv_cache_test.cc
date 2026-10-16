@@ -1,12 +1,16 @@
 #include "gemma/kv_cache.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "compression/types.h"
 #include "gemma/configs.h"
 #include "gemma/gemma_args.h"
+#include "util/mat.h"
 #include "util/threading_context.h"
+#include "hwy/base.h"
 namespace gcpp {
 namespace {
 

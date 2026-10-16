@@ -195,6 +195,20 @@ struct RuntimeConfig {
   bool use_mtp = false;
   size_t mtp_draft_horizon = 7;
   float mtp_confidence_threshold = 0.0f;
+
+  // By default, prefill stops after the last layer that owns a KV cache:
+  // trailing layers with `LayerConfig::kv_share_layer_idx >= 0` (e.g. layers
+  // 15..34 of Gemma 4 2B) write no KV during prefill and their activations are
+  // never read again, so skipping them is exact. Set to true to run every
+  // layer anyway (debugging, or callers inspecting prefill activations).
+  bool prefill_all_layers = false;
+
+  // By default, prefill stops before the last prompt token, which the first
+  // decode step then processes. Set to true for prefill-only calls that need
+  // the KV cache of every prompt token (e.g. exporting the cache). Requires
+  // `max_generated_tokens == 0`, `!use_continuous_batching`, and no MTP
+  // decoding (whose prefill pairs each token with its successor).
+  bool prefill_last_token = false;
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {

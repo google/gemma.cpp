@@ -139,6 +139,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
                  const Allocator& allocator)
     : allocator_(allocator) {
   const std::vector<LayerConfig>& kv_layer_configs = KVLayerConfigs(config);
+  const std::vector<uint32_t>& kv_attention_window_sizes =
+      KVAttentionWindowSizes(config);
 
   HWY_ASSERT(!kv_layer_configs.empty());
   num_layers = kv_layer_configs.size();
@@ -157,7 +159,13 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     if (!kv_layer_configs[i].HasOwnKVCache()) {
       const size_t src =
           static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_DASSERT(src < i);
+      HWY_ASSERT(src < i);
+      HWY_ASSERT(kv_layer_configs[src].HasOwnKVCache());
+      HWY_ASSERT(kv_layer_configs[i].kv_heads ==
+                 kv_layer_configs[src].kv_heads);
+      HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
+      HWY_ASSERT(kv_attention_window_sizes[i] ==
+                 kv_attention_window_sizes[src]);
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
@@ -235,7 +243,13 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     if (!kv_layer_configs[i].HasOwnKVCache()) {
       const size_t src =
           static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_DASSERT(src < i);  // sources must precede, so their offsets are set
+      HWY_ASSERT(src < i);  // sources must precede, so their offsets are set
+      HWY_ASSERT(kv_layer_configs[src].HasOwnKVCache());
+      HWY_ASSERT(kv_layer_configs[i].kv_heads ==
+                 kv_layer_configs[src].kv_heads);
+      HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
+      HWY_ASSERT(kv_attention_window_sizes[i] ==
+                 kv_attention_window_sizes[src]);
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
@@ -335,6 +349,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
     const size_t capped_seq_len = CappedSeqLen(config, inference_args);
     for (size_t i = 0; i < num_layers; ++i) {
+      if (!kv_layer_configs[i].HasOwnKVCache()) continue;
       size_t num_tiles = num_tiles_per_head(kv_attention_window_sizes[i],
                                             runtime_config.prefill_tbatch_size,
                                             capped_seq_len) *
@@ -406,6 +421,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     kv_head_ptrs.clear();
     kv_head_ptrs.reserve(kv_head_accum);
     for (size_t i = 0; i < num_layers; ++i) {
+      if (!kv_layer_configs[i].HasOwnKVCache()) continue;
       size_t layer_tile_length = 2 * kv_layer_configs[i].qkv_dim * kTileSize;
       if (kv_cache_type == Type::kInt8) {
         layer_tile_length += 2 * sizeof(BF16) * kTileSize;

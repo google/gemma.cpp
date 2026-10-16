@@ -171,6 +171,31 @@ TEST(ConfigsTest, Gemma4E4BArchitectureInvariants) {
       EXPECT_EQ(layer.kv_share_layer_idx, expected_shared_idx);
     }
   }
+  EXPECT_EQ(config.NumPrefillLayers(), kKvSharingStartLayer);
+}
+
+TEST(ConfigsTest, NumPrefillLayersStopsAfterLastKVOwningLayer) {
+  // Gemma 4 2B: layers 15..34 reuse the KV of layers 13/14.
+  const ModelConfig gemma4_2b(Model::GEMMA4_2B_LM, Type::kSFP,
+                              PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(gemma4_2b.num_layers, 35u);
+  EXPECT_EQ(gemma4_2b.NumPrefillLayers(), 15u);
+  EXPECT_TRUE(gemma4_2b.layer_configs[14].HasOwnKVCache());
+  EXPECT_FALSE(gemma4_2b.layer_configs[15].HasOwnKVCache());
+
+  // Without KV sharing every layer is a prefill layer.
+  const ModelConfig gemma3_270m(Model::GEMMA3_270M, Type::kSFP,
+                                PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(gemma3_270m.NumPrefillLayers(), gemma3_270m.layer_configs.size());
+
+  // Only trailing shared layers are skipped: a shared layer followed by a
+  // KV-owning one still has to run so that the later layer sees its output.
+  ModelConfig mixed = gemma3_270m;
+  mixed.layer_configs[5].kv_share_layer_idx = 4;
+  EXPECT_EQ(mixed.NumPrefillLayers(), mixed.layer_configs.size());
+  const size_t last = mixed.layer_configs.size() - 1;
+  mixed.layer_configs[last].kv_share_layer_idx = static_cast<int>(last - 1);
+  EXPECT_EQ(mixed.NumPrefillLayers(), last);
 }
 
 TEST(ConfigsTest, Gemma4E4BQuantizerSpecifiers) {
