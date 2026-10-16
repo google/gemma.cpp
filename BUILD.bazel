@@ -1058,7 +1058,6 @@ cc_test(
 cc_test(
     name = "model_health_test",
     srcs = ["evals/model_health_test.cc"],
-    linkstatic = True,
     # Requires model files
     tags = [
         "local",
@@ -1070,7 +1069,8 @@ cc_test(
         ":configs",
         ":cross_entropy",
         ":gemma_lib",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        ":test_util",
+        "//testing/base/public:gunit_for_library_testonly",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
     ],
@@ -1079,7 +1079,6 @@ cc_test(
 cc_test(
     name = "gemma_batch_bench",
     srcs = ["evals/gemma_batch_bench.cc"],
-    linkstatic = True,
     # Requires model files
     tags = [
         "local",
@@ -1090,7 +1089,7 @@ cc_test(
         ":benchmark_helper",
         ":gemma_lib",
         ":test_util",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//testing/base/public:gunit_for_library_testonly",  # buildcleaner: keep
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
