@@ -435,6 +435,8 @@ struct PerToken {
   uint16_t row_idx;
 };
 static_assert(sizeof(PerToken) == 8);
+// `PerToken::expert_idx` of rows that are routed to no expert (padding).
+HWY_INLINE_VAR constexpr uint16_t kNoExpert = 0xFFFF;
 // Multiple to round up experts_per_token to avoid false sharing.
 HWY_INLINE_VAR constexpr size_t kPerTokenPerLine =
     HWY_ALIGNMENT / sizeof(PerToken);
@@ -840,6 +842,14 @@ struct Activations {
   // Token ids of the current batch rows, for DeepSeek V4 hash routing.
   // Filled by the embedding step; empty if unused.
   std::vector<int32_t> token_ids;
+
+  // If non-empty, nonzero for rows that only pad a prompt to the length of the
+  // others in the batch (see `ComputeEmbeddingsT`). Such rows are routed to no
+  // MoE expert, so they cost no expert FLOPs. Their outputs must be ignored.
+  std::vector<uint8_t> is_padding;
+  bool IsPadding(size_t row) const {
+    return row < is_padding.size() && is_padding[row] != 0;
+  }
 
   // Speculative decoding (DeepSeek V4 MTP): if >= 0, the compressor pass
   // copies each layer's KVCache::ds_state slice to ds_state_snapshot after

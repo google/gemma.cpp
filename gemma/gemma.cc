@@ -22,6 +22,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <numeric>
 #include <optional>
 #include <vector>
 
