@@ -970,35 +970,35 @@ static HWY_INLINE void StoreUpTo8Times2(DF df, MatPtrT<float>& out,
                                         VF out7_0, VF out7_1) {
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
-  hn::Store(out0_0, df, out.Row(0) + start_col);
-  hn::Store(out0_1, df, out.Row(0) + start_col + NF);
+  hn::StoreU(out0_0, df, out.Row(0) + start_col);
+  hn::StoreU(out0_1, df, out.Row(0) + start_col + NF);
   if constexpr (N >= 2) {
-    hn::Store(out1_0, df, out.Row(1) + start_col);
-    hn::Store(out1_1, df, out.Row(1) + start_col + NF);
+    hn::StoreU(out1_0, df, out.Row(1) + start_col);
+    hn::StoreU(out1_1, df, out.Row(1) + start_col + NF);
   }
   if constexpr (N >= 3) {
-    hn::Store(out2_0, df, out.Row(2) + start_col);
-    hn::Store(out2_1, df, out.Row(2) + start_col + NF);
+    hn::StoreU(out2_0, df, out.Row(2) + start_col);
+    hn::StoreU(out2_1, df, out.Row(2) + start_col + NF);
   }
   if constexpr (N >= 4) {
-    hn::Store(out3_0, df, out.Row(3) + start_col);
-    hn::Store(out3_1, df, out.Row(3) + start_col + NF);
+    hn::StoreU(out3_0, df, out.Row(3) + start_col);
+    hn::StoreU(out3_1, df, out.Row(3) + start_col + NF);
   }
   if constexpr (N >= 5) {
-    hn::Store(out4_0, df, out.Row(4) + start_col);
-    hn::Store(out4_1, df, out.Row(4) + start_col + NF);
+    hn::StoreU(out4_0, df, out.Row(4) + start_col);
+    hn::StoreU(out4_1, df, out.Row(4) + start_col + NF);
   }
   if constexpr (N >= 6) {
-    hn::Store(out5_0, df, out.Row(5) + start_col);
-    hn::Store(out5_1, df, out.Row(5) + start_col + NF);
+    hn::StoreU(out5_0, df, out.Row(5) + start_col);
+    hn::StoreU(out5_1, df, out.Row(5) + start_col + NF);
   }
   if constexpr (N >= 7) {
-    hn::Store(out6_0, df, out.Row(6) + start_col);
-    hn::Store(out6_1, df, out.Row(6) + start_col + NF);
+    hn::StoreU(out6_0, df, out.Row(6) + start_col);
+    hn::StoreU(out6_1, df, out.Row(6) + start_col + NF);
   }
   if constexpr (N >= 8) {
-    hn::Store(out7_0, df, out.Row(7) + start_col);
-    hn::Store(out7_1, df, out.Row(7) + start_col + NF);
+    hn::StoreU(out7_0, df, out.Row(7) + start_col);
+    hn::StoreU(out7_1, df, out.Row(7) + start_col + NF);
   }
 }
 
@@ -1010,50 +1010,50 @@ static HWY_INLINE void LoadAndMulUpTo8Times2(
     VF& out6_0, VF& out6_1, VF& out7_0, VF& out7_1) {
   namespace hn = hwy::HWY_NAMESPACE;
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
-  out0_0 = hn::Load(df, out.Row(0) + column);
+  out0_0 = hn::LoadU(df, out.Row(0) + column);
   out0_0 = hn::Mul(out0_0, hn::Set(df, scales[0]));
-  out0_1 = hn::Load(df, out.Row(0) + column + NF);
+  out0_1 = hn::LoadU(df, out.Row(0) + column + NF);
   out0_1 = hn::Mul(out0_1, hn::Set(df, scales[0]));
   if constexpr (N >= 2) {
-    out1_0 = hn::Load(df, out.Row(1) + column);
+    out1_0 = hn::LoadU(df, out.Row(1) + column);
     out1_0 = hn::Mul(out1_0, hn::Set(df, scales[1]));
-    out1_1 = hn::Load(df, out.Row(1) + column + NF);
+    out1_1 = hn::LoadU(df, out.Row(1) + column + NF);
     out1_1 = hn::Mul(out1_1, hn::Set(df, scales[1]));
   }
   if constexpr (N >= 3) {
-    out2_0 = hn::Load(df, out.Row(2) + column);
+    out2_0 = hn::LoadU(df, out.Row(2) + column);
     out2_0 = hn::Mul(out2_0, hn::Set(df, scales[2]));
-    out2_1 = hn::Load(df, out.Row(2) + column + NF);
+    out2_1 = hn::LoadU(df, out.Row(2) + column + NF);
     out2_1 = hn::Mul(out2_1, hn::Set(df, scales[2]));
   }
   if constexpr (N >= 4) {
-    out3_0 = hn::Load(df, out.Row(3) + column);
+    out3_0 = hn::LoadU(df, out.Row(3) + column);
     out3_0 = hn::Mul(out3_0, hn::Set(df, scales[3]));
-    out3_1 = hn::Load(df, out.Row(3) + column + NF);
+    out3_1 = hn::LoadU(df, out.Row(3) + column + NF);
     out3_1 = hn::Mul(out3_1, hn::Set(df, scales[3]));
   }
   if constexpr (N >= 5) {
-    out4_0 = hn::Load(df, out.Row(4) + column);
+    out4_0 = hn::LoadU(df, out.Row(4) + column);
     out4_0 = hn::Mul(out4_0, hn::Set(df, scales[4]));
-    out4_1 = hn::Load(df, out.Row(4) + column + NF);
+    out4_1 = hn::LoadU(df, out.Row(4) + column + NF);
     out4_1 = hn::Mul(out4_1, hn::Set(df, scales[4]));
   }
   if constexpr (N >= 6) {
-    out5_0 = hn::Load(df, out.Row(5) + column);
+    out5_0 = hn::LoadU(df, out.Row(5) + column);
     out5_0 = hn::Mul(out5_0, hn::Set(df, scales[5]));
-    out5_1 = hn::Load(df, out.Row(5) + column + NF);
+    out5_1 = hn::LoadU(df, out.Row(5) + column + NF);
     out5_1 = hn::Mul(out5_1, hn::Set(df, scales[5]));
   }
   if constexpr (N >= 7) {
-    out6_0 = hn::Load(df, out.Row(6) + column);
+    out6_0 = hn::LoadU(df, out.Row(6) + column);
     out6_0 = hn::Mul(out6_0, hn::Set(df, scales[6]));
-    out6_1 = hn::Load(df, out.Row(6) + column + NF);
+    out6_1 = hn::LoadU(df, out.Row(6) + column + NF);
     out6_1 = hn::Mul(out6_1, hn::Set(df, scales[6]));
   }
   if constexpr (N >= 8) {
-    out7_0 = hn::Load(df, out.Row(7) + column);
+    out7_0 = hn::LoadU(df, out.Row(7) + column);
     out7_0 = hn::Mul(out7_0, hn::Set(df, scales[7]));
-    out7_1 = hn::Load(df, out.Row(7) + column + NF);
+    out7_1 = hn::LoadU(df, out.Row(7) + column + NF);
     out7_1 = hn::Mul(out7_1, hn::Set(df, scales[7]));
   }
 }
