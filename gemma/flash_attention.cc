@@ -1099,7 +1099,8 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
 // queries_per_timestep - how many queries begin/end on the same timestep
 // attention_shape - see struct definition for more details.
 // att_cap - soft cap on attention logits
-// att_out - MatPtrT<float> of shape (q_count, qkv_dim)
+// att_out - IN/OUT MatPtrT<float> of shape (q_count, qkv_dim). Used directly
+// as the accumulator, so it must be zero-initialized before the first call.
 // exp_denominator_sums and max_logits: float* of shape:
 // (RountedUpTo(q_count,4),)
 // Need to be have multiple of 4 elements alocated and
@@ -1484,8 +1485,8 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
     const size_t* HWY_RESTRICT min_start_pos_per_group,
     const size_t* HWY_RESTRICT max_last_pos_per_group,
     const float* HWY_RESTRICT softmax_buf_ptr, float* HWY_RESTRICT max_logits,
-    float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT C_accumulators_ptr, size_t kBlockSize,
+    float* HWY_RESTRICT exp_denominator_sums, MatPtrT<float>& att_out,
+    size_t kBlockSize,
     FlashStepBufT<Q_T>* HWY_RESTRICT step_consts_buf,
     const KV_T** HWY_RESTRICT step_v_tiles,
     const BF16** HWY_RESTRICT step_microscaling_v_ptrs,
@@ -1551,8 +1552,8 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
       // This query attends to no token in this block, but the multiply-add
       // below still runs over all kNumQueries rows with scales_old == 1.
       // Zero its step constants (and Int16/Int8 query scales) so that its
-      // accumulator row is left unchanged; otherwise stale or uninitialized
-      // workspace values leak into att_out.
+      // att_out row is left unchanged; otherwise stale step constants from a
+      // previous group leak into att_out.
       constexpr size_t kMaxLanes = hn::MaxLanes(df);
       for (size_t step_idx = 0; step_idx < actual_steps; ++step_idx) {
         FlashStepBufT<Q_T>* dst = step_consts_buf +
@@ -1584,7 +1585,9 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
   }
 
   MatPtrT<float> group_out("group_out", Extents2D(kNumQueriesPerLoop, qkv_dim));
-  group_out.SetPtr(C_accumulators_ptr + q_base_idx * qkv_dim, qkv_dim);
+  // Accumulate directly into att_out (IN/OUT): rows are rescaled by
+  // scales_old and the new P*V contribution is added in place.
+  group_out.SetPtr(att_out.Row(q_base_idx), att_out.Stride());
 
   if constexpr (IsF32<Q_T>()) {
     MulByConstAndAddTileUpTo8<kNumQueries>(
@@ -1608,7 +1611,6 @@ struct TileFlashAttentionWorkspaceLayout {
   using StepBufT = FlashStepBufT<Q_T>;
 
   size_t padded_q_count;
-  size_t c_accum_offset, c_accum_bytes;
   size_t softmax_offset, softmax_bytes;
   size_t pos_data_offset, pos_data_bytes;
   size_t step_consts_offset, step_consts_bytes;
@@ -1619,15 +1621,11 @@ struct TileFlashAttentionWorkspaceLayout {
   size_t step_qb_offset, step_qb_bytes;
   size_t total_bytes;
 
-  constexpr TileFlashAttentionWorkspaceLayout(size_t q_count, size_t qkv_dim,
-                                              size_t kBlockSize,
+  constexpr TileFlashAttentionWorkspaceLayout(size_t q_count, size_t kBlockSize,
                                               size_t num_loops)
       : padded_q_count(hwy::RoundUpTo(
             q_count, HWY_MAX(size_t{16}, size_t(kNumQueriesPerLoop)))),
-        c_accum_offset(0),
-        c_accum_bytes(hwy::RoundUpTo(padded_q_count * qkv_dim * sizeof(float),
-                                     HWY_ALIGNMENT)),
-        softmax_offset(c_accum_offset + c_accum_bytes),
+        softmax_offset(0),
         softmax_bytes(hwy::RoundUpTo(
             padded_q_count * kBlockSize * sizeof(float), HWY_ALIGNMENT)),
         pos_data_offset(softmax_offset + softmax_bytes),
@@ -1695,7 +1693,7 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
   }
 
   TileFlashAttentionWorkspaceLayout<kNumQueriesPerLoop, KV_T, Q_T> layout(
-      q_count, qkv_dim, kBlockSize, num_loops);
+      q_count, kBlockSize, num_loops);
   const size_t padded_q_count = layout.padded_q_count;
 
   // Use pre-allocated worker_workspace when available, resizing up if needed.
@@ -1712,8 +1710,6 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
     raw_ptr = workspace_fallback.get();
   }
 
-  float* C_accumulators_ptr =
-      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset);
   float* softmax_buf_ptr =
       HWY_RCAST_ALIGNED(float*, raw_ptr + layout.softmax_offset);
   size_t* pos_data_ptr =
@@ -1731,9 +1727,6 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
   float* step_q_scales_s_buf =
       HWY_RCAST_ALIGNED(float*, raw_ptr + layout.step_qb_offset);
 
-  hwy::Span<float> c_accumulators_span(C_accumulators_ptr,
-                                       padded_q_count * qkv_dim);
-  std::fill(c_accumulators_span.begin(), c_accumulators_span.end(), 0.0f);
   hwy::Span<float> softmax_buf_span(softmax_buf_ptr,
                                     padded_q_count * kBlockSize);
   hwy::Span<size_t> min_start_pos_per_group(pos_data_ptr, num_loops);
@@ -1783,7 +1776,7 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
           step_size, att_cap, one_over_cap, start_pos_per_query.data(),
           last_pos_per_query.data(), min_start_pos_per_group.data(),
           max_last_pos_per_group.data(), softmax_buf_ptr, max_logits,
-          exp_denominator_sums, C_accumulators_ptr, kBlockSize, step_consts_buf,
+          exp_denominator_sums, att_out, kBlockSize, step_consts_buf,
           step_v_tiles, step_microscaling_v_ptrs, step_microscaling_k_ptrs,
           step_q_scales_s_ptrs, step_q_scales_s_buf);
     };
@@ -1824,16 +1817,6 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
                kvs[current_kv_idx].Rows() * kTileSize) {
       current_kv_start_offset += kvs[current_kv_idx].Rows() * kTileSize;
       current_kv_idx++;
-    }
-  }
-
-  using VF = hn::Vec<DF>;
-  for (size_t qi = 0; qi < q_count; ++qi) {
-    float* out = att_out.Row(qi);
-    const float* accum = C_accumulators_ptr + qi * qkv_dim;
-    for (size_t d = 0; d < qkv_dim; d += hn::Lanes(df)) {
-      VF v = hn::LoadU(df, accum + d);
-      hn::StoreU(v, df, out + d);
     }
   }
 }
