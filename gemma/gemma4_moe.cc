@@ -48,6 +48,7 @@
 #include "gemma/attention.h"  // includes highway.h
 #include "gemma/tiled_attention.h"
 #include "gemma/gemma-inl.h"
+#include "ops/fast_ops-inl.h"
 #include "ops/ops-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -239,6 +240,8 @@ struct Gemma4MoE {
     activations.s_expert_in.Notify(layer.layer_idx, tmp_in, env.ctx, 0,
                                    cluster_idx, parallelism);
 
+    const size_t expert_ff_hidden_dim =
+        layer.moe_gating_einsum_w1[expert_idx].Rows();
     const ActivationType activation = layer.layer_config.activation;
     MatPtrT<BF16>& C1 = per_cluster.moe_C1;
     C1.OverrideRows(expert_size);
@@ -275,19 +278,20 @@ struct Gemma4MoE {
                                        cluster_idx, parallelism);
 
     // Hidden layer -> output layer.
-    size_t expert_ff_hidden_dim = layer.moe_gating_einsum_w1[expert_idx].Rows();
-    MatStorageT<BF16> C1_narrow("C1_n",
-                                Extents2D(expert_size, expert_ff_hidden_dim),
-                                env.ctx.allocator, MatPadding::kOdd);
-    for (size_t i = 0; i < expert_size; ++i) {
-      memcpy(C1_narrow.Row(i), C1.Row(i), expert_ff_hidden_dim * sizeof(BF16));
+    {
+      MatStorageT<BF16> C1_narrow("C1_n",
+                                  Extents2D(expert_size, expert_ff_hidden_dim),
+                                  env.ctx.allocator, MatPadding::kOdd);
+      for (size_t i = 0; i < expert_size; ++i) {
+        memcpy(C1_narrow.Row(i), C1.Row(i),
+               expert_ff_hidden_dim * sizeof(BF16));
+      }
+      CallMatMul(C1_narrow, layer.moe_linear_w[expert_idx],
+                 /*add=*/nullptr, env, expert_out, options);
     }
 
-
-    CallMatMul(C1_narrow, layer.moe_linear_w[expert_idx],
-               /*add=*/nullptr, env, expert_out, options);
-
-    if (layer.p_expert_sc.HasPtr()) {
+    if (layer.p_expert_sc.HasPtr()
+        ) {
       const MatPtrT<BF16> sc_mat(layer.p_expert_sc);
       const BF16* sc_data = sc_mat.Row(0);
       const float expert_scale =
@@ -466,9 +470,12 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
                      /*is_attention=*/true, env.ctx);
 
   // Dual-Path FFW
-  pre_norm(
-      layer.pre_ffw2_ns.HasPtr() ? layer.pre_ffw2_ns : layer.pre_ffw_norm_scale,
-      activations.pre_ffw_rms_out);
+  const MatPtr& shared_norm = layer.pre_ffw2_ns.HasPtr() ? layer.pre_ffw2_ns : layer.pre_ffw_norm_scale;
+  const MatPtr& moe_norm = layer.pre_ffw_norm_scale;
+  const MatPtr& shared_post_norm = layer.post_ffw2_ns;
+  const MatPtr& moe_post_norm = layer.post_ffw1_ns;
+
+  pre_norm(shared_norm, activations.pre_ffw_rms_out);
 
   // Shared MLP Path
   FFWNoVit(layer, activations, env);  // writes to activations.ffw_out
@@ -482,17 +489,17 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
     }
   }
 
-  if (layer.post_ffw2_ns.HasPtr()) {
-    rms_norm_inplace(layer.post_ffw2_ns, activations.attention.att_sums);
+  if (shared_post_norm.HasPtr()) {
+    rms_norm_inplace(shared_post_norm, activations.attention.att_sums);
   }
 
   // MoE Path
-  pre_norm(layer.pre_ffw_norm_scale, activations.pre_ffw_rms_out);
+  pre_norm(moe_norm, activations.pre_ffw_rms_out);
 
   Gemma4MoE::MoEFFW(layer, activations, env);  // writes to activations.ffw_out
 
-  if (layer.post_ffw1_ns.HasPtr()) {
-    rms_norm_inplace(layer.post_ffw1_ns, activations.ffw_out);
+  if (moe_post_norm.HasPtr()) {
+    rms_norm_inplace(moe_post_norm, activations.ffw_out);
   }
 
   // Combine & Final Norm (Fix for dual-path combination)

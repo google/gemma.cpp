@@ -85,8 +85,10 @@ class SbsWriterImpl : public ISbsWriter {
     }
 
     HWY_ASSERT(weights.size() == mat.Extents().Area());
-    Compress(weights.data(), weights.size(), working_set_, mat.Span(),
-             /*packed_ofs=*/0, ctx_);
+    {
+      Compress(weights.data(), weights.size(), working_set_, mat.Span(),
+               /*packed_ofs=*/0, ctx_);
+    }
     writer_.Add(name, mat.Packed(), mat.PackedBytes());
   }
 

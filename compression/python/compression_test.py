@@ -83,9 +83,10 @@ class CompressionTest(absltest.TestCase):
         configs.Type.kBF16,
         info_256,
     )
+    f32_data = np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32)
     writer.insert(
         "tensor_f32",
-        np.array([0.000375] * 128 + [0.00006] * 128, dtype=np.float32),
+        f32_data,
         configs.Type.kF32,
         info_256,
     )
@@ -104,6 +105,10 @@ class CompressionTest(absltest.TestCase):
     )
     tokenizer_blob = ""  # no tokenizer required for testing
     writer.write(config, tokenizer_blob)
+
+    with open(temp_file.full_path, "rb") as f:
+      sbs_bytes = f.read()
+    self.assertIn(f32_data.tobytes(), sbs_bytes)
 
     print("Ignore next two warnings; test does not enable model deduction.")
     reader = compression.SbsReader(temp_file.full_path)
