@@ -392,13 +392,32 @@ class GenerateCandidates {
 // Facade to avoid exposing `GenerateCandidates` in the header.
 std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t max_M,
                                    size_t K, size_t N, size_t num_B,
-                                   size_t sizeof_TC, bool print_config) {
-  return GenerateCandidates(cache, max_M, K, N, num_B, sizeof_TC,
-                            print_config)();
+                                   size_t sizeof_TC, bool print_config,
+                                   MMSchedule schedule) {
+  auto candidates =
+      GenerateCandidates(cache, max_M, K, N, num_B, sizeof_TC, print_config)();
+  if (schedule == MMSchedule::kAutoTune) return candidates;
+
+  size_t selected = 0;
+  if (schedule == MMSchedule::kFixedMinK) {
+    for (size_t i = 1; i < candidates.size(); ++i) {
+      if (candidates[i].RangesOfKC(K).NumTasks() <
+          candidates[selected].RangesOfKC(K).NumTasks()) {
+        selected = i;
+      }
+    }
+  }
+  return {candidates[selected]};
 }
 
-MatMulEnv::MatMulEnv(ThreadingContext& ctx)
-    : ctx(ctx), A_BF(ctx.allocator), C_tiles(ctx) {
+std::vector<MMParA> MMParACandidates(size_t M, MMSchedule schedule) {
+  if (schedule != MMSchedule::kAutoTune) return {MMParA::kK1};
+  const MMParA other = (M == 1) ? MMParA::kNone : MMParA::kM;
+  return {MMParA::kK1, MMParA::kK2, MMParA::kK4, other};
+}
+
+MatMulEnv::MatMulEnv(ThreadingContext& ctx, MMSchedule schedule)
+    : ctx(ctx), schedule(schedule), A_BF(ctx.allocator), C_tiles(ctx) {
   const size_t num_clusters = ctx.pools.NumClusters();
   per_cluster.resize(num_clusters);
   for (size_t cluster_idx = 0; cluster_idx < num_clusters; ++cluster_idx) {
