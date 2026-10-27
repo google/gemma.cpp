@@ -1100,11 +1100,12 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
 // attention_shape - see struct definition for more details.
 // att_cap - soft cap on attention logits
 // att_out - MatPtrT<float> of shape (q_count, qkv_dim)
-// exp_denominator_sums and max_logits: float* of shape:
-// (RountedUpTo(q_count,4),)
-// Need to be have multiple of 4 elements alocated and
-// be initizalized If you need to compute over multiple chunks of kv's you can
-// keep values between calls to this function and avoid explicit merge.
+// exp_denominator_sums and max_logits - float* of shape (q_count,), holding
+// the running online-softmax denominator and maximum logit per query. Only
+// entries [0, q_count) are read and written. They are in-out: initialize them
+// to 0.0f and -std::numeric_limits<float>::max() / 2 respectively before the
+// first call. If you need to compute over multiple chunks of kvs, you can
+// keep the values between calls to this function and avoid an explicit merge.
 template <int kNumQueriesPerLoop, typename KV_T, typename Q_T, class DF,
           class DU>
 static HWY_INLINE void ComputeQKMacroTile(
