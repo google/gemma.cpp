@@ -143,6 +143,74 @@ TEST_F(BpeTokenizerTest, DecodeRoundTrip) {
   }
 }
 
+// Byte-fallback runs that are not valid UTF-8, such as a single token of a
+// multi-byte character (streaming callers decode one token at a time), must
+// still decode to valid UTF-8, as in SentencePiece: well-formed sequences are
+// kept and every other byte becomes U+FFFD.
+TEST_F(BpeTokenizerTest, DecodeMalformedByteFallbackMatchesSentencePiece) {
+  // Returns the byte-fallback token ids ("<0xHH>") for the bytes of `s`. These
+  // tokens have consecutive ids in the test vocabulary.
+  const auto bytes = [](const std::string& s) {
+    constexpr int kByte0Id = 238;  // "<0x00>"
+    std::vector<int> ids;
+    for (unsigned char c : s) ids.push_back(kByte0Id + c);
+    return ids;
+  };
+  const std::string kRepl = "\xEF\xBF\xBD";  // U+FFFD
+
+  std::vector<int> truncated_then_word = bytes("\xE2\x80");
+  std::vector<int> word;
+  ASSERT_TRUE(sp_->Encode(" word", &word));
+  truncated_then_word.insert(truncated_then_word.end(), word.begin(),
+                             word.end());
+
+  struct Case {
+    std::vector<int> ids;
+    std::string expected;
+  };
+  const std::vector<Case> cases = {
+      {bytes("\xC3\xA9"), "\xC3\xA9"},                  // valid U+00E9
+      {bytes("\xF0\x9F\x98\x80"), "\xF0\x9F\x98\x80"},  // valid U+1F600
+      {bytes("\xA0"), kRepl},                           // lone continuation
+      {bytes("\xFF"), kRepl},                           // invalid lead byte
+      {bytes("\xC2\xC2"), kRepl + kRepl},               // no continuation
+      {bytes("\xE2\x80"), kRepl + kRepl},               // truncated
+      {bytes("\xC0\xAF"), kRepl + kRepl},               // overlong
+      {bytes("\xE0\x80\x80"), kRepl + kRepl + kRepl},   // overlong
+      {bytes("\xED\xA0\x80"), kRepl + kRepl + kRepl},   // surrogate
+      {bytes("\xF4\x90\x80\x80"), kRepl + kRepl + kRepl + kRepl},  // >U+10FFFF
+      // Valid prefix kept, as in SentencePiece (HF ByteFallback: 3 x U+FFFD).
+      {bytes("\xC3\xA9\xA9"), "\xC3\xA9" + kRepl},  // valid, then stray byte
+      {truncated_then_word, kRepl + kRepl + " word"},
+  };
+  for (const auto& [ids, expected] : cases) {
+    std::string sp_text, bpe_text;
+    ASSERT_TRUE(sp_->Decode(ids, &sp_text));
+    ASSERT_TRUE(bpe_->Decode(ids, &bpe_text));
+    EXPECT_EQ(sp_text, expected) << testing::PrintToString(ids);
+    EXPECT_EQ(bpe_text, expected) << testing::PrintToString(ids);
+  }
+
+  // Every run of one or two byte-fallback tokens.
+  size_t mismatches = 0;
+  for (int b0 = 0; b0 < 256; ++b0) {
+    for (int b1 = -1; b1 < 256; ++b1) {
+      std::string run(1, static_cast<char>(b0));
+      if (b1 >= 0) run.push_back(static_cast<char>(b1));
+      std::string sp_text, bpe_text;
+      ASSERT_TRUE(sp_->Decode(bytes(run), &sp_text));
+      ASSERT_TRUE(bpe_->Decode(bytes(run), &bpe_text));
+      if (bpe_text != sp_text && mismatches++ == 0) {
+        ADD_FAILURE() << "First mismatch on bytes "
+                      << testing::PrintToString(run) << ": bpe "
+                      << testing::PrintToString(bpe_text) << ", sentencepiece "
+                      << testing::PrintToString(sp_text);
+      }
+    }
+  }
+  EXPECT_EQ(mismatches, 0u);
+}
+
 // A tokenizer rebuilt from the compact binary should behave identically to
 // the one parsed from tokenizer.json.
 TEST_F(BpeTokenizerTest, CompactRoundTrip) {
