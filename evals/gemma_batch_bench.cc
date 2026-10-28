@@ -16,6 +16,8 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <cmath>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@
 #include "hwy/base.h"
 #include "hwy/nanobenchmark.h"
 #include "hwy/profiler.h"
+#include "hwy/timer.h"
 
 namespace gcpp {
 namespace {
@@ -122,6 +125,9 @@ std::vector<std::string> GenerateInputs() {
 }
 
 TEST_F(GemmaBatchBench, RandomQuestionsBatched) {
+  if (s_env->GetGemma()->Config().IsEmbedding()) {
+    GTEST_SKIP() << "Embedding models do not generate";
+  }
   s_env->SetMaxGeneratedTokens(12);
   const std::vector<std::string> inputs = GenerateInputs();
   constexpr size_t kNumReps = 7;

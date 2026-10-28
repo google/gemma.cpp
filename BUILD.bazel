@@ -1090,7 +1090,8 @@ cc_test(
         ":benchmark_helper",
         ":gemma_lib",
         ":test_util",
-        "@googletest//:gtest_main",  # buildcleaner: keep
+        # Defines its own main.
+        "@googletest//:gtest",
         "@highway//:hwy",
         "@highway//:hwy_test_util",
         "@highway//:nanobenchmark",
