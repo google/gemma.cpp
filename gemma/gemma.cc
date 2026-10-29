@@ -152,9 +152,8 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
     // 1. Gate: [batch, model_dim] @ [model_dim, ple_dim] -> [batch, ple_dim]
     // Use activations.x_bf to convert activations.x
     for (size_t r = 0; r < num_tokens; ++r) {
-      for (size_t c = 0; c < layer_config.model_dim; ++c) {
-        activations.x_bf.Row(r)[c] = BF16(activations.x.Row(r)[c]);
-      }
+      DemoteRowToBF16(activations.x.Row(r), activations.x_bf.Row(r),
+                      layer_config.model_dim);
     }
 
     // Use pre-allocated activations.gate_out (BF16)
@@ -1062,9 +1061,8 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
 
   // 1. Convert activations.x (float) to activations.x_bf (BF16)
   for (size_t r = 0; r < tbatch_size; ++r) {
-    for (size_t c = 0; c < config.model_dim; ++c) {
-      activations.x_bf.Row(r)[c] = gcpp::BF16(activations.x.Row(r)[c]);
-    }
+    DemoteRowToBF16(activations.x.Row(r), activations.x_bf.Row(r),
+                    config.model_dim);
   }
 
   // 2. CallMatMul for the context projection (with folded scale)

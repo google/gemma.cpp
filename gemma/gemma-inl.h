@@ -267,6 +267,32 @@ static HWY_INLINE void SumHeads(const LayerWeightsPtrs& layer,
 
 }
 
+// Vectorized Float -> BF16 row conversion using Highway SIMD demotion.
+static HWY_INLINE void DemoteRowToBF16(const float* HWY_RESTRICT in,
+                                       BF16* HWY_RESTRICT out, size_t num) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  const hn::ScalableTag<float> df;
+  const hn::Repartition<BF16, decltype(df)> dbf;
+  const size_t NF = hn::Lanes(df);
+  size_t i = 0;
+  if (num >= 2 * NF) {
+    for (; i <= num - 2 * NF; i += 2 * NF) {
+      const auto raw0 = hn::LoadU(df, in + i);
+      const auto raw1 = hn::LoadU(df, in + i + NF);
+      hn::StoreU(hn::OrderedDemote2To(dbf, raw0, raw1), dbf, out + i);
+    }
+  }
+  const size_t remaining = num - i;
+  if (remaining != 0) {
+    const auto raw0 = hn::LoadN(df, in + i, remaining);
+    auto raw1 = hn::Zero(df);
+    if (remaining > NF) {
+      raw1 = hn::LoadN(df, in + i + NF, remaining - NF);
+    }
+    hn::StoreN(hn::OrderedDemote2To(dbf, raw0, raw1), dbf, out + i, remaining);
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp

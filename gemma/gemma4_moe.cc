@@ -475,11 +475,8 @@ void Gemma4MoETransformerLayer(size_t num_tokens, size_t layer_idx,
 
   // Reuse att_sums as temporary buffer for Shared MLP output
   for (size_t r = 0; r < num_tokens; ++r) {
-    const float* from_row = activations.ffw_out.Row(r);
-    BF16* to_row = activations.attention.att_sums.Row(r);
-    for (size_t c = 0; c < config.model_dim; ++c) {
-      to_row[c] = hwy::ConvertScalarTo<BF16>(from_row[c]);
-    }
+    DemoteRowToBF16(activations.ffw_out.Row(r),
+                    activations.attention.att_sums.Row(r), config.model_dim);
   }
 
   if (layer.post_ffw2_ns.HasPtr()) {
