@@ -375,11 +375,14 @@ cc_test(
     srcs = ["gemma/tensor_info_test.cc"],
     deps = [
         ":configs",
+        ":gemma_args",
         ":mat",
         ":tensor_info",
+        ":threading_context",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep
         "//compression:compress",
+        "//compression:types",
         "@highway//:hwy",  # aligned_allocator.h
     ],
 )
