@@ -664,19 +664,32 @@ static HWY_INLINE void CompressSingleQueryBF16orInt16(
   }
   auto scale_vec = hn::Set(df, s);
 
-  for (size_t i = 0; i < qkv_dim; i += 2 * lanes) {
-    auto x0 = hn::LoadU(df, q_ptr + i);
-    auto x1 = hn::LoadU(df, q_ptr + i + lanes);
+  auto demote = [&](auto x0, auto x1) HWY_ATTR {
     if constexpr (IsInt16<OutT>()) {
       x0 = hn::Mul(x0, scale_vec);
       x1 = hn::Mul(x1, scale_vec);
-      auto demoted = hn::OrderedDemote2To(d_out_full, hn::NearestInt(x0),
-                                          hn::NearestInt(x1));
-      hn::StoreU(demoted, d_out_full, out_ptr + i);
+      return hn::OrderedDemote2To(d_out_full, hn::NearestInt(x0),
+                                  hn::NearestInt(x1));
     } else {
-      auto demoted = hn::OrderedDemote2To(d_out_full, x0, x1);
-      hn::StoreU(demoted, d_out_full, out_ptr + i);
+      return hn::OrderedDemote2To(d_out_full, x0, x1);
     }
+  };
+
+  const size_t dim = static_cast<size_t>(qkv_dim);
+  size_t i = 0;
+  for (; i + 2 * lanes <= dim; i += 2 * lanes) {
+    const auto x0 = hn::LoadU(df, q_ptr + i);
+    const auto x1 = hn::LoadU(df, q_ptr + i + lanes);
+    hn::StoreU(demote(x0, x1), d_out_full, out_ptr + i);
+  }
+  // Masked tail so that `qkv_dim` need not be a multiple of `2 * lanes`.
+  const size_t remaining = dim - i;
+  if (HWY_UNLIKELY(remaining != 0)) {
+    const auto x0 = hn::LoadN(df, q_ptr + i, HWY_MIN(remaining, lanes));
+    const auto x1 = remaining > lanes
+                        ? hn::LoadN(df, q_ptr + i + lanes, remaining - lanes)
+                        : hn::Zero(df);
+    hn::StoreN(demote(x0, x1), d_out_full, out_ptr + i, remaining);
   }
 }
 
