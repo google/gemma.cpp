@@ -107,5 +107,5 @@ jobs:
       - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306  # v5.0.3
         with:
           path: ~/.cache/bazel
-          key: bazel-${{ runner.os }}
+          key: bazel-${{ runner.os }}-${{ env.ImageOS }}-${{ hashFiles('.bazelversion', '.bazelrc', 'MODULE.bazel') }}
       - run: bazel build --cxxopt=-std=c++20 //:gemma --jobs=10 --show_progress_rate_limit=1
