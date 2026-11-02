@@ -77,7 +77,7 @@ jobs:
           -D CMAKE_C_COMPILER_LAUNCHER=ccache
           -D CMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DCMAKE_POLICY_VERSION_MINIMUM="3.5"
-          ${{ matrix.cc == 'gcc-15' && '-DCMAKE_CXX_FLAGS=-Wno-error=missing-declarations -Wno-error=missing-field-initializers' || '' }}
+          ${{ matrix.cc == 'gcc-15' && '-DCMAKE_CXX_FLAGS=-Wno-error=missing-declarations' || '' }}
 
       - name: Build
         run: cmake --build ${{ github.workspace }}/build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }} -j 4

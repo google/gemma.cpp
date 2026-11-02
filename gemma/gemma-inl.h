@@ -149,8 +149,8 @@ HWY_NOINLINE void ActivationBatched(
     ActivationType activation, Mat1& c1, const Mat2* c2, ThreadingContext& ctx,
     size_t cluster_idx = 0,
     Parallelism parallelism = Parallelism::kFlat) {
-  HWY_DASSERT(c1.SameShape(*c2));
   if (c2 && c2->HasPtr()) {
+    HWY_DASSERT(c1.SameShape(*c2));
     ParallelFor(parallelism, c1.Rows(), ctx, cluster_idx,
                 Callers::kActivationBatched, [&](uint64_t task, size_t worker) {
                   Activation(activation, c1.Row(task), c2->Row(task), c1.Cols(),

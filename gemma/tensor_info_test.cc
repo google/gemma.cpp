@@ -2,11 +2,15 @@
 
 #include <stdio.h>
 
+#include <vector>
+
 #include "gtest/gtest.h"
+#include "compression/compress-inl.h"
 #include "compression/types.h"  // SfpStream
 #include "gemma/configs.h"
 #include "gemma/weights.h"
 #include "util/mat.h"
+#include "util/threading_context.h"
 #include "hwy/base.h"  // HWY_ASSERT_M
 
 namespace gcpp {

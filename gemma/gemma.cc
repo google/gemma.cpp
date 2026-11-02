@@ -232,7 +232,7 @@ static HWY_INLINE void EmbedTokenFromWeights(int token, size_t x_row,
                                              MatStorageT<float>& x) {
   const size_t model_dim = model_config.model_dim;
   // Qwen3/DeepSeekV4 does not scale embeddings by sqrt(model_dim).
-  const float emb_scaling =
+  float emb_scaling =
       HasEmbeddingScaling(model_config) ? EmbeddingScaling(model_dim) : 1.0f;
   HWY_DASSERT(token >= 0);
   HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
