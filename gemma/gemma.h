@@ -18,6 +18,7 @@
 
 #include <stdio.h>
 
+#include <memory>
 #include <optional>
 #include <vector>
 
