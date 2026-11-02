@@ -189,6 +189,9 @@ set(SOURCES
   gemma/kv_transcoding.h
   gemma/model_store.cc
   gemma/model_store.h
+  gemma/query_compression-inl.h
+  gemma/query_compression.cc
+  gemma/query_compression.h
   gemma/tensor_info.cc
   gemma/tensor_info.h
   gemma/tiled_attention.cc
@@ -377,6 +380,7 @@ set(GEMMA_TEST_FILES
   compression/sfp_test.cc
   deepseek/deepseek_test.cc
   gemma/gemma_args_test.cc
+  gemma/query_compression_test.cc
   gemma/tensor_info_test.cc
   gemma/weights_test.cc
   io/blob_store_test.cc

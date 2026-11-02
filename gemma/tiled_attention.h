@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gemma/gemma.h"
+#include "gemma/query_compression.h"  // IWYU pragma: export
 #include "util/allocator.h"
 #include "hwy/aligned_allocator.h"
 #include "hwy/highway.h"
@@ -27,39 +28,6 @@ namespace gcpp {
       const size_t layer_idx, const LayerWeightsPtrs& layer,                   \
       AttentionActivationsPtrs& activations, QBatch& qbatch,                   \
       ThreadingContext& ctx);                                                  \
-                                                                               \
-  void CompressQueriesBF16(hwy::Span<const float* const> input, int qkv_dim,   \
-                           BF16* HWY_RESTRICT output);                         \
-  void CompressQueriesBF16Contiguous(const float* HWY_RESTRICT input,          \
-                                     int qkv_dim, size_t num_queries,          \
-                                     BF16* HWY_RESTRICT output);               \
-                                                                               \
-  void CompressQueriesInt16(hwy::Span<const float* const> input, int qkv_dim,  \
-                            int16_t* HWY_RESTRICT output,                      \
-                            float* HWY_RESTRICT scale);                        \
-                                                                               \
-  void CompressQueriesInt16Contiguous(const float* HWY_RESTRICT input,         \
-                                      int qkv_dim, size_t num_queries,         \
-                                      int16_t* HWY_RESTRICT output,            \
-                                      float* HWY_RESTRICT scale);              \
-                                                                               \
-  void CompressQueriesUint8(hwy::Span<const float* const> input, int qkv_dim,  \
-                            int8_t* HWY_RESTRICT output,                       \
-                            float* HWY_RESTRICT scale);                        \
-                                                                               \
-  void CompressQueriesUint8Contiguous(const float* HWY_RESTRICT input,         \
-                                      int qkv_dim, size_t num_queries,         \
-                                      int8_t* HWY_RESTRICT output,             \
-                                      float* HWY_RESTRICT scale);              \
-                                                                               \
-  void CompressQueriesInt8(hwy::Span<const float* const> input, int qkv_dim,   \
-                           int8_t* HWY_RESTRICT output,                        \
-                           float* HWY_RESTRICT scale);                         \
-                                                                               \
-  void CompressQueriesInt8Contiguous(const float* HWY_RESTRICT input,          \
-                                     int qkv_dim, size_t num_queries,          \
-                                     int8_t* HWY_RESTRICT output,              \
-                                     float* HWY_RESTRICT scale);               \
                                                                                \
   void CompressAndTransposeQueriesMatrixAccumulation(const float* raw_queries, \
                                                      BF16* packed_queries,     \
