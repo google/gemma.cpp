@@ -861,78 +861,76 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
 
 enum class MixedRangesQueryType { kF32, kBF16, kInt16, kInt8 };
 
-// Queries in the same kernel group (4 or 8 queries) whose [start, last] ranges
-// cover different kernel blocks: some start late, some end early. A query that
-// is inactive in a block must not pick up stale step constants from the
-// workspace, which is poisoned with 0xFF (NaN) here. The reference runs every
-// query on its own, so no query is ever inactive while others are active.
+// Shared setup for the generic (non-AMX, non-matrix accumulation) tile flash
+// attention kernels: a Gaussian KV cache of `kSeqLen` tokens (more than two
+// 256-token kernel blocks, with a partial last tile), `num_queries` Gaussian
+// queries compressed to `q_type`, and per-query [start, last] ranges mixing
+// full, late-start, early-end and short ranges within each kernel group.
 template <typename KV_T>
-void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
-                                           MixedRangesQueryType q_type,
-                                           const char* name, float tol) {
-  constexpr size_t kQkvDim = 64;
-  // More than two kernel blocks (256 tokens), with a partial last tile.
-  constexpr size_t kSeqLen = 600;
-  constexpr size_t kNumQueries = 16;
-  ThreadingArgs threading_args;
-  ThreadingContext ctx(threading_args);
+struct TiledFlashAttentionTestSetup {
+  static constexpr size_t kQkvDim = 64;
+  static constexpr size_t kSeqLen = 600;
+  using PosVec = std::vector<size_t, hwy::AlignedAllocator<size_t>>;
 
-  const size_t num_tiles = hwy::DivCeil(kSeqLen, gcpp::KVCache::kTileSize);
-  const size_t tile_elems =
-      *gcpp::GetTileSizeBytes(kv_encoding, kQkvDim) / sizeof(KV_T);
-  MatStorageT<KV_T> kv("kv", Extents2D(num_tiles, tile_elems), ctx.allocator,
-                       MatPadding::kPacked);
-  PopulateTestKVCache(kv, kv_encoding, kQkvDim,
-                      TestDataDistribution::kGaussian);
-  const hwy::Span<const MatPtr> kvs(&kv, 1);
-
-  const AlignedFloatVector q_f32 = PopulateTestQueries(
-      kNumQueries, kQkvDim, TestDataDistribution::kGaussian);
-  std::vector<BF16, hwy::AlignedAllocator<BF16>> q_bf16(kNumQueries * kQkvDim);
-  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> q_i16(kNumQueries *
-                                                             kQkvDim);
-  std::vector<int8_t, hwy::AlignedAllocator<int8_t>> q_i8(kNumQueries *
-                                                          kQkvDim);
-  AlignedFloatVector q_scales(kNumQueries);
-  if (q_type == MixedRangesQueryType::kBF16) {
-    CompressQueriesBF16Contiguous(q_f32.data(), kQkvDim, kNumQueries,
-                                  q_bf16.data());
-  } else if (q_type == MixedRangesQueryType::kInt16) {
-    CompressQueriesInt16Contiguous(q_f32.data(), kQkvDim, kNumQueries,
-                                   q_i16.data(), q_scales.data());
-  } else if (q_type == MixedRangesQueryType::kInt8) {
-    CompressQueriesUint8Contiguous(q_f32.data(), kQkvDim, kNumQueries,
-                                   q_i8.data(), q_scales.data());
-  }
-
-  std::vector<size_t, hwy::AlignedAllocator<size_t>> start_pos(kNumQueries);
-  std::vector<size_t, hwy::AlignedAllocator<size_t>> last_pos(kNumQueries);
-  for (size_t i = 0; i < kNumQueries; ++i) {
-    switch (i % 4) {
-      case 0:  // Full range.
-        start_pos[i] = 0;
-        last_pos[i] = kSeqLen - 1;
-        break;
-      case 1:  // Late start: inactive in the first block.
-        start_pos[i] = 300;
-        last_pos[i] = kSeqLen - 1;
-        break;
-      case 2:  // Early end: inactive in the later blocks.
-        start_pos[i] = 0;
-        last_pos[i] = 200;
-        break;
-      default:  // Short range spanning a block boundary.
-        start_pos[i] = 250;
-        last_pos[i] = 270;
-        break;
+  TiledFlashAttentionTestSetup(gcpp::KVEncoding kv_encoding,
+                               MixedRangesQueryType q_type, size_t num_queries,
+                               ThreadingContext& ctx)
+      : q_type(q_type),
+        num_queries(num_queries),
+        kv("kv",
+           Extents2D(hwy::DivCeil(kSeqLen, gcpp::KVCache::kTileSize),
+                     *gcpp::GetTileSizeBytes(kv_encoding, kQkvDim) /
+                         sizeof(KV_T)),
+           ctx.allocator, MatPadding::kPacked),
+        q_f32(PopulateTestQueries(num_queries, kQkvDim,
+                                  TestDataDistribution::kGaussian)),
+        q_bf16(num_queries * kQkvDim),
+        q_i16(num_queries * kQkvDim),
+        q_i8(num_queries * kQkvDim),
+        q_scales(num_queries),
+        start_pos(num_queries),
+        last_pos(num_queries) {
+    PopulateTestKVCache(kv, kv_encoding, kQkvDim,
+                        TestDataDistribution::kGaussian);
+    if (q_type == MixedRangesQueryType::kBF16) {
+      CompressQueriesBF16Contiguous(q_f32.data(), kQkvDim, num_queries,
+                                    q_bf16.data());
+    } else if (q_type == MixedRangesQueryType::kInt16) {
+      CompressQueriesInt16Contiguous(q_f32.data(), kQkvDim, num_queries,
+                                     q_i16.data(), q_scales.data());
+    } else if (q_type == MixedRangesQueryType::kInt8) {
+      CompressQueriesUint8Contiguous(q_f32.data(), kQkvDim, num_queries,
+                                     q_i8.data(), q_scales.data());
+    }
+    for (size_t i = 0; i < num_queries; ++i) {
+      switch (i % 4) {
+        case 0:  // Full range.
+          start_pos[i] = 0;
+          last_pos[i] = kSeqLen - 1;
+          break;
+        case 1:  // Late start: inactive in the first block.
+          start_pos[i] = 300;
+          last_pos[i] = kSeqLen - 1;
+          break;
+        case 2:  // Early end: inactive in the later blocks.
+          start_pos[i] = 0;
+          last_pos[i] = 200;
+          break;
+        default:  // Short range spanning a block boundary.
+          start_pos[i] = 250;
+          last_pos[i] = 270;
+          break;
+      }
     }
   }
 
-  // Runs `q_count` queries starting at `first_q`.
-  auto run = [&](size_t first_q, size_t q_count,
-                 hwy::Span<const size_t> starts, hwy::Span<const size_t> lasts,
-                 MatPtrT<float>& att_out, float* exp_sums, float* max_logits,
-                 hwy::AlignedVector<uint8_t>* workspace) {
+  // Runs the kernel for `q_count` queries starting at `first_q`, with the
+  // given per-query ranges, updating att_out, exp_sums and max_logits in place.
+  void Run(size_t first_q, size_t q_count, hwy::Span<const size_t> starts,
+           hwy::Span<const size_t> lasts, MatPtrT<float>& att_out,
+           float* exp_sums, float* max_logits,
+           hwy::AlignedVector<uint8_t>* workspace) const {
+    const hwy::Span<const MatPtr> kvs(&kv, 1);
     const hwy::Span<const float> scales(q_scales.data() + first_q, q_count);
     switch (q_type) {
       case MixedRangesQueryType::kF32:
@@ -956,7 +954,37 @@ void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
             lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
     }
-  };
+  }
+
+  const MixedRangesQueryType q_type;
+  const size_t num_queries;
+  MatStorageT<KV_T> kv;
+  AlignedFloatVector q_f32;
+  std::vector<BF16, hwy::AlignedAllocator<BF16>> q_bf16;
+  std::vector<int16_t, hwy::AlignedAllocator<int16_t>> q_i16;
+  std::vector<int8_t, hwy::AlignedAllocator<int8_t>> q_i8;
+  AlignedFloatVector q_scales;
+  PosVec start_pos;
+  PosVec last_pos;
+};
+
+// Queries in the same kernel group (4 or 8 queries) whose [start, last] ranges
+// cover different kernel blocks: some start late, some end early. A query that
+// is inactive in a block must not pick up stale step constants from the
+// workspace, which is poisoned with 0xFF (NaN) here. The reference runs every
+// query on its own, so no query is ever inactive while others are active.
+template <typename KV_T>
+void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
+                                           MixedRangesQueryType q_type,
+                                           const char* name, float tol) {
+  using Setup = TiledFlashAttentionTestSetup<KV_T>;
+  constexpr size_t kQkvDim = Setup::kQkvDim;
+  constexpr size_t kNumQueries = 16;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  const Setup setup(kv_encoding, q_type, kNumQueries, ctx);
+  const auto& start_pos = setup.start_pos;
+  const auto& last_pos = setup.last_pos;
 
   constexpr float kInitMax = -std::numeric_limits<float>::max() / 2.0f;
   const size_t padded_queries = hwy::RoundUpTo(kNumQueries, 16);
@@ -964,23 +992,25 @@ void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
   // All queries in one call, with a NaN-poisoned workspace.
   MatStorageT<float> att_out("att_out", Extents2D(kNumQueries, kQkvDim),
                              ctx.allocator, MatPadding::kPacked);
+  ZeroInit(att_out);  // att_out is IN/OUT and must start zeroed.
   std::vector<float> exp_sums(padded_queries, 0.0f);
   std::vector<float> max_logits(padded_queries, kInitMax);
   hwy::AlignedVector<uint8_t> poisoned_workspace(size_t{1} << 20, 0xFF);
-  run(0, kNumQueries, hwy::Span<const size_t>(start_pos),
-      hwy::Span<const size_t>(last_pos), att_out, exp_sums.data(),
-      max_logits.data(), &poisoned_workspace);
+  setup.Run(0, kNumQueries, hwy::Span<const size_t>(start_pos),
+            hwy::Span<const size_t>(last_pos), att_out, exp_sums.data(),
+            max_logits.data(), &poisoned_workspace);
 
   size_t num_failed_queries = 0;
   for (size_t i = 0; i < kNumQueries; ++i) {
     MatStorageT<float> ref_out("ref_out", Extents2D(1, kQkvDim), ctx.allocator,
                                MatPadding::kPacked);
+    ZeroInit(ref_out);
     std::vector<float> ref_exp_sums(16, 0.0f);
     std::vector<float> ref_max_logits(16, kInitMax);
     hwy::AlignedVector<uint8_t> ref_workspace(size_t{1} << 20, 0);
-    run(i, 1, hwy::Span<const size_t>(&start_pos[i], 1),
-        hwy::Span<const size_t>(&last_pos[i], 1), ref_out, ref_exp_sums.data(),
-        ref_max_logits.data(), &ref_workspace);
+    setup.Run(i, 1, hwy::Span<const size_t>(&start_pos[i], 1),
+              hwy::Span<const size_t>(&last_pos[i], 1), ref_out,
+              ref_exp_sums.data(), ref_max_logits.data(), &ref_workspace);
 
     // The single-query reference starts its block loop at its own start
     // position, so block boundaries (and hence rescaling and BF16/quantized
@@ -1025,6 +1055,145 @@ void TestTiledFlashAttentionMixedQueryRanges() {
       gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kInt16,
       "Int8TTkv_Int16q", 5e-3f);
   RunTiledFlashAttentionMixedRangesTest<int8_t>(
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions, MixedRangesQueryType::kInt8,
+      "Int8VNNIkv_Uint8q", 5e-3f);
+}
+
+// Kernel-agnostic check that tile flash attention kernels can be chained over
+// the KV range: running `kernel` once over each query's full
+// [starts[i], lasts[i]] range must match `num_chunks` consecutive calls over
+// sub-ranges that carry att_out, exp_sums and max_logits between calls.
+//
+// `kernel(starts, lasts, att_out, exp_sums, max_logits, workspace)` must run
+// all `num_queries` queries and update att_out (IN/OUT), exp_sums and
+// max_logits in place. Each query is split at its own fractional points, so
+// chunk boundaries differ across queries and do not align with kernel blocks.
+// The chained calls use a fresh 0xFF-poisoned (NaN) workspace per call, so no
+// state may be kept in the workspace, and a padded (kOdd) att_out, so att_out
+// must be addressed via its stride.
+template <class KernelFn>
+void CheckChainedCallsMatchSingleCall(const KernelFn& kernel,
+                                      ThreadingContext& ctx,
+                                      size_t num_queries, size_t qkv_dim,
+                                      hwy::Span<const size_t> starts,
+                                      hwy::Span<const size_t> lasts,
+                                      size_t num_chunks, const char* name,
+                                      float tol) {
+  using PosVec = std::vector<size_t, hwy::AlignedAllocator<size_t>>;
+  constexpr float kInitMax = -std::numeric_limits<float>::max() / 2.0f;
+  constexpr size_t kWorkspaceBytes = size_t{1} << 20;
+  const size_t padded_queries = hwy::RoundUpTo(num_queries, 16);
+
+  // Single call over the full ranges.
+  MatStorageT<float> single_out("single_out", Extents2D(num_queries, qkv_dim),
+                                ctx.allocator, MatPadding::kPacked);
+  ZeroInit(single_out);
+  std::vector<float> single_sums(padded_queries, 0.0f);
+  std::vector<float> single_max(padded_queries, kInitMax);
+  hwy::AlignedVector<uint8_t> workspace(kWorkspaceBytes, 0);
+  kernel(starts, lasts, single_out, single_sums.data(), single_max.data(),
+         &workspace);
+
+  // Chained calls over consecutive sub-ranges.
+  MatStorageT<float> chained_out("chained_out",
+                                 Extents2D(num_queries, qkv_dim),
+                                 ctx.allocator, MatPadding::kOdd);
+  ZeroInit(chained_out);
+  std::vector<float> chained_sums(padded_queries, 0.0f);
+  std::vector<float> chained_max(padded_queries, kInitMax);
+  PosVec chunk_starts(num_queries);
+  PosVec chunk_lasts(num_queries);
+  for (size_t c = 0; c < num_chunks; ++c) {
+    for (size_t i = 0; i < num_queries; ++i) {
+      const size_t len = lasts[i] - starts[i] + 1;
+      // Every chunk must be non-empty for every query: the [start, last] API
+      // cannot express an empty range.
+      HWY_ASSERT(len >= num_chunks);
+      chunk_starts[i] = starts[i] + len * c / num_chunks;
+      chunk_lasts[i] = starts[i] + len * (c + 1) / num_chunks - 1;
+    }
+    hwy::AlignedVector<uint8_t> poisoned_workspace(kWorkspaceBytes, 0xFF);
+    kernel(hwy::Span<const size_t>(chunk_starts),
+           hwy::Span<const size_t>(chunk_lasts), chained_out,
+           chained_sums.data(), chained_max.data(), &poisoned_workspace);
+  }
+
+  // Block boundaries (and hence rescaling and BF16/quantized rounding of the
+  // step constants) differ between the single and chained calls, so compare
+  // with tolerances.
+  size_t num_failed_queries = 0;
+  for (size_t i = 0; i < num_queries; ++i) {
+    float max_out_err = 0.0f;
+    bool all_finite = true;
+    for (size_t j = 0; j < qkv_dim; ++j) {
+      const float out = chained_out.Row(i)[j];
+      all_finite &= std::isfinite(out);
+      max_out_err =
+          std::max(max_out_err, std::abs(out - single_out.Row(i)[j]));
+    }
+    const float sum_err = std::abs(chained_sums[i] - single_sums[i]) /
+                          std::max(1.0f, std::abs(single_sums[i]));
+    const float max_err = std::abs(chained_max[i] - single_max[i]);
+    if (!all_finite || !(max_out_err <= tol) || !(sum_err <= tol) ||
+        !(max_err <= tol)) {
+      ++num_failed_queries;
+      ADD_FAILURE() << name << " chunks=" << num_chunks << " q=" << i << " ["
+                    << starts[i] << "," << lasts[i] << "] finite=" << all_finite
+                    << " max_att_out_err=" << max_out_err
+                    << " rel_exp_sum_err=" << sum_err
+                    << " max_logit_err=" << max_err << " tol=" << tol;
+    }
+  }
+  EXPECT_EQ(num_failed_queries, size_t{0}) << name << " chunks=" << num_chunks;
+}
+
+// Runs CheckChainedCallsMatchSingleCall on the generic tile flash attention
+// kernels. 15 queries also exercise the remainder groups (8+4+2+1 or
+// 4+4+4+2+1), which now write directly into the unpadded att_out rows.
+template <typename KV_T>
+void RunTiledFlashAttentionChainingTest(gcpp::KVEncoding kv_encoding,
+                                        MixedRangesQueryType q_type,
+                                        const char* name, float tol) {
+  using Setup = TiledFlashAttentionTestSetup<KV_T>;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  for (size_t num_queries : {size_t{16}, size_t{15}}) {
+    const Setup setup(kv_encoding, q_type, num_queries, ctx);
+    auto kernel = [&](hwy::Span<const size_t> starts,
+                      hwy::Span<const size_t> lasts, MatPtrT<float>& att_out,
+                      float* exp_sums, float* max_logits,
+                      hwy::AlignedVector<uint8_t>* workspace) {
+      setup.Run(0, num_queries, starts, lasts, att_out, exp_sums, max_logits,
+                workspace);
+    };
+    for (size_t num_chunks : {size_t{2}, size_t{3}}) {
+      CheckChainedCallsMatchSingleCall(
+          kernel, ctx, num_queries, Setup::kQkvDim,
+          hwy::Span<const size_t>(setup.start_pos),
+          hwy::Span<const size_t>(setup.last_pos), num_chunks, name, tol);
+    }
+  }
+}
+
+void TestTiledFlashAttentionChainedCalls() {
+  RunTiledFlashAttentionChainingTest<float>(
+      gcpp::KVEncoding::kF32, MixedRangesQueryType::kF32, "F32kv_F32q", 1e-4f);
+  // BF16 step constants are normalized by a different partial sum in each
+  // chained call, so their rounding differs from the single call; short
+  // ranges do not average this out, hence the looser tolerance.
+  RunTiledFlashAttentionChainingTest<BF16>(
+      gcpp::KVEncoding::kBF16TwoTranspositions, MixedRangesQueryType::kBF16,
+      "BF16TTkv_BF16q", 5e-3f);
+  RunTiledFlashAttentionChainingTest<int8_t>(
+      gcpp::KVEncoding::kInt8, MixedRangesQueryType::kF32, "Int8kv_F32q",
+      5e-3f);
+  RunTiledFlashAttentionChainingTest<int8_t>(
+      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kBF16,
+      "Int8TTkv_BF16q", 5e-3f);
+  RunTiledFlashAttentionChainingTest<int8_t>(
+      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kInt16,
+      "Int8TTkv_Int16q", 5e-3f);
+  RunTiledFlashAttentionChainingTest<int8_t>(
       gcpp::KVEncoding::kInt8VNNITwoTranspositions, MixedRangesQueryType::kInt8,
       "Int8VNNIkv_Uint8q", 5e-3f);
 }
@@ -1373,6 +1542,7 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionInt8MatrixAccumulation);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionMixedQueryRanges);
+HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionChainedCalls);
 
 HWY_AFTER_TEST();
 
