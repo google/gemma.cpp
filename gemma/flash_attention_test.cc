@@ -23,6 +23,7 @@
 #include <algorithm>  // std::max
 #include <cmath>      // std::abs
 #include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -861,7 +862,7 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
 
 // Tile flash attention kernel under test, named by kernel family and query
 // type. The first four are the generic kernels (no family prefix); the others
-// are the matrix accumulation (ARM) kernels.
+// are the matrix accumulation (ARM) and AMX kernels.
 enum class TiledTestKernel {
   kF32,
   kBF16,
@@ -869,6 +870,8 @@ enum class TiledTestKernel {
   kInt8,
   kMatrixAccumulationBF16,
   kMatrixAccumulationInt8,
+  kAmxBF16,
+  kAmxInt8,
 };
 
 // Shared setup for the tile flash attention kernels: a Gaussian KV cache of
@@ -905,7 +908,8 @@ struct TiledFlashAttentionTestSetup {
         last_pos(num_queries) {
     PopulateTestKVCache(kv, kv_encoding, kQkvDim,
                         TestDataDistribution::kGaussian);
-    if (kernel_type == TiledTestKernel::kBF16) {
+    if (kernel_type == TiledTestKernel::kBF16 ||
+        kernel_type == TiledTestKernel::kAmxBF16) {
       CompressQueriesBF16Contiguous(q_f32.data(), kQkvDim, num_queries,
                                     q_bf16.data());
     } else if (kernel_type == TiledTestKernel::kInt16) {
@@ -914,6 +918,9 @@ struct TiledFlashAttentionTestSetup {
     } else if (kernel_type == TiledTestKernel::kInt8) {
       CompressQueriesUint8Contiguous(q_f32.data(), kQkvDim, num_queries,
                                      q_i8.data(), q_scales.data());
+    } else if (kernel_type == TiledTestKernel::kAmxInt8) {
+      CompressQueriesInt8Contiguous(q_f32.data(), kQkvDim, num_queries,
+                                    q_i8.data(), q_scales.data());
     } else if (kernel_type == TiledTestKernel::kMatrixAccumulationBF16) {
       CompressAndTransposeQueriesMatrixAccumulation(
           q_f32.data(), q_ma_bf16.data(), num_queries, kQkvDim);
@@ -987,6 +994,16 @@ struct TiledFlashAttentionTestSetup {
             kvs, q_count, q_ma_i8.data(),
             hwy::Span<const float>(q_ma_scales.data(), q_count), starts, lasts,
             /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
+      case TiledTestKernel::kAmxBF16:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
+            kvs, q_count, q_bf16.data() + first_q * kQkvDim, starts, lasts,
+            /*att_cap=*/0.0f, att_out, exp_sums, max_logits);
+        break;
+      case TiledTestKernel::kAmxInt8:
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
+            kvs, q_count, q_i8.data() + first_q * kQkvDim, scales, starts,
+            lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
     }
   }
@@ -1185,17 +1202,18 @@ void CheckChainedCallsMatchSingleCall(const KernelFn& kernel,
   EXPECT_EQ(num_failed_queries, size_t{0}) << name << " chunks=" << num_chunks;
 }
 
-// Runs CheckChainedCallsMatchSingleCall on `kernel_type`. 15 queries also
-// exercise the remainder query groups, which write directly into the unpadded
-// att_out rows.
+// Runs CheckChainedCallsMatchSingleCall on `kernel_type` for each of
+// `query_counts`. The default 15 queries also exercise the remainder query
+// groups, which write directly into the unpadded att_out rows.
 template <typename KV_T>
-void RunTiledFlashAttentionChainingTest(gcpp::KVEncoding kv_encoding,
-                                        TiledTestKernel kernel_type,
-                                        const char* name, float tol) {
+void RunTiledFlashAttentionChainingTest(
+    gcpp::KVEncoding kv_encoding, TiledTestKernel kernel_type,
+    const char* name, float tol,
+    std::initializer_list<size_t> query_counts = {16, 15}) {
   using Setup = TiledFlashAttentionTestSetup<KV_T>;
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
-  for (size_t num_queries : {size_t{16}, size_t{15}}) {
+  for (size_t num_queries : query_counts) {
     const Setup setup(kv_encoding, kernel_type, num_queries, ctx);
     auto kernel = [&](hwy::Span<const size_t> starts,
                       hwy::Span<const size_t> lasts, MatPtrT<float>& att_out,
@@ -1255,6 +1273,26 @@ void TestTiledFlashAttentionMatrixAccumulationChainedCalls() {
   RunTiledFlashAttentionChainingTest<int8_t>(
       gcpp::KVEncoding::kInt8MatrixAccumulation,
       TiledTestKernel::kMatrixAccumulationInt8, "Int8MAkv_Int8q", 5e-3f);
+}
+
+// AMX kernels process 32-query blocks: 64 queries are two full blocks, 40 are a
+// full block plus a partial one, and 15 are a single partial block.
+void TestTiledFlashAttentionAMXChainedCalls() {
+  // Skip visibly rather than silently passing on hosts without AMX.
+  if (!HaveAmxBf16() && !HaveAmxInt8()) {
+    GTEST_SKIP() << "AMX is not available on this host.";
+  }
+  if (HaveAmxBf16()) {
+    RunTiledFlashAttentionChainingTest<BF16>(
+        gcpp::KVEncoding::kBF16TwoTranspositions, TiledTestKernel::kAmxBF16,
+        "BF16TTkv_BF16q_AMX", 5e-3f, {64, 40, 15});
+  }
+  if (HaveAmxInt8()) {
+    RunTiledFlashAttentionChainingTest<int8_t>(
+        gcpp::KVEncoding::kInt8VNNITwoTranspositions,
+        TiledTestKernel::kAmxInt8, "Int8VNNIkv_Int8q_AMX", 5e-3f,
+        {64, 40, 15});
+  }
 }
 
 template <typename KV_T>
@@ -1604,6 +1642,8 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionChainedCalls);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionMatrixAccumulationChainedCalls);
+HWY_EXPORT_AND_TEST_BEST_P(FlashAttentionTest,
+                           TestTiledFlashAttentionAMXChainedCalls);
 
 HWY_AFTER_TEST();
 

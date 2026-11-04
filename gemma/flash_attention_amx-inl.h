@@ -142,37 +142,17 @@ static_assert(HWY_MAX_LANES_D(hn::ScalableTag<float>) == 16,
 static_assert(!HWY_HAVE_SCALABLE,
               "AMX flash attention requires compile-time vector sizes");
 
-// Templated on T so that read-only callers can pass a `const float*` without
-// casting away constness.
-template <typename T>
-HWY_INLINE T* GetAccumTilePtr(T* HWY_RESTRICT c_accum_base,
-                              size_t num_ch_blocks, size_t q_block,
-                              size_t ch_block, size_t row_in_block,
-                              size_t col_in_block) {
-  // Each block is [kAmxQueriesPerBlock rows][kAmxDimStep channels].
-  return c_accum_base +
-         ((q_block * num_ch_blocks + ch_block) * kAmxQueriesPerBlock +
-          row_in_block) *
-             kAmxDimStep +
-         col_in_block;
-}
-
-HWY_INLINE void StoreAccumulatorsToOutput(
-    const float* HWY_RESTRICT c_accum_base, size_t q_count,
-    size_t num_ch_blocks, MatPtrT<float>& att_out) {
-  const hn::ScalableTag<float> df;
-  for (size_t q = 0; q < q_count; ++q) {
-    const size_t q_blk = q / kAmxQueriesPerBlock;
-    const size_t r = q % kAmxQueriesPerBlock;
-    float* out = att_out.Row(q);
-    for (size_t ch_blk = 0; ch_blk < num_ch_blocks; ++ch_blk) {
-      const float* accum_chunk =
-          GetAccumTilePtr(c_accum_base, num_ch_blocks, q_blk, ch_blk, r, 0);
-      hn::StoreU(hn::LoadU(df, accum_chunk), df, out + ch_blk * kAmxDimStep);
-      hn::StoreU(hn::LoadU(df, accum_chunk + kAmxTileColsF32), df,
-                 out + ch_blk * kAmxDimStep + kAmxTileColsF32);
-    }
-  }
+// The kernels accumulate in FP32 directly into `att_out` (IN/OUT), addressed
+// row-major through a MatPtrT. The AMX-BF16 kernel instead uses a small
+// scratch MatPtrT for a partial last query block, whose AMX tiles span all
+// kAmxQueriesPerBlock rows.
+//
+// Returns the start of channel block `ch_block` of row `row_in_block` of query
+// block `q_block` in `accum`.
+HWY_INLINE float* AccumRow(MatPtrT<float>& accum, size_t q_block,
+                           size_t row_in_block, size_t ch_block) {
+  return accum.Row(q_block * kAmxQueriesPerBlock + row_in_block) +
+         ch_block * kAmxDimStep;
 }
 
 // The BF16 kernel below delegates to Highway's AMX-BF16 wrappers, which are
@@ -250,13 +230,15 @@ HWY_INLINE void ComputeQKTileAMX_BF16(
 
 // Returns true if any query row wrote probabilities into `p_bf16_scratch`.
 // When false the P tile is all zeros and the caller can skip the PV multiply.
+// `accum_q_block` is the query block's index within `accum`, which differs from
+// the global block index for the partial last block's scratch view.
 HWY_INLINE bool SoftmaxAndRescaleAMX_BF16(
     const float s_tile[kAmxQueriesPerBlock][kAmxTileTokens],
     uint16_t p_bf16_scratch[kAmxQueriesPerBlock][kAmxTileTokens],
-    float* HWY_RESTRICT c_accum_base, float* HWY_RESTRICT exp_denominator_sums,
+    MatPtrT<float>& accum, float* HWY_RESTRICT exp_denominator_sums,
     float* HWY_RESTRICT max_logits, hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, size_t q_base_idx,
-    size_t q_block, size_t actual_q_in_block, size_t num_ch_blocks,
+    size_t accum_q_block, size_t actual_q_in_block, size_t num_ch_blocks,
     size_t position, float att_cap, float one_over_cap) {
   hwy::ZeroBytes(p_bf16_scratch,
                  sizeof(uint16_t) * kAmxQueriesPerBlock * kAmxTileTokens);
@@ -355,8 +337,7 @@ HWY_INLINE bool SoftmaxAndRescaleAMX_BF16(
     if (scale_old != 1.0f) {
       const VF s_old = hn::Set(df, scale_old);
       for (size_t ch_blk = 0; ch_blk < num_ch_blocks; ++ch_blk) {
-        float* row_ptr =
-            GetAccumTilePtr(c_accum_base, num_ch_blocks, q_block, ch_blk, r, 0);
+        float* row_ptr = AccumRow(accum, accum_q_block, r, ch_blk);
         hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr), s_old), df, row_ptr);
         hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr + kAmxTileColsF32), s_old), df,
                    row_ptr + kAmxTileColsF32);
@@ -368,8 +349,8 @@ HWY_INLINE bool SoftmaxAndRescaleAMX_BF16(
 
 HWY_INLINE void ComputePVTileAMX_BF16(
     const uint16_t p_bf16_scratch[kAmxQueriesPerBlock][kAmxTileTokens],
-    const BF16* HWY_RESTRICT v_base, float* HWY_RESTRICT c_accum_base,
-    size_t q_block, size_t num_ch_blocks, size_t qkv_dim) {
+    const BF16* HWY_RESTRICT v_base, MatPtrT<float>& accum,
+    size_t accum_q_block, size_t num_ch_blocks, size_t qkv_dim) {
   auto p0 = hn::MakeTile64B();
   auto p1 = hn::MakeTile64B();
   auto v0 = hn::MakeTile64B();
@@ -389,10 +370,10 @@ HWY_INLINE void ComputePVTileAMX_BF16(
   // channels for a pair of adjacent tokens, hence the `* 2` channel offsets.
   const size_t v_row_bytes = 2 * qkv_dim * sizeof(BF16);
 
-  // Accumulator rows span kAmxDimStep channels.
-  constexpr size_t kAccumRowBytes = kAmxDimStep * sizeof(float);
-  // Offsets of the lower-left / upper-right tiles within the 2x2 grid.
-  constexpr size_t kAccumNextRows = kAmxTileRows * kAmxDimStep;
+  // Accumulator rows are `accum.Stride()` floats apart.
+  const size_t accum_row_bytes = accum.Stride() * sizeof(float);
+  // Offset of the lower tiles within the 2x2 grid.
+  const size_t accum_next_rows = kAmxTileRows * accum.Stride();
 
   for (size_t ch_blk = 0; ch_blk < num_ch_blocks; ++ch_blk) {
     const size_t db = ch_blk * kAmxDimStep;
@@ -402,24 +383,23 @@ HWY_INLINE void ComputePVTileAMX_BF16(
     hn::Tile64BLoad(&v0, v0_ptr, v_row_bytes);
     hn::Tile64BLoad(&v1, v1_ptr, v_row_bytes);
 
-    float* accum_ptr =
-        GetAccumTilePtr(c_accum_base, num_ch_blocks, q_block, ch_blk, 0, 0);
-    hn::Tile64BLoad(&acc00, accum_ptr, kAccumRowBytes);
-    hn::Tile64BLoad(&acc01, accum_ptr + kAmxTileColsF32, kAccumRowBytes);
-    hn::Tile64BLoad(&acc10, accum_ptr + kAccumNextRows, kAccumRowBytes);
-    hn::Tile64BLoad(&acc11, accum_ptr + kAccumNextRows + kAmxTileColsF32,
-                    kAccumRowBytes);
+    float* accum_ptr = AccumRow(accum, accum_q_block, 0, ch_blk);
+    hn::Tile64BLoad(&acc00, accum_ptr, accum_row_bytes);
+    hn::Tile64BLoad(&acc01, accum_ptr + kAmxTileColsF32, accum_row_bytes);
+    hn::Tile64BLoad(&acc10, accum_ptr + accum_next_rows, accum_row_bytes);
+    hn::Tile64BLoad(&acc11, accum_ptr + accum_next_rows + kAmxTileColsF32,
+                    accum_row_bytes);
 
     hn::Tile64BMatMul(df, &acc00, &p0, &v0);
     hn::Tile64BMatMul(df, &acc01, &p0, &v1);
     hn::Tile64BMatMul(df, &acc10, &p1, &v0);
     hn::Tile64BMatMul(df, &acc11, &p1, &v1);
 
-    hn::Tile64BStore(&acc00, accum_ptr, kAccumRowBytes);
-    hn::Tile64BStore(&acc01, accum_ptr + kAmxTileColsF32, kAccumRowBytes);
-    hn::Tile64BStore(&acc10, accum_ptr + kAccumNextRows, kAccumRowBytes);
-    hn::Tile64BStore(&acc11, accum_ptr + kAccumNextRows + kAmxTileColsF32,
-                     kAccumRowBytes);
+    hn::Tile64BStore(&acc00, accum_ptr, accum_row_bytes);
+    hn::Tile64BStore(&acc01, accum_ptr + kAmxTileColsF32, accum_row_bytes);
+    hn::Tile64BStore(&acc10, accum_ptr + accum_next_rows, accum_row_bytes);
+    hn::Tile64BStore(&acc11, accum_ptr + accum_next_rows + kAmxTileColsF32,
+                     accum_row_bytes);
   }
   // No Tile64BRelease here: this is inlined into the kernel loop, where the
   // compiler only reloads the tile config at function entry and after calls.
@@ -457,16 +437,31 @@ inline void TileFlashAttentionAMX_BF16_Impl(
   HWY_ALIGN uint16_t p_bf16_scratch[kAmxQueriesPerBlock][kAmxTileTokens];
   HWY_ALIGN BF16 q_padded[kAmxQueriesPerBlock * kAmxDimStep];
 
-  // Blocked FP32 accumulators: stored in blocks of kAmxQueriesPerBlock queries
-  // x qkv_dim, where each block is arranged as (qkv_dim / kAmxDimStep) chunks
-  // of [kAmxQueriesPerBlock queries x kAmxDimStep channels]. This layout
-  // enables direct Tile64BLoad and Tile64BStore without intermediate
-  // transposition.
-  const size_t rounded_q = hwy::RoundUpTo(q_count, kAmxQueriesPerBlock);
-  const size_t num_q_blocks = rounded_q / kAmxQueriesPerBlock;
+  // Accumulate directly into att_out (IN/OUT). Tile loads/stores of a query
+  // block span all kAmxQueriesPerBlock rows, so a partial last block instead
+  // uses a scratch block, copied in from and back out to att_out.
   const size_t num_ch_blocks = qkv_dim / kAmxDimStep;
-  hwy::AlignedVector<float> C_accumulators(
-      num_q_blocks * num_ch_blocks * kAmxQueriesPerBlock * kAmxDimStep, 0.0f);
+  const size_t num_full_q_blocks = q_count / kAmxQueriesPerBlock;
+  const size_t tail_q_base = num_full_q_blocks * kAmxQueriesPerBlock;
+  const size_t tail_q_count = q_count - tail_q_base;
+  hwy::AlignedVector<float> tail_scratch;
+  MatPtrT<float> tail("amx_tail", Extents2D(kAmxQueriesPerBlock, qkv_dim));
+  if (tail_q_count != 0) {
+    tail_scratch.resize(kAmxQueriesPerBlock * qkv_dim);
+    tail.SetPtr(tail_scratch.data(), qkv_dim);
+    // Padding rows are never copied back and do not affect valid rows (AMX
+    // tile rows are independent and their P rows are zero); they are zeroed
+    // only to keep stale or non-finite values out of the scratch.
+    for (size_t r = 0; r < kAmxQueriesPerBlock; ++r) {
+      float* dst = tail.Row(r);
+      if (r < tail_q_count) {
+        hwy::CopyBytes(att_out.Row(tail_q_base + r), dst,
+                       qkv_dim * sizeof(float));
+      } else {
+        hwy::ZeroBytes(dst, qkv_dim * sizeof(float));
+      }
+    }
+  }
 
   size_t current_kv_idx = 0;
   size_t current_kv_start_offset = 0;
@@ -531,18 +526,22 @@ inline void TileFlashAttentionAMX_BF16_Impl(
       ComputeQKTileAMX_BF16(q_base, k_base, q_padded, s_tile, q_base_idx,
                             actual_q_in_block, qkv_dim);
 
+      // The tail block is addressed as block 0 of the scratch view.
+      const bool is_tail = q_block == num_full_q_blocks;
+      MatPtrT<float>& accum = is_tail ? tail : att_out;
+      const size_t accum_q_block = is_tail ? 0 : q_block;
+
       // Phase 2: Softmax & Online Rescaling
       const bool any_p_written = SoftmaxAndRescaleAMX_BF16(
-          s_tile, p_bf16_scratch, C_accumulators.data(), exp_denominator_sums,
-          max_logits, start_pos_per_query, last_pos_per_query, q_base_idx,
-          q_block, actual_q_in_block, num_ch_blocks, position, att_cap,
-          one_over_cap);
+          s_tile, p_bf16_scratch, accum, exp_denominator_sums, max_logits,
+          start_pos_per_query, last_pos_per_query, q_base_idx, accum_q_block,
+          actual_q_in_block, num_ch_blocks, position, att_cap, one_over_cap);
 
       // Phase 3: P * V via AMX (Direct Tile Accumulation). Skipped when every
       // row was masked out, in which case P is all zeros.
       if (!any_p_written) continue;
-      ComputePVTileAMX_BF16(p_bf16_scratch, v_base, C_accumulators.data(),
-                            q_block, num_ch_blocks, qkv_dim);
+      ComputePVTileAMX_BF16(p_bf16_scratch, v_base, accum, accum_q_block,
+                            num_ch_blocks, qkv_dim);
     }
 
     position += kAmxTileTokens;
@@ -550,9 +549,11 @@ inline void TileFlashAttentionAMX_BF16_Impl(
 
   hn::Tile64BRelease();
 
-  // Phase 4: Store final accumulated outputs to att_out
-  StoreAccumulatorsToOutput(C_accumulators.data(), q_count, num_ch_blocks,
-                            att_out);
+  // Phase 4: Copy the partial last query block back to att_out.
+  for (size_t r = 0; r < tail_q_count; ++r) {
+    hwy::CopyBytes(tail.Row(r), att_out.Row(tail_q_base + r),
+                   qkv_dim * sizeof(float));
+  }
 }
 #endif  // GEMMA_HAVE_AMX
 
@@ -738,7 +739,7 @@ inline bool SoftmaxAndQuantizeAMX_Int8(
     float scales_old[kAmxQueriesPerBlock],
     const BF16* const HWY_RESTRICT k_scales[kTiles],
     const BF16* const HWY_RESTRICT v_scales[kTiles], size_t n_valid,
-    hwy::Span<const float> q_scales, float* HWY_RESTRICT c_accum_base,
+    hwy::Span<const float> q_scales, MatPtrT<float>& accum,
     float* HWY_RESTRICT exp_denominator_sums, float* HWY_RESTRICT max_logits,
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, size_t q_base_idx,
@@ -929,8 +930,7 @@ inline bool SoftmaxAndQuantizeAMX_Int8(
       if (scales_old[r] != 1.0f) {
         const VF s_old = hn::Set(df, scales_old[r]);
         for (size_t ch_blk = 0; ch_blk < num_ch_blocks; ++ch_blk) {
-          float* row_ptr = GetAccumTilePtr(c_accum_base, num_ch_blocks, q_block,
-                                           ch_blk, r, 0);
+          float* row_ptr = AccumRow(accum, q_block, r, ch_blk);
           hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr), s_old), df, row_ptr);
           hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr + kAmxTileColsF32), s_old),
                      df, row_ptr + kAmxTileColsF32);
@@ -947,8 +947,8 @@ HWY_INLINE void AccumulatePVTileInt8(
     const int32_t pv_tile[2][kAmxQueriesPerBlock][kAmxDimStep],
     const float eff_scales[kAmxQueriesPerBlock],
     const float scales_old[kAmxQueriesPerBlock],
-    float* HWY_RESTRICT c_accum_base, size_t q_block, size_t blk_idx,
-    int buf_idx, size_t actual_q_in_block, size_t num_ch_blocks) {
+    MatPtrT<float>& accum, size_t q_block, size_t blk_idx, int buf_idx,
+    size_t actual_q_in_block) {
   const hn::ScalableTag<float> df;
   using DF = decltype(df);
   using VF = hn::Vec<DF>;
@@ -966,8 +966,7 @@ HWY_INLINE void AccumulatePVTileInt8(
       const VF pv1 = hn::ConvertTo(
           df, hn::LoadU(di32, &pv_tile[buf_idx][r][kAmxTileColsF32]));
 
-      float* row_ptr =
-          GetAccumTilePtr(c_accum_base, num_ch_blocks, q_block, blk_idx, r, 0);
+      float* row_ptr = AccumRow(accum, q_block, r, blk_idx);
       VF acc0 = hn::Mul(hn::LoadU(df, row_ptr), s_old);
       VF acc1 = hn::Mul(hn::LoadU(df, row_ptr + kAmxTileColsF32), s_old);
 
@@ -978,8 +977,7 @@ HWY_INLINE void AccumulatePVTileInt8(
       hn::StoreU(acc1, df, row_ptr + kAmxTileColsF32);
     } else if (s_old_val != 1.0f) {
       const VF s_old = hn::Set(df, s_old_val);
-      float* row_ptr =
-          GetAccumTilePtr(c_accum_base, num_ch_blocks, q_block, blk_idx, r, 0);
+      float* row_ptr = AccumRow(accum, q_block, r, blk_idx);
       hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr), s_old), df, row_ptr);
       hn::StoreU(hn::Mul(hn::LoadU(df, row_ptr + kAmxTileColsF32), s_old), df,
                  row_ptr + kAmxTileColsF32);
@@ -1003,7 +1001,7 @@ HWY_NOINLINE void ComputePVGroupAMX_Int8(
     size_t q_block_base, size_t q_group_blocks,
     const int8_t* const HWY_RESTRICT v_base[kTiles], size_t n_valid,
     int32_t pv_tile[2][kAmxQueriesPerBlock][kAmxDimStep],
-    float* HWY_RESTRICT c_accum_base, size_t num_ch_blocks, size_t qkv_dim) {
+    MatPtrT<float>& accum, size_t num_ch_blocks, size_t qkv_dim) {
   auto p0 = hn::MakeTile64B(kAmxTileRows, kAmxTileTokens * sizeof(uint8_t));
   auto p1 = hn::MakeTile64B(kAmxTileRows, kAmxTileTokens * sizeof(uint8_t));
   auto v0 = hn::MakeTile64B(kAmxTileTokens / 4);
@@ -1068,8 +1066,8 @@ HWY_NOINLINE void ComputePVGroupAMX_Int8(
 
       if (step_count > 0) {
         AccumulatePVTileInt8(pv_tile, eff_scales[prev_qb], scales_old[prev_qb],
-                             c_accum_base, q_block_base + prev_qb, prev_ch_blk,
-                             1 - cur_buf, prev_actual_q, num_ch_blocks);
+                             accum, q_block_base + prev_qb, prev_ch_blk,
+                             1 - cur_buf, prev_actual_q);
       }
 
       prev_qb = qb;
@@ -1081,8 +1079,8 @@ HWY_NOINLINE void ComputePVGroupAMX_Int8(
 
   if (step_count > 0) {
     AccumulatePVTileInt8(pv_tile, eff_scales[prev_qb], scales_old[prev_qb],
-                         c_accum_base, q_block_base + prev_qb, prev_ch_blk,
-                         (step_count - 1) % 2, prev_actual_q, num_ch_blocks);
+                         accum, q_block_base + prev_qb, prev_ch_blk,
+                         (step_count - 1) % 2, prev_actual_q);
   }
 }
 
@@ -1104,17 +1102,14 @@ struct AmxInt8WorkspaceLayout {
   // Per query block: one scale per query row.
   using RowScales = float[kAmxQueriesPerBlock];
 
-  size_t num_q_blocks, num_ch_blocks, c_accum_bytes;
+  size_t num_q_blocks, num_ch_blocks;
   size_t s_tile_offset, p_u8_offset, pv_tile_offset, eff_scales_offset;
-  size_t scales_old_offset, q_padded_offset, c_accum_offset;
+  size_t scales_old_offset, q_padded_offset;
   size_t total_bytes;
 
   constexpr AmxInt8WorkspaceLayout(size_t q_count, size_t qkv_dim)
       : num_q_blocks(hwy::DivCeil(q_count, kAmxQueriesPerBlock)),
         num_ch_blocks(qkv_dim / kAmxDimStep),
-        // Blocked FP32 accumulators, same layout as the BF16 kernel.
-        c_accum_bytes(num_q_blocks * num_ch_blocks * kAmxQueriesPerBlock *
-                      kAmxDimStep * sizeof(float)),
         s_tile_offset(0),
         p_u8_offset(s_tile_offset +
                     Aligned(kMaxAmxInt8QBlocksPerGroup * sizeof(STile))),
@@ -1127,10 +1122,8 @@ struct AmxInt8WorkspaceLayout {
         q_padded_offset(
             scales_old_offset +
             Aligned(kMaxAmxInt8QBlocksPerGroup * sizeof(RowScales))),
-        c_accum_offset(
-            q_padded_offset +
-            Aligned(kAmxQueriesPerBlock * qkv_dim * sizeof(int8_t))),
-        total_bytes(c_accum_offset + Aligned(c_accum_bytes)) {}
+        total_bytes(q_padded_offset +
+                    Aligned(kAmxQueriesPerBlock * qkv_dim * sizeof(int8_t))) {}
 
  private:
   static constexpr size_t Aligned(size_t bytes) {
@@ -1183,7 +1176,13 @@ inline void TileFlashAttentionAMX_Int8_ImplT(
 
   // Scratchpad buffers for a group of up to `kMaxAmxInt8QBlocksPerGroup` query
   // blocks (128 queries), enabling L1D reuse of K and V across query blocks.
-  // Only `C_accumulators` is read before being written, so it alone is zeroed.
+  // None of them needs zero-initialization: `p_u8_scratch` rows that the
+  // softmax skipped are still tile-loaded with stale contents, but their
+  // products are discarded because `AccumulatePVTileInt8` only consumes rows
+  // with `eff_scales > 0`; every other buffer is written before it is read.
+  // The FP32 accumulators are att_out itself (IN/OUT), which the caller
+  // zero-initializes; only rows < q_count are ever accessed, so no padding
+  // rows are needed.
   typename Layout::STile* s_tile = HWY_RCAST_ALIGNED(
       typename Layout::STile*, raw_ptr + layout.s_tile_offset);
   typename Layout::PTile* p_u8_scratch = HWY_RCAST_ALIGNED(
@@ -1196,9 +1195,6 @@ inline void TileFlashAttentionAMX_Int8_ImplT(
       typename Layout::RowScales*, raw_ptr + layout.scales_old_offset);
   int8_t* q_padded =
       HWY_RCAST_ALIGNED(int8_t*, raw_ptr + layout.q_padded_offset);
-  float* C_accumulators =
-      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset);
-  hwy::ZeroBytes(C_accumulators, layout.c_accum_bytes);
 
   size_t current_kv_idx = 0;
   size_t current_kv_start_offset = 0;
@@ -1343,7 +1339,7 @@ inline void TileFlashAttentionAMX_Int8_ImplT(
         const size_t q_base_idx = q_block * kAmxQueriesPerBlock;
         any_p_written[qb] = SoftmaxAndQuantizeAMX_Int8<kTiles>(
             s_tile[qb], p_u8_scratch[qb], eff_scales[qb], scales_old[qb],
-            k_scales, v_scales, n_valid, q_scales, C_accumulators,
+            k_scales, v_scales, n_valid, q_scales, att_out,
             exp_denominator_sums, max_logits, start_pos_per_query,
             last_pos_per_query, q_base_idx, q_block, actual_q_per_qb[qb],
             num_ch_blocks, position, att_cap, one_over_cap);
@@ -1357,18 +1353,14 @@ inline void TileFlashAttentionAMX_Int8_ImplT(
       // group, reusing L1D-resident V slices.
       ComputePVGroupAMX_Int8<kTiles>(
           p_u8_scratch, eff_scales, scales_old, any_p_written, actual_q_per_qb,
-          q_block_base, q_group_blocks, v_base, n_valid, pv_tile,
-          C_accumulators, num_ch_blocks, qkv_dim);
+          q_block_base, q_group_blocks, v_base, n_valid, pv_tile, att_out,
+          num_ch_blocks, qkv_dim);
     }
 
     position += kTokensPerStep;
   }
 
   hn::Tile64BRelease();
-
-  // Phase 4: Store final accumulated outputs to att_out
-  StoreAccumulatorsToOutput(C_accumulators, q_count, num_ch_blocks,
-                            att_out);
 }
 
 // Default number of 32-token KV tiles processed per AMX INT8 macro-step.
