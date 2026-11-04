@@ -859,13 +859,23 @@ void TestTiledFlashAttentionInt8MatrixAccumulation() {
                                      tol, tol_exp, tol_max, 0.0f);
 }
 
-enum class MixedRangesQueryType { kF32, kBF16, kInt16, kInt8 };
+// Tile flash attention kernel under test, named by kernel family and query
+// type. The first four are the generic kernels (no family prefix); the others
+// are the matrix accumulation (ARM) kernels.
+enum class TiledTestKernel {
+  kF32,
+  kBF16,
+  kInt16,
+  kInt8,
+  kMatrixAccumulationBF16,
+  kMatrixAccumulationInt8,
+};
 
-// Shared setup for the generic (non-AMX, non-matrix accumulation) tile flash
-// attention kernels: a Gaussian KV cache of `kSeqLen` tokens (more than two
-// 256-token kernel blocks, with a partial last tile), `num_queries` Gaussian
-// queries compressed to `q_type`, and per-query [start, last] ranges mixing
-// full, late-start, early-end and short ranges within each kernel group.
+// Shared setup for the tile flash attention kernels: a Gaussian KV cache of
+// `kSeqLen` tokens (more than two 256-token kernel blocks, with a partial last
+// tile) in `kv_encoding`, `num_queries` Gaussian queries prepared for
+// `kernel_type`, and per-query [start, last] ranges mixing full, late-start,
+// early-end and short ranges within each kernel group.
 template <typename KV_T>
 struct TiledFlashAttentionTestSetup {
   static constexpr size_t kQkvDim = 64;
@@ -873,9 +883,9 @@ struct TiledFlashAttentionTestSetup {
   using PosVec = std::vector<size_t, hwy::AlignedAllocator<size_t>>;
 
   TiledFlashAttentionTestSetup(gcpp::KVEncoding kv_encoding,
-                               MixedRangesQueryType q_type, size_t num_queries,
+                               TiledTestKernel kernel_type, size_t num_queries,
                                ThreadingContext& ctx)
-      : q_type(q_type),
+      : kernel_type(kernel_type),
         num_queries(num_queries),
         kv("kv",
            Extents2D(hwy::DivCeil(kSeqLen, gcpp::KVCache::kTileSize),
@@ -888,19 +898,29 @@ struct TiledFlashAttentionTestSetup {
         q_i16(num_queries * kQkvDim),
         q_i8(num_queries * kQkvDim),
         q_scales(num_queries),
+        q_ma_bf16(hwy::RoundUpTo(num_queries, 2) * kQkvDim),
+        q_ma_i8(hwy::RoundUpTo(num_queries, 2) * kQkvDim),
+        q_ma_scales(hwy::RoundUpTo(num_queries, 2)),
         start_pos(num_queries),
         last_pos(num_queries) {
     PopulateTestKVCache(kv, kv_encoding, kQkvDim,
                         TestDataDistribution::kGaussian);
-    if (q_type == MixedRangesQueryType::kBF16) {
+    if (kernel_type == TiledTestKernel::kBF16) {
       CompressQueriesBF16Contiguous(q_f32.data(), kQkvDim, num_queries,
                                     q_bf16.data());
-    } else if (q_type == MixedRangesQueryType::kInt16) {
+    } else if (kernel_type == TiledTestKernel::kInt16) {
       CompressQueriesInt16Contiguous(q_f32.data(), kQkvDim, num_queries,
                                      q_i16.data(), q_scales.data());
-    } else if (q_type == MixedRangesQueryType::kInt8) {
+    } else if (kernel_type == TiledTestKernel::kInt8) {
       CompressQueriesUint8Contiguous(q_f32.data(), kQkvDim, num_queries,
                                      q_i8.data(), q_scales.data());
+    } else if (kernel_type == TiledTestKernel::kMatrixAccumulationBF16) {
+      CompressAndTransposeQueriesMatrixAccumulation(
+          q_f32.data(), q_ma_bf16.data(), num_queries, kQkvDim);
+    } else if (kernel_type == TiledTestKernel::kMatrixAccumulationInt8) {
+      CompressAndQuantizeQueriesMatrixAccumulationInt8(
+          q_f32.data(), q_ma_i8.data(), q_ma_scales.data(), num_queries,
+          kQkvDim);
     }
     for (size_t i = 0; i < num_queries; ++i) {
       switch (i % 4) {
@@ -926,37 +946,52 @@ struct TiledFlashAttentionTestSetup {
 
   // Runs the kernel for `q_count` queries starting at `first_q`, with the
   // given per-query ranges, updating att_out, exp_sums and max_logits in place.
+  // The matrix accumulation kernels pack queries in pairs, so they only support
+  // running all queries at once.
   void Run(size_t first_q, size_t q_count, hwy::Span<const size_t> starts,
            hwy::Span<const size_t> lasts, MatPtrT<float>& att_out,
            float* exp_sums, float* max_logits,
            hwy::AlignedVector<uint8_t>* workspace) const {
     const hwy::Span<const MatPtr> kvs(&kv, 1);
     const hwy::Span<const float> scales(q_scales.data() + first_q, q_count);
-    switch (q_type) {
-      case MixedRangesQueryType::kF32:
+    switch (kernel_type) {
+      case TiledTestKernel::kF32:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogits(
             kvs, q_count, q_f32.data() + first_q * kQkvDim, starts, lasts,
             /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
-      case MixedRangesQueryType::kBF16:
+      case TiledTestKernel::kBF16:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
             kvs, q_count, q_bf16.data() + first_q * kQkvDim, starts, lasts,
             /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
-      case MixedRangesQueryType::kInt16:
+      case TiledTestKernel::kInt16:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt16(
             kvs, q_count, q_i16.data() + first_q * kQkvDim, scales, starts,
             lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
-      case MixedRangesQueryType::kInt8:
+      case TiledTestKernel::kInt8:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsInt8(
             kvs, q_count, q_i8.data() + first_q * kQkvDim, scales, starts,
             lasts, /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
+      case TiledTestKernel::kMatrixAccumulationBF16:
+        HWY_ASSERT(first_q == 0 && q_count == num_queries);
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulation(
+            kvs, q_count, q_ma_bf16.data(), starts, lasts, /*att_cap=*/0.0f,
+            att_out, exp_sums, max_logits, workspace);
+        break;
+      case TiledTestKernel::kMatrixAccumulationInt8:
+        HWY_ASSERT(first_q == 0 && q_count == num_queries);
+        DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsMatrixAccumulationInt8(
+            kvs, q_count, q_ma_i8.data(),
+            hwy::Span<const float>(q_ma_scales.data(), q_count), starts, lasts,
+            /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
+        break;
     }
   }
 
-  const MixedRangesQueryType q_type;
+  const TiledTestKernel kernel_type;
   const size_t num_queries;
   MatStorageT<KV_T> kv;
   AlignedFloatVector q_f32;
@@ -964,6 +999,9 @@ struct TiledFlashAttentionTestSetup {
   std::vector<int16_t, hwy::AlignedAllocator<int16_t>> q_i16;
   std::vector<int8_t, hwy::AlignedAllocator<int8_t>> q_i8;
   AlignedFloatVector q_scales;
+  std::vector<BF16, hwy::AlignedAllocator<BF16>> q_ma_bf16;
+  std::vector<int8_t, hwy::AlignedAllocator<int8_t>> q_ma_i8;
+  AlignedFloatVector q_ma_scales;
   PosVec start_pos;
   PosVec last_pos;
 };
@@ -975,14 +1013,14 @@ struct TiledFlashAttentionTestSetup {
 // query on its own, so no query is ever inactive while others are active.
 template <typename KV_T>
 void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
-                                           MixedRangesQueryType q_type,
+                                           TiledTestKernel kernel_type,
                                            const char* name, float tol) {
   using Setup = TiledFlashAttentionTestSetup<KV_T>;
   constexpr size_t kQkvDim = Setup::kQkvDim;
   constexpr size_t kNumQueries = 16;
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
-  const Setup setup(kv_encoding, q_type, kNumQueries, ctx);
+  const Setup setup(kv_encoding, kernel_type, kNumQueries, ctx);
   const auto& start_pos = setup.start_pos;
   const auto& last_pos = setup.last_pos;
 
@@ -1041,21 +1079,21 @@ void RunTiledFlashAttentionMixedRangesTest(gcpp::KVEncoding kv_encoding,
 
 void TestTiledFlashAttentionMixedQueryRanges() {
   RunTiledFlashAttentionMixedRangesTest<float>(
-      gcpp::KVEncoding::kF32, MixedRangesQueryType::kF32, "F32kv_F32q", 1e-4f);
+      gcpp::KVEncoding::kF32, TiledTestKernel::kF32, "F32kv_F32q", 1e-4f);
   RunTiledFlashAttentionMixedRangesTest<BF16>(
-      gcpp::KVEncoding::kBF16TwoTranspositions, MixedRangesQueryType::kBF16,
+      gcpp::KVEncoding::kBF16TwoTranspositions, TiledTestKernel::kBF16,
       "BF16TTkv_BF16q", 1e-3f);
   RunTiledFlashAttentionMixedRangesTest<int8_t>(
-      gcpp::KVEncoding::kInt8, MixedRangesQueryType::kF32, "Int8kv_F32q",
+      gcpp::KVEncoding::kInt8, TiledTestKernel::kF32, "Int8kv_F32q",
       5e-3f);
   RunTiledFlashAttentionMixedRangesTest<int8_t>(
-      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kBF16,
+      gcpp::KVEncoding::kInt8TwoTranspositions, TiledTestKernel::kBF16,
       "Int8TTkv_BF16q", 5e-3f);
   RunTiledFlashAttentionMixedRangesTest<int8_t>(
-      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kInt16,
+      gcpp::KVEncoding::kInt8TwoTranspositions, TiledTestKernel::kInt16,
       "Int8TTkv_Int16q", 5e-3f);
   RunTiledFlashAttentionMixedRangesTest<int8_t>(
-      gcpp::KVEncoding::kInt8VNNITwoTranspositions, MixedRangesQueryType::kInt8,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions, TiledTestKernel::kInt8,
       "Int8VNNIkv_Uint8q", 5e-3f);
 }
 
@@ -1147,18 +1185,18 @@ void CheckChainedCallsMatchSingleCall(const KernelFn& kernel,
   EXPECT_EQ(num_failed_queries, size_t{0}) << name << " chunks=" << num_chunks;
 }
 
-// Runs CheckChainedCallsMatchSingleCall on the generic tile flash attention
-// kernels. 15 queries also exercise the remainder groups (8+4+2+1 or
-// 4+4+4+2+1), which now write directly into the unpadded att_out rows.
+// Runs CheckChainedCallsMatchSingleCall on `kernel_type`. 15 queries also
+// exercise the remainder query groups, which write directly into the unpadded
+// att_out rows.
 template <typename KV_T>
 void RunTiledFlashAttentionChainingTest(gcpp::KVEncoding kv_encoding,
-                                        MixedRangesQueryType q_type,
+                                        TiledTestKernel kernel_type,
                                         const char* name, float tol) {
   using Setup = TiledFlashAttentionTestSetup<KV_T>;
   ThreadingArgs threading_args;
   ThreadingContext ctx(threading_args);
   for (size_t num_queries : {size_t{16}, size_t{15}}) {
-    const Setup setup(kv_encoding, q_type, num_queries, ctx);
+    const Setup setup(kv_encoding, kernel_type, num_queries, ctx);
     auto kernel = [&](hwy::Span<const size_t> starts,
                       hwy::Span<const size_t> lasts, MatPtrT<float>& att_out,
                       float* exp_sums, float* max_logits,
@@ -1177,25 +1215,46 @@ void RunTiledFlashAttentionChainingTest(gcpp::KVEncoding kv_encoding,
 
 void TestTiledFlashAttentionChainedCalls() {
   RunTiledFlashAttentionChainingTest<float>(
-      gcpp::KVEncoding::kF32, MixedRangesQueryType::kF32, "F32kv_F32q", 1e-4f);
+      gcpp::KVEncoding::kF32, TiledTestKernel::kF32, "F32kv_F32q", 1e-4f);
   // BF16 step constants are normalized by a different partial sum in each
   // chained call, so their rounding differs from the single call; short
   // ranges do not average this out, hence the looser tolerance.
   RunTiledFlashAttentionChainingTest<BF16>(
-      gcpp::KVEncoding::kBF16TwoTranspositions, MixedRangesQueryType::kBF16,
+      gcpp::KVEncoding::kBF16TwoTranspositions, TiledTestKernel::kBF16,
       "BF16TTkv_BF16q", 5e-3f);
   RunTiledFlashAttentionChainingTest<int8_t>(
-      gcpp::KVEncoding::kInt8, MixedRangesQueryType::kF32, "Int8kv_F32q",
+      gcpp::KVEncoding::kInt8, TiledTestKernel::kF32, "Int8kv_F32q",
       5e-3f);
   RunTiledFlashAttentionChainingTest<int8_t>(
-      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kBF16,
+      gcpp::KVEncoding::kInt8TwoTranspositions, TiledTestKernel::kBF16,
       "Int8TTkv_BF16q", 5e-3f);
   RunTiledFlashAttentionChainingTest<int8_t>(
-      gcpp::KVEncoding::kInt8TwoTranspositions, MixedRangesQueryType::kInt16,
+      gcpp::KVEncoding::kInt8TwoTranspositions, TiledTestKernel::kInt16,
       "Int8TTkv_Int16q", 5e-3f);
   RunTiledFlashAttentionChainingTest<int8_t>(
-      gcpp::KVEncoding::kInt8VNNITwoTranspositions, MixedRangesQueryType::kInt8,
+      gcpp::KVEncoding::kInt8VNNITwoTranspositions, TiledTestKernel::kInt8,
       "Int8VNNIkv_Uint8q", 5e-3f);
+}
+
+void TestTiledFlashAttentionMatrixAccumulationChainedCalls() {
+  const hn::ScalableTag<hwy::bfloat16_t> dbf;
+  if (hn::Lanes(dbf) > 32) {
+    GTEST_SKIP() << "Skipping MatrixAccumulation test for target with register "
+                    "size > 512-bit.";
+    return;
+  }
+  // Both kernels round the softmax probabilities P to BF16 (or quantize them to
+  // int8 with a per-block scale) after normalizing by the running sum, which
+  // differs between the single and chained calls. The measured max absolute
+  // att_out difference is ~3e-3 for both kernels, on the 21-token queries
+  // (outputs ~0.3); longer ranges stay below ~2.7e-3. 5e-3 leaves ~1.7x
+  // headroom, the same as the generic BF16 kernel.
+  RunTiledFlashAttentionChainingTest<BF16>(
+      gcpp::KVEncoding::kBF16MatrixAccumulation,
+      TiledTestKernel::kMatrixAccumulationBF16, "BF16MAkv_BF16q", 5e-3f);
+  RunTiledFlashAttentionChainingTest<int8_t>(
+      gcpp::KVEncoding::kInt8MatrixAccumulation,
+      TiledTestKernel::kMatrixAccumulationInt8, "Int8MAkv_Int8q", 5e-3f);
 }
 
 template <typename KV_T>
@@ -1543,6 +1602,8 @@ HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
                       TestTiledFlashAttentionMixedQueryRanges);
 HWY_EXPORT_AND_TEST_P(FlashAttentionTest, TestTiledFlashAttentionChainedCalls);
+HWY_EXPORT_AND_TEST_P(FlashAttentionTest,
+                      TestTiledFlashAttentionMatrixAccumulationChainedCalls);
 
 HWY_AFTER_TEST();
 

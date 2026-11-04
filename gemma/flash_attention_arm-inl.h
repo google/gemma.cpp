@@ -436,8 +436,9 @@ HWY_INLINE void QuantizeAndPackSoftmaxProbs(
 template <int kNumQueries>
 HWY_INLINE void TileFlashAttentionSVBlockInt8(
     size_t q_base_idx, size_t qkv_dim, const float* HWY_RESTRICT scales_old,
-    float* HWY_RESTRICT C_accumulators, const GroupInfo* group_infos,
-    size_t num_groups, const uint8_t* HWY_RESTRICT q_weights_pre,
+    float* HWY_RESTRICT att_out, size_t att_out_stride,
+    const GroupInfo* group_infos, size_t num_groups,
+    const uint8_t* HWY_RESTRICT q_weights_pre,
     const float* HWY_RESTRICT w_scales_pre) {
   namespace hn = hwy::HWY_NAMESPACE;
   using DI8 = hn::Full128<int8_t>;
@@ -455,9 +456,9 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
   const DF4 df4;
   using VF4 = hn::Vec<DF4>;
 
-  // 1. Scale the old accumulator values in C_accumulators
+  // 1. Scale the old accumulator values in att_out
   for (size_t q = 0; q < kNumQueries; ++q) {
-    float* HWY_RESTRICT out = C_accumulators + (q_base_idx + q) * qkv_dim;
+    float* HWY_RESTRICT out = att_out + (q_base_idx + q) * att_out_stride;
     const VF4 s = hn::Set(df4, scales_old[q]);
     for (size_t d = 0; d < qkv_dim; d += 4) {
       const VF4 old = hn::LoadU(df4, out + d);
@@ -529,12 +530,12 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
       VF4 Q1_hi = ConcatUpperUpper_VLA(df4, C3_f, C2_f);
 
       if (q0 < kNumQueries) {
-        float* out = C_accumulators + (q_base_idx + q0) * qkv_dim + ch_base;
+        float* out = att_out + (q_base_idx + q0) * att_out_stride + ch_base;
         hn::StoreU(hn::Add(hn::LoadU(df4, out + 0), Q0_lo), df4, out + 0);
         hn::StoreU(hn::Add(hn::LoadU(df4, out + 4), Q0_hi), df4, out + 4);
       }
       if (q1 < kNumQueries) {
-        float* out = C_accumulators + (q_base_idx + q1) * qkv_dim + ch_base;
+        float* out = att_out + (q_base_idx + q1) * att_out_stride + ch_base;
         hn::StoreU(hn::Add(hn::LoadU(df4, out + 0), Q1_lo), df4, out + 0);
         hn::StoreU(hn::Add(hn::LoadU(df4, out + 4), Q1_hi), df4, out + 4);
       }
@@ -564,8 +565,8 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
     const float* HWY_RESTRICT scales_old,
     const float* HWY_RESTRICT q_scales_new,
     const float* HWY_RESTRICT softmax_buf,
-    const hwy::Span<const MatPtrT<KV_T>>& kvs,
-    float* HWY_RESTRICT C_accumulators) {
+    const hwy::Span<const MatPtrT<KV_T>>& kvs, float* HWY_RESTRICT att_out,
+    size_t att_out_stride) {
   namespace hn = hwy::HWY_NAMESPACE;
   using BF16 = hwy::bfloat16_t;
   const DF_T df;
@@ -768,15 +769,15 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
       VF4 s0 = hn::Set(df4, scale0);
       VF4 s1 = hn::Set(df4, scale1);
 
-      const float* row0 =
-          C_accumulators + (q_base_idx + 2 * r) * qkv_dim + ch_base + col_g * 4;
+      const float* row0 = att_out + (q_base_idx + 2 * r) * att_out_stride +
+                          ch_base + col_g * 4;
       VF4 old0 = hn::Mul(hn::LoadU(df4, row0), s0);
 
       VF4 old1;
       if (2 * r + 1 < kNumQueries) {
-        const float* row1 = C_accumulators +
-                            (q_base_idx + 2 * r + 1) * qkv_dim + ch_base +
-                            col_g * 4;
+        const float* row1 = att_out +
+                            (q_base_idx + 2 * r + 1) * att_out_stride +
+                            ch_base + col_g * 4;
         old1 = hn::Mul(hn::LoadU(df4, row1), s1);
       } else {
         old1 = hn::Zero(df4);
@@ -791,19 +792,16 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
       VF4 final_acc1 = hn::Add(acc1_red, old_acc1);
 
       // Undo interleaving and store back
-      float* out =
-          C_accumulators + (q_base_idx + 2 * r) * qkv_dim + ch_base + col_g * 4;
+      float* out = att_out + (q_base_idx + 2 * r) * att_out_stride + ch_base +
+                   col_g * 4;
       VF4 q0 = ConcatLowerLower_VLA(df4, final_acc1, final_acc0);
       hn::StoreU(q0, df4, out);
 
-      VF4 q1;
       if (2 * r + 1 < kNumQueries) {
-        float* out1 = C_accumulators + (q_base_idx + 2 * r + 1) * qkv_dim +
+        float* out1 = att_out + (q_base_idx + 2 * r + 1) * att_out_stride +
                       ch_base + col_g * 4;
-        q1 = ConcatUpperUpper_VLA(df4, final_acc1, final_acc0);
+        const VF4 q1 = ConcatUpperUpper_VLA(df4, final_acc1, final_acc0);
         hn::StoreU(q1, df4, out1);
-      } else {
-        q1 = hn::Zero(df4);
       }
     };
 
@@ -836,18 +834,19 @@ HWY_INLINE void TileFlashAttentionSVBlock(
     const float* HWY_RESTRICT q_scales_new,
     const float* HWY_RESTRICT softmax_buf,
     const hwy::Span<const MatPtrT<KV_T>>& kvs,
-    float* HWY_RESTRICT C_accumulators, const GroupInfo* group_infos = nullptr,
-    size_t num_groups = 0, const uint8_t* HWY_RESTRICT q_weights_pre = nullptr,
+    float* HWY_RESTRICT att_out, size_t att_out_stride,
+    const GroupInfo* group_infos = nullptr, size_t num_groups = 0,
+    const uint8_t* HWY_RESTRICT q_weights_pre = nullptr,
     const float* HWY_RESTRICT w_scales_pre = nullptr) {
   if constexpr (IsInt8<KV_T>()) {
     TileFlashAttentionSVBlockInt8<kNumQueries>(
-        q_base_idx, qkv_dim, scales_old, C_accumulators, group_infos,
+        q_base_idx, qkv_dim, scales_old, att_out, att_out_stride, group_infos,
         num_groups, q_weights_pre, w_scales_pre);
   } else {
     TileFlashAttentionSVBlockBF16<kNumQueries, kRegBytes, DF_T, DBF_T, KV_T>(
         q_base_idx, position, current_kv_start_offset, current_kv_idx,
         actual_steps, qkv_dim, scales_old, q_scales_new, softmax_buf, kvs,
-        C_accumulators);
+        att_out, att_out_stride);
   }
 }
 
@@ -970,21 +969,17 @@ constexpr size_t kNumWeightScales = 8;
 // `q_weights` and `w_scales` are only used by the int8 path and are empty
 // otherwise.
 struct MatrixAccumulationWorkspaceLayout {
-  size_t c_accum_count, softmax_count, q_weights_count, w_scales_count;
-  size_t c_accum_offset, softmax_offset, q_weights_offset, w_scales_offset;
+  size_t softmax_count, q_weights_count, w_scales_count;
+  size_t softmax_offset, q_weights_offset, w_scales_offset;
   size_t total_bytes;
 
-  constexpr MatrixAccumulationWorkspaceLayout(size_t q_count, size_t qkv_dim,
+  constexpr MatrixAccumulationWorkspaceLayout(size_t q_count,
                                               size_t block_size, bool is_int8)
-      : c_accum_count(hwy::RoundUpTo(q_count, size_t{8}) * qkv_dim),
-        softmax_count(q_count * block_size),
+      : softmax_count(q_count * block_size),
         q_weights_count(is_int8 ? (block_size / 8) * kNumQuantizedPackets * 16
                                 : 0),
         w_scales_count(is_int8 ? kNumWeightScales : 0),
-        c_accum_offset(0),
-        softmax_offset(
-            c_accum_offset +
-            hwy::RoundUpTo(c_accum_count * sizeof(float), HWY_ALIGNMENT)),
+        softmax_offset(0),
         q_weights_offset(
             softmax_offset +
             hwy::RoundUpTo(softmax_count * sizeof(float), HWY_ALIGNMENT)),
@@ -1008,6 +1003,10 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   using BF16 = hwy::bfloat16_t;
 
   const size_t qkv_dim = att_out.Cols();
+  // att_out rows are addressed directly from Row(0) and Stride(), and the SV
+  // block processes channels in groups of 8.
+  HWY_DASSERT(att_out.Rows() >= q_count);
+  HWY_DASSERT(qkv_dim % 8 == 0);
   using DF = hn::ScalableTag<float>;
   using DBF = hn::ScalableTag<hwy::bfloat16_t>;
   using DU = hn::ScalableTag<uint32_t>;
@@ -1036,7 +1035,7 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   const auto min_last_pos_per_group = preamble.min_last_pos_per_group;
   const auto max_last_pos_per_group = preamble.max_last_pos_per_group;
 
-  const MatrixAccumulationWorkspaceLayout layout(q_count, qkv_dim, kBlockSize,
+  const MatrixAccumulationWorkspaceLayout layout(q_count, kBlockSize,
                                                  IsInt8<KV_T>());
 
   // Use the pre-allocated per-worker workspace when available, resizing up if
@@ -1058,10 +1057,8 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   // fully written must be re-initialized here rather than relying on
   // allocation-time initialization. `softmax_buf` is exempt: the main loop
   // below refills it in its entirety before every use.
-  hwy::Span<float> C_accumulators(
-      HWY_RCAST_ALIGNED(float*, raw_ptr + layout.c_accum_offset),
-      layout.c_accum_count);
-  hwy::ZeroBytes(C_accumulators.data(), C_accumulators.size() * sizeof(float));
+  //
+  // att_out is the IN/OUT accumulator and is not part of the workspace.
 
   hwy::Span<float> softmax_buf(
       HWY_RCAST_ALIGNED(float*, raw_ptr + layout.softmax_offset),
@@ -1361,7 +1358,8 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
         TileFlashAttentionSVBlock<kNumQueries, kRegBytes, DF, DBF>(
             q_base_idx, position, current_kv_start_offset, current_kv_idx,
             actual_steps, qkv_dim, scales_old, q_scales_new, softmax_buf.data(),
-            kvs, C_accumulators.data(), gi_ptr, n_groups, qw_ptr, ws_ptr);
+            kvs, att_out.Row(0), att_out.Stride(), gi_ptr, n_groups, qw_ptr,
+            ws_ptr);
       };
 
       if (actual_q_count >= 8) {
@@ -1384,15 +1382,6 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
     }
 
     position += actual_block_size;
-  }
-
-  for (size_t qi = 0; qi < q_count; ++qi) {
-    float* out = att_out.Row(qi);
-    const float* accum = C_accumulators.data() + qi * qkv_dim;
-    for (size_t d = 0; d < qkv_dim; d += hn::Lanes(df)) {
-      VF v = hn::LoadU(df, accum + d);
-      hn::StoreU(v, df, out + d);
-    }
   }
 }
 
