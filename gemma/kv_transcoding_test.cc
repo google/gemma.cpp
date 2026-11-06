@@ -103,7 +103,9 @@ INSTANTIATE_TEST_SUITE_P(
            EncodingTestCase{gcpp::KVEncoding::kInt8, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8TwoTranspositions, 0.1f},
            EncodingTestCase{gcpp::KVEncoding::kInt8VNNITwoTranspositions, 0.1f},
-           EncodingTestCase{gcpp::KVEncoding::kInt8MatrixAccumulation, 0.02f}));
+           EncodingTestCase{gcpp::KVEncoding::kInt8MatrixAccumulation, 0.02f},
+           // Half a step is 1.5 / 7 / 2 ~= 0.107 for this pattern's absmax.
+           EncodingTestCase{gcpp::KVEncoding::kInt4, 0.11f}));
 
 class Int8EncodingTest : public TestWithParam<gcpp::KVEncoding> {};
 
@@ -159,6 +161,207 @@ INSTANTIATE_TEST_SUITE_P(AllInt8Encodings, Int8EncodingTest,
                                 gcpp::KVEncoding::kInt8TwoTranspositions,
                                 gcpp::KVEncoding::kInt8VNNITwoTranspositions,
                                 gcpp::KVEncoding::kInt8MatrixAccumulation));
+
+// Fills a tile with per-token magnitudes that vary, so that absmax / qmax is
+// rarely exact in bf16.
+void FillVaryingTile(DecodedTile& tile) {
+  for (size_t token = 0; token < tile.tile_size; ++token) {
+    for (size_t dim = 0; dim < tile.qkv_dim; ++dim) {
+      const float i = static_cast<float>(dim * tile.tile_size + token);
+      tile.k_elem(token, dim) = std::sin(i * 0.37f) * (1.0f + token);
+      tile.v_elem(token, dim) = std::cos(i * 0.53f) * (3.0f + 0.7f * token);
+    }
+  }
+}
+
+// Reference per-token symmetric 4-bit quant-dequant of one row: bf16 scale
+// absmax / 7, quantized with the stored scale, values in [-7, 7].
+void RefQuantDequantInt4Row(float* row, size_t d) {
+  float max_abs = 0.0f;
+  for (size_t j = 0; j < d; ++j) max_abs = std::max(max_abs, std::abs(row[j]));
+  const float scale = hwy::ConvertScalarTo<float>(
+      hwy::ConvertScalarTo<hwy::bfloat16_t>(max_abs == 0.0f ? 1.0f
+                                                            : max_abs / 7.0f));
+  const float inv = scale == 0.0f ? 0.0f : 1.0f / scale;
+  for (size_t j = 0; j < d; ++j) {
+    const float q = std::clamp(std::nearbyint(row[j] * inv), -7.0f, 7.0f);
+    row[j] = q * scale;
+  }
+}
+
+TEST(Int4EncodingTest, RoundTripIsWithinHalfAStep) {
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 256;
+  const KVEncoding encoding = KVEncoding::kInt4;
+
+  DecodedTile original(qkv_dim, kTileSize);
+  FillVaryingTile(original);
+
+  hwy::AlignedVector<char> encoded(GetTileSizeBytes(encoding, qkv_dim).value());
+  ASSERT_TRUE(EncodeTile(encoding, original, qkv_dim,
+                         hwy::Span<char>(encoded.data(), encoded.size())));
+  DecodedTile decoded(qkv_dim, kTileSize);
+  ASSERT_TRUE(DecodeTile(encoding,
+                         hwy::Span<const char>(encoded.data(), encoded.size()),
+                         qkv_dim, &decoded));
+
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float k_max = 0.0f, v_max = 0.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      k_max = std::max(k_max, std::abs(original.k_elem(token, dim)));
+      v_max = std::max(v_max, std::abs(original.v_elem(token, dim)));
+    }
+    // Half a step, plus slack for rounding the scale to bf16.
+    const float k_bound = 0.51f * k_max / 7.0f;
+    const float v_bound = 0.51f * v_max / 7.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      ASSERT_LE(
+          std::abs(decoded.k_elem(token, dim) - original.k_elem(token, dim)),
+          k_bound)
+          << "k token=" << token << " dim=" << dim;
+      ASSERT_LE(
+          std::abs(decoded.v_elem(token, dim) - original.v_elem(token, dim)),
+          v_bound)
+          << "v token=" << token << " dim=" << dim;
+    }
+  }
+}
+
+// The packed encoding must reproduce the simulated (quant-dequant) INT4 that
+// the accuracy evaluation used, bit for bit.
+TEST(Int4EncodingTest, MatchesReferenceQuantDequantExactly) {
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 512;
+  const KVEncoding encoding = KVEncoding::kInt4;
+
+  DecodedTile original(qkv_dim, kTileSize);
+  FillVaryingTile(original);
+  DecodedTile expected = original;
+  for (size_t token = 0; token < kTileSize; ++token) {
+    RefQuantDequantInt4Row(&expected.k_elem(token, 0), qkv_dim);
+    RefQuantDequantInt4Row(&expected.v_elem(token, 0), qkv_dim);
+  }
+
+  hwy::AlignedVector<char> encoded(GetTileSizeBytes(encoding, qkv_dim).value());
+  ASSERT_TRUE(EncodeTile(encoding, original, qkv_dim,
+                         hwy::Span<char>(encoded.data(), encoded.size())));
+  DecodedTile decoded(qkv_dim, kTileSize);
+  ASSERT_TRUE(DecodeTile(encoding,
+                         hwy::Span<const char>(encoded.data(), encoded.size()),
+                         qkv_dim, &decoded));
+
+  EXPECT_THAT(decoded.k, Pointwise(::testing::FloatEq(), expected.k));
+  EXPECT_THAT(decoded.v, Pointwise(::testing::FloatEq(), expected.v));
+}
+
+TEST(Int4EncodingTest, TileIsHalfOfInt8PlusScales) {
+  for (size_t qkv_dim : {256, 512}) {
+    const size_t scales = 32 * 2 * sizeof(hwy::bfloat16_t);
+    const size_t int8 = GetTileSizeBytes(KVEncoding::kInt8, qkv_dim).value();
+    const size_t int4 = GetTileSizeBytes(KVEncoding::kInt4, qkv_dim).value();
+    EXPECT_EQ(int4, (int8 - scales) / 2 + scales) << "qkv_dim=" << qkv_dim;
+  }
+  EXPECT_EQ(KVEncodingToString(KVEncoding::kInt4), "Int4");
+}
+
+TEST(Int4EncodingTest, LayoutValidation) {
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 4;
+  const KVEncoding encoding = KVEncoding::kInt4;
+
+  // Token 0 has K = {7, -7, 0, 3.5} and V = {-14, 14, 2, 0}; other tokens are
+  // zero. Scales: K 7/7 = 1, V 14/7 = 2.
+  DecodedTile original(qkv_dim, kTileSize);
+  for (size_t token = 0; token < kTileSize; ++token) {
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      original.k_elem(token, dim) = 0.0f;
+      original.v_elem(token, dim) = 0.0f;
+    }
+  }
+  const float k0[] = {7.0f, -7.0f, 0.0f, 3.25f};
+  const float v0[] = {-14.0f, 14.0f, 2.0f, 0.0f};
+  for (size_t dim = 0; dim < qkv_dim; ++dim) {
+    original.k_elem(0, dim) = k0[dim];
+    original.v_elem(0, dim) = v0[dim];
+  }
+  // Token 1, dim 0: K = 5 (alone in its row, so q = 7, scale 5/7).
+  original.k_elem(1, 0) = 5.0f;
+
+  hwy::AlignedVector<char> encoded(GetTileSizeBytes(encoding, qkv_dim).value());
+  ASSERT_TRUE(EncodeTile(encoding, original, qkv_dim,
+                         hwy::Span<char>(encoded.data(), encoded.size())));
+  const uint8_t* data = HWY_RCAST_ALIGNED(const uint8_t*, encoded.data());
+
+  // K is [qkv_dim, tile_size] nibbles: byte (dim * 32 + token) / 2, low nibble
+  // for even tokens. Stored value is q + 8.
+  EXPECT_EQ(data[0], (8 + 7) | ((8 + 7) << 4));   // dim 0: t0 q=7, t1 q=7
+  EXPECT_EQ(data[16], (8 - 7) | (8 << 4));        // dim 1: t0 q=-7, t1 q=0
+  EXPECT_EQ(data[32], 8 | (8 << 4));              // dim 2: t0 q=0
+  EXPECT_EQ(data[48], (8 + 3) | (8 << 4));        // dim 3: t0 3.25 -> q=3
+  // V is [tile_size, qkv_dim] nibbles starting at qkv_dim * 32 / 2 = 64; low
+  // nibble for even dims.
+  EXPECT_EQ(data[64], (8 - 7) | ((8 + 7) << 4));  // t0: d0 q=-7, d1 q=7
+  EXPECT_EQ(data[65], (8 + 1) | (8 << 4));        // t0: d2 q=1, d3 q=0
+  // Scales follow at 128: K scales then V scales, bf16.
+  const hwy::bfloat16_t* scales =
+      HWY_RCAST_ALIGNED(const hwy::bfloat16_t*, data + 128);
+  EXPECT_EQ(hwy::ConvertScalarTo<float>(scales[0]), 1.0f);
+  EXPECT_EQ(hwy::ConvertScalarTo<float>(scales[32]), 2.0f);
+}
+
+TEST(Int4EncodingTest, TranscodesToAndFromInt8) {
+  constexpr size_t kTileSize = 32;
+  constexpr size_t qkv_dim = 256;
+  DecodedTile original(qkv_dim, kTileSize);
+  FillVaryingTile(original);
+
+  hwy::AlignedVector<char> int4(
+      GetTileSizeBytes(KVEncoding::kInt4, qkv_dim).value());
+  hwy::AlignedVector<char> int8(
+      GetTileSizeBytes(KVEncoding::kInt8, qkv_dim).value());
+  hwy::AlignedVector<char> int4_again(int4.size());
+  ASSERT_TRUE(EncodeTile(KVEncoding::kInt4, original, qkv_dim,
+                         hwy::Span<char>(int4.data(), int4.size())));
+  ASSERT_TRUE(TranscodeTile(KVEncoding::kInt4,
+                            hwy::Span<const char>(int4.data(), int4.size()),
+                            KVEncoding::kInt8,
+                            hwy::Span<char>(int8.data(), int8.size()),
+                            qkv_dim));
+  ASSERT_TRUE(TranscodeTile(
+      KVEncoding::kInt8, hwy::Span<const char>(int8.data(), int8.size()),
+      KVEncoding::kInt4, hwy::Span<char>(int4_again.data(), int4_again.size()),
+      qkv_dim));
+
+  // The INT8 hop moves each value by at most half an INT8 step (~absmax / 254),
+  // far below half an INT4 step (~absmax / 14), so re-encoding to INT4 must
+  // give the same values up to rounding of the scale.
+  DecodedTile a(qkv_dim, kTileSize), b(qkv_dim, kTileSize);
+  ASSERT_TRUE(DecodeTile(KVEncoding::kInt4,
+                         hwy::Span<const char>(int4.data(), int4.size()),
+                         qkv_dim, &a));
+  ASSERT_TRUE(DecodeTile(
+      KVEncoding::kInt4,
+      hwy::Span<const char>(int4_again.data(), int4_again.size()), qkv_dim,
+      &b));
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float k_max = 0.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      k_max = std::max(k_max, std::abs(a.k_elem(token, dim)));
+    }
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      ASSERT_NEAR(a.k_elem(token, dim), b.k_elem(token, dim), 0.02f * k_max)
+          << "k token=" << token << " dim=" << dim;
+    }
+    float v_max = 0.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      v_max = std::max(v_max, std::abs(a.v_elem(token, dim)));
+    }
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      ASSERT_NEAR(a.v_elem(token, dim), b.v_elem(token, dim), 0.02f * v_max)
+          << "v token=" << token << " dim=" << dim;
+    }
+  }
+}
 
 TEST(KVEncodingTest, ConvertTileFloat32ToBfloat16) {
   constexpr size_t kTileSize = 32;
