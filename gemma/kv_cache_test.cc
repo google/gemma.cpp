@@ -136,5 +136,45 @@ TEST(KVCacheTest, FlashScratchPreservesSequenceAndHistory) {
   EXPECT_NE(copy.k_cache.Row(0), cache.k_cache.Row(0));
 }
 
+// Copy() of a tiled cache must deep-copy both the local and global tiles, and
+// GetPointers() of the copy must return the copy's tiles.
+TEST(KVCacheTest, CopyTiledCache) {
+  ModelConfig model_config;
+  model_config.max_seq_len = 1024;
+  model_config.num_layers = 2;
+  for (int i = 0; i < model_config.num_layers; ++i) {
+    model_config.layer_configs.push_back(LayerConfig());
+    model_config.layer_configs.back().kv_heads = 2;
+    model_config.layer_configs.back().qkv_dim = 64;
+  }
+  model_config.attention_window_sizes = {256, 1024};  // local, global
+  InferenceArgs inference_args;
+  inference_args.seq_len = 1024;
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+
+  for (size_t i = 0; i < static_cast<size_t>(AttentionImpl::kSentinel); ++i) {
+    RuntimeConfig runtime_config;
+    runtime_config.attention_impl = static_cast<AttentionImpl>(i);
+    if (!IsTiledAttention(runtime_config.attention_impl)) continue;
+    KVCache cache(model_config, inference_args, runtime_config, ctx.allocator);
+    // Mark a tile of the second head of each layer.
+    for (int layer = 0; layer < 2; ++layer) {
+      MatPtr tiles = cache.GetPointers(layer, 1, 0, layer == 1).back();
+      tiles.RowBytes(1)[0] = 1 + layer;
+    }
+
+    KVCache copy = cache.Copy();
+    for (int layer = 0; layer < 2; ++layer) {
+      const MatPtr from = cache.GetPointers(layer, 1, 0, layer == 1).back();
+      const MatPtr to = copy.GetPointers(layer, 1, 0, layer == 1).back();
+      EXPECT_NE(to.RowBytes(1), from.RowBytes(1));
+      EXPECT_EQ(to.RowBytes(1)[0], 1 + layer);
+      EXPECT_EQ(to.GetType(), from.GetType());
+      EXPECT_EQ(to.GetLayout(), from.GetLayout());
+    }
+  }
+}
+
 }  // namespace
 }  // namespace gcpp

@@ -16,6 +16,7 @@
 #include "gemma/kv_cache.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <algorithm>
 #include <utility>
@@ -512,6 +513,30 @@ void KVCache::EnsureProjectionRows(size_t num_tokens, size_t cols) {
   }
 }
 
+// Allocates `to` with the same type, extents and layout as the compact tiled
+// storage `from`, using the same padding as the constructor, and copies the
+// contents of `from` into it.
+static void CopyCompactKVCache(const MatPtr& from, const Allocator& allocator,
+                               MatPtr& to, MatOwner& to_owner) {
+  to = MatPtr(from.Name(), from.GetType(), from.Extents());
+  to.SetLayout(from.GetLayout());
+  to_owner.AllocateFor(to, allocator, MatPadding::kPacked);
+  HWY_ASSERT(to.Stride() == from.Stride());
+  CopyMat(from, to);
+}
+
+// If `tile` points into `from`, returns the address at the same byte offset in
+// `to`, else nullptr. `to` must be an allocated copy of `from`, with identical
+// extents and stride.
+static uint8_t* RebaseInto(const MatPtr& tile, const MatPtr& from, MatPtr& to) {
+  if (!tile.HasPtr() || !from.HasPtr()) return nullptr;
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(from.RowBytes(0));
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(tile.RowBytes(0));
+  const size_t bytes = from.Rows() * from.Stride() * from.ElementBytes();
+  if (addr < begin || addr >= begin + bytes) return nullptr;
+  return to.RowBytes(0) + (addr - begin);
+}
+
 KVCache KVCache::Copy() {
   KVCache copy(kv_cache.Extents(), num_layers, kv_heads, qkv_dim, allocator_);
 
@@ -526,15 +551,36 @@ KVCache KVCache::Copy() {
     CopyMat(v_cache, copy.v_cache);
     copy.k_v_cols = k_v_cols;
   }
+  // The private constructor does not allocate the compact tiled storage.
   if (compact_local_kv_cache_ptr.HasPtr()) {
-    CopyMat(compact_local_kv_cache_ptr, copy.compact_local_kv_cache_ptr);
+    CopyCompactKVCache(compact_local_kv_cache_ptr, allocator_,
+                       copy.compact_local_kv_cache_ptr,
+                       copy.compact_local_kv_cache);
   }
   if (compact_global_kv_cache_ptr.HasPtr()) {
-    CopyMat(compact_global_kv_cache_ptr, copy.compact_global_kv_cache_ptr);
+    CopyCompactKVCache(compact_global_kv_cache_ptr, allocator_,
+                       copy.compact_global_kv_cache_ptr,
+                       copy.compact_global_kv_cache);
   }
   copy.compact_kv_cache_ptr = compact_global_kv_cache_ptr.HasPtr()
                                   ? copy.compact_global_kv_cache_ptr
                                   : copy.compact_local_kv_cache_ptr;
+  // Point each per-head tile view at the same offset in the copy's storage.
+  copy.kv_head_ptrs.reserve(kv_head_ptrs.size());
+  for (const MatPtr& head : kv_head_ptrs) {
+    uint8_t* ptr = RebaseInto(head, compact_local_kv_cache_ptr,
+                              copy.compact_local_kv_cache_ptr);
+    if (ptr == nullptr) {
+      ptr = RebaseInto(head, compact_global_kv_cache_ptr,
+                       copy.compact_global_kv_cache_ptr);
+    }
+    if (ptr == nullptr) {
+      HWY_ABORT("kv_head_ptrs entry does not point into compact KV storage.");
+    }
+    MatPtr copied_head = head;  // keeps name, type, extents and layout
+    copied_head.SetPtr(ptr, head.Stride());
+    copy.kv_head_ptrs.push_back(std::move(copied_head));
+  }
   copy.tiled_seq_len = tiled_seq_len;
   if (ds_state.Rows() > 0) {
     copy.ds_state = MatStorageT<float>("ds_state", ds_state.Extents(),
