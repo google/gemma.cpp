@@ -259,6 +259,22 @@ cc_test(
 )
 
 cc_test(
+    name = "sentencepiece_tokenizer_test",
+    srcs = ["tokenizer/sentencepiece_tokenizer_test.cc"],
+    data = [
+        "tokenizer/testdata/tokenizer.model",
+    ],
+    deps = [
+        ":tokenizer",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//io",
+        "@highway//:hwy",
+        "@com_google_sentencepiece//:sentencepiece_model_converters",
+        "@com_google_sentencepiece//src:sentencepiece_model_cc_proto",
+    ],
+)
+
+cc_test(
     name = "bpe_tokenizer_benchmark_test",
     srcs = ["tokenizer/bpe_tokenizer_benchmark_test.cc"],
     data = [
@@ -322,7 +338,9 @@ cc_library(
         "//io:fields",
         "@highway//:hwy",
         "@highway//:profiler",
-        "@com_google_sentencepiece//:sentencepiece_processor",
+        "@com_google_sentencepiece//:sentencepiece_lite",
+        "@com_google_sentencepiece//:sentencepiece_model_converters",
+        "@com_google_sentencepiece//src:sentencepiece_model_cc_proto",
     ],
 )
 
