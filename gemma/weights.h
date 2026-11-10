@@ -664,6 +664,7 @@ struct WeightsPtrs {
         finder_("", tensors_),  // no suffix because these are per-model.
         embedder_input_embedding(finder_("c_embedding")),
         final_norm_scale(finder_("c_final_norm")),
+        default_proj(finder_("default_proj")),
         lm_head(finder_("lm_head")),
         hc_head_fn(finder_("hc_head_fn")),
         hc_head_base(finder_("hc_head_base")),
@@ -740,6 +741,7 @@ struct WeightsPtrs {
   // TODO: switch to SFP?
   MatPtr embedder_input_embedding;
   MatPtr final_norm_scale;  // at least BF16.
+  MatPtr default_proj;      // embedding projection head
   MatPtr lm_head;           // untied output head (DeepSeek); empty if tied.
   // mHC head collapse (DeepSeek V4; empty unless hc_mult > 1).
   MatPtr hc_head_fn;     // [hc_mult, hc_mult * model_dim] f32
@@ -842,6 +844,9 @@ struct WeightsPtrs {
 
     func(TENSOR_ARGS(embedder_input_embedding, kMustRead));
     func(TENSOR_ARGS(final_norm_scale, kMustRead));
+    if (IsEmbeddingGemma2(config_.model)) {
+      func(TENSOR_ARGS(default_proj, kMustRead));
+    }
     if (config_.HasLmHead()) {
       func(TENSOR_ARGS(lm_head, kMustRead));
     }
@@ -894,7 +899,9 @@ struct WeightsPtrs {
     }
 
     if (config_.ple_dim > 0) {
-      func(TENSOR_ARGS(ple_embeddings, kMustRead));
+      if (config_.HasPLETable()) {
+        func(TENSOR_ARGS(ple_embeddings, kMustRead));
+      }
       func(TENSOR_ARGS(ple_model_proj, kMustRead));
       func(TENSOR_ARGS(ple_proj_norm, kMustRead));
     }

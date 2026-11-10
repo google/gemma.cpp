@@ -150,6 +150,18 @@ struct TimingInfo {
   int verbosity = 0;
 };
 
+// Buffers for `Gemma::ComputeEmbeddings`, reused by subsequent calls that fit
+// within their capacity. Use one per concurrent caller.
+struct EmbeddingsWorkspace {
+  // Capacity: prompts per group, tokens per prompt, and rows per layer.
+  size_t num_queries = 0;
+  size_t num_tokens = 0;
+  size_t num_rows = 0;
+  AttentionImpl attention_impl = AttentionImpl::kSentinel;
+  std::vector<KVCache> kv_caches;
+  std::unique_ptr<Activations> activations;
+};
+
 // After construction, all methods are const and thread-compatible if using
 // separate `ThreadingContext` and `MatMulEnv` for each concurrent `Generate`.
 class Gemma {
@@ -198,6 +210,30 @@ class Gemma {
   void GenerateImageTokens(const RuntimeConfig& runtime_config, size_t seq_len,
                            const Image& image, ImageTokens& image_tokens,
                            MatMulEnv& env, TimingInfo& timing_info) const;
+
+  // Computes normalized text embedding for embedding models (e.g.
+  // EMBEDDING_GEMMA2_LM).
+  void ComputeEmbedding(const PromptTokens& prompt,
+                        hwy::AlignedVector<float>& embedding,
+                        MatMulEnv& env) const;
+  void ComputeEmbedding(const RuntimeConfig& runtime_config,
+                        const PromptTokens& prompt,
+                        hwy::AlignedVector<float>& embedding,
+                        MatMulEnv& env) const;
+  // Computes one embedding per prompt. Prompts may differ in length. Their
+  // tokens pass through each layer together, which amortizes reading the
+  // weights over all prompts.
+  // Prompts are sorted by length and grouped such that each layer sees at
+  // most `kMaxBatchSize` rows; shorter prompts are padded to the longest in
+  // their group, and the padding does not affect the embeddings. As for
+  // `ComputeEmbedding`, each prompt must have at most `kMaxBatchSize` tokens.
+  // If `workspace` is non-null, its buffers are reused if large enough,
+  // otherwise (re)allocated.
+  void ComputeEmbeddings(const RuntimeConfig& runtime_config,
+                         hwy::Span<const PromptTokens> prompts,
+                         std::vector<hwy::AlignedVector<float>>& embeddings,
+                         MatMulEnv& env,
+                         EmbeddingsWorkspace* workspace = nullptr) const;
 
  private:
   BlobReader reader_;
