@@ -94,6 +94,10 @@ void Attention(LayerAttentionType type, const size_t num_tokens,
                const size_t layer_idx, const LayerWeightsPtrs& layer,
                Activations& activations, QBatch& qbatch, MatMulEnv& env) {
   const int kFlags = 0;
+  const size_t active_qkv_dim =
+      layer.layer_config.heads * layer.layer_config.qkv_dim;
+  activations.attention.q.OverrideCols(active_qkv_dim);
+  activations.attention.att_out.OverrideCols(active_qkv_dim);
   if (IsTiledAttention(activations.attention_impl)) {
     TiledAttention(activations.attention_impl, num_tokens, layer_idx, layer,
                    activations.attention, qbatch, env, kFlags);
@@ -386,8 +390,7 @@ static void T5GemmaEncoderAttentionReference(
   CallMatMul(pre_att_rms_out, layer.qkv_einsum_w1, /*add=*/nullptr, env, q);
   CallMatMul(pre_att_rms_out, layer.qkv_einsum_w2, /*add=*/nullptr, env, kv);
   T5GemmaApplyRope(layer_config, inv_timescale,
-                   /*scale=*/1.0f / sqrtf(static_cast<float>(qkv_dim)), q, kv,
-                   env.ctx);
+                   ChooseQueryScale(config, layer_config), q, kv, env.ctx);
 
   for (size_t query_pos = 0; query_pos < source_len; ++query_pos) {
     for (size_t head = 0; head < heads; ++head) {
@@ -516,6 +519,7 @@ static void T5GemmaEncode(const ModelConfig& config, const WeightsPtrs& weights,
 
   for (size_t layer_idx = 0; layer_idx < weights.t5gemma_encoder_layers.size();
        ++layer_idx) {
+    HWY_ASSERT(layer_idx < activations.t5_encoder_inv_timescales.size());
     T5GemmaEncoderLayerReference(
         config, layer_idx, weights.t5gemma_encoder_layers[layer_idx],
         encoder_cache, activations.t5_encoder_pre_att_rms_out,
@@ -523,7 +527,7 @@ static void T5GemmaEncode(const ModelConfig& config, const WeightsPtrs& weights,
         activations.t5_encoder_att_out, activations.t5_encoder_att_sums,
         activations.t5_encoder_pre_ffw_rms_out, activations.t5_encoder_c1,
         activations.t5_encoder_c2, activations.t5_encoder_ffw_out,
-        activations.t5_encoder_inv_timescale, env);
+        activations.t5_encoder_inv_timescales[layer_idx], env);
   }
   RMSNormInplaceBatched(weights.t5gemma_encoder_final_norm_scale,
                         encoder_cache.hidden_states, env.ctx);
@@ -673,7 +677,7 @@ static void T5GemmaDecoderSelfAttentionReference(
   CallMatMul(activations.attention.pre_att_rms_out, layer.self_qkv_einsum_w2,
              /*add=*/nullptr, env, kv);
   T5GemmaApplyDecoderRope(layer_config, inv_timescale,
-                          /*scale=*/1.0f / sqrtf(static_cast<float>(qkv_dim)),
+                          ChooseQueryScale(config, layer_config),
                           activations.attention.q, kv, qbatch, env.ctx);
   T5GemmaWriteDecoderKV(layer, layer_idx, kv, qbatch);
 
@@ -885,15 +889,17 @@ static void T5GemmaDecoderTransformer(const ModelConfig& config,
                                       const WeightsPtrs& weights,
                                       Activations& activations,
                                       MatStorageT<float>& decoder_kv,
-                                      const MatPtrT<float>& inv_timescale,
+                                      const std::vector<MatStorageT<float>>&
+                                          inv_timescales,
                                       QBatch& qbatch, MatMulEnv& env) {
   for (size_t layer_idx = 0; layer_idx < weights.t5gemma_decoder_layers.size();
        ++layer_idx) {
+    HWY_ASSERT(layer_idx < inv_timescales.size());
     const T5GemmaDecoderLayerWeightsPtrs& layer =
         weights.t5gemma_decoder_layers[layer_idx];
     T5GemmaDecoderSelfAttentionReference(config, layer_idx, layer, activations,
-                                         decoder_kv, inv_timescale, qbatch,
-                                         env);
+                                         decoder_kv, inv_timescales[layer_idx],
+                                         qbatch, env);
     T5GemmaDecoderCrossAttentionReference(config, layer_idx, layer, activations,
                                           qbatch, env);
     T5GemmaDecoderFFW(layer, activations, env);
@@ -986,9 +992,13 @@ static void T5GemmaGenerateT(const ModelConfig& config,
       "t5_d_kv", qbatch.Size(),
       2 * layer_config.kv_heads * layer_config.qkv_dim, env.ctx.allocator));
   decoder_kv.AllocateAndAttachRowPtrs(env.row_ptrs);
-  MatStorageT<float> inv_timescale = CreateInvTimescale(
-      env.ctx.allocator, layer_config.qkv_dim,
-      layer_config.post_qk == PostQKType::HalfRope, config.rope_theta);
+  std::vector<MatStorageT<float>> inv_timescales;
+  inv_timescales.reserve(config.decoder_layer_configs.size());
+  for (const LayerConfig& lc : config.decoder_layer_configs) {
+    inv_timescales.push_back(CreateInvTimescale(
+        env.ctx.allocator, lc.qkv_dim, lc.post_qk == PostQKType::HalfRope,
+        config.rope_theta));
+  }
   auto logits_chunk_row_ptrs = hwy::AllocateAligned<uint8_t*>(qbatch.Size());
   std::vector<int> greedy_tokens(qbatch.Size());
   std::vector<float> greedy_logits(qbatch.Size());
@@ -996,7 +1006,7 @@ static void T5GemmaGenerateT(const ModelConfig& config,
   for (size_t gen = 0; gen < max_gen_steps && non_eos.Any(); ++gen) {
     T5GemmaEmbedDecoderTokens(config, weights, activations, qbatch, env);
     T5GemmaDecoderTransformer(config, weights, activations, decoder_kv,
-                              inv_timescale, qbatch, env);
+                              inv_timescales, qbatch, env);
     T5GemmaSampleAndStream(config, runtime_config, weights, sample_token,
                            activations, qbatch, env,
                            logits_chunk_row_ptrs.get(), greedy_tokens,

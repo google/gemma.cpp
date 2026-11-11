@@ -124,10 +124,10 @@ void SingleDotSoftmaxWeightedSum(
     float* HWY_RESTRICT att_out, const SMOptions& sm_options,
     ThreadingContext& ctx, const size_t worker) {
   const float att_cap = activations.config.att_cap;
-  const float query_scale = activations.query_scale;
   // --seq_len must be large enough to avoid wraparound.
   HWY_DASSERT(kv_last_pos < activations.SeqLen());
   const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
+  const float query_scale = ChooseQueryScale(activations.config, layer_config);
 
   // Apply rope and scaling to Q.
   if (query_norm_scale.HasPtr()) {

@@ -1638,8 +1638,12 @@ void TiledAttention(AttentionImpl attention_impl, size_t num_tokens,
         "Unsupported KV cache type: %d",
         static_cast<int>(qbatch.KV(0).cache->compact_kv_cache_ptr.GetType()));
   }
+  const size_t q_layer_idx =
+      layer.layer_idx < activations.config.layer_configs.size()
+          ? layer.layer_idx
+          : layer_idx;
   RMSNormAndPositionalEncoding(num_tokens, qbatch, activations.q,
-                               layer.query_norm_scale, layer_idx, activations,
+                               layer.query_norm_scale, q_layer_idx, activations,
                                env.ctx);
   if (activations.s_att_q) {
     activations.s_att_q->Notify(layer.layer_idx, activations.q, env.ctx);

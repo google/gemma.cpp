@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>  // strcmp
@@ -36,6 +37,7 @@
 #include "compression/compress-inl.h"
 #include "gemma/attention.h"
 #include "gemma/configs.h"
+#include "gemma/generate_internal.h"
 #include "util/test_util.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -580,6 +582,79 @@ void TestGemmaAttentionFlash() {
   RunAttentionTest(AttentionImpl::kFlash, true);
 }
 
+void TestHeterogeneousLayerRopeAndScale() {
+  ModelConfig config(Model::GEMMA3_1B, Type::kF32, PromptWrapping::GEMMA_PT);
+  config.model_dim = config.vocab_size = config.max_seq_len = 64;
+  config.num_layers = 2;
+  config.attention_window_sizes = {16, 64};
+  LayerConfig lc0 = config.layer_configs[0];
+  lc0.model_dim = lc0.ff_hidden_dim = lc0.qkv_dim = 64;
+  lc0.post_qk = PostQKType::HalfRope;
+  lc0.post_norm = PostNormType::None;
+  lc0.use_qk_norm = false;
+  LayerConfig lc1 = lc0;  // Wider full-RoPE global layer (b/583882314).
+  lc1.qkv_dim = 128;
+  lc1.post_qk = PostQKType::Rope;
+  config.layer_configs = {lc0, lc1};
+  ModelConfig ref_cfg = config;
+  ref_cfg.num_layers = 1;
+  ref_cfg.layer_configs = {lc1};
+  ref_cfg.attention_window_sizes = {64};
+
+  constexpr size_t kBatch = 4;
+  InferenceArgs inf_args;
+  inf_args.seq_len = 64;
+  std::vector<int> tokens = {1, 2, 3, 4};
+  const PromptTokens prompt(tokens.data(), kBatch);
+  const Extents2D x_extents(kBatch, config.model_dim);
+
+  for (AttentionImpl impl :
+       {AttentionImpl::kFlash, AttentionImpl::kFlashTransposedQsBF16}) {
+    RuntimeConfig rt_cfg{.attention_impl = impl};
+    ThreadingContext io_ctx({});
+    MatStorageT<float> x_in1("in1", x_extents, io_ctx.allocator,
+                             MatPadding::kOdd);
+    auto run = [&](const ModelConfig& cfg, const MatPtrT<float>* x_init) {
+      TestState s;
+      TensorInfoRegistry reg(cfg);
+      std::vector<KVCache> kv;
+      kv.emplace_back(cfg, inf_args, rt_cfg, s.ctx.allocator);
+      Activations act(rt_cfg, cfg, kBatch, kv[0].SeqLen(), s.ctx,
+                      s.env.row_ptrs);
+      FillRandom(act.x, 301);
+      if (x_init != nullptr) CopyMat(*x_init, act.x);
+      AllQueries queries(prompt, /*pos=*/0, /*prefix_end=*/0,
+                         hwy::Span<KVCache>(kv.data(), kv.size()));
+      QBatch qbatch(/*start=*/0, /*max_size=*/1, queries);
+      for (size_t l = 0; l < cfg.num_layers; ++l) {
+        if (l == 1) CopyMat(act.x, x_in1);
+        LayerWeightsPtrs layer(l, cfg.layer_configs[l], reg);
+        uint64_t seed = (x_init != nullptr || l == 1) ? 200 : 100;
+        for (MatPtr* m : {&layer.pre_attention_norm_scale, &layer.qkv_einsum_w,
+                          &layer.attn_vec_einsum_w, &layer.pre_ffw_norm_scale,
+                          &layer.gating_einsum_w, &layer.linear_w}) {
+          AllocateAndFillRandom(*m, s.ctx.allocator, s.mat_owners, seed++);
+        }
+        layer.Fixup(cfg.model, s.mat_owners, s.ctx);
+        TransformerLayer(kBatch, l, layer, act, qbatch, s.env);
+      }
+      MatStorageT<float> out("out", x_extents, io_ctx.allocator,
+                             MatPadding::kOdd);
+      CopyMat(act.x, out);
+      return out;
+    };
+
+    const MatStorageT<float> out = run(config, nullptr);
+    const MatStorageT<float> ref = run(ref_cfg, &x_in1);
+    for (size_t r = 0; r < kBatch; ++r) {
+      for (size_t c = 0; c < config.model_dim; ++c) {
+        ASSERT_TRUE(std::isfinite(out.Row(r)[c]));
+        EXPECT_NEAR(out.Row(r)[c], ref.Row(r)[c], 1e-5f);
+      }
+    }
+  }
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -589,6 +664,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(AttentionTest);
 HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionFlash);
+HWY_EXPORT_AND_TEST_P(AttentionTest, TestHeterogeneousLayerRopeAndScale);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

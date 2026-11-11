@@ -997,7 +997,8 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
 
   // ---- Per (token, head): scores over window + compressed entries, online
   // softmax with sink, inverse-RoPE of the output.
-  const float query_scale = att.query_scale;
+  const float query_scale =
+      ChooseQueryScale(activations.attention.config, layer.layer_config);
   ParallelFor(
       Parallelism::kFlat, num_interleaved * heads, env.ctx, /*cluster_idx=*/0,
       Callers::kAttComputeQKV, [&](size_t task, size_t worker) HWY_ATTR {

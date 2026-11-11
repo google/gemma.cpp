@@ -151,10 +151,10 @@ void PositionalEncodingQK(float* qk, const size_t layer_idx,
   const size_t qkv_dim = layer_config.qkv_dim;
   const PostQKType& post_qk = layer_config.post_qk;
   // qk is either q or k, so qkv_dim is the length we operate on.
-  const float* inv_timescale = activations.inv_timescale.PackedScale1();
+  const float* inv_timescale = activations.InvTimescale(layer_idx);
   const bool is_global_layer = activations.config.IsGlobalLayer(layer_idx);
   if (is_global_layer && activations.config.use_global_timescale) {
-    inv_timescale = activations.inv_timescale_global.PackedScale1();
+    inv_timescale = activations.InvTimescaleGlobal(layer_idx);
   }
   // PostQKType::Rope
   if (post_qk == PostQKType::HalfRope) {
@@ -216,6 +216,7 @@ static HWY_INLINE void ComputeQKV(size_t num_tokens, const size_t layer_idx,
   // Set up MatMul row pointers for `kv_heads` pairs of (k, v) vectors.
   MatPtrT<KV_t> kv_rows("kv", Extents2D(activations.pre_att_rms_out.Rows(),
                                         layer.qkv_einsum_w2.Rows()));
+  HWY_ASSERT(num_interleaved <= kMaxBatchSize);
   for (size_t interleaved_idx = 0; interleaved_idx < num_interleaved;
        ++interleaved_idx) {
     // Index into qbatch, within [0, qbatch.Size()]

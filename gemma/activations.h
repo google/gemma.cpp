@@ -41,8 +41,18 @@ namespace gcpp {
 typedef std::vector<float, hwy::AlignedAllocator<float>> AlignedFloatVector;
 typedef std::vector<BF16, hwy::AlignedAllocator<BF16>> AlignedBF16Vector;
 
-// Returns the scale value to use for the query in the attention computation.
-// Also called by ops_test.
+static inline const std::vector<LayerConfig>& ActiveLayerConfigs(
+    const ModelConfig& config) {
+  return config.is_encoder_decoder ? config.decoder_layer_configs
+                                   : config.layer_configs;
+}
+
+static inline const LayerConfig& FirstLayerConfig(
+    const std::vector<LayerConfig>& layers) {
+  HWY_ASSERT(!layers.empty());
+  return layers[0];
+}
+
 static inline size_t MaxQkvDim(const ModelConfig& config) {
   size_t max_dim = 0;
   for (const auto& lc : config.layer_configs) {
@@ -61,16 +71,23 @@ static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
   return max_dim;
 }
 
-
-static inline float ChooseQueryScale(const ModelConfig& config) {
-  const LayerConfig& layer_config = config.layer_configs[0];
-  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads)
-    return 1.0f /
-           sqrtf(static_cast<float>(config.model_dim / layer_config.heads));
+// Returns the scale value to use for the query in the attention computation.
+static inline float ChooseQueryScale(const ModelConfig& config,
+                                     const LayerConfig& layer_config) {
+  HWY_ASSERT(layer_config.heads != 0 && layer_config.qkv_dim != 0);
+  if (config.query_scale == QueryScaleType::SqrtModelDimDivNumHeads) {
+    return 1.0f / sqrtf(static_cast<float>(config.model_dim) /
+                        static_cast<float>(layer_config.heads));
+  }
   if (config.query_scale == QueryScaleType::One)
     return 1.0f;
   // QueryScaleType::SqrtKeySize
   return 1.0f / sqrtf(static_cast<float>(layer_config.qkv_dim));
+}
+
+// Also called by ops_test.
+static inline float ChooseQueryScale(const ModelConfig& config) {
+  return ChooseQueryScale(config, FirstLayerConfig(ActiveLayerConfigs(config)));
 }
 
 struct AttentionActivations {
@@ -129,8 +146,7 @@ struct AttentionActivations {
             allocator, layer_config.qkv_dim,
             layer_config.post_qk == PostQKType::HalfRope, config.rope_theta)),
         inv_timescale_global(CreateInvTimescale(
-            allocator, max_qkv_dim,
-            layer_config.post_qk == PostQKType::HalfRope,
+            allocator, max_qkv_dim, /*half_rope=*/false,
             config.global_rope_theta, config.partial_rotary_factor)),
         s_att_q(config.is_encoder_decoder ? config.decoder_num_layers
                                           : config.num_layers,
@@ -144,6 +160,17 @@ struct AttentionActivations {
         s_att_out(config.is_encoder_decoder ? config.decoder_num_layers
                                             : config.num_layers,
                   max_workers) {
+    const std::vector<LayerConfig>& active_layers = ActiveLayerConfigs(config);
+    layer_inv_timescales.reserve(active_layers.size());
+    layer_inv_timescales_global.reserve(active_layers.size());
+    for (const LayerConfig& lc : active_layers) {
+      const bool half_rope = lc.post_qk == PostQKType::HalfRope;
+      layer_inv_timescales.push_back(CreateInvTimescale(
+          allocator, lc.qkv_dim, half_rope, config.rope_theta));
+      layer_inv_timescales_global.push_back(CreateInvTimescale(
+          allocator, lc.qkv_dim, half_rope, config.global_rope_theta,
+          config.partial_rotary_factor));
+    }
     // Batch size can be 0 in experimental code so do not assert.
     if (batch_size == 0) {
       static std::atomic_flag warned = ATOMIC_FLAG_INIT;
@@ -258,6 +285,8 @@ struct AttentionActivations {
   // Rope
   MatStorageT<float> inv_timescale;
   MatStorageT<float> inv_timescale_global;
+  std::vector<MatStorageT<float>> layer_inv_timescales;
+  std::vector<MatStorageT<float>> layer_inv_timescales_global;
 
   // Only active when GCPP_TENSOR_STATS.
   TensorStats s_att_q;
@@ -288,7 +317,8 @@ struct AttentionActivationsPtrs {
         float_queries(nullptr),
         q_scales(nullptr),
         div_seq_len(static_cast<uint32_t>(seq_len)),
-        div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
+        div_heads(static_cast<uint32_t>(
+            FirstLayerConfig(ActiveLayerConfigs(config)).heads)),
         query_scale(ChooseQueryScale(config)) {}
 
   AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len,
@@ -308,6 +338,8 @@ struct AttentionActivationsPtrs {
     att_sums = activations.att_sums;
     inv_timescale = activations.inv_timescale;
     inv_timescale_global = activations.inv_timescale_global;
+    layer_inv_timescales = &activations.layer_inv_timescales;
+    layer_inv_timescales_global = &activations.layer_inv_timescales_global;
     k_tile_vec = activations.k_tile_vec;
     v_tile_vec = activations.v_tile_vec;
     sub_task_att_out = &activations.sub_task_att_out;
@@ -400,11 +432,27 @@ struct AttentionActivationsPtrs {
   MatPtrT<float> inv_timescale;
   // Inverse timescales for global RoPE computation.
   MatPtrT<float> inv_timescale_global;
+  const std::vector<MatStorageT<float>>* layer_inv_timescales = nullptr;
+  const std::vector<MatStorageT<float>>* layer_inv_timescales_global = nullptr;
+
+  const float* InvTimescale(size_t layer_idx) const {
+    if (layer_inv_timescales == nullptr) return inv_timescale.PackedScale1();
+    HWY_ASSERT(layer_idx < layer_inv_timescales->size());
+    return (*layer_inv_timescales)[layer_idx].PackedScale1();
+  }
+  const float* InvTimescaleGlobal(size_t layer_idx) const {
+    if (layer_inv_timescales_global == nullptr) {
+      return inv_timescale_global.PackedScale1();
+    }
+    HWY_ASSERT(layer_idx < layer_inv_timescales_global->size());
+    return (*layer_inv_timescales_global)[layer_idx].PackedScale1();
+  }
+
   // Divisor for faster division by sequence length.
   hwy::Divisor div_seq_len;
   // Divisor for faster division by number of heads.
   hwy::Divisor div_heads;
-  // Query scaling factor for attention computation.
+  // Query scaling factor for attention computation (layer 0 default).
   float query_scale;
 
   // Only active when GCPP_TENSOR_STATS.
@@ -445,8 +493,7 @@ struct Activations {
   Activations(const RuntimeConfig& runtime_config, const ModelConfig& config,
               size_t batch_size, size_t seq_len, ThreadingContext& ctx,
               std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : layer_config(config.is_encoder_decoder ? config.decoder_layer_configs[0]
-                                               : config.layer_configs[0]),
+      : layer_config(FirstLayerConfig(ActiveLayerConfigs(config))),
         moe_layer_config(MoELayerConfig(config)),
         mla_dims(config),
         num_layers(config.is_encoder_decoder ? config.decoder_num_layers
@@ -516,14 +563,6 @@ struct Activations {
         t5_encoder_ffw_out(MatFactory(
             "t5_e_ffw_out", encoder_seq_len,
             config.is_encoder_decoder ? config.model_dim : 0, ctx.allocator)),
-        t5_encoder_inv_timescale(
-            config.is_encoder_decoder
-                ? CreateInvTimescale(ctx.allocator,
-                                     config.encoder_layer_configs[0].qkv_dim,
-                                     config.encoder_layer_configs[0].post_qk ==
-                                         PostQKType::HalfRope,
-                                     config.rope_theta)
-                : MatStorageT<float>()),
 
         max_workers(ctx.pools.MaxWorkers()),
         s_ffw_in(num_layers, max_workers),
@@ -644,6 +683,12 @@ struct Activations {
     }
 
     if (config.is_encoder_decoder) {
+      t5_encoder_inv_timescales.reserve(config.encoder_layer_configs.size());
+      for (const LayerConfig& lc : config.encoder_layer_configs) {
+        t5_encoder_inv_timescales.push_back(CreateInvTimescale(
+            ctx.allocator, lc.qkv_dim, lc.post_qk == PostQKType::HalfRope,
+            config.rope_theta));
+      }
       t5_encoder_q.AllocateAndAttachRowPtrs(row_ptrs);
       t5_encoder_kv.AllocateAndAttachRowPtrs(row_ptrs);
       t5_encoder_att_out.AllocateAndAttachRowPtrs(row_ptrs);
@@ -801,7 +846,7 @@ struct Activations {
   MatStorageT<BF16> t5_encoder_c1;
   MatStorageT<BF16> t5_encoder_c2;
   MatStorageT<float> t5_encoder_ffw_out;
-  MatStorageT<float> t5_encoder_inv_timescale;
+  std::vector<MatStorageT<float>> t5_encoder_inv_timescales;
 
   const size_t max_workers;
   TensorStats s_ffw_in;
