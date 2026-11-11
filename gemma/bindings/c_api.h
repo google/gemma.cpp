@@ -61,10 +61,12 @@ GEMMA_API void GemmaSetLogCallback(GemmaContext* ctx, GemmaLogCallback callback,
                                    void* user_data);
 
 // Configuration functions
+GEMMA_API void GemmaSetMaxGeneratedTokens(GemmaContext* ctx, int value);
 GEMMA_API void GemmaSetMultiturn(GemmaContext* ctx, int value);
 GEMMA_API void GemmaSetTemperature(GemmaContext* ctx, float value);
 GEMMA_API void GemmaSetTopK(GemmaContext* ctx, int value);
 GEMMA_API void GemmaSetDeterministic(GemmaContext* ctx, int value);
+GEMMA_API void GemmaSetPrefillTbatchSize(GemmaContext* ctx, int value);
 GEMMA_API void GemmaResetConversation(GemmaContext* ctx);
 
 // Conversation management functions (renamed)
