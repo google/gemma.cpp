@@ -50,7 +50,8 @@
         "cacheVariables": {
           "BUILD_SHARED_LIBS": "OFF",
           "CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS": "ON",
-          "BUILD_GEMMA_DLL": "ON"
+          "BUILD_GEMMA_DLL": "ON",
+          "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
         }
       }
     ],

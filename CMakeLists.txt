@@ -307,6 +307,7 @@ target_link_libraries(gemma_shared PRIVATE
     $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy>
     $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy_contrib>
     $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece-static>
+    nlohmann_json::nlohmann_json
 )
 target_include_directories(gemma_shared PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(gemma_shared
@@ -324,8 +325,8 @@ if(GEMMA_ONEDNN_MATMUL)
   target_link_libraries(gemma_shared PRIVATE dnnl)
 endif()
 install(TARGETS gemma_shared DESTINATION lib)
-install(FILES gemma/c_api.h DESTINATION include/gemma)
-install(FILES gemma/GemmaInterop.cs DESTINATION include/gemma)
+install(FILES gemma/bindings/c_api.h gemma/bindings/context.h DESTINATION include/gemma/bindings)
+install(FILES gemma/bindings/GemmaInterop.cs DESTINATION include/gemma/bindings)
 endif()
 
 # Executable Target

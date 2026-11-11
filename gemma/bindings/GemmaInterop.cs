@@ -47,9 +47,7 @@ namespace GemmaCpp
         [DllImport("gemma", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr GemmaCreate(
             [MarshalAs(UnmanagedType.LPUTF8Str)] string tokenizerPath,
-            [MarshalAs(UnmanagedType.LPUTF8Str)] string modelType,
             [MarshalAs(UnmanagedType.LPUTF8Str)] string weightsPath,
-            [MarshalAs(UnmanagedType.LPUTF8Str)] string weightType,
             int maxGeneratedTokens);
 
         [DllImport("gemma", CallingConvention = CallingConvention.Cdecl)]
