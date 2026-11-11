@@ -285,5 +285,103 @@ TEST(WeightsTest, MappingRequiresBlobAlignment) {
             WeightsPtrs::Mode::kReadBF16);
 }
 
+static void WriteModelBlobWithToc(const Path& path, ThreadingContext& ctx,
+                                  const std::vector<uint32_t>& toc) {
+  ModelConfig config(Model::GEMMA2_2B, Type::kBF16, PromptWrapping::GEMMA_PT);
+  GemmaTokenizer tokenizer(kMockTokenizer);
+  const std::array<BF16, 16> tensor_data = {};
+  BlobWriter writer(path, ctx);
+  writer.Add("w_25", tensor_data.data(), sizeof(tensor_data));
+  WriteSingleFile(config, tokenizer, toc, writer);
+}
+
+TEST(WeightsTest, SetTypeRejectsNumElementsOverflow) {
+  // 524296 * 8192 = 4,295,032,832 > UINT32_MAX (b/583871800).
+  MatPtr mat("emb", Type::kUnknown, Extents2D(524296, 8192));
+  EXPECT_DEATH(mat.SetType(Type::kBF16), "extents\\.rows <=");
+
+  EXPECT_DEATH(
+      MatPtr("big", Type::kBF16, Extents2D(uint64_t{UINT32_MAX} + 1, 1)),
+      "extents\\.rows <=");
+
+  MatPtr non_empty("ne", Type::kBF16, Extents2D(4, 8));
+  EXPECT_DEATH(non_empty.OverrideRows(0), "rows > 0");
+  EXPECT_DEATH(non_empty.OverrideCols(0), "cols > 0");
+
+  MatPtr default_mat;
+  EXPECT_EQ(default_mat.GetType(), Type::kUnknown);
+  EXPECT_EQ(default_mat.Stride(), 0u);
+
+  MatPtr reshaped("rs", Type::kBF16, Extents2D(6, 4));
+  reshaped.ReshapePackedRowsToCols(2);
+  EXPECT_EQ(reshaped.Rows(), 3u);
+  EXPECT_EQ(reshaped.Cols(), 8u);
+  EXPECT_EQ(reshaped.Stride(), 8u);
+  EXPECT_EQ(reshaped.PackedBytes(), 48u);
+
+  MatPtr odd("odd", Type::kBF16, Extents2D(5, 8));
+  EXPECT_DEATH(odd.ReshapePackedRowsToCols(2), "private_rows_ % factor");
+
+  MatPtr overridden("ov", Type::kBF16, Extents2D(4, 8));
+  overridden.OverrideRows(2);
+  EXPECT_DEATH(overridden.ReshapePackedRowsToCols(2), "override_rows_ == 0");
+}
+
+TEST(WeightsTest, ModelStoreValidatesDeserializedTocEntries) {
+  ThreadingContext ctx = MakeContext();
+  MatPtr valid("w_25", Type::kBF16, Extents2D(4, 4));
+  valid.SetScale(1.5f);
+  const std::vector<uint32_t> base_toc = valid.Write();
+  ASSERT_EQ(base_toc.size(), 10u);
+
+  // Full TOC roundtrip and legacy TOC omitting `stride_` (missing_fields == 1).
+  std::vector<uint32_t> legacy_toc = base_toc;
+  legacy_toc.pop_back();
+  legacy_toc[0] -= 1;
+  for (const std::vector<uint32_t>& toc : {base_toc, legacy_toc}) {
+    TemporaryBlob blob;
+    WriteModelBlobWithToc(blob.path(), ctx, toc);
+    BlobReader reader(blob.path());
+    ModelStore store(reader);
+    const MatPtr* loaded = store.FindMat("w_25");
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetType(), Type::kBF16);
+    EXPECT_EQ(loaded->Rows(), 4u);
+    EXPECT_EQ(loaded->Cols(), 4u);
+    EXPECT_EQ(loaded->Stride(), 4u);
+    EXPECT_EQ(loaded->PackedBytes(), 32u);
+    EXPECT_FLOAT_EQ(loaded->Scale(), 1.5f);
+  }
+
+  const auto expect_toc_death = [&](const std::vector<uint32_t>& bad_toc,
+                                    const char* regex) {
+    TemporaryBlob blob;
+    WriteModelBlobWithToc(blob.path(), ctx, bad_toc);
+    BlobReader reader(blob.path());
+    EXPECT_DEATH({ ModelStore store(reader); }, regex);
+  };
+
+  // rows * cols = 524296 * 8192 > UINT32_MAX (b/583871800).
+  std::vector<uint32_t> overflow_toc = base_toc;
+  overflow_toc[6] = 524296;
+  overflow_toc[7] = 8192;
+  overflow_toc[9] = 8192;
+  expect_toc_death(overflow_toc, "extents\\.rows <=");
+
+  // stride < cols.
+  std::vector<uint32_t> bad_stride_toc = base_toc;
+  bad_stride_toc[9] = 2;
+  expect_toc_death(bad_stride_toc, "stride 2 < cols 4");
+
+  // Type::kUnknown in TOC.
+  std::vector<uint32_t> unknown_type_toc = base_toc;
+  unknown_type_toc[3] = static_cast<uint32_t>(Type::kUnknown);
+  expect_toc_death(unknown_type_toc, "mat\\.GetType\\(\\) != Type::kUnknown");
+
+  // Truncated TOC entry stopping right after `name_` (missing_fields == 7).
+  std::vector<uint32_t> truncated_toc = {2, 1, base_toc[2]};
+  expect_toc_death(truncated_toc, "result\\.missing_fields <= 1");
+}
+
 }  // namespace
 }  // namespace gcpp

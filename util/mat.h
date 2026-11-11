@@ -79,9 +79,10 @@ class MatPtr : public IFields {
   MatPtr() = default;
   // `name`: see `SetName`. Note that `stride` is initially `cols` and only
   // differs after deserializing, or calling `SetPtr`.
-  MatPtr(const char* name, Type type, Extents2D extents)
-      : private_rows_(static_cast<uint32_t>(extents.rows)),
-        cols_(static_cast<uint32_t>(extents.cols)) {
+  MatPtr(const char* name, Type type, Extents2D extents) {
+    HWY_ASSERT(extents.rows <= UINT32_MAX && extents.cols <= UINT32_MAX);
+    private_rows_ = static_cast<uint32_t>(extents.rows);
+    cols_ = static_cast<uint32_t>(extents.cols);
     SetName(name);
     SetType(type);
     SetPtr(nullptr, cols_);
@@ -98,6 +99,7 @@ class MatPtr : public IFields {
     if (stride < Cols()) {
       HWY_ABORT("%s: stride %zu < cols %zu\n", Name(), stride, Cols());
     }
+    HWY_ASSERT(stride <= UINT32_MAX);
     ptr_ = ptr;
     stride_ = static_cast<uint32_t>(stride);
 
@@ -163,15 +165,18 @@ class MatPtr : public IFields {
   // Works for any kind of padding and element type.
   uint8_t* RowBytes(size_t row) {
     HWY_DASSERT(row < Rows());
-    return static_cast<uint8_t*>(ptr_) + row * (stride_ * element_bytes_);
+    return static_cast<uint8_t*>(ptr_) +
+           row * static_cast<size_t>(stride_) * element_bytes_;
   }
   const uint8_t* RowBytes(size_t row) const {
     HWY_DASSERT(row < Rows());
-    return static_cast<const uint8_t*>(ptr_) + row * (stride_ * element_bytes_);
+    return static_cast<const uint8_t*>(ptr_) +
+           row * static_cast<size_t>(stride_) * element_bytes_;
   }
 
   Type GetType() const { return type_; }
   void SetType(Type type) {
+    HWY_ASSERT(EnumValid(type));
     type_ = type;
     if (type == Type::kUnknown) {
       // Temporary invalid state. Happens during weights.h construction, before
@@ -181,7 +186,9 @@ class MatPtr : public IFields {
       return;
     }
     element_bytes_ = static_cast<uint32_t>(hwy::DivCeil(TypeBits(type), 8));
-    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type, Extents()));
+    const size_t num_elements = ComputeNumElements(type, Extents());
+    HWY_ASSERT(num_elements <= UINT32_MAX);
+    num_elements_ = static_cast<uint32_t>(num_elements);
     HWY_DASSERT(0 != element_bytes_ && element_bytes_ <= 16);
   }
 
@@ -212,8 +219,11 @@ class MatPtr : public IFields {
       HWY_ABORT("%s: rows %zu > private_rows_ %u\n", name_.c_str(), rows,
                 private_rows_);
     }
+    HWY_ASSERT(rows > 0 || private_rows_ == 0);
     override_rows_ = static_cast<uint32_t>(rows);
-    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
+    const size_t num_elements = ComputeNumElements(type_, Extents());
+    HWY_ASSERT(num_elements <= UINT32_MAX);
+    num_elements_ = static_cast<uint32_t>(num_elements);
   }
 
   void OverrideCols(size_t cols) {
@@ -221,18 +231,29 @@ class MatPtr : public IFields {
       HWY_ABORT("%s: cols %zu > stride_ %u\n", name_.c_str(), cols,
                 stride_);
     }
+    HWY_ASSERT(cols > 0 || cols_ == 0);
     override_cols_ = static_cast<uint32_t>(cols);
-    num_elements_ = static_cast<uint32_t>(ComputeNumElements(type_, Extents()));
+    const size_t num_elements = ComputeNumElements(type_, Extents());
+    HWY_ASSERT(num_elements <= UINT32_MAX);
+    num_elements_ = static_cast<uint32_t>(num_elements);
   }
 
   // Changes the number of rows and columns without reallocating the memory.
   // Increases cols by factor and reduces rows by factor.
   // The rows must be divisible by factor and the matrix must be packed.
   void ReshapePackedRowsToCols(size_t factor) {
+    HWY_ASSERT(factor > 0 && factor <= UINT32_MAX);
+    HWY_ASSERT(override_rows_ == 0 && override_cols_ == 0);
     HWY_ASSERT(IsPacked());
-    private_rows_ = hwy::DivCeil(private_rows_, factor);
-    cols_ *= factor;
-    stride_ *= factor;  // safe because we verified IsPacked
+    HWY_ASSERT((private_rows_ % factor) == 0);
+    HWY_ASSERT(static_cast<uint64_t>(cols_) * factor <= UINT32_MAX);
+    HWY_ASSERT(static_cast<uint64_t>(stride_) * factor <= UINT32_MAX);
+    private_rows_ = static_cast<uint32_t>(private_rows_ / factor);
+    cols_ = static_cast<uint32_t>(cols_ * factor);
+    stride_ = static_cast<uint32_t>(stride_ * factor);  // safe: IsPacked
+    const size_t num_elements = ComputeNumElements(type_, Extents());
+    HWY_ASSERT(num_elements <= UINT32_MAX);
+    num_elements_ = static_cast<uint32_t>(num_elements);
   }
 
   // Offset by which to advance pointers to the next row.
@@ -276,11 +297,12 @@ class MatPtr : public IFields {
   // padding, which is anyway not supported for NUQ because `compress-inl.h`
   // assumes a contiguous stream for its group indexing.
   static size_t ComputeNumElements(Type type, Extents2D extents) {
+    HWY_ASSERT(extents.cols == 0 || extents.rows <= UINT32_MAX / extents.cols);
     return PackedEnd(type, extents.Area());
   }
 
   std::string name_;  // See `SetName`.
-  Type type_;
+  Type type_ = Type::kUnknown;
 
   // Most members are u32 because that is the preferred type of fields.h.
 
@@ -306,7 +328,7 @@ class MatPtr : public IFields {
   uint8_t** row_ptrs_ = nullptr;  // not serialized
 
   // Offset by which to advance pointers to the next row, >= `cols_`.
-  uint32_t stride_;
+  uint32_t stride_ = 0;
 
   float scale_ = 1.0f;  // multiplier for each value, for MatMul.
 
@@ -399,7 +421,8 @@ RowPtrs<T> GetOrSetTempRowPtrs(
             "%s.AttachRowPtrs() was not called.\n",
             mat.Name());
   }
-  HWY_DASSERT(mat.HasPtr());
+  HWY_ASSERT(mat.HasPtr());
+  HWY_ASSERT(mat.Rows() <= kMaxBatchSize);
   for (size_t r = 0; r < mat.Rows(); ++r) {
     storage[r] = reinterpret_cast<uint8_t*>(const_cast<T*>(mat.Row(r)));
   }
