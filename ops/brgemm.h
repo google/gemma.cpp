@@ -56,8 +56,9 @@ struct BRGeMMConfig {
 
 // Generates autotuning candidates. Fixed: N_blk=32, K_blk=32 (AMX BF16).
 // Tunable: M_blk in {32,64}, batch_size in {16,32,64,128,256}.
-inline std::vector<BRGeMMConfig> BRGeMMCandidates(size_t M, size_t K,
-                                                  size_t N) {
+inline std::vector<BRGeMMConfig> BRGeMMCandidates(size_t M, size_t K, size_t N,
+                                                  bool autotune = true,
+                                                  bool min_k_splits = false) {
   std::vector<BRGeMMConfig> out;
   out.reserve(10);  // At most 2 M_blk * 5 batch_size candidates.
   static constexpr size_t kNBlk = 32;
@@ -84,6 +85,18 @@ inline std::vector<BRGeMMConfig> BRGeMMCandidates(size_t M, size_t K,
   }
   if (out.empty()) {
     out.push_back({std::min(M, size_t{32}), std::min(N, size_t{32}), 32, 1, 1});
+  }
+  if (!autotune) {
+    size_t selected = 0;
+    if (min_k_splits) {
+      for (size_t i = 1; i < out.size(); ++i) {
+        const size_t splits = hwy::DivCeil(k_chunks, out[i].batch_size);
+        const size_t best_splits =
+            hwy::DivCeil(k_chunks, out[selected].batch_size);
+        if (splits < best_splits) selected = i;
+      }
+    }
+    return {out[selected]};
   }
   return out;
 }
