@@ -1,4 +1,4 @@
-# Required for referencing bazel:sentencepiece.patch
+# Required for referencing the build files in this directory.
 package(
     default_applicable_licenses = ["//:license"],
     default_visibility = ["//:__subpackages__"],

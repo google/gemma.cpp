@@ -79,7 +79,7 @@ endif()
 
 ## Note: absl needs to be installed by sentencepiece. This will only happen if
 ## cmake is invoked with -DSPM_ENABLE_SHARED=OFF and -DSPM_ABSL_PROVIDER=module
-gemma_fetch(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG e0cce7d37b065b5140349dbe12c6bcf6192fdd78 EXCLUDE_FROM_ALL)
+gemma_fetch(sentencepiece GIT_REPOSITORY https://github.com/google/sentencepiece GIT_TAG eafd99cf3b8bfa5101c2c5f42aab2cc39947938d EXCLUDE_FROM_ALL)  # v0.2.3
 
 gemma_fetch(json GIT_REPOSITORY https://github.com/nlohmann/json.git GIT_TAG 9cca280a4d0ccf0c08f47a99aa71d1b0e52f8d03 EXCLUDE_FROM_ALL)
 
@@ -271,6 +271,11 @@ endif()
 
 FetchContent_GetProperties(sentencepiece)
 
+# tokenizer/sentencepiece_tokenizer.cc uses SentencePiece Lite: the runtime
+# (sentencepiece_lite) and the ModelProto -> FlatBuffer converter
+# (sentencepiece_lite_fb_converter). Both are separate from sentencepiece-static.
+set(GEMMA_SENTENCEPIECE_LIBS sentencepiece_lite sentencepiece_lite_fb_converter)
+
 ## Library Target
 
 add_library(libgemma ${SOURCES})
@@ -278,7 +283,7 @@ set_property(TARGET libgemma PROPERTY CXX_STANDARD ${GEMMA_CXX_STANDARD})
 set_target_properties(libgemma PROPERTIES PREFIX "")
 set_property(TARGET libgemma PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(libgemma PUBLIC ./)
-target_link_libraries(libgemma hwy hwy_contrib sentencepiece-static
+target_link_libraries(libgemma hwy hwy_contrib ${GEMMA_SENTENCEPIECE_LIBS}
                       nlohmann_json::nlohmann_json)
 target_include_directories(libgemma PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(libgemma PRIVATE $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS NOMINMAX>)
@@ -306,7 +311,8 @@ target_include_directories(gemma_shared PUBLIC ./)
 target_link_libraries(gemma_shared PRIVATE
     $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy>
     $<LINK_LIBRARY:WHOLE_ARCHIVE,hwy_contrib>
-    $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece-static>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece_lite>
+    $<LINK_LIBRARY:WHOLE_ARCHIVE,sentencepiece_lite_fb_converter>
 )
 target_include_directories(gemma_shared PUBLIC ${sentencepiece_SOURCE_DIR})
 target_compile_definitions(gemma_shared
