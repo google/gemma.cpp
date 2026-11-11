@@ -43,12 +43,36 @@ typedef std::vector<BF16, hwy::AlignedAllocator<BF16>> AlignedBF16Vector;
 
 // Returns the scale value to use for the query in the attention computation.
 // Also called by ops_test.
+static inline const std::vector<LayerConfig>& ActiveLayerConfigs(
+    const ModelConfig& c) {
+  return c.is_encoder_decoder ? c.decoder_layer_configs : c.layer_configs;
+}
 static inline size_t MaxQkvDim(const ModelConfig& config) {
   size_t max_dim = 0;
-  for (const auto& lc : config.layer_configs) {
-    max_dim = HWY_MAX(max_dim, lc.qkv_dim);
-  }
+  for (const auto& lc : config.layer_configs)
+    max_dim = HWY_MAX(max_dim, static_cast<size_t>(lc.qkv_dim));
+  for (const auto& lc : config.decoder_layer_configs)
+    max_dim = HWY_MAX(max_dim, static_cast<size_t>(lc.qkv_dim));
   return max_dim;
+}
+static inline size_t MaxHeads(const std::vector<LayerConfig>& layers,
+                              size_t fallback = 0) {
+  for (const auto& lc : layers)
+    fallback = HWY_MAX(fallback, static_cast<size_t>(lc.heads));
+  return fallback;
+}
+static inline size_t MinHeads(const std::vector<LayerConfig>& layers,
+                              size_t fallback = 0) {
+  size_t m = fallback ? fallback : ~size_t{0};
+  for (const auto& lc : layers)
+    if (lc.heads) m = HWY_MIN(m, static_cast<size_t>(lc.heads));
+  return m == ~size_t{0} ? size_t{1} : m;
+}
+static inline size_t MaxKVHeads(const std::vector<LayerConfig>& layers,
+                                size_t fallback = 0) {
+  for (const auto& lc : layers)
+    fallback = HWY_MAX(fallback, static_cast<size_t>(lc.kv_heads));
+  return fallback;
 }
 static inline size_t MaxFFHiddenDim(const ModelConfig& config) {
   size_t max_dim = config.model_dim;
@@ -79,50 +103,53 @@ struct AttentionActivations {
       size_t batch_size, size_t seq_len, const RuntimeConfig& runtime_config,
       size_t max_workers, const Allocator& allocator,
       std::vector<hwy::AlignedFreeUniquePtr<uint8_t*[]>>& row_ptrs)
-      : heads(layer_config.heads),
+      : heads(MaxHeads(ActiveLayerConfigs(config), layer_config.heads)),
+        kv_heads(MaxKVHeads(ActiveLayerConfigs(config), layer_config.kv_heads)),
         qkv_dim(layer_config.qkv_dim),
-        max_qkv_dim(MaxQkvDim(config)),
+        max_qkv_dim(HWY_MAX(MaxQkvDim(config),
+                            static_cast<size_t>(layer_config.qkv_dim))),
         rep_factor(max_workers *
                    AttentionActivations::kThreadReplicationFactor /
-                   layer_config.heads),
+                   MinHeads(ActiveLayerConfigs(config), layer_config.heads)),
         // `vocab_size == 0` means it is for Vit part, VitAttention
         // is still MHA and does not use an external KV cache.
         q(MatFactory("q", batch_size,
                      config.vocab_size == 0
-                         ? layer_config.heads * 3 * max_qkv_dim
-                         : layer_config.heads * max_qkv_dim,
+                         ? (heads + 2 * HWY_MAX(heads, kv_heads)) * max_qkv_dim
+                         : heads * max_qkv_dim,
                      allocator)),
         q_bf(MatFactory("q_bf", batch_size,
                         config.vocab_size == 0
-                            ? layer_config.heads * 3 * max_qkv_dim
-                            : layer_config.heads * max_qkv_dim,
+                            ? HWY_MAX(heads * 3, heads + 2 * kv_heads) *
+                                  max_qkv_dim
+                            : heads * max_qkv_dim,
                         allocator)),
 
         vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
         vit_K_T(MatFactory(
             "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
-            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         vit_V_T(MatFactory(
             "V2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
-            layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
+            heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,
                                    config.model_dim, allocator)),
         att_out(MatFactory("att_out", batch_size,
-                           layer_config.heads * max_qkv_dim, allocator)),
+                           heads * max_qkv_dim, allocator)),
         att_out_reps(MatFactory("att_out", batch_size * rep_factor,
-                                layer_config.heads * max_qkv_dim, allocator)),
-        softmax_max(MatFactory("softmax_max", batch_size, layer_config.heads,
+                                heads * max_qkv_dim, allocator)),
+        softmax_max(MatFactory("softmax_max", batch_size, heads,
                                allocator)),
         softmax_d(
-            MatFactory("softmax_d", batch_size, layer_config.heads, allocator)),
+            MatFactory("softmax_d", batch_size, heads, allocator)),
         att_sums(
             MatFactory("att_sums", batch_size, config.model_dim, allocator)),
 
-        k_tile_vec(MatFactory("k_tile_vec", batch_size * layer_config.kv_heads,
+        k_tile_vec(MatFactory("k_tile_vec", batch_size * kv_heads,
                               KVCache::kTileSize * max_qkv_dim, allocator)),
-        v_tile_vec(MatFactory("v_tile_vec", batch_size * layer_config.kv_heads,
+        v_tile_vec(MatFactory("v_tile_vec", batch_size * kv_heads,
                               KVCache::kTileSize * max_qkv_dim, allocator)),
 
         inv_timescale(CreateInvTimescale(
@@ -155,13 +182,12 @@ struct AttentionActivations {
     // This is a guess at the maximum number of params we might need to avoid
     // reallocations. The actual number of params is determined by the number of
     // query tiles, which is not known here.
-    flash_params.reserve(batch_size * layer_config.heads);
-    split_flash_params.reserve(batch_size * layer_config.heads);
+    flash_params.reserve(batch_size * heads);
+    split_flash_params.reserve(batch_size * heads);
 
-    const size_t kv_out_elems =
-        batch_size * layer_config.kv_heads * 2 * max_qkv_dim;
+    const size_t kv_out_elems = batch_size * kv_heads * 2 * max_qkv_dim;
     kv_out_mem.resize(kv_out_elems, 0.0f);
-    const size_t total_queries = batch_size * layer_config.heads;
+    const size_t total_queries = batch_size * heads;
     const size_t query_elems = total_queries * max_qkv_dim;
     float_queries.resize(query_elems, 0.0f);
     bf16_queries.resize(query_elems);
@@ -211,6 +237,7 @@ struct AttentionActivations {
   }
 
   size_t heads;
+  size_t kv_heads;
   size_t qkv_dim;
   size_t max_qkv_dim;
   AlignedBF16Vector bf16_queries;
@@ -288,13 +315,15 @@ struct AttentionActivationsPtrs {
         float_queries(nullptr),
         q_scales(nullptr),
         div_seq_len(static_cast<uint32_t>(seq_len)),
-        div_heads(static_cast<uint32_t>(config.layer_configs[0].heads)),
+        div_heads(static_cast<uint32_t>(
+            HWY_MAX(size_t{1}, MaxHeads(ActiveLayerConfigs(config))))),
         query_scale(ChooseQueryScale(config)) {}
 
   AttentionActivationsPtrs(const ModelConfig& config, size_t seq_len,
                            AttentionActivations& activations)
       : AttentionActivationsPtrs(config, seq_len, activations.flash_params,
                                  activations.split_flash_params) {
+    rep_factor = activations.rep_factor;
     q = activations.q;
     q_bf = activations.q_bf;
     vit_Q = activations.vit_Q;
@@ -335,6 +364,7 @@ struct AttentionActivationsPtrs {
 
     pre_att_rms_out.OverrideRows(batch_size);
     att_out.OverrideRows(batch_size);
+    if (rep_factor != 0) att_out_reps.OverrideRows(batch_size * rep_factor);
     softmax_max.OverrideRows(batch_size);
     softmax_d.OverrideRows(batch_size);
     att_sums.OverrideRows(batch_size);
@@ -406,6 +436,8 @@ struct AttentionActivationsPtrs {
   hwy::Divisor div_heads;
   // Query scaling factor for attention computation.
   float query_scale;
+  size_t rep_factor = 0;
+  bool vit_kv_reshaped = false;
 
   // Only active when GCPP_TENSOR_STATS.
   TensorStats* s_att_q = nullptr;

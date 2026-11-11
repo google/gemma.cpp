@@ -169,13 +169,12 @@ void DotSoftmaxWeightedSum(const size_t num_tokens, const size_t layer_idx,
 
   const size_t cache_layer_size = layer_config.CacheLayerSize();
   const size_t seq_len = activations.SeqLen();
-  // All layers should have the same number of heads.
-  HWY_DASSERT(activations.div_heads.GetDivisor() == layer_config.heads);
+  const hwy::Divisor div_heads(layer_config.heads);
 
   // For each head/token/query, compute Q.K, softmax, and weighted V.
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {
-    const size_t tq_idx = activations.div_heads.Divide(task);
-    const size_t head = activations.div_heads.Remainder(task);
+    const size_t tq_idx = div_heads.Divide(task);
+    const size_t head = div_heads.Remainder(task);
     GCPP_ZONE(ctx, worker, Zones::kGenAttentionDotSoftmaxWeightedSumPar);
 
     const size_t qi = div_qbatch.Remainder(tq_idx);

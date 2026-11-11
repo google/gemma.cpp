@@ -2190,8 +2190,8 @@ void ComputeFlashParams(size_t num_tokens, const size_t target_parallelism,
   const size_t total_tasks = token_batch * layer_config.heads;
   size_t kVTileSize = GetVTileSize(kNF, kHeadGroups, num_tokens, total_tasks,
                                    target_parallelism);
-  // All layers should have the same number of heads.
-  HWY_DASSERT(activations.div_heads.GetDivisor() == layer_config.heads);
+  HWY_DASSERT(layer_config.heads != 0 &&
+              layer_config.heads <= activations.div_heads.GetDivisor());
   // To maximize adjacent tasks with the same kv matrices, task index is encoded
   // thus: [qi][kv_head][batch_idx][head_group]. Note that the head index is
   // split into kv_head and head_group, since the head_group does not affect
@@ -2272,7 +2272,7 @@ size_t GetMaxTiles(const std::vector<Tile148Params>& params,
 // split_params is cleared and filled with the split tasks.
 void SplitTasksByKPos(std::vector<Tile148Params>& params,
                       const size_t kHTileSize, const size_t num_tiles_per_task,
-                      const size_t out_stride,
+                      const size_t out_stride, const size_t att_out_reps_rows,
                       std::vector<Tile148Params>& split_params) {
   split_params.clear();
   for (auto& param : params) {
@@ -2302,6 +2302,7 @@ void SplitTasksByKPos(std::vector<Tile148Params>& params,
         for (size_t i = 0; i < split_param.v_tile_size; ++i) {
           split_param.tq_idx[i] =
               param.tq_idx[i] * split_param.n_of_n + split_param.i_of_n - 1;
+          HWY_ASSERT(split_param.tq_idx[i] < att_out_reps_rows);
           split_param.out_offsets[i] =
               param.out_offsets[i] +
               (split_param.tq_idx[i] - param.tq_idx[i]) * out_stride;
@@ -2328,7 +2329,10 @@ uint32_t ComputeAndSplitFlashParams(const size_t kNF, const size_t num_tokens,
   ComputeFlashParams(num_tokens, target_parallelism, layer_idx, activations,
                      qbatch, attention_impl, activations.flash_params);
   size_t target_workers = std::min(ctx.pools.MaxWorkers(), target_parallelism);
-  if (activations.flash_params.size() < target_workers) {
+  const size_t token_batch = num_tokens * qbatch.Size();
+  const size_t max_splits =
+      token_batch != 0 ? activations.att_out_reps.Rows() / token_batch : 0;
+  if (max_splits >= 2 && activations.flash_params.size() < target_workers) {
     // Insufficient parallelism for this processor type. Try splitting along the
     // k positions.
     size_t max_tiles = GetMaxTiles(activations.flash_params, 2 * kNF);
@@ -2343,11 +2347,15 @@ uint32_t ComputeAndSplitFlashParams(const size_t kNF, const size_t num_tokens,
                          activations.flash_params.size() / k4xNFVTileSize,
                          layer_idx, activations, qbatch, attention_impl,
                          activations.flash_params);
+      max_tiles = GetMaxTiles(activations.flash_params, 2 * kNF);
       desired_tiles_per_task =
           hwy::DivCeil(desired_tiles_per_task, k4xNFVTileSize);
+      desired_tiles_per_task = HWY_MAX(desired_tiles_per_task,
+                                       hwy::DivCeil(max_tiles, max_splits));
       SplitTasksByKPos(
           activations.flash_params, 2 * kNF, desired_tiles_per_task,
-          activations.att_out_reps.Stride(), activations.split_flash_params);
+          activations.att_out_reps.Stride(), activations.att_out_reps.Rows(),
+          activations.split_flash_params);
       return k4xNFVTileSize;
     }
   }
