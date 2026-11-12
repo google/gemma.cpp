@@ -914,6 +914,43 @@ void TestTopK() {
   }
 }
 
+// If `accept_token` leaves fewer than `k` candidates, `TopK` and `SampleTopK`
+// must only consider the accepted tokens.
+void TestTopKFewerAcceptedThanK() {
+  const size_t kSize = 300;
+  std::vector<float> logits_vec(kSize);
+  // Negative logits, so that any extra zero-valued entry would outrank the
+  // eligible tokens.
+  for (size_t i = 0; i < kSize; ++i) logits_vec[i] = -10.0f - 0.01f * i;
+  Logits logits(logits_vec.data(), kSize);
+
+  // Only tokens 10, 20 and 30 are eligible, but k = 8.
+  std::function<bool(int, float)> accept_token = [](int i, float) {
+    return i == 10 || i == 20 || i == 30;
+  };
+  const std::vector<TokenAndProb> top = TopK(logits, /*k=*/8, accept_token);
+  ASSERT_EQ(top.size(), size_t{3});
+  EXPECT_EQ(top[0].token, 10);
+  EXPECT_EQ(top[1].token, 20);
+  EXPECT_EQ(top[2].token, 30);
+
+  RngStream rng = MakeRng();
+  for (float temperature : {0.0f, 1.0f}) {
+    for (int i = 0; i < 100; ++i) {
+      const int sample =
+          SampleTopK(logits, /*k=*/8, rng, temperature, accept_token);
+      EXPECT_TRUE(sample == 10 || sample == 20 || sample == 30)
+          << "sample " << sample << " temperature " << temperature;
+      // The fused softmax + sampling path used by `gemma.cc`.
+      const TokenAndProb fused = FusedSoftmaxAndSampleTopK(
+          logits, /*k=*/8, rng, temperature, accept_token, Ctx(), /*worker=*/0);
+      EXPECT_TRUE(fused.token == 10 || fused.token == 20 || fused.token == 30)
+          << "fused " << fused.token << " temperature " << temperature;
+      EXPECT_GT(fused.prob, 0.0f);
+    }
+  }
+}
+
 void TestPackTokenAndProb() {
   double packed1 = PackTokenAndProb(10, 0.96f);
   TokenAndProb unpacked1 = UnpackTokenAndProb(packed1);
@@ -953,6 +990,7 @@ HWY_EXPORT_AND_TEST_P(OpsTest, TestAllLayerNorm);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestLayerNormSimple);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestSampleTopK);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestTopK);
+HWY_EXPORT_AND_TEST_P(OpsTest, TestTopKFewerAcceptedThanK);
 HWY_EXPORT_AND_TEST_P(OpsTest, TestPackTokenAndProb);
 HWY_AFTER_TEST();
 
