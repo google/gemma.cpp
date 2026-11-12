@@ -1614,6 +1614,7 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
 template <int kNumQueriesPerLoop, typename KV_T, typename Q_T>
 struct TileFlashAttentionWorkspaceLayout {
   using StepBufT = FlashStepBufT<Q_T>;
+  static constexpr size_t kMaxLanes = hn::MaxLanes(hn::ScalableTag<float>());
 
   size_t padded_q_count;
   size_t softmax_offset, softmax_bytes;
@@ -1637,9 +1638,9 @@ struct TileFlashAttentionWorkspaceLayout {
         pos_data_bytes(
             hwy::RoundUpTo(2 * num_loops * sizeof(size_t), HWY_ALIGNMENT)),
         step_consts_offset(pos_data_offset + pos_data_bytes),
-        step_consts_bytes(
-            hwy::RoundUpTo(256 * kNumQueriesPerLoop * 2 * 16 * sizeof(StepBufT),
-                           HWY_ALIGNMENT)),
+        step_consts_bytes(hwy::RoundUpTo(
+            256 * kNumQueriesPerLoop * 2 * kMaxLanes * sizeof(StepBufT),
+            HWY_ALIGNMENT)),
         step_v_tiles_offset(step_consts_offset + step_consts_bytes),
         step_v_tiles_bytes(
             hwy::RoundUpTo(256 * sizeof(const KV_T*), HWY_ALIGNMENT)),
