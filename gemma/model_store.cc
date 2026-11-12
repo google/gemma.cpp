@@ -397,7 +397,7 @@ bool ModelStore::ReadMatPtrs(BlobReader& reader) {
             HWY_ABORT("Deserializing MatPtr %s failed (pos %zu of %zu).",
                       mat.Name(), pos, serialized.size());
           }
-          pos = result.pos + result.extra_u32;
+          pos = result.pos;  // already skipped any extra_u32
 
           // Retrieve actual key index because a writer may have written other
           // blobs before the tensor data.

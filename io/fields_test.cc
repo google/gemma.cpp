@@ -357,7 +357,7 @@ TEST(FieldsTest, TestOldCodeNewData) {
   OldFields old_fields;
   const ReadResult result = old_fields.Read(Span(storage), 0);
   MaybePrint(old_fields);
-  EXPECT_NE(0, result.pos);  // did not fail
+  EXPECT_EQ(storage.size(), result.pos);  // skipped the extra fields
   EXPECT_EQ(0, result.missing_fields);
   EXPECT_NE(0, result.extra_u32);
 
@@ -375,6 +375,61 @@ TEST(FieldsTest, TestTruncatedData) {
   NewFields copy;
   const ReadResult result = copy.Read(Span(storage.data(), 2), 0);
   EXPECT_EQ(0, result.pos);
+}
+
+// Write old defaults followed by more data, read old using new code.
+TEST(FieldsTest, TestNewCodeOldDataFollowedByData) {
+  OldFields old_fields;
+  std::vector<uint32_t> storage = old_fields.Write();
+  const size_t old_size = storage.size();
+  old_fields.AppendTo(storage);
+
+  NewFields new_fields;
+  const ReadResult result = new_fields.Read(Span(storage), 0);
+  EXPECT_EQ(old_size, result.pos);  // stopped at the end of the old data
+  EXPECT_NE(0, result.missing_fields);
+  NewFields().CheckEqual(new_fields);  // new fields match their defaults
+}
+
+// If a nested IFields extends past the end of its parent, Read must report the
+// error via `pos == 0` instead of aborting.
+TEST(FieldsTest, TestNestedExceedsParent) {
+  std::vector<uint32_t> storage = NewFields().Write();
+  // storage[3] is the size of `old_nested`; make the parent end inside it.
+  ASSERT_GT(storage[3], 1u);
+  storage[0] = 4;
+
+  NewFields copy;
+  EXPECT_EQ(0, copy.Read(Span(storage), 0).pos);
+}
+
+// Parents whose nested child is OldFields or NewFields, followed by a field.
+template <class Child>
+struct Parent : public IFields {
+  const char* Name() const override { return "Parent"; }
+  void VisitFields(IFieldsVisitor& visitor) override {
+    visitor(child);
+    visitor(after);
+  }
+
+  Child child;
+  uint32_t after = 7;
+};
+
+// Old code reading new data must skip the extra fields of a nested IFields so
+// that the parent resumes reading at its next field.
+TEST(FieldsTest, TestOldCodeNewDataNested) {
+  Parent<NewFields> new_parent;
+  new_parent.after = 42;
+  const std::vector<uint32_t> storage = new_parent.Write();
+
+  Parent<OldFields> old_parent;
+  const ReadResult result = old_parent.Read(Span(storage), 0);
+  EXPECT_EQ(storage.size(), result.pos);
+  EXPECT_EQ(0, result.missing_fields);
+  EXPECT_NE(0, result.extra_u32);
+  EXPECT_EQ(42, old_parent.after);
+  old_parent.child.CheckEqual(new_parent.child);
 }
 
 }  // namespace

@@ -150,8 +150,8 @@ class ReadVisitor : public VisitorBase {
 
     // Ensure we have that much data.
     if (HWY_UNLIKELY(result_.pos + num_u32 > end_.back())) {
-      NotifyInvalid("Invalid string: pos %zu + num_u32 %u > end %zu\n",
-                    result_.pos, num_u32, span_.size());
+      NotifyInvalid("Invalid string: pos %zu + num_u32 %u > end %u\n",
+                    result_.pos, num_u32, end_.back());
       return;
     }
 
@@ -172,9 +172,12 @@ class ReadVisitor : public VisitorBase {
 
   void operator()(IFields& fields) override {
     // Our SkipField requires end_ to be set before reading num_u32, which
-    // determines the actual end, so use an upper bound which is tight if this
-    // IFields is last one in span_.
-    end_.push_back(span_.size());
+    // determines the actual end, so use an upper bound: the end of the parent
+    // IFields, or of span_ if there is none. Using the parent's end ensures a
+    // nested IFields beyond the parent's stored size counts as missing, even
+    // if more data follows in span_.
+    const size_t parent_end = end_.empty() ? span_.size() : end_.back();
+    end_.push_back(parent_end);
 
     if (HWY_UNLIKELY(SkipField())) {
       end_.pop_back();  // undo `push_back` to keep the stack balanced
@@ -184,10 +187,12 @@ class ReadVisitor : public VisitorBase {
     uint32_t num_u32;     // not including itself because this..
     operator()(num_u32);  // increments result_.pos for the num_u32 field
 
-    // Ensure we have that much data and set end_.
-    if (HWY_UNLIKELY(result_.pos + num_u32 > span_.size())) {
-      NotifyInvalid("Invalid IFields: pos %zu + num_u32 %u > size %zu\n",
-                    result_.pos, num_u32, span_.size());
+    // Ensure the parent (or span_) has that much data and set end_. No
+    // underflow because SkipField ensured result_.pos < parent_end before
+    // reading num_u32.
+    if (HWY_UNLIKELY(num_u32 > parent_end - result_.pos)) {
+      NotifyInvalid("Invalid IFields: pos %zu + num_u32 %u > end %zu\n",
+                    result_.pos, num_u32, parent_end);
       end_.pop_back();  // keep the stack balanced, see `~ReadVisitor`
       return;
     }
@@ -198,6 +203,8 @@ class ReadVisitor : public VisitorBase {
     HWY_ASSERT(!end_.empty() && result_.pos <= end_.back());
     // Count extra, which indicates old code and new data.
     result_.extra_u32 += end_.back() - result_.pos;
+    // Skip any extra so that the parent, or the next Read, resumes after them.
+    result_.pos = end_.back();
     end_.pop_back();
   }
 
