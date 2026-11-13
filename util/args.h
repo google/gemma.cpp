@@ -18,10 +18,16 @@
 #ifndef THIRD_PARTY_GEMMA_CPP_UTIL_ARGS_H_
 #define THIRD_PARTY_GEMMA_CPP_UTIL_ARGS_H_
 
+#include <errno.h>
+#include <math.h>  // isinf
 #include <stdio.h>
+#include <stdlib.h>  // strtoll, strtoull, strtof
+#include <string.h>  // strchr
 
 #include <algorithm>  // std::transform
+#include <limits>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "io/io.h"        // Path
@@ -179,15 +185,44 @@ class ArgsBase {
 
    private:
     // Returns false if an invalid value is detected.
+    // Rejects empty strings, trailing characters, values outside the range of
+    // `T` (including negative values for unsigned `T`) instead of silently
+    // wrapping or throwing.
     template <typename T, HWY_IF_NOT_FLOAT(T)>
     static bool SetValue(const char* string, T& t) {
-      t = std::stoi(string);
+      // `strtoull` accepts a leading '-' and wraps, so reject it up front.
+      if (std::is_unsigned_v<T> && strchr(string, '-')) return false;
+
+      errno = 0;
+      char* end = nullptr;
+      if constexpr (std::is_unsigned_v<T>) {
+        const unsigned long long value = strtoull(string, &end, 10);
+        if (end == string || *end != '\0' || errno == ERANGE ||
+            value > static_cast<unsigned long long>(
+                        std::numeric_limits<T>::max())) {
+          return false;
+        }
+        t = static_cast<T>(value);
+      } else {
+        const long long value = strtoll(string, &end, 10);
+        if (end == string || *end != '\0' || errno == ERANGE ||
+            value < static_cast<long long>(std::numeric_limits<T>::min()) ||
+            value > static_cast<long long>(std::numeric_limits<T>::max())) {
+          return false;
+        }
+        t = static_cast<T>(value);
+      }
       return true;
     }
 
     template <typename T, HWY_IF_FLOAT(T)>
     static bool SetValue(const char* string, T& t) {
-      t = std::stof(string);
+      errno = 0;
+      char* end = nullptr;
+      const float value = strtof(string, &end);
+      if (end == string || *end != '\0') return false;
+      if (errno == ERANGE && isinf(value)) return false;  // overflow
+      t = static_cast<T>(value);
       return true;
     }
 
