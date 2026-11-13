@@ -1602,13 +1602,19 @@ HWY_NOINLINE HWY_MAYBE_UNUSED std::vector<TokenAndProb> TopK(
     }
   }
 
-  hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), k,
-                hwy::SortDescending());
-  hwy::VQSort(packed_token_probs.data(), k, hwy::SortDescending());
+  // `accept_token` may have rejected so many tokens that fewer than `k` remain.
+  HWY_ASSERT(!packed_token_probs.empty());  // at least one token must be OK
+  const size_t num = HWY_MIN(k, packed_token_probs.size());
+  // `VQSelect` requires `num < size`; nothing to select otherwise.
+  if (num < packed_token_probs.size()) {
+    hwy::VQSelect(packed_token_probs.data(), packed_token_probs.size(), num,
+                  hwy::SortDescending());
+  }
+  hwy::VQSort(packed_token_probs.data(), num, hwy::SortDescending());
 
   std::vector<TokenAndProb> token_probs;
-  token_probs.reserve(k);
-  for (int32_t i = 0; i < static_cast<int32_t>(k); ++i) {
+  token_probs.reserve(num);
+  for (size_t i = 0; i < num; ++i) {
     token_probs.push_back(UnpackTokenAndProb(packed_token_probs[i]));
   }
   return token_probs;
@@ -1619,9 +1625,11 @@ HWY_NOINLINE HWY_MAYBE_UNUSED int SampleTopK(Logits logits, size_t k,
                                              RngStream& gen, float temperature,
                                              TAcceptToken& accept_token) {
   std::vector<TokenAndProb> token_probs = TopK(logits, k, accept_token);
-  std::vector<int> topk_indices(k);
-  std::vector<float> topk_probs(k);
-  for (size_t i = 0; i < k; ++i) {
+  // May be shorter than `k` if `accept_token` rejected most tokens.
+  const size_t num = token_probs.size();
+  std::vector<int> topk_indices(num);
+  std::vector<float> topk_probs(num);
+  for (size_t i = 0; i < num; ++i) {
     topk_indices[i] = token_probs[i].token;
     topk_probs[i] = token_probs[i].prob;
   }
