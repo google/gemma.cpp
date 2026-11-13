@@ -39,6 +39,8 @@ HWY_INLINE_VAR constexpr int kSkipKV = 1;
 
 HWY_INLINE_VAR constexpr size_t kMaxQKVDim = 1024;
 
+constexpr size_t kEmbeddingGemma2Dim = 768;
+
 #ifndef GEMMA_FUSED_FFN
 #define GEMMA_FUSED_FFN 1
 #endif  // !GEMMA_FUSED_FFN
@@ -328,6 +330,7 @@ enum class Model {
   GEMMA4_E2B_LM = GEMMA4_2B_LM,
   GEMMA4_E4B,
   GEMMA4_E4B_LM,
+  EMBEDDING_GEMMA2_LM,
   kSentinel,
 };
 
@@ -347,6 +350,10 @@ static inline bool IsPaliGemma(Model model) {
 static inline bool IsQwen3(Model model) {
   return model == Model::QWEN3_600M || model == Model::QWEN3_2B ||
          model == Model::QWEN3_4B;
+}
+
+static inline bool IsEmbeddingGemma2(Model model) {
+  return model == Model::EMBEDDING_GEMMA2_LM;
 }
 
 static inline bool IsObsolete(Model model) {
@@ -849,7 +856,18 @@ struct ModelConfig : public IFields {
   }
 
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
-  bool IsEmbedding() const { return false; }
+
+  bool IsEmbedding() const {
+    if (IsEmbeddingGemma2(model)) return true;
+    return false;
+  }
+
+  size_t EmbeddingProjDim() const {
+    if (IsEmbeddingGemma2(model)) return kEmbeddingGemma2Dim;
+    return 0;
+  }
+
+  bool HasPLETable() const { return ple_dim > 0 && !IsEmbeddingGemma2(model); }
 
   // Major version of the model family, reflecting architecture changes. This is
   // more convenient to compare than `Model` because that also includes the

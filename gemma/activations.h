@@ -529,6 +529,12 @@ struct Activations {
         s_ffw_in(num_layers, max_workers),
         s_ffw_hidden(num_layers, max_workers),
         s_ffw_out(num_layers, max_workers),
+        pooled(MatFactory("pooled", config.IsEmbedding() ? 1 : 0,
+                          config.model_dim, ctx.allocator,
+                          MatPadding::kPacked)),
+        h1(MatFactory("h1", config.IsEmbedding() ? 1 : 0,
+                      config.EmbeddingProjDim(), ctx.allocator,
+                      MatPadding::kPacked)),
         router_in(MatFactory("router_in",
                              MoEBatchSize(moe_layer_config, batch_size),
                              config.model_dim, ctx.allocator)),
@@ -631,6 +637,10 @@ struct Activations {
     }
     if (config.hc_mult > 1) {
       hc_mixes.AllocateAndAttachRowPtrs(row_ptrs);
+    }
+    if (config.IsEmbedding()) {
+      pooled.AllocateAndAttachRowPtrs(row_ptrs);
+      h1.AllocateAndAttachRowPtrs(row_ptrs);
     }
 
     if (config.is_encoder_decoder) {
@@ -797,6 +807,10 @@ struct Activations {
   TensorStats s_ffw_in;
   TensorStats s_ffw_hidden;  // after Activation+gating
   TensorStats s_ffw_out;
+
+  // Embedding pooling and projection activations.
+  MatStorageT<float> pooled;
+  MatStorageT<float> h1;
 
   // For MoE layers. These are used outside the expert-parallel loop:
   MatStorageT<float> router_in;
