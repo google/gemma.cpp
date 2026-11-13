@@ -2035,6 +2035,7 @@ HWY_INLINE void MultiplyByScaleAndQuantScale(
 
 template <size_t kTargetLanes = 4, class D, typename V>
 HWY_INLINE V SumReduceSegments(D d, V v) {
+#if HWY_HAVE_CONSTEXPR_LANES
   constexpr size_t L = HWY_MAX_LANES_D(D);
   if constexpr (L <= kTargetLanes) {
     return v;
@@ -2047,6 +2048,12 @@ HWY_INLINE V SumReduceSegments(D d, V v) {
     auto reduced_half = SumReduceSegments<kTargetLanes>(d_half, sum);
     return hn::ZeroExtendVector(d, reduced_half);
   }
+#else
+  for (size_t half = hn::Lanes(d) / 2; half >= kTargetLanes; half /= 2) {
+    v = hn::Add(v, hn::SlideDownLanes(d, v, half));
+  }
+  return hn::IfThenElseZero(hn::FirstN(d, kTargetLanes), v);
+#endif
 }
 
 // NOLINTNEXTLINE(google-readability-namespace-comments)
