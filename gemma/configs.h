@@ -133,6 +133,8 @@ enum class KVEncoding {
   kBF16MatrixAccumulation = 7,
   kInt8MatrixAccumulation = 8,
   kInt8VNNITwoTranspositions = 9,
+  // Same layout as kInt8, but two 4-bit values per byte (see kv_transcoding.h).
+  kInt4 = 10,
 };
 
 // Returns a string representation of the KVEncoding.
