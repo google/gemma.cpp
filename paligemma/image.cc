@@ -24,7 +24,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <iostream>
 #include <limits>
 #include <string>
 #include <utility>
@@ -41,6 +40,7 @@ namespace {
 // Returns the linearly scaled index in [0, to_size) closest to the
 // value in [0, from_size).
 int NearestNeighbor(int value, int from_size, int to_size) {
+  if (from_size <= 1 || to_size <= 1) return 0;
   float scale_factor = static_cast<float>(to_size - 1) / (from_size - 1);
   // Apply nearest neighbor rounding.
   int nn = static_cast<int>(std::round(value * scale_factor));
@@ -69,21 +69,21 @@ const char* CheckP6Format(const char* pos, const char* end) {
 }
 
 const char* SkipWhitespaceAndComments(const char* pos, const char* end) {
-  while (pos < end && std::isspace(*pos)) ++pos;
+  while (pos < end && std::isspace(static_cast<unsigned char>(*pos))) ++pos;
   while (pos < end && *pos == '#') {  // Skip comment lines.
     while (pos < end && !IsLineBreak(*pos)) ++pos;
-    while (pos < end && std::isspace(*pos)) ++pos;
+    while (pos < end && std::isspace(static_cast<unsigned char>(*pos))) ++pos;
   }
   return pos;
 }
 
 const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
-  if (pos == end || !std::isdigit(*pos)) {
+  if (pos == end || !std::isdigit(static_cast<unsigned char>(*pos))) {
     return nullptr;
   }
   num = 0;
-  for (; pos < end && std::isdigit(*pos); ++pos) {
-    const size_t digit = *pos - '0';
+  for (; pos < end && std::isdigit(static_cast<unsigned char>(*pos)); ++pos) {
+    const size_t digit = static_cast<unsigned char>(*pos) - '0';
     if (num > (SIZE_MAX - digit) / 10) {
       return nullptr;  // overflow
     }
@@ -96,7 +96,7 @@ const char* ParseUnsigned(const char* pos, const char* end, size_t& num) {
 bool Image::ReadPPM(const std::string& filename) {
   Path path(filename);
   if (!path.Exists()) {
-    std::cerr << filename << " does not exist\n";
+    HWY_WARN("%s does not exist", filename.c_str());
     return false;
   }
   const std::string content = ReadFileToString(path);
@@ -107,54 +107,56 @@ bool Image::ReadPPM(const std::string& filename) {
 bool Image::ReadPPM(const hwy::Span<const char>& buf) {
   const char* pos = CheckP6Format(buf.cbegin(), buf.cend());
   if (!pos) {
-    std::cerr << "We only support binary PPM (P6)\n";
+    HWY_WARN("We only support binary PPM (P6)");
     return false;
   }
   size_t width, height, max_value;
   pos = SkipWhitespaceAndComments(pos, buf.cend());
   pos = ParseUnsigned(pos, buf.cend(), width);
   if (!pos) {
-    std::cerr << "Reached end before width\n";
+    HWY_WARN("Reached end before width");
     return false;
   }
   pos = SkipWhitespaceAndComments(pos, buf.cend());
   pos = ParseUnsigned(pos, buf.cend(), height);
   if (!pos) {
-    std::cerr << "Reached end before height\n";
+    HWY_WARN("Reached end before height");
     return false;
   }
   pos = SkipWhitespaceAndComments(pos, buf.cend());
   pos = ParseUnsigned(pos, buf.cend(), max_value);
   if (!pos) {
-    std::cerr << "Reached end before max_value\n";
+    HWY_WARN("Reached end before max_value");
     return false;
   }
-  if (max_value <= 0 || max_value > 255) {
-    std::cerr << "Unsupported max value " << max_value << "\n";
+  if (max_value == 0 || max_value > 255) {
+    HWY_WARN("Unsupported max value %zu", max_value);
+    return false;
+  }
+  // Policy sanity limit (VLM inputs are ~1k pixels per side). Byte-count
+  // overflow is independently prevented by the INT32_MAX / height check below
+  // (width * 3 cannot overflow size_t while width <= kMaxImageDim).
+  constexpr size_t kMaxImageDim = 65535;
+  if (width == 0 || height == 0 || width > kMaxImageDim ||
+      height > kMaxImageDim ||
+      width * 3 > static_cast<size_t>(INT32_MAX) / height) {
+    HWY_WARN("Unsupported PPM dimensions %zu x %zu", width, height);
     return false;
   }
   // P6 requires exactly one whitespace character after the header.
-  if (!std::isspace(*pos)) {
-    std::cerr << "Missing whitespace after header\n";
+  if (pos == buf.cend() || !std::isspace(static_cast<unsigned char>(*pos))) {
+    HWY_WARN("Missing whitespace after header");
     return false;
   }
   ++pos;
-  if (width == 0 || height == 0) {
-    HWY_ABORT("Invalid zero dimension\n");
-    return false;
-  }
-  if (width > SIZE_MAX / 3 || width * 3 > SIZE_MAX / height) {
-    HWY_ABORT("Image dimensions overflow\n");
-    return false;
-  }
   const size_t data_size = width * height * 3;
-  if (buf.cend() - pos < static_cast<ptrdiff_t>(data_size)) {
-    std::cerr << "Insufficient data remaining\n";
+  if (static_cast<size_t>(buf.cend() - pos) < data_size) {
+    HWY_WARN("Insufficient data remaining");
     return false;
   }
   data_.resize(data_size);
-  width_ = width;
-  height_ = height;
+  width_ = static_cast<int>(width);
+  height_ = static_cast<int>(height);
   for (size_t i = 0; i < data_size; ++i) {
     uint8_t value = pos[i];
     data_[i] = StretchToSigned(static_cast<float>(value) / max_value);
@@ -187,6 +189,8 @@ void Image::Set(int width, int height, const float* data) {
 
 // This is surprisingly inexpensive for small images (2 ms).
 void Image::Resize(int new_width, int new_height) {
+  HWY_ASSERT(width_ > 0 && height_ > 0);
+  HWY_ASSERT(data_.size() == static_cast<size_t>(width_) * height_ * 3);
   HWY_ASSERT(new_width > 0 && new_height > 0);
   HWY_ASSERT(new_width <= INT32_MAX / 3 &&
              new_width * 3 <= INT32_MAX / new_height);
@@ -211,6 +215,8 @@ void Image::Resize(int new_width, int new_height) {
 }
 
 void Image::ResizeBilinear(int new_width, int new_height) {
+  HWY_ASSERT(width_ > 0 && height_ > 0);
+  HWY_ASSERT(data_.size() == static_cast<size_t>(width_) * height_ * 3);
   HWY_ASSERT(new_width > 0 && new_height > 0);
   HWY_ASSERT(new_width <= INT32_MAX / 3 &&
              new_width * 3 <= INT32_MAX / new_height);
@@ -259,7 +265,7 @@ bool Image::WriteBinary(const std::string& filename) const {
   // Writes the floating point values as float32 in binary format.
   std::ofstream file(filename);
   if (!file.is_open()) {
-    std::cerr << "Failed to open " << filename << "\n";
+    HWY_WARN("Failed to open %s", filename.c_str());
     return false;
   }
   file.write(reinterpret_cast<const char*>(data_.data()),
@@ -278,14 +284,15 @@ void Image::GetPatch(size_t patch_num, const hwy::Divisor& div_patch_dim,
   const size_t patch_dim = div_patch_dim.GetDivisor();
   const size_t bytes_per_row = (patch_dim * kBytesPerPixel);
   const size_t in_bytes_to_next_row = (width_ * kBytesPerPixel);
+  HWY_ASSERT(width_ > 0 && height_ > 0);
   HWY_ASSERT(size() == static_cast<size_t>(width_) * height_ * kNumChannels);
   HWY_ASSERT(div_patch_dim.Remainder(width_) == 0);
   HWY_ASSERT(div_patch_dim.Remainder(height_) == 0);
   const size_t patches_x = div_patch_dim.Divide(width_);
   size_t patch_y = patch_num / patches_x;
   size_t patch_x = patch_num % patches_x;
-  HWY_DASSERT(0 <= patch_y && patch_y < div_patch_dim.Divide(height_));
-  HWY_DASSERT(0 <= patch_x && patch_x < patches_x);
+  HWY_ASSERT(patch_y < div_patch_dim.Divide(height_));
+  HWY_ASSERT(patch_x < patches_x);
   patch_y *= patch_dim;
   patch_x *= patch_dim;
 

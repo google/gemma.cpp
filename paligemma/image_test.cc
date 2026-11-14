@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
 
 namespace gcpp {
@@ -128,6 +129,109 @@ TEST(ImageTest, Non224) {
     j += 28;
     EXPECT_EQ(patch[n], image.data()[(i * 56 + j) * 3 + k]);
   }
+}
+
+bool ReadPPMFromString(Image& image, const std::string& content) {
+  return image.ReadPPM(hwy::Span<const char>(content.data(), content.size()));
+}
+
+TEST(ImageTest, RejectsInvalidPPMHeaders) {
+  Image image;
+  // ParseUnsigned rejects > SIZE_MAX decimal values without unsigned wrap.
+  EXPECT_FALSE(
+      ReadPPMFromString(image, "P6\n99999999999999999999 1\n255\nXYZ"));
+  // Width that previously overflowed width * 3 in 64-bit math (SIZE_MAX/3 + 1).
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n6148914691236517206 1\n255\nXYZ"));
+  // Zero dimensions must return false cleanly without aborting.
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n0 10\n255\nXYZ"));
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n10 0\n255\nXYZ"));
+  // Dimensions exceeding the kMaxImageDim (65535) policy cap.
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n70000 1\n255\nXYZ"));
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n1 70000\n255\nXYZ"));
+  // Dimensions each <= kMaxImageDim whose byte count exceeds INT32_MAX.
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n40000 40000\n255\nXYZ"));
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n65535 65535\n255\nXYZ"));
+  // Invalid max_value (0 or > 255).
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n1 1\n0\nXYZ"));
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n1 1\n256\nXYZ"));
+  // Header ending right after max_value without trailing whitespace (no OOB).
+  EXPECT_FALSE(ReadPPMFromString(image, "P6 1 1 255"));
+  EXPECT_FALSE(ReadPPMFromString(image, "P6 1 1 255X"));
+  // Insufficient pixel data remaining.
+  EXPECT_FALSE(ReadPPMFromString(image, "P6\n2 2\n255\n123"));
+}
+
+TEST(ImageTest, Resize1x1) {
+  Image image;
+  // Valid 1x1 PPM followed by Resize (exercises NearestNeighbor from_size==1).
+  ASSERT_TRUE(ReadPPMFromString(image, "P6\n1 1\n255\n\x80\x40\xff"));
+  EXPECT_EQ(image.width(), 1);
+  EXPECT_EQ(image.height(), 1);
+  image.Resize(4, 4);
+  EXPECT_EQ(image.width(), 4);
+  EXPECT_EQ(image.height(), 4);
+  EXPECT_NEAR(image.data()[0], Normalize(0x80), 1e-6f);
+  EXPECT_NEAR(image.data()[1], Normalize(0x40), 1e-6f);
+  EXPECT_NEAR(image.data()[2], Normalize(0xff), 1e-6f);
+
+  // Downsample a 2x2 image with distinct pixels to 1x2 and 1x1 (exercises
+  // NearestNeighbor to_size==1 while from_size > 1).
+  const float quad[2 * 2 * 3] = {
+      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+      2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f,
+  };
+  image.Set(2, 2, quad);
+  image.Resize(1, 2);
+  EXPECT_EQ(image.width(), 1);
+  EXPECT_EQ(image.height(), 2);
+  EXPECT_NEAR(image.data()[0], -1.0f, 1e-6f);
+  EXPECT_NEAR(image.data()[3], 2.0f * (2.0f / 3.0f) - 1.0f, 1e-6f);
+  image.Resize(1, 1);
+  EXPECT_EQ(image.width(), 1);
+  EXPECT_EQ(image.height(), 1);
+  EXPECT_NEAR(image.data()[0], -1.0f, 1e-6f);
+}
+
+TEST(ImageTest, PreconditionsAbortOnEmptyImage) {
+  Image empty;
+  float patch[14 * 14 * 3];
+  EXPECT_DEATH_IF_SUPPORTED(empty.Resize(4, 4), "width_ > 0");
+  EXPECT_DEATH_IF_SUPPORTED(empty.ResizeBilinear(4, 4), "width_ > 0");
+  EXPECT_DEATH_IF_SUPPORTED(empty.GetPatch(0, hwy::Divisor(14), patch),
+                            "width_ > 0");
+
+  Image image;
+  ASSERT_TRUE(ReadPPMFromString(image, "P6\n1 1\n255\n\x80\x40\xff"));
+  image.Resize(14, 14);
+  EXPECT_DEATH_IF_SUPPORTED(image.GetPatch(1, hwy::Divisor(14), patch),
+                            "patch_y <");
+}
+
+TEST(ImageTest, ResizeBilinear1x1And2x2) {
+  Image image;
+  ASSERT_TRUE(ReadPPMFromString(image, "P6\n1 1\n255\n\x20\x60\xa0"));
+  image.ResizeBilinear(3, 3);
+  EXPECT_EQ(image.width(), 3);
+  EXPECT_EQ(image.height(), 3);
+  for (int i = 0; i < 9; ++i) {
+    EXPECT_NEAR(image.data()[i * 3 + 0], Normalize(0x20), 1e-6f);
+    EXPECT_NEAR(image.data()[i * 3 + 1], Normalize(0x60), 1e-6f);
+    EXPECT_NEAR(image.data()[i * 3 + 2], Normalize(0xa0), 1e-6f);
+  }
+  // Same-size ResizeBilinear is a no-op.
+  image.ResizeBilinear(3, 3);
+  EXPECT_EQ(image.width(), 3);
+
+  const float quad[2 * 2 * 3] = {
+      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 2.0f, 2.0f, 2.0f,
+  };
+  image.Set(2, 2, quad);
+  image.ResizeBilinear(4, 4);
+  EXPECT_EQ(image.width(), 4);
+  EXPECT_EQ(image.height(), 4);
+  EXPECT_NEAR(image.data()[0], -1.0f, 1e-6f);
+  EXPECT_NEAR(image.data()[(1 * 4 + 1) * 3], -0.5f, 1e-6f);
+  EXPECT_NEAR(image.data()[4 * 4 * 3 - 1], 1.0f, 1e-6f);
 }
 
 }  // namespace
