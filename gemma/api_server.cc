@@ -16,8 +16,10 @@
 // HTTP API server for gemma.cpp with SSE support
 
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -72,7 +74,8 @@ struct ServerState {
     std::lock_guard<std::mutex> lock(sessions_mutex);
     auto now = std::chrono::steady_clock::now();
     for (auto it = sessions.begin(); it != sessions.end();) {
-      if (now - it->second->last_access > std::chrono::minutes(30)) {
+      if (it->second.use_count() <= 1 &&
+          now - it->second->last_access > std::chrono::minutes(30)) {
         it = sessions.erase(it);
       } else {
         ++it;
@@ -92,6 +95,15 @@ struct ServerState {
     }
     session->last_access = std::chrono::steady_clock::now();
     return session;
+  }
+
+  // Refreshes last_access after inference finishes so long-running or queued
+  // requests are not evicted immediately on completion. Must not be called
+  // while holding inference_mutex.
+  void TouchSession(const std::shared_ptr<Session>& session) {
+    if (!session) return;
+    std::lock_guard<std::mutex> lock(sessions_mutex);  // NOLINT(build/c++11)
+    session->last_access = std::chrono::steady_clock::now();
   }
 };
 
@@ -138,7 +150,8 @@ std::string WrapMessagesWithTurnMarkers(const json& contents) {
 }
 
 // Parse generation config
-RuntimeConfig ParseGenerationConfig(const json& request) {
+RuntimeConfig ParseGenerationConfig(const json& request,
+                                    const ModelConfig& model_config) {
   RuntimeConfig config;
   config.verbosity = 0;
 
@@ -154,10 +167,27 @@ RuntimeConfig ParseGenerationConfig(const json& request) {
       config.temperature = gen_config["temperature"].get<float>();
     }
     if (gen_config.contains("topK")) {
-      config.top_k = gen_config["topK"].get<int>();
+      // Clamp to a safe range: TopK() asserts k != 0 and k <= vocab_size, and
+      // a negative int would wrap to a huge size_t. 1024 is well above any
+      // useful sampling cutoff and well below the smallest Gemma vocab.
+      const size_t vocab_size = model_config.vocab_size;
+      const int64_t max_top_k =
+          vocab_size > 0
+              ? static_cast<int64_t>(HWY_MIN(size_t{1024}, vocab_size))
+              : 1024;
+      int64_t top_k = gen_config["topK"].get<int64_t>();
+      top_k = std::clamp(top_k, static_cast<int64_t>(1), max_top_k);
+      config.top_k = static_cast<size_t>(top_k);
     }
     if (gen_config.contains("maxOutputTokens")) {
-      config.max_generated_tokens = gen_config["maxOutputTokens"].get<size_t>();
+      const int64_t max_seq_len =
+          model_config.max_seq_len > 0
+              ? static_cast<int64_t>(model_config.max_seq_len)
+              : 8192;
+      int64_t max_tokens = gen_config["maxOutputTokens"].get<int64_t>();
+      max_tokens =
+          std::clamp(max_tokens, static_cast<int64_t>(0), max_seq_len);
+      config.max_generated_tokens = static_cast<size_t>(max_tokens);
     }
   }
 
@@ -186,12 +216,13 @@ json CreateAPIResponse(const std::string& text,
 void HandleGenerateContentNonStreaming(ServerState& state,
                                        const httplib::Request& req,
                                        httplib::Response& res) {
+  std::shared_ptr<ServerState::Session> session;
   try {
     json request = json::parse(req.body);
 
     // Get or create session (acquires sessions_mutex, then releases it).
     std::string session_id = request.value("sessionId", GenerateSessionId());
-    auto session = state.GetOrCreateSession(session_id);
+    session = state.GetOrCreateSession(session_id);
 
     // Extract prompt from API format
     std::string prompt;
@@ -205,62 +236,68 @@ void HandleGenerateContentNonStreaming(ServerState& state,
       return;
     }
 
-    // Lock for inference (after sessions_mutex is released).
-    std::lock_guard<std::mutex> lock(state.inference_mutex);
+    json response;
+    {
+      // Lock for inference (after sessions_mutex is released).
+      std::lock_guard<std::mutex> lock(state.inference_mutex);
 
-    // Set up runtime config
-    RuntimeConfig runtime_config = ParseGenerationConfig(request);
+      // Set up runtime config
+      RuntimeConfig runtime_config =
+          ParseGenerationConfig(request, state.gemma->Config());
 
-    runtime_config.stream_token = [](int token, float) { return true; };
+      runtime_config.stream_token = [](int token, float) { return true; };
 
-    // Tokenize prompt
-    std::vector<int> tokens = WrapAndTokenize(
-        state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
-        state.gemma->Config().wrapping, session->abs_pos, prompt);
+      // Tokenize prompt
+      std::vector<int> tokens = WrapAndTokenize(
+          state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
+          state.gemma->Config().wrapping, session->abs_pos, prompt);
 
-    // Run inference with KV cache
-    TimingInfo timing_info = {.verbosity = 0};
-    size_t prefix_end = 0;
+      // Run inference with KV cache
+      TimingInfo timing_info = {.verbosity = 0};
+      size_t prefix_end = 0;
 
-    // Temporarily redirect output to capture response
-    std::stringstream output;
-    runtime_config.stream_token = [&output, &state, &session, &tokens](
-                                      int token, float) {
-      // Skip prompt tokens
-      if (session->abs_pos < tokens.size()) {
+      // Temporarily redirect output to capture response
+      std::stringstream output;
+      runtime_config.stream_token = [&output, &state, &session, &tokens](
+                                        int token, float) {
+        // Skip prompt tokens
+        if (session->abs_pos < tokens.size()) {
+          session->abs_pos++;
+          return true;
+        }
+
         session->abs_pos++;
+
+        // Check for EOS
+        if (state.gemma->Config().IsEOS(token)) {
+          return true;
+        }
+
+        // Decode token
+        std::string token_text;
+        state.gemma->Tokenizer().Decode(std::vector<int>{token}, &token_text);
+        output << token_text;
+
         return true;
-      }
+      };
 
-      session->abs_pos++;
+      state.gemma->Generate(runtime_config, tokens, session->abs_pos,
+                            prefix_end, *session->kv_cache, *state.env,
+                            timing_info);
 
-      // Check for EOS
-      if (state.gemma->Config().IsEOS(token)) {
-        return true;
-      }
-
-      // Decode token
-      std::string token_text;
-      state.gemma->Tokenizer().Decode(std::vector<int>{token}, &token_text);
-      output << token_text;
-
-      return true;
-    };
-
-    state.gemma->Generate(runtime_config, tokens, session->abs_pos, prefix_end,
-                          *session->kv_cache, *state.env, timing_info);
-
-    // Create response
-    json response = CreateAPIResponse(output.str(), false);
-    response["usageMetadata"] = {
-      {"promptTokenCount", tokens.size()},
-      {"candidatesTokenCount", session->abs_pos - tokens.size()},
-      {"totalTokenCount", session->abs_pos}
-    };
+      // Create response
+      response = CreateAPIResponse(output.str(), false);
+      response["usageMetadata"] = {
+          {"promptTokenCount", tokens.size()},
+          {"candidatesTokenCount", session->abs_pos - tokens.size()},
+          {"totalTokenCount", session->abs_pos}};
+    }
+    state.TouchSession(session);
 
     res.set_content(response.dump(), "application/json");
 
   } catch (const json::exception& e) {
+    state.TouchSession(session);
     res.status = 400;
     res.set_content(
         json{{"error",
@@ -268,6 +305,7 @@ void HandleGenerateContentNonStreaming(ServerState& state,
             .dump(),
         "application/json");
   } catch (const std::exception& e) {
+    state.TouchSession(session);
     res.status = 500;
     res.set_content(
         json{{"error", {{"message", std::string("Server error: ") + e.what()}}}}
@@ -312,65 +350,69 @@ void HandleGenerateContentStreaming(ServerState& state,
         "text/event-stream", [&state, request, prompt, session](
                                  size_t offset, httplib::DataSink& sink) {
           try {
-            // Lock for inference (sessions_mutex is NOT held here —
-            // consistent ordering: sessions_mutex before inference_mutex).
-            std::lock_guard<std::mutex> lock(state.inference_mutex);
-
-            // Set up runtime config
-            RuntimeConfig runtime_config = ParseGenerationConfig(request);
-
-            // Tokenize prompt
-            std::vector<int> tokens = WrapAndTokenize(
-                state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
-                state.gemma->Config().wrapping, session->abs_pos, prompt);
-
-            // Stream token callback
-            std::string accumulated_text;
-            auto stream_token = [&](int token, float) {
-              // Skip prompt tokens
-              if (session->abs_pos < tokens.size()) {
-                session->abs_pos++;
-                return true;
-              }
-
-              session->abs_pos++;
-
-              // Check for EOS
-              if (state.gemma->Config().IsEOS(token)) {
-                return true;
-              }
-
-              // Decode token
-              std::string token_text;
-              state.gemma->Tokenizer().Decode(std::vector<int>{token},
-                                              &token_text);
-              accumulated_text += token_text;
-
-              // Send SSE event using unified formatter
-              json event = CreateAPIResponse(token_text, true);
-
-              std::string sse_data = "data: " + event.dump() + "\n\n";
-              sink.write(sse_data.data(), sse_data.size());
-
-              return true;
-            };
-
-            runtime_config.stream_token = stream_token;
-
-            // Run inference with KV cache
-            TimingInfo timing_info = {.verbosity = 0};
-            size_t prefix_end = 0;
-
-            state.gemma->Generate(runtime_config, tokens, session->abs_pos,
-                                  prefix_end, *session->kv_cache, *state.env,
-                                  timing_info);
-
-            // Send final event using unified formatter
             json final_event = CreateAPIResponse("", false);
-            final_event["usageMetadata"] = {
-                {"promptTokenCount", tokens.size()},
-                {"candidatesTokenCount", session->abs_pos - tokens.size()},
-                {"totalTokenCount", session->abs_pos}};
+            {
+              // Lock for inference (sessions_mutex is NOT held here --
+              // consistent ordering: sessions_mutex before inference_mutex).
+              std::lock_guard<std::mutex> lock(state.inference_mutex);
+
+              // Set up runtime config
+              RuntimeConfig runtime_config =
+                  ParseGenerationConfig(request, state.gemma->Config());
+
+              // Tokenize prompt
+              std::vector<int> tokens = WrapAndTokenize(
+                  state.gemma->Tokenizer(), state.gemma->ChatTemplate(),
+                  state.gemma->Config().wrapping, session->abs_pos, prompt);
+
+              // Stream token callback
+              std::string accumulated_text;
+              auto stream_token = [&](int token, float) {
+                // Skip prompt tokens
+                if (session->abs_pos < tokens.size()) {
+                  session->abs_pos++;
+                  return true;
+                }
+
+                session->abs_pos++;
+
+                // Check for EOS
+                if (state.gemma->Config().IsEOS(token)) {
+                  return true;
+                }
+
+                // Decode token
+                std::string token_text;
+                state.gemma->Tokenizer().Decode(std::vector<int>{token},
+                                                &token_text);
+                accumulated_text += token_text;
+
+                // Send SSE event using unified formatter
+                json event = CreateAPIResponse(token_text, true);
+
+                std::string sse_data = "data: " + event.dump() + "\n\n";
+                sink.write(sse_data.data(), sse_data.size());
+
+                return true;
+              };
+
+              runtime_config.stream_token = stream_token;
+
+              // Run inference with KV cache
+              TimingInfo timing_info = {.verbosity = 0};
+              size_t prefix_end = 0;
+
+              state.gemma->Generate(runtime_config, tokens, session->abs_pos,
+                                    prefix_end, *session->kv_cache, *state.env,
+                                    timing_info);
+
+              // Send final event using unified formatter
+              final_event["usageMetadata"] = {
+                  {"promptTokenCount", tokens.size()},
+                  {"candidatesTokenCount", session->abs_pos - tokens.size()},
+                  {"totalTokenCount", session->abs_pos}};
+            }
+            state.TouchSession(session);
 
             std::string final_sse = "data: " + final_event.dump() + "\n\n";
             sink.write(final_sse.data(), final_sse.size());
@@ -382,6 +424,7 @@ void HandleGenerateContentStreaming(ServerState& state,
             sink.done();
             return false;  // End streaming
           } catch (const std::exception& e) {
+            state.TouchSession(session);
             json error_event = {{"error", {{"message", e.what()}}}};
             std::string error_sse = "data: " + error_event.dump() + "\n\n";
             sink.write(error_sse.data(), error_sse.size());
