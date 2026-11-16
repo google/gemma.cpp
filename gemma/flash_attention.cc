@@ -859,7 +859,7 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthInt16(
     VF& sum0_p1, VF& sum1_p0, VF& sum1_p1, VF& sum2_p0, VF& sum2_p1,
     VF& sum3_p0, VF& sum3_p1, VF& sum4_p0, VF& sum4_p1, VF& sum5_p0,
     VF& sum5_p1, VF& sum6_p0, VF& sum6_p1, VF& sum7_p0, VF& sum7_p1) {
-  using DI16 = hn::ScalableTag<int16_t>;
+  using DI16 = hn::Repartition<int16_t, DF>;
   const DI16 di16;
   using VI16 = hn::Vec<DI16>;
   using DI32 = hn::Repartition<int32_t, DF>;
@@ -987,7 +987,7 @@ static HWY_INLINE void QDotKTilexUpTo8TransposedKDoubleWidthBF16(
     VF& sum0_p1, VF& sum1_p0, VF& sum1_p1, VF& sum2_p0, VF& sum2_p1,
     VF& sum3_p0, VF& sum3_p1, VF& sum4_p0, VF& sum4_p1, VF& sum5_p0,
     VF& sum5_p1, VF& sum6_p0, VF& sum6_p1, VF& sum7_p0, VF& sum7_p1) {
-  using DBF = hn::ScalableTag<BF16>;
+  using DBF = hn::Repartition<BF16, DF>;
   const DBF dbf;
   using VBF = hn::Vec<DBF>;
   const PackedSpan<const T> k_transposed_span =
@@ -1611,6 +1611,12 @@ static HWY_INLINE void ComputeSoftmaxAndSVBundle(
   }
 }
 
+// TileFlashAttention steps through KVCache::kTileSize (32) tokens at
+// 2 * Lanes(FlashDF) tokens per step, so at most 16 float lanes (512 bits).
+constexpr size_t kMaxFlashFloatLanes = gcpp::KVCache::kTileSize / 2;
+static_assert(kMaxFlashFloatLanes == 16);
+using FlashDF = hn::CappedTag<float, kMaxFlashFloatLanes>;
+
 template <int kNumQueriesPerLoop, typename KV_T, typename Q_T>
 struct TileFlashAttentionWorkspaceLayout {
   using StepBufT = FlashStepBufT<Q_T>;
@@ -1638,7 +1644,8 @@ struct TileFlashAttentionWorkspaceLayout {
             hwy::RoundUpTo(2 * num_loops * sizeof(size_t), HWY_ALIGNMENT)),
         step_consts_offset(pos_data_offset + pos_data_bytes),
         step_consts_bytes(
-            hwy::RoundUpTo(256 * kNumQueriesPerLoop * 2 * 16 * sizeof(StepBufT),
+            hwy::RoundUpTo(256 * kNumQueriesPerLoop * 2 * kMaxFlashFloatLanes *
+                               sizeof(StepBufT),
                            HWY_ALIGNMENT)),
         step_v_tiles_offset(step_consts_offset + step_consts_bytes),
         step_v_tiles_bytes(
@@ -1672,9 +1679,10 @@ HWY_NOINLINE void TileFlashAttentionReturnExpSumsAndMaxLogitsImpl(
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
     float* HWY_RESTRICT max_logits,
     hwy::AlignedVector<uint8_t>* worker_workspace) {
-  using DF = hn::ScalableTag<float>;
+  using DF = FlashDF;
   const DF df;
-  using DU = hn::ScalableTag<uint32_t>;
+  static_assert(hn::MaxLanes(df) <= kMaxFlashFloatLanes);
+  using DU = hn::Repartition<uint32_t, DF>;
   const DU du;
 
   constexpr int kTileSize = gcpp::KVCache::kTileSize;

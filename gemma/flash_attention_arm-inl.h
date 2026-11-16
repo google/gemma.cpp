@@ -188,7 +188,7 @@ HWY_INLINE void QDotKTilexUpTo8MatrixAccumulation(
   V_ACC acc30 = hn::Zero(d_acc), acc31 = hn::Zero(d_acc),
         acc32 = hn::Zero(d_acc), acc33 = hn::Zero(d_acc);
 
-  using D_INPUT = hn::ScalableTag<T_IN>;
+  using D_INPUT = hn::Repartition<T_IN, DF>;
   const D_INPUT d_input;
   using VecInput = hn::Vec<D_INPUT>;
 
@@ -557,8 +557,9 @@ HWY_INLINE void TileFlashAttentionSVBlockInt8(
 }
 
 template <int kNumQueries, size_t kRegBytes,
-          typename DF_T = hn::ScalableTag<float>,
-          typename DBF_T = hn::ScalableTag<hwy::bfloat16_t>, typename KV_T>
+          typename DF_T = hn::CappedTag<float, kRegBytes / sizeof(float)>,
+          typename DBF_T = hn::Repartition<hwy::bfloat16_t, DF_T>,
+          typename KV_T>
 HWY_INLINE void TileFlashAttentionSVBlockBF16(
     size_t q_base_idx, size_t position, size_t current_kv_start_offset,
     size_t current_kv_idx, size_t actual_steps, size_t qkv_dim,
@@ -825,8 +826,9 @@ HWY_INLINE void TileFlashAttentionSVBlockBF16(
 }
 
 template <int kNumQueries, size_t kRegBytes,
-          typename DF_T = hn::ScalableTag<float>,
-          typename DBF_T = hn::ScalableTag<hwy::bfloat16_t>, typename KV_T>
+          typename DF_T = hn::CappedTag<float, kRegBytes / sizeof(float)>,
+          typename DBF_T = hn::Repartition<hwy::bfloat16_t, DF_T>,
+          typename KV_T>
 HWY_INLINE void TileFlashAttentionSVBlock(
     size_t q_base_idx, size_t position, size_t current_kv_start_offset,
     size_t current_kv_idx, size_t actual_steps, size_t qkv_dim,
@@ -1007,9 +1009,9 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl(
   // block processes channels in groups of 8.
   HWY_DASSERT(att_out.Rows() >= q_count);
   HWY_DASSERT(qkv_dim % 8 == 0);
-  using DF = hn::ScalableTag<float>;
-  using DBF = hn::ScalableTag<hwy::bfloat16_t>;
-  using DU = hn::ScalableTag<uint32_t>;
+  using DF = hn::CappedTag<float, kRegBytes / sizeof(float)>;
+  using DBF = hn::Repartition<hwy::bfloat16_t, DF>;
+  using DU = hn::Repartition<uint32_t, DF>;
   const DF df;
   const DBF dbf;
   const DU du;
@@ -1394,13 +1396,16 @@ HWY_ATTR void TileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
     float* HWY_RESTRICT max_logits,
     hwy::AlignedVector<uint8_t>* worker_workspace) {
+  constexpr size_t kMaxRegBytes = KVCache::kTileSize * sizeof(hwy::bfloat16_t);
+  static_assert(kMaxRegBytes == 64);
 #if HWY_HAVE_CONSTEXPR_LANES
-  constexpr size_t kRegBytes = hn::Lanes(hn::ScalableTag<uint8_t>());
+  constexpr size_t kRegBytes =
+      hn::Lanes(hn::CappedTag<uint8_t, kMaxRegBytes>());
   TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<kRegBytes, KV_T, Q_T>(
       kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,
       att_cap, att_out, exp_denominator_sums, max_logits, worker_workspace);
 #else
-  const size_t reg_bytes = hn::Lanes(hn::ScalableTag<uint8_t>());
+  const size_t reg_bytes = hn::Lanes(hn::CappedTag<uint8_t, kMaxRegBytes>());
   if (reg_bytes == 64) {
     TileFlashAttentionReturnExpSumsAndMaxLogitsBF16_Impl<64, KV_T, Q_T>(
         kvs, q_count, q_base, q_scales, start_pos_per_query, last_pos_per_query,

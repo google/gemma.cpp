@@ -1248,7 +1248,7 @@ HWY_INLINE HWY_MAYBE_UNUSED void MulByConstAndAddTileUpTo8_BF16(
   const size_t qkv_dim = out.Cols();
   HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
   constexpr size_t kMaxLanes = hn::MaxLanes(df);
-  using DBF = hn::ScalableTag<BF16>;
+  using DBF = hn::Repartition<BF16, DF>;
   const DBF dbf;
   using VBF = hn::Vec<DBF>;
   size_t i = 0;
@@ -1859,7 +1859,7 @@ HWY_INLINE void ApplySoftCap(DF df, float att_cap, float one_over_cap, VF& x0,
 }
 
 template <int kNumQueries, class DF, class VF = hn::Vec<DF>,
-          typename DU = hn::ScalableTag<uint32_t>, class VU = hn::Vec<DU>>
+          typename DU = hn::Repartition<uint32_t, DF>, class VU = hn::Vec<DU>>
 HWY_INLINE void ApplyMasking(DF df, DU du, size_t position,
                                const size_t* HWY_RESTRICT first_pos_per_query,
                                const size_t* HWY_RESTRICT last_pos_per_query,
