@@ -21,7 +21,11 @@
 #include <pybind11/stl.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -47,7 +51,11 @@ static void RemoveTrailingZeros(std::vector<int> &vec) {
 // Wrapper around GemmaEnv to expose to Python.
 class GemmaModel {
  public:
-  GemmaModel(const gcpp::GemmaArgs& args) : env_(args), last_prob_(0.0f) {}
+  GemmaModel(const gcpp::GemmaArgs& args, size_t max_seq_len = 0)
+      : env_(args),
+        last_prob_(0.0f),
+        max_seq_len_(max_seq_len > 0 ? max_seq_len
+                                     : env_.MutableKVCache().SeqLen()) {}
 
   // Generates a single example, given a prompt and a callback to stream the
   // generated tokens.
@@ -282,6 +290,10 @@ class GemmaModel {
 
   float GetLastProb() const { return last_prob_; }
 
+  std::vector<int> Tokenize(const std::string& text) const {
+    return env_.Tokenize(text);
+  }
+
   std::string Detokenize(const std::vector<int>& token_ids) const {
     return env_.StringFromTokens(token_ids);
   }
@@ -289,32 +301,65 @@ class GemmaModel {
   bool ModelIsLoaded() const { return env_.GetGemma() != nullptr; }
 
  private:
+
   gcpp::GemmaEnv env_;
   std::unique_ptr<gcpp::ImageTokens> image_tokens_;
+  std::optional<gcpp::KVCache> eval_kv_cache_;
+  std::unique_ptr<gcpp::Activations> eval_activations_;
+  size_t eval_activations_max_tbatch_ = 0;
+  size_t eval_activations_kv_seq_len_ = 0;
+  gcpp::AttentionImpl eval_activations_att_impl_ = gcpp::AttentionImpl::kFlash;
+  size_t dirty_kv_tokens_ = std::numeric_limits<size_t>::max();
   gcpp::TimingInfo timing_info_;
   float last_prob_;
+  size_t max_seq_len_ = 0;
 };
 
 PYBIND11_MODULE(gemma, mod) {
-  py::class_<GemmaModel>(mod, "GemmaModel")
+  py::class_<GemmaModel> gemma_cls(mod, "GemmaModel");
+  gemma_cls
       .def(py::init([](const std::string& tokenizer, const std::string& weights,
-                       size_t max_threads) {
+                       size_t max_threads, size_t seq_len,
+                       size_t prefill_tbatch_size,
+                       const std::string& attention_impl, bool map_weights) {
              gcpp::ThreadingArgs threading;
              threading.max_lps = max_threads;
 
              gcpp::InferenceArgs inference;
              inference.max_generated_tokens = 512;
+             if (seq_len > 0) {
+               // Reserve one extra SIMD row tile (kMaxBF16PerVector) in the
+               // initial KVCache so AVX-512 batched prefill does not need to
+               // allocate a second KVCache in ComputeLikelihood.
+               inference.seq_len =
+                   hwy::RoundUpTo(seq_len, gcpp::kMaxBF16PerVector) +
+                   gcpp::kMaxBF16PerVector;
+             }
+             if (prefill_tbatch_size > 0) {
+               inference.prefill_tbatch_size = prefill_tbatch_size;
+             }
+             if (attention_impl == "auto") {
+               inference.attention_impl = "flash_amx";
+             } else if (!attention_impl.empty()) {
+               inference.attention_impl = attention_impl;
+             }
 
-             const gcpp::GemmaArgs args(gcpp::LoaderArgs(tokenizer, weights),
-                                        threading, inference);
-             auto gemma = std::make_unique<GemmaModel>(args);
+             gcpp::LoaderArgs loader_args(tokenizer, weights);
+             if (map_weights) {
+               loader_args.map = gcpp::Tristate::kTrue;
+             }
+             const gcpp::GemmaArgs args(loader_args, threading, inference);
+             auto gemma = std::make_unique<GemmaModel>(args, seq_len);
              if (!gemma->ModelIsLoaded()) {
                throw std::invalid_argument("Could not load model.");
              }
              return gemma;
            }),
            py::arg("tokenizer_path"), py::arg("weights_path"),
-           py::arg("max_threads") = 0)
+           py::arg("max_threads") = 0, py::arg("seq_len") = 0,
+           py::arg("prefill_tbatch_size") = 0,
+           py::arg("attention_impl") = "flash",
+           py::arg("map_weights") = false)
       // seed arguments are ignored.
       .def("generate_ex", &GemmaModel::GenerateEx, py::arg("prompt"),
            py::arg("stream"), py::arg("max_generated_tokens") = 1024,
@@ -338,5 +383,6 @@ PYBIND11_MODULE(gemma, mod) {
       .def("score_next", &GemmaModel::ScoreNext, py::arg("prompt"),
            py::arg("candidates"))
       .def("get_last_prob", &GemmaModel::GetLastProb)
+      .def("tokenize", &GemmaModel::Tokenize, py::arg("text"))
       .def("detokenize", &GemmaModel::Detokenize, py::arg("token_ids"));
 }

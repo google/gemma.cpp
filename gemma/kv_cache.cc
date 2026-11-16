@@ -280,34 +280,46 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
   if (runtime_config.attention_impl == AttentionImpl::kFlash ||
       IsTiledAttention(runtime_config.attention_impl)) {
+    const bool tiled_only = IsTiledAttention(runtime_config.attention_impl) &&
+                            !config.is_encoder_decoder && !config.HasMLA() &&
+                            config.num_mtp_layers == 0;
     kv_is_scratch = runtime_config.attention_impl == AttentionImpl::kFlash &&
                     !config.is_encoder_decoder && !config.HasMLA();
-    size_t projection_cols = config.KVCacheCols();
-    size_t projection_rows = CappedSeqLen(config, inference_args);
-    if (kv_is_scratch) {
-      projection_cols = 0;
-      for (const LayerConfig& layer : kv_layer_configs) {
-        projection_cols = std::max(projection_cols, layer.CacheLayerSize());
+    if (tiled_only) {
+      // TiledAttention exclusively reads and writes compact_local_kv_cache_ptr
+      // and compact_global_kv_cache_ptr. Keep a 1x1 sentinel in kv_cache so
+      // KVCachePtr::IsEmpty() returns false without allocating O(seq_len)
+      // unused flat/transposed buffers (36 GiB saved at 1M context).
+      kv_cache = MatStorageT<KV_t>("kv", Extents2D(1, 1), allocator,
+                                   MatPadding::kOdd);
+    } else {
+      size_t projection_cols = config.KVCacheCols();
+      size_t projection_rows = CappedSeqLen(config, inference_args);
+      if (kv_is_scratch) {
+        projection_cols = 0;
+        for (const LayerConfig& layer : kv_layer_configs) {
+          projection_cols = std::max(projection_cols, layer.CacheLayerSize());
+        }
+        projection_rows =
+            std::min(projection_rows,
+                     std::max(size_t{1}, runtime_config.prefill_tbatch_size));
       }
-      projection_rows =
-          std::min(projection_rows,
-                   std::max(size_t{1}, runtime_config.prefill_tbatch_size));
+      kv_cache =
+          MatStorageT<KV_t>("kv", Extents2D(projection_rows, projection_cols),
+                            allocator, MatPadding::kOdd);
+      k_cache = MatStorageT<KV_t>(
+          "k",
+          Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
+                                   kMaxBF16PerVector),
+                    k_v_cols),
+          allocator, MatPadding::kPacked);
+      v_cache = MatStorageT<KV_t>(
+          "v",
+          Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
+                                   kMaxBF16PerVector),
+                    k_v_cols),
+          allocator, MatPadding::kPacked);
     }
-    kv_cache =
-        MatStorageT<KV_t>("kv", Extents2D(projection_rows, projection_cols),
-                          allocator, MatPadding::kOdd);
-    k_cache = MatStorageT<KV_t>(
-        "k",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
-                                 kMaxBF16PerVector),
-                  k_v_cols),
-        allocator, MatPadding::kPacked);
-    v_cache = MatStorageT<KV_t>(
-        "v",
-        Extents2D(hwy::RoundUpTo(CappedSeqLen(config, inference_args),
-                                 kMaxBF16PerVector),
-                  k_v_cols),
-        allocator, MatPadding::kPacked);
     const size_t num_tiles =
         hwy::DivCeil(CappedSeqLen(config, inference_args), kTileSize);
     tiled_seq_len = num_tiles * kTileSize;
@@ -485,6 +497,58 @@ void KVCache::ZeroInit() {
   if (compact_global_kv_cache_ptr.HasPtr()) {
     gcpp::ZeroInit(compact_global_kv_cache_ptr);
   }
+  if (ds_state.HasPtr()) gcpp::ZeroInit(ds_state);
+  if (ds_state_snapshot.HasPtr()) gcpp::ZeroInit(ds_state_snapshot);
+}
+
+void KVCache::ZeroInitPrefix(size_t dirty_tokens) {
+  if (dirty_tokens == 0) return;
+
+  if (!kv_head_ptrs.empty()) {
+    const size_t needed_tiles = hwy::DivCeil(dirty_tokens, kTileSize) + 1;
+    for (MatPtr& hp : kv_head_ptrs) {
+      if (!hp.HasPtr()) continue;
+      const size_t dirty_tiles = std::min(hp.Rows(), needed_tiles);
+      hwy::ZeroBytes(hp.RowBytes(0),
+                     dirty_tiles * hp.Stride() * hp.ElementBytes());
+    }
+  } else {
+    if (compact_local_kv_cache_ptr.HasPtr()) {
+      gcpp::ZeroInit(compact_local_kv_cache_ptr);
+    }
+    if (compact_global_kv_cache_ptr.HasPtr()) {
+      gcpp::ZeroInit(compact_global_kv_cache_ptr);
+    }
+  }
+
+  if (kv_cache.HasPtr()) {
+    if (kv_is_scratch || kv_cache.Rows() <= dirty_tokens) {
+      gcpp::ZeroInit(kv_cache);
+    } else {
+      hwy::ZeroBytes(kv_cache.RowBytes(0),
+                     dirty_tokens * kv_cache.Stride() *
+                         kv_cache.ElementBytes());
+    }
+  }
+
+  auto zero_kv_prefix = [&](MatStorageT<KV_t>& cache) {
+    if (!cache.HasPtr()) return;
+    size_t dirty_rows = cache.Rows();
+    if (k_v_cols > 0 && cache.Cols() > k_v_cols) {
+      const size_t group = cache.Cols() / k_v_cols;
+      dirty_rows =
+          std::min(cache.Rows(), hwy::DivCeil(dirty_tokens, group) + 1);
+    } else {
+      dirty_rows = std::min(
+          cache.Rows(),
+          hwy::RoundUpTo(dirty_tokens, kMaxBF16PerVector) + kMaxBF16PerVector);
+    }
+    hwy::ZeroBytes(cache.RowBytes(0),
+                   dirty_rows * cache.Stride() * cache.ElementBytes());
+  };
+  zero_kv_prefix(k_cache);
+  zero_kv_prefix(v_cache);
+
   if (ds_state.HasPtr()) gcpp::ZeroInit(ds_state);
   if (ds_state_snapshot.HasPtr()) gcpp::ZeroInit(ds_state_snapshot);
 }

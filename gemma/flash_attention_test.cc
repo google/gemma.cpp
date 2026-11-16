@@ -700,7 +700,8 @@ void RunTiledFlashAttentionTest(gcpp::KVEncoding kv_encoding,
         kvs, num_queries, bf16_queries.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (attention_impl == AttentionImpl::kFlashAMXInt8) {
     std::vector<int8_t, hwy::AlignedAllocator<int8_t>> int8_queries(
         num_queries * qkv_dim);
@@ -998,7 +999,7 @@ struct TiledFlashAttentionTestSetup {
       case TiledTestKernel::kAmxBF16:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
             kvs, q_count, q_bf16.data() + first_q * kQkvDim, starts, lasts,
-            /*att_cap=*/0.0f, att_out, exp_sums, max_logits);
+            /*att_cap=*/0.0f, att_out, exp_sums, max_logits, workspace);
         break;
       case TiledTestKernel::kAmxInt8:
         DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
@@ -1453,7 +1454,8 @@ void RunTiledFlashAttentionDifferentialTest(
         kvs, num_queries, bf16_queries.data(),
         hwy::Span<const size_t>(start_pos_per_query),
         hwy::Span<const size_t>(last_pos_per_query), att_cap, att_out,
-        exp_denominator_sums.data(), max_logits.data());
+        exp_denominator_sums.data(), max_logits.data(),
+        /*worker_workspace=*/nullptr);
   } else if (opt_impl == AttentionImpl::kFlashAMXInt8) {
     DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(
         kvs, num_queries, int8_queries.data(), q_scales,

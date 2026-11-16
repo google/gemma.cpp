@@ -1392,7 +1392,8 @@ inline void TileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
     hwy::Span<const size_t> start_pos_per_query,
     hwy::Span<const size_t> last_pos_per_query, const float att_cap,
     MatPtrT<float>& att_out, float* HWY_RESTRICT exp_denominator_sums,
-    float* HWY_RESTRICT max_logits) {
+    float* HWY_RESTRICT max_logits,
+    hwy::AlignedVector<uint8_t>* worker_workspace = nullptr) {
 #if GEMMA_HAVE_AMX
   if (hwy::HaveTile64BMatMulBF16()) {
     TileFlashAttentionAMX_BF16_Impl(kvs, q_count, q_base, start_pos_per_query,
@@ -1403,8 +1404,7 @@ inline void TileFlashAttentionReturnExpSumsAndMaxLogitsAMX(
 #endif  // GEMMA_HAVE_AMX
   DispatchTileFlashAttentionReturnExpSumsAndMaxLogitsBF16(
       kvs, q_count, q_base, start_pos_per_query, last_pos_per_query, att_cap,
-      att_out, exp_denominator_sums, max_logits,
-      /*worker_workspace=*/nullptr);
+      att_out, exp_denominator_sums, max_logits, worker_workspace);
 }
 
 inline void TileFlashAttentionReturnExpSumsAndMaxLogitsAMXInt8(

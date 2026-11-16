@@ -1480,7 +1480,7 @@ void LocalAttentionForAllHeadsTokensAndBatch(
               hwy::Span<const size_t>(start_pos_per_query),
               hwy::Span<const size_t>(last_pos_per_query),
               activations.config.att_cap, att_out, exp_denominator_sums.data(),
-              max_logits.data());
+              max_logits.data(), worker_workspace);
 
         } else if (attention_impl == AttentionImpl::kFlashTransposedQsInt16) {
           HWY_DASSERT(activations.int16_queries != nullptr);
