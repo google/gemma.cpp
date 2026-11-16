@@ -19,11 +19,29 @@
 #include <stddef.h>
 
 #include <cmath>
+#include <cstdint>
+#include <limits>
 
 #include "util/mat.h"
+#include "hwy/aligned_allocator.h"  // Span
 #include "hwy/base.h"
 
 namespace gcpp {
+
+// Applies vector logit mask to `logits`.
+// `mask_words` points to an array of uint64_t words where bit i = 1 indicates
+// token i is allowed, and bit i = 0 indicates token i is disallowed.
+// Disallowed tokens are overwritten with `mask_value` (-infinity).
+//
+// Fast Path 1: word == ~0ULL -> all 64 tokens allowed; skip writes.
+// Fast Path 2: word == 0ULL -> all 64 tokens disallowed; vector store
+// mask_value (-inf). General Path: Highway SIMD LoadMaskBits, IfThenElse, and
+// StoreU. Guardrail: Empty mask (0 set bits across entire vocabulary) preserves
+// finite logits.
+void ApplyLogitMaskKernel(
+    hwy::Span<float> logits, const uint64_t* HWY_RESTRICT mask_words,
+    size_t vocab_size,
+    float mask_value = -std::numeric_limits<float>::infinity());
 
 static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
     const Allocator& allocator, size_t qkv_dim, bool half_rope,
