@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <optional>
 
@@ -39,6 +40,9 @@ std::optional<size_t> GetTileSizeBytes(gcpp::KVEncoding encoding,
     case gcpp::KVEncoding::kF32:
     case gcpp::KVEncoding::kF32TwoTranspositions:
       return tileElements * sizeof(float);
+    case gcpp::KVEncoding::kInt4:
+      // Two 4-bit values per byte, plus the same scales as kInt8.
+      return tileElements / 2 + kTileSize * 2 * sizeof(gcpp::KV_microscale_t);
     default:
       return std::nullopt;
   }
@@ -65,6 +69,31 @@ int8_t Quantize(float v, float inv_scale) {
   if (scaled > 127.0f) return 127;
   if (scaled < -127.0f) return -127;
   return hwy::ConvertScalarTo<int8_t>(scaled);
+}
+
+// Symmetric 4-bit quantization: returns q in [-7, 7].
+int8_t QuantizeInt4(float v, float inv_scale) {
+  float scaled = std::nearbyint(v * inv_scale);
+  if (scaled > 7.0f) return 7;
+  if (scaled < -7.0f) return -7;
+  return hwy::ConvertScalarTo<int8_t>(scaled);
+}
+
+// kInt4 stores q + 8 in a nibble. Element `offset` (in the kInt8 layout) is in
+// byte `offset / 2`: the low nibble if `offset` is even, else the high nibble.
+// K offsets pair adjacent tokens and V offsets pair adjacent dims, because
+// kTileSize and qkv_dim are even.
+inline void StoreNibble(uint8_t* data, size_t offset, int8_t q) {
+  const uint8_t nibble = static_cast<uint8_t>(q + 8) & 0xF;
+  uint8_t& byte = data[offset / 2];
+  byte = (offset % 2 == 0) ? static_cast<uint8_t>((byte & 0xF0) | nibble)
+                           : static_cast<uint8_t>((byte & 0x0F) | (nibble << 4));
+}
+
+inline int LoadNibble(const uint8_t* data, size_t offset) {
+  const uint8_t byte = data[offset / 2];
+  const int nibble = (offset % 2 == 0) ? (byte & 0xF) : (byte >> 4);
+  return nibble - 8;
 }
 
 template <typename DecodeKFn, typename DecodeVFn>
@@ -279,6 +308,76 @@ void EncodeTileInt8(bool transposed, size_t qkv_dim, const DecodedTile& decoded,
       [&](size_t dim, size_t token, float val) HWY_ATTR {
         v_data[VOffset(transposed, qkv_dim, dim, token)] =
             Quantize(val, inv_scales_v[token]);
+      });
+}
+
+void EncodeTileInt4(size_t qkv_dim, const DecodedTile& decoded,
+                    hwy::Span<char> out_encoded_tile_data) {
+  HWY_DASSERT(qkv_dim % 2 == 0);
+  uint8_t* k_data = HWY_RCAST_ALIGNED(uint8_t*, out_encoded_tile_data.data());
+  uint8_t* v_data = k_data + qkv_dim * kTileSize / 2;
+  gcpp::KV_microscale_t* scales = HWY_RCAST_ALIGNED(
+      gcpp::KV_microscale_t*, v_data + kTileSize * qkv_dim / 2);
+  gcpp::KV_microscale_t* k_scales = scales;
+  gcpp::KV_microscale_t* v_scales = scales + kTileSize;
+
+  AlignedFloatVector inv_scales_k(kTileSize);
+  AlignedFloatVector inv_scales_v(kTileSize);
+  for (size_t token = 0; token < kTileSize; ++token) {
+    float k_max_abs = 0.0f;
+    float v_max_abs = 0.0f;
+    for (size_t dim = 0; dim < qkv_dim; ++dim) {
+      k_max_abs = std::max(k_max_abs, std::abs(decoded.k_elem(token, dim)));
+      v_max_abs = std::max(v_max_abs, std::abs(decoded.v_elem(token, dim)));
+    }
+    const float scale_k = k_max_abs == 0.0f ? 1.0f : k_max_abs / 7.0f;
+    k_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_k);
+    // Quantize with the stored (bf16) scale, as for kInt8.
+    const float stored_k = hwy::ConvertScalarTo<float>(k_scales[token]);
+    inv_scales_k[token] = stored_k == 0.0f ? 0.0f : 1.0f / stored_k;
+
+    const float scale_v = v_max_abs == 0.0f ? 1.0f : v_max_abs / 7.0f;
+    v_scales[token] = hwy::ConvertScalarTo<gcpp::KV_microscale_t>(scale_v);
+    const float stored_v = hwy::ConvertScalarTo<float>(v_scales[token]);
+    inv_scales_v[token] = stored_v == 0.0f ? 0.0f : 1.0f / stored_v;
+  }
+
+  EncodeTileWithFn(
+      qkv_dim, decoded,
+      [&](size_t dim, size_t token, float val) HWY_ATTR {
+        StoreNibble(k_data, KOffset(/*transposed=*/false, qkv_dim, dim, token),
+                    QuantizeInt4(val, inv_scales_k[token]));
+      },
+      [&](size_t dim, size_t token, float val) HWY_ATTR {
+        StoreNibble(v_data, VOffset(/*transposed=*/false, qkv_dim, dim, token),
+                    QuantizeInt4(val, inv_scales_v[token]));
+      });
+}
+
+void DecodeTileInt4(size_t qkv_dim, hwy::Span<const char> encoded_tile_data,
+                    DecodedTile* out) {
+  HWY_DASSERT(qkv_dim % 2 == 0);
+  const uint8_t* k_data =
+      HWY_RCAST_ALIGNED(const uint8_t*, encoded_tile_data.data());
+  const uint8_t* v_data = k_data + qkv_dim * kTileSize / 2;
+  const gcpp::KV_microscale_t* scales = HWY_RCAST_ALIGNED(
+      const gcpp::KV_microscale_t*, v_data + kTileSize * qkv_dim / 2);
+  const gcpp::KV_microscale_t* k_scales = scales;
+  const gcpp::KV_microscale_t* v_scales = scales + kTileSize;
+
+  DecodeTileWithFn(
+      qkv_dim, out,
+      [&](size_t dim, size_t token) HWY_ATTR {
+        const float scale = hwy::ConvertScalarTo<float>(k_scales[token]);
+        return LoadNibble(k_data,
+                          KOffset(/*transposed=*/false, qkv_dim, dim, token)) *
+               scale;
+      },
+      [&](size_t dim, size_t token) HWY_ATTR {
+        const float scale = hwy::ConvertScalarTo<float>(v_scales[token]);
+        return LoadNibble(v_data,
+                          VOffset(/*transposed=*/false, qkv_dim, dim, token)) *
+               scale;
       });
 }
 
@@ -555,6 +654,10 @@ bool DecodeTile(KVEncoding encoding, hwy::Span<const char> encoded_tile_data,
       DecodeTileInt8MatrixAccumulation(qkv_dim, encoded_tile_data, out);
       return true;
     }
+    case gcpp::KVEncoding::kInt4: {
+      DecodeTileInt4(qkv_dim, encoded_tile_data, out);
+      return true;
+    }
     default:
       return false;
   }
@@ -595,6 +698,10 @@ bool EncodeTile(gcpp::KVEncoding encoding, const DecodedTile& decoded,
     }
     case gcpp::KVEncoding::kInt8MatrixAccumulation: {
       EncodeTileInt8MatrixAccumulation(qkv_dim, decoded, out_encoded_tile_data);
+      return true;
+    }
+    case gcpp::KVEncoding::kInt4: {
+      EncodeTileInt4(qkv_dim, decoded, out_encoded_tile_data);
       return true;
     }
     default:

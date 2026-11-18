@@ -12,6 +12,12 @@ namespace gcpp {
 
 // Returns the size in bytes of a single KV cache tile for a given encoding.
 // Returns std::nullopt if the encoding is unsupported.
+//
+// KVEncoding::kInt4 uses the kInt8 layout (K: [qkv_dim, tile_size],
+// V: [tile_size, qkv_dim], then K and V per-token bf16 scales) with two 4-bit
+// values per byte: element i of the kInt8 layout is in byte i / 2, in the low
+// nibble if i is even. A nibble stores q + 8 for q in [-7, 7]; the value is
+// q * scale, with scale = bf16(absmax / 7) per token.
 std::optional<size_t> GetTileSizeBytes(gcpp::KVEncoding encoding,
                                        size_t qkv_dim);
 
