@@ -15,6 +15,15 @@ bazel_dep(name = "rules_cc", version = "0.2.0")
 bazel_dep(name = "rules_license", version = "1.0.0")
 bazel_dep(name = "rules_python", version = "1.6.3")
 bazel_dep(name = "google_benchmark", version = "1.8.5")
+bazel_dep(name = "sentencepiece", version = "0.2.3", repo_name = "com_google_sentencepiece")
+
+# SentencePiece is not in the Bazel Central Registry yet.
+archive_override(
+    module_name = "sentencepiece",
+    integrity = "sha256-rqv5sq4ad82m5yGrH7n25EuLpN241zQ9xbAq7HD6syQ=",
+    strip_prefix = "sentencepiece-0.2.3",
+    urls = ["https://github.com/google/sentencepiece/archive/refs/tags/v0.2.3.tar.gz"],
+)
 
 # Require a more recent version.
 git_override(
@@ -60,37 +69,6 @@ http_archive(
     strip_prefix = "abseil-py-2.1.0",
     urls = [
         "https://github.com/abseil/abseil-py/archive/refs/tags/v2.1.0.tar.gz",
-    ],
-)
-
-http_archive(
-    name = "com_google_sentencepiece",
-    build_file = "@//bazel:sentencepiece.bazel",
-    patch_args = ["-p1"],
-    patches = ["@//bazel:sentencepiece.patch"],
-    sha256 = "8409b0126ebd62b256c685d5757150cf7fcb2b92a2f2b98efb3f38fc36719754",
-    strip_prefix = "sentencepiece-0.1.96",
-    urls = ["https://github.com/google/sentencepiece/archive/refs/tags/v0.1.96.zip"],
-)
-
-# For sentencepiece
-http_archive(
-    name = "darts_clone",
-    build_file_content = """
-licenses(["notice"])
-exports_files(["LICENSE"])
-package(default_visibility = ["//visibility:public"])
-cc_library(
-    name = "darts_clone",
-    hdrs = [
-        "include/darts.h",
-    ],
-)
-""",
-    sha256 = "c97f55d05c98da6fcaf7f9ecc6a6dc6bc5b18b8564465f77abff8879d446491c",
-    strip_prefix = "darts-clone-e40ce4627526985a7767444b6ed6893ab6ff8983",
-    urls = [
-        "https://github.com/s-yata/darts-clone/archive/e40ce4627526985a7767444b6ed6893ab6ff8983.zip",
     ],
 )
 
