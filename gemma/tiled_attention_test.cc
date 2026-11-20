@@ -5,7 +5,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <tuple>
 #include <vector>
 
 #include "compression/types.h"  // GEMMA_DISABLED_TARGETS
