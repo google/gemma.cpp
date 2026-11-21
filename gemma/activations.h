@@ -100,11 +100,17 @@ struct AttentionActivations {
 
         vit_Q(MatFactory("Q2", batch_size, max_qkv_dim, allocator)),
         vit_K_T(MatFactory(
-            "K2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
+            "K2_T",
+            config.vocab_size == 0
+                ? hwy::RoundUpTo(seq_len, kMaxBF16PerVector)
+                : 0,
             layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         vit_V_T(MatFactory(
-            "V2_T", hwy::RoundUpTo(seq_len, kMaxBF16PerVector),
+            "V2_T",
+            config.vocab_size == 0
+                ? hwy::RoundUpTo(seq_len, kMaxBF16PerVector)
+                : 0,
             layer_config.heads * hwy::RoundUpTo(max_qkv_dim, kMaxBF16PerVector),
             allocator, MatPadding::kPacked)),
         pre_att_rms_out(MatFactory("pre_att_rms_out", batch_size,

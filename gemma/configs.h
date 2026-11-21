@@ -365,7 +365,10 @@ void ForEachModel(const Func& func) {
   }
 }
 
-static inline bool& IsInternalActive() {
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((visibility("default")))
+#endif
+inline bool& IsInternalActive() {
   static bool active = false;
   return active;
 }
