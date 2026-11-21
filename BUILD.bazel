@@ -1036,6 +1036,23 @@ cc_library(
 )
 
 cc_test(
+    name = "embeddings_test",
+    srcs = ["gemma/embeddings_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":mat",
+        ":matmul",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:types",
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
     name = "gemma_test",
     srcs = [
         "evals/gemma_test.cc",

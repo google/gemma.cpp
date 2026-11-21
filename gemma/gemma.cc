@@ -150,10 +150,13 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
 
   ResidualConnection(activations.ffw_out, activations.x, layer,
                      /*is_attention=*/false, env.ctx);
+  const Model m = activations.attention.config.model;
   if (layer_config.ple_dim > 0) {
+    const size_t ple_rows =
+        IsEmbeddingGemma2(m) ? activations.x.Rows() : num_tokens;
     // 1. Gate: [batch, model_dim] @ [model_dim, ple_dim] -> [batch, ple_dim]
     // Use activations.x_bf to convert activations.x
-    for (size_t r = 0; r < num_tokens; ++r) {
+    for (size_t r = 0; r < ple_rows; ++r) {
       DemoteRowToBF16(activations.x.Row(r), activations.x_bf.Row(r),
                       layer_config.model_dim);
     }
@@ -166,8 +169,8 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
     const size_t ple_dim = layer_config.ple_dim;
     const size_t layer_offset = layer_idx * ple_dim;
 
-    ParallelFor(Parallelism::kFlat, num_tokens, env.ctx, /*cluster_idx=*/0,
-                Callers::kActivationBatched,
+    ParallelFor(Parallelism::kFlat, ple_rows, env.ctx,
+                /*cluster_idx=*/0, Callers::kActivationBatched,
                 [&](uint64_t token_idx, size_t worker) HWY_ATTR {
                   BF16* g_row = activations.gate_out.Row(token_idx);
                   const float* p_row =
@@ -190,8 +193,8 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
     // 4. Norm and Residual Add
     RMSNormInplaceBatched(layer.post_ple_ns, activations.ffw_out, env.ctx);
 
-    ParallelFor(Parallelism::kFlat, num_tokens, env.ctx, /*cluster_idx=*/0,
-                Callers::kOpsAddFromBatched,
+    ParallelFor(Parallelism::kFlat, ple_rows, env.ctx,
+                /*cluster_idx=*/0, Callers::kOpsAddFromBatched,
                 [&](uint64_t token_idx, size_t worker) {
                   AddFrom(activations.ffw_out.Row(token_idx),
                           activations.x.Row(token_idx), layer_config.model_dim,
@@ -199,7 +202,6 @@ HWY_NOINLINE void TransformerLayer(const size_t num_tokens,
                 });
   }
 
-  const Model m = activations.attention.config.model;
   if (layer.skip_scale.HasPtr() && m != Model::GEMMA4_26B_MOE) {
     float skip_scale_val = 1.0f;
     if (layer.skip_scale.GetType() == Type::kF32) {
@@ -1092,6 +1094,8 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
                 });
   });
 
+  if (!weights.ple_embeddings.HasPtr()) return;
+
   // 5. Add token embedding and apply input scale
   const float scale_input = 1.0f / sqrtf(2.0f);
   // Use pre-allocated activations.ple_token_emb
@@ -1866,6 +1870,296 @@ void GenerateImageTokensT(const ModelConfig& config,
   timing_info.NotifyImageTokenDone(num_tokens);
 }
 
+// Given the sum over `num_tokens` final-normed rows in `activations.pooled`
+// row 0, computes their mean, applies the projection head, and writes the
+// L2-normalized (Matryoshka-truncated) result to `embedding`.
+static void PoolAndProjectEmbedding(const RuntimeConfig& runtime_config,
+                                    const ModelConfig& config,
+                                    const WeightsPtrs& weights,
+                                    size_t num_tokens, Activations& activations,
+                                    hwy::AlignedVector<float>& embedding,
+                                    MatMulEnv& env) {
+  namespace hn = hwy::HWY_NAMESPACE;
+  using DF = hn::ScalableTag<float>;
+  using VF = hn::Vec<DF>;
+  const DF df;
+  const size_t N = hn::Lanes(df);
+  const size_t model_dim = config.model_dim;
+
+  float* HWY_RESTRICT pooled_ptr = activations.pooled.Row(0);
+  MulByConst(1.0f / static_cast<float>(num_tokens), pooled_ptr, model_dim);
+
+  // L2-normalizes the first `embed_dim` entries of `src` into `embedding`.
+  // Truncating before normalizing is what makes each shorter Matryoshka
+  // prefix a unit vector in its own right.
+  const auto normalize_prefix = [&](const float* HWY_RESTRICT src,
+                                    size_t full_dim) HWY_ATTR {
+    const size_t out_dim = runtime_config.embed_dim > 0
+                               ? HWY_MIN(runtime_config.embed_dim, full_dim)
+                               : full_dim;
+    VF v_sum = hn::Zero(df);
+    size_t i = 0;
+    for (; i + N <= out_dim; i += N) {
+      const VF v = hn::Load(df, src + i);
+      v_sum = hn::MulAdd(v, v, v_sum);
+    }
+    if (i < out_dim) {
+      const VF v = hn::LoadN(df, src + i, out_dim - i);
+      v_sum = hn::MulAdd(v, v, v_sum);
+    }
+    const float l2_sum = hn::ReduceSum(df, v_sum);
+    // Otherwise the reciprocal below is inf/NaN and the failure is silent.
+    HWY_ASSERT(l2_sum > 0.0f);
+    embedding.resize(out_dim);
+    MulByConstTo(1.0f / sqrtf(l2_sum), src, embedding.data(), out_dim, env.ctx,
+                 /*worker=*/0);
+  };
+
+  HWY_DASSERT(weights.default_proj.HasPtr());
+  PROFILER_ZONE("Gen.Embedding.Proj");
+  CallMatMul(activations.pooled, weights.default_proj, /*add=*/nullptr, env,
+             activations.h1);
+  normalize_prefix(activations.h1.Row(0), weights.default_proj.Rows());
+}
+
+// Returns `runtime_config_in` adapted for embedding prompts of at most
+// `max_tokens` tokens, each in a single pass through the layers.
+static RuntimeConfig EmbeddingRuntimeConfig(
+    const RuntimeConfig& runtime_config_in, size_t max_tokens) {
+  RuntimeConfig runtime_config = runtime_config_in;
+  runtime_config.stream_token = [](int, float) { return true; };
+  runtime_config.prefill_tbatch_size = max_tokens;
+  // TiledAttention is the validated path for embedding prefill.
+  if (runtime_config.attention_impl == AttentionImpl::kFlash) {
+    runtime_config.attention_impl = AttentionImpl::kFlashTransposedQs;
+  }
+  return runtime_config;
+}
+
+// Writes the sum of `num_rows` rows of `x`, starting at `row` and `stride`
+// rows apart, to row 0 of `pooled`.
+static void SumRows(const MatStorageT<float>& x, size_t row, size_t stride,
+                    size_t num_rows, MatStorageT<float>& pooled,
+                    ThreadingContext& ctx) {
+  PROFILER_ZONE("Gen.Embedding.Pool");
+  float* HWY_RESTRICT sum = pooled.Row(0);
+  ZeroInit(pooled);
+  for (size_t i = 0; i < num_rows; ++i) {
+    AddFrom(x.Row(row + i * stride), sum, x.Cols(), ctx, /*worker=*/0);
+  }
+}
+
+void ComputeEmbeddingT(const RuntimeConfig& runtime_config_in,
+                       const PromptTokens& prompt, const ModelConfig& config,
+                       const InferenceArgs& inference,
+                       const WeightsPtrs& weights,
+                       hwy::AlignedVector<float>& embedding, MatMulEnv& env) {
+  HWY_ASSERT(config.IsEmbedding());
+  const size_t num_tokens = prompt.size();
+  HWY_ASSERT(num_tokens > 0);
+
+  const RuntimeConfig runtime_config =
+      EmbeddingRuntimeConfig(runtime_config_in, num_tokens);
+
+  KVCache kv_cache(config, inference, runtime_config, env.ctx.allocator);
+  HWY_ASSERT(num_tokens <= kv_cache.SeqLen());
+
+  Activations activations(runtime_config, config, num_tokens, kv_cache.SeqLen(),
+                          env.ctx, env.row_ptrs);
+
+  // A non-zero `prefix_end` makes attention over the prompt bidirectional.
+  const size_t prefix_end = num_tokens;
+
+  AllQueries all_queries(prompt, /*pos=*/0, prefix_end,
+                         hwy::Span<KVCache>(&kv_cache, 1));
+  QBatch qbatch(/*start=*/0, /*max_size=*/1, all_queries);
+  hwy::BitSet4096<> non_eos;
+
+  {
+    GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbedding);
+
+    PrefillTBatch(config, runtime_config, weights, activations, qbatch, env,
+                  non_eos);
+
+    RMSNormInplaceBatched(weights.final_norm_scale, activations.x, env.ctx);
+
+    SumRows(activations.x, /*row=*/0, /*stride=*/1, num_tokens,
+            activations.pooled, env.ctx);
+    PoolAndProjectEmbedding(runtime_config, config, weights, num_tokens,
+                            activations, embedding, env);
+  }
+
+  // Print results if profiler is enabled.
+  env.ctx.profiler.PrintResults();
+}
+
+// Prompts that pass through the layers together.
+struct EmbeddingGroup {
+  size_t begin;       // Index of its first prompt in `order`.
+  size_t size;        // Number of prompts.
+  size_t num_tokens;  // Of its longest (= first) prompt.
+};
+
+// Sorts the prompts by decreasing length into `order` and splits them into
+// groups of at most `kMaxBatchSize` rows. Groups are balanced, e.g. 32 + 32
+// rather than 56 + 8 prompts of equal length.
+static std::vector<EmbeddingGroup> GroupByLength(
+    hwy::Span<const PromptTokens> prompts, std::vector<size_t>& order) {
+  order.resize(prompts.size());
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return prompts[a].size() > prompts[b].size();
+  });
+  std::vector<EmbeddingGroup> groups;
+  for (size_t i = 0; i < prompts.size();) {
+    const size_t num_tokens = prompts[order[i]].size();
+    const size_t max_size = kMaxBatchSize / num_tokens;
+    const size_t remaining = prompts.size() - i;
+    const size_t size =
+        remaining <= max_size
+            ? remaining
+            : hwy::DivCeil(remaining, hwy::DivCeil(remaining, max_size));
+    groups.push_back(EmbeddingGroup{i, size, num_tokens});
+    i += size;
+  }
+  return groups;
+}
+
+// (Re)allocates the buffers of `ws` unless they suffice for `groups`.
+static void ReserveEmbeddingsWorkspace(
+    const std::vector<EmbeddingGroup>& groups, const ModelConfig& config,
+    const InferenceArgs& inference, const RuntimeConfig& runtime_config,
+    MatMulEnv& env, EmbeddingsWorkspace& ws) {
+  const size_t max_tokens = groups[0].num_tokens;
+  size_t max_size = 0;
+  size_t max_rows = 0;
+  for (const EmbeddingGroup& group : groups) {
+    max_size = HWY_MAX(max_size, group.size);
+    max_rows = HWY_MAX(max_rows, group.size * group.num_tokens);
+  }
+  if (ws.activations && ws.num_queries >= max_size &&
+      ws.num_tokens >= max_tokens && ws.num_rows >= max_rows &&
+      ws.attention_impl == runtime_config.attention_impl) {
+    return;
+  }
+  ws.activations.reset();
+  ws.kv_caches.clear();
+  // Embeddings do not generate, hence the KV caches only need to hold the
+  // prompt. Allocating and zeroing `inference.seq_len` would dominate.
+  InferenceArgs kv_inference = inference;
+  kv_inference.seq_len = max_tokens;
+  ws.kv_caches.reserve(max_size);
+  for (size_t qi = 0; qi < max_size; ++qi) {
+    ws.kv_caches.emplace_back(config, kv_inference, runtime_config,
+                              env.ctx.allocator);
+  }
+  HWY_ASSERT(max_tokens <= ws.kv_caches[0].SeqLen());
+  ws.activations = std::make_unique<Activations>(
+      runtime_config, config, max_rows, ws.kv_caches[0].SeqLen(), env.ctx,
+      env.row_ptrs);
+  ws.num_queries = max_size;
+  ws.num_tokens = max_tokens;
+  ws.num_rows = max_rows;
+  ws.attention_impl = runtime_config.attention_impl;
+}
+
+// Embeds `num_tokens` tokens of each of `prompts` into `activations.x`, with
+// token `ti` of prompt `qi` in row `ti * prompts.size() + qi`, which is the
+// `QBatch` layout of `TransformerLayer`. Shorter prompts are padded at the end.
+static void EmbedGroup(hwy::Span<const PromptTokens> prompts, size_t num_tokens,
+                       const ModelConfig& config, const WeightsPtrs& weights,
+                       Activations& activations, ThreadingContext& ctx) {
+  const size_t num_rows = num_tokens * prompts.size();
+  activations.SetBatchSize(num_rows);
+  activations.token_ids.resize(num_rows);
+  activations.is_padding.assign(num_rows, 0);
+  for (size_t ti = 0; ti < num_tokens; ++ti) {
+    for (size_t qi = 0; qi < prompts.size(); ++qi) {
+      const size_t row = ti * prompts.size() + qi;
+      const bool is_padding = ti >= prompts[qi].size();
+      activations.is_padding[row] = is_padding;
+      // Padding: any valid token works because its rows are not pooled.
+      const int token = prompts[qi][is_padding ? 0 : ti];
+      activations.token_ids[row] = token;
+      EmbedMMToken(token, row, /*pos=*/ti, /*pos_in_prompt=*/ti, config,
+                   weights, activations.x, ctx, /*image_tokens=*/nullptr,
+                   /*image_token_position=*/0);
+    }
+  }
+}
+
+// Batched `ComputeEmbeddingT`: prompts of similar length pass through the
+// layers together, see `GroupByLength`. The padding of shorter prompts does
+// not change their embeddings: `prefix_end` limits bidirectional attention to
+// the real tokens, and only real tokens are pooled.
+void ComputeEmbeddingsT(const RuntimeConfig& runtime_config_in,
+                        hwy::Span<const PromptTokens> prompts,
+                        const ModelConfig& config,
+                        const InferenceArgs& inference,
+                        const WeightsPtrs& weights,
+                        std::vector<hwy::AlignedVector<float>>& embeddings,
+                        MatMulEnv& env, EmbeddingsWorkspace* workspace) {
+  HWY_ASSERT(config.IsEmbedding());
+  HWY_ASSERT(prompts.size() != 0);
+  // As for `ComputeEmbeddingT`, each prompt passes through the layers at once.
+  for (const PromptTokens& prompt : prompts) {
+    HWY_ASSERT(prompt.size() != 0 && prompt.size() <= kMaxBatchSize);
+  }
+
+  std::vector<size_t> order;
+  const std::vector<EmbeddingGroup> groups = GroupByLength(prompts, order);
+  const RuntimeConfig runtime_config =
+      EmbeddingRuntimeConfig(runtime_config_in, groups[0].num_tokens);
+  EmbeddingsWorkspace local_workspace;
+  EmbeddingsWorkspace& ws = workspace ? *workspace : local_workspace;
+  ReserveEmbeddingsWorkspace(groups, config, inference, runtime_config, env,
+                             ws);
+  Activations& activations = *ws.activations;
+
+  GCPP_ZONE(env.ctx, hwy::Profiler::GlobalIdx(), Zones::kGenEmbedding);
+  embeddings.resize(prompts.size());
+  std::vector<PromptTokens> group_prompts;
+  std::vector<size_t> prefix_end;
+  for (const EmbeddingGroup& group : groups) {
+    group_prompts.clear();
+    prefix_end.clear();
+    for (size_t qi = 0; qi < group.size; ++qi) {
+      group_prompts.push_back(prompts[order[group.begin + qi]]);
+      prefix_end.push_back(group_prompts.back().size());
+    }
+    const hwy::Span<const PromptTokens> span(group_prompts.data(), group.size);
+    AllQueries all_queries(
+        span, hwy::Span<KVCache>(ws.kv_caches.data(), group.size),
+        hwy::Span<const size_t>(prefix_end.data(), group.size));
+    QBatch qbatch(/*start=*/0, /*max_size=*/group.size, all_queries);
+
+    EmbedGroup(span, group.num_tokens, config, weights, activations, env.ctx);
+    if (config.ple_dim > 0) {
+      ComputePLEEmbeddings(activations.x.Rows(), activations.token_ids, config,
+                           weights, activations, env);
+    }
+    for (size_t layer_idx = 0; layer_idx < config.layer_configs.size();
+         ++layer_idx) {
+      TransformerLayer(group.num_tokens, layer_idx,
+                       *weights.GetLayer(layer_idx), activations, qbatch, env);
+    }
+    RMSNormInplaceBatched(weights.final_norm_scale, activations.x, env.ctx);
+
+    for (size_t qi = 0; qi < group.size; ++qi) {
+      const size_t num_tokens = group_prompts[qi].size();
+      SumRows(activations.x, /*row=*/qi, /*stride=*/group.size, num_tokens,
+              activations.pooled, env.ctx);
+      PoolAndProjectEmbedding(runtime_config, config, weights, num_tokens,
+                              activations, embeddings[order[group.begin + qi]],
+                              env);
+    }
+  }
+  activations.is_padding.clear();
+
+  // Print results if profiler is enabled.
+  env.ctx.profiler.PrintResults();
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -1876,6 +2170,8 @@ namespace gcpp {
 HWY_EXPORT(GenerateSingleT);
 HWY_EXPORT(GenerateBatchT);
 HWY_EXPORT(GenerateImageTokensT);
+HWY_EXPORT(ComputeEmbeddingT);
+HWY_EXPORT(ComputeEmbeddingsT);
 
 Gemma::Gemma(const GemmaArgs& args, ThreadingContext& ctx)
     : reader_(args.loader.weights),
@@ -1943,6 +2239,40 @@ void Gemma::GenerateImageTokens(const RuntimeConfig& runtime_config,
   HWY_DYNAMIC_DISPATCH(GenerateImageTokensT)(model_.Config(), runtime_config,
                                              seq_len, weights_, image,
                                              image_tokens, env, timing_info);
+
+  env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
+}
+
+void Gemma::ComputeEmbedding(const PromptTokens& prompt,
+                             hwy::AlignedVector<float>& embedding,
+                             MatMulEnv& env) const {
+  RuntimeConfig runtime_config;
+  inference_.CopyTo(runtime_config);
+  ComputeEmbedding(runtime_config, prompt, embedding, env);
+}
+
+void Gemma::ComputeEmbedding(const RuntimeConfig& runtime_config,
+                             const PromptTokens& prompt,
+                             hwy::AlignedVector<float>& embedding,
+                             MatMulEnv& env) const {
+  env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
+
+  HWY_DYNAMIC_DISPATCH(ComputeEmbeddingT)(runtime_config, prompt,
+                                          model_.Config(), inference_,
+                                          weights_, embedding, env);
+
+  env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
+}
+
+void Gemma::ComputeEmbeddings(
+    const RuntimeConfig& runtime_config, hwy::Span<const PromptTokens> prompts,
+    std::vector<hwy::AlignedVector<float>>& embeddings, MatMulEnv& env,
+    EmbeddingsWorkspace* workspace) const {
+  env.ctx.pools.MaybeStartSpinning(runtime_config.use_spinning);
+
+  HWY_DYNAMIC_DISPATCH(ComputeEmbeddingsT)(
+      runtime_config, prompts, model_.Config(), inference_, weights_,
+      embeddings, env, workspace);
 
   env.ctx.pools.MaybeStopSpinning(runtime_config.use_spinning);
 }

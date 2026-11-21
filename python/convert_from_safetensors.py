@@ -219,6 +219,7 @@ def _is_bf16_param(param_name: str) -> bool:
       "pre_",
       "post_",
       "c_",
+      "default_proj",
       "img_head_kernel",
       "query_norm",
       "key_norm",
@@ -923,6 +924,8 @@ def export_gemma4_lm_sbs(
     llm_prefix = "model."
   elif "language_model.embed_tokens.weight" in params:
     llm_prefix = "language_model."
+  elif "embed_tokens.weight" in params:
+    llm_prefix = ""
   else:
     raise ValueError("Could not locate embed_tokens.weight in checkpoint.")
 
@@ -931,7 +934,12 @@ def export_gemma4_lm_sbs(
   num_layers = len(
       set([k for k in params.keys() if k.endswith("input_layernorm.weight")])
   )
-  has_ple = f"{llm_prefix}embed_tokens_per_layer.weight" in params
+  ple_prefix = (
+      f"{llm_prefix}ple."
+      if f"{llm_prefix}ple.per_layer_model_projection.weight" in params
+      else llm_prefix
+  )
+  has_ple = f"{ple_prefix}per_layer_model_projection.weight" in params
 
   print(
       f"Gemma4 LM: vocab={vocab_size} dim={model_dim} layers={num_layers} "
@@ -948,6 +956,7 @@ def export_gemma4_lm_sbs(
   else:
     target_weight_type = configs.Type.kSFP
 
+  is_eg2 = model_specifier.startswith("embeddinggemma2-")
   writer = compression.SbsWriter(sbs_file)
   metadata = []
   scales = {}
@@ -963,7 +972,8 @@ def export_gemma4_lm_sbs(
     assert isinstance(data, torch.Tensor)
     data = data.to(torch.float32).numpy()
     data = np.array(data)
-    if "norm" in sbs_name or "_ns" in sbs_name:
+    is_norm = "norm" in sbs_name or "_ns" in sbs_name
+    if is_norm:
       data = data - 1.0
 
     if layer_index is not None:
@@ -975,14 +985,14 @@ def export_gemma4_lm_sbs(
     both_names = param_name + "::" + sbs_name
     metadata.append((both_names, data.dtype, data.shape, scale))
 
-    if _is_float_param(sbs_name):
+    if (is_eg2 and is_norm) or _is_float_param(sbs_name):
       packed = configs.Type.kF32
     elif _is_bf16_param(sbs_name):
       packed = configs.Type.kBF16
     else:
       packed = target_weight_type
       if packed == configs.Type.kSFP:
-        assert scale == 1.0, f"Scale for {both_names} is not 1.0"
+        assert is_eg2 or scale == 1.0, f"Scale for {both_names} is not 1.0"
         scales[sbs_name] = scale
     sys.stdout.flush()
 
@@ -1062,25 +1072,35 @@ def export_gemma4_lm_sbs(
       "c_final_norm",
   )
 
-  if has_ple:
-    ple_weight = params[f"{llm_prefix}embed_tokens_per_layer.weight"]
-    ple_total_dim = ple_weight.shape[1]
-    ple_dim = ple_total_dim // num_layers
+  if f"{llm_prefix}embedding_projection.weight" in params:
+    proj = params.pop(f"{llm_prefix}embedding_projection.weight")
     add_data(
-        f"{llm_prefix}embed_tokens_per_layer.weight",
-        params.pop(f"{llm_prefix}embed_tokens_per_layer.weight"),
-        (vocab_size, ple_total_dim),
-        "ple_embeddings",
+        f"{llm_prefix}embedding_projection.weight",
+        proj,
+        (proj.shape[0], model_dim),
+        "default_proj",
     )
+
+  if has_ple:
+    ple_proj_weight = params[f"{ple_prefix}per_layer_model_projection.weight"]
+    ple_total_dim = ple_proj_weight.shape[0]
+    ple_dim = ple_total_dim // num_layers
+    if f"{llm_prefix}embed_tokens_per_layer.weight" in params:
+      add_data(
+          f"{llm_prefix}embed_tokens_per_layer.weight",
+          params.pop(f"{llm_prefix}embed_tokens_per_layer.weight"),
+          (vocab_size, ple_total_dim),
+          "ple_embeddings",
+      )
     add_data(
-        f"{llm_prefix}per_layer_model_projection.weight",
-        params.pop(f"{llm_prefix}per_layer_model_projection.weight"),
+        f"{ple_prefix}per_layer_model_projection.weight",
+        params.pop(f"{ple_prefix}per_layer_model_projection.weight"),
         (ple_total_dim, model_dim),
         "ple_model_proj",
     )
     add_data(
-        f"{llm_prefix}per_layer_projection_norm.weight",
-        params.pop(f"{llm_prefix}per_layer_projection_norm.weight"),
+        f"{ple_prefix}per_layer_projection_norm.weight",
+        params.pop(f"{ple_prefix}per_layer_projection_norm.weight"),
         (ple_dim,),
         "ple_proj_norm",
     )
@@ -1127,18 +1147,19 @@ def export_gemma4_lm_sbs(
         break
 
     if has_ple:
-      gate_dim = params[
-          f"{llm_prefix}layers.{i}.per_layer_input_gate.weight"
-      ].shape[0]
-      add_layer_tensor(
-          i, "per_layer_input_gate.weight", (gate_dim, model_dim), "ple_gate"
+      ple_gate = "per_layer_input_gate.weight"
+      ple_p = (
+          "ple_block."
+          if f"{llm_prefix}layers.{i}.ple_block.{ple_gate}" in params
+          else ""
       )
-      add_layer_tensor(
-          i, "per_layer_projection.weight", (model_dim, gate_dim), "ple_proj"
-      )
-      add_layer_tensor(
-          i, "post_per_layer_input_norm.weight", (model_dim,), "post_ple_ns"
-      )
+      gate_dim = params[f"{llm_prefix}layers.{i}.{ple_p}{ple_gate}"].shape[0]
+      for name, shape, sbs_name in (
+          (ple_gate, (gate_dim, model_dim), "ple_gate"),
+          ("per_layer_projection.weight", (model_dim, gate_dim), "ple_proj"),
+          ("post_per_layer_input_norm.weight", (model_dim,), "post_ple_ns"),
+      ):
+        add_layer_tensor(i, ple_p + name, shape, sbs_name)
 
   if params:
     print(f"WARNING: leftover params not consumed: {list(params.keys())[:10]}")
@@ -1768,7 +1789,9 @@ def main(argv: Sequence[str]) -> None:
     export_gemma3_lm_sbs(
         model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
     )
-  elif model_specifier.startswith("gemma4-") and "-lm-" in model_specifier:
+  elif (
+      model_specifier.startswith("gemma4-") and "-lm-" in model_specifier
+  ) or model_specifier.startswith("embeddinggemma2-lm-"):
     export_gemma4_lm_sbs(
         model_specifier, load_path, tokenizer_file, metadata_file, sbs_file
     )
@@ -1788,8 +1811,8 @@ def main(argv: Sequence[str]) -> None:
   else:
     raise app.UsageError(
         f"Unsupported model_specifier {model_specifier!r}. Expected a "
-        "'paligemma*', 'gemma3-*-lm-*', 'gemma4-*-lm-*', 'qwen3-*', or "
-        "'t5gemma*' specifier."
+        "'paligemma*', 'gemma3-*-lm-*', 'gemma4-*-lm-*', "
+        "'embeddinggemma2-lm-*', 'qwen3-*', or 't5gemma*' specifier."
     )
 
 

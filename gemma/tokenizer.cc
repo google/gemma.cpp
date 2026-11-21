@@ -73,7 +73,8 @@ GemmaChatTemplate::GemmaChatTemplate(const GemmaTokenizer& tokenizer,
     sot_model_ = {105, 4368, 107, 100, 45518, 107, 101};
     eot_ = {106, 107};
   } else if (model == Model::GEMMA4_2B || model == Model::GEMMA4_2B_LM ||
-             model == Model::GEMMA4_E4B || model == Model::GEMMA4_E4B_LM) {
+             model == Model::GEMMA4_E4B || model == Model::GEMMA4_E4B_LM ||
+             IsEmbeddingGemma2(model)) {
     sot_user_ = {105, 2364, 107};
     sot_model_ = {105, 4368, 107};
     eot_ = {106, 107};
