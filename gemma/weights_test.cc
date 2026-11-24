@@ -27,14 +27,18 @@
 #include "gtest/gtest.h"
 #include "compression/compress-inl.h"
 #include "compression/types.h"
+#include "gemma/configs.h"
 #include "gemma/gemma_args.h"
+#include "gemma/tensor_info.h"
 #include "gemma/weights_internal.h"
 #include "io/blob_store.h"
 #include "io/io.h"
 #include "util/basics.h"
 #include "util/mat.h"
 #include "util/threading_context.h"
+#include "hwy/aligned_allocator.h"
 #include "hwy/base.h"
+#include "hwy/highway.h"
 
 namespace gcpp {
 namespace {
@@ -283,6 +287,95 @@ TEST(WeightsTest, MappingRequiresBlobAlignment) {
   EXPECT_EQ(weights_internal::ChooseMode(page_aligned_bytes + 1, loader,
                                          inference, ctx.allocator),
             WeightsPtrs::Mode::kReadBF16);
+}
+
+template <typename Packed>
+static void TestFixupInterleavesKVHeads() {
+  ThreadingContext ctx = MakeContext();
+  static constexpr size_t kCols = 128, kQKVDim = 512, kKVHeads = 2;
+  ModelConfig config;
+  config.model = Model::GEMMA4_26B_MOE;
+  config.model_dim = kCols;
+  LayerConfig& lc = config.layer_configs.emplace_back();
+  lc.model_dim = lc.ff_hidden_dim = kCols;
+  lc.heads = 1;
+  lc.kv_heads = kKVHeads;
+  lc.qkv_dim = kQKVDim;
+
+  const TensorInfoRegistry registry(config);
+  LayerWeightsPtrs layer(0, lc, registry);
+  uint8_t dummy = 0;
+  layer.att_weights.SetPtr(&dummy, layer.att_weights.Cols());
+  layer.gating_einsum_w1.SetPtr(&dummy, kCols);
+  layer.gating_einsum_w2.SetPtr(&dummy, kCols);
+
+  MatPtrT<Packed> qkv(layer.qkv_einsum_w);
+  qkv.SetScale(1.25f);
+  const size_t w1_rows = lc.heads * kQKVDim, w2_rows = 2 * kKVHeads * kQKVDim;
+  const auto row_val = [](size_t r, size_t c) {
+    constexpr std::array<float, 4> kSeg = {-6.0f, -4.0f, 2.0f, 6.0f};
+    const float s =
+        IsI8Stream<Packed>()
+            ? 1.0f
+            : std::ldexp(1.0f, static_cast<int>((r + c / 32) % 9) - 4);
+    return (c % 32 == 0) ? -8.0f * s : ((c & 1) ? kSeg[r / kQKVDim] : 3.0f) * s;
+  };
+  std::vector<uint8_t> exact_packed;
+  MatOwner padded_owner;
+  if constexpr (IsPacked<Packed>()) {
+    exact_packed.resize(qkv.PackedBytes());
+    qkv.SetPtr(exact_packed.data(), kCols);
+    const size_t total = (w1_rows + w2_rows) * kCols;
+    hwy::AlignedFreeUniquePtr<float[]> raw = hwy::AllocateAligned<float>(total);
+    hwy::ZeroBytes(raw.get(), w1_rows * kCols * sizeof(float));
+    for (size_t i = 0; i < w2_rows * kCols; ++i) {
+      raw[w1_rows * kCols + i] = row_val(i / kCols, i % kCols);
+    }
+    CompressWorkingSet work;
+    HWY_NAMESPACE::Compress(raw.get(), total, work, qkv.Span(), 0, ctx);
+  } else {
+    padded_owner.AllocateFor(qkv, ctx.allocator, MatPadding::kOdd);
+    ASSERT_GT(qkv.Stride(), kCols);
+    for (size_t r = 0; r < w2_rows; ++r) {
+      for (size_t c = 0; c < kCols; ++c) {
+        qkv.Row(w1_rows + r)[c] = hwy::ConvertScalarTo<Packed>(row_val(r, c));
+      }
+    }
+  }
+  layer.qkv_einsum_w = qkv;
+  std::vector<MatOwner> owners;
+  layer.Fixup(config.model, owners, ctx);
+  std::vector<uint8_t>().swap(exact_packed);
+
+  ASSERT_EQ(owners.size(), IsI8Stream<Packed>() ? 3u : 1u);
+  EXPECT_EQ(layer.qkv_einsum_w2.GetType(), TypeEnum<Packed>());
+  EXPECT_EQ(layer.qkv_einsum_w2.Stride(), kCols);
+  EXPECT_FLOAT_EQ(layer.qkv_einsum_w2.Scale(),
+                  IsI8Stream<Packed>() ? 1.0f : 1.25f);
+  const size_t w2_num = w2_rows * kCols;
+  hwy::AlignedFreeUniquePtr<float[]> actual =
+      hwy::AllocateAligned<float>(w2_num);
+  HWY_NAMESPACE::DecompressAndZeroPad(
+      hwy::HWY_NAMESPACE::ScalableTag<float>(),
+      MatPtrT<Packed>(layer.qkv_einsum_w2).Span(), 0, actual.get(), w2_num);
+  constexpr std::array<size_t, 4> kSrcSeg = {0, kKVHeads, 1, kKVHeads + 1};
+  for (size_t dst_r = 0; dst_r < w2_rows; ++dst_r) {
+    const size_t src_r = kSrcSeg[dst_r / kQKVDim] * kQKVDim + dst_r % kQKVDim;
+    for (size_t c = 0; c < kCols; ++c) {
+      if constexpr (IsI8Stream<Packed>()) {
+        ASSERT_NEAR(actual[dst_r * kCols + c], row_val(src_r, c), 0.1f);
+      } else {
+        ASSERT_FLOAT_EQ(actual[dst_r * kCols + c], row_val(src_r, c)) << dst_r;
+      }
+    }
+  }
+}
+
+TEST(WeightsTest, FixupInterleavesKVHeadsPackedAndPadded) {
+  TestFixupInterleavesKVHeads<Q4_0Stream>();
+  TestFixupInterleavesKVHeads<MxFp4Stream>();
+  TestFixupInterleavesKVHeads<I8Stream>();
+  TestFixupInterleavesKVHeads<BF16>();
 }
 
 }  // namespace

@@ -392,8 +392,10 @@ cc_test(
     srcs = ["gemma/weights_test.cc"],
     deps = [
         ":basics",
+        ":configs",
         ":gemma_args",
         ":mat",
+        ":tensor_info",
         ":threading_context",
         ":weights",
         "@googletest//:gtest_main",  # buildcleaner: keep

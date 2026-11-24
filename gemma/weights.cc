@@ -490,6 +490,53 @@ static void HWY_MAYBE_UNUSED SplitAttW1I8(const LayerConfig& layer_config,
   qkv_einsum_w.SetPtr(nullptr, qkv_einsum_w.Cols());
 }
 
+// Interleaves K/V heads in `qkv_einsum_w2` from exporter layout
+// `[K0..Kn, V0..Vn]` to runtime layout `[K0, V0, K1, V1, ...]`.
+static void InterleaveKVHeads(const LayerConfig& layer_config,
+                              MatPtr& qkv_einsum_w2,
+                              std::vector<MatOwner>& mat_owners,
+                              const Allocator& allocator) {
+  if (!qkv_einsum_w2.HasPtr()) return;
+
+  const size_t kv_heads = layer_config.kv_heads;
+  const size_t qkv_dim = layer_config.qkv_dim;
+  const size_t rows = 2 * kv_heads * qkv_dim;
+  const size_t cols = qkv_einsum_w2.Cols();
+  HWY_ASSERT(qkv_einsum_w2.Rows() == rows);
+
+  // Previous backing storage remains alive in `mat_owners` or `mapped_`.
+  const MatPtr src = qkv_einsum_w2;
+  {
+    std::lock_guard<std::mutex> lock(g_mat_owners_mutex);  // NOLINT
+    mat_owners.emplace_back();
+    mat_owners.back().AllocateFor(qkv_einsum_w2, allocator,
+                                  MatPadding::kPacked);
+  }
+
+  const Type type = src.GetType();
+  size_t row_bytes = cols * src.ElementBytes();
+  size_t src_stride_bytes = src.Stride() * src.ElementBytes();
+  if (IsPacked(type)) {
+    HWY_ASSERT(src.IsPacked());
+    row_bytes = PackedEnd(type, cols);
+    HWY_ASSERT(PackedEnd(type, rows * cols) == rows * row_bytes);
+    src_stride_bytes = row_bytes;
+  }
+
+  const uint8_t* HWY_RESTRICT src_ptr = src.RowBytes(0);
+  uint8_t* HWY_RESTRICT dst_ptr = qkv_einsum_w2.RowBytes(0);
+  for (size_t i = 0; i < kv_heads; ++i) {
+    for (size_t row = 0; row < qkv_dim; ++row) {
+      hwy::CopyBytes(src_ptr + (i * qkv_dim + row) * src_stride_bytes,
+                     dst_ptr + ((2 * i) * qkv_dim + row) * row_bytes,
+                     row_bytes);
+      hwy::CopyBytes(
+          src_ptr + ((kv_heads + i) * qkv_dim + row) * src_stride_bytes,
+          dst_ptr + ((2 * i + 1) * qkv_dim + row) * row_bytes, row_bytes);
+    }
+  }
+}
+
 // Must be called after reading weights via `ForEachTensor`.
 // TODO: exporters should bake this into the weights already.
 // WARNING: called from multiple threads; `mat_owners` requires a lock.
@@ -530,46 +577,18 @@ void LayerWeightsPtrs::Fixup(Model model, std::vector<MatOwner>& mat_owners,
     qkv_einsum_w2 = qkv_einsum_w2_i8;
   } else {
     SplitAttW1();
-    // Interleave K/V heads in qkv_einsum_w2: the exporter writes
-    // [K0..Kn, V0..Vn] but the runtime expects [K0, V0, K1, V1, ...].
-    // TODO(philculliton): either (1) fix the exporter to emit interleaved
-    // layout directly, or (2) replace this model check with a general
-    // structural condition (e.g. !IsMHA() && kv_heads > 1) once we
-    // verify it doesn't regress other multi-kv-head models.
-    // This applies to Gemma 4 global layers; the model check will be expanded.
-    if (model == Model::GEMMA4_26B_MOE && layer_config.kv_heads == 2 &&
-        layer_config.qkv_dim == 512) {
-      const size_t old_stride = qkv_einsum_w2.Stride();
-      const size_t elem_bytes = qkv_einsum_w2.ElementBytes();
-      const size_t old_row_bytes = old_stride * elem_bytes;
-      const size_t kv_heads = layer_config.kv_heads;
-      const size_t total_bytes = qkv_einsum_w2.Rows() * old_row_bytes;
-      hwy::AlignedFreeUniquePtr<uint8_t[]> tmp =
-          hwy::AllocateAligned<uint8_t>(total_bytes);
-      hwy::CopyBytes(qkv_einsum_w2.RowBytes(0), tmp.get(), total_bytes);
-
-      {
-        std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
-        mat_owners.emplace_back();
-        mat_owners.back().AllocateFor(qkv_einsum_w2, ctx.allocator,
-                                      MatPadding::kPacked);
-      }
-
-      const size_t new_row_bytes = qkv_einsum_w2.Cols() * elem_bytes;
-      const size_t qkv_dim = layer_config.qkv_dim;
-      const uint8_t* src_ptr = tmp.get();
-      for (size_t i = 0; i < kv_heads; ++i) {
-        for (size_t row = 0; row < qkv_dim; ++row) {
-          hwy::CopyBytes(src_ptr + (i * qkv_dim + row) * old_row_bytes,
-                         qkv_einsum_w2.RowBytes((2 * i) * qkv_dim + row),
-                         new_row_bytes);
-          hwy::CopyBytes(
-              src_ptr + ((kv_heads + i) * qkv_dim + row) * old_row_bytes,
-              qkv_einsum_w2.RowBytes((2 * i + 1) * qkv_dim + row),
-              new_row_bytes);
-        }
-      }
-    }
+  }
+  // Interleave K/V heads in qkv_einsum_w2: the exporter writes
+  // [K0..Kn, V0..Vn] but the runtime expects [K0, V0, K1, V1, ...].
+  // TODO(philculliton): either (1) fix the exporter to emit interleaved
+  // layout directly, or (2) replace this model check with a general
+  // structural condition (e.g. !IsMHA() && kv_heads > 1) once we
+  // verify it doesn't regress other multi-kv-head models.
+  // This applies to Gemma 4 global layers; the model check will be expanded.
+  if (layer_config.type == LayerAttentionType::kGemma &&
+      model == Model::GEMMA4_26B_MOE && layer_config.kv_heads == 2 &&
+      layer_config.qkv_dim == 512) {
+    InterleaveKVHeads(layer_config, qkv_einsum_w2, mat_owners, ctx.allocator);
   }
 }
 
