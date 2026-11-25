@@ -401,6 +401,13 @@ bool ModelStore::ReadMatPtrs(BlobReader& reader) {
 
           // Retrieve actual key index because a writer may have written other
           // blobs before the tensor data.
+          HWY_ASSERT(mat.Name()[0] != '\0');
+          HWY_ASSERT(EnumValid(mat.GetType()) &&
+                     mat.GetType() != Type::kUnknown);
+          const size_t stride =
+              (mat.Stride() == 0) ? mat.Cols() : mat.Stride();
+          mat.SetType(mat.GetType());
+          mat.SetPtr(nullptr, stride);
           const BlobRange* range = reader.Find(mat.Name());
           HWY_ASSERT(range);
           const size_t key_idx = range->key_idx;
