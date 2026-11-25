@@ -332,15 +332,48 @@ struct QueuedMerge {
   }
 };
 
-// Decodes a run of byte-fallback bytes as UTF-8, appending to `out` (invalid
-// sequences become U+FFFD, matching HuggingFace ByteFallback).
+// Returns the length of the well-formed UTF-8 sequence starting at `b[i]`, or 0
+// if there is none (invalid lead or continuation byte, truncated, overlong,
+// surrogate or above U+10FFFF).
+size_t ValidUtf8Len(const std::string& b, size_t i) {
+  const unsigned char c = static_cast<unsigned char>(b[i]);
+  if (c < 0x80) return 1;
+  size_t len;
+  uint32_t min_cp;
+  if (c >= 0xC2 && c <= 0xDF) {
+    len = 2;
+    min_cp = 0x80;
+  } else if (c >= 0xE0 && c <= 0xEF) {
+    len = 3;
+    min_cp = 0x800;
+  } else if (c >= 0xF0 && c <= 0xF4) {
+    len = 4;
+    min_cp = 0x10000;
+  } else {
+    return 0;
+  }
+  if (i + len > b.size()) return 0;
+  uint32_t cp = c & (0x7Fu >> len);
+  for (size_t k = 1; k < len; ++k) {
+    const unsigned char cc = static_cast<unsigned char>(b[i + k]);
+    if ((cc & 0xC0) != 0x80) return 0;
+    cp = (cp << 6) | (cc & 0x3Fu);
+  }
+  if (cp < min_cp || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return 0;
+  return len;
+}
+
+// Decodes a run of byte-fallback bytes as UTF-8, appending to `out`. As in
+// SentencePiece, well-formed sequences are kept and every other byte becomes
+// U+FFFD. (HF ByteFallback instead replaces every byte of a run that is not
+// entirely valid; the two agree on valid runs.)
 void FlushBytes(std::string* bytes, std::string* out) {
   if (bytes->empty()) return;
   size_t i = 0;
   const std::string& b = *bytes;
   while (i < b.size()) {
-    const size_t clen = Utf8Len(static_cast<unsigned char>(b[i]));
-    if (i + clen <= b.size()) {
+    const size_t clen = ValidUtf8Len(b, i);
+    if (clen != 0) {
       out->append(b, i, clen);
       i += clen;
     } else {
