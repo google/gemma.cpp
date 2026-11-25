@@ -18,6 +18,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -158,20 +159,27 @@ class BlobStore {
       return false;
     }
 
-    if (header_.num_blobs > kMaxBlobs) {
+    if (header_.num_blobs >= kMaxBlobs) {
       HWY_WARN("Too many blobs, likely corrupt file.");
       return false;
     }
 
-    directory_.resize(header_.num_blobs * 2);
-    const auto directory_bytes = 2 * kU128Bytes * header_.num_blobs;
+    const uint64_t file_bytes = file.FileSize();
+    const size_t directory_bytes =
+        2 * kU128Bytes * static_cast<size_t>(header_.num_blobs);
+    if (file_bytes < sizeof(header_) ||
+        directory_bytes > file_bytes - sizeof(header_)) {
+      HWY_WARN("Directory is larger than the file size.");
+      return false;
+    }
+
+    directory_.resize(static_cast<size_t>(header_.num_blobs) * 2);
     // Read directory after the header.
     if (!file.Read(sizeof(header_), directory_bytes, directory_.data())) {
       HWY_WARN("Failed to read BlobStore directory.");
       return false;
     }
-    HWY_ASSERT(IsValid(file.FileSize()));
-    return true;
+    return IsValid(file_bytes);
   }
 
   bool ParseHeaderAndDirectoryV2(const File& file) {
@@ -182,7 +190,7 @@ class BlobStore {
       HWY_WARN("File is too small to contain a BlobStore header.");
       return false;
     }
-    size_t pos = file_bytes - sizeof(header_);
+    uint64_t pos = file_bytes - sizeof(header_);
     if (!file.Read(pos, sizeof(header_), &header_)) {
       HWY_WARN("Failed to read BlobStore header.");
       return false;
@@ -194,26 +202,31 @@ class BlobStore {
       return false;
     }
 
-    if (header_.num_blobs > kMaxBlobs) {
+    if (header_.num_blobs == 0) {
+      HWY_WARN("Invalid BlobStore (empty), likely corrupt file.");
+      return false;
+    }
+
+    if (header_.num_blobs >= kMaxBlobs) {
       HWY_WARN("Too many blobs, likely corrupt file.");
       return false;
     }
-    directory_.resize(header_.num_blobs * 2);
 
     // Read directory, which ends at the start of the header.
-    const size_t directory_bytes = 2 * kU128Bytes * header_.num_blobs;
+    const size_t directory_bytes =
+        2 * kU128Bytes * static_cast<size_t>(header_.num_blobs);
     if (directory_bytes > pos) {
       HWY_WARN("Directory is larger than the file size.");
       return false;
     }
+    directory_.resize(static_cast<size_t>(header_.num_blobs) * 2);
     pos -= directory_bytes;
     if (!file.Read(pos, directory_bytes, directory_.data())) {
       HWY_WARN("Failed to read BlobStore directory.");
       return false;
     }
 
-    HWY_ASSERT(IsValid(file_bytes));
-    return true;
+    return IsValid(file_bytes);
   }
 
  public:
@@ -237,7 +250,7 @@ class BlobStore {
   BlobStore(const std::vector<hwy::uint128_t>& keys,
             const std::vector<size_t>& blob_sizes) {
     const size_t num_blobs = keys.size();
-    HWY_ASSERT(num_blobs < kMaxBlobs);  // Ensures safe to cast to u32.
+    HWY_ASSERT(num_blobs > 0 && num_blobs < kMaxBlobs);  // Ensures safe u32.
     HWY_ASSERT(keys.size() == blob_sizes.size());
     EnsureUnique(hwy::Span<const hwy::uint128_t>(keys.data(), num_blobs));
 
@@ -275,8 +288,14 @@ class BlobStore {
       HWY_WARN("Given file is not a BlobStore (magic %08x).", header_.magic);
       return false;
     }
-    if (header_.num_blobs == 0) {
-      HWY_WARN("Invalid BlobStore (empty), likely corrupt file.");
+    if (header_.num_blobs == 0 || header_.num_blobs >= kMaxBlobs) {
+      HWY_WARN("Invalid BlobStore num_blobs %u, likely corrupt file.",
+               header_.num_blobs);
+      return false;
+    }
+    if (directory_.size() != NumBlobs() * 2) {
+      HWY_WARN("Invalid BlobStore directory size %zu for %zu blobs.",
+               directory_.size(), NumBlobs());
       return false;
     }
     if (header_.file_bytes != file_size) {
@@ -286,30 +305,51 @@ class BlobStore {
       return false;
     }
 
-    // Ensure blobs are back to back.
-    const size_t size_before_blobs = BytesBeforeBlobs().size();
-    const size_t size_after_blobs = BytesAfterBlobs().size();
+    // Ensure blobs fit between the prefix and (for V2) the trailing directory
+    // and header, and are back to back.
+    const uint64_t size_before_blobs =
+        is_file_v2_ ? PaddedHeaderAndDirBytes(0)
+                    : PaddedHeaderAndDirBytes(NumBlobs());
+    const uint64_t min_after_blobs =
+        is_file_v2_ ? sizeof(Header) + 2 * kU128Bytes * NumBlobs() : 0;
+    if (size_before_blobs > file_size ||
+        min_after_blobs > file_size - size_before_blobs) {
+      HWY_WARN("Invalid BlobStore: file size %zu too small for metadata.",
+               static_cast<size_t>(file_size));
+      return false;
+    }
+    const uint64_t max_blobs_end = file_size - min_after_blobs;
 
     uint64_t expected_offset = size_before_blobs;
     for (size_t key_idx = 0; key_idx < NumBlobs(); ++key_idx) {
-      uint64_t actual_offset;
-      size_t bytes;
-      GetRange(key_idx, actual_offset, bytes);
+      const hwy::uint128_t val = directory_[NumBlobs() + key_idx];
+      const uint64_t actual_offset = val.lo;
+      const uint64_t bytes = val.hi;
       if (expected_offset != actual_offset) {
         HWY_WARN("Invalid BlobStore: blob %zu at offset %zu but expected %zu.",
                  key_idx, static_cast<size_t>(actual_offset),
                  static_cast<size_t>(expected_offset));
         return false;
       }
-      expected_offset = RoundUpToAlign(expected_offset + bytes);
-    }
-    // Previously files were not padded to `kEndAlign`, so also allow that.
-    if (expected_offset != header_.file_bytes &&
-        expected_offset + size_after_blobs != header_.file_bytes) {
-      HWY_WARN("Invalid BlobStore: end of blobs %zu but file size %zu.",
-               static_cast<size_t>(expected_offset),
-               static_cast<size_t>(header_.file_bytes));
-      return false;
+      if (bytes == 0 || bytes > std::numeric_limits<size_t>::max() ||
+          bytes > max_blobs_end - expected_offset) {
+        HWY_WARN("Invalid BlobStore: blob %zu has invalid size %zu.", key_idx,
+                 static_cast<size_t>(bytes));
+        return false;
+      }
+      const uint64_t unpadded_end = expected_offset + bytes;
+      if (unpadded_end >
+          std::numeric_limits<uint64_t>::max() - (kBlobAlign - 1)) {
+        HWY_WARN("Invalid BlobStore: blob %zu end overflows.", key_idx);
+        return false;
+      }
+      expected_offset = RoundUpToAlign(unpadded_end);
+      if (expected_offset > max_blobs_end) {
+        HWY_WARN("Invalid BlobStore: end of blob %zu (%zu) exceeds limit %zu.",
+                 key_idx, static_cast<size_t>(expected_offset),
+                 static_cast<size_t>(max_blobs_end));
+        return false;
+      }
     }
 
     return true;  // all OK
@@ -347,24 +387,32 @@ class BlobStore {
   }
 
   std::vector<uint8_t> BytesAfterBlobs() const {
+    HWY_ASSERT(NumBlobs() > 0);
     // Gets blob end.
     uint64_t offset = 0;
     size_t bytes = 0;
     GetRange(NumBlobs() - 1, offset, bytes);
-    const uint64_t blob_end = RoundUpToAlign(offset + bytes);
+    const uint64_t unpadded_end = offset + bytes;
+    HWY_ASSERT(unpadded_end <=
+               std::numeric_limits<uint64_t>::max() - (kBlobAlign - 1));
+    const uint64_t blob_end = RoundUpToAlign(unpadded_end);
+    HWY_ASSERT(blob_end <= FileSize());
+    const uint64_t after_bytes = FileSize() - blob_end;
+    HWY_ASSERT(after_bytes <= std::numeric_limits<size_t>::max());
 
     // For V1, just return the file paddings.
     if (!is_file_v2_) {
-      return std::vector<uint8_t>(FileSize() - blob_end);
+      return std::vector<uint8_t>(static_cast<size_t>(after_bytes));
     }
 
     const size_t header_and_directory_with_file_padding_size =
-        FileSize() - blob_end;
-    std::vector<uint8_t> header_and_directory(
-        header_and_directory_with_file_padding_size);
-
+        static_cast<size_t>(after_bytes);
     const size_t header_size = sizeof(Header);
     const size_t directory_size = 2 * kU128Bytes * NumBlobs();
+    HWY_ASSERT(header_and_directory_with_file_padding_size >=
+               header_size + directory_size);
+    std::vector<uint8_t> header_and_directory(
+        header_and_directory_with_file_padding_size);
 
     // Copy header_ at the end.
     offset = header_and_directory_with_file_padding_size - header_size;
@@ -378,7 +426,7 @@ class BlobStore {
     return header_and_directory;
   }
 
-  size_t FileSize() const { return header_.file_bytes; }
+  uint64_t FileSize() const { return header_.file_bytes; }
 
   size_t NumBlobs() const { return static_cast<size_t>(header_.num_blobs); }
 
@@ -392,10 +440,12 @@ class BlobStore {
     HWY_ASSERT(key_idx < NumBlobs());
     const hwy::uint128_t val = directory_[NumBlobs() + key_idx];
     offset = val.lo;
-    bytes = val.hi;
+    HWY_ASSERT(val.hi <= std::numeric_limits<size_t>::max());
+    bytes = static_cast<size_t>(val.hi);
     HWY_ASSERT(offset % kBlobAlign == 0);
     HWY_ASSERT(bytes != 0);
-    HWY_ASSERT(offset + bytes <= header_.file_bytes);
+    HWY_ASSERT(offset <= header_.file_bytes &&
+               bytes <= header_.file_bytes - offset);
   }
 
  private:
@@ -405,7 +455,8 @@ class BlobStore {
     HWY_ASSERT(key_idx < NumBlobs());
     HWY_ASSERT(offset % kBlobAlign == 0);
     HWY_ASSERT(bytes != 0);
-    HWY_ASSERT(offset + bytes <= header_.file_bytes);
+    HWY_ASSERT(offset <= header_.file_bytes &&
+               bytes <= header_.file_bytes - offset);
     hwy::uint128_t& val = directory_[NumBlobs() + key_idx];
     val.lo = offset;
     val.hi = bytes;
