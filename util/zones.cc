@@ -177,6 +177,8 @@ const char* CallerName(Callers caller) {
       return "MM.ClusterForN";
     case Callers::kMMClusterForSFC:
       return "MM.ClusterForSFC";
+    case Callers::kMMQuantizeA:
+      return "MM.QuantizeA";
     case Callers::kMMHierForMC:
       return "MM.HierForMC";
     case Callers::kMMHierForMCNC:

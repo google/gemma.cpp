@@ -214,6 +214,9 @@ static inline void FFWNoVit(const LayerWeightsPtrs& layer,
 
   HWY_DASSERT(!layer_config.ff_biases);  // Only used in Vit.
 
+  MMI8WeightCache::Get().PrepareFFN(
+      layer.gating_einsum_w1, layer.gating_einsum_w2, layer.linear_w, env);
+
   activations.s_ffw_in.Notify(layer.layer_idx, activations.pre_ffw_rms_out,
                               env.ctx);
 
