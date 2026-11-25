@@ -80,7 +80,8 @@ class BlobReader {
     if (it == key_idx_for_key_.end()) return nullptr;
     const BlobRange& range = Range(it->second);
     HWY_ASSERT(range.offset != 0 && range.bytes != 0);
-    HWY_ASSERT(range.End() <= file_bytes_);
+    HWY_ASSERT(range.offset <= file_bytes_ &&
+               range.bytes <= file_bytes_ - range.offset);
     return &range;
   }
 

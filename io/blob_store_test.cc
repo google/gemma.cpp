@@ -15,10 +15,13 @@
 
 #include "io/blob_store.h"
 
+#include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -158,6 +161,134 @@ TEST(BlobStoreTest, TestNumBlobs) {
     unlink(path_str);
   }
 }
+
+#pragma pack(push, 1)
+struct TestHeader {
+  uint32_t magic;
+  uint32_t num_blobs;
+  uint64_t file_bytes;
+};
+#pragma pack(pop)
+
+constexpr uint32_t kTestMagic = 0x0A534253;
+
+struct TempBlobFile {
+  explicit TempBlobFile(const std::vector<uint8_t>& data) {
+    char path_str[] = "/tmp/blob_store_malformed-XXXXXX";
+    const int fd = mkstemp(path_str);
+    HWY_ASSERT(fd >= 0);
+    const ssize_t written = write(fd, data.data(), data.size());
+    HWY_ASSERT(written == static_cast<ssize_t>(data.size()));
+    close(fd);
+    path = path_str;
+  }
+  ~TempBlobFile() { unlink(path.c_str()); }
+
+  std::string path;
+};
+
+std::vector<uint8_t> MakeV2File(size_t file_bytes, uint32_t footer_num_blobs,
+                                uint64_t blob_offset, uint64_t blob_bytes) {
+  std::vector<uint8_t> buf(file_bytes, 0);
+  const TestHeader h_start{kTestMagic, 0, file_bytes};
+  memcpy(buf.data(), &h_start, sizeof(h_start));
+
+  const size_t h_end_ofs = file_bytes - sizeof(TestHeader);
+  if (footer_num_blobs == 1 && h_end_ofs >= 32) {
+    const size_t dir_ofs = h_end_ofs - 32;
+    buf[dir_ofs] = 'a';
+    memcpy(buf.data() + dir_ofs + 16, &blob_offset, sizeof(blob_offset));
+    memcpy(buf.data() + dir_ofs + 24, &blob_bytes, sizeof(blob_bytes));
+  }
+  const TestHeader h_end{kTestMagic, footer_num_blobs, file_bytes};
+  memcpy(buf.data() + h_end_ofs, &h_end, sizeof(h_end));
+  return buf;
+}
+
+std::vector<uint8_t> MakeV1File(size_t file_bytes, uint32_t num_blobs,
+                                uint64_t blob_offset, uint64_t blob_bytes) {
+  std::vector<uint8_t> buf(file_bytes, 0);
+  const TestHeader h_start{kTestMagic, num_blobs, file_bytes};
+  memcpy(buf.data(), &h_start, sizeof(h_start));
+  if (num_blobs == 1 && file_bytes >= sizeof(TestHeader) + 32) {
+    const size_t dir_ofs = sizeof(TestHeader);
+    buf[dir_ofs] = 'a';
+    memcpy(buf.data() + dir_ofs + 16, &blob_offset, sizeof(blob_offset));
+    memcpy(buf.data() + dir_ofs + 24, &blob_bytes, sizeof(blob_bytes));
+  }
+  return buf;
+}
+
+TEST(BlobStoreTest, TestReadV1) {
+  std::vector<uint8_t> buf = MakeV1File(/*file_bytes=*/512, /*num_blobs=*/1,
+                                        /*blob_offset=*/256, /*blob_bytes=*/4);
+  memcpy(buf.data() + 256, "TEST", 4);
+  TempBlobFile file(buf);
+  const BlobReader reader{Path(file.path)};
+  ASSERT_EQ(reader.Keys().size(), 1u);
+  EXPECT_EQ(reader.Keys()[0], "a");
+  EXPECT_TRUE(
+      reader.CallWithSpan<char>("a", [](const hwy::Span<const char> span) {
+        ASSERT_EQ(span.size(), 4u);
+        EXPECT_EQ(std::string(span.data(), span.size()), "TEST");
+      }));
+}
+
+#if !HWY_TEST_STANDALONE
+TEST(BlobStoreDeathTest, RejectsMalformedFiles) {
+  const char* kAbortMsg = "Failed to read BlobStore header or directory";
+
+  // V2 file where FileSize() - blob_end < sizeof(Header) + directory_size
+  // (previously caused a heap-buffer-overflow write in BytesAfterBlobs).
+  {
+    TempBlobFile file(MakeV2File(528, 1, 256, 250));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // V2 file where RoundUpToAlign(offset + bytes) > FileSize()
+  // (previously threw std::length_error on FileSize() - blob_end underflow).
+  {
+    TempBlobFile file(MakeV2File(500, 1, 256, 240));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // V1 file where RoundUpToAlign(offset + bytes) > FileSize().
+  {
+    TempBlobFile file(MakeV1File(500, 1, 256, 240));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // 64-bit unsigned wrap: offset + bytes wraps to 0 (previously bypassed
+  // IsValid() and BlobReader::Find() completely).
+  {
+    TempBlobFile file(
+        MakeV2File(512, 1, 256, std::numeric_limits<uint64_t>::max() - 255));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // Zero-sized blob entry in directory.
+  {
+    TempBlobFile file(MakeV2File(1024, 1, 256, 0));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // V2 footer claiming zero blobs.
+  {
+    TempBlobFile file(MakeV2File(512, 0, 0, 0));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+
+  // Huge num_blobs exceeding file size (must fail before allocating directory).
+  {
+    TempBlobFile file(MakeV2File(64, 1024 * 1024, 0, 0));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+  {
+    TempBlobFile file(MakeV1File(64, 1024 * 1024, 0, 0));
+    EXPECT_DEATH_IF_SUPPORTED((void)BlobReader(Path(file.path)), kAbortMsg);
+  }
+}
+#endif  // !HWY_TEST_STANDALONE
 
 }  // namespace
 }  // namespace gcpp
