@@ -224,6 +224,24 @@ void ReplGemma(const GemmaArgs& args, const Gemma& gemma, KVCache& kv_cache,
       }
     }
 
+    if (config.IsEmbedding()) {
+      prompt.clear();
+      HWY_ASSERT(gemma.Tokenizer().Encode(prompt_string, &prompt));
+      if (IsEmbeddingGemma2(config.model)) {
+        prompt.insert(prompt.begin(), BOS_ID);
+        prompt.push_back(config.eos_id);
+      }
+      prompt_size = prompt.size();
+      hwy::AlignedVector<float> embedding;
+      gemma.ComputeEmbedding(runtime_config, prompt, embedding, env);
+      std::cout << "[ Embedding: size " << embedding.size() << " ]\n";
+      for (size_t i = 0; i < embedding.size(); ++i) {
+        std::cout << embedding[i] << (i + 1 < embedding.size() ? " " : "\n");
+      }
+      if (!is_interactive) break;
+      continue;
+    }
+
     // Generate until EOS or max_generated_tokens.
     if (inference.verbosity >= 1) {
       std::cerr << "\n[ Reading prompt ] " << std::flush;

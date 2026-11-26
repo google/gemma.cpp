@@ -45,6 +45,8 @@ const char* ZoneName(Zones zone) {
       return "Gen.Attention.SumHeads";
     case Zones::kGenEmbed:
       return "Gen.Embed";
+    case Zones::kGenEmbedding:
+      return "Gen.Embedding";
     case Zones::kGenEmbeddingMatmul:
       return "Gen.EmbeddingMatmul";
     case Zones::kGenFFW:
@@ -134,6 +136,7 @@ hwy::ProfilerFlags ZoneFlags(Zones zone) {
     case Zones::kGenAttentionDotSoftmaxWeightedSumInclusive:
     case Zones::kGenAttentionSumHeads:
     case Zones::kGenEmbed:
+    case Zones::kGenEmbedding:
     case Zones::kGenEmbeddingMatmul:
     case Zones::kGenFFW:
     case Zones::kGenImageTokens:

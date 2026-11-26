@@ -209,6 +209,10 @@ struct RuntimeConfig {
   // `max_generated_tokens == 0`, `!use_continuous_batching`, and no MTP
   // decoding (whose prefill pairs each token with its successor).
   bool prefill_last_token = false;
+
+  // Embedding output dimension truncation (0 = full dimension). Only consulted
+  // by `Gemma::ComputeEmbedding`.
+  size_t embed_dim = 0;
 };
 
 struct InferenceArgs : public ArgsBase<InferenceArgs> {
@@ -244,6 +248,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   bool use_mtp;
   size_t mtp_draft_horizon;
   float mtp_confidence_threshold;
+  size_t embed_dim;
 
   template <class Visitor>
   void ForEach(const Visitor& visitor) {
@@ -314,6 +319,8 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     visitor(mtp_confidence_threshold, "mtp_confidence_threshold", 0.0f,
             "Minimum top-1 probability threshold to accept MTP drafts (default: 0.0)",
             2);
+    visitor(embed_dim, "embed_dim", size_t{0},
+            "Truncate embedding to this dimension (0 = full dimension).", 2);
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
@@ -350,6 +357,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
     runtime_config.use_mtp = use_mtp;
     runtime_config.mtp_draft_horizon = mtp_draft_horizon;
     runtime_config.mtp_confidence_threshold = mtp_confidence_threshold;
+    runtime_config.embed_dim = embed_dim;
   }
 };
 

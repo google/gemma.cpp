@@ -116,6 +116,7 @@ PYBIND11_MODULE(configs, py_module) {
       .value("GEMMA4_2B_LM", gcpp::Model::GEMMA4_2B_LM)
       .value("GEMMA4_E4B", gcpp::Model::GEMMA4_E4B)
       .value("GEMMA4_E4B_LM", gcpp::Model::GEMMA4_E4B_LM)
+      .value("EMBEDDING_GEMMA2_LM", gcpp::Model::EMBEDDING_GEMMA2_LM)
       // Insert new models above this line.
       ;  // NOLINT
 

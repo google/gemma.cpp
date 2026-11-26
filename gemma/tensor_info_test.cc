@@ -173,5 +173,45 @@ TEST(TensorInfoRegistryTest, Gemma4E4BShapes) {
   EXPECT_EQ(linear_shared->shape[1], kFfHiddenDim);  // 10240
 }
 
+TEST(TensorInfoRegistryTest, EmbeddingGemma2Shapes) {
+  const ModelConfig config(Model::EMBEDDING_GEMMA2_LM, Type::kBF16,
+                           PromptWrapping::GEMMA_IT);
+  EXPECT_TRUE(config.vit_config.layer_configs.empty());
+  const TensorInfoRegistry tensors(config);
+
+  const TensorInfo* default_proj = tensors.Find("default_proj");
+  ASSERT_NE(default_proj, nullptr);
+  EXPECT_EQ(default_proj->shape, (std::vector<size_t>{768, 512}));
+  EXPECT_EQ(default_proj->axes, (std::vector<size_t>{0, 1}));
+  EXPECT_EQ(default_proj->source_names,
+            (std::vector<std::string>{"embedding_projection.weight"}));
+  EXPECT_EQ(default_proj->min_size, Type::kBF16);
+
+  EXPECT_EQ(tensors.Find("ple_embeddings"), nullptr);
+  const TensorInfo* ple_model_proj = tensors.Find("ple_model_proj");
+  ASSERT_NE(ple_model_proj, nullptr);
+  EXPECT_EQ(ple_model_proj->shape, (std::vector<size_t>{24 * 512, 512}));
+  const TensorInfo* ple_proj_norm = tensors.Find("ple_proj_norm");
+  ASSERT_NE(ple_proj_norm, nullptr);
+  EXPECT_EQ(ple_proj_norm->shape, (std::vector<size_t>{512}));
+
+  const TensorInfo* qkv1_local = tensors.Find("qkv1_w_0");
+  ASSERT_NE(qkv1_local, nullptr);
+  EXPECT_EQ(qkv1_local->shape, (std::vector<size_t>{4 * 256, 512}));
+  const TensorInfo* qkv2_local = tensors.Find("qkv2_w_0");
+  ASSERT_NE(qkv2_local, nullptr);
+  EXPECT_EQ(qkv2_local->shape, (std::vector<size_t>{2 * 2 * 256, 512}));
+  const TensorInfo* ple_gate = tensors.Find("ple_gate_0");
+  ASSERT_NE(ple_gate, nullptr);
+  EXPECT_EQ(ple_gate->shape, (std::vector<size_t>{512, 512}));
+
+  const TensorInfo* qkv1_global = tensors.Find("qkv1_w_5");
+  ASSERT_NE(qkv1_global, nullptr);
+  EXPECT_EQ(qkv1_global->shape, (std::vector<size_t>{4 * 512, 512}));
+  const TensorInfo* qkv2_global = tensors.Find("qkv2_w_5");
+  ASSERT_NE(qkv2_global, nullptr);
+  EXPECT_EQ(qkv2_global->shape, (std::vector<size_t>{2 * 1 * 512, 512}));
+}
+
 }  // namespace
 }  // namespace gcpp

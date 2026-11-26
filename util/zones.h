@@ -28,6 +28,7 @@ enum class Zones {   // Keep sorted
   kGenAttentionQDotK,
   kGenAttentionSumHeads,
   kGenEmbed,
+  kGenEmbedding,
   kGenEmbeddingMatmul,
   kGenFFW,
   kGenImageTokens,

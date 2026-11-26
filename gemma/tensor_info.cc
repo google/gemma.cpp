@@ -84,6 +84,15 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
             .min_size = Type::kBF16,
         });
   }
+  if (IsEmbeddingGemma2(config.model)) {
+    Add(no_suffix, {
+                       .base_name = "default_proj",
+                       .source_names = {"embedding_projection.weight"},
+                       .axes = {0, 1},
+                       .shape = {config.EmbeddingProjDim(), config.model_dim},
+                       .min_size = Type::kBF16,
+                   });
+  }
   Add(no_suffix, {
                      .base_name = "enc_norm_bias",
                      .source_names = {"img/Transformer/encoder_norm/bias"},
@@ -150,16 +159,17 @@ void TensorInfoRegistry::AddModelTensors(const ModelConfig& config) {
                  });
   // Per-Layer Embedding (PLE) model-level tensors.
   if (config.ple_dim > 0) {
-    Add(no_suffix,
-        {
-            .base_name = "ple_embeddings",
-            .source_names = {"embedder/per_layer_embeddings"},
-            .preshape = {config.vocab_size,
-                         config.num_layers * config.ple_dim},
-            .axes = {0, 1},
-            .shape = {config.vocab_size,
-                      config.num_layers * config.ple_dim},
-        });
+    if (config.HasPLETable()) {
+      Add(no_suffix,
+          {
+              .base_name = "ple_embeddings",
+              .source_names = {"embedder/per_layer_embeddings"},
+              .preshape = {config.vocab_size,
+                           config.num_layers * config.ple_dim},
+              .axes = {0, 1},
+              .shape = {config.vocab_size, config.num_layers * config.ple_dim},
+          });
+    }
     Add(no_suffix,
         {
             .base_name = "ple_model_proj",

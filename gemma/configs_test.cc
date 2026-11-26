@@ -239,4 +239,53 @@ TEST(ConfigsTest, Gemma4E4BQuantizerSpecifiers) {
   EXPECT_EQ(e4b_lm_pt.wrapping, PromptWrapping::GEMMA_PT);
 }
 
+TEST(ConfigsTest, EmbeddingGemma2) {
+  const ModelConfig config(Model::EMBEDDING_GEMMA2_LM, Type::kBF16,
+                           PromptWrapping::GEMMA_IT);
+  EXPECT_EQ(config.display_name, "EmbeddingGemma2_LM");
+  EXPECT_FALSE(config.HasGemma4Vit());
+  EXPECT_TRUE(IsEmbeddingGemma2(config.model));
+  EXPECT_TRUE(config.IsEmbedding());
+  EXPECT_EQ(config.EmbeddingProjDim(), kEmbeddingGemma2Dim);
+  EXPECT_EQ(config.num_layers, 24u);
+  EXPECT_EQ(config.model_dim, 512u);
+  EXPECT_EQ(config.ple_dim, 512u);
+  EXPECT_FALSE(config.HasPLETable());
+  EXPECT_EQ(config.vocab_size, 262144u);
+  EXPECT_EQ(config.max_seq_len, kMaxBatchSize);
+  EXPECT_EQ(config.query_scale, QueryScaleType::One);
+  EXPECT_TRUE(config.use_global_timescale);
+  EXPECT_FLOAT_EQ(config.partial_rotary_factor, 1.0f);
+  EXPECT_EQ(config.NumPrefillLayers(), 24u);
+
+  for (size_t i = 0; i < 24; ++i) {
+    const LayerConfig& lc = config.layer_configs[i];
+    EXPECT_EQ(lc.ple_dim, 512u) << i;
+    EXPECT_EQ(lc.ff_hidden_dim, 2048u) << i;
+    EXPECT_EQ(lc.heads, 4u) << i;
+    EXPECT_EQ(lc.post_qk, PostQKType::Rope) << i;
+    EXPECT_TRUE(lc.use_qk_norm) << i;
+    EXPECT_TRUE(lc.norm_v) << i;
+    const bool is_global = (i % 6 == 5);
+    EXPECT_EQ(lc.kv_heads, is_global ? 1u : 2u) << i;
+    EXPECT_EQ(lc.qkv_dim, is_global ? 512u : 256u) << i;
+    EXPECT_EQ(config.attention_window_sizes[i],
+              is_global ? config.max_seq_len : 513u)
+        << i;
+  }
+
+  const ModelConfig bf16_it("embeddinggemma2-lm-bf16-it");
+  EXPECT_EQ(bf16_it.model, Model::EMBEDDING_GEMMA2_LM);
+  EXPECT_EQ(bf16_it.weight, Type::kBF16);
+  EXPECT_EQ(bf16_it.wrapping, PromptWrapping::GEMMA_IT);
+
+  const ModelConfig sfp_pt("embeddinggemma2-lm-sfp-pt");
+  EXPECT_EQ(sfp_pt.model, Model::EMBEDDING_GEMMA2_LM);
+  EXPECT_EQ(sfp_pt.weight, Type::kSFP);
+  EXPECT_EQ(sfp_pt.wrapping, PromptWrapping::GEMMA_PT);
+
+  EXPECT_EQ(DeduceModel(Path("embeddinggemma2-lm-bf16-it.sbs"), 24, 0),
+            Model::EMBEDDING_GEMMA2_LM);
+}
+
 }  // namespace gcpp
