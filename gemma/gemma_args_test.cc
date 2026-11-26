@@ -71,4 +71,44 @@ TEST(GemmaArgsTest, UnconsumedArgs) {
   CheckUnconsumed({"gemma", "--UNDEFINED", "--weights=x", "--XXX"}, 1);
 }
 
+// Parses `args` (including argv[0]) into `InferenceArgs`.
+static InferenceArgs ParseInferenceArgs(const std::vector<std::string>& args) {
+  std::vector<char*> ptrs;
+  FillPtrs(args, ptrs);
+  const int argc = static_cast<int>(args.size());
+  char** argv = const_cast<char**>(ptrs.data());
+  ConsumedArgs consumed(argc, argv);
+  InferenceArgs inference(argc, argv, consumed);
+  consumed.ClearUnconsumed();
+  return inference;
+}
+
+TEST(GemmaArgsTest, ParsesValidNumbers) {
+  const InferenceArgs a =
+      ParseInferenceArgs({"gemma", "--top_k=40", "--temperature", "0.5",
+                          "--verbosity=-1", "--seq_len=3000000000"});
+  EXPECT_EQ(a.top_k, size_t{40});
+  EXPECT_FLOAT_EQ(a.temperature, 0.5f);
+  EXPECT_EQ(a.verbosity, -1);
+  EXPECT_EQ(a.seq_len, size_t{3000000000});
+}
+
+// Invalid numeric values must produce the "Invalid value" abort message rather
+// than being silently accepted (negative values for unsigned args wrapped to
+// SIZE_MAX, trailing garbage was ignored) or escaping as an uncaught exception.
+TEST(GemmaArgsDeathTest, RejectsInvalidNumbers) {
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--top_k=-1"}),
+               "Invalid value for top_k");
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--top_k", "abc"}),
+               "Invalid value for top_k");
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--max_generated_tokens=10x"}),
+               "Invalid value for max_generated_tokens");
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--verbosity=3000000000"}),
+               "Invalid value for verbosity");
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--temperature=1.0x"}),
+               "Invalid value for temperature");
+  EXPECT_DEATH(ParseInferenceArgs({"gemma", "--temperature="}),
+               "Invalid value for temperature");
+}
+
 }  // namespace gcpp
