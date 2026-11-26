@@ -289,10 +289,20 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
     const LayerConfig& layer_config, MatPtrT<I8Stream>& attn_vec_einsum_w,
     MatPtrT<I8Stream>& att_weights, std::vector<MatOwner>& mat_owners,
     ThreadingContext& ctx) {
+  if (layer_config.type != LayerAttentionType::kGemma) return;
+  HWY_ASSERT(attn_vec_einsum_w.HasPtr() ^ att_weights.HasPtr());
   if (!attn_vec_einsum_w.HasPtr()) return;
   HWY_ASSERT(attn_vec_einsum_w.GetType() == Type::kI8);
 
+  const size_t model_dim = layer_config.model_dim;
+  const size_t heads = layer_config.heads;
+  const size_t qkv_dim = layer_config.qkv_dim;
+
   att_weights.SetType(Type::kI8);
+  HWY_ASSERT(att_weights.Rows() == model_dim);
+  HWY_ASSERT(att_weights.Cols() == heads * qkv_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Rows() == heads * model_dim);
+  HWY_ASSERT(attn_vec_einsum_w.Cols() == qkv_dim);
 
   {
     std::lock_guard<std::mutex> lock(g_mat_owners_mutex);
@@ -300,10 +310,6 @@ static void HWY_MAYBE_UNUSED InitAttWeightsI8(
     mat_owners.back().AllocateFor(att_weights, ctx.allocator,
                                   MatPadding::kPacked);
   }
-
-  const size_t model_dim = layer_config.model_dim;
-  const size_t heads = layer_config.heads;
-  const size_t qkv_dim = layer_config.qkv_dim;
 
   // Reshape [kHeads, kModelDim, kQKVDim] to [kModelDim, kHeads * kQKVDim].
   hwy::AlignedFreeUniquePtr<float[]> attn_vec_einsum_w_tmp =
@@ -786,7 +792,8 @@ static void MapAll(const std::vector<TensorToRead>& tensors,
     HWY_ASSERT_M(mat_bytes == tensors[i].range.bytes, tensors[i].mat->Name());
     // Ensure the blob lies within the file mapping.
     const uint64_t offset = tensors[i].range.offset;
-    HWY_ASSERT_M(offset + mat_bytes <= file_bytes, tensors[i].mat->Name());
+    HWY_ASSERT_M(offset <= file_bytes && mat_bytes <= file_bytes - offset,
+                 tensors[i].mat->Name());
 
     tensors[i].mat->SetPtr(const_cast<uint8_t*>(mapped.get() + offset),
                            tensors[i].mat->Stride());
@@ -812,8 +819,9 @@ static void DecompressToBF16(MatPtr& mat,
   }
 }
 
-static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
-                          const BlobReader& reader, ThreadingContext& ctx) {
+void weights_internal::ReadAllToBF16(const std::vector<TensorToRead>& tensors,
+                                     const BlobReader& reader,
+                                     ThreadingContext& ctx) {
   // Especially TSAN is slow enough to warrant hierarchical parallelism.
   const Parallelism parallelism =
       HWY_IS_DEBUG_BUILD ? Parallelism::kHierarchical : Parallelism::kFlat;
@@ -829,6 +837,8 @@ static void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
                              mat.Name());
 
                 if (tensor.keep_type) {
+                  HWY_ASSERT_M(tensor.range.bytes == mat.PackedBytes(),
+                               mat.Name());
                   HWY_ASSERT(reader.file().Read(
                       tensor.range.offset, tensor.range.bytes, mat.Packed()));
                   return;
@@ -1159,7 +1169,7 @@ static MapPtr MapOrReadAll(std::vector<TensorToRead>& tensors,
   if (!to_sfp.empty()) weights_internal::ReadAllToSFP(to_sfp, reader, ctx);
 
   if (*mode == WeightsPtrs::Mode::kReadBF16) {
-    ReadAllToBF16(rest, reader, ctx);
+    weights_internal::ReadAllToBF16(rest, reader, ctx);
     return MapPtr();
   }
 

@@ -52,6 +52,9 @@ WeightsPtrs::Mode ChooseMode(uint64_t file_bytes, const LoaderArgs& loader,
                              const InferenceArgs& inference,
                              const Allocator& allocator);
 
+void ReadAllToBF16(const std::vector<TensorToRead>& tensors,
+                   const BlobReader& reader, ThreadingContext& ctx);
+
 void ReadAllToSFP(const std::vector<TensorToRead>& tensors,
                   const BlobReader& reader, ThreadingContext& ctx);
 

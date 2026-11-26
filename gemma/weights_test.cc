@@ -190,6 +190,109 @@ TEST(WeightsTest, RejectsMismatchedEmbeddingBlobSize) {
                "tensor.range.bytes == tensor.prev_packed_bytes");
 }
 
+TEST(WeightsTest, RejectsMismatchedBlobSizeInReadAllToBF16) {
+  ThreadingContext ctx = MakeContext();
+  TemporaryBlob blob;
+  const std::array<BF16, 8> oversized = {};
+  {
+    BlobWriter writer(blob.path(), ctx);
+    writer.Add("w", oversized.data(), sizeof(oversized));
+    writer.Finalize();
+  }
+  BlobReader reader(blob.path());
+  const BlobRange* range = reader.Find("w");
+  ASSERT_NE(range, nullptr);
+
+  // Destination matrix holds 2x2 BF16 (8 bytes), whereas the blob has 16 bytes
+  // (b/583883341).
+  MatPtr mat("w", Type::kBF16, Extents2D(2, 2));
+  MatOwner owner;
+  owner.AllocateFor(mat, ctx.allocator, MatPadding::kPacked);
+
+  weights_internal::TensorToRead mismatch_prev{
+      .mat = &mat,
+      .range = *range,
+      .padding = MatPadding::kPacked,
+      .keep_type = true,
+      .prev_type = Type::kBF16,
+      .prev_packed_bytes = mat.PackedBytes(),
+  };
+  EXPECT_DEATH(weights_internal::ReadAllToBF16({mismatch_prev}, reader, ctx),
+               "tensor.range.bytes == tensor.prev_packed_bytes");
+
+  // Also verify keep_type checks mat.PackedBytes() directly even if
+  // prev_packed_bytes matches range.bytes.
+  weights_internal::TensorToRead mismatch_packed = mismatch_prev;
+  mismatch_packed.prev_packed_bytes = range->bytes;
+  EXPECT_DEATH(weights_internal::ReadAllToBF16({mismatch_packed}, reader, ctx),
+               "tensor.range.bytes == mat.PackedBytes\\(\\)");
+}
+
+TEST(WeightsTest, RejectsMismatchedInitAttWeightsI8Extents) {
+  ThreadingContext ctx = MakeContext();
+  ModelConfig config;
+  config.model = Model::GEMMA2_2B;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.weight = Type::kI8;
+  config.model_dim = 64;
+  config.vocab_size = 16;
+  config.max_seq_len = 16;
+  config.num_layers = 1;
+  LayerConfig lc;
+  lc.model_dim = config.model_dim;
+  lc.ff_hidden_dim = 64;
+  lc.heads = 2;
+  lc.kv_heads = 1;
+  lc.qkv_dim = 32;
+  config.layer_configs = {lc};
+  config.attention_window_sizes = {16};
+
+  TensorInfoRegistry registry(config);
+  // Construct LayerWeightsPtrs with a wider LayerConfig than `registry` so
+  // att_weights extents disagree with layer.layer_config (b/584434376).
+  LayerConfig mutated = lc;
+  mutated.heads = 4;
+  LayerWeightsPtrs layer(0, mutated, registry);
+  layer.attn_vec_einsum_w.SetType(Type::kI8);
+  std::vector<MatOwner> owners(1);
+  owners[0].AllocateFor(layer.attn_vec_einsum_w, ctx.allocator,
+                        MatPadding::kPacked);
+  EXPECT_DEATH(layer.Fixup(config.model, owners, ctx),
+               "att_weights\\.Cols\\(\\) == heads \\* qkv_dim");
+}
+
+TEST(WeightsTest, SkipsInitAttWeightsI8ForNonGemmaLayers) {
+  ThreadingContext ctx = MakeContext();
+  ModelConfig config;
+  config.model = Model::GEMMA2_2B;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.weight = Type::kI8;
+  config.model_dim = 64;
+  config.vocab_size = 16;
+  config.max_seq_len = 16;
+  config.num_layers = 1;
+  LayerConfig lc;
+  lc.model_dim = config.model_dim;
+  lc.ff_hidden_dim = 64;
+  lc.heads = 2;
+  lc.kv_heads = 1;
+  lc.qkv_dim = 32;
+  config.layer_configs = {lc};
+  config.attention_window_sizes = {16};
+
+  TensorInfoRegistry registry(config);
+  LayerConfig vit_lc = lc;
+  vit_lc.type = LayerAttentionType::kVit;
+  LayerWeightsPtrs layer(0, vit_lc, registry);
+  layer.attn_vec_einsum_w.SetType(Type::kI8);
+  std::vector<MatOwner> owners(1);
+  owners[0].AllocateFor(layer.attn_vec_einsum_w, ctx.allocator,
+                        MatPadding::kPacked);
+  layer.Fixup(config.model, owners, ctx);
+  EXPECT_FALSE(layer.att_weights.HasPtr());
+  EXPECT_EQ(owners.size(), 1u);
+}
+
 TEST(WeightsTest, ExplicitSFPDisablesOnlyAutomaticMapping) {
   ThreadingContext ctx = MakeContext();
   InferenceArgs inference;
