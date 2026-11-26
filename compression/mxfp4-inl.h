@@ -70,13 +70,20 @@ class MxFp4Codec {
     return sign | kEncodeLut[lut_idx];
   }
 
-  alignas(16) static constexpr uint8_t kLutLo[16] = {
-      0x00, 0x00, 0x80, 0xC0, 0x00, 0x40, 0x80, 0xC0,
-      0x00, 0x00, 0x80, 0xC0, 0x00, 0x40, 0x80, 0xC0,
+  // BF16 bytes for E2M1 * 2^0 (row 0, even exp_delta) and E2M1 * 2^1 (row 1,
+  // odd exp_delta). Selecting row (exp_delta & 1) absorbs the bit-7 exponent
+  // LSB carry so scaling adds (exp_delta >> 1) directly to the high byte.
+  alignas(16) static constexpr uint8_t kLutLo[2][16] = {
+      {0x00, 0x00, 0x80, 0xC0, 0x00, 0x40, 0x80, 0xC0,
+       0x00, 0x00, 0x80, 0xC0, 0x00, 0x40, 0x80, 0xC0},
+      {0x00, 0x80, 0x00, 0x40, 0x80, 0xC0, 0x00, 0x40,
+       0x00, 0x80, 0x00, 0x40, 0x80, 0xC0, 0x00, 0x40},
   };
-  alignas(16) static constexpr uint8_t kLutHi[16] = {
-      0x00, 0x3F, 0x3F, 0x3F, 0x40, 0x40, 0x40, 0x40,
-      0x80, 0xBF, 0xBF, 0xBF, 0xC0, 0xC0, 0xC0, 0xC0,
+  alignas(16) static constexpr uint8_t kLutHi[2][16] = {
+      {0x00, 0x3F, 0x3F, 0x3F, 0x40, 0x40, 0x40, 0x40,
+       0x80, 0xBF, 0xBF, 0xBF, 0xC0, 0xC0, 0xC0, 0xC0},
+      {0x00, 0x3F, 0x40, 0x40, 0x40, 0x40, 0x41, 0x41,
+       0x80, 0xBF, 0xC0, 0xC0, 0xC0, 0xC0, 0xC1, 0xC1},
   };
 
   template <class DU8H, class DF, HWY_IF_F32_D(DF),
@@ -151,8 +158,8 @@ class MxFp4Codec {
 
     const DU8H du8h;
     const DU8 du8;
-    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo);
-    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi);
+    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo[0]);
+    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi[0]);
     HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
     const uint8_t e8m0 = block_ptr[0];
     const float scale_f = DecodeE8M0ScaleToF32(e8m0);
@@ -165,8 +172,8 @@ class MxFp4Codec {
       VF out0, out1;
       Dequantize2Lanes(df, du8h, qs_ptr, v_idx * 2 * NF, vd, lut_lo, lut_hi,
                        out0, out1);
-      hn::Store(out0, df, raw + v_idx * 2 * NF);
-      hn::Store(out1, df, raw + v_idx * 2 * NF + NF);
+      hn::StoreU(out0, df, raw + v_idx * 2 * NF);
+      hn::StoreU(out1, df, raw + v_idx * 2 * NF + NF);
     }
   }
 
@@ -174,50 +181,122 @@ class MxFp4Codec {
   static HWY_INLINE void DequantizeBlock(DBF dbf,
                                          const uint8_t* HWY_RESTRICT block_ptr,
                                          BF16* HWY_RESTRICT raw) {
+    const uint8_t e8m0 = block_ptr[0];
+#if HWY_IS_LITTLE_ENDIAN && !HWY_HAVE_SCALABLE
+    // For e8m0 in [1, 252], normal BF16 exponents stay in [1, 254] and the
+    // single subnormal magnitude (0.5 * 2^-126 = 2^-127) flushes to signed
+    // zero, matching hardware VCVTNE2PS2BF16. Scales {0, 253, 254, 255} require
+    // zero/Inf handling and fall through to the F32 path below.
+    if (HWY_LIKELY(static_cast<uint8_t>(e8m0 - 1u) < 252u)) {
 #if HWY_TARGET <= HWY_AVX3
-    if constexpr (hn::MaxLanes(dbf) == 32) {
-      HWY_ALIGN static constexpr uint16_t kLutBaseBF16[32] = {
-          0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0,
-          0x8000, 0xBF00, 0xBF80, 0xBFC0, 0xC000, 0xC040, 0xC080, 0xC0C0,
-          0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0,
-          0x8000, 0xBF00, 0xBF80, 0xBFC0, 0xC000, 0xC040, 0xC080, 0xC0C0,
-      };
+      if constexpr (hn::MaxLanes(dbf) == 32) {
+        HWY_ALIGN static constexpr uint16_t kLutBaseBF16[32] = {
+            0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0,
+            0x8000, 0xBF00, 0xBF80, 0xBFC0, 0xC000, 0xC040, 0xC080, 0xC0C0,
+            0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0,
+            0x8000, 0xBF00, 0xBF80, 0xBFC0, 0xC000, 0xC040, 0xC080, 0xC0C0,
+        };
 
-      HWY_ALIGN static constexpr uint16_t kNonZeroMaskBF16[32] = {
-          0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-          0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-          0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-          0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
-      };
+        HWY_ALIGN static constexpr uint16_t kNonZeroMaskBF16[32] = {
+            0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+            0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+            0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+            0x0000, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF,
+        };
 
-      using DU16x16 = hn::FixedTag<uint16_t, 16>;
-      using DU16x32 = hn::FixedTag<uint16_t, 32>;
-      using DU8x16 = hn::FixedTag<uint8_t, 16>;
+        using DU16x16 = hn::FixedTag<uint16_t, 16>;
+        using DU16x32 = hn::FixedTag<uint16_t, 32>;
+        using DU8x16 = hn::FixedTag<uint8_t, 16>;
 
-      const DU16x16 du16x16;
-      const DU16x32 du16x32;
-      const DU8x16 du8x16;
+        const DU16x16 du16x16;
+        const DU16x32 du16x32;
+        const DU8x16 du8x16;
 
-      const int exp_delta = static_cast<int>(block_ptr[0]) - 127;
-      const uint16_t delta_bits = static_cast<uint16_t>(exp_delta << 7);
-      const auto delta_vec = hn::And(hn::Set(du16x32, delta_bits),
-                                     hn::Load(du16x32, kNonZeroMaskBF16));
-      const auto lut_u16 =
-          hn::Add(hn::Load(du16x32, kLutBaseBF16), delta_vec);
+        const uint16_t delta_bits =
+            static_cast<uint16_t>((static_cast<uint32_t>(e8m0) - 127u) << 7);
+        const auto delta_vec = hn::And(hn::Set(du16x32, delta_bits),
+                                       hn::Load(du16x32, kNonZeroMaskBF16));
+        const auto lut_u16 =
+            hn::Add(hn::Load(du16x32, kLutBaseBF16), delta_vec);
 
-      const uint8_t* qs_ptr = block_ptr + 1;
-      const auto raw16 = hn::LoadU(du8x16, qs_ptr);
-      const auto lo_nibs = hn::And(raw16, hn::Set(du8x16, 0x0F));
-      const auto hi_nibs = hn::ShiftRight<4>(raw16);
+        const uint8_t* qs_ptr = block_ptr + 1;
+        const auto raw16 = hn::LoadU(du8x16, qs_ptr);
+        const auto lo_nibs = hn::And(raw16, hn::Set(du8x16, 0x0F));
+        const auto hi_nibs = hn::ShiftRight<4>(raw16);
 
-      const auto idx_lo = hn::PromoteTo(du16x16, lo_nibs);
-      const auto idx_hi = hn::PromoteTo(du16x16, hi_nibs);
-      const auto idx512 = hn::Combine(du16x32, idx_hi, idx_lo);
+        const auto idx_lo = hn::PromoteTo(du16x16, lo_nibs);
+        const auto idx_hi = hn::PromoteTo(du16x16, hi_nibs);
+        const auto idx512 = hn::Combine(du16x32, idx_hi, idx_lo);
 
-      const auto w_u16 =
-          hn::TableLookupLanes(lut_u16, hn::IndicesFromVec(du16x32, idx512));
-      hn::Store(hn::BitCast(dbf, w_u16), dbf, raw);
-      return;
+        const auto w_u16 =
+            hn::TableLookupLanes(lut_u16, hn::IndicesFromVec(du16x32, idx512));
+        hn::StoreU(hn::BitCast(dbf, w_u16), dbf, raw);
+        return;
+      }
+#endif
+      if constexpr (hn::MaxLanes(dbf) == 16 || hn::MaxLanes(dbf) == 8) {
+        alignas(16) static constexpr uint8_t kNonZeroMask8[16] = {
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        };
+        const hn::Repartition<uint8_t, DBF> du8;
+        const size_t odd = (e8m0 ^ 1u) & 1u;
+        const uint8_t exp_hi_delta =
+            static_cast<uint8_t>(((e8m0 - 1u) >> 1) - 63u);
+        const auto lut_lo = hn::LoadDup128(du8, kLutLo[odd]);
+        const auto lut_hi = hn::Add(
+            hn::LoadDup128(du8, kLutHi[odd]),
+            hn::And(hn::Set(du8, exp_hi_delta),
+                    hn::LoadDup128(du8, kNonZeroMask8)));
+
+        if constexpr (hn::MaxLanes(dbf) == 16) {
+          const hn::Half<decltype(du8)> du8x16;
+          const hn::Repartition<uint64_t, decltype(du8x16)> du64x2;
+          const auto raw16 = hn::LoadU(du8x16, block_ptr + 1);
+          const auto lo64 =
+              hn::BitCast(du64x2, hn::And(raw16, hn::Set(du8x16, 0x0F)));
+          const auto hi64 = hn::BitCast(du64x2, hn::ShiftRight<4>(raw16));
+          // Per-block InterleaveLower/Upper is safe without InterleaveWhole*:
+          // du64x2 (Half<du8>) is 128-bit (one block), and Combine places
+          // [lo[0..7], hi[0..7]] in block 0 and [lo[8..15], hi[8..15]] in
+          // block 1 of 256-bit du8, so per-block byte interleaves below emit
+          // contiguous BF16[0..15] and BF16[16..31] without cross-lane
+          // permutes.
+          const auto pair0 =
+              hn::BitCast(du8x16, hn::InterleaveLower(du64x2, lo64, hi64));
+          const auto pair1 =
+              hn::BitCast(du8x16, hn::InterleaveUpper(du64x2, lo64, hi64));
+          const auto nibs = hn::Combine(du8, pair1, pair0);
+
+          const auto b_lo = hn::TableLookupBytes(lut_lo, nibs);
+          const auto b_hi = hn::TableLookupBytes(lut_hi, nibs);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveLower(du8, b_lo, b_hi)),
+                     dbf, raw);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveUpper(du8, b_lo, b_hi)),
+                     dbf, raw + 16);
+        } else {
+          // MaxLanes(dbf) == 8: du8 is 128-bit (a single block), where
+          // InterleaveLower/Upper and InterleaveWholeLower/Upper are identical.
+          const auto raw16 = hn::LoadU(du8, block_ptr + 1);
+          const auto lo_nibs = hn::And(raw16, hn::Set(du8, 0x0F));
+          const auto hi_nibs = hn::ShiftRight<4>(raw16);
+
+          const auto b_lo0 = hn::TableLookupBytes(lut_lo, lo_nibs);
+          const auto b_hi0 = hn::TableLookupBytes(lut_hi, lo_nibs);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveLower(du8, b_lo0, b_hi0)),
+                     dbf, raw);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveUpper(du8, b_lo0, b_hi0)),
+                     dbf, raw + 8);
+
+          const auto b_lo1 = hn::TableLookupBytes(lut_lo, hi_nibs);
+          const auto b_hi1 = hn::TableLookupBytes(lut_hi, hi_nibs);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveLower(du8, b_lo1, b_hi1)),
+                     dbf, raw + 16);
+          hn::StoreU(hn::BitCast(dbf, hn::InterleaveUpper(du8, b_lo1, b_hi1)),
+                     dbf, raw + 24);
+        }
+        return;
+      }
     }
 #endif
     using DF = hn::Repartition<float, DBF>;
@@ -230,10 +309,9 @@ class MxFp4Codec {
     const DF df;
     const DU8H du8h;
     const DU8 du8;
-    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo);
-    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi);
+    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo[0]);
+    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi[0]);
     HWY_LANES_CONSTEXPR size_t NF = hn::Lanes(df);
-    const uint8_t e8m0 = block_ptr[0];
     const float scale_f = DecodeE8M0ScaleToF32(e8m0);
     const VF vd = hn::Set(df, scale_f);
 
@@ -245,7 +323,7 @@ class MxFp4Codec {
       Dequantize2Lanes(df, du8h, qs_ptr, v_idx * 2 * NF, vd, lut_lo, lut_hi,
                        out0, out1);
       const VBF out_bf = hn::OrderedDemote2To(dbf, out0, out1);
-      hn::Store(out_bf, dbf, raw + v_idx * 2 * NF);
+      hn::StoreU(out_bf, dbf, raw + v_idx * 2 * NF);
     }
   }
 
@@ -315,8 +393,8 @@ class MxFp4Codec {
 
     const DU8H du8h;
     const DU8 du8;
-    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo);
-    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi);
+    const VU8 lut_lo = hn::LoadDup128(du8, kLutLo[0]);
+    const VU8 lut_hi = hn::LoadDup128(du8, kLutHi[0]);
     const uint8_t* block_ptr = reinterpret_cast<const uint8_t*>(packed.ptr) +
                                BlockByteOffset(packed_ofs);
     const uint8_t e8m0 = block_ptr[0];

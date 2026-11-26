@@ -185,18 +185,22 @@ void BenchAllMatMul() {
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 1536, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 1536, kAdd, env);
     BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 1536, kAdd, env);
+    BenchMatMul<BF16, MxFp4Stream, BF16>(batch_size, 1152, 1536, kAdd, env);
     // FFN gate+up
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 13824, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 13824, kAdd, env);
     BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 13824, kAdd, env);
+    BenchMatMul<BF16, MxFp4Stream, BF16>(batch_size, 1152, 13824, kAdd, env);
     // FFN down
     BenchMatMul<BF16, BF16, BF16>(batch_size, 6912, 1152, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 6912, 1152, kAdd, env);
     BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 6912, 1152, kAdd, env);
+    BenchMatMul<BF16, MxFp4Stream, BF16>(batch_size, 6912, 1152, kAdd, env);
     // Logits / embedding
     BenchMatMul<BF16, BF16, BF16>(batch_size, 1152, 262144, kAdd, env);
     BenchMatMul<BF16, SFP, BF16>(batch_size, 1152, 262144, kAdd, env);
     BenchMatMul<BF16, Q4_0Stream, BF16>(batch_size, 1152, 262144, kAdd, env);
+    BenchMatMul<BF16, MxFp4Stream, BF16>(batch_size, 1152, 262144, kAdd, env);
   }
 
   PROFILER_PRINT_RESULTS();
