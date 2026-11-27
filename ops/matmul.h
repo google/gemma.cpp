@@ -342,7 +342,7 @@ class MMEntireA {
  public:
   // Compile-time bounds on matrix columns to enable pre-allocating storage
   // and reusing it across `MatMul` calls. Sufficient for Gemma 2 27B.
-  static constexpr size_t kMaxK = 36 * 1024;
+  static constexpr size_t kMaxK = kMaxMatMulK;
 
   explicit MMEntireA(const Allocator& allocator)
       // 288 MiB. Must be padded, see `DoDecompressA`.

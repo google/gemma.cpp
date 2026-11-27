@@ -329,14 +329,14 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
     deduced_model = DeduceModel(reader.blob_path(), layers, layer_types);
   }
   if (has_config) {
-    HWY_ASSERT(config.wrapping != PromptWrapping::kSentinel);
-    HWY_ASSERT(config.weight != Type::kUnknown);
-    for (const LayerConfig& layer_config : config.layer_configs) {
-      if (static_cast<size_t>(layer_config.qkv_dim) > kMaxQKVDim) {
-        HWY_ABORT("Increase kMaxQKVDim to at least %u.", layer_config.qkv_dim);
+    for (const std::string& key : reader.Keys()) {
+      if (key.find("mtp_main_proj") != std::string::npos ||
+          key.find("mtp.0.main_proj") != std::string::npos) {
+        config.num_mtp_layers = 3;
+        break;
       }
     }
-
+    config.Validate();
     // We trust the deserialized config, but checking helps to validate the
     // deduction, which we rely on below for pre-2025 files.
     if (deduced_model.has_value() && config.model != *deduced_model) {
@@ -344,13 +344,6 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
       HWY_WARN("Detected model %s does not match config %s.",
                (std::string(ModelPrefix(*deduced_model)) + suffix).c_str(),
                (std::string(ModelPrefix(config.model)) + suffix).c_str());
-    }
-    for (const std::string& key : reader.Keys()) {
-      if (key.find("mtp_main_proj") != std::string::npos ||
-          key.find("mtp.0.main_proj") != std::string::npos) {
-        config.num_mtp_layers = 3;
-        break;
-      }
     }
     return config;
   }

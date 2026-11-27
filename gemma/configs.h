@@ -478,7 +478,9 @@ struct LayerConfig : public IFields {
   }
 
   // Width of one cached latent row (c_kv + decoupled RoPE key).
-  size_t KVLatentDim() const { return kv_lora_rank + rope_head_dim; }
+  size_t KVLatentDim() const {
+    return static_cast<size_t>(kv_lora_rank) + rope_head_dim;
+  }
 
   // V4 compressor: ratio-4 layers use overlapping windows (doubled dims).
   size_t CompressorCoff() const { return kv_compression_rate == 4 ? 2 : 1; }
@@ -517,7 +519,7 @@ struct LayerConfig : public IFields {
       }
       return size;
     }
-    return kv_heads * qkv_dim * 2;
+    return static_cast<size_t>(kv_heads) * qkv_dim * 2;
   }
 
   // f32 elements of per-query incremental compressor state for this layer:
@@ -760,10 +762,18 @@ struct ModelConfig : public IFields {
   // The third ctor also expects a string returned by this.
   std::string Specifier() const;
 
+  // Maximum `max_seq_len` that can be rounded by `KVCache` (`kMaxBF16PerVector`
+  // and `kTileSize = 32`) or added to `prefill_tbatch_size` (<= kMaxBatchSize)
+  // without 32-bit `size_t` / `uint32_t` wraparound.
+  static constexpr size_t kMaxSeqLen =
+      UINT32_MAX - HWY_MAX(kMaxBF16PerVector, kMaxBatchSize);
+
   // Overwrites `max_seq_len` with `new_max_seq_len` and updates all global
   // layers' attention window sizes to `new_max_seq_len`. This function must be
   // called before instantiating the KVCache object.
   void SetMaxSeqLen(size_t new_max_seq_len) {
+    HWY_ASSERT(new_max_seq_len > 0);
+    HWY_ASSERT(new_max_seq_len <= kMaxSeqLen);
     for (size_t i = 0; i < attention_window_sizes.size(); ++i) {
       if (attention_window_sizes[i] == max_seq_len) {
         attention_window_sizes[i] = new_max_seq_len;
@@ -854,6 +864,13 @@ struct ModelConfig : public IFields {
     }
     return num_layers;
   }
+  // Validates a layer sharing another layer's KV cache (`!HasOwnKVCache()`),
+  // returning the validated source layer index `< layer_idx`.
+  static size_t ValidateKVShareLayer(const std::vector<LayerConfig>& layers,
+                                     const std::vector<uint32_t>& window_sizes,
+                                     size_t layer_idx,
+                                     const char* stack_name = "kv");
+  void Validate() const;
 
   bool IsEOS(int id) const { return (id == eos_id || id == secondary_eos_id); }
 

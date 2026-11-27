@@ -33,6 +33,10 @@ namespace gcpp {
 // For hwy::BitSet4096. Note that KVs are extremely large for such batches.
 HWY_INLINE_VAR constexpr size_t kMaxBatchSize = 4096;
 
+// Maximum MatMul inner dimension K (matches MMEntireA::kMaxK; sufficient for
+// Gemma 2 27B ff_hidden_dim = 36864).
+HWY_INLINE_VAR constexpr size_t kMaxMatMulK = 36 * 1024;
+
 // Multiplier so a u64 occupies an entire cache line; avoids false sharing.
 HWY_INLINE_VAR constexpr size_t kU64PerLine = HWY_ALIGNMENT / sizeof(uint64_t);
 

@@ -27,6 +27,7 @@
 #include "io/fields.h"          // IFields
 #include "io/io.h"              // Path
 #include "hwy/base.h"
+#include "hwy/per_target.h"
 
 namespace gcpp {
 
@@ -1261,6 +1262,426 @@ bool ModelConfig::OverwriteWithCanonical() {
     }
   });
   return found;
+}
+
+size_t ModelConfig::ValidateKVShareLayer(
+    const std::vector<LayerConfig>& layers,
+    const std::vector<uint32_t>& window_sizes, size_t layer_idx,
+    const char* stack_name) {
+  const LayerConfig& lc = layers[layer_idx];
+  if (HWY_UNLIKELY(lc.kv_share_layer_idx < 0)) {
+    HWY_ABORT("Invalid %s layer %zu: kv_share_layer_idx %d < 0", stack_name,
+              layer_idx, lc.kv_share_layer_idx);
+  }
+  const size_t src = static_cast<size_t>(lc.kv_share_layer_idx);
+  if (HWY_UNLIKELY(src >= layer_idx)) {
+    HWY_ABORT("Invalid %s layer %zu: kv_share_layer_idx %zu >= layer_idx",
+              stack_name, layer_idx, src);
+  }
+  const LayerConfig& src_lc = layers[src];
+  if (HWY_UNLIKELY(lc.IsMLA() || src_lc.IsMLA())) {
+    HWY_ABORT("Invalid %s layer %zu: MLA layer cannot share KV with layer %zu",
+              stack_name, layer_idx, src);
+  }
+  if (HWY_UNLIKELY(!src_lc.HasOwnKVCache())) {
+    HWY_ABORT("Invalid %s layer %zu: KV share source %zu lacks own KV cache",
+              stack_name, layer_idx, src);
+  }
+  if (HWY_UNLIKELY(lc.kv_heads != src_lc.kv_heads)) {
+    HWY_ABORT("Invalid %s layer %zu: kv_heads %u != share source %zu (%u)",
+              stack_name, layer_idx, lc.kv_heads, src, src_lc.kv_heads);
+  }
+  if (HWY_UNLIKELY(lc.qkv_dim != src_lc.qkv_dim)) {
+    HWY_ABORT("Invalid %s layer %zu: qkv_dim %u != share source %zu (%u)",
+              stack_name, layer_idx, lc.qkv_dim, src, src_lc.qkv_dim);
+  }
+  if (HWY_UNLIKELY(layer_idx >= window_sizes.size() ||
+                   window_sizes[layer_idx] != window_sizes[src])) {
+    HWY_ABORT("Invalid %s layer %zu: attention window mismatch with source %zu",
+              stack_name, layer_idx, src);
+  }
+  return src;
+}
+
+void ModelConfig::Validate() const {
+  enum class Stack { kMain, kEnc, kDec, kVit };
+  // Fits MatPtr uint32_t element count for any batch_size <= kMaxBatchSize.
+  constexpr uint64_t kMaxMatCols = UINT32_MAX / kMaxBatchSize;
+  // `ds_state_snapshot` in kv_cache.cc allocates 32 rows in MatPtr (uint32_t).
+  constexpr uint64_t kMaxDSStateCols = UINT32_MAX / 32;
+  // Stack buffers in deepseek/deepseek.cc (`kDSMaxHCMult`).
+  constexpr size_t kMaxHCMult = 8;
+  // Caps Sinkhorn-Knopp iterations in HCReadDynamic against CPU-hang DoS.
+  constexpr size_t kMaxSinkhornIters = 64;
+  // Stack buffers in deepseek/deepseek.cc (`kDSMaxHeadDim`, `kDSMaxLatentDim`,
+  // `kDSMaxRate`, `k_f[4][512]`, `kDSMaxIndexerDim`, `chosen[64]`,
+  // `ffw_row[kDSMaxHeadDim * 8]`).
+  constexpr size_t kDSMaxHeadDim = 1024;
+  constexpr size_t kDSMaxLatentDim = 1024;
+  constexpr size_t kDSMaxRate = 256;
+  constexpr size_t kDSMaxIndexerHeadDim = 512;
+  constexpr size_t kDSMaxIndexerDim = 8192;
+  constexpr size_t kDSMaxExpertsPerToken = 64;
+  constexpr size_t kDSMaxMTPModelDim = kDSMaxHeadDim * 8;
+  // Stack arrays `kMaxExperts` in gemma4_moe.cc (128), deepseek.cc (512).
+  constexpr size_t kGemma4MaxExperts = 128;
+  constexpr size_t kMaxMoEExperts = 512;
+  // `LayerIdxFromKey` in gemma/model_store.cc asserts `layer_idx < 999`, and
+  // `MatPtr::SetName` caps names at 16 bytes (3-digit suffix for 13-byte base
+  // names like `moe_gate_ein_998`). Also bounds `TensorInfoRegistry` against
+  // single-field `num_mtp_layers` allocation amplification.
+  constexpr size_t kMaxLayers = 999;
+  // `PrefillVitGemma4` Step 5 in gemma/vit_gemma4.cc hardcodes 3x3 pooling
+  // (`max_patches / 9`), while callers size `image_tokens` by `pool_dim^2`.
+  constexpr size_t kGemma4VitPoolDim = 3;
+  // 2D RoPE in gemma/vit_gemma4.cc applies two 32-dim rotations.
+  constexpr size_t kGemma4VitMinQKVDim = 64;
+  // `AvgPool4x4` in ops/ops-inl.h hardcodes 64x64 -> 16x16 pooling.
+  constexpr size_t kGemmaVlmSeqLen = 4096;
+  constexpr size_t kGemmaVlmPoolDim = 4;
+
+  HWY_ASSERT(wrapping != PromptWrapping::kSentinel);
+  HWY_ASSERT(weight != Type::kUnknown);
+  HWY_ASSERT(model_dim > 0);
+  HWY_ASSERT(model_dim <= kMaxMatMulK);
+  HWY_ASSERT(vocab_size > 0);
+  HWY_ASSERT(vocab_size <= kMaxMatCols);
+  HWY_ASSERT(max_seq_len > 0);
+  HWY_ASSERT(max_seq_len <= kMaxSeqLen);
+  HWY_ASSERT(norm_num_groups > 0);
+  HWY_ASSERT((model_dim % norm_num_groups) == 0);
+  HWY_ASSERT(partial_rotary_factor >= 0.0f);
+  HWY_ASSERT(partial_rotary_factor <= 1.0f);
+  HWY_ASSERT(hc_mult <= kMaxHCMult);
+  HWY_ASSERT(hc_sinkhorn_iters <= kMaxSinkhornIters);
+  const uint64_t total_ple_dim = uint64_t{num_layers} * ple_dim;
+  HWY_ASSERT(total_ple_dim <= kMaxMatCols);
+  bool allow_gemma_moe = (model == Model::GEMMA4_26B_MOE);
+  uint64_t kv_flat_cols = 0, k_v_cols = 0, ds_state_cols = 0;
+  const auto check_stack = [&](Stack kind, const char* stack_name,
+                               size_t num_stack_layers,
+                               const std::vector<LayerConfig>& layers,
+                               const std::vector<uint32_t>& window_sizes) {
+    const bool is_main = (kind == Stack::kMain);
+    const bool uses_kv_cache =
+        (kind == Stack::kDec) || (is_main && !is_encoder_decoder);
+    const size_t expected_model_dim =
+        (kind == Stack::kVit) ? vit_config.model_dim : model_dim;
+    if (HWY_UNLIKELY(num_stack_layers == 0 || num_stack_layers > kMaxLayers ||
+                     layers.size() != num_stack_layers)) {
+      HWY_ABORT("Invalid %s stack: expected %zu layers in [1, %zu], got %zu",
+                stack_name, num_stack_layers, kMaxLayers, layers.size());
+    }
+    if (kind != Stack::kVit &&
+        HWY_UNLIKELY(window_sizes.size() != num_stack_layers)) {
+      HWY_ABORT("Invalid %s stack: window_sizes.size() %zu != %zu", stack_name,
+                window_sizes.size(), num_stack_layers);
+    }
+    for (size_t i = 0; i < window_sizes.size(); ++i) {
+      if (HWY_UNLIKELY(window_sizes[i] == 0 || window_sizes[i] > max_seq_len)) {
+        HWY_ABORT("Invalid %s layer %zu: window_size %u must be in [1, %u]",
+                  stack_name, i, window_sizes[i], max_seq_len);
+      }
+    }
+    size_t local_qkv_dim = 0, global_qkv_dim = 0;
+    const LayerConfig* widest_moe_layer = nullptr;
+    for (const LayerConfig& lc : layers) {
+      if (lc.IsMoE() && (widest_moe_layer == nullptr ||
+                         lc.NumExperts() > widest_moe_layer->NumExperts())) {
+        widest_moe_layer = &lc;
+      }
+    }
+    for (size_t i = 0; i < num_stack_layers; ++i) {
+      const LayerConfig& lc = layers[i];
+      const size_t experts_per_token = lc.NumExpertsPerDatapoint();
+      if (HWY_UNLIKELY(lc.model_dim != expected_model_dim)) {
+        HWY_ABORT("Invalid %s layer %zu: model_dim %u != expected %zu",
+                  stack_name, i, lc.model_dim, expected_model_dim);
+      }
+      if (HWY_UNLIKELY(lc.ff_hidden_dim == 0 ||
+                       lc.ff_hidden_dim > kMaxMatMulK)) {
+        HWY_ABORT("Invalid %s layer %zu: ff_hidden_dim %u not in [1, %zu]",
+                  stack_name, i, lc.ff_hidden_dim, kMaxMatMulK);
+      }
+      if (HWY_UNLIKELY(lc.qkv_dim == 0 || (lc.qkv_dim % 2) != 0)) {
+        HWY_ABORT("Invalid %s layer %zu: qkv_dim %u must be positive even",
+                  stack_name, i, lc.qkv_dim);
+      }
+      if (lc.post_qk == PostQKType::HalfRope &&
+          HWY_UNLIKELY((lc.qkv_dim % 4) != 0)) {
+        HWY_ABORT("Invalid %s layer %zu: HalfRope qkv_dim %u not multiple of 4",
+                  stack_name, i, lc.qkv_dim);
+      }
+      if (lc.type == LayerAttentionType::kVitGemma4 &&
+          HWY_UNLIKELY(lc.qkv_dim < kGemma4VitMinQKVDim)) {
+        HWY_ABORT("Invalid %s layer %zu: VitGemma4 qkv_dim %u < %zu",
+                  stack_name, i, lc.qkv_dim, kGemma4VitMinQKVDim);
+      }
+      if (lc.ple_dim != 0 && HWY_UNLIKELY(!is_main || lc.ple_dim != ple_dim)) {
+        HWY_ABORT("Invalid %s layer %zu: ple_dim %u != model ple_dim %u",
+                  stack_name, i, lc.ple_dim, ple_dim);
+      }
+      if (!lc.IsMoE() && HWY_UNLIKELY(experts_per_token != 0)) {
+        HWY_ABORT("Invalid %s layer %zu: non-MoE experts_per_token %zu != 0",
+                  stack_name, i, experts_per_token);
+      }
+      if (HWY_UNLIKELY(lc.heads == 0)) {
+        HWY_ABORT("Invalid %s layer %zu: heads must be > 0", stack_name, i);
+      }
+      const uint64_t heads_x_qkv = uint64_t{lc.heads} * lc.qkv_dim;
+      if (HWY_UNLIKELY(heads_x_qkv > kMaxMatMulK)) {
+        HWY_ABORT("Invalid %s layer %zu: heads %u * qkv_dim %u > kMaxMatMulK",
+                  stack_name, i, lc.heads, lc.qkv_dim);
+      }
+      if (HWY_UNLIKELY(lc.heads != layers[0].heads)) {
+        HWY_ABORT("Invalid %s layer %zu: heads %u != layer 0 heads %u",
+                  stack_name, i, lc.heads, layers[0].heads);
+      }
+      if (HWY_UNLIKELY(lc.kv_heads > layers[0].kv_heads)) {
+        HWY_ABORT("Invalid %s layer %zu: kv_heads %u > layer 0 kv_heads %u",
+                  stack_name, i, lc.kv_heads, layers[0].kv_heads);
+      }
+      if (HWY_UNLIKELY(lc.qkv_dim > kMaxQKVDim)) {
+        HWY_ABORT("Increase kMaxQKVDim >= %u.", lc.qkv_dim);
+      }
+      const auto check_gqa = [&]() {
+        if (HWY_UNLIKELY(lc.kv_heads == 0 || lc.kv_heads > lc.heads ||
+                         (lc.heads % lc.kv_heads) != 0)) {
+          HWY_ABORT("Invalid %s layer %zu: invalid GQA heads %u / kv_heads %u",
+                    stack_name, i, lc.heads, lc.kv_heads);
+        }
+      };
+      if (kind == Stack::kVit) {
+        const bool is_vit_type = lc.type == LayerAttentionType::kVit ||
+                                 lc.type == LayerAttentionType::kVitGemma4;
+        if (HWY_UNLIKELY(!is_vit_type || lc.type != layers[0].type ||
+                         lc.IsMLA() || lc.kv_heads != lc.heads)) {
+          HWY_ABORT("Invalid %s layer %zu: invalid ViT attention config",
+                    stack_name, i);
+        }
+      } else if (is_main &&
+                 (lc.IsMLA() || lc.type == LayerAttentionType::kDeepSeekMLA)) {
+        const size_t kv_latent_dim = lc.KVLatentDim();
+        const uint64_t o_proj_mid_dim = uint64_t{lc.o_groups} * lc.o_lora_rank;
+        if (HWY_UNLIKELY(!lc.IsMLA() ||
+                         lc.type != LayerAttentionType::kDeepSeekMLA ||
+                         !lc.IsV4MLA())) {
+          HWY_ABORT("Invalid %s layer %zu: inconsistent MLA config", stack_name,
+                    i);
+        }
+        if (HWY_UNLIKELY(lc.heads > kDSMaxHeadDim)) {
+          HWY_ABORT("Invalid %s layer %zu: MLA heads %u > %zu", stack_name, i,
+                    lc.heads, kDSMaxHeadDim);
+        }
+        if (lc.kv_heads != 0) check_gqa();
+        if (HWY_UNLIKELY(lc.rope_head_dim > lc.qkv_dim ||
+                         (lc.rope_head_dim % 2) != 0)) {
+          HWY_ABORT("Invalid %s layer %zu: rope_head_dim %u vs qkv_dim %u",
+                    stack_name, i, lc.rope_head_dim, lc.qkv_dim);
+        }
+        if (HWY_UNLIKELY(kv_latent_dim != lc.qkv_dim ||
+                         kv_latent_dim > kDSMaxLatentDim)) {
+          HWY_ABORT("Invalid %s layer %zu: KVLatentDim %zu vs qkv_dim %u",
+                    stack_name, i, kv_latent_dim, lc.qkv_dim);
+        }
+        if (HWY_UNLIKELY(lc.q_lora_rank > kMaxMatMulK)) {
+          HWY_ABORT("Invalid %s layer %zu: q_lora_rank %u > kMaxMatMulK",
+                    stack_name, i, lc.q_lora_rank);
+        }
+        if (HWY_UNLIKELY(lc.kv_compression_rate == 0 ||
+                         lc.kv_compression_rate > kDSMaxRate)) {
+          HWY_ABORT("Invalid %s layer %zu: kv_compression_rate %u", stack_name,
+                    i, lc.kv_compression_rate);
+        }
+        if (HWY_UNLIKELY(lc.o_groups == 0 || (lc.heads % lc.o_groups) != 0 ||
+                         o_proj_mid_dim > kMaxMatMulK)) {
+          HWY_ABORT("Invalid %s layer %zu: o_groups %u / o_lora_rank %u",
+                    stack_name, i, lc.o_groups, lc.o_lora_rank);
+        }
+        if (lc.HasIndexer()) {
+          const uint64_t indexer_total_dim =
+              uint64_t{lc.indexer_heads} * lc.indexer_head_dim;
+          if (HWY_UNLIKELY(!lc.HasCompressor())) {
+            HWY_ABORT("Invalid %s layer %zu: indexer requires compressor",
+                      stack_name, i);
+          }
+          if (HWY_UNLIKELY(lc.q_lora_rank == 0 || lc.indexer_head_dim == 0 ||
+                           lc.indexer_head_dim > kDSMaxIndexerHeadDim ||
+                           lc.indexer_head_dim < lc.rope_head_dim ||
+                           indexer_total_dim > kDSMaxIndexerDim ||
+                           lc.indexer_top_k > max_seq_len)) {
+            HWY_ABORT("Invalid %s layer %zu: indexer heads=%u dim=%u top_k=%u",
+                      stack_name, i, lc.indexer_heads, lc.indexer_head_dim,
+                      lc.indexer_top_k);
+          }
+        }
+      } else {
+        if (HWY_UNLIKELY(lc.type != LayerAttentionType::kGemma || lc.IsMLA())) {
+          HWY_ABORT("Invalid %s layer %zu: expected Gemma attention type",
+                    stack_name, i);
+        }
+        check_gqa();
+      }
+      if (!lc.HasIndexer() &&
+          HWY_UNLIKELY(lc.indexer_heads != 0 || lc.indexer_head_dim != 0 ||
+                       lc.indexer_top_k != 0)) {
+        HWY_ABORT(
+            "Invalid %s layer %zu: non-zero indexer fields without "
+            "indexer (heads=%u dim=%u top_k=%u)",
+            stack_name, i, lc.indexer_heads, lc.indexer_head_dim,
+            lc.indexer_top_k);
+      }
+      if (lc.kv_share_layer_idx != -1) {
+        if (HWY_UNLIKELY(!is_main)) {
+          HWY_ABORT("Invalid %s layer %zu: KV sharing only allowed on main",
+                    stack_name, i);
+        }
+        ValidateKVShareLayer(layers, window_sizes, i, stack_name);
+      }
+      if (lc.IsMoE()) {
+        const size_t max_experts =
+            model == Model::GEMMA4_26B_MOE ? kGemma4MaxExperts : kMaxMoEExperts;
+        size_t max_experts_per_token =
+            lc.IsMLA() ? kDSMaxExpertsPerToken : max_experts;
+        const size_t experts_limit =
+            HWY_MIN(size_t{lc.NumExperts()}, max_experts_per_token);
+        if (HWY_UNLIKELY(!is_main || (!lc.IsMLA() && !allow_gemma_moe))) {
+          HWY_ABORT("Invalid %s layer %zu: MoE not supported for this model",
+                    stack_name, i);
+        }
+        if (HWY_UNLIKELY(lc.NumExperts() > max_experts)) {
+          HWY_ABORT("Invalid %s layer %zu: num_experts %zu > max_experts %zu",
+                    stack_name, i, size_t{lc.NumExperts()}, max_experts);
+        }
+        if (HWY_UNLIKELY(experts_per_token == 0 ||
+                         experts_per_token > experts_limit)) {
+          HWY_ABORT("Invalid %s layer %zu: experts_per_token %zu (> %zu)",
+                    stack_name, i, experts_per_token, experts_limit);
+        }
+        if (HWY_UNLIKELY(experts_per_token >
+                         widest_moe_layer->NumExpertsPerDatapoint())) {
+          HWY_ABORT("Invalid %s layer %zu: experts_per_token %zu > widest %zu",
+                    stack_name, i, experts_per_token,
+                    size_t{widest_moe_layer->NumExpertsPerDatapoint()});
+        }
+        if (HWY_UNLIKELY(lc.ff_hidden_dim != widest_moe_layer->ff_hidden_dim)) {
+          HWY_ABORT("Invalid %s layer %zu: MoE ff_hidden_dim %u != widest %u",
+                    stack_name, i, lc.ff_hidden_dim,
+                    widest_moe_layer->ff_hidden_dim);
+        }
+      }
+      const bool has_own_kv_cache = uses_kv_cache && lc.HasOwnKVCache();
+      if (has_own_kv_cache) {
+        size_t& bucket_qkv_dim =
+            (window_sizes[i] == max_seq_len) ? global_qkv_dim : local_qkv_dim;
+        if (bucket_qkv_dim == 0) {
+          bucket_qkv_dim = lc.qkv_dim;
+        } else if (HWY_UNLIKELY(lc.qkv_dim != bucket_qkv_dim)) {
+          HWY_ABORT("Invalid %s layer %zu: qkv_dim %u != bucket qkv_dim %zu",
+                    stack_name, i, lc.qkv_dim, bucket_qkv_dim);
+        }
+      }
+      ds_state_cols += uses_kv_cache ? lc.DSStateSize() : 0;
+      kv_flat_cols += has_own_kv_cache ? lc.CacheLayerSize() : 0;
+      k_v_cols += has_own_kv_cache
+                      ? uint64_t{lc.kv_heads} *
+                            hwy::RoundUpTo(lc.qkv_dim, kMaxBF16PerVector)
+                      : 0;
+      if (HWY_UNLIKELY(kv_flat_cols > kMaxMatCols ||
+                       ds_state_cols > kMaxDSStateCols ||
+                       k_v_cols > UINT32_MAX / kMaxBF16PerVector)) {
+        HWY_ABORT("Invalid %s layer %zu: cumulative KV/state cols overflow",
+                  stack_name, i);
+      }
+    }
+  };
+  check_stack(Stack::kMain, "main", num_layers, layer_configs,
+              attention_window_sizes);
+  if (num_mtp_layers != 0) {
+    const size_t float_lanes =
+        HWY_MAX(size_t{1}, hwy::VectorBytes() / sizeof(float));
+    HWY_ASSERT(!is_encoder_decoder);
+    HWY_ASSERT(num_layers >= 3);
+    HWY_ASSERT(hc_mult >= 2);
+    HWY_ASSERT(model_dim <= kDSMaxMTPModelDim);
+    HWY_ASSERT((model_dim % float_lanes) == 0);
+    HWY_ASSERT(layer_configs[0].IsV4MLA());
+    const uint64_t total_mtp_layers = uint64_t{num_layers} + num_mtp_layers;
+    HWY_ASSERT(total_mtp_layers <= kMaxLayers);
+    const uint64_t mtp_kv_cols =
+        kv_flat_cols +
+        uint64_t{num_mtp_layers} * MTPLayerConfig().CacheLayerSize();
+    HWY_ASSERT(mtp_kv_cols <= kMaxMatCols);
+  }
+  if (is_encoder_decoder) {
+    check_stack(Stack::kEnc, "encoder", encoder_num_layers,
+                encoder_layer_configs, encoder_attention_window_sizes);
+    check_stack(Stack::kDec, "decoder", decoder_num_layers,
+                decoder_layer_configs, decoder_attention_window_sizes);
+    HWY_ASSERT(decoder_num_layers <= num_layers);
+    size_t max_main_qkv = 0, max_main_ff = model_dim;
+    for (const LayerConfig& lc : layer_configs) {
+      max_main_qkv = HWY_MAX(max_main_qkv, size_t{lc.qkv_dim});
+      max_main_ff = HWY_MAX(max_main_ff, size_t{lc.ff_hidden_dim});
+    }
+    const size_t enc0_ff = encoder_layer_configs[0].ff_hidden_dim;
+    const size_t enc0_qkv = encoder_layer_configs[0].qkv_dim;
+    const bool enc0_half_rope =
+        encoder_layer_configs[0].post_qk == PostQKType::HalfRope;
+    for (size_t i = 0; i < encoder_layer_configs.size(); ++i) {
+      const LayerConfig& enc = encoder_layer_configs[i];
+      const bool enc_half_rope = enc.post_qk == PostQKType::HalfRope;
+      if (HWY_UNLIKELY(enc.ff_hidden_dim != enc0_ff ||
+                       enc.qkv_dim != enc0_qkv ||
+                       enc_half_rope != enc0_half_rope)) {
+        HWY_ABORT("Invalid encoder layer %zu: heterogeneous vs layer 0", i);
+      }
+    }
+    const size_t dec0_cache = decoder_layer_configs[0].CacheLayerSize();
+    const bool dec0_half_rope =
+        decoder_layer_configs[0].post_qk == PostQKType::HalfRope;
+    for (size_t i = 0; i < decoder_num_layers; ++i) {
+      const LayerConfig& dec = decoder_layer_configs[i];
+      const bool dec_half_rope = dec.post_qk == PostQKType::HalfRope;
+      if (HWY_UNLIKELY(dec.kv_heads != layer_configs[i].kv_heads ||
+                       dec.qkv_dim != max_main_qkv ||
+                       dec.ff_hidden_dim != max_main_ff ||
+                       dec.CacheLayerSize() != dec0_cache ||
+                       dec_half_rope != dec0_half_rope)) {
+        HWY_ABORT("Invalid decoder layer %zu: mismatched vs main/layer 0", i);
+      }
+    }
+  }
+  if (!vit_config.layer_configs.empty()) {
+    const uint64_t patch_pixels =
+        uint64_t{3} * vit_config.patch_width * vit_config.patch_width;
+    HWY_ASSERT(vit_config.model_dim > 0);
+    HWY_ASSERT(vit_config.model_dim <= kMaxMatMulK);
+    HWY_ASSERT(vit_config.seq_len > 0);
+    // ViT runs `seq_len` patches as a batch in MMEntireA / GetOrSetTempRowPtrs.
+    HWY_ASSERT(vit_config.seq_len <= kMaxBatchSize);
+    HWY_ASSERT(vit_config.patch_width > 0);
+    HWY_ASSERT(patch_pixels <= kMaxMatMulK);
+    HWY_ASSERT(vit_config.image_size > 0);
+    HWY_ASSERT(vit_config.pool_dim > 0);
+    const uint64_t pool_area =
+        uint64_t{vit_config.pool_dim} * vit_config.pool_dim;
+    HWY_ASSERT((vit_config.seq_len % pool_area) == 0);
+    check_stack(Stack::kVit, "vit", vit_config.layer_configs.size(),
+                vit_config.layer_configs, {});
+    if (HasGemma4Vit()) {
+      HWY_ASSERT(vit_config.pool_dim == kGemma4VitPoolDim);
+    } else {
+      if (wrapping == PromptWrapping::GEMMA_VLM) {
+        HWY_ASSERT(vit_config.seq_len == kGemmaVlmSeqLen);
+        HWY_ASSERT(vit_config.pool_dim == kGemmaVlmPoolDim);
+      }
+      HWY_ASSERT((vit_config.image_size % vit_config.patch_width) == 0);
+      const uint64_t patches_per_side =
+          vit_config.image_size / vit_config.patch_width;
+      HWY_ASSERT(patches_per_side * patches_per_side == vit_config.seq_len);
+    }
+  }
 }
 
 static inline bool StrContains(std::string_view str, std::string_view substr) {

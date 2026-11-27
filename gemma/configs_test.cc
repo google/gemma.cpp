@@ -64,6 +64,73 @@ TEST(ConfigsTest, T5GemmaKVCacheUsesDecoderLayers) {
   EXPECT_EQ(config.KVCacheCols(), expected_cols);
 }
 
+TEST(ConfigsTest, ValidateAcceptsAllCanonicalModels) {
+  ForEachModel([](Model m) {
+    ModelConfig(m, Type::kBF16, ChooseWrapping(m)).Validate();
+  });
+}
+
+TEST(ConfigsTest, ValidateRejectsMalformedUntrustedConfigs) {
+#ifdef GTEST_HAS_DEATH_TEST
+  using M = Model;
+  const auto chk = [](const char* re, auto fn, M m = M::GEMMA2_2B) {
+    ModelConfig c(m, Type::kBF16, ChooseWrapping(m));
+    fn(c, c.layer_configs);
+    EXPECT_DEATH(c.Validate(), re);
+  };
+  const auto ds = M::DEEPSEEK4_FLASH, m4 = M::GEMMA4_26B_MOE;
+  const auto v4 = M::GEMMA4_2B, pg = M::PALIGEMMA2_3B_224;
+  chk("main layer 0: ff_hidden_dim 0",
+      [](auto&, auto& l) { l[0].ff_hidden_dim = 0; });
+  chk("main layer 1: heads 4194305 \\* qkv_dim .* > kMaxMatMulK",
+      [](auto&, auto& l) { l[1].heads = 0x400001; });
+  chk("main layer 1: model_dim .* != expected",
+      [](auto&, auto& l) { l[1].model_dim += 64; });
+  chk("main layer 0: window_size 0",
+      [](auto& c, auto&) { c.attention_window_sizes[0] = 0; });
+  chk("main layer 1: ple_dim 256 != model ple_dim 0",
+      [](auto&, auto& l) { l[1].ple_dim = 256; });
+  chk("vocab_size <= kMaxMatCols",
+      [](auto& c, auto&) { c.vocab_size = 0xFFFFFFFFu; });
+  chk("max_seq_len <= kMaxSeqLen",
+      [](auto& c, auto&) { c.max_seq_len = UINT32_MAX; });
+  chk("hc_sinkhorn_iters <= kMaxSinkhornIters",
+      [](auto& c, auto&) { c.hc_sinkhorn_iters = 999; });
+  chk("main layer 0: window_size .* must be in",
+      [](auto& c, auto&) { c.attention_window_sizes[0] = c.max_seq_len + 1; });
+  chk("main layer 1: heads .* != layer 0 heads",
+      [](auto&, auto& l) { l[1].heads *= 2; });
+  chk("main layer 0: non-zero indexer fields",
+      [](auto&, auto& l) { l[0].indexer_heads = 16; });
+  chk("Invalid decoder stack: window_sizes\\.size\\(\\) 0 != 8",
+      [](auto& c, auto&) { c.decoder_attention_window_sizes.clear(); },
+      M::T5GEMMA_S_S);
+  chk("total_mtp_layers <= kMaxLayers",
+      [](auto& c, auto&) { c.num_mtp_layers = 100000; }, ds);
+  chk("main layer 0: inconsistent MLA config",
+      [](auto&, auto& l) { l[0].kv_lora_rank = 0; }, ds);
+  chk("main layer 2: indexer requires compressor",
+      [](auto&, auto& l) { l[2].kv_compression_rate = 1; }, ds);
+  chk("main layer 0: num_experts 256 > max_experts 128",
+      [](auto&, auto& l) { l[0].num_experts = 256; }, m4);
+  chk("vit_config\\.seq_len <= kMaxBatchSize",
+      [](auto& c, auto&) { c.vit_config.seq_len = 8192; }, v4);
+  chk("vit_config\\.pool_dim == kGemma4VitPoolDim",
+      [](auto& c, auto&) { c.vit_config.pool_dim = 6; }, v4);
+  chk("main layer 15: kv_heads 4 > layer 0 kv_heads",
+      [](auto&, auto& l) { l[15].kv_heads = 4; }, M::GEMMA4_2B_LM);
+  chk("main layer 15: qkv_dim .* != share source",
+      [](auto&, auto& l) { l[15].qkv_dim += 64; }, M::GEMMA4_2B_LM);
+  chk("vit_config\\.seq_len == kGemmaVlmSeqLen",
+      [](auto& c, auto&) { c.vit_config.seq_len = 16; }, M::GEMMA3_4B);
+  chk("patches_per_side \\* patches_per_side == vit_config\\.seq_len",
+      [](auto& c, auto&) { c.vit_config.image_size = 14; }, pg);
+  ModelConfig bad(M::GEMMA2_2B, Type::kBF16, PromptWrapping::GEMMA_IT);
+  EXPECT_DEATH(bad.SetMaxSeqLen(0), "new_max_seq_len > 0");
+  EXPECT_DEATH(bad.SetMaxSeqLen(UINT32_MAX), "new_max_seq_len <= kMaxSeqLen");
+#endif  // GTEST_HAS_DEATH_TEST
+}
+
 TEST(ConfigsTest, DeduceT5GemmaSS) {
   EXPECT_EQ(DeduceModel(Path("t5gemma-s-s.sbs"), 8, kDeducedT5Gemma),
             Model::T5GEMMA_S_S);

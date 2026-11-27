@@ -158,15 +158,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
 
   for (size_t i = 0; i < num_layers; ++i) {
     if (!kv_layer_configs[i].HasOwnKVCache()) {
-      const size_t src =
-          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_ASSERT(src < i);
-      HWY_ASSERT(kv_layer_configs[src].HasOwnKVCache());
-      HWY_ASSERT(kv_layer_configs[i].kv_heads ==
-                 kv_layer_configs[src].kv_heads);
-      HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
-      HWY_ASSERT(kv_attention_window_sizes[i] ==
-                 kv_attention_window_sizes[src]);
+      const size_t src = ModelConfig::ValidateKVShareLayer(
+          kv_layer_configs, kv_attention_window_sizes, i);
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
@@ -242,15 +235,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     max_kv_heads = HWY_MAX(max_kv_heads, kv_layer_configs[i].kv_heads);
 
     if (!kv_layer_configs[i].HasOwnKVCache()) {
-      const size_t src =
-          static_cast<size_t>(kv_layer_configs[i].kv_share_layer_idx);
-      HWY_ASSERT(src < i);  // sources must precede, so their offsets are set
-      HWY_ASSERT(kv_layer_configs[src].HasOwnKVCache());
-      HWY_ASSERT(kv_layer_configs[i].kv_heads ==
-                 kv_layer_configs[src].kv_heads);
-      HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
-      HWY_ASSERT(kv_attention_window_sizes[i] ==
-                 kv_attention_window_sizes[src]);
+      const size_t src = ModelConfig::ValidateKVShareLayer(
+          kv_layer_configs, kv_attention_window_sizes, i);
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
