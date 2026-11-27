@@ -254,7 +254,7 @@ void AssertClose(const MatPtrT<TA>& A, const MatPtrT<TB>& B,
   if (IsF32<TA>() || IsF32<TB>()) {
     tolerance += 2 * max_abs * eps_bf16;
   }
-  if constexpr (IsQ4_0Stream<TB>()) {
+  if constexpr (IsQ4_0Stream<TB>() || IsMxFp4Stream<TB>()) {
     tolerance += 0.02 * norm;
   }
 

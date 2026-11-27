@@ -285,6 +285,12 @@ void TestAllMatMul() {
   TestMatMul<F32, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, BF16>(128, 258, 128, /*add=*/true, env, __LINE__);
 
+  // Multi-kc accumulation (K > kMaxKC) exercising MMSetC + MMAddC.
+  TestMatMul<BF16, MxFp4Stream, BF16>(2, kMaxKC + 256, 32, /*add=*/false, env,
+                                      __LINE__);
+  TestMatMul<F32, MxFp4Stream, F32>(3, kMaxKC + 96, 32, /*add=*/true, env,
+                                    __LINE__);
+
   // minimal non-square test. kColsARowsB must be at least 2 vectors.
   TestMatMul<F32>(35, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16>(34, 128, 32, /*add=*/true, env, __LINE__);
@@ -308,6 +314,7 @@ void TestAllMatMul() {
   TestMatMul<BF16, Q4_0Stream>(4, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<F32, MxFp4Stream>(4, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<BF16, MxFp4Stream>(4, 128, 32, /*add=*/false, env, __LINE__);
+  TestMatMul<BF16, MxFp4Stream, BF16>(4, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<F32>(3, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, BF16>(3, 128, 32, /*add=*/false, env, __LINE__);
@@ -318,6 +325,7 @@ void TestAllMatMul() {
   TestMatMul<BF16, Q4_0Stream>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32, MxFp4Stream>(3, 128, 32, /*add=*/false, env, __LINE__);
   TestMatMul<BF16, MxFp4Stream>(3, 128, 32, /*add=*/true, env, __LINE__);
+  TestMatMul<BF16, MxFp4Stream, BF16>(3, 128, 32, /*add=*/true, env, __LINE__);
   TestMatMul<F32>(2, 128, 64, /*add=*/true, env, __LINE__);
   TestMatMul<BF16>(2, 128, 64, /*add=*/false, env, __LINE__);
   TestMatMul<F32, BF16>(2, 128, 64, /*add=*/true, env, __LINE__);
@@ -342,6 +350,173 @@ void TestAllMatMul() {
   pools.MaybeStopSpinning(threading_args.spin);
 }
 
+// Verifies the direct M <= 4 MxFp4Stream kernel across E8M0 edge scales
+// {0, 1, 127, 253, 254, 255}, all 16 E2M1 nibble values, subnormal and huge
+// BF16 activations, and partial tail blocks (kc % 32 != 0 with aligned stride).
+void TestMxFp4EdgeCases() {
+  ThreadingArgs threading_args;
+  ThreadingContext ctx(threading_args);
+  MatMulEnv env(ctx);
+  env.print_config = false;
+  env.print_best = false;
+
+  const hn::ScalableTag<float> df;
+  constexpr size_t kBlocks = 6;
+  constexpr size_t K = kBlocks * MxFp4Stream::kBlockSize;  // 192
+  constexpr size_t N = 8;
+
+  MatStorageT<MxFp4Stream> BT("BT_edge", Extents2D(N, K), env.ctx.allocator,
+                              MatPadding::kPacked);
+  BT.SetScale(1.0f);
+  MxFp4Stream* blocks = BT.Span().ptr;
+  static constexpr uint8_t kScales[kBlocks] = {0, 1, 127, 253, 254, 255};
+  for (size_t n = 0; n < N; ++n) {
+    for (size_t b = 0; b < kBlocks; ++b) {
+      MxFp4Stream& blk = blocks[n * kBlocks + b];
+      blk.scale_e8m0 = kScales[b];
+      for (size_t i = 0; i < 16; ++i) {
+        if (b == 0 || b == 5) {
+          // Non-zero +/-6.0 nibbles under zero/NaN scale codes must yield 0.0f.
+          blk.bytes[i] = (b == 0) ? 0xF7 : 0xFF;
+        } else if (b == 1) {
+          // +/-0.5 * 2^-126 = +/-2^-127 (FP32 subnormal).
+          blk.bytes[i] = static_cast<uint8_t>(((i + n) & 1) ? 0x19 : 0x91);
+        } else if (b == 2) {
+          // Exhaustively cover all 16 E2M1 nibbles (0..15).
+          const uint8_t lo = static_cast<uint8_t>((i + n) & 0xF);
+          const uint8_t hi = static_cast<uint8_t>((15 - i + n) & 0xF);
+          blk.bytes[i] = static_cast<uint8_t>(lo | (hi << 4));
+        } else {
+          // Keep |E2M1| <= 1.5 so E2M1 * 2^127 stays finite in IEEE-754 float.
+          const uint8_t lo = static_cast<uint8_t>(1 + ((i + n) % 3));
+          const uint8_t hi = static_cast<uint8_t>(8 + 1 + ((i + n + 1) % 3));
+          blk.bytes[i] = static_cast<uint8_t>(lo | (hi << 4));
+        }
+      }
+    }
+  }
+
+  MatStorageT<BF16> A_full("A_edge", Extents2D(4, K), env.ctx.allocator,
+                           MatPadding::kOdd);
+  ZeroInit(A_full);
+  // Row 0: 1e37f on zero/0xFF scale blocks (guards against Inf * 0 = NaN).
+  for (size_t i = 0; i < 32; ++i) {
+    A_full.Row(0)[0 + i] = hwy::BF16FromF32(1e37f);
+    A_full.Row(0)[160 + i] = hwy::BF16FromF32(-1e37f);
+  }
+  // Row 1: isolate block 1 (e8m0 == 1 subnormal 2^-127) with period-3 signs
+  // (16 % 3 != 0) so lo and hi nibbles do not cancel to 0.
+  for (size_t i = 0; i < 32; ++i) {
+    A_full.Row(1)[32 + i] = hwy::BF16FromF32(((i % 3) == 0) ? -0.75f : 1.0f);
+  }
+  // Row 2: min-normal BF16 (2^-126, tiny pre-scale path) on block 4
+  // (e8m0 == 254, weight scale 2^127 -> finite O(10) dot product).
+  for (size_t i = 0; i < 32; ++i) {
+    A_full.Row(2)[128 + i] = hwy::BF16FromF32(
+        ((i % 3) == 0) ? -8.0f * 1.17549435e-38f : 6.0f * 1.17549435e-38f);
+  }
+  // Row 3: all 16 E2M1 nibbles on block 2 (e8m0 == 127) and 2^-12f on blocks
+  // 3..4 (e8m0 == 253, 254, guarding against premature dot_f * 2^127 overflow).
+  for (size_t i = 0; i < 32; ++i) {
+    A_full.Row(3)[64 + i] = hwy::BF16FromF32(1.0f / 4096.0f);
+    A_full.Row(3)[96 + i] = hwy::BF16FromF32(1.0f / 4096.0f);
+    A_full.Row(3)[128 + i] = hwy::BF16FromF32((i & 1) ? -1.0f / 4096.0f
+                                                      : 1.0f / 2048.0f);
+  }
+
+  // Promote A_full and BT to float for exact per-(r, c) reference and L1 norm
+  // so targets with BF16 FTZ do not flush Block 1's +/-2^-127 weights.
+  MatStorageT<float> A_ref("A_ref", Extents2D(4, K), env.ctx.allocator,
+                           MatPadding::kOdd);
+  for (size_t r = 0; r < 4; ++r) {
+    DecompressAndZeroPad(df, A_full.PaddedSpan(), r * A_full.Stride(),
+                         A_ref.Row(r), K);
+  }
+  MatStorageT<float> B_ref("B_ref", Extents2D(N, K), env.ctx.allocator,
+                           MatPadding::kOdd);
+  for (size_t c = 0; c < N; ++c) {
+    DecompressAndZeroPad(df, BT.PaddedSpan(), c * K, B_ref.Row(c), K);
+  }
+
+  MatStorageT<float> bias("bias", N, env.ctx.allocator);
+  for (size_t c = 0; c < N; ++c) {
+    bias.Row(0)[c] = 0.125f * static_cast<float>(c + 1);
+  }
+
+  for (size_t M = 1; M <= 4; ++M) {
+    MatPtrT<BF16> A_sub("A_sub", Extents2D(M, K));
+    A_sub.SetPtr(A_full.Row(0), A_full.Stride());
+    for (bool use_add : {false, true}) {
+      const float* add_ptr = use_add ? bias.PackedScale1() : nullptr;
+      MatStorageT<float> C("C", Extents2D(M, N), env.ctx.allocator,
+                           MatPadding::kOdd);
+      C.AllocateAndAttachRowPtrs(env.row_ptrs);
+      MMOptions options;
+      for (size_t rep = 0; rep < 8; ++rep) {
+        MatMulStatic(A_sub, BT, add_ptr, env, C, options);
+        for (size_t r = 0; r < M; ++r) {
+          for (size_t c = 0; c < N; ++c) {
+            const float add_v = use_add ? add_ptr[c] : 0.0f;
+            const float expected =
+                add_v + Dot(df, MakeConst(BT.Span()), c * K, A_ref.Row(r), K);
+            const float actual = C.Row(r)[c];
+            HWY_ASSERT(hwy::ScalarIsFinite(expected));
+            HWY_ASSERT(hwy::ScalarIsFinite(actual));
+            if ((r == 1 || r == 2) && !use_add) {
+              HWY_ASSERT(expected != 0.0f);
+            }
+            double abs_dot = 0.0;
+            for (size_t k = 0; k < K; ++k) {
+              abs_dot += hwy::ScalarAbs(static_cast<double>(A_ref.Row(r)[k]) *
+                                        static_cast<double>(B_ref.Row(c)[k]));
+            }
+            const double tol = 0.01 * abs_dot +
+                               (use_add ? 1e-6 * hwy::ScalarAbs(expected) : 0);
+            if (hwy::ScalarAbs(static_cast<double>(actual) -
+                               static_cast<double>(expected)) > tol) {
+              HWY_ABORT("M=%zu add=%d r=%zu c=%zu expected=%g actual=%g", M,
+                        use_add, r, c, expected, actual);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Partial tail block (K = 70, not a multiple of 32) with block-aligned
+  // B.Stride() == 96 and non-zero trailing values in cols 70..95, covering
+  // B3A2C0_4Bit (M = 1..4, with row 0 zeroed to cover max_abs == 0) and the
+  // MMDecompress fallback (M = 8).
+  constexpr size_t kFullK = 96;
+  constexpr size_t kSubK = 70;
+  MatStorageT<MxFp4Stream> BT_full = GenerateTransposedMat<MxFp4Stream>(
+      Extents2D(N, kFullK), MatPadding::kPacked, env.ctx);
+  MatPtrT<MxFp4Stream> BT_sub("BT_sub", Extents2D(N, kSubK));
+  BT_sub.SetPtr(BT_full.Span().ptr, kFullK);
+  BT_sub.SetScale(BT_full.Scale());
+  static constexpr size_t kTailMs[] = {1, 2, 3, 4, 8};
+  for (size_t tail_M : kTailMs) {
+    MatStorageT<BF16> A_tail =
+        GenerateMat<BF16>(Extents2D(tail_M, kSubK), MatPadding::kOdd, env.ctx);
+    hwy::ZeroBytes(A_tail.Row(0), kSubK * sizeof(BF16));
+    MatStorageT<float> C_tail("C_tail", Extents2D(tail_M, N), env.ctx.allocator,
+                              MatPadding::kOdd);
+    C_tail.AllocateAndAttachRowPtrs(env.row_ptrs);
+    MMOptions options;
+    MatMulStatic(A_tail, BT_sub, /*add=*/nullptr, env, C_tail, options);
+    const float scale = A_tail.Scale() * BT_sub.Scale();
+    for (size_t r = 0; r < tail_M; ++r) {
+      for (size_t c = 0; c < N; ++c) {
+        const float expected = scale * Dot(df, MakeConst(BT_full.Span()),
+                                           c * kFullK, A_tail.Row(r), kSubK);
+        const float actual = C_tail.Row(r)[c];
+        HWY_ASSERT(hwy::ScalarAbs(actual - expected) <=
+                   0.01f * hwy::ScalarAbs(expected) + 1e-4f);
+      }
+    }
+  }
+}
+
 // NOLINTNEXTLINE(google-readability-namespace-comments)
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
@@ -353,6 +528,7 @@ namespace gcpp {
 int64_t first_target = 0;  // none run yet
 HWY_BEFORE_TEST(MatMulTest);
 HWY_EXPORT_AND_TEST_P(MatMulTest, TestTiny);
+HWY_EXPORT_AND_TEST_P(MatMulTest, TestMxFp4EdgeCases);
 HWY_EXPORT_AND_TEST_P(MatMulTest, TestAllMatMul);
 HWY_AFTER_TEST();
 
