@@ -1399,6 +1399,8 @@ std::string KVEncodingToString(KVEncoding encoding) {
       return "BF16MatrixAccumulation";
     case KVEncoding::kInt8MatrixAccumulation:
       return "Int8MatrixAccumulation";
+    case KVEncoding::kInt4:
+      return "Int4";
     default:
       return "Unknown";
   }
