@@ -72,7 +72,7 @@ void RMSNormAndPositionalEncoding(const size_t num_tokens, const QBatch& qbatch,
                                   const AttentionActivationsPtrs& activations,
                                   ThreadingContext& ctx) {
   const LayerConfig& layer_config = activations.config.layer_configs[layer_idx];
-  const float query_scale = activations.query_scale;
+  const float query_scale = ChooseQueryScale(activations.config, layer_config);
   const hwy::Divisor div_qbatch(qbatch.Size());
 
   const auto func = [&](const size_t task, size_t worker) HWY_ATTR {

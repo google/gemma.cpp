@@ -28,10 +28,12 @@ namespace gcpp {
 static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
     const Allocator& allocator, size_t qkv_dim, bool half_rope,
     double base_frequency, float partial_rotary_factor = 1.0f) {
+  HWY_ASSERT(partial_rotary_factor >= 0.0f && partial_rotary_factor <= 1.0f);
   const size_t rope_dim = half_rope ? qkv_dim / 2 : qkv_dim;
   const size_t total_entries = rope_dim / 2;
   const size_t active_entries =
-      static_cast<size_t>(total_entries * partial_rotary_factor);
+      HWY_MIN(total_entries,
+              static_cast<size_t>(total_entries * partial_rotary_factor));
   MatStorageT<float> inv_timescale("inv_timescale", total_entries, allocator);
   float* data = inv_timescale.Row(0);
   for (size_t dim = 0; dim < active_entries; ++dim) {
@@ -42,7 +44,7 @@ static inline HWY_MAYBE_UNUSED MatStorageT<float> CreateInvTimescale(
     data[dim] =
         static_cast<float>(1.0 / std::pow(base_frequency, freq_exponents));
   }
-  // Zero out NoPE dimensions — cos(0)=1, sin(0)=0 gives identity.
+  // Zero out NoPE dimensions: cos(0)=1, sin(0)=0 gives identity.
   for (size_t dim = active_entries; dim < total_entries; ++dim) {
     data[dim] = 0.0f;
   }
