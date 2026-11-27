@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -592,6 +593,46 @@ TEST(WeightsTest, ModelStoreValidatesDeserializedTocEntries) {
   // default Type::kUnknown and is rejected without relying on field counts.
   std::vector<uint32_t> truncated_toc = {2, 1, base_toc[2]};
   expect_toc_death(truncated_toc, "mat\\.GetType\\(\\) != Type::kUnknown");
+}
+
+TEST(WeightsTest, ModelStoreOverridesLegacyGemma4FinalCap) {
+  ThreadingContext ctx = MakeContext();
+  const auto roundtrip_final_cap = [&](const ModelConfig& config) {
+    TemporaryBlob blob;
+    {
+      GemmaTokenizer tokenizer(kMockTokenizer);
+      const std::string tensor_name =
+          "w_" + std::to_string(config.num_layers - 1);
+      MatPtr mat(tensor_name.c_str(), Type::kBF16, Extents2D(4, 4));
+      const std::array<BF16, 16> tensor_data = {};
+      BlobWriter writer(blob.path(), ctx);
+      writer.Add(tensor_name, tensor_data.data(), sizeof(tensor_data));
+      WriteSingleFile(config, tokenizer, mat.Write(), writer);
+    }
+    BlobReader reader(blob.path());
+    ModelStore store(reader);
+    return store.Config().final_cap;
+  };
+
+  constexpr Model kGemma4Models[] = {
+      Model::GEMMA4_26B_MOE, Model::GEMMA4_2B,    Model::GEMMA4_2B_LM,
+      Model::GEMMA4_E4B,     Model::GEMMA4_E4B_LM,
+  };
+  for (const Model model : kGemma4Models) {
+    ModelConfig legacy(model, Type::kBF16, ChooseWrapping(model));
+    legacy.final_cap = 0.0f;
+    EXPECT_FLOAT_EQ(roundtrip_final_cap(legacy), 30.0f) << legacy.display_name;
+
+    ModelConfig custom(model, Type::kBF16, ChooseWrapping(model));
+    custom.final_cap = 25.0f;
+    EXPECT_FLOAT_EQ(roundtrip_final_cap(custom), 25.0f) << custom.display_name;
+  }
+
+  for (const Model model : {Model::EMBEDDING_GEMMA2_LM, Model::GEMMA3_1B}) {
+    ModelConfig config(model, Type::kBF16, ChooseWrapping(model));
+    config.final_cap = 0.0f;
+    EXPECT_FLOAT_EQ(roundtrip_final_cap(config), 0.0f) << config.display_name;
+  }
 }
 
 }  // namespace
