@@ -43,6 +43,9 @@ class Image {
   void Resize(int width, int height);
   // Resizes to width x height using bilinear interpolation.
   void ResizeBilinear(int width, int height);
+  // Resizes to width x height using antialiased bicubic (Catmull-Rom, a=-0.5)
+  // interpolation, matching Pillow Image.BICUBIC.
+  void ResizeBicubic(int width, int height);
   // Writes the file as plain floats in binary. Useful to e.g. load in a colab.
   bool WriteBinary(const std::string& filename) const;
   // Stores the patch for the given patch number in `patch`.

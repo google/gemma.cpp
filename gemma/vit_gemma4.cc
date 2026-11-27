@@ -596,7 +596,7 @@ void PrefillVitGemma4(const ModelConfig& model_config,
                                max_patches,
                                pooling_kernel_size,
                                target_height, target_width);
-  resized_image.ResizeBilinear(target_width, target_height);
+  resized_image.ResizeBicubic(target_width, target_height);
 
   // 2. Embed patches & add position embeddings
   EmbedImagePatchesGemma4(resized_image, model_config, weights, activations,

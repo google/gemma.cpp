@@ -228,14 +228,16 @@ void Image::ResizeBilinear(int new_width, int new_height) {
 
   for (int y = 0; y < new_height; ++y) {
     const float src_y = (y + 0.5f) * scale_y - 0.5f;
-    const float src_y_clamped = std::clamp(src_y, 0.0f, static_cast<float>(height_ - 1));
+    const float src_y_clamped =
+        std::clamp(src_y, 0.0f, static_cast<float>(height_ - 1));
     const int y_l = static_cast<int>(std::floor(src_y_clamped));
     const int y_h = std::min(height_ - 1, y_l + 1);
     const float d_y = src_y_clamped - y_l;
 
     for (int x = 0; x < new_width; ++x) {
       const float src_x = (x + 0.5f) * scale_x - 0.5f;
-      const float src_x_clamped = std::clamp(src_x, 0.0f, static_cast<float>(width_ - 1));
+      const float src_x_clamped =
+          std::clamp(src_x, 0.0f, static_cast<float>(width_ - 1));
       const int x_l = static_cast<int>(std::floor(src_x_clamped));
       const int x_h = std::min(width_ - 1, x_l + 1);
       const float d_x = src_x_clamped - x_l;
@@ -246,10 +248,14 @@ void Image::ResizeBilinear(int new_width, int new_height) {
       const float w11 = d_x * d_y;
 
       for (int k = 0; k < 3; ++k) {
-        const float v00 = data_[(static_cast<size_t>(y_l) * width_ + x_l) * 3 + k];
-        const float v10 = data_[(static_cast<size_t>(y_l) * width_ + x_h) * 3 + k];
-        const float v01 = data_[(static_cast<size_t>(y_h) * width_ + x_l) * 3 + k];
-        const float v11 = data_[(static_cast<size_t>(y_h) * width_ + x_h) * 3 + k];
+        const float v00 =
+            data_[(static_cast<size_t>(y_l) * width_ + x_l) * 3 + k];
+        const float v10 =
+            data_[(static_cast<size_t>(y_l) * width_ + x_h) * 3 + k];
+        const float v01 =
+            data_[(static_cast<size_t>(y_h) * width_ + x_l) * 3 + k];
+        const float v11 =
+            data_[(static_cast<size_t>(y_h) * width_ + x_h) * 3 + k];
 
         new_data[(static_cast<size_t>(y) * new_width + x) * 3 + k] =
             w00 * v00 + w10 * v10 + w01 * v01 + w11 * v11;
@@ -257,6 +263,157 @@ void Image::ResizeBilinear(int new_width, int new_height) {
     }
   }
   data_ = std::move(new_data);
+  height_ = new_height;
+  width_ = new_width;
+}
+
+namespace {
+
+double BicubicFilter(double x) {
+  // Catmull-Rom (Keys cubic with a = -0.5), matching Pillow Image.BICUBIC.
+  x = std::abs(x);
+  if (x < 1.0) return ((1.5 * x - 2.5) * x) * x + 1.0;
+  if (x < 2.0) return ((-0.5 * x + 2.5) * x - 4.0) * x + 2.0;
+  return 0.0;
+}
+
+struct ResampleCoeffs {
+  size_t ksize;
+  std::vector<int> bounds;     // [2 * out_size]: (xmin, count) per output idx
+  std::vector<float> weights;  // [out_size * ksize]
+};
+
+ResampleCoeffs ComputeBicubicCoeffs(int in_size, int out_size) {
+  const double scale = static_cast<double>(in_size) / out_size;
+  const double filter_scale = scale > 1.0 ? scale : 1.0;
+  const double support = 2.0 * filter_scale;
+  // Cap ksize at in_size since count = xmax - xmin <= in_size; compute in
+  // uint64_t so extreme downscales (e.g. in_size > INT32_MAX / 4, out_size = 1)
+  // cannot overflow signed 32-bit int.
+  const uint64_t raw_ksize = static_cast<uint64_t>(std::ceil(support)) * 2 + 1;
+  const size_t ksize =
+      static_cast<size_t>(std::min<uint64_t>(raw_ksize, in_size));
+
+  ResampleCoeffs c;
+  c.ksize = ksize;
+  c.bounds.resize(static_cast<size_t>(out_size) * 2);
+  c.weights.assign(static_cast<size_t>(out_size) * ksize, 0.0f);
+
+  for (int i = 0; i < out_size; ++i) {
+    const double center = (i + 0.5) * scale;
+    const int xmin =
+        static_cast<int>(std::max(0.0, std::floor(center - support + 0.5)));
+    const int xmax = static_cast<int>(std::min(
+        static_cast<double>(in_size), std::floor(center + support + 0.5)));
+    const int count = xmax - xmin;
+    HWY_ASSERT(count > 0);
+    HWY_ASSERT(static_cast<size_t>(count) <= ksize);
+    c.bounds[i * 2] = xmin;
+    c.bounds[i * 2 + 1] = count;
+
+    double wsum = 0.0;
+    float* w = &c.weights[static_cast<size_t>(i) * ksize];
+    for (int j = 0; j < count; ++j) {
+      const double d = (xmin + j + 0.5 - center) / filter_scale;
+      const double weight = BicubicFilter(d);
+      w[j] = static_cast<float>(weight);
+      wsum += weight;
+    }
+    if (wsum != 0.0) {
+      const float inv = static_cast<float>(1.0 / wsum);
+      for (int j = 0; j < count; ++j) {
+        w[j] *= inv;
+      }
+    }
+  }
+  return c;
+}
+
+std::vector<float> ResampleHorizontal(const float* src, int height,
+                                      int in_width, int out_width) {
+  const ResampleCoeffs hx = ComputeBicubicCoeffs(in_width, out_width);
+  std::vector<float> out(static_cast<size_t>(height) * out_width * 3);
+  for (int y = 0; y < height; ++y) {
+    const float* in_row = src + static_cast<size_t>(y) * in_width * 3;
+    float* out_row = out.data() + static_cast<size_t>(y) * out_width * 3;
+    for (int x = 0; x < out_width; ++x) {
+      const int xmin = hx.bounds[x * 2];
+      const int count = hx.bounds[x * 2 + 1];
+      const float* w = &hx.weights[static_cast<size_t>(x) * hx.ksize];
+      float s0 = 0.0f;
+      float s1 = 0.0f;
+      float s2 = 0.0f;
+      for (int j = 0; j < count; ++j) {
+        const float* px = in_row + static_cast<size_t>(xmin + j) * 3;
+        s0 += w[j] * px[0];
+        s1 += w[j] * px[1];
+        s2 += w[j] * px[2];
+      }
+      out_row[x * 3 + 0] = std::clamp(s0, -1.0f, 1.0f);
+      out_row[x * 3 + 1] = std::clamp(s1, -1.0f, 1.0f);
+      out_row[x * 3 + 2] = std::clamp(s2, -1.0f, 1.0f);
+    }
+  }
+  return out;
+}
+
+std::vector<float> ResampleVertical(const float* src, int in_height,
+                                    int out_height, int width) {
+  const ResampleCoeffs hy = ComputeBicubicCoeffs(in_height, out_height);
+  const size_t row_floats = static_cast<size_t>(width) * 3;
+  std::vector<float> out(static_cast<size_t>(out_height) * row_floats);
+  for (int y = 0; y < out_height; ++y) {
+    const int ymin = hy.bounds[y * 2];
+    const int count = hy.bounds[y * 2 + 1];
+    const float* w = &hy.weights[static_cast<size_t>(y) * hy.ksize];
+    float* out_row = out.data() + static_cast<size_t>(y) * row_floats;
+    for (int x = 0; x < width; ++x) {
+      float s0 = 0.0f;
+      float s1 = 0.0f;
+      float s2 = 0.0f;
+      for (int j = 0; j < count; ++j) {
+        const float* px =
+            src + static_cast<size_t>(ymin + j) * row_floats + x * 3;
+        s0 += w[j] * px[0];
+        s1 += w[j] * px[1];
+        s2 += w[j] * px[2];
+      }
+      out_row[x * 3 + 0] = std::clamp(s0, -1.0f, 1.0f);
+      out_row[x * 3 + 1] = std::clamp(s1, -1.0f, 1.0f);
+      out_row[x * 3 + 2] = std::clamp(s2, -1.0f, 1.0f);
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+void Image::ResizeBicubic(int new_width, int new_height) {
+  HWY_ASSERT(width_ > 0);
+  HWY_ASSERT(height_ > 0);
+  HWY_ASSERT(data_.size() == static_cast<size_t>(width_) * height_ * 3);
+  HWY_ASSERT(new_width > 0);
+  HWY_ASSERT(new_height > 0);
+  HWY_ASSERT(new_width <= INT32_MAX / 3);
+  HWY_ASSERT(new_width * 3 <= INT32_MAX / new_height);
+  if (width_ == new_width && height_ == new_height) return;
+
+  if (width_ == new_width) {
+    data_ = ResampleVertical(data_.data(), height_, new_height, width_);
+  } else if (height_ == new_height) {
+    data_ = ResampleHorizontal(data_.data(), height_, width_, new_width);
+  } else if (static_cast<uint64_t>(height_) * new_width <=
+             static_cast<uint64_t>(width_) * new_height) {
+    // Run the pass with the smaller intermediate buffer first so the
+    // intermediate size never exceeds max(input, output) <= INT32_MAX / 3.
+    const std::vector<float> tmp =
+        ResampleHorizontal(data_.data(), height_, width_, new_width);
+    data_ = ResampleVertical(tmp.data(), height_, new_height, new_width);
+  } else {
+    const std::vector<float> tmp =
+        ResampleVertical(data_.data(), height_, new_height, width_);
+    data_ = ResampleHorizontal(tmp.data(), new_height, width_, new_width);
+  }
   height_ = new_height;
   width_ = new_width;
 }

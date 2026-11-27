@@ -97,17 +97,17 @@ TEST(ImageTest, Non224) {
   EXPECT_NEAR(image.data()[5], Normalize(2.0f, max_value), 1e-6);
   EXPECT_NEAR(image.data()[6], Normalize(3.0f, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 9],
-            Normalize(data.size() - 6, max_value), 1e-6);
+              Normalize(data.size() - 6, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 8],
-            Normalize(data.size() - 5, max_value), 1e-6);
+              Normalize(data.size() - 5, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 7],
-            Normalize(data.size() - 4, max_value), 1e-6);
+              Normalize(data.size() - 4, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 3],
-            Normalize(data.size() - 3, max_value), 1e-6);
+              Normalize(data.size() - 3, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 2],
-            Normalize(data.size() - 2, max_value), 1e-6);
+              Normalize(data.size() - 2, max_value), 1e-6);
   EXPECT_NEAR(image.data()[image.size() - 1],
-            Normalize(data.size() - 1, max_value), 1e-6);
+              Normalize(data.size() - 1, max_value), 1e-6);
   // Extract two patches.
   const size_t kPatchValues = 14 * 14 * 3;  // = 588
   float patch[kPatchValues];
@@ -177,8 +177,7 @@ TEST(ImageTest, Resize1x1) {
   // Downsample a 2x2 image with distinct pixels to 1x2 and 1x1 (exercises
   // NearestNeighbor to_size==1 while from_size > 1).
   const float quad[2 * 2 * 3] = {
-      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
-      2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f,
+      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f,
   };
   image.Set(2, 2, quad);
   image.Resize(1, 2);
@@ -197,6 +196,7 @@ TEST(ImageTest, PreconditionsAbortOnEmptyImage) {
   float patch[14 * 14 * 3];
   EXPECT_DEATH_IF_SUPPORTED(empty.Resize(4, 4), "width_ > 0");
   EXPECT_DEATH_IF_SUPPORTED(empty.ResizeBilinear(4, 4), "width_ > 0");
+  EXPECT_DEATH_IF_SUPPORTED(empty.ResizeBicubic(4, 4), "width_ > 0");
   EXPECT_DEATH_IF_SUPPORTED(empty.GetPatch(0, hwy::Divisor(14), patch),
                             "width_ > 0");
 
@@ -232,6 +232,87 @@ TEST(ImageTest, ResizeBilinear1x1And2x2) {
   EXPECT_NEAR(image.data()[0], -1.0f, 1e-6f);
   EXPECT_NEAR(image.data()[(1 * 4 + 1) * 3], -0.5f, 1e-6f);
   EXPECT_NEAR(image.data()[4 * 4 * 3 - 1], 1.0f, 1e-6f);
+}
+
+TEST(ImageTest, ResizeBicubic) {
+  Image image;
+  ASSERT_TRUE(ReadPPMFromString(image, "P6\n1 1\n255\n\x20\x60\xa0"));
+  image.ResizeBicubic(5, 7);
+  EXPECT_EQ(image.width(), 5);
+  EXPECT_EQ(image.height(), 7);
+  for (int i = 0; i < 35; ++i) {
+    EXPECT_NEAR(image.data()[i * 3 + 0], Normalize(0x20), 1e-5f);
+    EXPECT_NEAR(image.data()[i * 3 + 1], Normalize(0x60), 1e-5f);
+    EXPECT_NEAR(image.data()[i * 3 + 2], Normalize(0xa0), 1e-5f);
+  }
+
+  // Same-size ResizeBicubic is a no-op.
+  image.ResizeBicubic(5, 7);
+  EXPECT_EQ(image.width(), 5);
+  EXPECT_EQ(image.height(), 7);
+  EXPECT_NEAR(image.data()[0], Normalize(0x20), 1e-5f);
+
+  // 1D horizontal-only and vertical-only resizes on a 4-pixel ramp, verifying
+  // exact Catmull-Rom bicubic interpolation and both single-pass branches.
+  const float ramp[4 * 3] = {
+      0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f, 3.0f,
+  };
+  const float kExpectedRamp8[8] = {
+      -1.0f,     -0.888078f, -0.526718f, -0.166667f,
+      0.166667f, 0.526718f,  0.888078f,  1.0f,
+  };
+  image.Set(4, 1, ramp);
+  image.ResizeBicubic(8, 1);
+  EXPECT_EQ(image.width(), 8);
+  EXPECT_EQ(image.height(), 1);
+  for (int i = 0; i < 8; ++i) {
+    EXPECT_NEAR(image.data()[i * 3], kExpectedRamp8[i], 1e-5f);
+  }
+  image.Set(1, 4, ramp);
+  image.ResizeBicubic(1, 8);
+  EXPECT_EQ(image.width(), 1);
+  EXPECT_EQ(image.height(), 8);
+  for (int i = 0; i < 8; ++i) {
+    EXPECT_NEAR(image.data()[i * 3], kExpectedRamp8[i], 1e-5f);
+  }
+
+  // Asymmetric aspect-ratio swaps exercise both pass orders without allocating
+  // an O(kLong * kLong) intermediate buffer. Image::Set maps a constant input
+  // to -1.0f.
+  constexpr int kLong = 65535;
+  std::vector<float> strip(kLong * 3, 1.0f);
+  image.Set(1, kLong, strip.data());
+  image.ResizeBicubic(kLong, 1);
+  EXPECT_EQ(image.width(), kLong);
+  EXPECT_EQ(image.height(), 1);
+  EXPECT_NEAR(image.data()[0], -1.0f, 1e-4f);
+  image.ResizeBicubic(1, kLong);
+  EXPECT_EQ(image.width(), 1);
+  EXPECT_EQ(image.height(), kLong);
+  EXPECT_NEAR(image.data()[0], -1.0f, 1e-4f);
+
+  // Downscaling a high-frequency checkerboard should antialias toward 0.0
+  // rather than aliasing to +/-1.0, and stay clamped to [-1, 1].
+  constexpr int kSrc = 64;
+  std::vector<float> checker(kSrc * kSrc * 3);
+  for (int y = 0; y < kSrc; ++y) {
+    for (int x = 0; x < kSrc; ++x) {
+      const float v = ((x + y) & 1) ? 255.0f : 0.0f;
+      for (int c = 0; c < 3; ++c) {
+        checker[(y * kSrc + x) * 3 + c] = v;
+      }
+    }
+  }
+  image.Set(kSrc, kSrc, checker.data());
+  image.ResizeBicubic(16, 16);
+  EXPECT_EQ(image.width(), 16);
+  EXPECT_EQ(image.height(), 16);
+  for (size_t i = 0; i < image.size(); ++i) {
+    EXPECT_GE(image.data()[i], -1.0f);
+    EXPECT_LE(image.data()[i], 1.0f);
+  }
+  // Interior pixel should average the alternating -1/+1 checkerboard near 0.
+  EXPECT_NEAR(image.data()[(8 * 16 + 8) * 3], 0.0f, 0.05f);
 }
 
 }  // namespace
