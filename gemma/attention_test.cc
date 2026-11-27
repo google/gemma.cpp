@@ -36,6 +36,7 @@
 #include "compression/compress-inl.h"
 #include "gemma/attention.h"
 #include "gemma/configs.h"
+#include "gemma/generate_internal.h"
 #include "util/test_util.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -580,6 +581,52 @@ void TestGemmaAttentionFlash() {
   RunAttentionTest(AttentionImpl::kFlash, true);
 }
 
+void TestOutOfRangeTokenAborts() {
+  TestState state;
+  ModelConfig config;
+  config.model = Model::GEMMA2_2B;
+  config.wrapping = PromptWrapping::GEMMA_PT;
+  config.weight = Type::kF32;
+  config.model_dim = 64;
+  config.vocab_size = 16;
+  config.max_seq_len = 16;
+  config.num_layers = 1;
+  LayerConfig lc;
+  lc.model_dim = config.model_dim;
+  lc.ff_hidden_dim = 64;
+  lc.heads = 2;
+  lc.kv_heads = 1;
+  lc.qkv_dim = 32;
+  config.layer_configs = {lc};
+  config.attention_window_sizes = {16};
+
+  WeightsPtrs weights(config);
+  AllocateAndFillRandom(weights.embedder_input_embedding, state.ctx.allocator,
+                        state.mat_owners, 77);
+  MatStorageT<float> x("x", Extents2D(2, config.model_dim), state.ctx.allocator,
+                       MatPadding::kOdd);
+
+  // Valid token succeeds.
+  EXPECT_EQ(EmbedMMToken(/*token=*/3, /*x_row=*/0, /*pos=*/0,
+                         /*pos_in_prompt=*/0, config, weights, x, state.ctx,
+                         /*image_tokens=*/nullptr, /*image_token_position=*/0),
+            0u);
+
+#ifdef GTEST_HAS_DEATH_TEST
+  // Negative and >= vocab_size tokens abort in all build modes (b/583873142).
+  EXPECT_DEATH(
+      EmbedMMToken(/*token=*/-1, /*x_row=*/0, /*pos=*/0, /*pos_in_prompt=*/0,
+                   config, weights, x, state.ctx, /*image_tokens=*/nullptr,
+                   /*image_token_position=*/0),
+      "token >= 0");
+  EXPECT_DEATH(
+      EmbedMMToken(/*token=*/16, /*x_row=*/0, /*pos=*/0, /*pos_in_prompt=*/0,
+                   config, weights, x, state.ctx, /*image_tokens=*/nullptr,
+                   /*image_token_position=*/0),
+      "vocab_size");
+#endif  // GTEST_HAS_DEATH_TEST
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -589,6 +636,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(AttentionTest);
 HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionFlash);
+HWY_EXPORT_AND_TEST_P(AttentionTest, TestOutOfRangeTokenAborts);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

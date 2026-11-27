@@ -238,8 +238,11 @@ static HWY_INLINE void EmbedTokenFromWeights(int token, size_t x_row,
   // Qwen3/DeepSeekV4 does not scale embeddings by sqrt(model_dim).
   float emb_scaling =
       HasEmbeddingScaling(model_config) ? EmbeddingScaling(model_dim) : 1.0f;
-  HWY_DASSERT(token >= 0);
-  HWY_DASSERT(token < static_cast<int>(model_config.vocab_size));
+  HWY_ASSERT(token >= 0);
+  HWY_ASSERT(static_cast<size_t>(token) < model_config.vocab_size);
+  HWY_ASSERT(static_cast<size_t>(token) < embedding.Rows());
+  HWY_ASSERT(x_row < x.Rows());
+  HWY_ASSERT(x.Cols() >= model_dim);
 
   CallUpcasted(&embedding, [&](const auto* weights_t) {
     // Using `Stride` to compute the offset works for both NUQ (because we use
@@ -1029,6 +1032,8 @@ HWY_NOINLINE size_t EmbedMMToken(int token, size_t x_row, size_t pos,
        !model_config.vit_config.layer_configs.empty()) &&
       image_tokens != nullptr && token == -2) {
     if (image_token_position < image_tokens->Rows()) {
+      HWY_ASSERT(x_row < x.Rows());
+      HWY_ASSERT(image_tokens->Cols() == x.Cols());
       hwy::CopyBytes(image_tokens->Row(image_token_position), x.Row(x_row),
                      x.Cols() * x.ElementBytes());
       return image_token_position + 1;
@@ -1041,6 +1046,8 @@ HWY_NOINLINE size_t EmbedMMToken(int token, size_t x_row, size_t pos,
 
   if (model_config.wrapping == PromptWrapping::PALIGEMMA &&
       image_tokens != nullptr && pos_in_prompt < image_tokens->Rows()) {
+    HWY_ASSERT(x_row < x.Rows());
+    HWY_ASSERT(image_tokens->Cols() == x.Cols());
     hwy::CopyBytes(image_tokens->Row(pos_in_prompt), x.Row(x_row),
                    x.Cols() * x.ElementBytes());
     return image_token_position;
@@ -1098,8 +1105,14 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
 
   // 5. Add token embedding and apply input scale
   const float scale_input = 1.0f / sqrtf(2.0f);
-  // Use pre-allocated activations.ple_token_emb
+  // Ensure trailing SIMD padding for DecompressAndZeroPad.
+  const hn::ScalableTag<float> df;
+  const size_t padded_ple_dim = hwy::RoundUpTo(ple_total_dim, hn::Lanes(df));
+  if (activations.ple_token_emb.size() < padded_ple_dim) {
+    activations.ple_token_emb.resize(padded_ple_dim);
+  }
   float* token_emb = activations.ple_token_emb.data();
+  HWY_ASSERT(weights.ple_embeddings.HasPtr());
   for (size_t r = 0; r < tbatch_size; ++r) {
     int token = tokens[r];
     float* out_row = activations.ple_embeds.Row(r);
@@ -1107,10 +1120,11 @@ static HWY_NOINLINE void ComputePLEEmbeddings(size_t tbatch_size,
     // negative) as done in JAX/PyTorch implementation.
     const int ple_token = token < 0 ? 0 : token;
     CallUpcasted(&weights.ple_embeddings, [&](const auto* weights_t) HWY_ATTR {
+      HWY_ASSERT(static_cast<size_t>(ple_token) < weights_t->Rows());
+      HWY_ASSERT(weights_t->Cols() == ple_total_dim);
       const size_t embedding_ofs = ple_token * weights_t->Stride();
       const auto embedding_span =
           MakeSpan(weights_t->Row(0), embedding_ofs + ple_total_dim);
-      const hn::ScalableTag<float> df;
       DecompressAndZeroPad(df, embedding_span, embedding_ofs, token_emb,
                            ple_total_dim);
 

@@ -66,8 +66,10 @@ struct MLADims {
         }
       }
       if (lc.IsV4MLA()) {
-        o_in_dim =
-            HWY_MAX(o_in_dim, size_t{lc.heads} / lc.o_groups * lc.qkv_dim);
+        HWY_ASSERT(lc.o_groups > 0);
+        HWY_ASSERT(lc.heads % lc.o_groups == 0);
+        const size_t group_heads = size_t{lc.heads} / lc.o_groups;
+        o_in_dim = HWY_MAX(o_in_dim, group_heads * lc.qkv_dim);
         o_mid_dim = HWY_MAX(o_mid_dim, size_t{lc.o_groups} * lc.o_lora_rank);
       }
     }

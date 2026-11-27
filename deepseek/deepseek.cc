@@ -98,6 +98,9 @@ static constexpr uint32_t DSFloatToUint32Sortkey(float val) {
 // Copies a small 1D/row tensor of any weight type to f32.
 void ReadRowF32(const MatPtr& w, size_t row, float* HWY_RESTRICT out,
                 size_t n) {
+  HWY_ASSERT(w.HasPtr());
+  HWY_ASSERT(row < w.Rows());
+  HWY_ASSERT(w.Cols() == n);
   if (w.GetType() == Type::kF32) {
     MatPtrT<float> wf(w);
     const float* src = wf.Row(row);
@@ -107,11 +110,18 @@ void ReadRowF32(const MatPtr& w, size_t row, float* HWY_RESTRICT out,
     }
     return;
   }
-  CallUpcasted(&w, [&](const auto* weights_t) {
+  CallUpcasted(&w, [&](const auto* weights_t) HWY_ATTR {
+    const hn::ScalableTag<float> df;
+    const size_t nf = hn::Lanes(df);
     const size_t ofs = row * weights_t->Stride();
-    HWY_ASSERT(weights_t->Cols() == n);
     const auto span = MakeSpan(weights_t->Row(0), ofs + n);
-    DecompressAndZeroPad(hn::ScalableTag<float>(), span, ofs, out, n);
+    const size_t full = n - (n % nf);
+    if (full != 0) DecompressAndZeroPad(df, span, ofs, out, full);
+    if (full != n) {
+      HWY_ALIGN float tmp[hn::MaxLanes(df)];
+      DecompressAndZeroPad(df, span, ofs + full, tmp, n - full);
+      hwy::CopyBytes(tmp, out + full, (n - full) * sizeof(float));
+    }
     MulByConst(weights_t->Scale(), out, n);
   });
 }
@@ -199,7 +209,7 @@ static HWY_NOINLINE void HCReadDynamic(const MatPtr& fn_w, const MatPtr& base_w,
   const size_t mix_hc = (2 + hc_mult) * hc_mult;
   const size_t sinkhorn_iters = config.hc_sinkhorn_iters;
   const float eps = config.hc_eps;
-  HWY_DASSERT(hc_mult >= 2 && hc_mult <= kDSMaxHCMult);
+  HWY_ASSERT(hc_mult >= 2 && hc_mult <= kDSMaxHCMult);
 
   // mixes = streams @ fn_w^T. Row scaling by rsqrt happens below.
   activations.hc_mixes.OverrideCols(mix_hc);
@@ -650,6 +660,11 @@ static HWY_NOINLINE void DeepSeekRunCompressors(
   const size_t rope_dim = lc.rope_head_dim;
   const bool has_indexer = lc.HasIndexer();
   const size_t idx_dim = lc.indexer_head_dim;
+  HWY_ASSERT(d <= kDSMaxLatentDim && rope_dim <= d);
+  HWY_ASSERT(rate > 0 && rate <= kDSMaxRate);
+  if (has_indexer) {
+    HWY_ASSERT(idx_dim <= kDSMaxLatentDim && rope_dim <= idx_dim);
+  }
 
   // Projections for all batch tokens.
   activations.comp_kv.OverrideCols(coff * d);
@@ -798,6 +813,9 @@ static HWY_NOINLINE void DeepSeekIndexerSelect(
   const size_t rate = lc.kv_compression_rate;
   const size_t rope_dim = lc.rope_head_dim;
   const size_t d = lc.KVLatentDim();
+  HWY_ASSERT(idx_dim <= 512 && rope_dim <= idx_dim);
+  HWY_ASSERT(idx_heads * idx_dim <= kDSMaxIndexerDim);
+  HWY_ASSERT(rate > 0 && rate <= kDSMaxRate);
 
   // Queries from the normed q-LoRA latent; per-head weights from x.
   activations.idx_q.OverrideCols(idx_heads * idx_dim);
@@ -894,8 +912,14 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
   const size_t qkv_dim = lc.qkv_dim;  // per-head query dim (= latent dim)
   const size_t rope_dim = lc.rope_head_dim;
   const size_t kv_a_dim = lc.KVLatentDim();
-  HWY_DASSERT(kv_a_dim <= kDSMaxLatentDim && qkv_dim <= kDSMaxHeadDim);
-  HWY_DASSERT(qkv_dim == kv_a_dim);  // V4: queries live in latent space.
+  HWY_ASSERT(kv_a_dim <= kDSMaxLatentDim);
+  HWY_ASSERT(qkv_dim <= kDSMaxHeadDim);
+  HWY_ASSERT(heads > 0);
+  HWY_ASSERT(heads <= kDSMaxHeadDim);
+  HWY_ASSERT(qkv_dim == kv_a_dim);  // V4: queries live in latent space.
+  HWY_ASSERT(rope_dim <= kv_a_dim);
+  HWY_ASSERT(lc.o_groups > 0);
+  HWY_ASSERT(heads % lc.o_groups == 0);
 
   // The MTP block has layer_idx == num_layers, past the end of the window
   // table; it uses the same sliding window as the other layers.
@@ -905,7 +929,8 @@ static HWY_NOINLINE void DeepSeekAttention(size_t num_tokens, size_t layer_idx,
                             ? config.attention_window_sizes[0]
                             : config.max_seq_len;
   const bool has_compressor = lc.HasCompressor();
-  const bool has_indexer = lc.HasIndexer() && layer.idx_q_w.HasPtr();
+  const bool has_indexer =
+      has_compressor && lc.HasIndexer() && layer.idx_q_w.HasPtr();
   const size_t rate = lc.kv_compression_rate;
 
   // Raw path (sliding-window layers) uses rope_theta; compressed layers use
@@ -1163,7 +1188,9 @@ struct DeepSeekMoE {
     const size_t num_experts = lc.NumExperts();
     const size_t experts_per_token = lc.NumExpertsPerDatapoint();
     const size_t num_tokens = activations.x.Rows();
-    HWY_DASSERT(num_experts <= kDSMaxExperts);
+    HWY_ASSERT(num_experts > 0 && num_experts <= kDSMaxExperts);
+    HWY_ASSERT(experts_per_token > 0 &&
+               experts_per_token <= HWY_MIN(num_experts, size_t{64}));
 
     activations.router_logits.OverrideRows(num_tokens);
     // Router input is the (already RMSNorm'd) FFN input.
@@ -1225,13 +1252,22 @@ struct DeepSeekMoE {
             const int32_t token_id = token_idx < activations.token_ids.size()
                                          ? activations.token_ids[token_idx]
                                          : 0;
+            const size_t hash_row =
+                token_id < 0 ? 0 : static_cast<size_t>(token_id);
             HWY_ALIGN float row[64];
-            ReadRowF32(layer.hash_tid2eid, static_cast<size_t>(token_id), row,
-                       experts_per_token);
+            ReadRowF32(layer.hash_tid2eid, hash_row, row, experts_per_token);
+            bool valid = true;
+            const float max_expert = static_cast<float>(num_experts);
             for (size_t i = 0; i < experts_per_token; ++i) {
-              chosen[i] = static_cast<uint32_t>(row[i]);
-              HWY_DASSERT(chosen[i] < num_experts);
+              const float v = row[i];
+              if (HWY_LIKELY(v >= 0.0f && v < max_expert)) {
+                chosen[i] = static_cast<uint32_t>(v);
+              } else {
+                chosen[i] = 0;
+                valid = false;
+              }
             }
+            HWY_ASSERT(valid);
           } else {
             hwy::K32V32 sel[kDSMaxExperts];
             for (uint32_t e = 0; e < num_experts; ++e) {
@@ -1566,28 +1602,37 @@ void DeepSeekMaybeSaveDSparkTarget(size_t layer_idx,
     return;
   }
   const size_t num_layers = activations.attention.config.num_layers;
-  if (layer_idx < num_layers - 3 || layer_idx >= num_layers) {
+  const size_t hc_mult = activations.attention.config.hc_mult;
+  if (num_layers < 3 || hc_mult < 2 || layer_idx < num_layers - 3 ||
+      layer_idx >= num_layers) {
     return;
   }
   const size_t model_dim = activations.x.Cols();
-  const size_t hc_mult = activations.attention.config.hc_mult;
   const size_t col_offset = (layer_idx - (num_layers - 3)) * model_dim;
   const float inv_mult = 1.0f / static_cast<float>(hc_mult);
   const hn::ScalableTag<float> df;
   using VF = hn::Vec<decltype(df)>;
   const size_t N = hn::Lanes(df);
   const VF vinv_mult = hn::Set(df, inv_mult);
-  HWY_DASSERT(model_dim % N == 0);
   for (size_t r = 0; r < activations.x.Rows(); ++r) {
     const float* HWY_RESTRICT s = activations.hc_streams.Row(r);
     float* HWY_RESTRICT dst =
         activations.dspark_main_hiddens.Row(r) + col_offset;
-    for (size_t c = 0; c < model_dim; c += N) {
+    size_t c = 0;
+    for (; c + N <= model_dim; c += N) {
       VF vsum = hn::Zero(df);
       for (size_t i = 0; i < hc_mult; ++i) {
         vsum = hn::Add(vsum, hn::LoadU(df, s + i * model_dim + c));
       }
       hn::StoreU(hn::Mul(vsum, vinv_mult), df, dst + c);
+    }
+    const size_t rem = model_dim - c;
+    if (HWY_UNLIKELY(rem != 0)) {
+      VF vsum = hn::Zero(df);
+      for (size_t i = 0; i < hc_mult; ++i) {
+        vsum = hn::Add(vsum, hn::LoadN(df, s + i * model_dim + c, rem));
+      }
+      hn::StoreN(hn::Mul(vsum, vinv_mult), df, dst + c, rem);
     }
   }
 }
@@ -1605,6 +1650,9 @@ void DeepSeekCommitDSparkKV(size_t num_tokens, size_t pos_base,
   const LayerConfig mtp_lc = config.MTPLayerConfig();
   const size_t kv_a_dim = mtp_lc.KVLatentDim();
   const size_t rope_dim = mtp_lc.rope_head_dim;
+  HWY_ASSERT(model_dim <= kDSMaxHeadDim * 8);
+  HWY_ASSERT(kv_a_dim <= kDSMaxLatentDim);
+  HWY_ASSERT(rope_dim <= kv_a_dim);
   const float* HWY_RESTRICT inv_ts =
       activations.mla_inv_timescale.PackedScale1();
   CompressPerThread tls;
@@ -1681,6 +1729,8 @@ void DeepSeekMTPStep(size_t num_tokens, const int* next_tokens,
                    hc_mult * model_dim * sizeof(float));
     activations.token_ids[r] = next_tokens[r];
     // Raw embedding row (DeepSeek does not scale embeddings), then enorm.
+    HWY_ASSERT(next_tokens[r] >= 0 &&
+               static_cast<size_t>(next_tokens[r]) < config.vocab_size);
     float* HWY_RESTRICT e = activations.x.Row(r);
     ReadRowF32(weights.embedder_input_embedding,
                static_cast<size_t>(next_tokens[r]), e, model_dim);
@@ -1836,8 +1886,10 @@ size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,
                                           weights.mtp_main_norm,
                                           activations.x_bf, env.ctx);
     for (size_t r = 0; r < num_tokens; ++r) {
+      HWY_ASSERT(next_tokens[r] >= 0 &&
+                 static_cast<size_t>(next_tokens[r]) < vocab_size);
       float* HWY_RESTRICT e = activations.x.Row(r);
-      const size_t tok = static_cast<size_t>(next_tokens[r]) % vocab_size;
+      const size_t tok = static_cast<size_t>(next_tokens[r]);
       ReadRowF32(weights.embedder_input_embedding, tok, e, model_dim);
       float* HWY_RESTRICT h = activations.hc_streams.Row(r);
       for (size_t stream = 0; stream < hc_mult; ++stream) {
@@ -1858,7 +1910,8 @@ size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,
   activations.token_ids.resize(num_tokens);
   activations.token_ids[0] = next_tokens[0];  // committed token (pending)
   for (size_t r = 1; r < num_tokens; ++r) {
-    activations.token_ids[r] = kDSNoiseTokenId;
+    activations.token_ids[r] =
+        static_cast<int32_t>(kDSNoiseTokenId % config.vocab_size);
   }
 
   // Target features from committed token (row 0).
@@ -1871,9 +1924,10 @@ size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,
 
   // Embed draft input tokens and expand to residual streams.
   for (size_t r = 0; r < num_tokens; ++r) {
+    HWY_ASSERT(activations.token_ids[r] >= 0 &&
+               static_cast<size_t>(activations.token_ids[r]) < vocab_size);
     float* HWY_RESTRICT e = activations.x.Row(r);
-    const size_t tok =
-        static_cast<size_t>(activations.token_ids[r]) % config.vocab_size;
+    const size_t tok = static_cast<size_t>(activations.token_ids[r]);
     ReadRowF32(weights.embedder_input_embedding, tok, e, model_dim);
     float* HWY_RESTRICT h = activations.hc_streams.Row(r);
     for (size_t stream = 0; stream < hc_mult; ++stream) {
@@ -1907,8 +1961,8 @@ size_t DeepSeekDSparkStep(size_t num_draft_tokens, const int* next_tokens,
   for (size_t i = 0; i < num_draft_tokens; ++i) {
     HWY_ALIGN float markov_embed[256];
     if (has_markov) {
-      ReadRowF32(weights.mtp_markov_w1,
-                 static_cast<size_t>(curr_tok) % config.vocab_size,
+      HWY_ASSERT(curr_tok >= 0 && static_cast<size_t>(curr_tok) < vocab_size);
+      ReadRowF32(weights.mtp_markov_w1, static_cast<size_t>(curr_tok),
                  markov_embed, 256);
       ApplyMarkovHeadBias(markov_embed, weights.mtp_markov_w2,
                           activations.logits.Row(i), config.vocab_size, env);
