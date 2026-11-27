@@ -1057,6 +1057,24 @@ cc_test(
 )
 
 cc_test(
+    name = "vit_gemma4_test",
+    srcs = ["gemma/vit_gemma4_test.cc"],
+    deps = [
+        ":configs",
+        ":gemma_args",
+        ":gemma_lib",
+        ":mat",
+        ":matmul",
+        ":threading_context",
+        ":weights",
+        "@googletest//:gtest_main",  # buildcleaner: keep
+        "//compression:types",
+        "//paligemma:image",
+        "@highway//:hwy",
+    ],
+)
+
+cc_test(
     name = "gemma_test",
     srcs = [
         "evals/gemma_test.cc",

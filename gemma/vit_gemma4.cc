@@ -627,9 +627,11 @@ void PrefillVitGemma4(const ModelConfig& model_config,
   const size_t num_pooled_tokens = H_g * W_g;
   const size_t max_soft_tokens = max_patches / 9;  // 280
 
+  HWY_ASSERT(num_pooled_tokens > 0);
   HWY_ASSERT(num_pooled_tokens <= max_soft_tokens);
 
-  MatStorageT<float> pooled("pooled", Extents2D(max_soft_tokens, vit_model_dim),
+  MatStorageT<float> pooled("pooled",
+                            Extents2D(num_pooled_tokens, vit_model_dim),
                             env.ctx.allocator, MatPadding::kOdd);
   gcpp::ZeroInit(pooled);
 
@@ -660,6 +662,7 @@ void PrefillVitGemma4(const ModelConfig& model_config,
 
   // 7. Project to LLM space
   // Apply head embedding into image_tokens of size of the LLM kModelDim.
+  image_tokens.OverrideRows(num_pooled_tokens);
   CallMatMul(pooled, weights.vit_img_head_kernel,
              /*bias=*/nullptr, env, image_tokens);
 }
