@@ -351,6 +351,14 @@ target_link_libraries(benchmarks libgemma hwy hwy_contrib nlohmann_json::nlohman
 add_executable(debug_prompt evals/debug_prompt.cc)
 target_link_libraries(debug_prompt libgemma hwy hwy_contrib nlohmann_json::nlohmann_json)
 
+add_library(model_comparison evals/model_comparison.cc)
+target_include_directories(model_comparison PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(model_comparison PRIVATE nlohmann_json::nlohmann_json)
+
+add_executable(gemma_mmlu evals/run_mmlu.cc)
+target_link_libraries(gemma_mmlu PRIVATE libgemma model_comparison hwy hwy_contrib
+                      nlohmann_json::nlohmann_json)
+
 ## Tests
 set(GEMMA_ENABLE_TESTS OFF CACHE BOOL "Enable Gemma tests")
 if (GEMMA_ENABLE_TESTS)
@@ -358,6 +366,16 @@ if (GEMMA_ENABLE_TESTS)
 enable_testing()
 find_package(GTest REQUIRED)
 include(GoogleTest)
+
+add_executable(model_comparison_test evals/model_comparison_test.cc)
+target_link_libraries(model_comparison_test PRIVATE model_comparison GTest::Main)
+gtest_discover_tests(model_comparison_test)
+find_package(Python3 3.10 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME model_comparison_python_test
+    COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+            -s ${CMAKE_CURRENT_SOURCE_DIR}/evals -p compare*_test.py)
+endif()
 
 # Tests use HWY_IS_TEST=1 with `hwy/foreach_target.h`, which expands the test
 # TU for every attainable SIMD target (including EMU128). libgemma's
