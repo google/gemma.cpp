@@ -244,7 +244,9 @@ TEST(ConfigsTest, EmbeddingGemma2) {
                            PromptWrapping::GEMMA_IT);
   EXPECT_EQ(config.display_name, "EmbeddingGemma2_LM");
   EXPECT_FALSE(config.HasGemma4Vit());
+  EXPECT_FALSE(IsGemma4(config.model));
   EXPECT_TRUE(IsEmbeddingGemma2(config.model));
+  EXPECT_FLOAT_EQ(config.final_cap, 0.0f);
   EXPECT_TRUE(config.IsEmbedding());
   EXPECT_EQ(config.EmbeddingProjDim(), kEmbeddingGemma2Dim);
   EXPECT_EQ(config.num_layers, 24u);
@@ -286,6 +288,23 @@ TEST(ConfigsTest, EmbeddingGemma2) {
 
   EXPECT_EQ(DeduceModel(Path("embeddinggemma2-lm-bf16-it.sbs"), 24, 0),
             Model::EMBEDDING_GEMMA2_LM);
+}
+
+TEST(ConfigsTest, Gemma4FinalCap) {
+  constexpr Model kGemma4Models[] = {
+      Model::GEMMA4_26B_MOE, Model::GEMMA4_2B,    Model::GEMMA4_2B_LM,
+      Model::GEMMA4_E4B,     Model::GEMMA4_E4B_LM,
+  };
+  for (const Model model : kGemma4Models) {
+    EXPECT_TRUE(IsGemma4(model));
+    const ModelConfig config(model, Type::kSFP, ChooseWrapping(model));
+    EXPECT_FLOAT_EQ(config.final_cap, 30.0f) << config.display_name;
+  }
+
+  const ModelConfig gemma3(Model::GEMMA3_1B, Type::kSFP,
+                           PromptWrapping::GEMMA_VLM);
+  EXPECT_FALSE(IsGemma4(gemma3.model));
+  EXPECT_FLOAT_EQ(gemma3.final_cap, 0.0f);
 }
 
 }  // namespace gcpp

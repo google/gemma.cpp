@@ -337,6 +337,14 @@ static ModelConfig ReadOrDeduceConfig(BlobReader& reader,
       }
     }
 
+    // Gemma 4 checkpoints exported with older configs stored final_cap=0.0f.
+    if (config.final_cap == 0.0f && IsGemma4(config.model)) {
+      HWY_WARN(
+          "Gemma 4 model %s was exported with final_cap=0; overriding to 30.0. "
+          "Consider re-exporting the model to avoid this warning.",
+          ModelPrefix(config.model));
+      config.final_cap = 30.0f;
+    }
     // We trust the deserialized config, but checking helps to validate the
     // deduction, which we rely on below for pre-2025 files.
     if (deduced_model.has_value() && config.model != *deduced_model) {

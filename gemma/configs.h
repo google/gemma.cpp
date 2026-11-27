@@ -352,6 +352,12 @@ static inline bool IsQwen3(Model model) {
          model == Model::QWEN3_4B;
 }
 
+static inline bool IsGemma4(Model model) {
+  return model == Model::GEMMA4_26B_MOE || model == Model::GEMMA4_2B ||
+         model == Model::GEMMA4_2B_LM || model == Model::GEMMA4_E4B ||
+         model == Model::GEMMA4_E4B_LM;
+}
+
 static inline bool IsEmbeddingGemma2(Model model) {
   return model == Model::EMBEDDING_GEMMA2_LM;
 }

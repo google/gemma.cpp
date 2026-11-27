@@ -448,7 +448,7 @@ static ModelConfig ConfigBaseGemmaV4() {
   ModelConfig config = ConfigNoSSM();
   config.model_family_version = 4;
   config.att_cap = 0.0f;
-  config.final_cap = 0.0f;
+  config.final_cap = 30.0f;
   config.eos_id = 1;
   config.secondary_eos_id = 106;
   config.vocab_size = 262208;
@@ -481,7 +481,6 @@ static LayerConfig LayerConfigGemma4_26B_MoE_LM(size_t model_dim) {
 static ModelConfig ConfigGemma4_26B_MoE() {
   ModelConfig config = ConfigBaseGemmaV4();
   config.display_name = "Gemma4_26B_MoE";
-  config.final_cap = 0.0f;
   config.att_cap = 0.0f;
   config.model = Model::GEMMA4_26B_MOE;
   config.wrapping = PromptWrapping::GEMMA_IT;
@@ -538,7 +537,6 @@ static ModelConfig ConfigGemma4_2B_LM() {
   config.model_dim = 1536;
   config.vocab_size = kGemmaV3VocabSize;  // 262144
   config.max_seq_len = 128 * 1024;
-  config.final_cap = 0.0f;
   config.ple_dim = 256;
   config.num_layers = 35;
   config.use_global_timescale = true;
@@ -620,7 +618,6 @@ static ModelConfig ConfigGemma4_E4B_LM() {
   config.model_dim = 2560;
   config.vocab_size = kGemmaV3VocabSize;  // 262144
   config.max_seq_len = 128 * 1024;
-  config.final_cap = 0.0f;
   config.ple_dim = 256;
   config.num_layers = 42;
   config.use_global_timescale = true;
@@ -688,6 +685,7 @@ static ModelConfig ConfigEmbeddingGemma2_LM() {
   ModelConfig config = ConfigBaseGemmaV4();
   config.display_name = "EmbeddingGemma2_LM";
   config.model = Model::EMBEDDING_GEMMA2_LM;
+  config.final_cap = 0.0f;
   config.wrapping = PromptWrapping::GEMMA_IT;
   config.model_dim = 512;
   config.vocab_size = kGemmaV3VocabSize;
