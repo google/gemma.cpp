@@ -56,6 +56,9 @@ struct KVCache {
   // copy ctor to make the cost explicit.
   KVCache Copy();
   void ZeroInit();
+  // Zeroes only KV cache storage that could have been dirtied by evaluating up
+  // to `dirty_tokens` positions starting from position 0.
+  void ZeroInitPrefix(size_t dirty_tokens);
 
   // Default flash only needs the current layer's projections until transpose.
   // Other backends can still use kv_cache as persistent inference state.
