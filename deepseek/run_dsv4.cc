@@ -161,7 +161,7 @@ int Main(int argc, char** argv) {
   consumed.AbortIfUnconsumed();
 
   ThreadingContext ctx(args.threading);
-  MatMulEnv env(ctx);
+  MatMulEnv env(ctx, args.inference.MatMulSchedule());
   Gemma gemma(args, ctx);
   KVCache kv_cache(gemma.Config(), args.inference, ctx.allocator);
 

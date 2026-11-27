@@ -573,9 +573,17 @@ class MMConfig {
 static_assert(sizeof(MMConfig) == 32);  // for faster indexing
 #pragma pack(pop)
 
+// Fixed modes select one legal candidate independently of timing measurements.
+// kFixedMinK prefers fewer intermediate stores/roundings along K, retaining
+// candidate order to break ties. Neither fixed mode promises optimal speed.
+enum class MMSchedule : uint8_t { kAutoTune, kFixed, kFixedMinK };
+
+std::vector<MMParA> MMParACandidates(size_t M, MMSchedule schedule);
+
 std::vector<MMConfig> MMCandidates(const CacheInfo& cache, size_t M, size_t K,
                                    size_t N, size_t num_B, size_t sizeof_TC,
-                                   bool print_config);
+                                   bool print_config,
+                                   MMSchedule schedule = MMSchedule::kAutoTune);
 
 // State machine for choosing the best `TConfig`, which is `MMConfig` for the
 // main MatMul autotuner.
@@ -637,8 +645,8 @@ class MMAutoTune {
       skipped_.Set(my_idx);
     }
 
-    // After sufficient rounds, choose the winner.
-    if (rounds_complete_ == 4) {
+    // A single candidate needs no comparison with other configurations.
+    if (candidates_.size() == 1 || rounds_complete_ == 4) {
       for (size_t i = 0; i < candidates_.size(); ++i) {
         worst_min_ticks_ = HWY_MAX(worst_min_ticks_, min_ticks_[i]);
         if (min_ticks_[i] == best_ticks_) {
@@ -677,6 +685,10 @@ class MMAutoTune {
 
 //------------------------------------------------------------------------------
 
+// The representation consumed by the kernel (F32 inputs converted to BF16
+// also use kBF16). Reserve separate tuning state for the forthcoming A8 paths.
+enum class MMActivation : uint8_t { kBF16, kI8, kI8Block };
+
 // Map of previously seen dimensions to index via linear search.
 class MMKeys {
  public:
@@ -699,12 +711,19 @@ class MMKeys {
   }
 
   // Compresses the dimensions into a single Key for faster comparison.
-  static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B) {
+  static Key KeyFromDims(size_t M, size_t K, size_t N, size_t num_B,
+                         MMActivation activation = MMActivation::kBF16) {
     HWY_DASSERT(M < (Key{1} << 16));  // batch sizes are smaller
     HWY_DASSERT(K < (Key{1} << 20));
     HWY_DASSERT(N < (Key{1} << 20));
     HWY_DASSERT(num_B == 1 || num_B == 2);
+    HWY_DASSERT(activation == MMActivation::kBF16 ||
+                activation == MMActivation::kI8 ||
+                activation == MMActivation::kI8Block);
+    // M: bits 0..15, K: 16..35, activation: 36..37, N: 40..59,
+    // num_B: 60..61. BF16 retains the existing key encoding.
     const Key key = static_cast<Key>(BucketM(M)) | (static_cast<Key>(K) << 16) |
+                    (static_cast<Key>(activation) << 36) |
                     (static_cast<Key>(N) << 40) |
                     (static_cast<Key>(num_B) << 60);
     HWY_DASSERT(key != kPadding);
@@ -733,7 +752,9 @@ class MMKeys {
       HWY_DASSERT(capacity_ >= num_unique_ + 1);
       hwy::AlignedFreeUniquePtr<Key[]> new_keys =
           hwy::AllocateAligned<Key>(capacity_);
-      hwy::CopyBytes(keys_.get(), new_keys.get(), num_unique_ * sizeof(Key));
+      if (num_unique_ != 0) {
+        hwy::CopyBytes(keys_.get(), new_keys.get(), num_unique_ * sizeof(Key));
+      }
       // Pad for SIMD.
       for (size_t i = num_unique_; i < hwy::RoundUpTo(num_unique_, NU64); ++i) {
         new_keys[i] = kPadding;
@@ -766,9 +787,12 @@ struct MMPerKey {
 // Stores state shared across MatMul calls. Non-copyable. `ctx` must outlive
 // `MatMulEnv`.
 struct MatMulEnv {
-  explicit MatMulEnv(ThreadingContext& ctx);
+  explicit MatMulEnv(ThreadingContext& ctx,
+                     MMSchedule schedule = MMSchedule::kAutoTune);
 
   ThreadingContext& ctx;
+  // Immutable because cached candidates depend on the scheduling policy.
+  const MMSchedule schedule;
   bool have_timer_stop = false;
 
   // Whether `MMCandidates()` should print the set of parameters.

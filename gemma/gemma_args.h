@@ -28,6 +28,7 @@
 #include "compression/types.h"
 #include "gemma/configs.h"
 #include "io/io.h"        // Path
+#include "ops/matmul.h"   // MMSchedule
 #include "util/args.h"    // IWYU pragma: export
 #include "util/basics.h"  // Tristate
 #include "util/mat.h"
@@ -234,6 +235,7 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
   float temperature;
   size_t top_k;
   bool deterministic;
+  std::string matmul_schedule;
   bool multiturn;
   Path image_file;
 
@@ -273,6 +275,10 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             2);
     visitor(deterministic, "deterministic", false,
             "Make top-k sampling deterministic", 2);
+    visitor(
+        matmul_schedule, "matmul_schedule", std::string("auto"),
+        "MatMul schedule: auto, fixed, or fixed_min_k (fewest K partitions).",
+        2);
     visitor(multiturn, "multiturn", false,
             "Multiturn mode\n    0 = clear KV cache after every "
             "interaction\n    1 = continue KV cache after every interaction\n  "
@@ -321,6 +327,16 @@ struct InferenceArgs : public ArgsBase<InferenceArgs> {
             2);
     visitor(embed_dim, "embed_dim", size_t{0},
             "Truncate embedding to this dimension (0 = full dimension).", 2);
+  }
+
+  MMSchedule MatMulSchedule() const {
+    if (matmul_schedule == "auto") return MMSchedule::kAutoTune;
+    if (matmul_schedule == "fixed") return MMSchedule::kFixed;
+    if (matmul_schedule == "fixed_min_k") return MMSchedule::kFixedMinK;
+    HWY_ABORT(
+        "Invalid --matmul_schedule '%s': expected auto, fixed, or "
+        "fixed_min_k",
+        matmul_schedule.c_str());
   }
 
   void CopyTo(RuntimeConfig& runtime_config) const {
