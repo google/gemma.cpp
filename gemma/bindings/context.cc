@@ -71,9 +71,9 @@ GemmaContext* GemmaContext::Create(const char* tokenizer_path,
 
   ThreadingArgs threading_args;
   threading_args.spin = gcpp::Tristate::kFalse;
-
-  threading_args.spin = gcpp::Tristate::kFalse;
-  GemmaArgs args(LoaderArgs(tokenizer_path, weights_path), threading_args);
+  GemmaArgs args(LoaderArgs(tokenizer_path ? tokenizer_path : "",
+                            weights_path ? weights_path : ""),
+                 threading_args);
 
   // Initialize cached args
   LogDebug("Initializing inference args");
