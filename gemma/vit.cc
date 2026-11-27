@@ -66,7 +66,7 @@ class VitAttention {
     PROFILER_ZONE("Gen.VitAttention.QKV");
     auto& qkv = activations_.attention.q;
     HWY_ASSERT(qkv.Rows() == num_tokens_);
-    HWY_ASSERT(qkv.Cols() == layer_config_.heads * 3 * layer_config_.qkv_dim);
+    qkv.OverrideCols(layer_config_.heads * 3 * layer_config_.qkv_dim);
     CallMatMul(activations_.attention.pre_att_rms_out, layer_.vit.qkv_einsum_w,
                layer_.vit.qkv_einsum_b.PackedScale1(), env_, qkv);
   }
@@ -111,9 +111,12 @@ class VitAttention {
           for (size_t token_h = 0; token_h < kNumTokensH; ++token_h) {
             KVType* HWY_RESTRICT dst_k = k_output.Row(token_h);
             KVType* HWY_RESTRICT dst_v = v_output.Row(token_h);
+            const size_t valid_tokens_l =
+                std::min(2 * kNF, num_tokens - token_h * 2 * kNF);
+            const KVType kZero = hwy::ConvertScalarTo<KVType>(0.0f);
             size_t dst_k_index = k_or_v_offset;
             for (size_t q = 0; q < qkv_dim; q += 2) {
-              for (size_t token_l = 0; token_l < 2 * kNF;
+              for (size_t token_l = 0; token_l < valid_tokens_l;
                    ++token_l, dst_k_index += 2) {
                 const QKVType* HWY_RESTRICT src_k =
                     qkv.Row(token_h * 2 * kNF + token_l) + qkv_offset + qkv_dim;
@@ -121,25 +124,25 @@ class VitAttention {
                 dst_k[dst_k_index + 1] =
                     hwy::ConvertScalarTo<KVType>(src_k[q + 1]);
               }
+              const size_t pad_k = (2 * kNF - valid_tokens_l) * 2;
+              std::fill_n(dst_k + dst_k_index, pad_k, kZero);
+              dst_k_index += pad_k;
             }
             size_t dst_v_index = k_or_v_offset;
             for (size_t q = 0; q < qkv_dim; q += 2 * kNF) {
-              for (size_t token_l = 0; token_l < 2 * kNF; ++token_l) {
+              const size_t q_count = std::min(2 * kNF, qkv_dim - q);
+              for (size_t token_l = 0; token_l < valid_tokens_l; ++token_l) {
                 const QKVType* HWY_RESTRICT src_v =
                     qkv.Row(token_h * 2 * kNF + token_l) + qkv_offset +
                     qkv_dim * 2;
-                if (q + 2 * kNF <= qkv_dim) {
-                  for (size_t q_l = 0; q_l < 2 * kNF; ++q_l) {
-                    dst_v[dst_v_index++] =
-                        hwy::ConvertScalarTo<KVType>(src_v[q + q_l]);
-                  }
-                } else {
-                  for (size_t q_l = 0; q_l < qkv_dim - q; ++q_l) {
-                    dst_v[dst_v_index++] =
-                        hwy::ConvertScalarTo<KVType>(src_v[q + q_l]);
-                  }
+                for (size_t q_l = 0; q_l < q_count; ++q_l) {
+                  dst_v[dst_v_index++] =
+                      hwy::ConvertScalarTo<KVType>(src_v[q + q_l]);
                 }
               }
+              const size_t pad_v = (2 * kNF - valid_tokens_l) * q_count;
+              std::fill_n(dst_v + dst_v_index, pad_v, kZero);
+              dst_v_index += pad_v;
             }
             // Zero out the padding area.
             // In the loops above, the dst_k loop has written 2kNF x 2
@@ -217,10 +220,13 @@ class VitAttention {
     const size_t kNF = hn::Lanes(hn::ScalableTag<float>());
     const size_t kRoundedKVDim = hwy::RoundUpTo(qkv_dim, 2 * kNF);
     auto& attn = activations_.attention;
+    attn.q_bf.OverrideCols(heads * qkv_dim);
+    attn.att_out.OverrideCols(heads * qkv_dim);
     const size_t seq_len = static_cast<size_t>(attn.div_seq_len.GetDivisor());
-    if (attn.vit_K_T.Rows() >= seq_len) {
+    if (!attn.vit_kv_reshaped) {
       attn.vit_K_T.ReshapePackedRowsToCols(2 * kNF);
       attn.vit_V_T.ReshapePackedRowsToCols(2 * kNF);
+      attn.vit_kv_reshaped = true;
     }
     const float query_scale = 1.0f / sqrtf(static_cast<float>(qkv_dim));
     ScaleQuery(attn.q, num_tokens_, heads, qkv_dim, query_scale, attn.q_bf);
@@ -424,6 +430,7 @@ void PrefillVit(const ModelConfig& model_config, const WeightsPtrs& weights,
                    weights.vit_encoder_norm_bias, activations.x);
 
   if (model_config.wrapping == PromptWrapping::GEMMA_VLM) {
+    HWY_ASSERT(activations.x.Rows() == 4096);
     activations.x = AvgPool4x4(activations.x, env.ctx.allocator);
 
     // Apply soft embedding norm before input projection.

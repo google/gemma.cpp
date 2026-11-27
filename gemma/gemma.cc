@@ -383,6 +383,9 @@ static void T5GemmaEncoderAttentionReference(
   const size_t kv_heads = layer_config.kv_heads;
   const size_t heads_per_kv = heads / kv_heads;
 
+  q.OverrideCols(heads * qkv_dim);
+  kv.OverrideCols(2 * kv_heads * qkv_dim);
+  att_out.OverrideCols(heads * qkv_dim);
   CallMatMul(pre_att_rms_out, layer.qkv_einsum_w1, /*add=*/nullptr, env, q);
   CallMatMul(pre_att_rms_out, layer.qkv_einsum_w2, /*add=*/nullptr, env, kv);
   T5GemmaApplyRope(layer_config, inv_timescale,
@@ -646,7 +649,10 @@ static void T5GemmaWriteDecoderKV(const T5GemmaDecoderLayerWeightsPtrs& layer,
     }
     const size_t pos = qbatch.Pos(qi);
     HWY_ASSERT(pos < qbatch.KV(qi).SeqLen());
-    KV_t* dst = qbatch.KV(qi).kv_cache.Row(pos) + layer_idx * cache_layer_size;
+    const size_t layer_offset =
+        qbatch.KV(qi).cache ? qbatch.KV(qi).cache->layer_flat_offsets[layer_idx]
+                            : layer_idx * cache_layer_size;
+    KV_t* dst = qbatch.KV(qi).kv_cache.Row(pos) + layer_offset;
     const float* src = kv.Row(qi);
     for (size_t i = 0; i < cache_layer_size; ++i) {
       dst[i] = hwy::ConvertScalarTo<KV_t>(src[i]);
@@ -666,6 +672,9 @@ static void T5GemmaDecoderSelfAttentionReference(
   const size_t heads_per_kv = heads / kv_heads;
   const size_t cache_layer_size = layer_config.CacheLayerSize();
 
+  activations.attention.q.OverrideCols(heads * qkv_dim);
+  kv.OverrideCols(2 * kv_heads * qkv_dim);
+  activations.attention.att_out.OverrideCols(heads * qkv_dim);
   RMSNormBatched(activations.x, layer.pre_self_attention_norm_scale,
                  activations.attention.pre_att_rms_out, env.ctx);
   CallMatMul(activations.attention.pre_att_rms_out, layer.self_qkv_einsum_w1,
@@ -681,14 +690,17 @@ static void T5GemmaDecoderSelfAttentionReference(
     const size_t query_pos = qbatch.Pos(qi);
     const size_t start_pos =
         T5GemmaDecoderStartPos(config, layer_idx, query_pos);
+    const size_t layer_offset =
+        qbatch.KV(qi).cache ? qbatch.KV(qi).cache->layer_flat_offsets[layer_idx]
+                            : layer_idx * cache_layer_size;
     for (size_t head = 0; head < heads; ++head) {
       const size_t kv_head = head / heads_per_kv;
       const float* query = activations.attention.q.Row(qi) + head * qkv_dim;
 
       float max_score = -std::numeric_limits<float>::infinity();
       for (size_t key_pos = start_pos; key_pos <= query_pos; ++key_pos) {
-        const KV_t* key = qbatch.KV(qi).kv_cache.Row(key_pos) +
-                          layer_idx * cache_layer_size + kv_head * 2 * qkv_dim;
+        const KV_t* key = qbatch.KV(qi).kv_cache.Row(key_pos) + layer_offset +
+                          kv_head * 2 * qkv_dim;
         float score = 0.0f;
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
           score += query[dim] * hwy::ConvertScalarTo<float>(key[dim]);
@@ -701,8 +713,8 @@ static void T5GemmaDecoderSelfAttentionReference(
       float* out = activations.attention.att_out.Row(qi) + head * qkv_dim;
       std::fill(out, out + qkv_dim, 0.0f);
       for (size_t key_pos = start_pos; key_pos <= query_pos; ++key_pos) {
-        const KV_t* key = qbatch.KV(qi).kv_cache.Row(key_pos) +
-                          layer_idx * cache_layer_size + kv_head * 2 * qkv_dim;
+        const KV_t* key = qbatch.KV(qi).kv_cache.Row(key_pos) + layer_offset +
+                          kv_head * 2 * qkv_dim;
         const KV_t* value = key + qkv_dim;
         float score = 0.0f;
         for (size_t dim = 0; dim < qkv_dim; ++dim) {
@@ -737,6 +749,8 @@ static void T5GemmaDecoderCrossAttentionReference(
   const size_t kv_heads = layer_config.kv_heads;
   const size_t heads_per_kv = heads / kv_heads;
 
+  activations.attention.q.OverrideCols(heads * qkv_dim);
+  activations.attention.att_out.OverrideCols(heads * qkv_dim);
   RMSNormBatched(activations.x, layer.pre_cross_attention_norm_scale,
                  activations.attention.pre_att_rms_out, env.ctx);
   CallMatMul(activations.attention.pre_att_rms_out, layer.cross_q_einsum_w,

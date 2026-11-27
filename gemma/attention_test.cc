@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>  // strcmp
@@ -36,6 +37,7 @@
 #include "compression/compress-inl.h"
 #include "gemma/attention.h"
 #include "gemma/configs.h"
+#include "gemma/generate_internal.h"
 #include "util/test_util.h"
 #include "hwy/tests/test_util-inl.h"
 
@@ -580,6 +582,52 @@ void TestGemmaAttentionFlash() {
   RunAttentionTest(AttentionImpl::kFlash, true);
 }
 
+void TestHeterogeneousLayerActivations() {
+  TestState s;
+  ModelConfig cfg(Model::GEMMA2_2B, Type::kF32, PromptWrapping::GEMMA_PT);
+  cfg.vocab_size = cfg.max_seq_len = 64;
+  cfg.num_layers = 3;
+  cfg.attention_window_sizes = {16, 64, 16};
+  cfg.layer_configs.resize(3);
+  cfg.layer_configs[0].heads = cfg.layer_configs[2].heads = 2;
+  cfg.layer_configs[0].kv_heads = cfg.layer_configs[2].kv_heads = 1;
+  TensorInfoRegistry reg(cfg);
+  std::vector<LayerWeightsPtrs> layers;
+  layers.reserve(3);
+  for (size_t i = 0; i < 3; ++i) {
+    auto& l = layers.emplace_back(i, cfg.layer_configs[i], reg);
+    for (MatPtr* m : {&l.pre_attention_norm_scale, &l.post_attention_norm_scale,
+                      &l.qkv_einsum_w, &l.attn_vec_einsum_w,
+                      &l.pre_ffw_norm_scale, &l.post_ffw_norm_scale,
+                      &l.gating_einsum_w, &l.linear_w})
+      AllocateAndFillRandom(*m, s.ctx.allocator, s.mat_owners, 100 + i);
+    l.Fixup(cfg.model, s.mat_owners, s.ctx);
+  }
+  InferenceArgs inf;
+  inf.seq_len = 64;
+  int toks[4] = {1, 2, 3, 4};
+  RuntimeConfig rt;
+  for (auto impl :
+       {AttentionImpl::kFlash, AttentionImpl::kFlashTransposedQsBF16}) {
+    rt.attention_impl = impl;
+    KVCache kv(cfg, inf, rt, s.ctx.allocator);
+    Activations act(rt, cfg, 4, kv.SeqLen(), s.ctx, s.env.row_ptrs);
+    act.SetBatchSize(4);
+    EXPECT_GE(act.attention.q.Stride(), 8u * 256u);
+    EXPECT_GE(act.attention.k_tile_vec.Rows(), 16u);
+    FillRandom(act.x, 301);
+    AllQueries aq(PromptTokens(toks, 4), 0, 0, hwy::Span<KVCache>(&kv, 1));
+    QBatch qb(0, 1, aq);
+    for (size_t i = 0; i < 3; ++i)
+      TransformerLayer(4, i, layers[i], act, qb, s.env);
+    ASSERT_TRUE(std::isfinite(act.x.Row(3)[0]));
+  }
+  ModelConfig t5(Model::T5GEMMA_S_S, Type::kF32, PromptWrapping::GEMMA_PT);
+  t5.max_seq_len = 64;
+  t5.decoder_attention_window_sizes.clear();
+  EXPECT_EQ(KVCache(t5, inf, rt, s.ctx.allocator).SeqLen(), 64u);
+}
+
 }  // namespace HWY_NAMESPACE
 }  // namespace gcpp
 HWY_AFTER_NAMESPACE();
@@ -589,6 +637,7 @@ HWY_AFTER_NAMESPACE();
 namespace gcpp {
 HWY_BEFORE_TEST(AttentionTest);
 HWY_EXPORT_AND_TEST_P(AttentionTest, TestGemmaAttentionFlash);
+HWY_EXPORT_AND_TEST_P(AttentionTest, TestHeterogeneousLayerActivations);
 HWY_AFTER_TEST();
 
 }  // namespace gcpp

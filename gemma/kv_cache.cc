@@ -54,6 +54,12 @@ static const std::vector<uint32_t>& KVAttentionWindowSizes(
                                    : config.attention_window_sizes;
 }
 
+static uint32_t KVLayerWindowSize(const ModelConfig& config,
+                                  const std::vector<uint32_t>& windows,
+                                  size_t i) {
+  return i < windows.size() ? windows[i] : config.max_seq_len;
+}
+
 KVCache::KVCache(const Extents2D& kv_extents, size_t num_layers,
                  size_t kv_heads, size_t qkv_dim, const Allocator& allocator)
     : num_layers(num_layers),
@@ -165,8 +171,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       HWY_ASSERT(kv_layer_configs[i].kv_heads ==
                  kv_layer_configs[src].kv_heads);
       HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
-      HWY_ASSERT(kv_attention_window_sizes[i] ==
-                 kv_attention_window_sizes[src]);
+      HWY_ASSERT(KVLayerWindowSize(config, kv_attention_window_sizes, i) ==
+                 KVLayerWindowSize(config, kv_attention_window_sizes, src));
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
@@ -184,7 +190,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
 
     layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
-    kv_head_accum += config.layer_configs[i].kv_heads;
+    kv_head_accum += kv_layer_configs[i].kv_heads;
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
@@ -249,8 +255,8 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
       HWY_ASSERT(kv_layer_configs[i].kv_heads ==
                  kv_layer_configs[src].kv_heads);
       HWY_ASSERT(kv_layer_configs[i].qkv_dim == kv_layer_configs[src].qkv_dim);
-      HWY_ASSERT(kv_attention_window_sizes[i] ==
-                 kv_attention_window_sizes[src]);
+      HWY_ASSERT(KVLayerWindowSize(config, kv_attention_window_sizes, i) ==
+                 KVLayerWindowSize(config, kv_attention_window_sizes, src));
       layer_flat_offsets[i] = layer_flat_offsets[src];
       layer_k_v_offsets[i] = layer_k_v_offsets[src];
       layer_kv_head_offsets[i] = layer_kv_head_offsets[src];
@@ -268,7 +274,7 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     k_v_accum += kv_layer_configs[i].kv_heads * rounded_dim;
 
     layer_kv_head_offsets[i] = static_cast<uint32_t>(kv_head_accum);
-    kv_head_accum += config.layer_configs[i].kv_heads;
+    kv_head_accum += kv_layer_configs[i].kv_heads;
   }
   k_v_cols = static_cast<uint32_t>(k_v_accum);
 
@@ -351,7 +357,9 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
     const size_t capped_seq_len = CappedSeqLen(config, inference_args);
     for (size_t i = 0; i < num_layers; ++i) {
       if (!kv_layer_configs[i].HasOwnKVCache()) continue;
-      size_t num_tiles = num_tiles_per_head(kv_attention_window_sizes[i],
+      const uint32_t window_size =
+          KVLayerWindowSize(config, kv_attention_window_sizes, i);
+      size_t num_tiles = num_tiles_per_head(window_size,
                                             runtime_config.prefill_tbatch_size,
                                             capped_seq_len) *
                          kv_layer_configs[i].kv_heads;
@@ -365,12 +373,12 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
         }
       }
 
-      if (kv_attention_window_sizes[i] == config.max_seq_len) {
+      if (window_size == config.max_seq_len) {
         total_global_num_tiles += num_tiles;
-        global_tile_length = tile_len;
+        global_tile_length = HWY_MAX(global_tile_length, tile_len);
       } else {
         total_local_num_tiles += num_tiles;
-        local_tile_length = tile_len;
+        local_tile_length = HWY_MAX(local_tile_length, tile_len);
       }
     }
 
@@ -431,10 +439,12 @@ KVCache::KVCache(const ModelConfig& config, const InferenceArgs& inference_args,
           layer_tile_length += sizeof(int32_t) * kTileSize;
         }
       }
-      bool is_global = kv_attention_window_sizes[i] == config.max_seq_len;
+      const uint32_t window_size =
+          KVLayerWindowSize(config, kv_attention_window_sizes, i);
+      bool is_global = window_size == config.max_seq_len;
       for (size_t kv = 0; kv < kv_layer_configs[i].kv_heads; ++kv) {
         size_t num_tiles_per_kv_head = num_tiles_per_head(
-            kv_attention_window_sizes[i], runtime_config.prefill_tbatch_size,
+            window_size, runtime_config.prefill_tbatch_size,
             CappedSeqLen(config, inference_args));
         MatPtr kv_ptr("kv_ptr", kv_cache_type,
                       Extents2D(num_tiles_per_kv_head, layer_tile_length));

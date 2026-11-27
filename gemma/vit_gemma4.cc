@@ -193,6 +193,7 @@ class VitGemma4Attention {
     const size_t heads = layer_config_.heads;
     const size_t kv_heads = layer_config_.kv_heads;
     const size_t qkv_dim = layer_config_.qkv_dim;
+    HWY_ASSERT(qkv_dim >= 64);
     auto& qkv = activations_.attention.q;
 
     float inv_timescale[16];
@@ -294,7 +295,7 @@ class VitGemma4Attention {
     const size_t qkv_dim = layer_config_.qkv_dim;
 
     HWY_ASSERT(qkv.Rows() == num_tokens_);
-    HWY_ASSERT(qkv.Cols() == (heads + 2 * kv_heads) * qkv_dim);
+    qkv.OverrideCols((heads + 2 * kv_heads) * qkv_dim);
 
     // Q part:
     MatPtrT<float> q_part("q_part", Extents2D(num_tokens_, heads * qkv_dim));
@@ -479,10 +480,13 @@ class VitGemma4Attention {
     const size_t kNF = hn::Lanes(hn::ScalableTag<float>());
     const size_t kRoundedKVDim = hwy::RoundUpTo(qkv_dim, 2 * kNF);
     auto& attn = activations_.attention;
+    attn.q_bf.OverrideCols(heads * qkv_dim);
+    attn.att_out.OverrideCols(heads * qkv_dim);
     const size_t seq_len = static_cast<size_t>(attn.div_seq_len.GetDivisor());
-    if (attn.vit_K_T.Rows() >= seq_len) {
+    if (!attn.vit_kv_reshaped) {
       attn.vit_K_T.ReshapePackedRowsToCols(2 * kNF);
       attn.vit_V_T.ReshapePackedRowsToCols(2 * kNF);
+      attn.vit_kv_reshaped = true;
     }
     const float query_scale = 1.0f;
     ScaleQuery(attn.q, num_tokens_, heads, qkv_dim, query_scale, attn.q_bf);
